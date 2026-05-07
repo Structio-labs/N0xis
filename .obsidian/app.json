@@ -1,0 +1,12 @@
+{
+  "alwaysUpdateLinks": true,
+  "showUnsupportedFiles": false,
+  "userIgnoreFilters": [
+    "**/node_modules/**",
+    "**/target/**",
+    "**/.git/**",
+    "**/dist/**",
+    "**/build/**\\",
+    "**/.next/**"
+  ]
+}

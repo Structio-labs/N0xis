@@ -1,0 +1,22 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Rust / Cargo (n0x-cli-rs)
+n0x-cli-rs/target/
+**/*.rs.bk
+
+# Per-project N0x state (analysis artifacts, patches, dumps)
+.n0x/
+
+# Bundled archive — not source
+n0x.zip
+
+# Obsidian workspace state (keep config, drop transient state)
+.obsidian/workspace*.json
+.obsidian/cache

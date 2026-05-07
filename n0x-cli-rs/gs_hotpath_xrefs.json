@@ -1,0 +1,171 @@
+{
+  "generatedAt": "1778171044",
+  "selection": {
+    "created_at": "1778171032",
+    "end": "0x7FF967F81200",
+    "module": "KERNEL32",
+    "name": "gs_hotpath",
+    "note": "candidate hotpath",
+    "pid": 13140,
+    "start": "0x7FF967F81008"
+  },
+  "xrefCount": 26,
+  "xrefs": [
+    {
+      "from": "0x7FF967F8101B",
+      "instruction": "je short 00007FF967F81035h",
+      "kind": "jmp",
+      "to": "0x7FF967F81035"
+    },
+    {
+      "from": "0x7FF967F81020",
+      "instruction": "call qword [rel 7FF96800B470h]",
+      "kind": "call",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F8102C",
+      "instruction": "lea eax,[rax*2+2]",
+      "kind": "lea",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F81033",
+      "instruction": "jmp short 00007FF967F81041h",
+      "kind": "jmp",
+      "to": "0x7FF967F81041"
+    },
+    {
+      "from": "0x7FF967F81035",
+      "instruction": "lea rbx,[rel 7FF9680102FCh]",
+      "kind": "lea",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F8106E",
+      "instruction": "je short 00007FF967F81081h",
+      "kind": "jmp",
+      "to": "0x7FF967F81081"
+    },
+    {
+      "from": "0x7FF967F8107B",
+      "instruction": "jne short 00007FF967F81081h",
+      "kind": "jmp",
+      "to": "0x7FF967F81081"
+    },
+    {
+      "from": "0x7FF967F810D1",
+      "instruction": "lea rcx,[rel 7FF96801E820h]",
+      "kind": "lea",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F810E7",
+      "instruction": "lea rdx,[rsp+30h]",
+      "kind": "lea",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F810F0",
+      "instruction": "lea rax,[rel 7FF96801EA04h]",
+      "kind": "lea",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F81118",
+      "instruction": "call qword [rel 7FF96800AF28h]",
+      "kind": "call",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F81142",
+      "instruction": "je short 00007FF967F8119Eh",
+      "kind": "jmp",
+      "to": "0x7FF967F8119E"
+    },
+    {
+      "from": "0x7FF967F8114D",
+      "instruction": "je short 00007FF967F81172h",
+      "kind": "jmp",
+      "to": "0x7FF967F81172"
+    },
+    {
+      "from": "0x7FF967F81152",
+      "instruction": "jne short 00007FF967F81175h",
+      "kind": "jmp",
+      "to": "0x7FF967F81175"
+    },
+    {
+      "from": "0x7FF967F81157",
+      "instruction": "je short 00007FF967F81161h",
+      "kind": "jmp",
+      "to": "0x7FF967F81161"
+    },
+    {
+      "from": "0x7FF967F8115F",
+      "instruction": "jmp short 00007FF967F81166h",
+      "kind": "jmp",
+      "to": "0x7FF967F81166"
+    },
+    {
+      "from": "0x7FF967F81170",
+      "instruction": "jmp short 00007FF967F81175h",
+      "kind": "jmp",
+      "to": "0x7FF967F81175"
+    },
+    {
+      "from": "0x7FF967F8117C",
+      "instruction": "je short 00007FF967F8119Eh",
+      "kind": "jmp",
+      "to": "0x7FF967F8119E"
+    },
+    {
+      "from": "0x7FF967F81199",
+      "instruction": "call 00007FF968006010h",
+      "kind": "call",
+      "to": "0x7FF968006010"
+    },
+    {
+      "from": "0x7FF967F811B5",
+      "instruction": "lea eax,[r8+1]",
+      "kind": "lea",
+      "to": null
+    },
+    {
+      "from": "0x7FF967F811D4",
+      "instruction": "jle short 00007FF967F811FAh",
+      "kind": "jmp",
+      "to": "0x7FF967F811FA"
+    },
+    {
+      "from": "0x7FF967F811D9",
+      "instruction": "jae short 00007FF967F811FAh",
+      "kind": "jmp",
+      "to": "0x7FF967F811FA"
+    },
+    {
+      "from": "0x7FF967F811E1",
+      "instruction": "je short 00007FF967F81204h",
+      "kind": "jmp",
+      "to": "0x7FF967F81204"
+    },
+    {
+      "from": "0x7FF967F811E8",
+      "instruction": "ja short 00007FF967F811FAh",
+      "kind": "jmp",
+      "to": "0x7FF967F811FA"
+    },
+    {
+      "from": "0x7FF967F811EE",
+      "instruction": "jb short 00007FF967F811FAh",
+      "kind": "jmp",
+      "to": "0x7FF967F811FA"
+    },
+    {
+      "from": "0x7FF967F811F8",
+      "instruction": "jg short 00007FF967F811D6h",
+      "kind": "jmp",
+      "to": "0x7FF967F811D6"
+    }
+  ]
+}
