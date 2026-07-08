@@ -104,6 +104,20 @@ impl LiveProcess {
         Ok(LiveProcess { pid, handle, modules })
     }
 
+    /// The process's main module (its executable image), if enumerated.
+    pub fn main_module(&self) -> Option<&Module> {
+        self.modules.first()
+    }
+
+    /// Locate the `.text` section `(start, size)` of the main module by reading
+    /// its PE headers straight from live memory (the full image is mapped, so
+    /// unlike `StaticPe` we parse the section table from RAM).
+    pub fn text_range(&self) -> Option<(Va, u64)> {
+        let base = self.main_module()?.base;
+        let hdr = self.read(base, 0x1000).ok()?;
+        parse_text_range(&hdr, base.0)
+    }
+
     /// Query the committed region covering `va`, if any (base, size, protect).
     fn query(&self, va: u64) -> Option<MEMORY_BASIC_INFORMATION> {
         unsafe {
@@ -121,6 +135,39 @@ impl LiveProcess {
 
 fn is_readable(protect: u32) -> bool {
     protect & PAGE_GUARD == 0 && protect != PAGE_NOACCESS
+}
+
+/// Parse a PE header blob (read at the image base) and return the `.text`
+/// section's absolute `(start, size)`. Hand-rolled — we only need three fields
+/// and avoid pulling goblin into the `live` build.
+fn parse_text_range(hdr: &[u8], base: u64) -> Option<(Va, u64)> {
+    let rd_u32 = |off: usize| -> Option<u32> {
+        hdr.get(off..off + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let rd_u16 = |off: usize| -> Option<u16> {
+        hdr.get(off..off + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    // DOS header: e_lfanew at 0x3C → offset of the NT headers ('PE\0\0').
+    let e_lfanew = rd_u32(0x3C)? as usize;
+    if hdr.get(e_lfanew..e_lfanew + 4)? != b"PE\0\0" {
+        return None;
+    }
+    let coff = e_lfanew + 4; // IMAGE_FILE_HEADER
+    let num_sections = rd_u16(coff + 2)? as usize;
+    let size_opt_hdr = rd_u16(coff + 16)? as usize;
+    let sec_table = coff + 20 + size_opt_hdr; // section headers follow the optional header
+    for i in 0..num_sections {
+        let s = sec_table + i * 40; // IMAGE_SECTION_HEADER is 40 bytes
+        let name = hdr.get(s..s + 8)?;
+        let name = &name[..name.iter().position(|&c| c == 0).unwrap_or(8)];
+        if name == b".text" {
+            let virtual_size = rd_u32(s + 8)? as u64;
+            let virtual_address = rd_u32(s + 12)? as u64;
+            return Some((Va(base + virtual_address), virtual_size));
+        }
+    }
+    None
 }
 
 fn snapshot_modules(pid: u32) -> Result<Vec<Module>, SourceError> {

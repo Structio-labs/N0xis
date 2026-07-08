@@ -149,6 +149,11 @@ fn build_insn(
 
     let kind = classify(instr);
     let mnemonic = format!("{:?}", instr.mnemonic()).to_lowercase();
+    let rip_target = if instr.is_ip_rel_memory_operand() {
+        Some(Va(instr.ip_rel_memory_address()))
+    } else {
+        None
+    };
 
     DecodedInsn {
         va: Va(instr.ip()),
@@ -158,6 +163,7 @@ fn build_insn(
         text,
         kind,
         target: direct_target(instr, kind),
+        rip_target,
     }
 }
 
@@ -222,6 +228,17 @@ impl Arch for X64 {
             }
         }
         access
+    }
+
+    fn prologues(&self) -> &'static [&'static [u8]] {
+        // Common Win64/MSVC & gnu x64 function entry idioms.
+        &[
+            &[0x55, 0x48, 0x8B, 0xEC], // push rbp; mov rbp, rsp
+            &[0x40, 0x53],             // push rbx (REX)
+            &[0x48, 0x89, 0x5C, 0x24], // mov [rsp+x], rbx (home-save)
+            &[0x48, 0x83, 0xEC],       // sub rsp, imm8
+            &[0x4C, 0x8B, 0xDC],       // mov r11, rsp
+        ]
     }
 
     fn regs(&self) -> &RegisterFile {

@@ -17,6 +17,10 @@ pub mod v1 {
     pub const IR_CFG: &str = "n0xis.ir.cfg.v1";
     /// Human-readable IR summary (`ir explain`).
     pub const IR_EXPLAIN: &str = "n0xis.ir.explain.v1";
+    /// Heuristic function discovery (`function discover`).
+    pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
+    /// Cross-references to/from an address (`xref to` / `xref from`).
+    pub const XREF: &str = "n0xis.xref.v1";
     /// Environment / readiness report (`doctor`).
     pub const DOCTOR: &str = "n0xis.doctor.v1";
     /// Built-in quick reference (`guide`).

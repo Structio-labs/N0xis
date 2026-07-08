@@ -42,6 +42,12 @@ pub struct DecodedInsn {
     /// Resolved branch/call target when it is a direct near operand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Va>,
+    /// Absolute address of a RIP-relative memory operand, when present
+    /// (`lea reg,[rip+d]`, `mov reg,[rip+d]`, `call [rip+d]` IAT slots, …).
+    /// The seam that powers data xrefs and IAT resolution without a decoder
+    /// leaking into the passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rip_target: Option<Va>,
 }
 
 fn ser_hex_bytes<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {

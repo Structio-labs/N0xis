@@ -123,6 +123,13 @@ pub trait Arch {
         RegAccess::default()
     }
 
+    /// Byte patterns that commonly begin a function (prologues), used by
+    /// heuristic function discovery. ISA-specific, so it lives here — the
+    /// discovery pass matches against these without knowing the ISA.
+    fn prologues(&self) -> &'static [&'static [u8]] {
+        &[]
+    }
+
     /// The register model.
     fn regs(&self) -> &RegisterFile;
 

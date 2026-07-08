@@ -15,7 +15,9 @@ mod emit;
 use clap::{Args, Parser, Subcommand};
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
-use n0xis_core::{CfgInput, CfgPass, Ctx, Pass};
+use n0xis_core::{
+    CfgInput, CfgPass, Ctx, DiscoverInput, DiscoverPass, Pass, XrefDir, XrefInput, XrefPass,
+};
 use n0xis_pipeline::Pipeline;
 use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, list_processes};
 use serde_json::json;
@@ -67,6 +69,64 @@ enum Command {
     /// Intermediate representation (CFG + block/def-use).
     #[command(subcommand)]
     Ir(IrCmd),
+    /// Function-level analysis.
+    #[command(subcommand)]
+    Function(FunctionCmd),
+    /// Cross-references.
+    #[command(subcommand)]
+    Xref(XrefCmd),
+}
+
+#[derive(Subcommand)]
+enum FunctionCmd {
+    /// Discover functions by prologue scanning (`.text` by default).
+    Discover(DiscoverArgs),
+}
+
+#[derive(Args)]
+struct DiscoverArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Inline bytes source; requires `--start` for the base address.
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Scan range start (defaults to the module's `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    /// Scan range size in bytes (defaults to the `.text` size).
+    #[arg(long)]
+    size: Option<usize>,
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
+}
+
+#[derive(Subcommand)]
+enum XrefCmd {
+    /// Who references `--addr`.
+    To(XrefArgs),
+    /// What `--addr` references.
+    From(XrefArgs),
+}
+
+#[derive(Args)]
+struct XrefArgs {
+    /// The address of interest.
+    #[arg(long)]
+    addr: String,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Code window start to scan (defaults to the module's `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    /// Code window size (defaults to the `.text` size).
+    #[arg(long)]
+    size: Option<usize>,
 }
 
 #[derive(Subcommand)]
@@ -178,6 +238,9 @@ fn main() {
         Command::Disasm(a) => cmd_disasm(a, pretty),
         Command::Ir(IrCmd::Build(a)) => cmd_ir(a, false, pretty),
         Command::Ir(IrCmd::Explain(a)) => cmd_ir(a, true, pretty),
+        Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
+        Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
+        Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -349,10 +412,70 @@ fn cmd_ir(a: IrArgs, explain_mode: bool, pretty: bool) -> bool {
 }
 
 fn ir_err(code: &str, msg: &str, pretty: bool) -> bool {
-    emit(
-        &Response::<serde_json::Value>::error(code, msg),
-        pretty,
-    )
+    emit(&Response::<serde_json::Value>::error(code, msg), pretty)
+}
+
+fn opt_hex(s: &Option<String>) -> Result<Option<Va>, String> {
+    s.as_deref().map(Va::parse).transpose().map_err(|e| e.to_string())
+}
+
+/// A resolved analysis source. Kept as an enum so the range-resolution and
+/// symbol wiring can differ per adapter while the passes stay uniform.
+enum Src {
+    Live(Box<LiveProcess>),
+    Static(Box<StaticPe>),
+    Snap(Snapshot),
+}
+
+/// Resolve `--pid` / `--file` / `--bytes` into a source. Returns the source, a
+/// provenance label, and (for inline bytes) the mapped region length.
+fn build_source(
+    pid: Option<u32>,
+    file: Option<&str>,
+    bytes: Option<&str>,
+    bytes_base: Va,
+) -> Result<(Src, String, Option<usize>), (String, String)> {
+    if let Some(pid) = pid {
+        let live = LiveProcess::attach(pid).map_err(|e| ("attach-failed".into(), e.to_string()))?;
+        let label = live.label();
+        return Ok((Src::Live(Box::new(live)), label, None));
+    }
+    if let Some(file) = file {
+        let pe = StaticPe::load(std::path::Path::new(file))
+            .map_err(|e| ("load-failed".into(), e.to_string()))?;
+        let label = pe.label();
+        return Ok((Src::Static(Box::new(pe)), label, None));
+    }
+    if let Some(b) = bytes {
+        let parsed = parse_hex_bytes(b).map_err(|e| ("bad-bytes".into(), e))?;
+        let len = parsed.len();
+        let snap = Snapshot::builder()
+            .region(bytes_base, parsed)
+            .label(format!("bytes@{bytes_base}"))
+            .build();
+        let label = snap.label();
+        return Ok((Src::Snap(snap), label, Some(len)));
+    }
+    Err(("missing-source".into(), "provide --pid, --file, or --bytes".into()))
+}
+
+/// Choose a scan `(start, size)`: explicit flags win, else the module's `.text`,
+/// else the inline region.
+fn scan_range(
+    default_text: Option<(Va, u64)>,
+    region_len: Option<usize>,
+    explicit_start: Option<Va>,
+    explicit_size: Option<usize>,
+    fallback_start: Va,
+) -> (Va, usize) {
+    let start = explicit_start
+        .or(default_text.map(|d| d.0))
+        .unwrap_or(fallback_start);
+    let size = explicit_size
+        .or(default_text.map(|d| d.1 as usize))
+        .or(region_len)
+        .unwrap_or(0);
+    (start, size)
 }
 
 fn finish_ir(
@@ -386,6 +509,87 @@ fn finish_ir(
             }
         }
         Err(e) => ir_err("ir-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
+    let explicit_start = match opt_hex(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let bytes_base = explicit_start.unwrap_or(Va(0));
+    let (src, label, region_len) =
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+            Ok(x) => x,
+            Err((c, m)) => return ir_err(&c, &m, pretty),
+        };
+    let arch = X64::new();
+    let default_text = match &src {
+        Src::Static(pe) => pe.text_range(),
+        Src::Live(l) => l.text_range(),
+        Src::Snap(_) => None,
+    };
+    let (start, size) = scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
+    if size == 0 {
+        return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
+    }
+
+    let run = |ctx: &Ctx| -> bool {
+        match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit }) {
+            Ok(art) => emit(
+                &Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(label.clone()),
+                pretty,
+            ),
+            Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
+    }
+}
+
+fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let explicit_start = match opt_hex(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let bytes_base = explicit_start.unwrap_or(Va(0));
+    let (src, label, region_len) =
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+            Ok(x) => x,
+            Err((c, m)) => return ir_err(&c, &m, pretty),
+        };
+    let arch = X64::new();
+    let default_text = match &src {
+        Src::Static(pe) => pe.text_range(),
+        Src::Live(l) => l.text_range(),
+        Src::Snap(_) => None,
+    };
+    let (scan_start, size) =
+        scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
+    if size == 0 {
+        return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
+    }
+
+    let run = |ctx: &Ctx| -> bool {
+        match XrefPass.run(ctx, XrefInput { scan_start, size, addr, dir }) {
+            Ok(art) => emit(
+                &Response::success(schema::v1::XREF, art).with_source(label.clone()),
+                pretty,
+            ),
+            Err(e) => ir_err("xref-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
     }
 }
 

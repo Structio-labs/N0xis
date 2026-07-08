@@ -48,10 +48,15 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   end-of-function detection, call-target naming via the symbol seam. New arch
   seam `Arch::reg_access` keeps the iced decoder out of the pass. (`ir cfg/dot`
   presentations + switch/frame/slice/manifest are follow-on slices.)
-- ⬜ Function discovery (prolog scan), export/IAT symbol + import resolution.
+- ✅ Function discovery (prolog scan) — `function discover` over `.text`
+  (via source `text_range()`), prolog patterns supplied by `Arch::prologues`.
+  (`function list/info` + export/IAT enumeration verbs are a follow-on.)
+- ✅ `xref to/from` — branch + RIP-relative data refs via `DecodedInsn.target`
+  / new `DecodedInsn.rip_target` arch field (no byte patterns in the pass).
+  (`xref string` + relocation-aware/recursive scan are follow-on.)
 - ⬜ Switch/jump-table detection **and** memory-side resolution.
 - ⬜ Frame analysis, backward register slice (`ir slice`), `ir manifest` + quality.
-- ⬜ `xref to/from/string`, `mem read/write/map`, `patch *`, `selection *`,
+- ⬜ `xref string`, `mem read/write/map`, `patch *`, `selection *`,
   `dump *`, `function trace`, `debug await-hit`.
 - **Exit test (parity gate):** golden-output diff vs the archived binary on a fixed
   corpus of functions for `ir build`, `disasm`, `discover`, `xref`, switch cases.

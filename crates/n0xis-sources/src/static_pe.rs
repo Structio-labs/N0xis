@@ -52,6 +52,16 @@ impl StaticPe {
         &self.modules[0]
     }
 
+    /// Virtual address range of the `.text` section `(start, size)`, for
+    /// function discovery / code scanning. Falls back to the first executable
+    /// section's absence → `None`.
+    pub fn text_range(&self) -> Option<(Va, u64)> {
+        self.sections
+            .iter()
+            .find(|s| s.name == ".text")
+            .map(|s| (Va(s.va_start), s.va_end - s.va_start))
+    }
+
     /// Load and parse a PE file, building the section map and symbol tables.
     pub fn load(path: &Path) -> Result<Self, SourceError> {
         let bytes = std::fs::read(path)

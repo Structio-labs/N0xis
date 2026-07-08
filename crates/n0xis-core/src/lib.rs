@@ -12,12 +12,16 @@
 //! added in Phase 3 as more `impl Pass` — same shape, same context.
 
 mod decode;
+mod discover;
 mod ir;
+mod xref;
 
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
+pub use discover::{DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
 pub use ir::{
     CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
 };
+pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
 
 use n0xis_arch::Arch;
 use n0xis_sources::{MemorySource, ModuleProvider, SymbolProvider};
