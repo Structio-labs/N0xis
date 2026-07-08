@@ -17,6 +17,10 @@ pub mod v1 {
     pub const IR_CFG: &str = "n0xis.ir.cfg.v1";
     /// Human-readable IR summary (`ir explain`).
     pub const IR_EXPLAIN: &str = "n0xis.ir.explain.v1";
+    /// Graphviz DOT rendering of the CFG (`ir dot`).
+    pub const IR_DOT: &str = "n0xis.ir.dot.v1";
+    /// Backward register slice over a function (`ir slice`).
+    pub const IR_SLICE: &str = "n0xis.ir.slice.v1";
     /// Heuristic function discovery (`function discover`).
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).

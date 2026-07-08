@@ -125,6 +125,15 @@ pub trait Arch {
         RegAccess::default()
     }
 
+    /// Canonicalize a register name to this ISA's full-width form, so a query
+    /// for `eax`/`ax`/`al` matches a def-use recorded as `rax`. Lets analyses
+    /// (e.g. the backward slice) compare a user-supplied register against the
+    /// normalized names in [`RegAccess`] without knowing the ISA's aliasing.
+    /// Default: trimmed + lowercased (identity for canonical names).
+    fn normalize_reg(&self, reg: &str) -> String {
+        reg.trim().to_ascii_lowercase()
+    }
+
     /// Byte patterns that commonly begin a function (prologues), used by
     /// heuristic function discovery. ISA-specific, so it lives here — the
     /// discovery pass matches against these without knowing the ISA.

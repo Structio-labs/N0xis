@@ -234,6 +234,22 @@ enum IrCmd {
     Build(IrArgs),
     /// Human-readable IR summary.
     Explain(IrArgs),
+    /// Render the CFG as Graphviz DOT (pipe to `dot -Tsvg`).
+    Dot(IrArgs),
+    /// Backward register slice: what computes `--reg` at `--at`.
+    Slice(IrSliceArgs),
+}
+
+#[derive(Args)]
+struct IrSliceArgs {
+    #[command(flatten)]
+    ir: IrArgs,
+    /// Register to slice backward on (any width, e.g. `rax`, `eax`, `r8d`).
+    #[arg(long)]
+    reg: String,
+    /// Query point (hex). Defaults to the function's last instruction.
+    #[arg(long)]
+    at: Option<String>,
 }
 
 #[derive(Args)]
@@ -335,8 +351,10 @@ fn main() {
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
-        Command::Ir(IrCmd::Build(a)) => cmd_ir(a, false, pretty),
-        Command::Ir(IrCmd::Explain(a)) => cmd_ir(a, true, pretty),
+        Command::Ir(IrCmd::Build(a)) => cmd_ir(a, IrView::Cfg, pretty),
+        Command::Ir(IrCmd::Explain(a)) => cmd_ir(a, IrView::Explain, pretty),
+        Command::Ir(IrCmd::Dot(a)) => cmd_ir(a, IrView::Dot, pretty),
+        Command::Ir(IrCmd::Slice(a)) => cmd_ir_slice(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
@@ -466,28 +484,39 @@ fn cmd_process_ps(a: PsArgs, pretty: bool) -> bool {
     }
 }
 
-fn cmd_ir(a: IrArgs, explain_mode: bool, pretty: bool) -> bool {
+/// Which presentation of the CFG artifact to emit.
+#[derive(Clone, Copy)]
+enum IrView {
+    Cfg,
+    Explain,
+    Dot,
+}
+
+/// Resolve `--pid`/`--file`/`--bytes` into a `Ctx` and run `work` with it — the
+/// one place IR-family verbs (`build`/`explain`/`dot`/`slice`) share the source
+/// wiring, so the pipeline stays identical across live + static + bytes.
+fn run_ir<F>(a: &IrArgs, pretty: bool, work: F) -> bool
+where
+    F: FnOnce(&Ctx, CfgInput, String) -> bool,
+{
     let start = match Va::parse(&a.addr) {
         Ok(v) => v,
-        Err(e) => {
-            return emit(
-                &Response::<serde_json::Value>::error("bad-addr", e.to_string()),
-                pretty,
-            );
-        }
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
     let arch = X64::new();
-    let auto_end = !a.no_auto_end;
+    let input = CfgInput {
+        start,
+        max_bytes: a.size,
+        auto_end: !a.no_auto_end,
+    };
 
-    // Each source is built, wired into a Ctx (with symbols where the adapter
-    // provides them), and run through the one CfgPass — the seam in action.
     if let Some(pid) = a.pid {
         let live = match LiveProcess::attach(pid) {
             Ok(l) => l,
             Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
         };
         let ctx = Ctx::new(&live, &arch);
-        return finish_ir(&ctx, start, a.size, auto_end, explain_mode, live.label(), pretty);
+        return work(&ctx, input, live.label());
     }
     if let Some(file) = a.file.as_deref() {
         let pe = match StaticPe::load(std::path::Path::new(file)) {
@@ -497,12 +526,12 @@ fn cmd_ir(a: IrArgs, explain_mode: bool, pretty: bool) -> bool {
         // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
         // call targets resolve to names.
         let ctx = Ctx::new(&pe, &arch).with_symbols(&pe).with_modules(&pe);
-        return finish_ir(&ctx, start, a.size, auto_end, explain_mode, pe.label(), pretty);
+        return work(&ctx, input, pe.label());
     }
-    let Some(bytes_str) = a.bytes else {
+    let Some(bytes_str) = a.bytes.as_deref() else {
         return ir_err("missing-source", "provide --pid, --file, or --bytes", pretty);
     };
-    let bytes = match parse_hex_bytes(&bytes_str) {
+    let bytes = match parse_hex_bytes(bytes_str) {
         Ok(b) => b,
         Err(e) => return ir_err("bad-bytes", &e, pretty),
     };
@@ -511,7 +540,27 @@ fn cmd_ir(a: IrArgs, explain_mode: bool, pretty: bool) -> bool {
         .label(format!("bytes@{start}"))
         .build();
     let ctx = Ctx::new(&snap, &arch);
-    finish_ir(&ctx, start, a.size, auto_end, explain_mode, snap.label(), pretty)
+    work(&ctx, input, snap.label())
+}
+
+fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
+    run_ir(&a, pretty, |ctx, input, label| {
+        finish_ir(ctx, input, view, label, pretty)
+    })
+}
+
+fn cmd_ir_slice(a: IrSliceArgs, pretty: bool) -> bool {
+    let at = match &a.at {
+        Some(s) => match Va::parse(s) {
+            Ok(v) => Some(v),
+            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+        },
+        None => None,
+    };
+    let reg = a.reg.clone();
+    run_ir(&a.ir, pretty, move |ctx, input, label| {
+        finish_slice(ctx, input, &reg, at, label, pretty)
+    })
 }
 
 fn ir_err(code: &str, msg: &str, pretty: bool) -> bool {
@@ -599,38 +648,60 @@ fn scan_range(
     (start, size)
 }
 
-fn finish_ir(
+fn finish_ir(ctx: &Ctx, input: CfgInput, view: IrView, label: String, pretty: bool) -> bool {
+    let art = match CfgPass.run(ctx, input) {
+        Ok(a) => a,
+        Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
+    };
+    match view {
+        IrView::Cfg => emit(
+            &Response::success(schema::v1::IR_CFG, art).with_source(label),
+            pretty,
+        ),
+        IrView::Explain => {
+            let lines = n0xis_core::explain(&art);
+            emit(
+                &Response::success(schema::v1::IR_EXPLAIN, json!({ "lines": lines }))
+                    .with_source(label),
+                pretty,
+            )
+        }
+        IrView::Dot => emit(
+            &Response::success(schema::v1::IR_DOT, n0xis_core::dot(&art)).with_source(label),
+            pretty,
+        ),
+    }
+}
+
+/// Build the CFG, then take a backward register slice over it. `at` defaults to
+/// the function's last instruction (slice the final value of `reg`).
+fn finish_slice(
     ctx: &Ctx,
-    start: Va,
-    size: usize,
-    auto_end: bool,
-    explain_mode: bool,
+    input: CfgInput,
+    reg: &str,
+    at: Option<Va>,
     label: String,
     pretty: bool,
 ) -> bool {
-    let input = CfgInput {
-        start,
-        max_bytes: size,
-        auto_end,
+    let start = input.start;
+    let art = match CfgPass.run(ctx, input) {
+        Ok(a) => a,
+        Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
     };
-    match CfgPass.run(ctx, input) {
-        Ok(art) => {
-            if explain_mode {
-                let lines = n0xis_core::explain(&art);
-                emit(
-                    &Response::success(schema::v1::IR_EXPLAIN, json!({ "lines": lines }))
-                        .with_source(label),
-                    pretty,
-                )
-            } else {
-                emit(
-                    &Response::success(schema::v1::IR_CFG, art).with_source(label),
-                    pretty,
-                )
-            }
-        }
-        Err(e) => ir_err("ir-failed", &e.to_string(), pretty),
-    }
+    // Default the query point to the last decoded instruction.
+    let query = at.unwrap_or_else(|| {
+        art.blocks
+            .iter()
+            .flat_map(|b| &b.insns)
+            .map(|i| i.va)
+            .max_by_key(|v| v.get())
+            .unwrap_or(start)
+    });
+    let sl = n0xis_core::slice(ctx.arch, &art, query, reg);
+    emit(
+        &Response::success(schema::v1::IR_SLICE, sl).with_source(label),
+        pretty,
+    )
 }
 
 fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {

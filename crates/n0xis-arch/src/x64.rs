@@ -97,6 +97,39 @@ fn reg_name(r: Register) -> String {
     format!("{:?}", r.full_register()).to_lowercase()
 }
 
+/// Fold an x64 sub-register onto its 64-bit parent so callers can query by any
+/// width. Mirrors the naming `reg_name` produces (iced's `full_register`), but
+/// works from a string since a query register never comes from a decode.
+fn normalize_reg_x64(reg: &str) -> String {
+    let r = reg.trim().to_ascii_lowercase();
+    match r.as_str() {
+        "rax" | "eax" | "ax" | "al" | "ah" => "rax".into(),
+        "rbx" | "ebx" | "bx" | "bl" | "bh" => "rbx".into(),
+        "rcx" | "ecx" | "cx" | "cl" | "ch" => "rcx".into(),
+        "rdx" | "edx" | "dx" | "dl" | "dh" => "rdx".into(),
+        "rsi" | "esi" | "si" | "sil" => "rsi".into(),
+        "rdi" | "edi" | "di" | "dil" => "rdi".into(),
+        "rbp" | "ebp" | "bp" | "bpl" => "rbp".into(),
+        "rsp" | "esp" | "sp" | "spl" => "rsp".into(),
+        "rip" | "eip" | "ip" => "rip".into(),
+        _ => {
+            // r8..r15 and their d/w/b sub-registers (r8d, r9w, r10b, …).
+            if let Some(n) = r.strip_prefix('r') {
+                if n.chars().all(|c| c.is_ascii_digit()) {
+                    return format!("r{n}");
+                }
+                if let Some(stem) = n.strip_suffix(['d', 'w', 'b'])
+                    && !stem.is_empty()
+                    && stem.chars().all(|c| c.is_ascii_digit())
+                {
+                    return format!("r{stem}");
+                }
+            }
+            r
+        }
+    }
+}
+
 fn push_unique(v: &mut Vec<String>, s: String) {
     if !v.iter().any(|x| x == &s) {
         v.push(s);
@@ -266,6 +299,10 @@ impl Arch for X64 {
             }
         }
         access
+    }
+
+    fn normalize_reg(&self, reg: &str) -> String {
+        normalize_reg_x64(reg)
     }
 
     fn prologues(&self) -> &'static [&'static [u8]] {

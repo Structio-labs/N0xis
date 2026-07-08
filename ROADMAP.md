@@ -62,7 +62,16 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   gates cases to executable code (rejects `.rdata` misreads). Same code path over
   live + static (the edge). Verified on a real PE: e.g. a reg-rel32 dispatch
   resolved to its exact case targets read from the jump table.
-- ⬜ Frame analysis, backward register slice (`ir slice`), `ir manifest` + quality.
+- ✅ CFG presentations — `ir dot` (Graphviz; block nodes + successor edges,
+  memory-resolved `switch-case` targets drawn as dashed external nodes so
+  indirect flow is visible) and `ir slice` (backward register slice over the
+  block/def-use chains: normalizes the query reg via a new `Arch::normalize_reg`
+  seam so `eax`/`ax`/`al` hit a `rax` def, finds the seed writer at/before the
+  query point, walks def-use edges back to the roots). Both are pure views over
+  the `CfgArtifact` (`n0xis-core::dot`/`slice`). Verified on a real PE: a switch
+  dispatch renders its 5 resolved cases as edges; a `call` slices back to the
+  `sub rsp` that set up its frame. (Slice is intra-block until SSA in Phase 3.)
+- ⬜ Frame analysis, `ir manifest` + quality scoring.
 - ✅ `mem read` (any source) / `mem write` / `mem map` (live, VirtualQueryEx
   region walk); `LiveProcess::write` flips page protection (VirtualProtectEx)
   and restores it, so code pages are patchable.
