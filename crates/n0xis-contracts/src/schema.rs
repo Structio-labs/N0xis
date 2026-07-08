@@ -25,6 +25,8 @@ pub mod v1 {
     pub const IR_MANIFEST: &str = "n0xis.ir.manifest.v1";
     /// Heuristic function discovery (`function discover`).
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
+    /// Call-graph walk from a root (`function trace`).
+    pub const FUNCTION_TRACE: &str = "n0xis.function.trace.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).
     pub const XREF: &str = "n0xis.xref.v1";
     /// String-literal search + referencing instructions (`xref string`).

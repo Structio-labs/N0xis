@@ -118,7 +118,16 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   `powershell.exe` calling `kernel32!Sleep(150)` in a loop, the reported `rcx`
   was exactly `150`; ran twice in a row to confirm the restore is clean, not a
   one-shot; process kept accumulating CPU time (proof it resumed correctly).
-- ⬜ `function trace` (recursive call-graph walk).
+- ✅ `function trace` — BFS call-graph walk from a root (`n0xis-core::TracePass`),
+  built compositionally on `CfgPass`: each visited function's end is found via
+  its existing `auto_end` heuristic (an improvement over v0, which bounded a
+  function's body crudely at "the next known function start" from a separate
+  discovery pass). Depth and `max_nodes` caps, dedup via a visited-set so a
+  shared callee is reported once at its shallowest depth, and an `unreadable`
+  flag on nodes whose bytes couldn't be decoded (e.g. an IAT thunk) instead of
+  aborting the walk. Verified on a real PE: a 13-callsite root walked to 26
+  deduplicated nodes across depth 0–3, `--addr-rva` resolved to the same root
+  as the absolute-VA form, and `--max-nodes` truncation reported correctly.
 - **Exit test (parity gate):** golden-output diff vs the archived binary on a fixed
   corpus of functions for `ir build`, `disasm`, `discover`, `xref`, switch cases.
 

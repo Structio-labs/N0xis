@@ -17,7 +17,8 @@ use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
     CfgInput, CfgPass, Ctx, DiscoverInput, DiscoverPass, ManifestCandidate, ManifestInput,
-    ManifestPass, Pass, StringXrefInput, StringXrefPass, XrefDir, XrefInput, XrefPass,
+    ManifestPass, Pass, StringXrefInput, StringXrefPass, TraceInput, TracePass, XrefDir,
+    XrefInput, XrefPass,
 };
 use n0xis_pipeline::Pipeline;
 use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, await_breakpoint_hit, list_processes};
@@ -298,6 +299,33 @@ struct PatchUndoArgs {
 enum FunctionCmd {
     /// Discover functions by prologue scanning (`.text` by default).
     Discover(DiscoverArgs),
+    /// Walk the call graph from a root function.
+    Trace(FunctionTraceArgs),
+}
+
+#[derive(Args)]
+struct FunctionTraceArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Root address (hex `0x…`), absolute VA unless `--addr-rva`.
+    #[arg(long)]
+    addr: String,
+    /// Interpret `--addr` as an RVA from the module base.
+    #[arg(long)]
+    addr_rva: bool,
+    /// Maximum call-graph depth from the root (0 = only the root itself).
+    #[arg(long, default_value_t = 3)]
+    depth: usize,
+    /// Cap on visited functions; 0 = unlimited.
+    #[arg(long, default_value_t = 500)]
+    max_nodes: usize,
+    /// Byte window handed to `ir build` for each visited function.
+    #[arg(long, default_value_t = 4096)]
+    max_bytes: usize,
 }
 
 #[derive(Args)]
@@ -529,6 +557,7 @@ fn main() {
         Command::Ir(IrCmd::Slice(a)) => cmd_ir_slice(a, pretty),
         Command::Ir(IrCmd::Manifest(a)) => cmd_ir_manifest(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
+        Command::Function(FunctionCmd::Trace(a)) => cmd_function_trace(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
         Command::Xref(XrefCmd::String(a)) => cmd_xref_string(a, pretty),
@@ -879,6 +908,47 @@ fn finish_slice(
         &Response::success(schema::v1::IR_SLICE, sl).with_source(label),
         pretty,
     )
+}
+
+fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), addr) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let arch = X64::new();
+    let module_base = match &src {
+        Src::Static(pe) => Some(pe.image_base()),
+        Src::Live(l) => l.main_module().map(|m| m.base),
+        Src::Snap(_) => None,
+    };
+    let root = if a.addr_rva {
+        match module_base {
+            Some(base) => base.offset(addr.0),
+            None => return ir_err("no-module", "no module base resolved for --addr-rva", pretty),
+        }
+    } else {
+        addr
+    };
+
+    let input = TraceInput { root, depth: a.depth, max_nodes: a.max_nodes, max_bytes: a.max_bytes };
+    let run = |ctx: &Ctx| -> bool {
+        match TracePass.run(ctx, input) {
+            Ok(art) => emit(
+                &Response::success(schema::v1::FUNCTION_TRACE, art).with_source(label.clone()),
+                pretty,
+            ),
+            Err(e) => ir_err("trace-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
+    }
 }
 
 fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {

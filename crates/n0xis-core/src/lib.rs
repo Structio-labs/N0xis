@@ -18,6 +18,7 @@ mod ir;
 mod manifest;
 mod slice;
 mod switch;
+mod trace;
 mod xref;
 mod xref_string;
 
@@ -30,6 +31,7 @@ pub use ir::{
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
 pub use slice::{SliceArtifact, SliceNode, slice};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
+pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
