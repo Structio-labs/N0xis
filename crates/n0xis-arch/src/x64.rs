@@ -6,11 +6,12 @@
 
 use iced_x86::{
     Decoder, DecoderOptions, FlowControl, Formatter, Instruction, InstructionInfoFactory,
-    IntelFormatter, OpAccess, Register,
+    IntelFormatter, Mnemonic, OpAccess, OpKind, Register,
 };
 use n0xis_contracts::{Reg, Va};
 
 use crate::insn::{DecodeError, DecodedInsn, InsnKind};
+use crate::switch::{SwitchDispatch, SwitchKind};
 use crate::{Arch, CallConv, RegAccess, RegDesc, RegisterFile};
 
 /// Interned register ids for x86-64. Passes refer to registers *only* through
@@ -99,6 +100,43 @@ fn reg_name(r: Register) -> String {
 fn push_unique(v: &mut Vec<String>, s: String) {
     if !v.iter().any(|x| x == &s) {
         v.push(s);
+    }
+}
+
+/// Re-decode a single `DecodedInsn` back to an iced [`Instruction`] from its
+/// captured bytes. Used by structural recognizers (e.g. switch detection) that
+/// need operand-level detail the neutral `DecodedInsn` intentionally omits.
+fn decode_raw(insn: &DecodedInsn) -> Option<Instruction> {
+    let mut decoder = Decoder::with_ip(64, &insn.bytes, insn.va.0, DecoderOptions::NONE);
+    if !decoder.can_decode() {
+        return None;
+    }
+    let instr = decoder.decode();
+    if instr.is_invalid() {
+        return None;
+    }
+    Some(instr)
+}
+
+/// The immediate value of a `cmp`/`sub idx, imm` guard, if this instruction is
+/// one. Powers switch-bound recovery.
+fn guard_bound(instr: &Instruction) -> Option<u64> {
+    if !matches!(instr.mnemonic(), Mnemonic::Cmp | Mnemonic::Sub)
+        || instr.op_count() < 2
+        || instr.op0_kind() != OpKind::Register
+    {
+        return None;
+    }
+    match instr.op1_kind() {
+        OpKind::Immediate8
+        | OpKind::Immediate16
+        | OpKind::Immediate32
+        | OpKind::Immediate64
+        | OpKind::Immediate8to16
+        | OpKind::Immediate8to32
+        | OpKind::Immediate8to64
+        | OpKind::Immediate32to64 => Some(instr.immediate(1)),
+        _ => None,
     }
 }
 
@@ -239,6 +277,80 @@ impl Arch for X64 {
             &[0x48, 0x83, 0xEC],       // sub rsp, imm8
             &[0x4C, 0x8B, 0xDC],       // mov r11, rsp
         ]
+    }
+
+    fn detect_switch(&self, block: &[DecodedInsn]) -> Option<SwitchDispatch> {
+        let (term_idx, term_di) = block.iter().enumerate().next_back()?;
+        let term = decode_raw(term_di)?;
+        if term.flow_control() != FlowControl::IndirectBranch {
+            return None;
+        }
+
+        // The bound comes from the most recent `cmp`/`sub idx, imm` in the block.
+        let bound = block[..term_idx]
+            .iter()
+            .rev()
+            .filter_map(decode_raw)
+            .find_map(|ins| guard_bound(&ins));
+
+        // Form 1: `jmp [table + idx*scale]` — the table holds absolute pointers.
+        // The base is a rip-relative address (PIE) or an absolute displacement
+        // (non-PIE `jmp [disp32 + idx*8]`). A register base can't be resolved
+        // statically, so `table` stays `None` and only the shape is reported.
+        if term.op0_kind() == OpKind::Memory && term.memory_index() != Register::None {
+            let table = if term.is_ip_rel_memory_operand() {
+                Some(Va(term.ip_rel_memory_address()))
+            } else if term.memory_base() == Register::None {
+                Some(Va(term.memory_displacement64()))
+            } else {
+                None
+            };
+            return Some(SwitchDispatch {
+                at: term_di.va,
+                kind: SwitchKind::MemIndexed,
+                table,
+                index_reg: Some(reg_name(term.memory_index())),
+                scale: term.memory_index_scale(),
+                bound,
+            });
+        }
+
+        // Form 2: `jmp <reg>` — back-scan for the MSVC rel32 table pattern.
+        if term.op0_kind() == OpKind::Register {
+            let mut table: Option<Va> = None;
+            let mut index_reg: Option<String> = None;
+            let mut scale: u32 = 0;
+            for di in block[..term_idx].iter().rev() {
+                let Some(ins) = decode_raw(di) else { continue };
+                // `mov`/`movsxd r,[base + idx*scale]` discloses index + scale.
+                if index_reg.is_none() && ins.memory_index() != Register::None {
+                    index_reg = Some(reg_name(ins.memory_index()));
+                    scale = ins.memory_index_scale();
+                }
+                // `lea reg,[rip+disp]` sets the table base.
+                if table.is_none()
+                    && ins.mnemonic() == Mnemonic::Lea
+                    && ins.is_ip_rel_memory_operand()
+                {
+                    table = Some(Va(ins.ip_rel_memory_address()));
+                }
+                if table.is_some() && index_reg.is_some() {
+                    break;
+                }
+            }
+            if table.is_some() || index_reg.is_some() {
+                return Some(SwitchDispatch {
+                    at: term_di.va,
+                    kind: SwitchKind::RegRel32,
+                    table,
+                    index_reg,
+                    scale,
+                    bound,
+                });
+            }
+        }
+
+        None
     }
 
     fn regs(&self) -> &RegisterFile {

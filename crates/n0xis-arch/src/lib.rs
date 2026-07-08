@@ -12,9 +12,11 @@
 //! filled in Phase 3 (ROADMAP), where [`MicroStmt`] grows a real tree.
 
 mod insn;
+mod switch;
 mod x64;
 
 pub use insn::{DecodeError, DecodedInsn, InsnKind};
+pub use switch::{SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};
 
 use n0xis_contracts::{Reg, Va};
@@ -128,6 +130,15 @@ pub trait Arch {
     /// discovery pass matches against these without knowing the ISA.
     fn prologues(&self) -> &'static [&'static [u8]] {
         &[]
+    }
+
+    /// Recognize a switch / jump-table dispatch whose terminating **indirect
+    /// branch is the last instruction of `block`**. Returns the idiom and the
+    /// table base/index/bound needed to resolve the cases — but does **not**
+    /// read the table (the arch never touches memory; the core resolver does).
+    /// Default: no recognition. See [`SwitchDispatch`].
+    fn detect_switch(&self, _block: &[DecodedInsn]) -> Option<SwitchDispatch> {
+        None
     }
 
     /// The register model.

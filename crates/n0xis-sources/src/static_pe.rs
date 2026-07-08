@@ -187,6 +187,10 @@ impl MemorySource for StaticPe {
         self.section_for(va.0).is_some()
     }
 
+    fn code_range(&self) -> Option<(Va, u64)> {
+        self.text_range()
+    }
+
     fn label(&self) -> String {
         format!("static:{}", self.module_name)
     }

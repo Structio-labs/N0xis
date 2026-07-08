@@ -55,6 +55,15 @@ pub trait MemorySource {
     /// Is `va` backed by this source?
     fn contains(&self, va: Va) -> bool;
 
+    /// Executable code extent `(start, size)`, when the source knows it (a
+    /// PE's `.text`, a live module's code section). Lets passes tell code from
+    /// data through the seam — e.g. the switch resolver rejects jump-table
+    /// entries that don't land in code. Default `None`: unknown, so callers
+    /// fall back to [`contains`](MemorySource::contains).
+    fn code_range(&self) -> Option<(Va, u64)> {
+        None
+    }
+
     /// Write bytes at `va`. Default: [`SourceError::ReadOnly`] — only live
     /// sources override this. `StaticPe`/`Snapshot` stay read-only.
     fn write(&self, _va: Va, _bytes: &[u8]) -> Result<(), SourceError> {

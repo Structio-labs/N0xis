@@ -54,7 +54,14 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
 - ✅ `xref to/from` — branch + RIP-relative data refs via `DecodedInsn.target`
   / new `DecodedInsn.rip_target` arch field (no byte patterns in the pass).
   (`xref string` + relocation-aware/recursive scan are follow-on.)
-- ⬜ Switch/jump-table detection **and** memory-side resolution.
+- ✅ Switch/jump-table detection **and** memory-side resolution — arch seam
+  `Arch::detect_switch` recognizes the two x64 idioms (mem-indexed absolute-ptr
+  tables, MSVC reg-rel32 tables); `n0xis-core::resolve_switch` reads the table
+  through the `MemorySource` seam and emits resolved case targets as CFG
+  successors, closing indirect branches. A new optional `MemorySource::code_range`
+  gates cases to executable code (rejects `.rdata` misreads). Same code path over
+  live + static (the edge). Verified on a real PE: e.g. a reg-rel32 dispatch
+  resolved to its exact case targets read from the jump table.
 - ⬜ Frame analysis, backward register slice (`ir slice`), `ir manifest` + quality.
 - ✅ `mem read` (any source) / `mem write` / `mem map` (live, VirtualQueryEx
   region walk); `LiveProcess::write` flips page protection (VirtualProtectEx)

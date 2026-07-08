@@ -14,6 +14,7 @@
 mod decode;
 mod discover;
 mod ir;
+mod switch;
 mod xref;
 
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
@@ -21,6 +22,7 @@ pub use discover::{DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandid
 pub use ir::{
     CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
 };
+pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
 
 use n0xis_arch::Arch;

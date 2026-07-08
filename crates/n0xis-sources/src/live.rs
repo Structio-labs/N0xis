@@ -387,6 +387,10 @@ impl MemorySource for LiveProcess {
         }
     }
 
+    fn code_range(&self) -> Option<(Va, u64)> {
+        self.text_range()
+    }
+
     fn label(&self) -> String {
         format!("live:{}", self.pid)
     }

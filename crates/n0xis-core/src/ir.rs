@@ -18,6 +18,7 @@ use n0xis_arch::{DecodedInsn, InsnKind};
 use n0xis_contracts::Va;
 use serde::Serialize;
 
+use crate::switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 use crate::{Ctx, CoreError, Pass};
 
 /// Generous linear cap; `auto_end` normally stops well before this.
@@ -52,6 +53,10 @@ pub struct CfgArtifact {
     pub insn_count: usize,
     pub blocks: Vec<CfgBlock>,
     pub callsites: Vec<Callsite>,
+    /// Jump-table dispatches whose cases were resolved from memory (the
+    /// live-source edge). Empty when the function has no recognized switch.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub switches: Vec<ResolvedSwitch>,
     pub stats: CfgStats,
 }
 
@@ -232,10 +237,12 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
 
     let mut blocks: Vec<CfgBlock> = Vec::new();
     let mut callsites: Vec<Callsite> = Vec::new();
+    let mut switches: Vec<ResolvedSwitch> = Vec::new();
     let mut stats = CfgStats::default();
 
     let mut i = 0usize;
     while i < instrs.len() {
+        let block_start_index = i;
         let block_start_ip = instrs[i].va.0;
         let block_id = *block_id_by_ip.get(&block_start_ip).unwrap_or(&blocks.len());
         let mut ir_insns: Vec<IrInsn> = Vec::new();
@@ -321,6 +328,19 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                     } else {
                         stats.indirect_branches += 1;
                         terminator = "ijmp".into();
+                        // Try to recognize a jump-table dispatch and resolve its
+                        // cases from memory, closing the CFG for the switch.
+                        if let Some(disp) = ctx.arch.detect_switch(&instrs[block_start_index..=i]) {
+                            let resolved = resolve_switch(ctx, &disp);
+                            for case in &resolved.cases {
+                                successors.push(Successor {
+                                    to: *case,
+                                    kind: "switch-case".into(),
+                                    confidence: SWITCH_CASE_CONFIDENCE,
+                                });
+                            }
+                            switches.push(resolved);
+                        }
                     }
                     i += 1;
                     break;
@@ -393,6 +413,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
         insn_count: instrs.len(),
         blocks,
         callsites,
+        switches,
         stats,
     })
 }
@@ -431,6 +452,26 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
                 c.target.map(|t| t.to_string()).unwrap_or_else(|| "?".into())
             });
             lines.push(format!("  {} {} -> {}", c.from, c.kind, name));
+        }
+    }
+    if !art.switches.is_empty() {
+        lines.push(format!("switches: {}", art.switches.len()));
+        for sw in &art.switches {
+            let table = sw.table.map(|t| t.to_string()).unwrap_or_else(|| "?".into());
+            let bound = sw.bound.map(|b| b.to_string()).unwrap_or_else(|| "?".into());
+            lines.push(format!(
+                "  {} {} table={} idx={} scale={} bound={} -> {} cases",
+                sw.at,
+                sw.kind,
+                table,
+                sw.index_reg.clone().unwrap_or_else(|| "?".into()),
+                sw.scale,
+                bound,
+                sw.cases.len(),
+            ));
+            for (n, case) in sw.cases.iter().enumerate() {
+                lines.push(format!("    case[{n}] -> {case}"));
+            }
         }
     }
     lines
@@ -479,5 +520,52 @@ mod tests {
             .flat_map(|b| &b.insns)
             .any(|i| i.writes.iter().any(|w| w == "rcx"));
         assert!(wrote_rcx, "reg_access should surface the rcx write");
+    }
+
+    #[test]
+    fn resolves_mem_indexed_switch_from_memory() {
+        // 0x1000 cmp rax, 2                 48 83 f8 02
+        // 0x1004 jmp [rax*8 + 0x2000]       ff 24 c5 00 20 00 00
+        // Absolute-pointer table at 0x2000 → cases 0x1500 / 0x1600 / 0x1700.
+        let code = vec![
+            0x48, 0x83, 0xf8, 0x02, // cmp rax, 2  (bound = 2 → 3 cases)
+            0xff, 0x24, 0xc5, 0x00, 0x20, 0x00, 0x00, // jmp qword [rax*8 + 0x2000]
+        ];
+        let mut table = Vec::new();
+        for case in [0x1500u64, 0x1600, 0x1700] {
+            table.extend_from_slice(&case.to_le_bytes());
+        }
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .region(Va(0x2000), table)
+            // Backing for the case targets so the plausibility gate accepts them.
+            .region(Va(0x1500), vec![0x90; 0x300])
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(art.stats.indirect_branches, 1, "the jmp is indirect");
+        assert_eq!(art.switches.len(), 1, "one switch dispatch recognized");
+        let sw = &art.switches[0];
+        assert_eq!(sw.kind, "mem-indexed");
+        assert_eq!(sw.table, Some(Va(0x2000)));
+        assert_eq!(sw.bound, Some(2));
+        assert_eq!(sw.entry_size, 8);
+        assert!(sw.resolved, "cases came from memory");
+        assert_eq!(sw.cases, vec![Va(0x1500), Va(0x1600), Va(0x1700)]);
+
+        // The resolved cases become CFG edges — the switch is no longer a dead end.
+        let edges: Vec<Va> = art
+            .blocks
+            .iter()
+            .flat_map(|b| &b.successors)
+            .filter(|s| s.kind == "switch-case")
+            .map(|s| s.to)
+            .collect();
+        assert_eq!(edges, vec![Va(0x1500), Va(0x1600), Va(0x1700)]);
     }
 }
