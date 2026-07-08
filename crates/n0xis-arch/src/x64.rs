@@ -4,11 +4,14 @@
 //! calling convention, the flow-control mapping. Nothing here touches the OS or
 //! a memory source — bytes in, structure out.
 
-use iced_x86::{Decoder, DecoderOptions, FlowControl, Formatter, Instruction, IntelFormatter};
+use iced_x86::{
+    Decoder, DecoderOptions, FlowControl, Formatter, Instruction, InstructionInfoFactory,
+    IntelFormatter, OpAccess, Register,
+};
 use n0xis_contracts::{Reg, Va};
 
 use crate::insn::{DecodeError, DecodedInsn, InsnKind};
-use crate::{Arch, CallConv, RegDesc, RegisterFile};
+use crate::{Arch, CallConv, RegAccess, RegDesc, RegisterFile};
 
 /// Interned register ids for x86-64. Passes refer to registers *only* through
 /// these ids resolved against the [`RegisterFile`] — never by name literal.
@@ -81,6 +84,21 @@ impl X64 {
 impl Default for X64 {
     fn default() -> Self {
         X64::new()
+    }
+}
+
+/// Full-width, lowercased register name (`eax`/`al` → `rax`). Empty for
+/// `Register::None` so callers can skip it.
+fn reg_name(r: Register) -> String {
+    if r == Register::None {
+        return String::new();
+    }
+    format!("{:?}", r.full_register()).to_lowercase()
+}
+
+fn push_unique(v: &mut Vec<String>, s: String) {
+    if !v.iter().any(|x| x == &s) {
+        v.push(s);
     }
 }
 
@@ -176,6 +194,34 @@ impl Arch for X64 {
             }
         }
         out
+    }
+
+    fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
+        let mut decoder = Decoder::with_ip(64, &insn.bytes, insn.va.0, DecoderOptions::NONE);
+        if !decoder.can_decode() {
+            return RegAccess::default();
+        }
+        let instr = decoder.decode();
+        let mut factory = InstructionInfoFactory::new();
+        let info = factory.info(&instr);
+
+        let mut access = RegAccess::default();
+        for u in info.used_registers() {
+            let name = reg_name(u.register());
+            if name.is_empty() {
+                continue;
+            }
+            match u.access() {
+                OpAccess::Read | OpAccess::CondRead => push_unique(&mut access.reads, name),
+                OpAccess::Write | OpAccess::CondWrite => push_unique(&mut access.writes, name),
+                OpAccess::ReadWrite | OpAccess::ReadCondWrite => {
+                    push_unique(&mut access.reads, name.clone());
+                    push_unique(&mut access.writes, name);
+                }
+                _ => {}
+            }
+        }
+        access
     }
 
     fn regs(&self) -> &RegisterFile {

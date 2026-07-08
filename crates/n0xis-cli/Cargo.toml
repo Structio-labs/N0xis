@@ -14,6 +14,7 @@ path = "src/main.rs"
 n0xis-contracts = { workspace = true }
 n0xis-arch = { workspace = true }
 n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+n0xis-core = { workspace = true }
 n0xis-pipeline = { workspace = true }
 n0xis-project = { workspace = true }
 clap = { workspace = true }

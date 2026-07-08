@@ -15,6 +15,7 @@ mod emit;
 use clap::{Args, Parser, Subcommand};
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
+use n0xis_core::{CfgInput, CfgPass, Ctx, Pass};
 use n0xis_pipeline::Pipeline;
 use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, list_processes};
 use serde_json::json;
@@ -63,6 +64,37 @@ enum Command {
     Module(ModuleCmd),
     /// Linear disassembly.
     Disasm(DisasmArgs),
+    /// Intermediate representation (CFG + block/def-use).
+    #[command(subcommand)]
+    Ir(IrCmd),
+}
+
+#[derive(Subcommand)]
+enum IrCmd {
+    /// Build the CFG + block/def-use IR artifact.
+    Build(IrArgs),
+    /// Human-readable IR summary.
+    Explain(IrArgs),
+}
+
+#[derive(Args)]
+struct IrArgs {
+    /// Function start address (hex `0x…`, `…h`, or decimal).
+    #[arg(long)]
+    addr: String,
+    /// Byte window to analyze (the function's max extent).
+    #[arg(long, default_value_t = 4096)]
+    size: usize,
+    /// Disable auto end-of-function detection (decode the whole window).
+    #[arg(long)]
+    no_auto_end: bool,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Inline bytes source, e.g. "48 89 c8 c3".
+    #[arg(long)]
+    bytes: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -144,6 +176,8 @@ fn main() {
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
+        Command::Ir(IrCmd::Build(a)) => cmd_ir(a, false, pretty),
+        Command::Ir(IrCmd::Explain(a)) => cmd_ir(a, true, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -263,6 +297,95 @@ fn cmd_process_ps(a: PsArgs, pretty: bool) -> bool {
             &Response::<serde_json::Value>::error("ps-failed", e.to_string()),
             pretty,
         ),
+    }
+}
+
+fn cmd_ir(a: IrArgs, explain_mode: bool, pretty: bool) -> bool {
+    let start = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => {
+            return emit(
+                &Response::<serde_json::Value>::error("bad-addr", e.to_string()),
+                pretty,
+            );
+        }
+    };
+    let arch = X64::new();
+    let auto_end = !a.no_auto_end;
+
+    // Each source is built, wired into a Ctx (with symbols where the adapter
+    // provides them), and run through the one CfgPass — the seam in action.
+    if let Some(pid) = a.pid {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let ctx = Ctx::new(&live, &arch);
+        return finish_ir(&ctx, start, a.size, auto_end, explain_mode, live.label(), pretty);
+    }
+    if let Some(file) = a.file.as_deref() {
+        let pe = match StaticPe::load(std::path::Path::new(file)) {
+            Ok(p) => p,
+            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
+        };
+        // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
+        // call targets resolve to names.
+        let ctx = Ctx::new(&pe, &arch).with_symbols(&pe).with_modules(&pe);
+        return finish_ir(&ctx, start, a.size, auto_end, explain_mode, pe.label(), pretty);
+    }
+    let Some(bytes_str) = a.bytes else {
+        return ir_err("missing-source", "provide --pid, --file, or --bytes", pretty);
+    };
+    let bytes = match parse_hex_bytes(&bytes_str) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-bytes", &e, pretty),
+    };
+    let snap = Snapshot::builder()
+        .region(start, bytes)
+        .label(format!("bytes@{start}"))
+        .build();
+    let ctx = Ctx::new(&snap, &arch);
+    finish_ir(&ctx, start, a.size, auto_end, explain_mode, snap.label(), pretty)
+}
+
+fn ir_err(code: &str, msg: &str, pretty: bool) -> bool {
+    emit(
+        &Response::<serde_json::Value>::error(code, msg),
+        pretty,
+    )
+}
+
+fn finish_ir(
+    ctx: &Ctx,
+    start: Va,
+    size: usize,
+    auto_end: bool,
+    explain_mode: bool,
+    label: String,
+    pretty: bool,
+) -> bool {
+    let input = CfgInput {
+        start,
+        max_bytes: size,
+        auto_end,
+    };
+    match CfgPass.run(ctx, input) {
+        Ok(art) => {
+            if explain_mode {
+                let lines = n0xis_core::explain(&art);
+                emit(
+                    &Response::success(schema::v1::IR_EXPLAIN, json!({ "lines": lines }))
+                        .with_source(label),
+                    pretty,
+                )
+            } else {
+                emit(
+                    &Response::success(schema::v1::IR_CFG, art).with_source(label),
+                    pretty,
+                )
+            }
+        }
+        Err(e) => ir_err("ir-failed", &e.to_string(), pretty),
     }
 }
 

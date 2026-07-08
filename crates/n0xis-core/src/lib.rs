@@ -12,8 +12,12 @@
 //! added in Phase 3 as more `impl Pass` — same shape, same context.
 
 mod decode;
+mod ir;
 
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
+pub use ir::{
+    CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
+};
 
 use n0xis_arch::Arch;
 use n0xis_sources::{MemorySource, ModuleProvider, SymbolProvider};

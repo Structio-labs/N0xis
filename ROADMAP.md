@@ -43,7 +43,11 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   feature; `process ps`, `module list` (live+static), `disasm --pid/--file/--bytes`
   all run the *same* pipeline over the chosen source. Boundary still holds
   (`cargo tree -p n0xis-core` = zero OS crates).
-- ⬜ CFG + block/def-use IR (`ir build/cfg/dot/explain`).
+- ✅ CFG + block/def-use IR (`ir build`, `ir explain`) — leaders→blocks→edges
+  (fall/jmp/cjmp/tail), per-insn reg reads/writes + intra-block def-use, auto
+  end-of-function detection, call-target naming via the symbol seam. New arch
+  seam `Arch::reg_access` keeps the iced decoder out of the pass. (`ir cfg/dot`
+  presentations + switch/frame/slice/manifest are follow-on slices.)
 - ⬜ Function discovery (prolog scan), export/IAT symbol + import resolution.
 - ⬜ Switch/jump-table detection **and** memory-side resolution.
 - ⬜ Frame analysis, backward register slice (`ir slice`), `ir manifest` + quality.

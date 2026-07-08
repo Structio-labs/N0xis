@@ -231,6 +231,7 @@ dependencies = [
  "clap",
  "n0xis-arch",
  "n0xis-contracts",
+ "n0xis-core",
  "n0xis-pipeline",
  "n0xis-project",
  "n0xis-sources",

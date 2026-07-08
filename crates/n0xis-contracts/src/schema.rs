@@ -13,6 +13,10 @@ pub mod v1 {
     pub const PROCESS_PS: &str = "n0xis.process.ps.v1";
     /// Module listing (`module list`).
     pub const MODULE_LIST: &str = "n0xis.module.list.v1";
+    /// CFG + block/def-use IR (`ir build` / `ir cfg`).
+    pub const IR_CFG: &str = "n0xis.ir.cfg.v1";
+    /// Human-readable IR summary (`ir explain`).
+    pub const IR_EXPLAIN: &str = "n0xis.ir.explain.v1";
     /// Environment / readiness report (`doctor`).
     pub const DOCTOR: &str = "n0xis.doctor.v1";
     /// Built-in quick reference (`guide`).

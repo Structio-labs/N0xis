@@ -32,6 +32,17 @@ pub enum MicroStmt {
     Unlifted { va: Va },
 }
 
+/// Registers an instruction reads and writes, normalized to full-width names
+/// (e.g. `eax`/`al` → `rax`). Names, not [`Reg`] ids, because def-use tracking
+/// spans more than the 16 GPRs (flags, xmm, segment) and the typed [`Reg`]
+/// model is reserved for the SSA IR (Phase 3). Produced by the arch so the
+/// passes never touch an ISA decoder.
+#[derive(Clone, Debug, Default)]
+pub struct RegAccess {
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+}
+
 /// One register description: its interned id, canonical name, and width.
 #[derive(Clone, Copy, Debug)]
 pub struct RegDesc {
@@ -103,6 +114,13 @@ pub trait Arch {
     /// Lower one instruction to micro-IR. **Phase 3**: currently a stub.
     fn lift(&self, insn: &DecodedInsn) -> Vec<MicroStmt> {
         vec![MicroStmt::Unlifted { va: insn.va }]
+    }
+
+    /// Registers read/written by an instruction, normalized to full width.
+    /// Default is empty; ISA impls override. Used by def-use analysis in the
+    /// core without the passes ever seeing a decoder.
+    fn reg_access(&self, _insn: &DecodedInsn) -> RegAccess {
+        RegAccess::default()
     }
 
     /// The register model.
