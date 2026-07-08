@@ -106,8 +106,19 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   overwrite protection (`--force` to bypass). Verified end-to-end via the
   compiled CLI in a scratch `.n0x/` project: save/list/show/clear and the
   full dump CRUD including a refused-then-forced overwrite.
-- ⬜ `function trace`, `debug await-hit` (live execution control — breakpoints,
-  stepping; the largest remaining Phase 2 chunk).
+- ✅ `debug await-hit` — arms a software breakpoint (`int3`) via the Win32
+  debug API, blocks until it fires or times out, and reports the hitting
+  thread's full GPR + stack snapshot. New `n0xis-sources::debug` (gated behind
+  the same `live` feature as `LiveProcess`, but a standalone flow — a debug
+  session needs its own `DebugActiveProcess` attach, not the read/write handle
+  `LiveProcess` already holds). Every mutation (the patched byte, the debug
+  attach) is an RAII guard, so the byte is restored and the debugger detached
+  on *every* exit path — hit, timeout, or error — with no manual bookkeeping
+  per early-return, unlike v0. Verified on a real live process: attached to a
+  `powershell.exe` calling `kernel32!Sleep(150)` in a loop, the reported `rcx`
+  was exactly `150`; ran twice in a row to confirm the restore is clean, not a
+  one-shot; process kept accumulating CPU time (proof it resumed correctly).
+- ⬜ `function trace` (recursive call-graph walk).
 - **Exit test (parity gate):** golden-output diff vs the archived binary on a fixed
   corpus of functions for `ir build`, `disasm`, `discover`, `xref`, switch cases.
 

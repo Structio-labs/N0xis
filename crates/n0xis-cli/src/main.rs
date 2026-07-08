@@ -20,7 +20,7 @@ use n0xis_core::{
     ManifestPass, Pass, StringXrefInput, StringXrefPass, XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::Pipeline;
-use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, list_processes};
+use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, await_breakpoint_hit, list_processes};
 use serde_json::json;
 
 use emit::emit;
@@ -88,6 +88,32 @@ enum Command {
     /// Persistent artifact store under `.n0x/dumps/<kind>/`.
     #[command(subcommand)]
     Dump(DumpCmd),
+    /// Live execution control (software breakpoints).
+    #[command(subcommand)]
+    Debug(DebugCmd),
+}
+
+#[derive(Subcommand)]
+enum DebugCmd {
+    /// Arm a software breakpoint and block until it fires (or times out).
+    AwaitHit(DebugAwaitHitArgs),
+}
+
+#[derive(Args)]
+struct DebugAwaitHitArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Breakpoint address (hex `0x…`). Absolute VA, unless `--addr-rva`.
+    #[arg(long)]
+    addr: String,
+    /// Interpret `--addr` as an RVA from the main module's base.
+    #[arg(long)]
+    addr_rva: bool,
+    #[arg(long, default_value_t = 30000)]
+    timeout_ms: u64,
+    /// Qwords to capture from the stack starting at RSP on a hit.
+    #[arg(long, default_value_t = 16)]
+    stack_qwords: usize,
 }
 
 #[derive(Subcommand)]
@@ -512,6 +538,7 @@ fn main() {
         Command::Patch(c) => cmd_patch(c, pretty),
         Command::Selection(c) => cmd_selection(c, pretty),
         Command::Dump(c) => cmd_dump(c, pretty),
+        Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -1422,6 +1449,42 @@ fn cmd_dump(cmd: DumpCmd, pretty: bool) -> bool {
             }
             Err(e) => ir_err("dump-rm-failed", &e.to_string(), pretty),
         },
+    }
+}
+
+fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    // Attach only long enough to resolve the main module (for --addr-rva and
+    // the relative_rip label on a hit) — the debug session itself opens its
+    // own handle and becomes the process's debugger independently.
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let module = live.main_module().cloned();
+    let label = live.label();
+    drop(live);
+
+    let bp_va = if a.addr_rva {
+        match &module {
+            Some(m) => m.base.offset(addr.0),
+            None => {
+                return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty);
+            }
+        }
+    } else {
+        addr
+    };
+
+    match await_breakpoint_hit(a.pid, bp_va, a.timeout_ms, a.stack_qwords, module.as_ref()) {
+        Ok(outcome) => emit(
+            &Response::success(schema::v1::DEBUG_AWAIT_HIT, outcome).with_source(label),
+            pretty,
+        ),
+        Err(e) => ir_err("await-hit-failed", &e.to_string(), pretty),
     }
 }
 

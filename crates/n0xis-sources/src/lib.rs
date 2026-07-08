@@ -26,6 +26,11 @@ mod live;
 #[cfg(feature = "live")]
 pub use live::{LiveProcess, MemRegion, ProcInfo, list_processes};
 
+#[cfg(feature = "live")]
+mod debug;
+#[cfg(feature = "live")]
+pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, await_breakpoint_hit};
+
 use n0xis_contracts::{Module, Symbol, Va};
 
 /// Something went wrong reading/writing a source.
