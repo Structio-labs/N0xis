@@ -71,7 +71,17 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   the `CfgArtifact` (`n0xis-core::dot`/`slice`). Verified on a real PE: a switch
   dispatch renders its 5 resolved cases as edges; a `call` slices back to the
   `sub rsp` that set up its frame. (Slice is intra-block until SSA in Phase 3.)
-- ⬜ Frame analysis, `ir manifest` + quality scoring.
+- ✅ Frame analysis + `ir manifest` — a new `Arch::analyze_frame` seam scans a
+  function's prolog (purely structural, no memory) and recovers `frame_size`
+  (`sub rsp, imm`), `uses_rbp` (`mov rbp,rsp`), and `spilled_regs` (`push reg`),
+  surfaced as `CfgArtifact.frame` and an `ir explain` line. `ir manifest`
+  (`n0xis-core::ManifestPass`) batches `DiscoverPass` candidates through
+  `CfgPass` and reduces each to a triage entry — counts, frame, a ported
+  0.0..=1.0 quality score, and flags (`leaf`/`has-switch`/`stub`/`no-frame`/
+  `no-return`/…) — so an agent can rank thousands of discovered candidates
+  before spending a full `ir build` on any one. Verified on a real PE: 22
+  candidates scored, well-formed functions at 0.85–1.0, a switch dispatcher
+  correctly flagged `has-switch`+`no-return` at 0.55.
 - ✅ `mem read` (any source) / `mem write` / `mem map` (live, VirtualQueryEx
   region walk); `LiveProcess::write` flips page protection (VirtualProtectEx)
   and restores it, so code pages are patchable.

@@ -11,10 +11,12 @@
 //! calling-convention model. [`Arch::lift`] to micro-IR is stubbed here and
 //! filled in Phase 3 (ROADMAP), where [`MicroStmt`] grows a real tree.
 
+mod frame;
 mod insn;
 mod switch;
 mod x64;
 
+pub use frame::FrameInfo;
 pub use insn::{DecodeError, DecodedInsn, InsnKind};
 pub use switch::{SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};
@@ -148,6 +150,14 @@ pub trait Arch {
     /// Default: no recognition. See [`SwitchDispatch`].
     fn detect_switch(&self, _block: &[DecodedInsn]) -> Option<SwitchDispatch> {
         None
+    }
+
+    /// Recognize the function-entry prolog at the front of `instrs` (the
+    /// function's linear decode, not a single block) and summarize the stack
+    /// frame it sets up. Purely structural — no memory access. Default: empty
+    /// (no prolog recognized).
+    fn analyze_frame(&self, _instrs: &[DecodedInsn]) -> FrameInfo {
+        FrameInfo::default()
     }
 
     /// The register model.

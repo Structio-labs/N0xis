@@ -15,6 +15,7 @@ mod decode;
 mod discover;
 mod dot;
 mod ir;
+mod manifest;
 mod slice;
 mod switch;
 mod xref;
@@ -25,6 +26,7 @@ pub use dot::{DotArtifact, dot};
 pub use ir::{
     CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
 };
+pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
 pub use slice::{SliceArtifact, SliceNode, slice};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};

@@ -9,12 +9,13 @@
 //!
 //! Ported from the proven v0 `ir.rs` CFG core, refit to `DecodedInsn` +
 //! [`Arch::reg_access`](n0xis_arch::Arch::reg_access) so no ISA decoder leaks
-//! into the pass. Switch resolution, frame analysis, and arg-hint recovery are
-//! follow-on slices; the artifact is shaped to grow them additively.
+//! into the pass. Switch resolution and frame analysis are recognized entirely
+//! by the arch seam (`Arch::detect_switch` / `Arch::analyze_frame`); arg-hint
+//! recovery is a follow-on slice.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use n0xis_arch::{DecodedInsn, InsnKind};
+use n0xis_arch::{DecodedInsn, FrameInfo, InsnKind};
 use n0xis_contracts::Va;
 use serde::Serialize;
 
@@ -57,6 +58,8 @@ pub struct CfgArtifact {
     /// live-source edge). Empty when the function has no recognized switch.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub switches: Vec<ResolvedSwitch>,
+    /// What the prolog reveals about the stack frame (arch-recognized).
+    pub frame: FrameInfo,
     pub stats: CfgStats,
 }
 
@@ -224,6 +227,7 @@ fn edge_confidence(kind: &str) -> f32 {
 }
 
 fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, CoreError> {
+    let frame = ctx.arch.analyze_frame(instrs);
     let end_ip = instrs
         .last()
         .map(|i| i.va.0 + i.len as u64)
@@ -414,6 +418,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
         blocks,
         callsites,
         switches,
+        frame,
         stats,
     })
 }
@@ -429,6 +434,14 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
         "stats: {} returns, {} calls, {} indirect branches, {} tail calls",
         art.stats.returns, art.stats.calls, art.stats.indirect_branches, art.stats.tail_calls
     ));
+    if art.frame.frame_size > 0 || art.frame.uses_rbp || !art.frame.spilled_regs.is_empty() {
+        lines.push(format!(
+            "frame: size=0x{:x} uses_rbp={} spilled=[{}]",
+            art.frame.frame_size,
+            art.frame.uses_rbp,
+            art.frame.spilled_regs.join(",")
+        ));
+    }
     for b in &art.blocks {
         let succ: Vec<String> = b
             .successors
@@ -567,5 +580,35 @@ mod tests {
             .map(|s| s.to)
             .collect();
         assert_eq!(edges, vec![Va(0x1500), Va(0x1600), Va(0x1700)]);
+    }
+
+    #[test]
+    fn recognizes_a_standard_msvc_prolog() {
+        // 0x1000 push rbx          53
+        // 0x1001 sub rsp, 0x20     48 83 ec 20
+        // 0x1005 mov rbp, rsp      48 8b ec
+        // 0x1008 mov [rsp+8], rcx  48 89 4c 24 08  (home-space store)
+        // 0x100d nop                90  (ends the prolog)
+        // 0x100e ret                c3
+        let code = vec![
+            0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xec, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x90,
+            0xc3,
+        ];
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(art.frame.frame_size, 0x20);
+        assert!(art.frame.uses_rbp);
+        assert_eq!(art.frame.spilled_regs, vec!["rbx".to_string()]);
+        assert_eq!(
+            art.frame.prolog,
+            vec![Va(0x1000), Va(0x1001), Va(0x1005), Va(0x1008)],
+            "the nop ends the prolog scan"
+        );
     }
 }

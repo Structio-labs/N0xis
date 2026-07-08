@@ -21,6 +21,8 @@ pub mod v1 {
     pub const IR_DOT: &str = "n0xis.ir.dot.v1";
     /// Backward register slice over a function (`ir slice`).
     pub const IR_SLICE: &str = "n0xis.ir.slice.v1";
+    /// Per-function index with quality scoring (`ir manifest`).
+    pub const IR_MANIFEST: &str = "n0xis.ir.manifest.v1";
     /// Heuristic function discovery (`function discover`).
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).

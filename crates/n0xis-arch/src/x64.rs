@@ -10,6 +10,7 @@ use iced_x86::{
 };
 use n0xis_contracts::{Reg, Va};
 
+use crate::frame::FrameInfo;
 use crate::insn::{DecodeError, DecodedInsn, InsnKind};
 use crate::switch::{SwitchDispatch, SwitchKind};
 use crate::{Arch, CallConv, RegAccess, RegDesc, RegisterFile};
@@ -151,15 +152,10 @@ fn decode_raw(insn: &DecodedInsn) -> Option<Instruction> {
     Some(instr)
 }
 
-/// The immediate value of a `cmp`/`sub idx, imm` guard, if this instruction is
-/// one. Powers switch-bound recovery.
-fn guard_bound(instr: &Instruction) -> Option<u64> {
-    if !matches!(instr.mnemonic(), Mnemonic::Cmp | Mnemonic::Sub)
-        || instr.op_count() < 2
-        || instr.op0_kind() != OpKind::Register
-    {
-        return None;
-    }
+/// The immediate value of operand 1, if it's an immediate of any encoded
+/// width. Shared by switch-bound recovery and frame-size recovery — both are
+/// "this instruction's second operand is a constant" checks.
+fn imm_op1(instr: &Instruction) -> Option<u64> {
     match instr.op1_kind() {
         OpKind::Immediate8
         | OpKind::Immediate16
@@ -171,6 +167,18 @@ fn guard_bound(instr: &Instruction) -> Option<u64> {
         | OpKind::Immediate32to64 => Some(instr.immediate(1)),
         _ => None,
     }
+}
+
+/// The immediate value of a `cmp`/`sub idx, imm` guard, if this instruction is
+/// one. Powers switch-bound recovery.
+fn guard_bound(instr: &Instruction) -> Option<u64> {
+    if !matches!(instr.mnemonic(), Mnemonic::Cmp | Mnemonic::Sub)
+        || instr.op_count() < 2
+        || instr.op0_kind() != OpKind::Register
+    {
+        return None;
+    }
+    imm_op1(instr)
 }
 
 fn classify(instr: &Instruction) -> InsnKind {
@@ -388,6 +396,48 @@ impl Arch for X64 {
         }
 
         None
+    }
+
+    fn analyze_frame(&self, instrs: &[DecodedInsn]) -> FrameInfo {
+        let mut out = FrameInfo::default();
+        // Cap the scan (v0-proven heuristic): a real prolog finishes in a
+        // handful of instructions, so a longer run means we've walked past it
+        // into the function body without matching anything else.
+        for di in instrs.iter().take(16) {
+            let Some(ins) = decode_raw(di) else { continue };
+            let recognized = match ins.mnemonic() {
+                Mnemonic::Push if ins.op0_kind() == OpKind::Register => {
+                    push_unique(&mut out.spilled_regs, reg_name(ins.op0_register()));
+                    true
+                }
+                Mnemonic::Sub if ins.op0_register() == Register::RSP => {
+                    if let Some(v) = imm_op1(&ins) {
+                        out.frame_size = v;
+                    }
+                    true
+                }
+                Mnemonic::Mov
+                    if ins.op0_register() == Register::RBP
+                        && ins.op1_register() == Register::RSP =>
+                {
+                    out.uses_rbp = true;
+                    true
+                }
+                // Home-space stores: `mov [rsp+disp], reg`.
+                Mnemonic::Mov
+                    if ins.op0_kind() == OpKind::Memory && ins.memory_base() == Register::RSP =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            if recognized {
+                out.prolog.push(di.va);
+            } else if !out.prolog.is_empty() {
+                break;
+            }
+        }
+        out
     }
 
     fn regs(&self) -> &RegisterFile {

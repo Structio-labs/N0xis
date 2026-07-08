@@ -16,7 +16,8 @@ use clap::{Args, Parser, Subcommand};
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
-    CfgInput, CfgPass, Ctx, DiscoverInput, DiscoverPass, Pass, XrefDir, XrefInput, XrefPass,
+    CfgInput, CfgPass, Ctx, DiscoverInput, DiscoverPass, ManifestCandidate, ManifestInput,
+    ManifestPass, Pass, XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::Pipeline;
 use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, list_processes};
@@ -238,6 +239,31 @@ enum IrCmd {
     Dot(IrArgs),
     /// Backward register slice: what computes `--reg` at `--at`.
     Slice(IrSliceArgs),
+    /// Per-function index with quality scoring, over discovered candidates.
+    Manifest(ManifestArgs),
+}
+
+#[derive(Args)]
+struct ManifestArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Inline bytes source; requires `--start` for the base address.
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Discovery scan range start (defaults to the module's `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    /// Discovery scan range size in bytes (defaults to the `.text` size).
+    #[arg(long)]
+    size: Option<usize>,
+    /// Cap on discovered candidates to summarize.
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
+    /// Byte window handed to `ir build` per candidate.
+    #[arg(long, default_value_t = 4096)]
+    max_bytes: usize,
 }
 
 #[derive(Args)]
@@ -355,6 +381,7 @@ fn main() {
         Command::Ir(IrCmd::Explain(a)) => cmd_ir(a, IrView::Explain, pretty),
         Command::Ir(IrCmd::Dot(a)) => cmd_ir(a, IrView::Dot, pretty),
         Command::Ir(IrCmd::Slice(a)) => cmd_ir_slice(a, pretty),
+        Command::Ir(IrCmd::Manifest(a)) => cmd_ir_manifest(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
@@ -733,6 +760,55 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
                 pretty,
             ),
             Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
+    }
+}
+
+/// Discover candidates over the scan range, then reduce each to a manifest
+/// entry — the same two passes an agent would otherwise chain by hand.
+fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
+    let explicit_start = match opt_hex(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let bytes_base = explicit_start.unwrap_or(Va(0));
+    let (src, label, region_len) =
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+            Ok(x) => x,
+            Err((c, m)) => return ir_err(&c, &m, pretty),
+        };
+    let arch = X64::new();
+    let default_text = match &src {
+        Src::Static(pe) => pe.text_range(),
+        Src::Live(l) => l.text_range(),
+        Src::Snap(_) => None,
+    };
+    let (start, size) = scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
+    if size == 0 {
+        return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
+    }
+
+    let run = |ctx: &Ctx| -> bool {
+        let discovered = match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit }) {
+            Ok(d) => d,
+            Err(e) => return ir_err("discover-failed", &e.to_string(), pretty),
+        };
+        let candidates = discovered
+            .functions
+            .into_iter()
+            .map(|f| ManifestCandidate { name: f.name, va: f.va })
+            .collect();
+        match ManifestPass.run(ctx, ManifestInput { candidates, max_bytes: a.max_bytes }) {
+            Ok(art) => emit(
+                &Response::success(schema::v1::IR_MANIFEST, art).with_source(label.clone()),
+                pretty,
+            ),
+            Err(e) => ir_err("manifest-failed", &e.to_string(), pretty),
         }
     };
     match &src {
