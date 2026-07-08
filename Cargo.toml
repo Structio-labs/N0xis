@@ -3,6 +3,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The archived v0 binary is its own independent crate (kept buildable for the
+# Phase 2 parity gate) — not a workspace member.
+exclude = ["archive/n0x-cli-rs-v0"]
 
 [workspace.package]
 version = "0.1.0"

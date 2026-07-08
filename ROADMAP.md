@@ -35,7 +35,7 @@ Goal: the empty-but-correct architecture. No analysis yet; the boundaries exist.
 > (bundled linker, no MSVC Build Tools needed); pinned in `rust-toolchain.toml`.
 > Build/test from PowerShell or Git Bash both work with it.
 
-## Phase 2 — Port the proven v0 analysis (parity) ⏳
+## Phase 2 — Port the proven v0 analysis (parity) ✅
 Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
 - ✅ `StaticPe` (goblin) adapter — `MemorySource`+`SymbolProvider`+`ModuleProvider`,
   behind the `static-pe` feature.
@@ -128,8 +128,25 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   aborting the walk. Verified on a real PE: a 13-callsite root walked to 26
   deduplicated nodes across depth 0–3, `--addr-rva` resolved to the same root
   as the absolute-VA form, and `--max-nodes` truncation reported correctly.
-- **Exit test (parity gate):** golden-output diff vs the archived binary on a fixed
-  corpus of functions for `ir build`, `disasm`, `discover`, `xref`, switch cases.
+- ✅ **Exit test (parity gate)** — [`scripts/parity_gate.py`](scripts/parity_gate.py)
+  builds the archived v0 CLI standalone (now excluded from the workspace,
+  `Cargo.toml`) and runs both tools against the same PE, comparing what must
+  hold regardless of schema/formatter: `function discover` address-set
+  overlap, per-function `ir build` block/instruction/callsite counts,
+  `disasm` address+length+mnemonic sequences (compared via each side's
+  *formatted text*, not v1's semantic `mnemonic` field — iced-x86
+  canonicalizes some encodings, e.g. the `66 90` NOP-alias reports as `"nop"`
+  even though its text still says `xchg ax,ax`), and `xref to` from-address
+  sets. Run repeatedly across ten random samples (25–60 functions each): zero
+  gating failures. Along the way it caught two real switch-resolution
+  divergences — both in v1's favor: v0 over-reads a table past its real end
+  into adjacent garbage (the bug `code_range()` exists to fix, confirmed here
+  on a real function where v1's 15 cases are an exact prefix of v0's 60,
+  the rest garbage); and v0 fails to resolve a table entirely (empty) where
+  v1 correctly resolves 55 valid, self-consistent case targets. Switch
+  *case-content* agreement is therefore tracked as informational, not
+  gating — v0's resolver is demonstrably less correct, so exact agreement is
+  the wrong acceptance criterion; structural presence/absence still gates.
 
 ## Phase 3 — Optimizing decompiler 🎯
 Goal: the reason for the rewrite. Pseudo-C that reads like C. All as `n0xis-core` passes.
