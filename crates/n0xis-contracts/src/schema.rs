@@ -37,6 +37,10 @@ pub mod v1 {
     pub const MEM_MAP: &str = "n0xis.mem.map.v1";
     /// Patch operation result (`patch *`).
     pub const PATCH: &str = "n0xis.patch.v1";
+    /// Named memory-range selection (`selection *`).
+    pub const SELECTION: &str = "n0xis.selection.v1";
+    /// Persistent artifact store (`dump *`).
+    pub const DUMP: &str = "n0xis.dump.v1";
     /// Environment / readiness report (`doctor`).
     pub const DOCTOR: &str = "n0xis.doctor.v1";
     /// Built-in quick reference (`guide`).

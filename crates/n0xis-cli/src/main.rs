@@ -82,6 +82,97 @@ enum Command {
     /// Memory patching with a persisted undo journal.
     #[command(subcommand)]
     Patch(PatchCmd),
+    /// Named memory-range anchors, persisted under `.n0x/selections.json`.
+    #[command(subcommand)]
+    Selection(SelectionCmd),
+    /// Persistent artifact store under `.n0x/dumps/<kind>/`.
+    #[command(subcommand)]
+    Dump(DumpCmd),
+}
+
+#[derive(Subcommand)]
+enum SelectionCmd {
+    /// Save (or overwrite, by name) a named `[start, end)` range.
+    Save(SelectionSaveArgs),
+    /// List all selections.
+    List,
+    /// Show one selection by name.
+    Show(SelectionShowArgs),
+    /// Remove a selection by name.
+    Clear(SelectionShowArgs),
+}
+
+#[derive(Args)]
+struct SelectionSaveArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    start: String,
+    #[arg(long)]
+    end: String,
+    #[arg(long)]
+    label: Option<String>,
+}
+
+#[derive(Args)]
+struct SelectionShowArgs {
+    #[arg(long)]
+    name: String,
+}
+
+#[derive(Subcommand)]
+enum DumpCmd {
+    /// Save a payload to `.n0x/dumps/<kind>/<name>.<ext>`.
+    Save(DumpSaveArgs),
+    /// List dumps, optionally filtered by `--kind`.
+    List(DumpListArgs),
+    /// Print a dump's contents (text kinds) or a hex preview (`raw`/`hex`).
+    Show(DumpShowArgs),
+    /// Remove a dump by name.
+    Rm(DumpRmArgs),
+}
+
+#[derive(Args)]
+struct DumpSaveArgs {
+    #[arg(long)]
+    name: String,
+    /// One of: ir, pseudo, hex, raw, note.
+    #[arg(long)]
+    kind: String,
+    /// Read the payload from this file instead of `--content`/stdin.
+    #[arg(long)]
+    file: Option<String>,
+    /// Inline payload.
+    #[arg(long)]
+    content: Option<String>,
+    /// Overwrite an existing dump of the same name+kind.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct DumpListArgs {
+    #[arg(long)]
+    kind: Option<String>,
+}
+
+#[derive(Args)]
+struct DumpShowArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    kind: Option<String>,
+    /// For `raw`/`hex` kinds: cap the hex preview to N bytes.
+    #[arg(long, default_value_t = 256)]
+    preview: usize,
+}
+
+#[derive(Args)]
+struct DumpRmArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    kind: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -419,6 +510,8 @@ fn main() {
         Command::Mem(MemCmd::Write(a)) => cmd_mem_write(a, pretty),
         Command::Mem(MemCmd::Map(a)) => cmd_mem_map(a, pretty),
         Command::Patch(c) => cmd_patch(c, pretty),
+        Command::Selection(c) => cmd_selection(c, pretty),
+        Command::Dump(c) => cmd_dump(c, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -1195,6 +1288,141 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
         "restored": before.len(),
     });
     emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+}
+
+fn cmd_selection(cmd: SelectionCmd, pretty: bool) -> bool {
+    use n0xis_project::selection as sel;
+    match cmd {
+        SelectionCmd::Save(a) => {
+            let start = match Va::parse(&a.start) {
+                Ok(v) => v,
+                Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+            };
+            let end = match Va::parse(&a.end) {
+                Ok(v) => v,
+                Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+            };
+            match sel::save(&a.name, start, end, a.label) {
+                Ok(rec) => {
+                    let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
+                    emit(
+                        &Response::success(schema::v1::SELECTION, json!({ "op": "save", "selection": rec_v })),
+                        pretty,
+                    )
+                }
+                Err(e) => ir_err("selection-save-failed", &e.to_string(), pretty),
+            }
+        }
+        SelectionCmd::List => match sel::list() {
+            Ok(items) => {
+                let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
+                emit(
+                    &Response::success(
+                        schema::v1::SELECTION,
+                        json!({ "op": "list", "count": items.len(), "selections": items_v }),
+                    ),
+                    pretty,
+                )
+            }
+            Err(e) => ir_err("selection-list-failed", &e.to_string(), pretty),
+        },
+        SelectionCmd::Show(a) => match sel::get(&a.name) {
+            Ok(rec) => {
+                let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
+                emit(
+                    &Response::success(schema::v1::SELECTION, json!({ "op": "show", "selection": rec_v })),
+                    pretty,
+                )
+            }
+            Err(e) => ir_err("selection-not-found", &e.to_string(), pretty),
+        },
+        SelectionCmd::Clear(a) => match sel::remove(&a.name) {
+            Ok(true) => emit(
+                &Response::success(schema::v1::SELECTION, json!({ "op": "clear", "name": a.name, "removed": true })),
+                pretty,
+            ),
+            Ok(false) => ir_err("selection-not-found", &format!("no selection named '{}'", a.name), pretty),
+            Err(e) => ir_err("selection-clear-failed", &e.to_string(), pretty),
+        },
+    }
+}
+
+fn cmd_dump(cmd: DumpCmd, pretty: bool) -> bool {
+    use n0xis_project::dump as dp;
+    match cmd {
+        DumpCmd::Save(a) => {
+            let bytes: Vec<u8> = if let Some(c) = a.content {
+                c.into_bytes()
+            } else if let Some(f) = a.file.as_deref() {
+                match std::fs::read(f) {
+                    Ok(b) => b,
+                    Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+                }
+            } else {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+                    return ir_err("stdin-failed", &e.to_string(), pretty);
+                }
+                buf
+            };
+            match dp::save(&a.name, &a.kind, &bytes, a.force) {
+                Ok(saved) => {
+                    let v = serde_json::to_value(&saved).unwrap_or(serde_json::Value::Null);
+                    emit(&Response::success(schema::v1::DUMP, json!({ "op": "save", "dump": v })), pretty)
+                }
+                Err(e) => ir_err("dump-save-failed", &e.to_string(), pretty),
+            }
+        }
+        DumpCmd::List(a) => match dp::list(a.kind.as_deref()) {
+            Ok(items) => {
+                let v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
+                emit(
+                    &Response::success(schema::v1::DUMP, json!({ "op": "list", "count": items.len(), "items": v })),
+                    pretty,
+                )
+            }
+            Err(e) => ir_err("dump-list-failed", &e.to_string(), pretty),
+        },
+        DumpCmd::Show(a) => match dp::show(&a.name, a.kind.as_deref()) {
+            Ok(content) => {
+                let is_binaryish = content.kind == "raw" || content.kind == "hex";
+                let preview = if is_binaryish {
+                    let n = a.preview.min(content.bytes.len());
+                    to_hex_spaced(&content.bytes[..n])
+                } else {
+                    String::from_utf8_lossy(&content.bytes).into_owned()
+                };
+                let truncated = is_binaryish && a.preview < content.bytes.len();
+                emit(
+                    &Response::success(
+                        schema::v1::DUMP,
+                        json!({
+                            "op": "show",
+                            "name": content.name,
+                            "kind": content.kind,
+                            "path": content.path,
+                            "size": content.size,
+                            "content": preview,
+                            "truncated": truncated,
+                        }),
+                    ),
+                    pretty,
+                )
+            }
+            Err(e) => ir_err("dump-show-failed", &e.to_string(), pretty),
+        },
+        DumpCmd::Rm(a) => match dp::remove(&a.name, a.kind.as_deref()) {
+            Ok(removed) => {
+                let v = serde_json::to_value(&removed).unwrap_or(serde_json::Value::Null);
+                emit(
+                    &Response::success(schema::v1::DUMP, json!({ "op": "rm", "name": a.name, "removed": v })),
+                    pretty,
+                )
+            }
+            Err(e) => ir_err("dump-rm-failed", &e.to_string(), pretty),
+        },
+    }
 }
 
 fn cmd_module_list(a: ModuleListArgs, pretty: bool) -> bool {

@@ -97,7 +97,17 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
 - ✅ `patch dry-run/apply/list/show/undo` — journaled under `.n0x/patches/`
   (`n0xis-project::patch`), read→write→verify on apply, safety-checked undo
   with `--force`. Verified live: apply flipped bytes, undo restored them.
-- ⬜ `xref string`, `selection *`, `dump *`, `function trace`, `debug await-hit`.
+- ✅ `selection *` (`save`/`list`/`show`/`clear`) + `dump *` (`save`/`list`/
+  `show`/`rm`) — agent working primitives under `.n0x/`, same storage-only
+  split as `patch`. `n0xis-project::selection` persists named `[start,end)`
+  ranges to `selections.json` (overwrite-by-name, case-insensitive lookup);
+  `n0xis-project::dump` persists artifacts to `dumps/<kind>/<name>.<ext>`
+  (`ir`/`pseudo`/`hex`/`raw`/`note` kinds, already scaffolded by `init`) with
+  overwrite protection (`--force` to bypass). Verified end-to-end via the
+  compiled CLI in a scratch `.n0x/` project: save/list/show/clear and the
+  full dump CRUD including a refused-then-forced overwrite.
+- ⬜ `function trace`, `debug await-hit` (live execution control — breakpoints,
+  stepping; the largest remaining Phase 2 chunk).
 - **Exit test (parity gate):** golden-output diff vs the archived binary on a fixed
   corpus of functions for `ir build`, `disasm`, `discover`, `xref`, switch cases.
 

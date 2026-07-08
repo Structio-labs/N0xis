@@ -24,7 +24,16 @@
 //!   n0x.cmd           # generated shim that calls back into the global build
 //! ```
 
+pub mod dump;
 pub mod patch;
+pub mod selection;
+
+/// Guards `std::env::set_current_dir` across every test in this crate.
+/// `resolve()` walks up from the process-wide cwd, so any test that pins cwd
+/// to a temp project must serialize with every other such test, in `dump`,
+/// `selection`, or here — not just within its own module.
+#[cfg(test)]
+pub(crate) static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
