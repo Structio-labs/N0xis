@@ -24,7 +24,7 @@ pub use static_pe::StaticPe;
 #[cfg(feature = "live")]
 mod live;
 #[cfg(feature = "live")]
-pub use live::{LiveProcess, ProcInfo, list_processes};
+pub use live::{LiveProcess, MemRegion, ProcInfo, list_processes};
 
 use n0xis_contracts::{Module, Symbol, Va};
 

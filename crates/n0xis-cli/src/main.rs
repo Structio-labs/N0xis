@@ -75,6 +75,105 @@ enum Command {
     /// Cross-references.
     #[command(subcommand)]
     Xref(XrefCmd),
+    /// Raw memory access.
+    #[command(subcommand)]
+    Mem(MemCmd),
+    /// Memory patching with a persisted undo journal.
+    #[command(subcommand)]
+    Patch(PatchCmd),
+}
+
+#[derive(Subcommand)]
+enum MemCmd {
+    /// Read bytes (live process, static PE, or inline).
+    Read(MemReadArgs),
+    /// Write bytes to a live process (flips page protection as needed).
+    Write(MemWriteArgs),
+    /// Dump the address-space region map of a live process.
+    Map(MemMapArgs),
+}
+
+#[derive(Args)]
+struct MemReadArgs {
+    #[arg(long)]
+    addr: String,
+    #[arg(long, default_value_t = 64)]
+    size: usize,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+}
+
+#[derive(Args)]
+struct MemWriteArgs {
+    #[arg(long)]
+    addr: String,
+    /// Bytes to write, e.g. "90 90 c3".
+    #[arg(long)]
+    bytes: String,
+    #[arg(long)]
+    pid: u32,
+}
+
+#[derive(Args)]
+struct MemMapArgs {
+    #[arg(long)]
+    pid: u32,
+    #[arg(long, default_value_t = 256)]
+    limit: usize,
+}
+
+#[derive(Subcommand)]
+enum PatchCmd {
+    /// Preview a patch without writing.
+    DryRun(PatchWriteArgs),
+    /// Apply a patch and journal the undo record under `.n0x/patches/`.
+    Apply(PatchWriteArgs),
+    /// List journaled patches.
+    List(PatchListArgs),
+    /// Show one patch record.
+    Show(PatchShowArgs),
+    /// Restore the original bytes of a patch.
+    Undo(PatchUndoArgs),
+}
+
+#[derive(Args)]
+struct PatchWriteArgs {
+    #[arg(long)]
+    addr: String,
+    #[arg(long)]
+    bytes: String,
+    #[arg(long)]
+    pid: u32,
+}
+
+#[derive(Args)]
+struct PatchListArgs {
+    #[arg(long)]
+    status: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+}
+
+#[derive(Args)]
+struct PatchShowArgs {
+    #[arg(long)]
+    id: String,
+}
+
+#[derive(Args)]
+struct PatchUndoArgs {
+    /// Patch id (defaults to the most recent applied patch).
+    #[arg(long)]
+    id: Option<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    /// Undo even if current bytes no longer match the patched bytes.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Subcommand)]
@@ -241,6 +340,10 @@ fn main() {
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
+        Command::Mem(MemCmd::Read(a)) => cmd_mem_read(a, pretty),
+        Command::Mem(MemCmd::Write(a)) => cmd_mem_write(a, pretty),
+        Command::Mem(MemCmd::Map(a)) => cmd_mem_map(a, pretty),
+        Command::Patch(c) => cmd_patch(c, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -459,6 +562,24 @@ fn build_source(
     Err(("missing-source".into(), "provide --pid, --file, or --bytes".into()))
 }
 
+impl Src {
+    fn as_mem(&self) -> &dyn MemorySource {
+        match self {
+            Src::Live(l) => l.as_ref(),
+            Src::Static(p) => p.as_ref(),
+            Src::Snap(s) => s,
+        }
+    }
+}
+
+fn to_hex_spaced(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+fn byte_diff_count(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b.iter()).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len())
+}
+
 /// Choose a scan `(start, size)`: explicit flags win, else the module's `.text`,
 /// else the inline region.
 fn scan_range(
@@ -591,6 +712,246 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
     }
+}
+
+fn cmd_mem_read(a: MemReadArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let (src, label, _) =
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), addr) {
+            Ok(x) => x,
+            Err((c, m)) => return ir_err(&c, &m, pretty),
+        };
+    match src.as_mem().read(addr, a.size) {
+        Ok(bytes) => {
+            let data = json!({
+                "address": addr,
+                "requested": a.size,
+                "read": bytes.len(),
+                "hex": to_hex_spaced(&bytes),
+            });
+            emit(&Response::success(schema::v1::MEM_READ, data).with_source(label), pretty)
+        }
+        Err(e) => ir_err("read-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_mem_write(a: MemWriteArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let bytes = match parse_hex_bytes(&a.bytes) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-bytes", &e, pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    match live.write(addr, &bytes) {
+        Ok(()) => {
+            let data = json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) });
+            emit(&Response::success(schema::v1::MEM_WRITE, data).with_source(live.label()), pretty)
+        }
+        Err(e) => ir_err("write-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_mem_map(a: MemMapArgs, pretty: bool) -> bool {
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let regions = live.regions(a.limit);
+    let regions_v = serde_json::to_value(&regions).unwrap_or(serde_json::Value::Null);
+    let data = json!({ "count": regions.len(), "regions": regions_v });
+    emit(&Response::success(schema::v1::MEM_MAP, data).with_source(live.label()), pretty)
+}
+
+fn cmd_patch(cmd: PatchCmd, pretty: bool) -> bool {
+    use n0xis_project::patch as pj;
+    match cmd {
+        PatchCmd::DryRun(a) => patch_dry_run(a, pretty),
+        PatchCmd::Apply(a) => patch_apply(a, pretty),
+        PatchCmd::List(a) => {
+            match pj::list(a.limit) {
+                Ok(mut items) => {
+                    if let Some(s) = a.status.as_deref() {
+                        let q = s.to_ascii_lowercase();
+                        items.retain(|r| r.status.to_ascii_lowercase() == q);
+                    }
+                    let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
+                    emit(
+                        &Response::success(schema::v1::PATCH, json!({ "op": "list", "count": items.len(), "items": items_v })),
+                        pretty,
+                    )
+                }
+                Err(e) => ir_err("patch-list-failed", &e.to_string(), pretty),
+            }
+        }
+        PatchCmd::Show(a) => match pj::load_by_id(&a.id) {
+            Ok(rec) => {
+                let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
+                emit(&Response::success(schema::v1::PATCH, json!({ "op": "show", "item": rec_v })), pretty)
+            }
+            Err(e) => ir_err("patch-show-failed", &e.to_string(), pretty),
+        },
+        PatchCmd::Undo(a) => patch_undo(a, pretty),
+    }
+}
+
+fn patch_dry_run(a: PatchWriteArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let desired = match parse_hex_bytes(&a.bytes) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-bytes", &e, pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let current = match live.read(addr, desired.len()) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+    };
+    let data = json!({
+        "op": "dry-run",
+        "pid": a.pid,
+        "address": addr,
+        "size": desired.len(),
+        "currentHex": to_hex_spaced(&current),
+        "desiredHex": to_hex_spaced(&desired),
+        "wouldChange": current != desired,
+        "diffBytes": byte_diff_count(&current, &desired),
+    });
+    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+}
+
+fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
+    use n0xis_project::patch as pj;
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let desired = match parse_hex_bytes(&a.bytes) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-bytes", &e, pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let before = match live.read(addr, desired.len()) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+    };
+    if let Err(e) = live.write(addr, &desired) {
+        return ir_err("write-failed", &e.to_string(), pretty);
+    }
+    // Verify the write landed.
+    match live.read(addr, desired.len()) {
+        Ok(after) if after == desired => {}
+        Ok(_) => return ir_err("verify-failed", "post-write bytes do not match", pretty),
+        Err(e) => return ir_err("verify-read-failed", &e.to_string(), pretty),
+    }
+    let rec = pj::PatchRecord {
+        id: pj::new_patch_id(),
+        pid: a.pid,
+        address: addr.to_string(),
+        size: desired.len(),
+        before_hex: to_hex_spaced(&before),
+        after_hex: to_hex_spaced(&desired),
+        status: "applied".to_string(),
+        created_at_unix: pj::now_unix_secs(),
+        undone_at_unix: None,
+    };
+    let path = match pj::save(&rec) {
+        Ok(p) => p,
+        Err(e) => return ir_err("journal-failed", &e.to_string(), pretty),
+    };
+    let data = json!({
+        "op": "apply",
+        "id": rec.id,
+        "recordPath": path.to_string_lossy(),
+        "pid": a.pid,
+        "address": addr,
+        "size": rec.size,
+        "diffBytes": byte_diff_count(&before, &desired),
+    });
+    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+}
+
+fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
+    use n0xis_project::patch as pj;
+    let mut rec = match a.id.as_deref() {
+        Some(id) => match pj::load_by_id(id) {
+            Ok(r) => r,
+            Err(e) => return ir_err("patch-not-found", &e.to_string(), pretty),
+        },
+        None => match pj::load_latest() {
+            Ok(r) => r,
+            Err(e) => return ir_err("no-patches", &e.to_string(), pretty),
+        },
+    };
+    if rec.status != "applied" {
+        return ir_err(
+            "not-applied",
+            &format!("patch {} status is '{}', nothing to undo", rec.id, rec.status),
+            pretty,
+        );
+    }
+    let addr = match Va::parse(&rec.address) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let before = match parse_hex_bytes(&rec.before_hex) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-record", &e, pretty),
+    };
+    let after = match parse_hex_bytes(&rec.after_hex) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-record", &e, pretty),
+    };
+    let pid = a.pid.unwrap_or(rec.pid);
+    let live = match LiveProcess::attach(pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    // Safety: current bytes should still be the patched bytes unless --force.
+    match live.read(addr, after.len()) {
+        Ok(current) if current == after => {}
+        Ok(_) if a.force => {}
+        Ok(_) => {
+            return ir_err(
+                "undo-unsafe",
+                "current bytes no longer match the applied patch; re-run with --force",
+                pretty,
+            );
+        }
+        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+    }
+    if let Err(e) = live.write(addr, &before) {
+        return ir_err("restore-failed", &e.to_string(), pretty);
+    }
+    rec.status = "undone".to_string();
+    rec.undone_at_unix = Some(pj::now_unix_secs());
+    if let Err(e) = pj::save(&rec) {
+        return ir_err("journal-failed", &e.to_string(), pretty);
+    }
+    let data = json!({
+        "op": "undo",
+        "id": rec.id,
+        "pid": pid,
+        "address": addr,
+        "restored": before.len(),
+    });
+    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
 }
 
 fn cmd_module_list(a: ModuleListArgs, pretty: bool) -> bool {

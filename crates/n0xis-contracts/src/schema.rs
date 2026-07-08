@@ -21,6 +21,14 @@ pub mod v1 {
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).
     pub const XREF: &str = "n0xis.xref.v1";
+    /// Memory read (`mem read`).
+    pub const MEM_READ: &str = "n0xis.mem.read.v1";
+    /// Memory write (`mem write`).
+    pub const MEM_WRITE: &str = "n0xis.mem.write.v1";
+    /// Address-space region map (`mem map`).
+    pub const MEM_MAP: &str = "n0xis.mem.map.v1";
+    /// Patch operation result (`patch *`).
+    pub const PATCH: &str = "n0xis.patch.v1";
     /// Environment / readiness report (`doctor`).
     pub const DOCTOR: &str = "n0xis.doctor.v1";
     /// Built-in quick reference (`guide`).

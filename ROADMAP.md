@@ -56,8 +56,13 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   (`xref string` + relocation-aware/recursive scan are follow-on.)
 - ⬜ Switch/jump-table detection **and** memory-side resolution.
 - ⬜ Frame analysis, backward register slice (`ir slice`), `ir manifest` + quality.
-- ⬜ `xref string`, `mem read/write/map`, `patch *`, `selection *`,
-  `dump *`, `function trace`, `debug await-hit`.
+- ✅ `mem read` (any source) / `mem write` / `mem map` (live, VirtualQueryEx
+  region walk); `LiveProcess::write` flips page protection (VirtualProtectEx)
+  and restores it, so code pages are patchable.
+- ✅ `patch dry-run/apply/list/show/undo` — journaled under `.n0x/patches/`
+  (`n0xis-project::patch`), read→write→verify on apply, safety-checked undo
+  with `--force`. Verified live: apply flipped bytes, undo restored them.
+- ⬜ `xref string`, `selection *`, `dump *`, `function trace`, `debug await-hit`.
 - **Exit test (parity gate):** golden-output diff vs the archived binary on a fixed
   corpus of functions for `ir build`, `disasm`, `discover`, `xref`, switch cases.
 

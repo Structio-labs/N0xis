@@ -24,6 +24,8 @@
 //!   n0x.cmd           # generated shim that calls back into the global build
 //! ```
 
+pub mod patch;
+
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

@@ -20,7 +20,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     Process32FirstW, Process32NextW, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQueryEx,
+    MEM_COMMIT, MEM_FREE, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, MEM_RESERVE, MEMORY_BASIC_INFORMATION,
+    PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_GUARD,
+    PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, VirtualProtectEx, VirtualQueryEx,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
@@ -34,6 +36,58 @@ use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
 pub struct ProcInfo {
     pub pid: u32,
     pub name: String,
+}
+
+/// One region from the process address-space map (`mem map`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemRegion {
+    pub base: Va,
+    pub end: Va,
+    pub size: u64,
+    pub state: String,
+    pub protect: String,
+    pub kind: String,
+}
+
+fn state_str(s: u32) -> &'static str {
+    match s {
+        x if x == MEM_COMMIT => "commit",
+        x if x == MEM_RESERVE => "reserve",
+        x if x == MEM_FREE => "free",
+        _ => "unknown",
+    }
+}
+
+fn type_str(t: u32) -> &'static str {
+    match t {
+        x if x == MEM_IMAGE => "image",
+        x if x == MEM_MAPPED => "mapped",
+        x if x == MEM_PRIVATE => "private",
+        _ => "-",
+    }
+}
+
+fn protect_str(p: u32) -> String {
+    if p == 0 {
+        return "-".into();
+    }
+    let base = p & 0xFF;
+    let mut s = match base {
+        x if x == PAGE_NOACCESS => "---",
+        x if x == PAGE_READONLY => "r--",
+        x if x == PAGE_READWRITE => "rw-",
+        x if x == PAGE_WRITECOPY => "rc-",
+        x if x == PAGE_EXECUTE => "--x",
+        x if x == PAGE_EXECUTE_READ => "r-x",
+        x if x == PAGE_EXECUTE_READWRITE => "rwx",
+        x if x == PAGE_EXECUTE_WRITECOPY => "rcx",
+        _ => "???",
+    }
+    .to_string();
+    if p & PAGE_GUARD != 0 {
+        s.push_str("+guard");
+    }
+    s
 }
 
 fn wide_to_string(w: &[u16]) -> String {
@@ -118,6 +172,32 @@ impl LiveProcess {
         parse_text_range(&hdr, base.0)
     }
 
+    /// Walk the process address space via `VirtualQueryEx`, up to `limit`
+    /// regions (`mem map`).
+    pub fn regions(&self, limit: usize) -> Vec<MemRegion> {
+        let mut out = Vec::new();
+        let mut addr = 0u64;
+        while out.len() < limit {
+            let Some(mbi) = self.query(addr) else { break };
+            let base = mbi.BaseAddress as u64;
+            let size = mbi.RegionSize as u64;
+            if size == 0 {
+                break;
+            }
+            out.push(MemRegion {
+                base: Va(base),
+                end: Va(base + size),
+                size,
+                state: state_str(mbi.State).into(),
+                protect: protect_str(mbi.Protect),
+                kind: type_str(mbi.Type).into(),
+            });
+            let Some(next) = base.checked_add(size) else { break };
+            addr = next;
+        }
+        out
+    }
+
     /// Query the committed region covering `va`, if any (base, size, protect).
     fn query(&self, va: u64) -> Option<MEMORY_BASIC_INFORMATION> {
         unsafe {
@@ -200,6 +280,21 @@ fn snapshot_modules(pid: u32) -> Result<Vec<Module>, SourceError> {
     Ok(out)
 }
 
+/// Raw `WriteProcessMemory`, returning whether the full buffer was written.
+fn wpm(handle: HANDLE, va: Va, bytes: &[u8]) -> bool {
+    let mut written = 0usize;
+    let ok = unsafe {
+        WriteProcessMemory(
+            handle,
+            va.0 as *const c_void,
+            bytes.as_ptr() as *const c_void,
+            bytes.len(),
+            &mut written,
+        )
+    };
+    ok != 0 && written == bytes.len()
+}
+
 impl Drop for LiveProcess {
     fn drop(&mut self) {
         if !self.handle.is_null() {
@@ -249,26 +344,47 @@ impl MemorySource for LiveProcess {
     }
 
     fn write(&self, va: Va, bytes: &[u8]) -> Result<(), SourceError> {
-        // Note: assumes the target pages are already writable. Protection
-        // flipping (VirtualProtectEx) belongs to the patch layer, which owns
-        // save/restore of the original protection + bytes.
-        let mut written = 0usize;
-        let ok = unsafe {
-            WriteProcessMemory(
+        // Fast path: the page is already writable.
+        if wpm(self.handle, va, bytes) {
+            return Ok(());
+        }
+        // Slow path: flip protection to RWX, write, then restore — needed to
+        // patch read-only/executable code pages. Best-effort restore.
+        let mut old_protect: u32 = 0;
+        let flipped = unsafe {
+            VirtualProtectEx(
                 self.handle,
                 va.0 as *const c_void,
-                bytes.as_ptr() as *const c_void,
                 bytes.len(),
-                &mut written,
+                PAGE_EXECUTE_READWRITE,
+                &mut old_protect,
             )
         };
-        if ok == 0 {
+        if flipped == 0 {
             return Err(SourceError::Os(format!(
-                "WriteProcessMemory at {va} failed (GLE {})",
+                "VirtualProtectEx at {va} failed (GLE {})",
                 unsafe { GetLastError() }
             )));
         }
-        Ok(())
+        let wrote = wpm(self.handle, va, bytes);
+        let mut restore_scratch: u32 = 0;
+        unsafe {
+            VirtualProtectEx(
+                self.handle,
+                va.0 as *const c_void,
+                bytes.len(),
+                old_protect,
+                &mut restore_scratch,
+            );
+        }
+        if wrote {
+            Ok(())
+        } else {
+            Err(SourceError::Os(format!(
+                "WriteProcessMemory at {va} failed after unprotect (GLE {})",
+                unsafe { GetLastError() }
+            )))
+        }
     }
 
     fn label(&self) -> String {

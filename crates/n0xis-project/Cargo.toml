@@ -9,5 +9,6 @@ repository.workspace = true
 [dependencies]
 n0xis-contracts = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
