@@ -16,6 +16,16 @@ mod snapshot;
 
 pub use snapshot::{Snapshot, SnapshotBuilder};
 
+#[cfg(feature = "static-pe")]
+mod static_pe;
+#[cfg(feature = "static-pe")]
+pub use static_pe::StaticPe;
+
+#[cfg(feature = "live")]
+mod live;
+#[cfg(feature = "live")]
+pub use live::{LiveProcess, ProcInfo, list_processes};
+
 use n0xis_contracts::{Module, Symbol, Va};
 
 /// Something went wrong reading/writing a source.
@@ -25,6 +35,8 @@ pub enum SourceError {
     Unmapped(Va),
     #[error("this source is read-only (write not supported)")]
     ReadOnly,
+    #[error("failed to load source: {0}")]
+    Load(String),
     #[error("os error: {0}")]
     Os(String),
 }

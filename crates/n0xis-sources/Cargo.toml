@@ -9,7 +9,14 @@ repository.workspace = true
 [dependencies]
 n0xis-contracts = { workspace = true }
 thiserror = { workspace = true }
+goblin = { workspace = true, optional = true }
+windows-sys = { workspace = true, optional = true }
 
-# NOTE: no windows-sys / goblin yet. Phase 2 adds the LiveProcess (Win32) and
-# StaticPe (goblin) adapters behind cargo features so that `cargo test -p
-# n0xis-core` keeps linking zero OS APIs (the boundary exit test, ROADMAP P1).
+[features]
+default = []
+# StaticPe (goblin) — file-backed PE source. goblin is cross-platform (not an OS
+# dep), but gated anyway so the default build stays minimal.
+static-pe = ["dep:goblin"]
+# LiveProcess (Win32) — the only OS-linked adapter. Kept off by default so that
+# `cargo test -p n0xis-core` links zero Windows APIs (the boundary exit test).
+live = ["dep:windows-sys"]

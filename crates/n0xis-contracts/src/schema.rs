@@ -9,6 +9,10 @@
 pub mod v1 {
     /// Linear decode / disassembly output (`decode` pass, `disasm`).
     pub const DECODE: &str = "n0xis.decode.v1";
+    /// Process listing (`process ps`).
+    pub const PROCESS_PS: &str = "n0xis.process.ps.v1";
+    /// Module listing (`module list`).
+    pub const MODULE_LIST: &str = "n0xis.module.list.v1";
     /// Environment / readiness report (`doctor`).
     pub const DOCTOR: &str = "n0xis.doctor.v1";
     /// Built-in quick reference (`guide`).

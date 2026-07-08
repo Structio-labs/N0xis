@@ -16,7 +16,7 @@ use clap::{Args, Parser, Subcommand};
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_pipeline::Pipeline;
-use n0xis_sources::Snapshot;
+use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, list_processes};
 use serde_json::json;
 
 use emit::emit;
@@ -55,8 +55,44 @@ enum Command {
     /// Project introspection.
     #[command(subcommand)]
     Project(ProjectCmd),
+    /// Live process inspection.
+    #[command(subcommand)]
+    Process(ProcessCmd),
+    /// Module inspection (live process or static PE).
+    #[command(subcommand)]
+    Module(ModuleCmd),
     /// Linear disassembly.
     Disasm(DisasmArgs),
+}
+
+#[derive(Subcommand)]
+enum ModuleCmd {
+    /// List modules of a live process (`--pid`) or a single PE (`--file`).
+    List(ModuleListArgs),
+}
+
+#[derive(Args)]
+struct ModuleListArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Case-insensitive substring filter on the module name.
+    #[arg(long)]
+    filter: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum ProcessCmd {
+    /// List running processes.
+    Ps(PsArgs),
+}
+
+#[derive(Args)]
+struct PsArgs {
+    /// Case-insensitive substring filter on the process name.
+    #[arg(long)]
+    filter: Option<String>,
 }
 
 #[derive(Args)]
@@ -105,6 +141,8 @@ fn main() {
         Command::Guide => cmd_guide(pretty),
         Command::Init(a) => cmd_init(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
+        Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
+        Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
@@ -206,26 +244,69 @@ fn cmd_project_info(pretty: bool) -> bool {
     }
 }
 
-fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
-    if a.pid.is_some() || a.file.is_some() {
-        return emit(
-            &Response::<serde_json::Value>::error(
-                "source-not-implemented",
-                "live (--pid) and static-PE (--file) sources are not yet implemented",
-            )
-            .with_hint("Phase 1 supports --bytes; --pid/--file land in Phase 2 (see ROADMAP.md)"),
+fn cmd_process_ps(a: PsArgs, pretty: bool) -> bool {
+    match list_processes() {
+        Ok(mut procs) => {
+            if let Some(f) = a.filter.as_deref() {
+                let needle = f.to_lowercase();
+                procs.retain(|p| p.name.to_lowercase().contains(&needle));
+            }
+            procs.sort_by_key(|p| p.name.to_lowercase());
+            let list: Vec<_> = procs
+                .iter()
+                .map(|p| json!({ "pid": p.pid, "name": p.name }))
+                .collect();
+            let data = json!({ "count": list.len(), "processes": list });
+            emit(&Response::success(schema::v1::PROCESS_PS, data), pretty)
+        }
+        Err(e) => emit(
+            &Response::<serde_json::Value>::error("ps-failed", e.to_string()),
             pretty,
-        );
+        ),
     }
-    let Some(bytes_str) = a.bytes else {
+}
+
+fn cmd_module_list(a: ModuleListArgs, pretty: bool) -> bool {
+    use n0xis_contracts::Module;
+    use n0xis_sources::ModuleProvider;
+
+    let mut modules: Vec<Module> = if let Some(pid) = a.pid {
+        match LiveProcess::attach(pid) {
+            Ok(l) => l.modules().to_vec(),
+            Err(e) => {
+                return emit(
+                    &Response::<serde_json::Value>::error("attach-failed", e.to_string()),
+                    pretty,
+                );
+            }
+        }
+    } else if let Some(file) = a.file.as_deref() {
+        match StaticPe::load(std::path::Path::new(file)) {
+            Ok(pe) => pe.modules().to_vec(),
+            Err(e) => {
+                return emit(
+                    &Response::<serde_json::Value>::error("load-failed", e.to_string()),
+                    pretty,
+                );
+            }
+        }
+    } else {
         return emit(
-            &Response::<serde_json::Value>::error(
-                "missing-source",
-                "provide --bytes \"<hex>\" (Phase 1) — or --pid/--file once implemented",
-            ),
+            &Response::<serde_json::Value>::error("missing-source", "provide --pid or --file"),
             pretty,
         );
     };
+
+    if let Some(f) = a.filter.as_deref() {
+        let needle = f.to_lowercase();
+        modules.retain(|m| m.name.to_lowercase().contains(&needle));
+    }
+    let modules_v = serde_json::to_value(&modules).unwrap_or(serde_json::Value::Null);
+    let data = json!({ "count": modules.len(), "modules": modules_v });
+    emit(&Response::success(schema::v1::MODULE_LIST, data), pretty)
+}
+
+fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
     let start = match Va::parse(&a.addr) {
         Ok(v) => v,
         Err(e) => {
@@ -235,22 +316,88 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
             );
         }
     };
+
+    // Source selection: --pid (live) XOR --file (static PE) XOR --bytes (inline).
+    if let Some(pid) = a.pid {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => {
+                return emit(
+                    &Response::<serde_json::Value>::error("attach-failed", e.to_string()),
+                    pretty,
+                );
+            }
+        };
+        if !live.contains(start) {
+            return emit(
+                &Response::<serde_json::Value>::error(
+                    "addr-not-committed",
+                    format!("{start} is not a committed/readable region in pid {pid}"),
+                )
+                .with_hint("use a runtime VA (respecting ASLR); `n0xis process ps` finds the pid"),
+                pretty,
+            );
+        }
+        return run_disasm(&live, start, a.count, pretty);
+    }
+
+    if let Some(file) = a.file.as_deref() {
+        let pe = match StaticPe::load(std::path::Path::new(file)) {
+            Ok(pe) => pe,
+            Err(e) => {
+                return emit(
+                    &Response::<serde_json::Value>::error("load-failed", e.to_string()),
+                    pretty,
+                );
+            }
+        };
+        if !pe.contains(start) {
+            return emit(
+                &Response::<serde_json::Value>::error(
+                    "addr-out-of-image",
+                    format!("{start} is outside any section of the image"),
+                )
+                .with_hint(format!(
+                    "pass a VA at the preferred image base {} (ASLR'd modules need --pid)",
+                    pe.image_base()
+                )),
+                pretty,
+            );
+        }
+        return run_disasm(&pe, start, a.count, pretty);
+    }
+
+    let Some(bytes_str) = a.bytes else {
+        return emit(
+            &Response::<serde_json::Value>::error(
+                "missing-source",
+                "provide --file <PE> or --bytes \"<hex>\"",
+            ),
+            pretty,
+        );
+    };
     let bytes = match parse_hex_bytes(&bytes_str) {
         Ok(b) => b,
         Err(e) => {
             return emit(&Response::<serde_json::Value>::error("bad-bytes", e), pretty);
         }
     };
-
     let label = format!("bytes:{}@{}", bytes.len(), start);
     let snap = Snapshot::builder()
         .region(start, bytes)
-        .label(label.clone())
+        .label(label)
         .build();
-    let arch = X64::new();
-    let pipe = Pipeline::new(&snap, &arch);
+    run_disasm(&snap, start, a.count, pretty)
+}
 
-    match pipe.disassemble(start, a.count) {
+/// Disassemble ~`count` instructions from `start` over any memory source and
+/// emit the `n0xis.decode.v1` envelope. The single place all `disasm` sources
+/// converge — proving the "one pipeline, any source" thesis at the frontend.
+fn run_disasm(source: &dyn MemorySource, start: Va, count: usize, pretty: bool) -> bool {
+    let arch = X64::new();
+    let label = source.label();
+    let pipe = Pipeline::new(source, &arch);
+    match pipe.disassemble(start, count) {
         Ok(out) => emit(
             &Response::success(schema::v1::DECODE, out).with_source(label),
             pretty,

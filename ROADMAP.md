@@ -35,10 +35,15 @@ Goal: the empty-but-correct architecture. No analysis yet; the boundaries exist.
 > (bundled linker, no MSVC Build Tools needed); pinned in `rust-toolchain.toml`.
 > Build/test from PowerShell or Git Bash both work with it.
 
-## Phase 2 — Port the proven v0 analysis (parity) 🎯
+## Phase 2 — Port the proven v0 analysis (parity) ⏳
 Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
-- ⬜ `LiveProcess` (Win32 RPM/VirtualQueryEx/ToolHelp) + `StaticPe` (goblin) adapters.
-- ⬜ Linear disasm (`disasm`), CFG + block/def-use IR (`ir build/cfg/dot/explain`).
+- ✅ `StaticPe` (goblin) adapter — `MemorySource`+`SymbolProvider`+`ModuleProvider`,
+  behind the `static-pe` feature.
+- ✅ `LiveProcess` (Win32 RPM/VirtualQueryEx/ToolHelp) adapter behind the `live`
+  feature; `process ps`, `module list` (live+static), `disasm --pid/--file/--bytes`
+  all run the *same* pipeline over the chosen source. Boundary still holds
+  (`cargo tree -p n0xis-core` = zero OS crates).
+- ⬜ CFG + block/def-use IR (`ir build/cfg/dot/explain`).
 - ⬜ Function discovery (prolog scan), export/IAT symbol + import resolution.
 - ⬜ Switch/jump-table detection **and** memory-side resolution.
 - ⬜ Frame analysis, backward register slice (`ir slice`), `ir manifest` + quality.
