@@ -53,12 +53,17 @@ impl StaticPe {
     }
 
     /// Virtual address range of the `.text` section `(start, size)`, for
-    /// function discovery / code scanning. Falls back to the first executable
-    /// section's absence → `None`.
+    /// function discovery / code scanning. See [`section_range`](Self::section_range).
     pub fn text_range(&self) -> Option<(Va, u64)> {
+        self.section_range(".text")
+    }
+
+    /// Virtual address range of a named section `(start, size)` — e.g.
+    /// `.rdata` for string-literal scanning, not just `.text`.
+    pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
         self.sections
             .iter()
-            .find(|s| s.name == ".text")
+            .find(|s| s.name == name)
             .map(|s| (Va(s.va_start), s.va_end - s.va_start))
     }
 

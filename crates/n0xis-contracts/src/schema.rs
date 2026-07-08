@@ -27,6 +27,8 @@ pub mod v1 {
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).
     pub const XREF: &str = "n0xis.xref.v1";
+    /// String-literal search + referencing instructions (`xref string`).
+    pub const XREF_STRING: &str = "n0xis.xref.string.v1";
     /// Memory read (`mem read`).
     pub const MEM_READ: &str = "n0xis.mem.read.v1";
     /// Memory write (`mem write`).

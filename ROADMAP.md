@@ -53,7 +53,16 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   (`function list/info` + export/IAT enumeration verbs are a follow-on.)
 - ✅ `xref to/from` — branch + RIP-relative data refs via `DecodedInsn.target`
   / new `DecodedInsn.rip_target` arch field (no byte patterns in the pass).
-  (`xref string` + relocation-aware/recursive scan are follow-on.)
+- ✅ `xref string` — searches a data window for a byte needle and a code window
+  for `lea`-style `rip_target` hits on each match (`n0xis-core::StringXrefPass`,
+  reusing `XrefEntry`); only matches with ≥1 referencing instruction are
+  reported. New `StaticPe`/`LiveProcess::section_range(name)` generalizes the
+  existing `.text`-only lookup to any named section, so the data window
+  defaults to `.rdata` (falling back to `.text`) while the code window stays
+  `.text` — the two live in different sections. Verified on a real PE: found
+  `n0xis.xref.string.v1` and error-message literals with their exact `lea`
+  call sites, including one string referenced from 7 different places.
+  (Relocation-aware/recursive scan remain follow-on.)
 - ✅ Switch/jump-table detection **and** memory-side resolution — arch seam
   `Arch::detect_switch` recognizes the two x64 idioms (mem-indexed absolute-ptr
   tables, MSVC reg-rel32 tables); `n0xis-core::resolve_switch` reads the table

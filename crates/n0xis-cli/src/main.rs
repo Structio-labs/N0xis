@@ -17,7 +17,7 @@ use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
     CfgInput, CfgPass, Ctx, DiscoverInput, DiscoverPass, ManifestCandidate, ManifestInput,
-    ManifestPass, Pass, XrefDir, XrefInput, XrefPass,
+    ManifestPass, Pass, StringXrefInput, StringXrefPass, XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::Pipeline;
 use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, list_processes};
@@ -208,6 +208,35 @@ enum XrefCmd {
     To(XrefArgs),
     /// What `--addr` references.
     From(XrefArgs),
+    /// Find a string literal and who references it via `lea`.
+    String(XrefStringArgs),
+}
+
+#[derive(Args)]
+struct XrefStringArgs {
+    /// The string to search for.
+    #[arg(long)]
+    query: String,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Data window to search (defaults to `.rdata`, else `.text`).
+    #[arg(long)]
+    data_start: Option<String>,
+    /// Data window size (defaults to the resolved section's size).
+    #[arg(long)]
+    data_size: Option<usize>,
+    /// Code window to scan for referencing `lea` (defaults to `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    /// Code window size (defaults to the `.text` size).
+    #[arg(long)]
+    size: Option<usize>,
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
 }
 
 #[derive(Args)]
@@ -385,6 +414,7 @@ fn main() {
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
+        Command::Xref(XrefCmd::String(a)) => cmd_xref_string(a, pretty),
         Command::Mem(MemCmd::Read(a)) => cmd_mem_read(a, pretty),
         Command::Mem(MemCmd::Write(a)) => cmd_mem_write(a, pretty),
         Command::Mem(MemCmd::Map(a)) => cmd_mem_map(a, pretty),
@@ -852,6 +882,72 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
                 pretty,
             ),
             Err(e) => ir_err("xref-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
+    }
+}
+
+/// Search a data window for `--query` and a code window for referencing
+/// `lea`s. The two windows default independently: data to `.rdata` (falling
+/// back to `.text`), code to `.text` — string literals and the code that
+/// points to them usually live in different sections.
+fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
+    let explicit_code_start = match opt_hex(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let explicit_data_start = match opt_hex(&a.data_start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let bytes_base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
+    let (src, label, region_len) =
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+            Ok(x) => x,
+            Err((c, m)) => return ir_err(&c, &m, pretty),
+        };
+    let arch = X64::new();
+    let default_text = match &src {
+        Src::Static(pe) => pe.text_range(),
+        Src::Live(l) => l.text_range(),
+        Src::Snap(_) => None,
+    };
+    let default_data = match &src {
+        Src::Static(pe) => pe.section_range(".rdata").or_else(|| pe.text_range()),
+        Src::Live(l) => l.section_range(".rdata").or_else(|| l.text_range()),
+        Src::Snap(_) => None,
+    };
+    let (code_start, code_size) =
+        scan_range(default_text, region_len, explicit_code_start, a.size, bytes_base);
+    let (data_start, data_size) =
+        scan_range(default_data, region_len, explicit_data_start, a.data_size, bytes_base);
+    if code_size == 0 || data_size == 0 {
+        return ir_err(
+            "no-range",
+            "could not resolve a data/code range; pass --data-start/--data-size and --start/--size",
+            pretty,
+        );
+    }
+
+    let run = |ctx: &Ctx| -> bool {
+        let input = StringXrefInput {
+            data_start,
+            data_size,
+            code_start,
+            code_size,
+            query: a.query.clone(),
+            limit: a.limit,
+        };
+        match StringXrefPass.run(ctx, input) {
+            Ok(art) => emit(
+                &Response::success(schema::v1::XREF_STRING, art).with_source(label.clone()),
+                pretty,
+            ),
+            Err(e) => ir_err("xref-string-failed", &e.to_string(), pretty),
         }
     };
     match &src {

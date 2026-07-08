@@ -163,13 +163,20 @@ impl LiveProcess {
         self.modules.first()
     }
 
-    /// Locate the `.text` section `(start, size)` of the main module by reading
-    /// its PE headers straight from live memory (the full image is mapped, so
-    /// unlike `StaticPe` we parse the section table from RAM).
+    /// Locate the `.text` section `(start, size)` of the main module. See
+    /// [`section_range`](Self::section_range).
     pub fn text_range(&self) -> Option<(Va, u64)> {
+        self.section_range(".text")
+    }
+
+    /// Locate a named section's `(start, size)` in the main module by reading
+    /// its PE headers straight from live memory (the full image is mapped, so
+    /// unlike `StaticPe` we parse the section table from RAM). `name` is any
+    /// section, not just `.text` — e.g. `.rdata` for string-literal scanning.
+    pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
         let base = self.main_module()?.base;
         let hdr = self.read(base, 0x1000).ok()?;
-        parse_text_range(&hdr, base.0)
+        parse_section_range(&hdr, base.0, name)
     }
 
     /// Walk the process address space via `VirtualQueryEx`, up to `limit`
@@ -220,7 +227,7 @@ fn is_readable(protect: u32) -> bool {
 /// Parse a PE header blob (read at the image base) and return the `.text`
 /// section's absolute `(start, size)`. Hand-rolled — we only need three fields
 /// and avoid pulling goblin into the `live` build.
-fn parse_text_range(hdr: &[u8], base: u64) -> Option<(Va, u64)> {
+fn parse_section_range(hdr: &[u8], base: u64, name: &str) -> Option<(Va, u64)> {
     let rd_u32 = |off: usize| -> Option<u32> {
         hdr.get(off..off + 4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -237,11 +244,12 @@ fn parse_text_range(hdr: &[u8], base: u64) -> Option<(Va, u64)> {
     let num_sections = rd_u16(coff + 2)? as usize;
     let size_opt_hdr = rd_u16(coff + 16)? as usize;
     let sec_table = coff + 20 + size_opt_hdr; // section headers follow the optional header
+    let wanted = name.as_bytes();
     for i in 0..num_sections {
         let s = sec_table + i * 40; // IMAGE_SECTION_HEADER is 40 bytes
-        let name = hdr.get(s..s + 8)?;
-        let name = &name[..name.iter().position(|&c| c == 0).unwrap_or(8)];
-        if name == b".text" {
+        let sec_name = hdr.get(s..s + 8)?;
+        let sec_name = &sec_name[..sec_name.iter().position(|&c| c == 0).unwrap_or(8)];
+        if sec_name == wanted {
             let virtual_size = rd_u32(s + 8)? as u64;
             let virtual_address = rd_u32(s + 12)? as u64;
             return Some((Va(base + virtual_address), virtual_size));

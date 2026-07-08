@@ -19,6 +19,7 @@ mod manifest;
 mod slice;
 mod switch;
 mod xref;
+mod xref_string;
 
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use discover::{DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
@@ -30,6 +31,7 @@ pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestI
 pub use slice::{SliceArtifact, SliceNode, slice};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
+pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
 use n0xis_arch::Arch;
 use n0xis_sources::{MemorySource, ModuleProvider, SymbolProvider};
