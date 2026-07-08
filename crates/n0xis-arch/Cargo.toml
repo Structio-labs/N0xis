@@ -1,0 +1,16 @@
+[package]
+name = "n0xis-arch"
+description = "ISA seam: trait Arch + the X64 implementation (iced-x86). All x64/ABI knowledge lives here, never in the passes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+serde = { workspace = true }
+iced-x86 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

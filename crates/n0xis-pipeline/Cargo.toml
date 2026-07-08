@@ -1,0 +1,17 @@
+[package]
+name = "n0xis-pipeline"
+description = "Wires a source + arch (+ project) into the core and runs passes. Phase 1 is a thin PassManager; artifact caching / incremental recompute land in Phase 6."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-sources = { workspace = true }
+n0xis-core = { workspace = true }
+n0xis-project = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

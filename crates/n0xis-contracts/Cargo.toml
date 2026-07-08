@@ -1,0 +1,13 @@
+[package]
+name = "n0xis-contracts"
+description = "N0xis wire schemas and shared value types — the single source of truth. Depends on nothing but serde."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

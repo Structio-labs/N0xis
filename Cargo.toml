@@ -1,0 +1,34 @@
+# N0xis — reverse-engineering and live-memory toolkit (v1 rewrite).
+# See CONCEPT.md §4 for the crate boundaries and why each seam exists.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/n0xis-re/n0xis"
+rust-version = "1.90"
+
+[workspace.dependencies]
+# --- external (single source of truth for versions) ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+iced-x86 = "1"
+dirs = "6"
+
+# --- internal crates (path deps; the workspace is the graph in CONCEPT §4) ---
+n0xis-contracts = { path = "crates/n0xis-contracts" }
+n0xis-arch = { path = "crates/n0xis-arch" }
+n0xis-sources = { path = "crates/n0xis-sources" }
+n0xis-core = { path = "crates/n0xis-core" }
+n0xis-project = { path = "crates/n0xis-project" }
+n0xis-pipeline = { path = "crates/n0xis-pipeline" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

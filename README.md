@@ -1,39 +1,48 @@
----
-tags: [readme, frontend, project/n0x]
-aliases: [Frontend README, Project Root]
----
+# N0xis
 
-> Navigation: [[MAP|Map]] · [[CLI_FEATURES_SPEC|CLI Spec]] · [[BACKEND_SPEC|Backend Spec]] · **Frontend README** · [[n0x-cli-rs/README|CLI README]]
+**reverse-engineering and live-memory toolkit for x64
+Windows** — a synthesis of other tools (another tool / another tool-a source-level decompiler / another tool)
+and a memory scanner-class dynamic memory work, driven entirely through a stable CLI +
+MCP contract, analyzing both static PE files and live processes through one and the
+same analysis pipeline.
 
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+> Status: **v1 rewrite in progress.** The working v0 implementation is archived in
+> [`archive/`](archive/) and used as a reference for the port.
+>
+> Name: **N0xis** (pronounced "Noxis"). The CLI binary stays invocable as `n0x`
+> (and `n0xis`) so the installed global shim keeps working.
 
-> Project hub: [[MAP]]. The Rust analysis backend lives in [[n0x-cli-rs/README|n0x-cli-rs]] and is the source of truth for every reverse-engineering capability.
+## Start here
 
-# Run and deploy your AI Studio app
+- **[CONCEPT.md](CONCEPT.md)** — what N0xis is, the architecture (modular / adapter
+  / passes), the seams, the dynamic-memory layer, the `.n0xt` table format, and the
+  killer feature.
+- **[ROADMAP.md](ROADMAP.md)** — phased plan from workspace skeleton to the
+  optimizing decompiler, type recovery, dynamic memory, MCP, and beyond.
+- **[docs/CLI_COMMANDS_v0.md](docs/CLI_COMMANDS_v0.md)** — the CLI surface the
+  rewrite must preserve (compatibility contract).
 
-This contains everything you need to run your app locally.
+## What makes it different
 
-View your app in AI Studio: https://ai.studio/apps/34a430df-e470-4eb3-bd7f-3d25bdf7eb62
+another tool / another tool / another tool are GUI-first with black-box decompilers; a memory scanner
+finds runtime values but can't explain the code. N0xis is **contract-first and
+GUI-never**, and it **fuses both worlds**: every capability is a CLI verb + MCP tool
+returning a versioned JSON artifact, every analysis pass (SSA, propagation, DCE,
+type inference, control structuring) emits an *inspectable* result an agent can
+query, and dynamic memory work (scanning, pointer paths, AOB, freeze, hooks) is a
+first-class peer of static analysis. Live-process and on-disk analysis run through
+the identical pipeline — the only difference is which input adapter supplies bytes.
 
-## Run Locally
+## Layout (target)
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-
-## Run CLI Workspace
-
-For a terminal-first workflow with technical UI/UX styling:
-
-1. Install dependencies:
-   `npm install`
-2. Start the CLI:
-   `npm run cli`
-3. Type `help` to list commands (`view`, `search`, `select`, `attach`, `hex`, `disasm`, `exit`)
+```
+n0xis-contracts/   all wire schemas + shared types (single source of truth)
+n0xis-arch/        ISA abstraction (trait Arch) + X64 impl (iced-x86)
+n0xis-sources/     input adapters: LiveProcess, StaticPe, Snapshot, ...
+n0xis-core/        pure analysis passes + memory scan/diff (no I/O, no OS)
+n0xis-project/     .n0x/ analysis database (names, types, notes, patches, tables)
+n0xis-pipeline/    PassManager wiring source + arch + project into core
+n0xis-cli/         thin clap frontend (binary: n0xis, alias n0x)
+n0xis-mcp/         MCP server frontend
+archive/           v0 reference implementation
+```

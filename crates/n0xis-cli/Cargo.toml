@@ -1,0 +1,21 @@
+[package]
+name = "n0xis-cli"
+description = "The n0xis CLI — thin clap frontend over the pipeline. Emits the ok/data/meta envelope. Binary: n0xis (kept invocable as n0x)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "n0xis"
+path = "src/main.rs"
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-sources = { workspace = true }
+n0xis-pipeline = { workspace = true }
+n0xis-project = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

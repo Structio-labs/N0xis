@@ -1,0 +1,13 @@
+[package]
+name = "n0xis-project"
+description = "The .n0x/ analysis database: project discovery, config, init. Ported from the proven v0 layout; back-compat dir (.n0x) and shim (n0x.cmd) preserved."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }

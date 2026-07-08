@@ -1,0 +1,17 @@
+[package]
+name = "n0xis-core"
+description = "Pure analysis: trait Pass, Ctx, and the pass pipeline over the Arch + source seams. No I/O, no OS — validated with the Snapshot mock."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-sources = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

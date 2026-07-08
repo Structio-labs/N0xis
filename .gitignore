@@ -7,8 +7,10 @@ coverage/
 .env*
 !.env.example
 
-# Rust / Cargo (n0x-cli-rs)
+# Rust / Cargo
+/target/
 n0x-cli-rs/target/
+src-tauri/target/
 **/*.rs.bk
 
 # Per-project N0x state (analysis artifacts, patches, dumps)

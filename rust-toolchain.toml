@@ -1,0 +1,5 @@
+# The gnu toolchain bundles its own linker (mingw ld) — no MSVC Build Tools
+# needed on this machine. This is the host default and how v0 was built.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"
+components = ["rustfmt", "clippy"]

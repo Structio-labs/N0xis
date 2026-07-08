@@ -1,0 +1,15 @@
+[package]
+name = "n0xis-sources"
+description = "Source seam: MemorySource / SymbolProvider / ModuleProvider adapters. Phase 1 ships the OS-free Snapshot mock; LiveProcess/StaticPe land in Phase 2 behind features."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+thiserror = { workspace = true }
+
+# NOTE: no windows-sys / goblin yet. Phase 2 adds the LiveProcess (Win32) and
+# StaticPe (goblin) adapters behind cargo features so that `cargo test -p
+# n0xis-core` keeps linking zero OS APIs (the boundary exit test, ROADMAP P1).
