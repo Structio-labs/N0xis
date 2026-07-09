@@ -1178,11 +1178,11 @@ fn cmd_doctor(pretty: bool) -> bool {
         "status": "ready",
         "checks": {
             "arch_x64": { "ok": true, "name": <X64 as n0xis_arch::Arch>::name(&arch) },
-            "decoder": { "ok": true, "engine": "iced-x86" },
+            "arch_arm64": { "ok": true, "name": Arm64::new().name() },
+            "decoder": { "ok": true, "engines": ["iced-x86 (x64)", "disarm64 (arm64)"] },
             "project_resolves": { "ok": proj_ok, "dir": proj_dir, "local": proj_local },
         },
-        "phase": "1 — workspace skeleton & seams",
-        "note": "live-process / static-PE sources arrive in Phase 2",
+        "roadmap": "Phases 1-7 complete — see ROADMAP.md",
     });
     emit(&Response::success(schema::v1::DOCTOR, data), pretty)
 }
@@ -1190,21 +1190,37 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn cmd_guide(pretty: bool) -> bool {
     let data = json!({
         "tool": "n0xis",
-        "tagline": "reverse-engineering — static + live, contract-first, GUI-never.",
-        "phase": "1",
+        "tagline": "Agent-native reverse-engineering + live-memory toolkit — contract-first CLI and MCP over the same pipeline, static PE and live process alike. GUI is planned, not ruled out; not built yet.",
+        "sources": "most commands accept exactly one of --pid <live process>, --file <static PE>, --snapshot <captured .n0x/dumps/snapshot/*>, --remote-cmd \"<argv, e.g. ssh host n0xis remote-serve --pid N>\", or --bytes \"<hex>\" (inline)",
         "commands": {
             "doctor": "environment / readiness check",
             "guide": "this quick reference",
             "init": "create a .n0x/ project",
             "project info": "resolved project paths & config",
-            "disasm --addr <hex> --bytes \"<hex>\" [--count N]": "linear disassembly (Phase 1 uses --bytes)",
+            "process ps": "list live processes",
+            "module list": "loaded modules (live or static)",
+            "disasm": "linear disassembly",
+            "ir build|explain|dot|slice|manifest|value-set|deobfuscate": "CFG/def-use IR, human summary, Graphviz DOT, backward register slice, per-function quality index, value-set/alias analysis, junk+opaque-predicate report",
+            "function discover|trace": "heuristic function discovery, call-graph walk",
+            "decomp pseudo --style goto|structured|ssa": "pseudo-C decompilation (ssa = optimized + structured, the main path)",
+            "xref to|from|string": "cross-references and string-literal xrefs",
+            "mem read|write|map": "raw memory access, address-space map",
+            "patch dry-run|apply|list|show|undo|detour": "byte patches with a persisted undo journal, plus detour/trampoline hooks",
+            "selection save|list|show|rm": "named memory-range anchors",
+            "dump save|list|show|rm": "persistent artifact store (ir/pseudo/hex/raw/note/scan/snapshot)",
+            "debug await-hit|watch": "block until a software breakpoint or hardware watchpoint fires",
+            "scan value|filter|aob|pointer-path|dissect": "value-scanning typed value scan/rescan, AOB signature scan, pointer-path finding, struct dissection",
+            "table add|list|show|rm|freeze": ".n0xt cheat/analysis tables with a freeze loop",
+            "provenance trace": "the principal: fuse a live watchpoint hit with the SSA decompiler to explain exactly which source-level statement wrote a runtime value",
+            "annotate name|type|comment|show|list|rm": "names/types/comments at an address, kept as versioned truth (full history, never silently overwritten)",
+            "snapshot dump|info|list": "capture a reproducible offline memory snapshot; reload it later via --snapshot",
+            "remote-serve": "serve a live process over the remote-agent protocol (the far side of --remote-cmd, typically invoked over ssh)",
+            "diff functions": "decompile two functions and diff their pseudo-C line by line — agent-friendly change reports",
         },
-        "reserved": {
-            "disasm --pid/--file": "live & static sources — Phase 2",
-            "ir / decomp / xref / scan / table": "ported & built across Phases 2–4",
-        },
-        "envelope": "every command emits { ok, data, meta } or { ok:false, error }",
-        "docs": ["CONCEPT.md", "ROADMAP.md", "docs/KILLER_FEATURES.md"],
+        "architectures": ["x64 (iced-x86, full: CFG/SSA/types/decompile)", "arm64 (disarm64, CFG/discover/xref/goto+structured decompile; SSA optimization is x64-only for now)"],
+        "envelope": "every command emits { ok, data, meta } or { ok:false, error }; meta.schema names the payload shape (n0xis.*.v1, or the archived n0x.*.v1 for ported v0 shapes)",
+        "docs": ["README.md", "CONCEPT.md", "ROADMAP.md", "docs/KILLER_FEATURES.md"],
+        "mcp": "the same pipeline is also exposed as an MCP server (binary n0xis-mcp) for agent tool-calling over stdio — see README.md",
     });
     emit(&Response::success(schema::v1::GUIDE, data), pretty)
 }
