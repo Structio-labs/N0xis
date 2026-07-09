@@ -12,8 +12,6 @@ n0xis-arch = { workspace = true }
 n0xis-sources = { workspace = true }
 n0xis-core = { workspace = true }
 n0xis-project = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }
 
 [features]

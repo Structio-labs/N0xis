@@ -10,7 +10,7 @@
 
 use n0xis_arch::{SwitchDispatch, SwitchKind};
 use n0xis_contracts::Va;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Ctx;
 
@@ -26,17 +26,17 @@ pub const SWITCH_CASE_CONFIDENCE: f32 = 0.9;
 
 /// A switch dispatch with its cases resolved from memory (`cases` empty when
 /// the table base was unknown or unreadable). Embedded in the CFG artifact.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolvedSwitch {
     pub at: Va,
     /// `"mem-indexed"` or `"reg-rel32"`.
     pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<Va>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_reg: Option<String>,
     pub scale: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound: Option<u64>,
     /// Bytes per table entry (pointer width for mem-indexed, 4 for rel32).
     pub entry_size: u32,

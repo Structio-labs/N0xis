@@ -5,10 +5,10 @@
 //! register" or "reserve stack space" should leak into `n0xis-core`.
 
 use n0xis_contracts::Va;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// What the function's prolog reveals about its stack frame.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FrameInfo {
     /// Bytes reserved by a `sub rsp, imm` in the prolog (0 if none found).
     pub frame_size: u64,

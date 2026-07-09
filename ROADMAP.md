@@ -414,9 +414,41 @@ Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powe
   CLI-sharing contract, not just an in-memory convenience). 1/1 passing; zero warnings
   workspace-wide.
 
-## Phase 6 — Persistence, incremental, performance 🎯
+## Phase 6 — Persistence, incremental, performance 🎯 ⏳
+This phase bundles four independent sub-goals of very different weight (see the
+sequencing note below); ⏳ **artifact caching landed first** as the namesake
+"incremental" feature, the other three are still ⬜.
 - ⬜ `n0xis-project` analysis DB as versioned truth (names/types/comments/patches).
-- ⬜ `PassManager` artifact caching + incremental recompute (don't rebuild IR per call).
+- ✅ **`PassManager` artifact caching + incremental recompute** (don't rebuild IR per
+  call) — the hard part of this phase, since correctness under cache invalidation is
+  one of the two hard problems in CS. Solved with **content-addressed caching**
+  instead of dependency tracking: `n0xis-pipeline::cfg_cached` hashes the source's
+  label + `CfgInput` + **the actual bytes `CfgPass` would decode** (read once, up
+  front) into the cache key, so the cache can never silently hand back a stale
+  artifact — if the bytes at that address changed since the last call (self-modifying
+  code, a hot-patched function, a redeployed DLL), the hash changes and it's a miss,
+  never a wrong hit (CONCEPT §3 rule 6: never silently give stale data). Storage:
+  `n0xis-project::ir_cache` (`.n0x/ir-cache/<hash>.json`, raw-string get/put/clear,
+  same storage-only split as `selection`/`session`/`table` — it doesn't know what an
+  artifact *is*, keeping `n0xis-core` types out of `n0xis-project`). Required adding
+  `Deserialize` to `CfgArtifact`'s whole type chain (`CfgBlock`/`IrInsn`/`DefUse`/
+  `Callsite`/`Successor`/`CfgStats`, plus `n0xis-arch::{InsnKind,FrameInfo}` and
+  `n0xis-core::switch::ResolvedSwitch`) since until now every artifact only needed to
+  serialize *out* to JSON, never round-trip back. Wired into both frontends: CLI's
+  `ir build/explain/dot/slice` and `decomp pseudo` (`finish_ir`/`finish_slice`/
+  `finish_decomp` in `main.rs`), and MCP's `decomp_pseudo`/`explain_opt_delta`.
+  **Verified two ways**: an OS-free exit test
+  ([`crates/n0xis-pipeline/tests/phase6_exit.rs`](crates/n0xis-pipeline/tests/phase6_exit.rs))
+  proves miss→hit→invalidate-on-changed-bytes→hit-again against `Snapshot`, and a
+  manual run of the compiled `n0xis.exe` twice against itself as a static PE showed
+  the cache file's mtime *not* changing on the second call (byte-identical output,
+  proving it actually skipped recomputation, not just returned an equivalent value).
+  **Scoped out, documented follow-on**: `TracePass`/`ManifestPass`'s internal
+  per-candidate `CfgPass` calls stay uncached (caching lives at the frontend-facing
+  call sites, not inside pass-composes-pass internals — keeps `n0xis-core` free of
+  any cache-awareness); only `CfgPass` is cached so far, not every pass — mechanical
+  to extend (same `cfg_cache_key` shape, different `Out` type) once a second pass
+  actually needs it.
 - ⬜ Snapshot source (reproducible offline runs); `RemoteAgent` source over SSH/Tailscale.
 - ⬜ Perf pass on hot paths (manifest over large modules).
 

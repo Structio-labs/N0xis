@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use n0xis_arch::{DecodedInsn, FrameInfo, InsnKind};
 use n0xis_contracts::Va;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 use crate::{Ctx, CoreError, Pass};
@@ -46,7 +46,7 @@ impl CfgInput {
 }
 
 /// The CFG + def-use artifact (`n0xis.ir.cfg.v1`).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CfgArtifact {
     pub start: Va,
     pub end: Va,
@@ -56,14 +56,14 @@ pub struct CfgArtifact {
     pub callsites: Vec<Callsite>,
     /// Jump-table dispatches whose cases were resolved from memory (the
     /// live-source edge). Empty when the function has no recognized switch.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub switches: Vec<ResolvedSwitch>,
     /// What the prolog reveals about the stack frame (arch-recognized).
     pub frame: FrameInfo,
     pub stats: CfgStats,
 }
 
-#[derive(Clone, Debug, Serialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct CfgStats {
     pub returns: usize,
     pub calls: usize,
@@ -71,7 +71,7 @@ pub struct CfgStats {
     pub tail_calls: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CfgBlock {
     pub id: usize,
     pub start: Va,
@@ -83,14 +83,14 @@ pub struct CfgBlock {
     pub insns: Vec<IrInsn>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Successor {
     pub to: Va,
     pub kind: String,
     pub confidence: f32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IrInsn {
     pub va: Va,
     pub len: u8,
@@ -98,34 +98,34 @@ pub struct IrInsn {
     pub text: String,
     /// Flow classification (`seq` / `call` / `jump` / `cond_jump` / `ret` / …).
     pub flow: InsnKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Va>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_name: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writes: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub def_use: Vec<DefUse>,
 }
 
 /// A read of `reg` linked back to the instruction that last defined it in this
 /// block (the local def-use chain).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DefUse {
     pub reg: String,
     pub def_index: usize,
     pub def_addr: Va,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Callsite {
     pub from: Va,
     pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Va>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_name: Option<String>,
 }
 

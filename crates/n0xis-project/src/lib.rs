@@ -25,6 +25,7 @@
 //! ```
 
 pub mod dump;
+pub mod ir_cache;
 pub mod patch;
 pub mod selection;
 pub mod session;
@@ -81,6 +82,9 @@ impl ProjectRoot {
     }
     pub fn tables_dir(&self) -> PathBuf {
         self.dir.join("tables")
+    }
+    pub fn ir_cache_dir(&self) -> PathBuf {
+        self.dir.join("ir-cache")
     }
     pub fn shim_path(&self) -> PathBuf {
         self.dir.join(SHIM_NAME)

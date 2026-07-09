@@ -1,11 +1,11 @@
 //! Decoded-instruction data — the output of [`Arch::decode`](crate::Arch).
 
 use n0xis_contracts::Va;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
 /// Control-flow classification of a decoded instruction. Enough for CFG
 /// construction without re-deriving flow from the mnemonic in every pass.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InsnKind {
     /// Falls through to the next instruction.

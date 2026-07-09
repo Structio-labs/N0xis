@@ -17,7 +17,7 @@ use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
 use n0xis_core::{
-    build_trampoline, parse_aob, resolve_pointer_path, AobInput, AobScanPass, CfgInput, CfgPass,
+    build_trampoline, parse_aob, resolve_pointer_path, AobInput, AobScanPass, CfgInput,
     Ctx, DecompInput, DecompPass, DecompStyle, DiscoverInput, DiscoverPass, DissectInput,
     DissectPass, FilterCriterion, FilterInput, FilterPass, ManifestCandidate, ManifestInput,
     ManifestPass, Pass, PointerPathInput, PointerPathPass, PointerRoot, ProvenanceHit,
@@ -25,7 +25,7 @@ use n0xis_core::{
     StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueType, XrefDir, XrefInput,
     XrefPass,
 };
-use n0xis_pipeline::Pipeline;
+use n0xis_pipeline::{Pipeline, cfg_cached};
 use n0xis_sources::{
     LiveProcess, MemorySource, Snapshot, StaticPe, WatchKind, await_breakpoint_hit,
     await_watchpoint_hit, list_processes,
@@ -1151,8 +1151,8 @@ fn cmd_decomp(a: DecompArgs, pretty: bool) -> bool {
 }
 
 fn finish_decomp(ctx: &Ctx, input: CfgInput, style: DecompStyle, label: String, pretty: bool) -> bool {
-    let cfg = match CfgPass.run(ctx, input) {
-        Ok(a) => a,
+    let cfg = match cfg_cached(ctx, input) {
+        Ok((a, _cached)) => a,
         Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
     };
     match DecompPass.run(ctx, DecompInput { cfg, style }) {
@@ -1261,8 +1261,8 @@ fn scan_range(
 }
 
 fn finish_ir(ctx: &Ctx, input: CfgInput, view: IrView, label: String, pretty: bool) -> bool {
-    let art = match CfgPass.run(ctx, input) {
-        Ok(a) => a,
+    let art = match cfg_cached(ctx, input) {
+        Ok((a, _cached)) => a,
         Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
     };
     match view {
@@ -1296,8 +1296,8 @@ fn finish_slice(
     pretty: bool,
 ) -> bool {
     let start = input.start;
-    let art = match CfgPass.run(ctx, input) {
-        Ok(a) => a,
+    let art = match cfg_cached(ctx, input) {
+        Ok((a, _cached)) => a,
         Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
     };
     // Default the query point to the last decoded instruction.

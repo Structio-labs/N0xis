@@ -10,7 +10,7 @@
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
-    CfgInput, CfgPass, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass, DecompStyle,
+    CfgInput, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass, DecompStyle,
     DiscoverInput, DiscoverPass, Pass, ProvenanceHit, ProvenanceInput, ProvenancePass, TraceInput,
     TracePass, XrefDir, XrefInput, XrefPass, StringXrefInput, StringXrefPass,
 };
@@ -408,7 +408,7 @@ impl N0xisServer {
         let src = resolve_or_return!(a);
         let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
         let out = with_ctx(&src, |ctx| -> Result<_, String> {
-            let cfg = CfgPass.run(ctx, cfg_input).map_err(|e| e.to_string())?;
+            let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
             DecompPass.run(ctx, DecompInput { cfg, style }).map_err(|e| e.to_string())
         });
         match out {
@@ -432,7 +432,7 @@ impl N0xisServer {
         let src = resolve_or_return!(a);
         let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
         let out = with_ctx(&src, |ctx| -> Result<_, String> {
-            let cfg = CfgPass.run(ctx, cfg_input).map_err(|e| e.to_string())?;
+            let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
             DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa }).map_err(|e| e.to_string())
         });
         match out {
