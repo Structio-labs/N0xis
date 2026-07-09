@@ -148,42 +148,175 @@ Goal: match v0 on the boring-but-hard foundations, now behind clean seams.
   gating — v0's resolver is demonstrably less correct, so exact agreement is
   the wrong acceptance criterion; structural presence/absence still gates.
 
-## Phase 3 — Optimizing decompiler 🎯
+## Phase 3 — Optimizing decompiler 🎯 ✅
 Goal: the reason for the rewrite. Pseudo-C that reads like C. All as `n0xis-core` passes.
-- ⬜ **micro-IR lift** in `n0xis-arch::lift` — typed expr/stmt trees, flags modeled as values.
-- ⬜ **SSA construction** — dominance-frontier phi insertion + renaming → `n0xis.ir.ssa.v1`.
-- ⬜ **Propagation + folding** — copy/const/expression propagation, constant folding
-  → collapses `rax=f(); x=*(rax+8)` to `x=*(f()+8)`. Emits `n0xis.opt.delta.v1`.
-- ⬜ **DCE** — liveness-based removal of dead defs / spills / unused flag computations.
-- ⬜ **Control structuring** — port v0's dominator/loop/`if`/`while`/`for`/`do-while`/
-  `&&`/`||` reconstruction, now over the *optimized* IR.
-- ⬜ **Render** pseudo-C from optimized + structured IR. New style on `decomp pseudo`
-  (`--style ssa`), v0 `goto`/`structured` kept.
-- **Exit test:** on [`archive/docs-v0/Decompile.txt`](archive/docs-v0/Decompile.txt)
-  — no bare `rax`/`rcx` in the common path; loads resolved to named locals/fields;
-  conditions correct under intervening flag writes.
+- ✅ **micro-IR lift** — `n0xis-arch::microir` (`MicroExpr`/`MicroStmt`, flags modeled
+  as a real value under one variable namespace shared with registers) + `X64::lift`
+  covers the v0-parity mnemonic set (mov family, arithmetic, `lea`, `cmp`/`test`,
+  `push`/`pop`, `call`/`ret`) via `x64_lift.rs`. New seam `Arch::branch_condition`
+  turns a `Jcc` + whatever dataflow value reaches it for `"flags"` into an exact
+  condition — the key design move: **every** flag-touching instruction (not just
+  `cmp`/`test`) writes `"flags"`, so a later `Jcc` structurally cannot reuse a stale
+  compare across an intervening flag-setter (v0's exact bug) — it gets a Win64-clobber
+  invalidation after `call`s too (an accuracy gain over v0, which never modeled that).
+- ✅ **SSA construction** (`n0xis-core::SsaPass`, over a new `LiftPass`) — real
+  dominance-frontier phi insertion + Cytron-style renaming (shared `dom.rs`: forward
+  + post-dominators, dominance frontier, dom-tree, reused later by structuring).
+  `SsaBlock.condition` is synthesized once per block from the reaching `"flags"` SSA
+  value via `Arch::branch_condition` — structurally correct, not a heuristic.
+- ✅ **Propagation + folding + DCE** (`n0xis-core::OptimizePass`, one `n0xis.opt.delta.v1`
+  artifact per CONCEPT §6's grouping) — copy-prop (chases `x=y` chains and
+  same-valued phis), constant folding (typed, width-aware), and **expression
+  propagation**: a new `MicroExpr::Call` variant lets a single-use call result inline
+  directly into its sole consumer, collapsing `rax=f(); x=*(rax+8)` to `x=*(f()+8)`
+  exactly as specified — restricted to same-block/single-use/no intervening
+  `Call`/`Store` (the one place this pass is deliberately conservative: no alias
+  analysis yet to prove a `Load`/`Call` safe to reorder past a side effect). DCE never
+  removes `Call`/`Store` (only dead `Assign`/phi defs) — a call's side effect is never
+  assumed droppable just because its result went unused.
+- ✅ **Control structuring** (`n0xis-core::structure`) — ported v0's dominator/
+  post-dominator/natural-loop/`if`-`else`-with-`&&`/`||`-folding/`for`/`while`/
+  `do-while` recursive-descent emitter verbatim in shape, but driving it off
+  `SsaBlock`s (real per-block conditions, typed negation via `render::negate_condition`)
+  instead of v0's raw re-lifted instruction text + mutable "last compare". Falls back
+  to `goto` on anything irreducible, same as v0.
+- ✅ **Render** — `n0xis-core::render` (typed `MicroExpr`/`MicroStmt` → pseudo-C text,
+  shared by all three styles) + `DecompPass` orchestrator. `decomp pseudo --style
+  goto|structured|ssa` on `n0xis-cli` (the command didn't exist in v1 yet — added
+  here): `goto` = flat labeled blocks over SSA (no structuring/optimization); `structured`
+  = control-structured over SSA (no optimization); `ssa` = structured + optimized (the
+  main). All three already get exact per-branch conditions — that correctness fix
+  isn't gated behind `--style ssa`, only the expression-collapsing prettification is.
+  Reuses the v0 schema `n0x.decomp.pseudo.v1` (additive style, not a new capability).
+- ✅ **Exit test** — [`crates/n0xis-core/tests/phase3_exit.rs`](crates/n0xis-core/tests/phase3_exit.rs).
+  The original binary behind [`archive/docs-v0/Decompile.txt`](archive/docs-v0/Decompile.txt)
+  isn't in the repo, so this reconstructs its motivating shape as synthetic x64 (a call
+  result whose fields get read twice at `+0x68`/`+0x6C`, exactly like the transcript,
+  plus a branch separated from its guard by another flag-touching instruction across a
+  real block boundary) and asserts against the real `n0xis-cli` pipeline: no bare
+  (un-versioned) `rax`/`rcx`/`rdx` anywhere in the rendered body, the call site inlined/
+  named, and the cross-block stale-compare case rendering an honest placeholder instead
+  of a wrong reused condition. Verified end-to-end on `n0xis.exe` itself too (`decomp
+  pseudo --file`): `ssa` style correctly DCE'd a prologue/epilogue `rsp` adjustment pair
+  that cancels out and is never observed, which `goto`/`structured` show un-optimized.
 
-## Phase 4 — Types & signatures 🎯
+## Phase 4 — Types & signatures 🎯 ✅
 Goal: kill blanket `uint64_t` / `local_XX` / fixed 4-arg `void` signatures.
-- ⬜ Stack-slot coalescing into named locals; size/signedness inference from access +
-  branch context.
-- ⬜ Struct/field recovery (`state->count` instead of `*(uint32_t*)(rax+0x68)`).
-- ⬜ Real arity + return-type recovery; type propagation across calls.
-- ⬜ Known-API signature library (Win32 + CRT) feeding argument types + names.
-- ⬜ C++/Rust symbol demangling.
-- **Exit test:** recovered signatures + named fields on a labeled sample set.
+- ✅ **Stack-slot coalescing + struct/field recovery** — one `n0xis-core::TypeInferPass`
+  over the optimized SSA blocks (`typeinfer.rs`). Both recoveries key off the *same*
+  address shape (`Var(base) ± Const(offset)`, ported straight from `render.rs`'s own
+  local-recognition helper so the two can never disagree): a `rsp`/`rbp`-rooted base
+  coalesces every access at one offset into a single [`LocalVar`] (size = the widest
+  access seen, signed if *any* access was), sized/signed from access context exactly as
+  ROADMAP asked; any other named base gets a [`RecoveredType`] and renders as
+  `base->field_0x68` instead of raw pointer arithmetic. The struct case only fires on a
+  bare `Var + Const` address — precisely the shape that survives `OptimizePass` when a
+  pointer is dereferenced *more than once* (single-use pointers get inlined into their
+  sole consumer instead, per Phase 3), so it lines up exactly with what a human would
+  call "a struct pointer" without any threshold heuristics.
+- ✅ **Real arity + return-type recovery** — arity is exactly which of `rcx.0`/`rdx.0`/
+  `r8.0`/`r9.0` are ever read anywhere in the function (Win64 args are positional, so a
+  gap in the middle — e.g. `r8` used, `rdx` not — still yields arity 3, not 2: the ABI
+  can't skip a slot). Return type is `void` unless some `Return` carries something other
+  than the untouched entry `rax.0` — verified on real code in `n0xis.exe` itself (one
+  function correctly recovered as `sub_...(void)`, others as `uint32_t`/`uint64_t`
+  returns with narrower arity than the old fixed 4). Register-args only; stack-passed
+  args 5+ are an explicit documented follow-on (would need precise `rsp`-delta tracking
+  through `push`/`sub rsp,N` prologues, which Phase 3's lift deliberately doesn't model
+  yet — sound to defer rather than guess, CONCEPT §3 rule 6).
+- ✅ **Known-API signature library** (`signatures.rs`) — one small, extensible static
+  table (~30 common kernel32/CRT entries: `CreateFileW`, `VirtualAlloc`, `HeapAlloc`,
+  `malloc`/`memcpy`/`fopen`, …) keyed by bare function name. A matched call site trims
+  the generic 4-register arg dump to the real arity and names each argument inline
+  (`CreateFileW(/*lpFileName*/ rcx.0, /*dwDesiredAccess*/ rdx.0)`) and casts the result to
+  the known return type (`(HANDLE)CreateFileW(...)`) — "type propagation across calls,"
+  scoped to what's honestly knowable without a real type system.
+- ✅ **C++/Rust/MSVC demangling** (`demangle.rs`, new deps `rustc-demangle` +
+  `msvc-demangler` + `cpp_demangle` — verified none pull in windows/goblin, the
+  `n0xis-core` boundary test still holds) — tried in that order, falls through to the
+  original name unchanged on no match. Wired into `RenderNames::callee`: a genuinely
+  demangled C++/Rust name renders as-is (`Foo::bar<T>`, not C-identifier-sanitized, same
+  as real decompilers); a plain `module!function` import keeps the existing `__`
+  treatment.
+- ✅ **Exit test** — [`crates/n0xis-core/tests/phase4_exit.rs`](crates/n0xis-core/tests/phase4_exit.rs),
+  a synthetic labeled sample set (no existing labeled corpus in-repo, same gap Phase 3's
+  exit test hit): niladic `void` function, single-register-arg function, a
+  skipped-middle-register arity case, a local referenced at two sites staying one name,
+  a two-field struct pointer, and a known-API call site — each with ground truth known
+  by construction, checked against the real `CfgPass → SsaPass → OptimizePass →
+  TypeInferPass → DecompPass` pipeline. All pass; zero regressions across the 56 tests in
+  `n0xis-core` (up from Phase 3's 49) and zero warnings workspace-wide.
 
-## Phase 4b — Dynamic memory layer (a memory scanner class) 🎯
+## Phase 4b — Dynamic memory layer (a memory scanner class) 🎯 ✅
 Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9).
-- ⬜ Typed value scanning + iterative filtering (exact/unknown/increased/decreased/
-  changed/range) over `MemorySource`; pure scan/diff in `n0xis-core`.
-- ⬜ Pointer-path scanner (stable multi-level chains, ASLR-resilient rescan).
-- ⬜ AOB signature scanning with wildcards.
-- ⬜ Struct dissection (fused with Phase 4 type recovery).
-- ⬜ Freeze/write, code caves + detour/trampoline hooks (extends `patch`, persisted undo).
-- ⬜ Value-change watchpoints via hardware breakpoints.
-- ⬜ **`.n0xt` table format** (CONCEPT §10) in `n0xis-contracts`; `table *` CLI verbs.
-- **Exit test:** headless scan→filter→freeze loop on a live target, results saved to `.n0xt`.
+- ✅ **Typed value scanning + iterative filtering** — `n0xis-core::ScanPass`/`FilterPass`
+  (`scan.rs`): exact/in-range/unknown first scan, then increased/decreased/changed/
+  unchanged/exact/in-range rescan against the previous match set. Pure over the
+  `MemorySource` seam (region enumeration is the OS-specific part, stays in
+  `n0xis-sources`/`n0xis-cli`). `n0xis.scan.v1`.
+- ✅ **Pointer-path scanner** — `n0xis-core::PointerPathPass` (`pointer.rs`), built
+  *compositionally* on `ScanPass` rather than a bespoke reverse-pointer index:
+  "what points near X" **is** a value scan for X (± a plausible struct-offset window),
+  so each BFS level is one more `ScanPass` run. Terminates a chain once a hit lands in
+  a caller-supplied static root (a module's address range survives ASLR as
+  `module+offset`); `resolve_pointer_path` re-walks a discovered chain forward for the
+  "ASLR-resilient rescan" ROADMAP asks for. `n0xis.scan.pointer_path.v1`.
+- ✅ **AOB signature scanning** — `n0xis-core::AobScanPass` (`aob.rs`), `?`/`??`
+  wildcards. `n0xis.scan.aob.v1`.
+- ✅ **Struct dissection** — `n0xis-core::DissectPass` (`dissect.rs`): heuristically
+  types each slot of a *live* region from its runtime value's shape (resolves inside
+  mapped memory → pointer; plausible float; else integer; all-zero → padding), each
+  guess carrying a `confidence` rather than a bare assertion. The dynamic counterpart
+  to Phase 4's *static* struct/field recovery (`typeinfer.rs`), not yet fused (that
+  fusion is Phase 4c's provenance graph).
+- ✅ **`.n0xt` table format** (CONCEPT §10) — types in `n0xis-contracts::table` (a
+  wire contract like every other schema'd type, not project-local): `TableLocator`
+  (`Address` / `PointerPath` / `Aob`, increasing ASLR/patch resilience), the N0xis
+  superset (`Provenance`, `VerificationState` — both optional, unpopulated until
+  Phase 4c). Persistence in `n0xis-project::table` (`.n0x/tables/<name>.n0xt`, JSON),
+  mirroring the existing `selection`/`patch` storage-only split. Deliberately
+  **excludes** a memory scanner's scriptable enable/disable (arbitrary code execution in
+  the target — out of scope, `groups`/`hotkey` leave room to grow toward it later).
+- ✅ **Freeze + code caves + detour/trampoline hooks** — `table freeze` is a bounded
+  write-loop over the already-proven `LiveProcess::write`. Hooking is built to bound
+  risk: `LiveProcess::alloc_code_cave` (`VirtualAllocEx`, RWX) + a **pure**
+  `n0xis-core::build_trampoline` (`trampoline.rs`) that range-checks every `jmp rel32`
+  before ever producing bytes — refuses outright rather than writing a jump that would
+  silently wrap/miss — and `X64::decode_stream` finds a whole-instruction-aligned hook
+  length (never splits an instruction). The hook-site overwrite (the only *destructive*
+  part — the cave is fresh memory) goes through the existing `patch` journal, so it's
+  undo-able through the same record `patch apply` already produces. Verified live: the
+  range check correctly *refused* a cave `VirtualAllocEx` placed far from the hook site
+  rather than writing a corrupted jump — the safety property working as designed.
+- ✅ **Value-change watchpoints via hardware breakpoints** — `n0xis-sources::debug`
+  gains `await_watchpoint_hit`/`WatchKind` (Execute/Write/ReadOrWrite — x86 has no
+  hardware read-only mode, so the API doesn't invent one): arms DR0/DR7 across every
+  thread of the target (`CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)`), reuses the same
+  `WaitForDebugEvent`/RAII-guard shape as the Phase 2 software breakpoint, restores
+  every thread's original debug registers on drop. **Found and fixed a real Windows
+  FFI bug along the way**: `windows-sys`'s `CONTEXT` is `#[repr(C)]` with no explicit
+  16-byte alignment, but the kernel performs an aligned XMM save/restore into it during
+  `Get`/`SetThreadContext` — a stack-allocated `CONTEXT` can land under-aligned
+  depending on surrounding code and fault with `ERROR_NOACCESS` (998), intermittently
+  and call-site-dependently (this affected the *existing* Phase 2 software-breakpoint
+  path too, not just the new code — just hadn't manifested yet). Fixed with a
+  `#[repr(C, align(16))]` wrapper (`AlignedContext`) used at every `CONTEXT` site.
+  Verified live end-to-end on a real spawned process: the watchpoint fired on the
+  target's own write instruction, reporting the exact `rip` (`scan_target.exe+0x1862`)
+  and full register/stack state, and the target resumed running correctly afterward.
+- ✅ **Exit test** — [`crates/n0xis-pipeline/tests/phase4b_exit.rs`](crates/n0xis-pipeline/tests/phase4b_exit.rs)
+  (behind `--features live`, same opt-in-for-OS-tests convention as `n0xis-sources`
+  itself): spawns a real disposable process, writes a known value via the proven
+  `LiveProcess::write`, `ScanPass`-finds it, writes an increased value, `FilterPass`
+  narrows to exactly that address, persists the result as a real `.n0xt` file via
+  `n0xis-project::table`, reloads it from disk to prove persistence (not just
+  in-process state), then runs a bounded freeze loop and confirms the value stuck.
+  Passed 3/3 runs with no leaked processes. Additionally verified manually end-to-end
+  via the compiled CLI against a real running process: `scan value` (unknown) → `scan
+  filter` (increased) correctly narrowed 4 candidates to exactly the one live counter;
+  `scan dissect` correctly classified a real heap pointer (0.9 confidence) next to a
+  plain integer; `table add`/`table freeze` persisted and drove a real live write loop;
+  `debug watch` caught a real hardware trap.
 
 ## Phase 4c — Killer feature: Provenance-Driven Memory Intelligence 🎯
 Goal: fuse the two worlds (CONCEPT §11) — the core capability.

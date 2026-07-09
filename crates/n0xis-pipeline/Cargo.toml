@@ -15,3 +15,9 @@ n0xis-project = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+[features]
+# Exercises the real LiveProcess adapter in this crate's test suite (spawns a
+# real process) — opt-in, same reasoning as n0xis-sources itself: default
+# builds/tests stay OS-free.
+live = ["n0xis-sources/live"]

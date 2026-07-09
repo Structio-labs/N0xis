@@ -53,12 +53,27 @@ pub mod v1 {
     pub const PROJECT_INFO: &str = "n0xis.project.info.v1";
     /// Software-breakpoint hit report (`debug await-hit`).
     pub const DEBUG_AWAIT_HIT: &str = "n0xis.debug.await_hit.v1";
+    /// SSA form (`ir ssa`, ROADMAP Phase 3).
+    pub const IR_SSA: &str = "n0xis.ir.ssa.v1";
+    /// Per-pass optimization delta — the "explainable" artifact (`ir opt`,
+    /// Phase 3, KF-5); also inlined into `decomp pseudo --style ssa`.
+    pub const OPT_DELTA: &str = "n0xis.opt.delta.v1";
+    /// Typed value scan / rescan result (`scan value` / `scan filter`, Phase 4b).
+    pub const SCAN: &str = "n0xis.scan.v1";
+    /// AOB signature scan result (`scan aob`, Phase 4b).
+    pub const AOB_SCAN: &str = "n0xis.scan.aob.v1";
+    /// Pointer-path scan result (`scan pointer-path`, Phase 4b).
+    pub const POINTER_PATH: &str = "n0xis.scan.pointer_path.v1";
+    /// Struct dissection result (`scan dissect`, Phase 4b).
+    pub const DISSECT: &str = "n0xis.scan.dissect.v1";
+    /// A `.n0xt` table or entry (`table *`, CONCEPT §10, Phase 4b).
+    pub const TABLE: &str = "n0xis.table.v1";
+    /// Freeze-loop report (`table freeze`, Phase 4b).
+    pub const FREEZE: &str = "n0xis.freeze.v1";
+    /// Hardware-breakpoint watchpoint hit report (`debug watch`, Phase 4b).
+    pub const WATCHPOINT: &str = "n0xis.debug.watchpoint.v1";
 
     // --- reserved for the phases ahead (declared so the id is owned) ---
-    /// SSA form (ROADMAP Phase 3).
-    pub const IR_SSA: &str = "n0xis.ir.ssa.v1";
-    /// Per-pass optimization delta — the "explainable" artifact (Phase 3, KF-5).
-    pub const OPT_DELTA: &str = "n0xis.opt.delta.v1";
     /// Provenance graph — the principal (Phase 4c, KF-1).
     pub const PROVENANCE: &str = "n0xis.provenance.v1";
 }

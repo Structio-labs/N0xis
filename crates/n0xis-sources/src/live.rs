@@ -20,9 +20,10 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     Process32FirstW, Process32NextW, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_FREE, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, MEM_RESERVE, MEMORY_BASIC_INFORMATION,
-    PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_GUARD,
-    PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, VirtualProtectEx, VirtualQueryEx,
+    MEM_COMMIT, MEM_FREE, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, MEM_RELEASE, MEM_RESERVE,
+    MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+    PAGE_EXECUTE_WRITECOPY, PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE,
+    PAGE_WRITECOPY, VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, VirtualQueryEx,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
@@ -203,6 +204,31 @@ impl LiveProcess {
             addr = next;
         }
         out
+    }
+
+    /// Allocate `size` bytes of `RWX` memory in the target — a "code cave"
+    /// for a detour/trampoline hook (ROADMAP Phase 4b). The OS picks the
+    /// address (no `lpAddress` hint): on 64-bit Windows this is *usually*
+    /// within a `jmp rel32`'s reach of a nearby module, but never guaranteed
+    /// — `build_trampoline`-style callers must still range-check before
+    /// writing a near jump, not assume proximity.
+    pub fn alloc_code_cave(&self, size: usize) -> Result<Va, SourceError> {
+        let addr = unsafe {
+            VirtualAllocEx(self.handle, std::ptr::null(), size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
+        };
+        if addr.is_null() {
+            return Err(SourceError::Os(format!("VirtualAllocEx(size={size}) failed (GLE {})", unsafe { GetLastError() })));
+        }
+        Ok(Va(addr as u64))
+    }
+
+    /// Release a previously allocated code cave.
+    pub fn free_code_cave(&self, addr: Va) -> Result<(), SourceError> {
+        let ok = unsafe { VirtualFreeEx(self.handle, addr.0 as *mut c_void, 0, MEM_RELEASE) };
+        if ok == 0 {
+            return Err(SourceError::Os(format!("VirtualFreeEx({addr}) failed (GLE {})", unsafe { GetLastError() })));
+        }
+        Ok(())
     }
 
     /// Query the committed region covering `va`, if any (base, size, protect).

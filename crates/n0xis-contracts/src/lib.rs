@@ -16,9 +16,11 @@
 
 pub mod envelope;
 pub mod schema;
+pub mod table;
 pub mod types;
 
 pub use envelope::{ErrorBody, Failure, Meta, Response, Success};
+pub use table::{Provenance, Table, TableEntry, TableLocator, TableValueType, VerificationState};
 pub use types::{Module, Reg, SymKind, Symbol, Va};
 
 /// Brand token used in every `meta.tool` field. See naming policy in CONCEPT §12.

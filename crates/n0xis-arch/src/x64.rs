@@ -309,6 +309,14 @@ impl Arch for X64 {
         access
     }
 
+    fn lift(&self, insn: &DecodedInsn) -> Vec<crate::MicroStmt> {
+        crate::x64_lift::lift(self, insn)
+    }
+
+    fn branch_condition(&self, mnemonic: &str, flags_value: &crate::MicroExpr) -> crate::MicroExpr {
+        crate::x64_lift::branch_condition(mnemonic, flags_value)
+    }
+
     fn normalize_reg(&self, reg: &str) -> String {
         normalize_reg_x64(reg)
     }

@@ -1,0 +1,390 @@
+//! Typed-expression → pseudo-C text. Shared by every `decomp pseudo` style
+//! (`goto` / `structured` / `ssa`) — they differ in *which* IR they render
+//! (raw lift, SSA, or SSA+optimized) and whether a structuring pass ran, not
+//! in how a [`MicroExpr`] becomes text. One renderer, one place bugs get
+//! fixed (CONCEPT §3 rule 3).
+
+use std::collections::HashMap;
+
+use n0xis_arch::{BinOp, CallTarget, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
+use n0xis_contracts::Va;
+
+use crate::demangle::demangle;
+use crate::ir::Callsite;
+use crate::signatures::{known_signature, KnownSignature};
+use crate::typeinfer::TypeArtifact;
+
+/// Resolves a call target address to a human name, when known (from the
+/// function's own `CfgArtifact::callsites`, which already went through the
+/// symbol seam — the renderer itself never touches `Ctx`), plus (Phase 4)
+/// recovered locals/struct fields and whether the function is `void`. All
+/// optional: a `RenderNames` with no [`Self::with_types`] call behaves
+/// exactly as it did before Phase 4 (ad hoc `local_XX` naming, generic
+/// `*(type*)(addr)` field access, `return rax;` always shown).
+pub struct RenderNames {
+    callee_names: HashMap<u64, String>,
+    locals: HashMap<i64, String>,
+    structs: HashMap<String, ()>,
+    void_return: bool,
+}
+
+impl RenderNames {
+    pub fn new(callsites: &[Callsite]) -> Self {
+        let callee_names = callsites
+            .iter()
+            .filter_map(|c| Some((c.target?.get(), c.target_name.clone()?)))
+            .collect();
+        RenderNames { callee_names, locals: HashMap::new(), structs: HashMap::new(), void_return: false }
+    }
+
+    /// Enrich with Phase 4's recovered locals/struct-fields/signature.
+    pub fn with_types(mut self, types: &TypeArtifact) -> Self {
+        self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
+        self.structs = types.structs.iter().map(|s| (s.base_var.clone(), ())).collect();
+        self.void_return = types.signature.ret.is_none();
+        self
+    }
+
+    fn callee(&self, va: Va) -> String {
+        match self.callee_names.get(&va.get()) {
+            Some(name) => {
+                // A demangled C++/Rust name (`Foo::bar<T>`) is shown as-is —
+                // real decompilers don't C-identifier-sanitize these, and
+                // doing so would throw away the readability win. Only a
+                // plain `module!function` import name gets the identifier-
+                // safe `!` -> `__` treatment.
+                let demangled = demangle(name);
+                if demangled != *name { demangled } else { mangle_call_name(name) }
+            }
+            None => format!("sub_{:x}", va.get()),
+        }
+    }
+
+    /// The known-API signature for a direct call target, if its resolved
+    /// name (bare, `module!` prefix stripped) is in the signature library.
+    fn known_sig_for(&self, va: Va) -> Option<&'static KnownSignature> {
+        let name = self.callee_names.get(&va.get())?;
+        let bare = name.rsplit('!').next().unwrap_or(name);
+        known_signature(bare)
+    }
+}
+
+/// `kernel32!CreateFileW` -> `kernel32__CreateFileW` (a valid C identifier).
+fn mangle_call_name(name: &str) -> String {
+    name.replace('!', "__")
+}
+
+pub(crate) fn c_type(bits: n0xis_arch::Bits, signed: bool) -> &'static str {
+    match (bits, signed) {
+        (1 | 8, false) => "uint8_t",
+        (1 | 8, true) => "int8_t",
+        (16, false) => "uint16_t",
+        (16, true) => "int16_t",
+        (32, false) => "uint32_t",
+        (32, true) => "int32_t",
+        (64, true) => "int64_t",
+        _ => "uint64_t",
+    }
+}
+
+/// A pre-SSA or post-SSA variable name is "the flags bookkeeping var" if it's
+/// `"flags"` with an optional `.N` version suffix stripped.
+fn is_flags_var(name: &str) -> bool {
+    name.split('.').next() == Some(FLAGS_VAR)
+}
+
+/// Recognize `base + k` (or bare `base`), the one address shape stack locals
+/// and struct fields both key off (see `typeinfer.rs::as_base_offset`, the
+/// same pattern by construction — single source of truth for what counts as
+/// "nameable").
+fn as_base_offset(addr: &MicroExpr) -> Option<(&str, i128)> {
+    match addr {
+        MicroExpr::Var(name) => Some((name.as_str(), 0)),
+        MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {
+            (MicroExpr::Var(name), MicroExpr::Const { value, .. }) => Some((name.as_str(), *value)),
+            (MicroExpr::Const { value, .. }, MicroExpr::Var(name)) => Some((name.as_str(), *value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_stack_root(root: &str) -> bool {
+    root == "rsp" || root == "rbp"
+}
+
+/// The display text for a `Load`/`Store` address when it resolves to a named
+/// local (`local_18`) or a recovered struct field (`base->field_0x68`) —
+/// `None` if the address doesn't match that shape at all, in which case the
+/// caller falls back to the generic `*(type*)(addr)` rendering. Stack-local
+/// naming works even without [`RenderNames::with_types`] (same ad hoc
+/// `local_XX` scheme `typeinfer.rs` also produces, so the two never
+/// disagree); struct-field naming only fires once [`TypeArtifact`] recovered
+/// that base pointer.
+fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> {
+    let (base, offset) = as_base_offset(addr)?;
+    let root = base.split('.').next().unwrap_or(base);
+    if is_stack_root(root) {
+        let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| format!("local_{:x}", offset.unsigned_abs()));
+        return Some(name);
+    }
+    if names.structs.contains_key(base) {
+        return Some(if offset == 0 { format!("*{base}") } else { format!("{base}->field_0x{offset:x}") });
+    }
+    None
+}
+
+fn render_const(value: i128, bits: n0xis_arch::Bits) -> String {
+    if value < 0 {
+        format!("-0x{:x}", value.unsigned_abs())
+    } else {
+        let mask = if bits == 0 || bits >= 128 { u128::MAX } else { (1u128 << bits) - 1 };
+        format!("0x{:x}", (value as u128) & mask)
+    }
+}
+
+fn cmp_op_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Ult => "< /*u*/",
+        BinOp::Ule => "<= /*u*/",
+        BinOp::Ugt => "> /*u*/",
+        BinOp::Uge => ">= /*u*/",
+        BinOp::Slt => "<",
+        BinOp::Sle => "<=",
+        BinOp::Sgt => ">",
+        BinOp::Sge => ">=",
+        _ => "?",
+    }
+}
+
+fn bin_op_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::UDiv | BinOp::SDiv => "/",
+        BinOp::UMod | BinOp::SMod => "%",
+        BinOp::And => "&",
+        BinOp::Or => "|",
+        BinOp::Xor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr | BinOp::Sar => ">>",
+        _ => cmp_op_text(op),
+    }
+}
+
+fn is_comparison(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Ult | BinOp::Ule | BinOp::Ugt | BinOp::Uge | BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge
+    )
+}
+
+pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
+    match e {
+        MicroExpr::Const { value, bits } => render_const(*value, *bits),
+        MicroExpr::Var(name) => name.clone(),
+        MicroExpr::Load { addr, bits, signed } => {
+            if let Some(text) = field_or_local_text(addr, names) {
+                return text;
+            }
+            format!("*({}*)({})", c_type(*bits, *signed), render_expr(addr, names))
+        }
+        MicroExpr::Unary(UnOp::Neg, v) => format!("-{}", render_expr(v, names)),
+        MicroExpr::Unary(UnOp::Not, v) => format!("~{}", render_expr(v, names)),
+        MicroExpr::Binary(op, l, r) => {
+            format!("({} {} {})", render_expr(l, names), bin_op_text(*op), render_expr(r, names))
+        }
+        MicroExpr::Cast { signed, bits, expr } => format!("({}){}", c_type(*bits, *signed), render_expr(expr, names)),
+        MicroExpr::AddrOf(inner) => match inner.as_ref() {
+            MicroExpr::Const { value, .. } => format!("(void*)0x{:x}", *value as u64),
+            other => format!("&{}", render_expr(other, names)),
+        },
+        MicroExpr::Compare { kind, lhs, rhs } => {
+            // Only reachable if a Compare survives un-consumed by
+            // `Arch::branch_condition` (e.g. a dead flags def) — a sound
+            // fallback, not the normal rendering path for a condition.
+            format!("/*{:?}({}, {})*/", kind, render_expr(lhs, names), render_expr(rhs, names))
+        }
+        MicroExpr::OpaqueFlags { mnemonic } => format!("/*flags after {mnemonic}*/"),
+        MicroExpr::Call { target, args } => render_call(target, args, names),
+        MicroExpr::Unknown(s) => format!("/*{s}*/"),
+    }
+}
+
+/// Renders a call (direct or indirect), consulting the known-signature
+/// library (Phase 4) to trim the generic 4-register arg list down to the
+/// real arity and name each argument inline, and to cast the result to a
+/// known return type (`(HANDLE)CreateFileW(...)`) when known. Falls back to
+/// the plain 4-arg rendering when the callee isn't in the library — sound,
+/// just less pretty.
+fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> String {
+    let callee = match target {
+        CallTarget::Direct { va } => names.callee(*va),
+        CallTarget::Indirect(t) => format!("(*{})", render_expr(t, names)),
+    };
+    let known = match target {
+        CallTarget::Direct { va } => names.known_sig_for(*va),
+        CallTarget::Indirect(_) => None,
+    };
+    let args_text = match known {
+        Some(sig) => {
+            let n = sig.params.len().min(args.len());
+            args[..n]
+                .iter()
+                .zip(sig.params.iter())
+                .map(|(a, p)| format!("/*{}*/ {}", p.name, render_expr(a, names)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        None => args.iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", "),
+    };
+    let call = format!("{callee}({args_text})");
+    match known.and_then(|s| s.ret) {
+        Some(type_name) => format!("({type_name}){call}"),
+        None => call,
+    }
+}
+
+/// The exact condition text for a `cjmp` block's terminator. `is_comparison`
+/// determines whether extra parens are needed; kept simple since
+/// `render_expr` already wraps every `Binary`.
+pub fn render_condition(e: &MicroExpr, names: &RenderNames) -> String {
+    render_expr(e, names)
+}
+
+/// A statement that's pure bookkeeping for soundness (flags dataflow,
+/// call-clobber invalidation) and not something a human wrote — dropped from
+/// the *text* rendering only; the underlying artifact still carries it for
+/// anyone inspecting the JSON.
+fn is_noise(stmt: &MicroStmt) -> bool {
+    match stmt {
+        MicroStmt::Assign { dst, value } => {
+            is_flags_var(dst) || matches!(value, MicroExpr::Unknown(s) if s == "call-clobbered")
+        }
+        MicroStmt::Nop => true,
+        _ => false,
+    }
+}
+
+/// Render one statement to a pseudo-C line, or `None` if it's noise / a nop.
+pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
+    if is_noise(stmt) {
+        return None;
+    }
+    Some(match stmt {
+        MicroStmt::Assign { dst, value } => format!("{dst} = {};", render_expr(value, names)),
+        MicroStmt::Store { addr, value, bits } => {
+            if let Some(text) = field_or_local_text(addr, names) {
+                format!("{text} = {};", render_expr(value, names))
+            } else {
+                format!("*({}*)({}) = {};", c_type(*bits, false), render_expr(addr, names), render_expr(value, names))
+            }
+        }
+        MicroStmt::Call { target, args, ret } => {
+            let call = render_call(target, args, names);
+            match ret {
+                Some(r) => format!("{r} = {call};"),
+                None => format!("{call};"),
+            }
+        }
+        MicroStmt::Return(Some(e)) => {
+            // A `void` function's `ret` still reads `rax` (our lift always
+            // models it that way — see x64_lift.rs), but if `rax` was never
+            // otherwise defined, that's the *untouched entry value*, not a
+            // real return value: `TypeInferPass` marks the signature `void`
+            // in exactly that case, so drop the meaningless `return rax.0;`.
+            if names.void_return && matches!(e, MicroExpr::Var(n) if n == "rax.0") {
+                "return;".to_string()
+            } else {
+                format!("return {};", render_expr(e, names))
+            }
+        }
+        MicroStmt::Return(None) => "return;".to_string(),
+        MicroStmt::Nop => return None,
+        MicroStmt::Unlifted { text, .. } => format!("// asm: {text}"),
+    })
+}
+
+/// Structural negation of an already-rendered condition *expression* (not
+/// text) — used by the structuring pass when it needs `!cond` for a
+/// `while`/`do-while` whose natural exit arm is the "true" edge. Negating the
+/// typed expression (rather than string-munging rendered text, as v0 did)
+/// means the result renders through the exact same `render_expr` path.
+pub fn negate_condition(e: &MicroExpr) -> MicroExpr {
+    match e {
+        MicroExpr::Binary(op, l, r) if is_comparison(*op) => {
+            let negated = match *op {
+                BinOp::Eq => BinOp::Ne,
+                BinOp::Ne => BinOp::Eq,
+                BinOp::Ult => BinOp::Uge,
+                BinOp::Uge => BinOp::Ult,
+                BinOp::Ule => BinOp::Ugt,
+                BinOp::Ugt => BinOp::Ule,
+                BinOp::Slt => BinOp::Sge,
+                BinOp::Sge => BinOp::Slt,
+                BinOp::Sle => BinOp::Sgt,
+                BinOp::Sgt => BinOp::Sle,
+                other => other,
+            };
+            MicroExpr::Binary(negated, l.clone(), r.clone())
+        }
+        other => MicroExpr::Unary(UnOp::Not, Box::new(other.clone())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_a_field_load_through_a_call_result() {
+        let names = RenderNames::new(&[]);
+        let expr = MicroExpr::load(
+            MicroExpr::binary(
+                BinOp::Add,
+                MicroExpr::Call { target: CallTarget::Direct { va: Va(0x1000) }, args: vec![] },
+                MicroExpr::constant(0x68, 64),
+            ),
+            32,
+            false,
+        );
+        assert_eq!(render_expr(&expr, &names), "*(uint32_t*)((sub_1000() + 0x68))");
+    }
+
+    #[test]
+    fn stack_relative_load_renders_as_a_local() {
+        let names = RenderNames::new(&[]);
+        let expr = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)), 64, false);
+        assert_eq!(render_expr(&expr, &names), "local_20");
+    }
+
+    #[test]
+    fn a_known_win32_call_gets_named_trimmed_args_and_a_typed_cast() {
+        let callsites = vec![Callsite {
+            from: Va(0x2000),
+            kind: "named".to_string(),
+            target: Some(Va(0x3000)),
+            target_name: Some("kernel32!CloseHandle".to_string()),
+        }];
+        let names = RenderNames::new(&callsites);
+        // The lift always passes all 4 register slots positionally;
+        // `CloseHandle` only takes one — the extra 3 must be trimmed, not
+        // shown as noise, and the known `HANDLE` param should be named.
+        let call = MicroExpr::Call {
+            target: CallTarget::Direct { va: Va(0x3000) },
+            args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
+        };
+        let text = render_expr(&call, &names);
+        assert_eq!(text, "(BOOL)kernel32__CloseHandle(/*hObject*/ rcx.0)");
+    }
+
+    #[test]
+    fn negate_flips_the_comparison_operator() {
+        let cond = MicroExpr::binary(BinOp::Eq, MicroExpr::var("rcx"), MicroExpr::constant(0, 64));
+        let negated = negate_condition(&cond);
+        assert_eq!(negated, MicroExpr::binary(BinOp::Ne, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)));
+    }
+}

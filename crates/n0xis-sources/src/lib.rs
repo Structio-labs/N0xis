@@ -29,7 +29,7 @@ pub use live::{LiveProcess, MemRegion, ProcInfo, list_processes};
 #[cfg(feature = "live")]
 mod debug;
 #[cfg(feature = "live")]
-pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, await_breakpoint_hit};
+pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, WatchKind, await_breakpoint_hit, await_watchpoint_hit};
 
 use n0xis_contracts::{Module, Symbol, Va};
 

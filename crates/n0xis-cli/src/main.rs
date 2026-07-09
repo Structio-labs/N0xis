@@ -12,16 +12,23 @@
 
 mod emit;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
+use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
 use n0xis_core::{
-    CfgInput, CfgPass, Ctx, DiscoverInput, DiscoverPass, ManifestCandidate, ManifestInput,
-    ManifestPass, Pass, StringXrefInput, StringXrefPass, TraceInput, TracePass, XrefDir,
-    XrefInput, XrefPass,
+    build_trampoline, parse_aob, resolve_pointer_path, AobInput, AobScanPass, CfgInput, CfgPass,
+    Ctx, DecompInput, DecompPass, DecompStyle, DiscoverInput, DiscoverPass, DissectInput,
+    DissectPass, FilterCriterion, FilterInput, FilterPass, ManifestCandidate, ManifestInput,
+    ManifestPass, Pass, PointerPathInput, PointerPathPass, PointerRoot, ScanCriterion, ScanInput,
+    ScanPass, ScanValue, StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueType,
+    XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::Pipeline;
-use n0xis_sources::{LiveProcess, MemorySource, Snapshot, StaticPe, await_breakpoint_hit, list_processes};
+use n0xis_sources::{
+    LiveProcess, MemorySource, Snapshot, StaticPe, WatchKind, await_breakpoint_hit,
+    await_watchpoint_hit, list_processes,
+};
 use serde_json::json;
 
 use emit::emit;
@@ -74,6 +81,9 @@ enum Command {
     /// Function-level analysis.
     #[command(subcommand)]
     Function(FunctionCmd),
+    /// Pseudo-C decompilation.
+    #[command(subcommand)]
+    Decomp(DecompCmd),
     /// Cross-references.
     #[command(subcommand)]
     Xref(XrefCmd),
@@ -89,15 +99,63 @@ enum Command {
     /// Persistent artifact store under `.n0x/dumps/<kind>/`.
     #[command(subcommand)]
     Dump(DumpCmd),
-    /// Live execution control (software breakpoints).
+    /// Live execution control (software + hardware breakpoints).
     #[command(subcommand)]
     Debug(DebugCmd),
+    /// Typed value/AOB/pointer-path scanning + struct dissection (a memory scanner class).
+    #[command(subcommand)]
+    Scan(ScanCmd),
+    /// `.n0xt` cheat/analysis tables.
+    #[command(subcommand)]
+    Table(TableCmd),
 }
 
 #[derive(Subcommand)]
 enum DebugCmd {
     /// Arm a software breakpoint and block until it fires (or times out).
     AwaitHit(DebugAwaitHitArgs),
+    /// Arm a hardware watchpoint (data read/write, or execute) and block
+    /// until it fires (or times out) — no code byte is ever patched.
+    Watch(DebugWatchArgs),
+}
+
+#[derive(Args)]
+struct DebugWatchArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Address to watch (hex `0x…`). Absolute VA, unless `--addr-rva`.
+    #[arg(long)]
+    addr: String,
+    #[arg(long)]
+    addr_rva: bool,
+    /// What to trap on. There is no hardware "read-only" mode on x86 — only
+    /// `write` or `read-or-write`.
+    #[arg(long, value_enum, default_value_t = WatchKindArg::Write)]
+    kind: WatchKindArg,
+    /// Watch width in bytes: 1, 2, 4, or 8. `addr` must be aligned to it.
+    #[arg(long, default_value_t = 4)]
+    len: u8,
+    #[arg(long, default_value_t = 30000)]
+    timeout_ms: u64,
+    #[arg(long, default_value_t = 16)]
+    stack_qwords: usize,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum WatchKindArg {
+    Execute,
+    Write,
+    ReadOrWrite,
+}
+
+impl From<WatchKindArg> for WatchKind {
+    fn from(k: WatchKindArg) -> Self {
+        match k {
+            WatchKindArg::Execute => WatchKind::Execute,
+            WatchKindArg::Write => WatchKind::Write,
+            WatchKindArg::ReadOrWrite => WatchKind::ReadOrWrite,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -257,6 +315,25 @@ enum PatchCmd {
     Show(PatchShowArgs),
     /// Restore the original bytes of a patch.
     Undo(PatchUndoArgs),
+    /// Install a detour/trampoline hook: allocate a code cave, relocate the
+    /// hook site's bytes into it with a jump back, redirect the hook site
+    /// into the cave. The hook-site overwrite is journaled like any other
+    /// `patch apply` (`patch undo` restores the original code); the cave
+    /// itself is not freed on undo (documented scope limit).
+    Detour(PatchDetourArgs),
+}
+
+#[derive(Args)]
+struct PatchDetourArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Address to hook (hex `0x…`).
+    #[arg(long)]
+    hook_at: String,
+    /// Cave size in bytes; must fit the relocated hook bytes + a 5-byte jump
+    /// back (the CLI reports the minimum needed if this is too small).
+    #[arg(long, default_value_t = 64)]
+    cave_size: usize,
 }
 
 #[derive(Args)]
@@ -452,6 +529,273 @@ struct IrSliceArgs {
     at: Option<String>,
 }
 
+#[derive(Subcommand)]
+enum DecompCmd {
+    /// Pseudo-C for one function (`n0x.decomp.pseudo.v1`).
+    Pseudo(DecompArgs),
+}
+
+#[derive(Args)]
+struct DecompArgs {
+    #[command(flatten)]
+    ir: IrArgs,
+    /// `goto` (flat + labels), `structured` (if/while, unoptimized), or
+    /// `ssa` (structured *and* optimized — the ROADMAP Phase 3 target style).
+    #[arg(long, value_enum, default_value_t = PseudoStyle::Ssa)]
+    style: PseudoStyle,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PseudoStyle {
+    Goto,
+    Structured,
+    Ssa,
+}
+
+impl From<PseudoStyle> for DecompStyle {
+    fn from(s: PseudoStyle) -> Self {
+        match s {
+            PseudoStyle::Goto => DecompStyle::Goto,
+            PseudoStyle::Structured => DecompStyle::Structured,
+            PseudoStyle::Ssa => DecompStyle::Ssa,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum ScanCmd {
+    /// First scan: find every address matching a criterion.
+    Value(ScanValueArgs),
+    /// Rescan: narrow a previous `scan value`/`scan filter` result
+    /// (loaded from a `--from` dump) by comparing new values to old.
+    Filter(ScanFilterArgs),
+    /// AOB (array-of-bytes) signature scan with `??` wildcards.
+    Aob(ScanAobArgs),
+    /// Find stable multi-level pointer chains resolving to an address.
+    PointerPath(PointerPathArgs),
+    /// Heuristically type each field of a live region (pointer/float/int).
+    Dissect(ScanDissectArgs),
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ValueTypeArg {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+}
+
+impl From<ValueTypeArg> for ValueType {
+    fn from(t: ValueTypeArg) -> Self {
+        match t {
+            ValueTypeArg::I8 => ValueType::I8,
+            ValueTypeArg::U8 => ValueType::U8,
+            ValueTypeArg::I16 => ValueType::I16,
+            ValueTypeArg::U16 => ValueType::U16,
+            ValueTypeArg::I32 => ValueType::I32,
+            ValueTypeArg::U32 => ValueType::U32,
+            ValueTypeArg::I64 => ValueType::I64,
+            ValueTypeArg::U64 => ValueType::U64,
+            ValueTypeArg::F32 => ValueType::F32,
+            ValueTypeArg::F64 => ValueType::F64,
+        }
+    }
+}
+
+impl From<ValueTypeArg> for TableValueType {
+    fn from(t: ValueTypeArg) -> Self {
+        match t {
+            ValueTypeArg::I8 => TableValueType::I8,
+            ValueTypeArg::U8 => TableValueType::U8,
+            ValueTypeArg::I16 => TableValueType::I16,
+            ValueTypeArg::U16 => TableValueType::U16,
+            ValueTypeArg::I32 => TableValueType::I32,
+            ValueTypeArg::U32 => TableValueType::U32,
+            ValueTypeArg::I64 => TableValueType::I64,
+            ValueTypeArg::U64 => TableValueType::U64,
+            ValueTypeArg::F32 => TableValueType::F32,
+            ValueTypeArg::F64 => TableValueType::F64,
+        }
+    }
+}
+
+#[derive(Args)]
+struct ScanRegionArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Region start (hex). Defaults, on `--pid`, to every committed
+    /// writable region (the a memory scanner-default scan set); required for `--file`.
+    #[arg(long)]
+    start: Option<String>,
+    /// Region size in bytes (paired with `--start`).
+    #[arg(long)]
+    size: Option<usize>,
+}
+
+#[derive(Args)]
+struct ScanValueArgs {
+    #[command(flatten)]
+    region: ScanRegionArgs,
+    #[arg(long, value_enum)]
+    r#type: ValueTypeArg,
+    /// `exact` (needs `--value`), `in-range` (needs `--min`/`--max`), or
+    /// `unknown` (record every value — the "unknown initial value" scan).
+    #[arg(long, default_value = "exact")]
+    criterion: String,
+    #[arg(long)]
+    value: Option<f64>,
+    #[arg(long)]
+    min: Option<f64>,
+    #[arg(long)]
+    max: Option<f64>,
+    /// Byte stride between candidates; defaults to the value's natural size.
+    #[arg(long)]
+    align: Option<usize>,
+    /// Save the result under `.n0x/dumps/scan/<name>.json` for `scan filter`
+    /// to rescan later.
+    #[arg(long)]
+    save_as: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct ScanFilterArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Name of a previous `scan value`/`scan filter` dump to narrow.
+    #[arg(long)]
+    from: String,
+    /// `exact` (needs `--value`), `increased`, `decreased`, `changed`,
+    /// `unchanged`, or `in-range` (needs `--min`/`--max`).
+    #[arg(long)]
+    criterion: String,
+    #[arg(long)]
+    value: Option<f64>,
+    #[arg(long)]
+    min: Option<f64>,
+    #[arg(long)]
+    max: Option<f64>,
+    #[arg(long)]
+    save_as: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct ScanAobArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    start: String,
+    #[arg(long)]
+    size: usize,
+    /// e.g. `"48 8B ?? 68"`.
+    #[arg(long)]
+    pattern: String,
+}
+
+#[derive(Args)]
+struct ScanDissectArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    start: String,
+    #[arg(long, default_value_t = 64)]
+    size: usize,
+}
+
+#[derive(Args)]
+struct PointerPathArgs {
+    #[arg(long)]
+    pid: u32,
+    /// The address to find pointer chains to (hex).
+    #[arg(long)]
+    target: String,
+    /// Module name to root chains in (its full address range is both the
+    /// search space and the stable anchor); repeatable.
+    #[arg(long = "module", required = true)]
+    modules: Vec<String>,
+    #[arg(long, default_value_t = 3)]
+    max_depth: usize,
+    #[arg(long, default_value_t = 0x1000)]
+    max_offset: u64,
+}
+
+#[derive(Subcommand)]
+enum TableCmd {
+    /// Add (or overwrite, by name) an entry with a fixed-address locator.
+    Add(TableAddArgs),
+    /// List table names, or one table's entries with `--table`.
+    List(TableListArgs),
+    /// Show one entry.
+    Show(TableShowArgs),
+    /// Remove one entry (or the whole table with `--whole-table`).
+    Rm(TableShowArgs),
+    /// Repeatedly write an entry's frozen value for a bounded duration.
+    Freeze(TableFreezeArgs),
+}
+
+#[derive(Args)]
+struct TableAddArgs {
+    #[arg(long)]
+    table: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    addr: String,
+    #[arg(long, value_enum)]
+    r#type: ValueTypeArg,
+    #[arg(long)]
+    description: Option<String>,
+}
+
+#[derive(Args)]
+struct TableListArgs {
+    #[arg(long)]
+    table: Option<String>,
+}
+
+#[derive(Args)]
+struct TableShowArgs {
+    #[arg(long)]
+    table: String,
+    #[arg(long)]
+    name: Option<String>,
+}
+
+#[derive(Args)]
+struct TableFreezeArgs {
+    #[arg(long)]
+    table: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    pid: u32,
+    /// Value to (re-)write every interval — defaults to the entry's stored
+    /// `freeze_value`.
+    #[arg(long)]
+    value: Option<f64>,
+    #[arg(long, default_value_t = 100)]
+    interval_ms: u64,
+    #[arg(long, default_value_t = 5000)]
+    duration_ms: u64,
+}
+
 #[derive(Args)]
 struct IrArgs {
     /// Function start address (hex `0x…`, `…h`, or decimal).
@@ -558,6 +902,7 @@ fn main() {
         Command::Ir(IrCmd::Manifest(a)) => cmd_ir_manifest(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Function(FunctionCmd::Trace(a)) => cmd_function_trace(a, pretty),
+        Command::Decomp(DecompCmd::Pseudo(a)) => cmd_decomp(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
         Command::Xref(XrefCmd::String(a)) => cmd_xref_string(a, pretty),
@@ -568,6 +913,17 @@ fn main() {
         Command::Selection(c) => cmd_selection(c, pretty),
         Command::Dump(c) => cmd_dump(c, pretty),
         Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
+        Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
+        Command::Scan(ScanCmd::Value(a)) => cmd_scan_value(a, pretty),
+        Command::Scan(ScanCmd::Filter(a)) => cmd_scan_filter(a, pretty),
+        Command::Scan(ScanCmd::Aob(a)) => cmd_scan_aob(a, pretty),
+        Command::Scan(ScanCmd::PointerPath(a)) => cmd_pointer_path(a, pretty),
+        Command::Scan(ScanCmd::Dissect(a)) => cmd_scan_dissect(a, pretty),
+        Command::Table(TableCmd::Add(a)) => cmd_table_add(a, pretty),
+        Command::Table(TableCmd::List(a)) => cmd_table_list(a, pretty),
+        Command::Table(TableCmd::Show(a)) => cmd_table_show(a, pretty),
+        Command::Table(TableCmd::Rm(a)) => cmd_table_rm(a, pretty),
+        Command::Table(TableCmd::Freeze(a)) => cmd_table_freeze(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -753,6 +1109,22 @@ fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
     run_ir(&a, pretty, |ctx, input, label| {
         finish_ir(ctx, input, view, label, pretty)
     })
+}
+
+fn cmd_decomp(a: DecompArgs, pretty: bool) -> bool {
+    let style: DecompStyle = a.style.into();
+    run_ir(&a.ir, pretty, move |ctx, input, label| finish_decomp(ctx, input, style, label, pretty))
+}
+
+fn finish_decomp(ctx: &Ctx, input: CfgInput, style: DecompStyle, label: String, pretty: bool) -> bool {
+    let cfg = match CfgPass.run(ctx, input) {
+        Ok(a) => a,
+        Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
+    };
+    match DecompPass.run(ctx, DecompInput { cfg, style }) {
+        Ok(pf) => emit(&Response::success(schema::v0::DECOMP_PSEUDO, pf).with_source(label), pretty),
+        Err(e) => ir_err("decomp-failed", &e.to_string(), pretty),
+    }
 }
 
 fn cmd_ir_slice(a: IrSliceArgs, pretty: bool) -> bool {
@@ -1233,6 +1605,7 @@ fn cmd_patch(cmd: PatchCmd, pretty: bool) -> bool {
             Err(e) => ir_err("patch-show-failed", &e.to_string(), pretty),
         },
         PatchCmd::Undo(a) => patch_undo(a, pretty),
+        PatchCmd::Detour(a) => patch_detour(a, pretty),
     }
 }
 
@@ -1699,6 +2072,563 @@ fn run_disasm(source: &dyn MemorySource, start: Va, count: usize, pretty: bool) 
             pretty,
         ),
     }
+}
+
+// ============================================================================
+// scan / pointer-path / aob / dissect (ROADMAP Phase 4b)
+// ============================================================================
+
+fn to_scan_value(v: f64) -> ScanValue {
+    if v.fract() == 0.0 && v.abs() < 9.2e18 { ScanValue::Int(v as i64) } else { ScanValue::Float(v) }
+}
+
+fn build_scan_criterion(name: &str, value: Option<f64>, min: Option<f64>, max: Option<f64>) -> Result<ScanCriterion, String> {
+    match name {
+        "exact" => Ok(ScanCriterion::Exact { value: to_scan_value(value.ok_or("exact criterion needs --value")?) }),
+        "in-range" | "inrange" => Ok(ScanCriterion::InRange {
+            min: to_scan_value(min.ok_or("in-range needs --min")?),
+            max: to_scan_value(max.ok_or("in-range needs --max")?),
+        }),
+        "unknown" => Ok(ScanCriterion::Unknown),
+        other => Err(format!("unknown scan criterion '{other}' (exact|in-range|unknown)")),
+    }
+}
+
+fn build_filter_criterion(name: &str, value: Option<f64>, min: Option<f64>, max: Option<f64>) -> Result<FilterCriterion, String> {
+    match name {
+        "exact" => Ok(FilterCriterion::Exact { value: to_scan_value(value.ok_or("exact needs --value")?) }),
+        "increased" => Ok(FilterCriterion::Increased),
+        "decreased" => Ok(FilterCriterion::Decreased),
+        "changed" => Ok(FilterCriterion::Changed),
+        "unchanged" => Ok(FilterCriterion::Unchanged),
+        "in-range" | "inrange" => Ok(FilterCriterion::InRange {
+            min: to_scan_value(min.ok_or("in-range needs --min")?),
+            max: to_scan_value(max.ok_or("in-range needs --max")?),
+        }),
+        other => Err(format!("unknown filter criterion '{other}' (exact|increased|decreased|changed|unchanged|in-range)")),
+    }
+}
+
+/// Committed regions worth scanning by default: readable+writable data, not
+/// the (usually huge, rarely value-bearing) read-only/executable code.
+fn is_scan_default_protect(p: &str) -> bool {
+    matches!(p, "rw-" | "rwx" | "rc-" | "rcx")
+}
+
+fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
+    if let Some(s) = start {
+        let va = Va::parse(s).map_err(|e| e.to_string())?;
+        let sz = size.ok_or("provide --size with --start")?;
+        return Ok(vec![(va, sz)]);
+    }
+    let regions: Vec<(Va, usize)> = live
+        .regions(1_000_000)
+        .into_iter()
+        .filter(|r| r.state == "commit" && is_scan_default_protect(&r.protect))
+        .map(|r| (r.base, r.size as usize))
+        .collect();
+    if regions.is_empty() {
+        return Err("no committed writable regions found (and no --start/--size given)".to_string());
+    }
+    Ok(regions)
+}
+
+fn cmd_scan_value(a: ScanValueArgs, pretty: bool) -> bool {
+    let value_type: ValueType = a.r#type.into();
+    let criterion = match build_scan_criterion(&a.criterion, a.value, a.min, a.max) {
+        Ok(c) => c,
+        Err(e) => return ir_err("bad-criterion", &e, pretty),
+    };
+    let align = a.align.unwrap_or_else(|| value_type.size());
+    let arch = X64::new();
+
+    if let Some(pid) = a.region.pid {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let regions = match resolve_scan_regions_live(&live, a.region.start.as_deref(), a.region.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
+        };
+        let label = live.label();
+        let ctx = Ctx::new(&live, &arch);
+        return finish_scan_value(&ctx, regions, value_type, criterion, align, label, &a.save_as, a.force, pretty);
+    }
+    if let Some(file) = a.region.file.as_deref() {
+        let pe = match StaticPe::load(std::path::Path::new(file)) {
+            Ok(p) => p,
+            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
+        };
+        let (Some(start_s), Some(size)) = (a.region.start.as_deref(), a.region.size) else {
+            return ir_err("missing-region", "provide --start and --size for --file", pretty);
+        };
+        let start = match Va::parse(start_s) {
+            Ok(v) => v,
+            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+        };
+        let label = pe.label();
+        let ctx = Ctx::new(&pe, &arch);
+        return finish_scan_value(&ctx, vec![(start, size)], value_type, criterion, align, label, &a.save_as, a.force, pretty);
+    }
+    ir_err("missing-source", "provide --pid or --file", pretty)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_scan_value(
+    ctx: &Ctx,
+    regions: Vec<(Va, usize)>,
+    value_type: ValueType,
+    criterion: ScanCriterion,
+    align: usize,
+    label: String,
+    save_as: &str,
+    force: bool,
+    pretty: bool,
+) -> bool {
+    let art = match ScanPass.run(ctx, ScanInput { regions, value_type, criterion, align }) {
+        Ok(a) => a,
+        Err(e) => return ir_err("scan-failed", &e.to_string(), pretty),
+    };
+    let bytes = serde_json::to_vec(&art).expect("ScanArtifact always serializes");
+    if let Err(e) = n0xis_project::dump::save(save_as, "scan", &bytes, force) {
+        return ir_err("save-failed", &e.to_string(), pretty);
+    }
+    emit(&Response::success(schema::v1::SCAN, art).with_source(label), pretty)
+}
+
+fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
+    let criterion = match build_filter_criterion(&a.criterion, a.value, a.min, a.max) {
+        Ok(c) => c,
+        Err(e) => return ir_err("bad-criterion", &e, pretty),
+    };
+    let prev_bytes = match n0xis_project::dump::show(&a.from, Some("scan")) {
+        Ok(d) => d.bytes,
+        Err(e) => return ir_err("no-scan", &e.to_string(), pretty),
+    };
+    let prev: n0xis_core::ScanArtifact = match serde_json::from_slice(&prev_bytes) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-scan-dump", &e.to_string(), pretty),
+    };
+    let arch = X64::new();
+
+    let (out, label) = if let Some(pid) = a.pid {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let ctx = Ctx::new(&live, &arch);
+        let out = FilterPass.run(&ctx, FilterInput { previous: prev.matches, value_type: prev.value_type, criterion });
+        (out, live.label())
+    } else if let Some(file) = a.file.as_deref() {
+        let pe = match StaticPe::load(std::path::Path::new(file)) {
+            Ok(p) => p,
+            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
+        };
+        let ctx = Ctx::new(&pe, &arch);
+        let out = FilterPass.run(&ctx, FilterInput { previous: prev.matches, value_type: prev.value_type, criterion });
+        (out, pe.label())
+    } else {
+        return ir_err("missing-source", "provide --pid or --file", pretty);
+    };
+    let out = match out {
+        Ok(o) => o,
+        Err(e) => return ir_err("filter-failed", &e.to_string(), pretty),
+    };
+    let bytes = serde_json::to_vec(&out).expect("ScanArtifact always serializes");
+    if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &bytes, a.force) {
+        return ir_err("save-failed", &e.to_string(), pretty);
+    }
+    emit(&Response::success(schema::v1::SCAN, out).with_source(label), pretty)
+}
+
+fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {
+    let start = match Va::parse(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let pattern = match parse_aob(&a.pattern) {
+        Ok(p) => p,
+        Err(e) => return ir_err("bad-pattern", &e, pretty),
+    };
+    let arch = X64::new();
+    if let Some(pid) = a.pid {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let label = live.label();
+        let ctx = Ctx::new(&live, &arch);
+        return match AobScanPass.run(&ctx, AobInput { start, size: a.size, pattern }) {
+            Ok(art) => emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty),
+            Err(e) => ir_err("aob-failed", &e.to_string(), pretty),
+        };
+    }
+    if let Some(file) = a.file.as_deref() {
+        let pe = match StaticPe::load(std::path::Path::new(file)) {
+            Ok(p) => p,
+            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
+        };
+        let label = pe.label();
+        let ctx = Ctx::new(&pe, &arch);
+        return match AobScanPass.run(&ctx, AobInput { start, size: a.size, pattern }) {
+            Ok(art) => emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty),
+            Err(e) => ir_err("aob-failed", &e.to_string(), pretty),
+        };
+    }
+    ir_err("missing-source", "provide --pid or --file", pretty)
+}
+
+fn cmd_scan_dissect(a: ScanDissectArgs, pretty: bool) -> bool {
+    let start = match Va::parse(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let arch = X64::new();
+    if let Some(pid) = a.pid {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let label = live.label();
+        let ctx = Ctx::new(&live, &arch);
+        return match DissectPass.run(&ctx, DissectInput { start, size: a.size }) {
+            Ok(art) => emit(&Response::success(schema::v1::DISSECT, art).with_source(label), pretty),
+            Err(e) => ir_err("dissect-failed", &e.to_string(), pretty),
+        };
+    }
+    if let Some(file) = a.file.as_deref() {
+        let pe = match StaticPe::load(std::path::Path::new(file)) {
+            Ok(p) => p,
+            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
+        };
+        let label = pe.label();
+        let ctx = Ctx::new(&pe, &arch);
+        return match DissectPass.run(&ctx, DissectInput { start, size: a.size }) {
+            Ok(art) => emit(&Response::success(schema::v1::DISSECT, art).with_source(label), pretty),
+            Err(e) => ir_err("dissect-failed", &e.to_string(), pretty),
+        };
+    }
+    ir_err("missing-source", "provide --pid or --file", pretty)
+}
+
+fn cmd_pointer_path(a: PointerPathArgs, pretty: bool) -> bool {
+    use n0xis_sources::ModuleProvider;
+    let target = match Va::parse(&a.target) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let mods = live.modules();
+    let mut roots = Vec::new();
+    for name in &a.modules {
+        let Some(m) = mods.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else {
+            return ir_err("no-module", &format!("no module named '{name}' in this process"), pretty);
+        };
+        roots.push(PointerRoot { label: m.name.clone(), start: m.base, size: m.size });
+    }
+    let search_regions: Vec<(Va, usize)> = live
+        .regions(1_000_000)
+        .into_iter()
+        .filter(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx" | "rc-" | "rcx" | "r--" | "r-x"))
+        .map(|r| (r.base, r.size as usize))
+        .collect();
+    let arch = X64::new();
+    let label = live.label();
+    let ctx = Ctx::new(&live, &arch);
+    match PointerPathPass.run(
+        &ctx,
+        PointerPathInput { target, search_regions, roots, max_depth: a.max_depth, max_offset: a.max_offset, pointer_size: 8 },
+    ) {
+        Ok(art) => emit(&Response::success(schema::v1::POINTER_PATH, art).with_source(label), pretty),
+        Err(e) => ir_err("pointer-path-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let module = live.main_module().cloned();
+    let label = live.label();
+    drop(live);
+
+    let watch_va = if a.addr_rva {
+        match &module {
+            Some(m) => m.base.offset(addr.0),
+            None => return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty),
+        }
+    } else {
+        addr
+    };
+    let kind: WatchKind = a.kind.into();
+    match await_watchpoint_hit(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref()) {
+        Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
+        Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
+    }
+}
+
+fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
+    use n0xis_arch::Arch;
+    use n0xis_project::patch as pj;
+
+    let hook_at = match Va::parse(&a.hook_at) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+
+    // Decode whole instructions until we've covered >= 5 bytes (a near jmp),
+    // so the hook never splits an instruction mid-way.
+    let arch = X64::new();
+    let probe = match live.read(hook_at, 32) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+    };
+    let insns = arch.decode_stream(&probe, hook_at, 16);
+    let mut hook_len = 0usize;
+    for ins in &insns {
+        if hook_len >= 5 {
+            break;
+        }
+        hook_len += ins.len as usize;
+    }
+    if hook_len < 5 || hook_len > probe.len() {
+        return ir_err("decode-failed", "could not decode >= 5 bytes of whole instructions at --hook-at", pretty);
+    }
+    let original = probe[..hook_len].to_vec();
+
+    let cave = match live.alloc_code_cave(a.cave_size) {
+        Ok(c) => c,
+        Err(e) => return ir_err("alloc-failed", &e.to_string(), pretty),
+    };
+    let (cave_bytes, hook_jmp) = match build_trampoline(&original, hook_at, cave) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = live.free_code_cave(cave);
+            return ir_err("trampoline-failed", &e, pretty);
+        }
+    };
+    if cave_bytes.len() > a.cave_size {
+        let _ = live.free_code_cave(cave);
+        return ir_err(
+            "cave-too-small",
+            &format!("need at least {} bytes for this hook, got --cave-size {}", cave_bytes.len(), a.cave_size),
+            pretty,
+        );
+    }
+    if let Err(e) = live.write(cave, &cave_bytes) {
+        let _ = live.free_code_cave(cave);
+        return ir_err("cave-write-failed", &e.to_string(), pretty);
+    }
+    // Only the hook-site overwrite is journaled: it's the destructive part
+    // (existing code replaced) and the only one `patch undo` needs to
+    // reverse. The cave is freshly allocated memory with no "original state."
+    if let Err(e) = live.write(hook_at, &hook_jmp) {
+        return ir_err("hook-write-failed", &e.to_string(), pretty);
+    }
+    match live.read(hook_at, hook_jmp.len()) {
+        Ok(after) if after == hook_jmp => {}
+        Ok(_) => return ir_err("verify-failed", "post-write hook bytes do not match", pretty),
+        Err(e) => return ir_err("verify-read-failed", &e.to_string(), pretty),
+    }
+
+    let rec = pj::PatchRecord {
+        id: pj::new_patch_id(),
+        pid: a.pid,
+        address: hook_at.to_string(),
+        size: hook_jmp.len(),
+        before_hex: to_hex_spaced(&original),
+        after_hex: to_hex_spaced(&hook_jmp),
+        status: "applied".to_string(),
+        created_at_unix: pj::now_unix_secs(),
+        undone_at_unix: None,
+    };
+    if let Err(e) = pj::save(&rec) {
+        return ir_err("journal-failed", &e.to_string(), pretty);
+    }
+    let data = json!({
+        "op": "detour", "pid": a.pid, "hookAt": hook_at, "hookLen": hook_len,
+        "cave": cave, "caveSize": a.cave_size, "patchId": rec.id,
+    });
+    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+}
+
+// ============================================================================
+// `.n0xt` tables (CONCEPT §10)
+// ============================================================================
+
+fn cmd_table_add(a: TableAddArgs, pretty: bool) -> bool {
+    let va = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let entry = TableEntry {
+        name: a.name.clone(),
+        locator: TableLocator::Address { va },
+        value_type: a.r#type.into(),
+        description: a.description.clone(),
+        hotkey: None,
+        groups: Vec::new(),
+        frozen: false,
+        freeze_value: None,
+        provenance: Default::default(),
+        verification: Default::default(),
+    };
+    match n0xis_project::table::add_entry(&a.table, entry) {
+        Ok(t) => emit(&Response::success(schema::v1::TABLE, t).with_source(format!("table:{}", a.table)), pretty),
+        Err(e) => ir_err("table-add-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_table_list(a: TableListArgs, pretty: bool) -> bool {
+    match &a.table {
+        Some(name) => match n0xis_project::table::load(name) {
+            Ok(t) => emit(&Response::success(schema::v1::TABLE, t), pretty),
+            Err(e) => ir_err("table-not-found", &e.to_string(), pretty),
+        },
+        None => match n0xis_project::table::list() {
+            Ok(names) => emit(&Response::success(schema::v1::TABLE, json!({ "tables": names })), pretty),
+            Err(e) => ir_err("table-list-failed", &e.to_string(), pretty),
+        },
+    }
+}
+
+fn cmd_table_show(a: TableShowArgs, pretty: bool) -> bool {
+    let table = match n0xis_project::table::load(&a.table) {
+        Ok(t) => t,
+        Err(e) => return ir_err("table-not-found", &e.to_string(), pretty),
+    };
+    match &a.name {
+        Some(name) => match table.entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) {
+            Some(entry) => emit(&Response::success(schema::v1::TABLE, entry), pretty),
+            None => ir_err("entry-not-found", &format!("no entry named '{name}' in table '{}'", a.table), pretty),
+        },
+        None => emit(&Response::success(schema::v1::TABLE, table), pretty),
+    }
+}
+
+fn cmd_table_rm(a: TableShowArgs, pretty: bool) -> bool {
+    match &a.name {
+        Some(name) => match n0xis_project::table::remove_entry(&a.table, name) {
+            Ok(removed) => emit(&Response::success(schema::v1::TABLE, json!({ "removed": removed })), pretty),
+            Err(e) => ir_err("table-rm-failed", &e.to_string(), pretty),
+        },
+        None => match n0xis_project::table::delete(&a.table) {
+            Ok(removed) => emit(&Response::success(schema::v1::TABLE, json!({ "removedTable": removed })), pretty),
+            Err(e) => ir_err("table-rm-failed", &e.to_string(), pretty),
+        },
+    }
+}
+
+fn encode_scan_value(ty: TableValueType, v: f64) -> Result<Vec<u8>, String> {
+    Ok(match ty {
+        TableValueType::I8 => (v as i8).to_le_bytes().to_vec(),
+        TableValueType::U8 => (v as u8).to_le_bytes().to_vec(),
+        TableValueType::I16 => (v as i16).to_le_bytes().to_vec(),
+        TableValueType::U16 => (v as u16).to_le_bytes().to_vec(),
+        TableValueType::I32 => (v as i32).to_le_bytes().to_vec(),
+        TableValueType::U32 => (v as u32).to_le_bytes().to_vec(),
+        TableValueType::I64 => (v as i64).to_le_bytes().to_vec(),
+        TableValueType::U64 => (v as u64).to_le_bytes().to_vec(),
+        TableValueType::F32 => (v as f32).to_le_bytes().to_vec(),
+        TableValueType::F64 => v.to_le_bytes().to_vec(),
+        TableValueType::Aob => return Err("cannot freeze an Aob-typed entry as a scalar value".to_string()),
+    })
+}
+
+fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
+    use n0xis_sources::ModuleProvider;
+
+    let table = match n0xis_project::table::load(&a.table) {
+        Ok(t) => t,
+        Err(e) => return ir_err("table-not-found", &e.to_string(), pretty),
+    };
+    let Some(entry) = table.entries.iter().find(|e| e.name.eq_ignore_ascii_case(&a.name)).cloned() else {
+        return ir_err("entry-not-found", &format!("no entry named '{}' in table '{}'", a.name, a.table), pretty);
+    };
+    let value = match a.value.or(entry.freeze_value) {
+        Some(v) => v,
+        None => return ir_err("no-value", "provide --value or set the entry's freeze_value first", pretty),
+    };
+    let bytes = match encode_scan_value(entry.value_type, value) {
+        Ok(b) => b,
+        Err(e) => return ir_err("bad-value", &e, pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+
+    let addr = match &entry.locator {
+        TableLocator::Address { va } => *va,
+        TableLocator::PointerPath { module, root_offset, offsets } => {
+            let Some(m) = live.modules().iter().find(|m| m.name.eq_ignore_ascii_case(module)) else {
+                return ir_err("no-module", &format!("no module named '{module}' in this process"), pretty);
+            };
+            let root = PointerRoot { label: m.name.clone(), start: m.base, size: m.size };
+            let core_path = n0xis_core::PointerPath { root_label: root.label.clone(), root_offset: *root_offset, offsets: offsets.clone() };
+            let arch = X64::new();
+            let ctx = Ctx::new(&live, &arch);
+            match resolve_pointer_path(&ctx, &core_path, &[root], 8) {
+                Some(va) => va,
+                None => return ir_err("resolve-failed", "pointer path did not resolve (module layout changed?)", pretty),
+            }
+        }
+        TableLocator::Aob { pattern, offset_from_match, module } => {
+            let pattern_parsed = match parse_aob(pattern) {
+                Ok(p) => p,
+                Err(e) => return ir_err("bad-pattern", &e, pretty),
+            };
+            let (start, size) = match module.as_deref().and_then(|m| live.modules().iter().find(|mm| mm.name.eq_ignore_ascii_case(m))) {
+                Some(m) => (m.base, m.size as usize),
+                None => match live.text_range() {
+                    Some((s, sz)) => (s, sz as usize),
+                    None => return ir_err("no-range", "no default code range for this AOB entry; give it a --module", pretty),
+                },
+            };
+            let arch = X64::new();
+            let ctx = Ctx::new(&live, &arch);
+            let art = match AobScanPass.run(&ctx, AobInput { start, size, pattern: pattern_parsed }) {
+                Ok(a) => a,
+                Err(e) => return ir_err("aob-failed", &e.to_string(), pretty),
+            };
+            match art.matches.first() {
+                Some(&m) => Va((m.get() as i64 + offset_from_match) as u64),
+                None => return ir_err("no-match", "the entry's AOB pattern was not found", pretty),
+            }
+        }
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(a.duration_ms);
+    let mut writes = 0usize;
+    let mut errors = 0usize;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        match live.write(addr, &bytes) {
+            Ok(()) => writes += 1,
+            Err(_) => errors += 1,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(a.interval_ms.max(1)));
+    }
+    let data = json!({
+        "table": a.table, "entry": a.name, "address": addr, "value": value,
+        "writes": writes, "errors": errors, "durationMs": a.duration_ms, "intervalMs": a.interval_ms,
+    });
+    emit(&Response::success(schema::v1::FREEZE, data).with_source(live.label()), pretty)
 }
 
 /// Parse a hex byte string: accepts spaces, commas and `0x` prefixes, e.g.

@@ -24,6 +24,9 @@ clap = { version = "4", features = ["derive"] }
 iced-x86 = "1"
 dirs = "6"
 goblin = "0.10"
+rustc-demangle = "0.1.28"
+msvc-demangler = "0.11.0"
+cpp_demangle = "0.5.1"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_Diagnostics_Debug",

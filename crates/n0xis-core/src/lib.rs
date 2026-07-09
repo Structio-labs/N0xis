@@ -11,27 +11,62 @@
 //! optimizing decompiler passes (SSA, propagate/fold, DCE, structuring) are
 //! added in Phase 3 as more `impl Pass` — same shape, same context.
 
+mod aob;
 mod decode;
+mod decomp;
+mod demangle;
 mod discover;
+mod dissect;
+mod dom;
 mod dot;
 mod ir;
+mod lift;
 mod manifest;
+mod optimize;
+mod pointer;
+mod render;
+mod scan;
+mod signatures;
 mod slice;
+mod ssa;
+mod structure;
 mod switch;
 mod trace;
+mod trampoline;
+mod typeinfer;
 mod xref;
 mod xref_string;
 
+pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
+pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
+pub use demangle::demangle;
 pub use discover::{DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
+pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
 pub use dot::{DotArtifact, dot};
 pub use ir::{
     CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
 };
+pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
+pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};
+pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, PointerPathInput, PointerPathPass, PointerRoot};
+pub use render::{render_condition, render_expr, render_stmt, negate_condition, RenderNames};
+pub use scan::{
+    FilterCriterion, FilterInput, FilterPass, ScanArtifact, ScanCriterion, ScanInput, ScanMatch,
+    ScanPass, ScanValue, ValueType,
+};
+pub use signatures::{known_signature, KnownParam, KnownSignature};
 pub use slice::{SliceArtifact, SliceNode, slice};
+pub use ssa::{Phi, PhiInput, SsaArtifact, SsaBlock, SsaPass, SsaStmt};
+pub use structure::{StructuredOutput, structure};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
+pub use typeinfer::{
+    CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, TypeArtifact,
+    TypeInferInput, TypeInferPass,
+};
 pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
+pub use trampoline::{build_trampoline, near_jmp};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 

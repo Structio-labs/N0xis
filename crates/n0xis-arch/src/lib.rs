@@ -7,34 +7,26 @@
 //! leaked into the passes and made a second architecture impossible. This seam
 //! makes ARM64 a matter of adding an `impl Arch`, not a rewrite.
 //!
-//! Phase 1 ships the [`X64`] decoder (real, via `iced-x86`) and the register /
-//! calling-convention model. [`Arch::lift`] to micro-IR is stubbed here and
-//! filled in Phase 3 (ROADMAP), where [`MicroStmt`] grows a real tree.
+//! Phase 1 shipped the [`X64`] decoder (real, via `iced-x86`) and the register
+//! / calling-convention model. Phase 3 fills in [`Arch::lift`] with a real
+//! typed micro-IR ([`MicroStmt`] / [`MicroExpr`]) and adds
+//! [`Arch::branch_condition`], the seam that turns a `Jcc` + the dataflow
+//! value reaching it into an exact condition expression.
 
 mod frame;
 mod insn;
+mod microir;
 mod switch;
 mod x64;
+mod x64_lift;
 
 pub use frame::FrameInfo;
 pub use insn::{DecodeError, DecodedInsn, InsnKind};
+pub use microir::{BinOp, Bits, CallTarget, CmpKind, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
 pub use switch::{SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};
 
 use n0xis_contracts::{Reg, Va};
-
-/// A single micro-IR statement — the arch-neutral lowering of one machine
-/// instruction. **Phase 3 placeholder**: today `lift` returns an empty slice;
-/// the typed expression/statement tree (with flags modeled as values) is built
-/// in the decompiler phase. The type exists now so the seam's signature is
-/// stable and passes can be written against it.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum MicroStmt {
-    /// Explicit "not yet lowered" — preserves the instruction verbatim so no
-    /// semantics are silently lost (CONCEPT §3 rule 6).
-    Unlifted { va: Va },
-}
 
 /// Registers an instruction reads and writes, normalized to full-width names
 /// (e.g. `eax`/`al` → `rax`). Names, not [`Reg`] ids, because def-use tracking
@@ -115,9 +107,24 @@ pub trait Arch {
     /// still emitted, marked [`InsnKind::Invalid`], so nothing is dropped).
     fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn>;
 
-    /// Lower one instruction to micro-IR. **Phase 3**: currently a stub.
+    /// Lower one instruction to micro-IR. Default: preserves the instruction
+    /// verbatim (sound, uninterpreted) — ISA impls override per-mnemonic.
     fn lift(&self, insn: &DecodedInsn) -> Vec<MicroStmt> {
-        vec![MicroStmt::Unlifted { va: insn.va }]
+        vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }]
+    }
+
+    /// Turn a conditional-branch mnemonic (`"je"`, `"jg"`, …) plus the
+    /// dataflow value reaching it for [`FLAGS_VAR`] into an exact condition
+    /// expression. Only sound when `flags_value` is the precise
+    /// [`MicroExpr::Compare`] the mnemonic expects; anything else (an
+    /// [`MicroExpr::OpaqueFlags`] from an intervening flag-setter with no
+    /// following `cmp`/`test`) must render a placeholder, never a guess —
+    /// this is the seam that fixes v0's "stale last-compare" bug structurally
+    /// rather than heuristically. Default: always a placeholder (an ISA with
+    /// no override has no condition-code knowledge to give).
+    fn branch_condition(&self, mnemonic: &str, flags_value: &MicroExpr) -> MicroExpr {
+        let _ = flags_value;
+        MicroExpr::Unknown(format!("cond({mnemonic})"))
     }
 
     /// Registers read/written by an instruction, normalized to full width.

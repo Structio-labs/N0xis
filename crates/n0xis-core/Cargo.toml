@@ -12,6 +12,9 @@ n0xis-arch = { workspace = true }
 n0xis-sources = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+rustc-demangle = { workspace = true }
+msvc-demangler = { workspace = true }
+cpp_demangle = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
