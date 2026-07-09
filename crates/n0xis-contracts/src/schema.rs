@@ -73,9 +73,14 @@ pub mod v1 {
     /// Hardware-breakpoint watchpoint hit report (`debug watch`, Phase 4b).
     pub const WATCHPOINT: &str = "n0xis.debug.watchpoint.v1";
 
-    // --- reserved for the phases ahead (declared so the id is owned) ---
     /// Provenance graph — the principal (Phase 4c, KF-1).
     pub const PROVENANCE: &str = "n0xis.provenance.v1";
+    /// One address's asserted name/type/comment + history (`annotate *`, Phase 6).
+    pub const ANNOTATION: &str = "n0xis.annotation.v1";
+    /// A captured, reloadable memory snapshot (`snapshot dump`, Phase 6).
+    pub const SNAPSHOT: &str = "n0xis.snapshot.v1";
+
+    // --- reserved for the phases ahead (declared so the id is owned) ---
 }
 
 /// Reserved v0 (`n0x.*`) schema ids — the compatibility contract from

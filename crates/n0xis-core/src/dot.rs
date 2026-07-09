@@ -152,7 +152,7 @@ mod tests {
         assert!(d.dot.trim_end().ends_with('}'));
         // One node per block and at least the two cjmp edges present.
         assert!(d.dot.contains("b0 [label="));
-        assert_eq!(d.edge_count, art.blocks.iter().map(|b| b.successors.len()).sum());
+        assert_eq!(d.edge_count, art.blocks.iter().map(|b| b.successors.len()).sum::<usize>());
     }
 
     #[test]

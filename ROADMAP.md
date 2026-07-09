@@ -414,11 +414,19 @@ Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powe
   CLI-sharing contract, not just an in-memory convenience). 1/1 passing; zero warnings
   workspace-wide.
 
-## Phase 6 — Persistence, incremental, performance 🎯 ⏳
-This phase bundles four independent sub-goals of very different weight (see the
-sequencing note below); ⏳ **artifact caching landed first** as the namesake
-"incremental" feature, the other three are still ⬜.
-- ⬜ `n0xis-project` analysis DB as versioned truth (names/types/comments/patches).
+## Phase 6 — Persistence, incremental, performance 🎯 ✅
+This phase bundled four independent sub-goals of very different weight (see the
+sequencing note below); artifact caching landed first as the namesake "incremental"
+feature, then the analysis DB, then the two new sources, then the perf pass.
+- ✅ **`n0xis-project` analysis DB as versioned truth** (names/types/comments; patches
+  already had their own versioned journal since Phase 2, so this is the missing half).
+  New `n0xis-project::annotate` (`.n0x/annotations.json`) — `set_name`/`set_type`/
+  `set_comment(va, Option<value>)` append a history entry (field, old, new, unix)
+  **iff the value actually changed** (idempotent re-sets don't grow history), and
+  `None` clears a field while still recording that it was cleared — nothing is ever
+  silently overwritten. CLI: `annotate name|type|comment --addr --value`, `annotate
+  show|list|rm`. MCP: `annotate_set`/`annotate_get`/`annotate_list`. New schema
+  `n0xis.annotation.v1`.
 - ✅ **`PassManager` artifact caching + incremental recompute** (don't rebuild IR per
   call) — the hard part of this phase, since correctness under cache invalidation is
   one of the two hard problems in CS. Solved with **content-addressed caching**
@@ -449,8 +457,46 @@ sequencing note below); ⏳ **artifact caching landed first** as the namesake
   any cache-awareness); only `CfgPass` is cached so far, not every pass — mechanical
   to extend (same `cfg_cache_key` shape, different `Out` type) once a second pass
   actually needs it.
-- ⬜ Snapshot source (reproducible offline runs); `RemoteAgent` source over SSH/Tailscale.
-- ⬜ Perf pass on hot paths (manifest over large modules).
+- ✅ **Snapshot source (reproducible offline runs)**. `n0xis-sources::Snapshot` gained
+  `Serialize`/`Deserialize` (it was already the OS-free test double since Phase 1;
+  this made it round-trip through JSON byte-for-byte, region/module/symbol data
+  included). New `snapshot dump --pid|--file --start --size --name` captures a byte
+  range (+ modules when resolvable) into `.n0x/dumps/snapshot/<name>.json` (a new
+  `DUMP_KINDS` entry — reused `n0xis-project::dump`'s existing generic store rather
+  than inventing new storage); `snapshot info`/`snapshot list` inspect it. `--snapshot
+  <name>` is now a source option alongside `--pid`/`--file`/`--bytes` on every
+  CfgPass-driving CLI verb (`ir build/explain/dot/slice`, `decomp pseudo`, `function
+  discover/trace`, `xref to/from/string`, `mem read`) and the matching MCP tools —
+  reloading one and re-running the same analysis produces byte-identical output,
+  verified manually against a real captured `.text` slice of the compiled `n0xis.exe`.
+- ✅ **`RemoteAgent` source over SSH/Tailscale**. New `n0xis-sources::remote`: a tiny
+  newline-JSON wire protocol (`read`/`write`/`contains`/`label`/`quit`), generic over
+  *how* the remote-serve process is reached — `RemoteAgent::connect(argv)` just spawns
+  `argv` and speaks the protocol over its piped stdio, so `["ssh", "user@host", "n0xis",
+  "remote-serve", "--pid", "1234"]` reaches a real remote machine and a bare local argv
+  is exactly what the tests use to prove the protocol without a second machine (SSH is
+  one possible argv prefix, never hardcoded — anti-hardcode policy). `serve_stdio` is
+  the server half, generic over any `MemorySource` (protocol-tested against `Snapshot`,
+  OS-free) so the CLI's new `remote-serve --pid <p>` command just wires it to a real
+  `LiveProcess`. `--remote-cmd "<argv string>"` is a source option everywhere
+  `--snapshot` is. **Real bug found+fixed along the way**: the first implementation
+  used the `shell-words` crate (POSIX shell-word splitting) to parse `--remote-cmd`,
+  which silently ate every backslash in Windows paths (`D:\tools\n0xis.exe` →
+  `D:toolsn0xis.exe`) — this tool is Windows-first, so POSIX escaping is the wrong
+  model entirely; replaced with `n0xis_sources::split_command_line`, a small
+  no-escape-sequences splitter (only `"..."` for spaces) that treats `\` as always
+  literal. Caught by `crates/n0xis-cli/tests/phase6_remote_exit.rs`, which spawns the
+  *real* compiled `n0xis` binary as `remote-serve` against a real disposable process
+  and asserts `mem read --remote-cmd "..."` returns byte-identical output to a direct
+  `mem read --pid`.
+- ✅ **Perf pass on hot paths (manifest over large modules)**. Profiled `function
+  discover` and `ir manifest` against a real 2.5 MB system DLL (`ntdll.dll`, 4428
+  discovered functions) at several candidate-count limits. Result: linear scaling
+  with candidate count in both debug and release builds (no quadratic behavior found)
+  — release-mode `ir manifest` over *all* 4428 candidates completes in ~2.3s, discover
+  alone in ~0.36s. No bottleneck requiring a fix at this scale; documented here as the
+  exit criteria for this bullet rather than manufacturing a change where profiling
+  found none needed.
 
 ## Phase 7+ — Capabilities beyond the v0 port ⬜
 - ⬜ Value-set / light alias analysis (better jump tables, pointer reasoning).

@@ -24,6 +24,7 @@
 //!   n0x.cmd           # generated shim that calls back into the global build
 //! ```
 
+pub mod annotate;
 pub mod dump;
 pub mod ir_cache;
 pub mod patch;
@@ -52,7 +53,7 @@ pub const SHIM_NAME: &str = "n0x.cmd";
 /// Global fallback directory name under local app data. **Kept as `n0x`.**
 pub const GLOBAL_DIR_NAME: &str = "n0x";
 
-pub const DUMP_KINDS: &[&str] = &["ir", "pseudo", "hex", "raw", "note", "scan"];
+pub const DUMP_KINDS: &[&str] = &["ir", "pseudo", "hex", "raw", "note", "scan", "snapshot"];
 
 /// A resolved project root.
 #[derive(Debug, Clone)]
@@ -232,7 +233,7 @@ pub fn is_valid_kind(k: &str) -> bool {
 
 pub fn extension_for_kind(k: &str) -> &'static str {
     match k {
-        "ir" | "pseudo" | "scan" => "json",
+        "ir" | "pseudo" | "scan" | "snapshot" => "json",
         "hex" => "hex",
         "raw" => "bin",
         "note" => "txt",

@@ -582,6 +582,7 @@ dependencies = [
  "goblin",
  "n0xis-contracts",
  "serde",
+ "serde_json",
  "thiserror",
  "windows-sys",
 ]

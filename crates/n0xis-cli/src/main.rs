@@ -27,8 +27,8 @@ use n0xis_core::{
 };
 use n0xis_pipeline::{Pipeline, cfg_cached};
 use n0xis_sources::{
-    LiveProcess, MemorySource, Snapshot, StaticPe, WatchKind, await_breakpoint_hit,
-    await_watchpoint_hit, list_processes,
+    LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, WatchKind, await_breakpoint_hit,
+    await_watchpoint_hit, list_processes, remote_serve_stdio,
 };
 use serde_json::json;
 
@@ -113,6 +113,20 @@ enum Command {
     /// what recovered function, explains a runtime value (Phase 4c).
     #[command(subcommand)]
     Provenance(ProvenanceCmd),
+    /// Names/types/comments at an address, kept as versioned truth
+    /// (`.n0x/annotations.json`, Phase 6) — complements `patch`'s
+    /// already-versioned byte-level journal.
+    #[command(subcommand)]
+    Annotate(AnnotateCmd),
+    /// Capture a reproducible offline memory snapshot, or reload one as a
+    /// `--snapshot` source (Phase 6).
+    #[command(subcommand)]
+    Snapshot(SnapshotCmd),
+    /// Serve a live process over the remote-agent stdio protocol — the
+    /// remote-side half of `--remote-cmd` (Phase 6). Typically invoked over
+    /// SSH by the *other* machine, not run directly: e.g. locally, run
+    /// `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...`.
+    RemoteServe(RemoteServeArgs),
 }
 
 #[derive(Subcommand)]
@@ -189,6 +203,78 @@ impl From<WatchKindArg> for WatchKind {
             WatchKindArg::ReadOrWrite => WatchKind::ReadOrWrite,
         }
     }
+}
+
+#[derive(Subcommand)]
+enum AnnotateCmd {
+    /// Assert (or clear, with no `--value`) a function/variable name at an address.
+    Name(AnnotateSetArgs),
+    /// Assert (or clear) a type note at an address, e.g. `"int(char*, size_t)"`.
+    Type(AnnotateSetArgs),
+    /// Assert (or clear) a free-text comment at an address.
+    Comment(AnnotateSetArgs),
+    /// Show the current facts + full history for one address.
+    Show(AnnotateShowArgs),
+    /// List every annotated address.
+    List,
+    /// Remove all annotations (and history) at an address.
+    Rm(AnnotateShowArgs),
+}
+
+#[derive(Args)]
+struct AnnotateSetArgs {
+    #[arg(long)]
+    addr: String,
+    /// New value; omit to clear the field.
+    #[arg(long)]
+    value: Option<String>,
+}
+
+#[derive(Args)]
+struct AnnotateShowArgs {
+    #[arg(long)]
+    addr: String,
+}
+
+#[derive(Subcommand)]
+enum SnapshotCmd {
+    /// Capture a byte range (+ modules, when resolvable) from a live process
+    /// or static file into a reloadable `.n0x/dumps/snapshot/<name>.json`.
+    Dump(SnapshotDumpArgs),
+    /// Show a captured snapshot's region/module summary.
+    Info(SnapshotInfoArgs),
+    /// List captured snapshots.
+    List,
+}
+
+#[derive(Args)]
+struct SnapshotDumpArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Region start (hex `0x…`); defaults to the module's `.text`.
+    #[arg(long)]
+    start: Option<String>,
+    /// Region size in bytes; defaults to the `.text` size.
+    #[arg(long)]
+    size: Option<usize>,
+    /// Name to save the snapshot under.
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct SnapshotInfoArgs {
+    name: String,
+}
+
+#[derive(Args)]
+struct RemoteServeArgs {
+    #[arg(long)]
+    pid: u32,
 }
 
 #[derive(Args)]
@@ -315,6 +401,12 @@ struct MemReadArgs {
     file: Option<String>,
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
 }
 
 #[derive(Args)]
@@ -421,6 +513,12 @@ struct FunctionTraceArgs {
     file: Option<String>,
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
     /// Root address (hex `0x…`), absolute VA unless `--addr-rva`.
     #[arg(long)]
     addr: String,
@@ -447,6 +545,12 @@ struct DiscoverArgs {
     /// Inline bytes source; requires `--start` for the base address.
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
     /// Scan range start (defaults to the module's `.text`).
     #[arg(long)]
     start: Option<String>,
@@ -478,6 +582,12 @@ struct XrefStringArgs {
     file: Option<String>,
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
     /// Data window to search (defaults to `.rdata`, else `.text`).
     #[arg(long)]
     data_start: Option<String>,
@@ -505,6 +615,12 @@ struct XrefArgs {
     file: Option<String>,
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
     /// Code window start to scan (defaults to the module's `.text`).
     #[arg(long)]
     start: Option<String>,
@@ -536,6 +652,12 @@ struct ManifestArgs {
     /// Inline bytes source; requires `--start` for the base address.
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
     /// Discovery scan range start (defaults to the module's `.text`).
     #[arg(long)]
     start: Option<String>,
@@ -847,6 +969,12 @@ struct IrArgs {
     /// Inline bytes source, e.g. "48 89 c8 c3".
     #[arg(long)]
     bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -920,6 +1048,12 @@ struct DisasmArgs {
 fn main() {
     let cli = Cli::parse();
     let pretty = cli.global.pretty;
+    // remote-serve is a persistent stdio server, not a single ok/data/meta
+    // call — handled before the response-envelope dispatch below.
+    if let Command::RemoteServe(a) = &cli.command {
+        cmd_remote_serve(a);
+        return;
+    }
     let ok = match cli.command {
         Command::Doctor => cmd_doctor(pretty),
         Command::Guide => cmd_guide(pretty),
@@ -958,6 +1092,16 @@ fn main() {
         Command::Table(TableCmd::Rm(a)) => cmd_table_rm(a, pretty),
         Command::Table(TableCmd::Freeze(a)) => cmd_table_freeze(a, pretty),
         Command::Provenance(ProvenanceCmd::Trace(a)) => cmd_provenance_trace(a, pretty),
+        Command::Annotate(AnnotateCmd::Name(a)) => cmd_annotate_set("name", a, pretty),
+        Command::Annotate(AnnotateCmd::Type(a)) => cmd_annotate_set("type", a, pretty),
+        Command::Annotate(AnnotateCmd::Comment(a)) => cmd_annotate_set("comment", a, pretty),
+        Command::Annotate(AnnotateCmd::Show(a)) => cmd_annotate_show(a, pretty),
+        Command::Annotate(AnnotateCmd::List) => cmd_annotate_list(pretty),
+        Command::Annotate(AnnotateCmd::Rm(a)) => cmd_annotate_rm(a, pretty),
+        Command::Snapshot(SnapshotCmd::Dump(a)) => cmd_snapshot_dump(a, pretty),
+        Command::Snapshot(SnapshotCmd::Info(a)) => cmd_snapshot_info(a, pretty),
+        Command::Snapshot(SnapshotCmd::List) => cmd_snapshot_list(pretty),
+        Command::RemoteServe(_) => unreachable!("handled before this match, see main()"),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -1106,37 +1250,25 @@ where
         auto_end: !a.no_auto_end,
     };
 
-    if let Some(pid) = a.pid {
-        let live = match LiveProcess::attach(pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let ctx = Ctx::new(&live, &arch);
-        return work(&ctx, input, live.label());
-    }
-    if let Some(file) = a.file.as_deref() {
-        let pe = match StaticPe::load(std::path::Path::new(file)) {
-            Ok(p) => p,
-            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
-        };
-        // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
-        // call targets resolve to names.
-        let ctx = Ctx::new(&pe, &arch).with_symbols(&pe).with_modules(&pe);
-        return work(&ctx, input, pe.label());
-    }
-    let Some(bytes_str) = a.bytes.as_deref() else {
-        return ir_err("missing-source", "provide --pid, --file, or --bytes", pretty);
+    let (src, label, _) = match build_source(
+        a.pid,
+        a.file.as_deref(),
+        a.bytes.as_deref(),
+        a.snapshot.as_deref(),
+        a.remote_cmd.as_deref(),
+        start,
+    ) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let bytes = match parse_hex_bytes(bytes_str) {
-        Ok(b) => b,
-        Err(e) => return ir_err("bad-bytes", &e, pretty),
-    };
-    let snap = Snapshot::builder()
-        .region(start, bytes)
-        .label(format!("bytes@{start}"))
-        .build();
-    let ctx = Ctx::new(&snap, &arch);
-    work(&ctx, input, snap.label())
+    // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
+    // call targets resolve to names.
+    match &src {
+        Src::Static(pe) => work(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, label),
+        Src::Live(l) => work(&Ctx::new(l.as_ref(), &arch), input, label),
+        Src::Snap(s) => work(&Ctx::new(s, &arch), input, label),
+        Src::Remote(r) => work(&Ctx::new(r.as_ref(), &arch), input, label),
+    }
 }
 
 fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
@@ -1189,14 +1321,18 @@ enum Src {
     Live(Box<LiveProcess>),
     Static(Box<StaticPe>),
     Snap(Snapshot),
+    Remote(Box<RemoteAgent>),
 }
 
-/// Resolve `--pid` / `--file` / `--bytes` into a source. Returns the source, a
-/// provenance label, and (for inline bytes) the mapped region length.
+/// Resolve `--pid` / `--file` / `--snapshot` / `--remote-cmd` / `--bytes` into
+/// a source (checked in that order). Returns the source, a provenance label,
+/// and (for inline bytes) the mapped region length.
 fn build_source(
     pid: Option<u32>,
     file: Option<&str>,
     bytes: Option<&str>,
+    snapshot: Option<&str>,
+    remote_cmd: Option<&str>,
     bytes_base: Va,
 ) -> Result<(Src, String, Option<usize>), (String, String)> {
     if let Some(pid) = pid {
@@ -1210,6 +1346,20 @@ fn build_source(
         let label = pe.label();
         return Ok((Src::Static(Box::new(pe)), label, None));
     }
+    if let Some(name) = snapshot {
+        let snap = load_snapshot(name).map_err(|e| ("snapshot-load-failed".into(), e))?;
+        let label = snap.label();
+        return Ok((Src::Snap(snap), label, None));
+    }
+    if let Some(cmd) = remote_cmd {
+        let argv = n0xis_sources::split_command_line(cmd).map_err(|e| ("bad-remote-cmd".into(), e))?;
+        if argv.is_empty() {
+            return Err(("bad-remote-cmd".into(), "--remote-cmd must not be empty".into()));
+        }
+        let agent = RemoteAgent::connect(argv).map_err(|e| ("remote-connect-failed".into(), e.to_string()))?;
+        let label = agent.label();
+        return Ok((Src::Remote(Box::new(agent)), label, None));
+    }
     if let Some(b) = bytes {
         let parsed = parse_hex_bytes(b).map_err(|e| ("bad-bytes".into(), e))?;
         let len = parsed.len();
@@ -1220,7 +1370,7 @@ fn build_source(
         let label = snap.label();
         return Ok((Src::Snap(snap), label, Some(len)));
     }
-    Err(("missing-source".into(), "provide --pid, --file, or --bytes".into()))
+    Err(("missing-source".into(), "provide --pid, --file, --snapshot, --remote-cmd, or --bytes".into()))
 }
 
 impl Src {
@@ -1229,6 +1379,26 @@ impl Src {
             Src::Live(l) => l.as_ref(),
             Src::Static(p) => p.as_ref(),
             Src::Snap(s) => s,
+            Src::Remote(r) => r.as_ref(),
+        }
+    }
+
+    fn text_range(&self) -> Option<(Va, u64)> {
+        match self {
+            Src::Static(pe) => pe.text_range(),
+            Src::Live(l) => l.text_range(),
+            Src::Snap(_) | Src::Remote(_) => None,
+        }
+    }
+
+    /// Modules known to this source (empty for `Snap`/`Remote`, which don't
+    /// implement `ModuleProvider` yet).
+    fn modules(&self) -> Vec<n0xis_contracts::Module> {
+        use n0xis_sources::ModuleProvider;
+        match self {
+            Src::Live(l) => l.modules().to_vec(),
+            Src::Static(p) => p.modules().to_vec(),
+            Src::Snap(_) | Src::Remote(_) => Vec::new(),
         }
     }
 }
@@ -1321,7 +1491,7 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), addr) {
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), addr) {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
@@ -1329,7 +1499,7 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
     let module_base = match &src {
         Src::Static(pe) => Some(pe.image_base()),
         Src::Live(l) => l.main_module().map(|m| m.base),
-        Src::Snap(_) => None,
+        Src::Snap(_) | Src::Remote(_) => None,
     };
     let root = if a.addr_rva {
         match module_base {
@@ -1354,6 +1524,7 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
     }
 }
 
@@ -1364,7 +1535,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     };
     let bytes_base = explicit_start.unwrap_or(Va(0));
     let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
@@ -1372,7 +1543,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
         Src::Live(l) => l.text_range(),
-        Src::Snap(_) => None,
+        Src::Snap(_) | Src::Remote(_) => None,
     };
     let (start, size) = scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
     if size == 0 {
@@ -1392,6 +1563,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
     }
 }
 
@@ -1404,7 +1576,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
     };
     let bytes_base = explicit_start.unwrap_or(Va(0));
     let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
@@ -1412,7 +1584,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
         Src::Live(l) => l.text_range(),
-        Src::Snap(_) => None,
+        Src::Snap(_) | Src::Remote(_) => None,
     };
     let (start, size) = scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
     if size == 0 {
@@ -1441,6 +1613,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
     }
 }
 
@@ -1455,7 +1628,7 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
     };
     let bytes_base = explicit_start.unwrap_or(Va(0));
     let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
@@ -1463,7 +1636,7 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
         Src::Live(l) => l.text_range(),
-        Src::Snap(_) => None,
+        Src::Snap(_) | Src::Remote(_) => None,
     };
     let (scan_start, size) =
         scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
@@ -1484,6 +1657,7 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
     }
 }
 
@@ -1502,7 +1676,7 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
     };
     let bytes_base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
     let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), bytes_base) {
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
@@ -1510,12 +1684,12 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
         Src::Live(l) => l.text_range(),
-        Src::Snap(_) => None,
+        Src::Snap(_) | Src::Remote(_) => None,
     };
     let default_data = match &src {
         Src::Static(pe) => pe.section_range(".rdata").or_else(|| pe.text_range()),
         Src::Live(l) => l.section_range(".rdata").or_else(|| l.text_range()),
-        Src::Snap(_) => None,
+        Src::Snap(_) | Src::Remote(_) => None,
     };
     let (code_start, code_size) =
         scan_range(default_text, region_len, explicit_code_start, a.size, bytes_base);
@@ -1550,6 +1724,7 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
     }
 }
 
@@ -1559,7 +1734,7 @@ fn cmd_mem_read(a: MemReadArgs, pretty: bool) -> bool {
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
     let (src, label, _) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), addr) {
+        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), addr) {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
@@ -2512,6 +2687,152 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
         map.insert("savedTo".to_string(), json!(s));
     }
     emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty)
+}
+
+// ============================================================================
+// Analysis DB: names/types/comments as versioned truth (CONCEPT/ROADMAP Phase 6)
+// ============================================================================
+
+fn cmd_annotate_set(field: &str, a: AnnotateSetArgs, pretty: bool) -> bool {
+    let va = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let result = match field {
+        "name" => n0xis_project::annotate::set_name(va, a.value.clone()),
+        "type" => n0xis_project::annotate::set_type(va, a.value.clone()),
+        "comment" => n0xis_project::annotate::set_comment(va, a.value.clone()),
+        _ => unreachable!(),
+    };
+    match result {
+        Ok(rec) => emit(&Response::success(schema::v1::ANNOTATION, rec), pretty),
+        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_annotate_show(a: AnnotateShowArgs, pretty: bool) -> bool {
+    let va = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    match n0xis_project::annotate::get(va) {
+        Ok(Some(rec)) => emit(&Response::success(schema::v1::ANNOTATION, rec), pretty),
+        Ok(None) => ir_err("not-found", &format!("no annotations recorded at {va}"), pretty),
+        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_annotate_list(pretty: bool) -> bool {
+    match n0xis_project::annotate::list() {
+        Ok(records) => emit(&Response::success(schema::v1::ANNOTATION, json!({ "count": records.len(), "records": records })), pretty),
+        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_annotate_rm(a: AnnotateShowArgs, pretty: bool) -> bool {
+    let va = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    match n0xis_project::annotate::remove(va) {
+        Ok(removed) => emit(&Response::success(schema::v1::ANNOTATION, json!({ "va": va, "removed": removed })), pretty),
+        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
+    }
+}
+
+// ============================================================================
+// Snapshot source: capture a reproducible offline dump (ROADMAP Phase 6)
+// ============================================================================
+
+fn cmd_snapshot_dump(a: SnapshotDumpArgs, pretty: bool) -> bool {
+    let explicit_start = match opt_hex(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let bytes_base = explicit_start.unwrap_or(Va(0));
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, None, None, bytes_base) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let default_text = src.text_range();
+    let (start, size) = scan_range(default_text, None, explicit_start, a.size, bytes_base);
+    if size == 0 {
+        return ir_err("no-range", "could not resolve a capture range; pass --start and --size", pretty);
+    }
+    let bytes = match src.as_mem().read(start, size) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+    };
+    let modules = src.modules();
+    let mut builder = Snapshot::builder().region(start, bytes.clone()).label(format!("snapshot:{}", a.name));
+    for m in &modules {
+        builder = builder.module(m.clone());
+    }
+    let snap = builder.build();
+    let json = match serde_json::to_vec_pretty(&snap) {
+        Ok(j) => j,
+        Err(e) => return ir_err("serialize-failed", &e.to_string(), pretty),
+    };
+    match n0xis_project::dump::save(&a.name, "snapshot", &json, a.force) {
+        Ok(saved) => emit(
+            &Response::success(
+                schema::v1::SNAPSHOT,
+                json!({ "name": saved.name, "path": saved.path, "start": start, "size": bytes.len(), "moduleCount": modules.len(), "overwrote": saved.overwrote }),
+            )
+            .with_source(label),
+            pretty,
+        ),
+        Err(e) => ir_err("snapshot-save-failed", &e.to_string(), pretty),
+    }
+}
+
+fn load_snapshot(name: &str) -> Result<Snapshot, String> {
+    let content = n0xis_project::dump::show(name, Some("snapshot")).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&content.bytes).map_err(|e| format!("parse snapshot '{name}': {e}"))
+}
+
+fn cmd_snapshot_info(a: SnapshotInfoArgs, pretty: bool) -> bool {
+    use n0xis_sources::ModuleProvider;
+    match load_snapshot(&a.name) {
+        Ok(snap) => {
+            let data = json!({
+                "name": a.name,
+                "label": snap.label(),
+                "regionCount": snap.region_count(),
+                "totalBytes": snap.total_bytes(),
+                "moduleCount": snap.modules().len(),
+                "modules": snap.modules(),
+            });
+            emit(&Response::success(schema::v1::SNAPSHOT, data), pretty)
+        }
+        Err(e) => ir_err("snapshot-load-failed", &e, pretty),
+    }
+}
+
+fn cmd_snapshot_list(pretty: bool) -> bool {
+    match n0xis_project::dump::list(Some("snapshot")) {
+        Ok(items) => emit(&Response::success(schema::v1::SNAPSHOT, json!({ "count": items.len(), "snapshots": items })), pretty),
+        Err(e) => ir_err("snapshot-list-failed", &e.to_string(), pretty),
+    }
+}
+
+/// The remote-serve half of `--remote-cmd`: attach to `--pid` and answer the
+/// `n0xis_sources::remote` wire protocol on stdin/stdout until the caller
+/// (typically an `ssh`-tunneled `RemoteAgent`) sends `quit` or hangs up. No
+/// `ok/data/meta` envelope here — this is a persistent transport, not a
+/// single response.
+fn cmd_remote_serve(a: &RemoteServeArgs) {
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[n0xis] remote-serve: attach failed: {e}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(e) = remote_serve_stdio(&live, std::io::stdin(), std::io::stdout()) {
+        eprintln!("[n0xis] remote-serve: {e}");
+        std::process::exit(2);
+    }
 }
 
 fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {

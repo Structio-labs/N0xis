@@ -45,12 +45,14 @@ fn with_ctx<R>(src: &Src, work: impl FnOnce(&Ctx) -> R) -> R {
     match src {
         Src::Live(l) => work(&Ctx::new(l.as_ref(), &arch)),
         Src::Static(p) => work(&Ctx::new(p.as_ref(), &arch).with_symbols(p.as_ref()).with_modules(p.as_ref())),
+        Src::Snap(s) => work(&Ctx::new(s, &arch)),
+        Src::Remote(r) => work(&Ctx::new(r.as_ref(), &arch)),
     }
 }
 
 macro_rules! resolve_or_return {
     ($a:expr) => {
-        match source::resolve($a.pid, $a.file.as_deref()) {
+        match source::resolve($a.pid, $a.file.as_deref(), $a.snapshot.as_deref(), $a.remote_cmd.as_deref()) {
             Ok(s) => s,
             Err((c, m)) => return err(&c, m),
         }
@@ -79,6 +81,12 @@ pub struct ModuleListRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     #[serde(default)]
     pub filter: Option<String>,
 }
@@ -89,6 +97,12 @@ pub struct DisasmRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     /// Address to start disassembling at, e.g. `"0x140001000"`.
     pub addr: String,
     #[serde(default = "default_count")]
@@ -104,6 +118,12 @@ pub struct DiscoverRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     /// Start of the scan range; defaults to the module's `.text`.
     #[serde(default)]
     pub start: Option<String>,
@@ -122,6 +142,12 @@ pub struct FunctionTraceRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     /// Root address (or RVA if `addr_rva` is set) to walk the call graph from.
     pub addr: String,
     #[serde(default)]
@@ -146,6 +172,12 @@ pub struct DecompRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     /// Function start address, e.g. `"0x140001000"`.
     pub addr: String,
     #[serde(default = "default_max_bytes")]
@@ -175,6 +207,12 @@ pub struct XrefRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     /// The address of interest.
     pub addr: String,
     /// `"to"` (who references `addr`) or `"from"` (what `addr` references).
@@ -195,6 +233,12 @@ pub struct XrefStringRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     /// The string literal to search for.
     pub query: String,
     #[serde(default)]
@@ -215,6 +259,12 @@ pub struct MemReadRequest {
     pub pid: Option<u32>,
     #[serde(default)]
     pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
     pub addr: String,
     pub size: usize,
 }
@@ -249,6 +299,21 @@ fn default_watch_len() -> u8 {
 }
 fn default_timeout_ms() -> u64 {
     5000
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnnotateSetRequest {
+    pub addr: String,
+    /// `"name"`, `"type"`, or `"comment"`.
+    pub field: String,
+    /// New value; omit to clear the field.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnnotateShowRequest {
+    pub addr: String,
 }
 
 fn parse_watch_kind(s: &str) -> Result<WatchKind, String> {
@@ -306,7 +371,10 @@ impl N0xisServer {
         if a.pid.is_none() && a.file.is_none() {
             return err("missing-source", "provide pid or file");
         }
-        let src = resolve_or_return!(a);
+        let src = match source::resolve(a.pid, a.file.as_deref(), None, None) {
+            Ok(s) => s,
+            Err((c, m)) => return err(&c, m),
+        };
         let session = if let Some(pid) = a.pid {
             n0xis_project::session::attach_pid(pid)
         } else {
@@ -318,6 +386,7 @@ impl N0xisServer {
         let modules = match &src {
             Src::Live(l) => l.modules().len(),
             Src::Static(p) => p.modules().len(),
+            Src::Snap(_) | Src::Remote(_) => 0,
         };
         let data = json!({ "label": src.label(), "moduleCount": modules });
         emit(Response::success(schema::v1::PROJECT_INFO, data).with_source(src.label()))
@@ -329,6 +398,7 @@ impl N0xisServer {
         let mut modules: Vec<n0xis_contracts::Module> = match &src {
             Src::Live(l) => l.modules().to_vec(),
             Src::Static(p) => p.modules().to_vec(),
+            Src::Snap(_) | Src::Remote(_) => Vec::new(),
         };
         if let Some(f) = a.filter.as_deref() {
             let needle = f.to_lowercase();
@@ -592,6 +662,50 @@ impl N0xisServer {
         match graph {
             Ok(g) => emit(Response::success(schema::v1::PROVENANCE, g).with_source(label)),
             Err(e) => err("provenance-failed", e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Assert (or clear, with no value) a name/type/comment at an address — the \
+                        analysis DB, kept as versioned truth: every change is appended to that \
+                        address's history rather than overwriting it. field is one of \
+                        \"name\", \"type\", or \"comment\"."
+    )]
+    fn annotate_set(&self, Parameters(a): Parameters<AnnotateSetRequest>) -> String {
+        let va = match Va::parse(&a.addr) {
+            Ok(v) => v,
+            Err(e) => return bad_addr(e),
+        };
+        let result = match a.field.as_str() {
+            "name" => n0xis_project::annotate::set_name(va, a.value.clone()),
+            "type" => n0xis_project::annotate::set_type(va, a.value.clone()),
+            "comment" => n0xis_project::annotate::set_comment(va, a.value.clone()),
+            other => return err("bad-field", format!("unknown field '{other}', expected name|type|comment")),
+        };
+        match result {
+            Ok(rec) => emit(Response::success(schema::v1::ANNOTATION, rec)),
+            Err(e) => err("annotate-failed", e.to_string()),
+        }
+    }
+
+    #[tool(description = "The current name/type/comment + full history recorded at an address, if any.")]
+    fn annotate_get(&self, Parameters(a): Parameters<AnnotateShowRequest>) -> String {
+        let va = match Va::parse(&a.addr) {
+            Ok(v) => v,
+            Err(e) => return bad_addr(e),
+        };
+        match n0xis_project::annotate::get(va) {
+            Ok(Some(rec)) => emit(Response::success(schema::v1::ANNOTATION, rec)),
+            Ok(None) => err("not-found", format!("no annotations recorded at {va}")),
+            Err(e) => err("annotate-failed", e.to_string()),
+        }
+    }
+
+    #[tool(description = "Every annotated address, va-sorted.")]
+    fn annotate_list(&self) -> String {
+        match n0xis_project::annotate::list() {
+            Ok(records) => emit(Response::success(schema::v1::ANNOTATION, json!({ "count": records.len(), "records": records }))),
+            Err(e) => err("annotate-failed", e.to_string()),
         }
     }
 }
