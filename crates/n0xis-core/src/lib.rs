@@ -12,6 +12,7 @@
 //! added in Phase 3 as more `impl Pass` — same shape, same context.
 
 mod aob;
+mod aslr;
 mod decode;
 mod decomp;
 mod demangle;
@@ -24,6 +25,7 @@ mod lift;
 mod manifest;
 mod optimize;
 mod pointer;
+mod provenance;
 mod render;
 mod scan;
 mod signatures;
@@ -38,6 +40,7 @@ mod xref;
 mod xref_string;
 
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
+pub use aslr::{rebase, rva_of, va_at};
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
 pub use demangle::demangle;
@@ -51,6 +54,7 @@ pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
 pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};
 pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, PointerPathInput, PointerPathPass, PointerRoot};
+pub use provenance::{ProvenanceEntry, ProvenanceGraph, ProvenanceHit, ProvenanceInput, ProvenancePass};
 pub use render::{render_condition, render_expr, render_stmt, negate_condition, RenderNames};
 pub use scan::{
     FilterCriterion, FilterInput, FilterPass, ScanArtifact, ScanCriterion, ScanInput, ScanMatch,

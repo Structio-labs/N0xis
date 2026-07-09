@@ -20,9 +20,10 @@ use n0xis_core::{
     build_trampoline, parse_aob, resolve_pointer_path, AobInput, AobScanPass, CfgInput, CfgPass,
     Ctx, DecompInput, DecompPass, DecompStyle, DiscoverInput, DiscoverPass, DissectInput,
     DissectPass, FilterCriterion, FilterInput, FilterPass, ManifestCandidate, ManifestInput,
-    ManifestPass, Pass, PointerPathInput, PointerPathPass, PointerRoot, ScanCriterion, ScanInput,
-    ScanPass, ScanValue, StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueType,
-    XrefDir, XrefInput, XrefPass,
+    ManifestPass, Pass, PointerPathInput, PointerPathPass, PointerRoot, ProvenanceHit,
+    ProvenanceInput, ProvenancePass, ScanCriterion, ScanInput, ScanPass, ScanValue,
+    StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueType, XrefDir, XrefInput,
+    XrefPass,
 };
 use n0xis_pipeline::Pipeline;
 use n0xis_sources::{
@@ -108,6 +109,10 @@ enum Command {
     /// `.n0xt` cheat/analysis tables.
     #[command(subcommand)]
     Table(TableCmd),
+    /// Fuse a live watchpoint hit with the SSA decompiler: what code, in
+    /// what recovered function, explains a runtime value (Phase 4c).
+    #[command(subcommand)]
+    Provenance(ProvenanceCmd),
 }
 
 #[derive(Subcommand)]
@@ -146,6 +151,34 @@ enum WatchKindArg {
     Execute,
     Write,
     ReadOrWrite,
+}
+
+#[derive(Subcommand)]
+enum ProvenanceCmd {
+    /// Arm a hardware watchpoint on a value's address, wait for one hit,
+    /// then explain it: resolved module+function, decompiled statement.
+    Trace(ProvenanceTraceArgs),
+}
+
+#[derive(Args)]
+struct ProvenanceTraceArgs {
+    #[arg(long)]
+    pid: u32,
+    /// The value's address to explain (hex `0x…`).
+    #[arg(long)]
+    addr: String,
+    #[arg(long, value_enum, default_value_t = WatchKindArg::Write)]
+    kind: WatchKindArg,
+    #[arg(long, default_value_t = 4)]
+    len: u8,
+    #[arg(long, default_value_t = 30000)]
+    timeout_ms: u64,
+    /// Record the explained provenance onto an existing (or new) `.n0xt`
+    /// table entry — "record with provenance" (CONCEPT §10/§11).
+    #[arg(long)]
+    save_to_table: Option<String>,
+    #[arg(long)]
+    entry: Option<String>,
 }
 
 impl From<WatchKindArg> for WatchKind {
@@ -924,6 +957,7 @@ fn main() {
         Command::Table(TableCmd::Show(a)) => cmd_table_show(a, pretty),
         Command::Table(TableCmd::Rm(a)) => cmd_table_rm(a, pretty),
         Command::Table(TableCmd::Freeze(a)) => cmd_table_freeze(a, pretty),
+        Command::Provenance(ProvenanceCmd::Trace(a)) => cmd_provenance_trace(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -2374,6 +2408,110 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
         Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
         Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
     }
+}
+
+/// The principal ROADMAP Phase 4c loop, in one command: arm a hardware
+/// watchpoint on a value's address (Phase 4b), and on a hit, explain it —
+/// resolved module/function, decompiled statement (Phase 3's SSA
+/// decompiler) — then optionally record that explanation onto a `.n0xt`
+/// entry ("record with provenance", CONCEPT §10/§11).
+fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
+    use n0xis_sources::ModuleProvider;
+
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let main_module = live.main_module().cloned();
+    let label = live.label();
+    drop(live);
+
+    let kind: WatchKind = a.kind.into();
+    let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
+        Ok(o) => o,
+        Err(e) => return ir_err("watch-failed", &e.to_string(), pretty),
+    };
+    let Some(hit) = outcome.hit else {
+        let data = json!({ "value_addr": addr, "entries": [], "timedOut": true });
+        return emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty);
+    };
+
+    // Re-attach fresh: the accessing instruction (rip) may belong to a
+    // different module than the one owning the watched data address, and we
+    // need a live `Ctx` to decompile it.
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
+    let arch = X64::new();
+    let ctx = Ctx::new(&live, &arch);
+
+    let access_kind = match a.kind {
+        WatchKindArg::Execute => "execute",
+        WatchKindArg::Write => "write",
+        WatchKindArg::ReadOrWrite => "read-or-write",
+    };
+    let (code_scan_start, code_scan_size) = match insn_module.as_ref().and_then(|m| live.section_range_of(m.base, ".text")) {
+        Some((start, size)) => (Some(start), size as usize),
+        None => (None, 0),
+    };
+    let graph = match ProvenancePass.run(
+        &ctx,
+        ProvenanceInput {
+            value_addr: addr,
+            hits: vec![ProvenanceHit { instruction_va: hit.rip, access_kind: access_kind.to_string() }],
+            module: insn_module,
+            code_scan_start,
+            code_scan_size,
+        },
+    ) {
+        Ok(g) => g,
+        Err(e) => return ir_err("provenance-failed", &e.to_string(), pretty),
+    };
+
+    let mut saved_to: Option<String> = None;
+    if let (Some(table_name), Some(entry_name)) = (&a.save_to_table, &a.entry) {
+        let mut entry = n0xis_project::table::load(table_name)
+            .ok()
+            .and_then(|t| t.entries.into_iter().find(|e| e.name.eq_ignore_ascii_case(entry_name)))
+            .unwrap_or_else(|| TableEntry {
+                name: entry_name.clone(),
+                locator: TableLocator::Address { va: addr },
+                value_type: TableValueType::U32,
+                description: None,
+                hotkey: None,
+                groups: Vec::new(),
+                frozen: false,
+                freeze_value: None,
+                provenance: Default::default(),
+                verification: Default::default(),
+            });
+        if let Some(e) = graph.entries.first() {
+            let note = e.decompiled_context.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+            entry.provenance = n0xis_contracts::Provenance {
+                function_va: e.function_va,
+                struct_type: None,
+                field_offset: None,
+                note: (!note.is_empty()).then_some(note),
+            };
+        }
+        entry.verification.last_confirmed_unix = Some(n0xis_project::patch::now_unix_secs());
+        match n0xis_project::table::add_entry(table_name, entry) {
+            Ok(_) => saved_to = Some(format!("{table_name}::{entry_name}")),
+            Err(e) => return ir_err("table-save-failed", &e.to_string(), pretty),
+        }
+    }
+
+    let mut data = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
+    if let (Some(s), serde_json::Value::Object(map)) = (saved_to, &mut data) {
+        map.insert("savedTo".to_string(), json!(s));
+    }
+    emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty)
 }
 
 fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {

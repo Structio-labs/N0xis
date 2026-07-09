@@ -175,9 +175,19 @@ impl LiveProcess {
     /// unlike `StaticPe` we parse the section table from RAM). `name` is any
     /// section, not just `.text` — e.g. `.rdata` for string-literal scanning.
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
-        let base = self.main_module()?.base;
-        let hdr = self.read(base, 0x1000).ok()?;
-        parse_section_range(&hdr, base.0, name)
+        self.section_range_of(self.main_module()?.base, name)
+    }
+
+    /// Same as [`section_range`](Self::section_range), but for *any* loaded
+    /// module by its base — not just the main one. Needed once an address
+    /// (e.g. a watchpoint hit's `rip`) can fall in a DLL rather than the
+    /// main image (ROADMAP Phase 4c: function resolution must scan the
+    /// *code* section, never the module base — that's the header page, a
+    /// separate, much smaller VAD region that `MemorySource::read`'s
+    /// read-up-to-region-end semantics would silently clamp to).
+    pub fn section_range_of(&self, module_base: Va, name: &str) -> Option<(Va, u64)> {
+        let hdr = self.read(module_base, 0x1000).ok()?;
+        parse_section_range(&hdr, module_base.0, name)
     }
 
     /// Walk the process address space via `VirtualQueryEx`, up to `limit`

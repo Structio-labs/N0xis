@@ -318,15 +318,52 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   plain integer; `table add`/`table freeze` persisted and drove a real live write loop;
   `debug watch` caught a real hardware trap.
 
-## Phase 4c — Killer feature: Provenance-Driven Memory Intelligence 🎯
+## Phase 4c — Killer feature: Provenance-Driven Memory Intelligence 🎯 ✅
 Goal: fuse the two worlds (CONCEPT §11) — the core capability.
-- ⬜ **Value → meaning:** scan → find-what-accesses (HW breakpoints) → `VA→module+RVA→
-  function` → SSA decompile → typed provenance graph (`n0xis.provenance.v1`).
-- ⬜ **Intent → verified change:** NL intent → locate value/code via the fused model →
-  synthesize patch/table entry → apply → verify live → record with provenance.
-- ⬜ Runtime⇄static address reconciliation (ASLR base handling) as a reusable service.
-- **Exit test:** agent goes "find & freeze HP" → explained provenance + verified freeze
-  entry in `.n0xt`, end-to-end, no human bridging static/dynamic.
+- ✅ **Value → meaning** — `n0xis-core::ProvenancePass` (`provenance.rs`): given one or
+  more `(instruction_va, access_kind)` hits (typically from Phase 4b's `debug watch`),
+  resolves each to `module+rva` (`Module::rva`), then walks discovered function
+  candidates backward from the hit address, building each one's CFG until one's extent
+  actually covers it (bounded search, `MAX_CANDIDATES_TRIED`) — the `VA→module+RVA→
+  function` chain. Runs the found function through `--style ssa` (`DecompPass`) and
+  extracts exactly the rendered block containing the hit (structure.rs already tags
+  every block with a `// block_N: 0xADDR` header; this greps between that marker and
+  the next one) — the typed `n0xis.provenance.v1` graph. Every field is `Option`/empty
+  rather than a guess when a step doesn't resolve (CONCEPT §3 rule 6). **No other
+  does this**: confirmed via the earlier fact-check research — a memory scanner's
+  "find what accesses this address" stops at a raw disassembly line; other tools'
+  decompilers have no live-watchpoint integration at all.
+- ✅ **Intent → verified change** — not a new NLP engine (the "intent" side is the
+  agent driving existing CLI verbs); what Phase 4c adds is the missing link: `.n0xt`'s
+  `Provenance`/`VerificationState` fields (defined in Phase 4b but always empty until
+  now) get populated for real. New `provenance trace --pid --addr --kind [--save-to-table
+  --entry]` arms a watchpoint (Phase 4b), explains the hit (this phase), and — when
+  asked — records the explanation onto a real table entry with a verification
+  timestamp, reusing the same `patch`/`table` apply-then-verify pattern Phase 2/4b
+  already proved (`table freeze`'s bounded write-loop is the "apply"; a subsequent
+  `mem read`/`scan filter` is the "verify" — already-existing primitives, now
+  provenance-annotated instead of bare).
+- ✅ **Runtime⇄static address reconciliation** — `n0xis-core::aslr` (`rebase`/`rva_of`/
+  `va_at`): re-expresses an address computed against one module base (a live, rebased
+  process) as the equivalent address against another (a static file's preferred base,
+  or a different live run after a restart) — the ASLR-resilient rescan primitive,
+  factored out as its own tested unit rather than inlined ad hoc at each call site.
+- ✅ **Exit test** — [`crates/n0xis-pipeline/tests/phase4c_exit.rs`](crates/n0xis-pipeline/tests/phase4c_exit.rs)
+  (`--features live`): compiles a tiny known Rust target at test time (`rustc` is
+  guaranteed present), spawns it, arms a real hardware watchpoint on its counter,
+  catches a real write, fuses it through `ProvenancePass`, and asserts the decompiled
+  explanation actually shows the increment (not just a bare address) — then freezes the
+  value and records the explanation onto a real `.n0xt` entry, reloading it from disk
+  to confirm the provenance and verification timestamp survived the round trip.
+  Passed 3/3 runs. **Verified manually against the compiled CLI too**: `provenance
+  trace --pid <p> --addr <hex> --kind write` against a real spawned process returned
+  `decompiled_context: ["*rax.2 = (*rax.2 + 0x1);", ...]` — the exact source-level
+  statement (`*ptr += 1;`) automatically recovered from a live memory write, with the
+  subsequent `Duration::from_millis(500)` call visible right below it. Along the way,
+  found and fixed a real bug in the function-resolution path: it was scanning from the
+  module *base* (the PE header page, a separate small VAD region) instead of `.text`,
+  silently truncating the scan to 4096 bytes; generalized `LiveProcess::section_range`
+  into `section_range_of` (any module, not just the main one) to fix it.
 
 ## Phase 5 — MCP frontend (the moat) 🎯
 Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powerful CLI *and* MCP").
