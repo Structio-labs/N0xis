@@ -1,11 +1,25 @@
 [package]
 name = "n0xis-mcp"
-description = "MCP frontend — agent-native tools over the same pipeline as the CLI. Placeholder in Phase 1; built out in Phase 5 (the moat)."
+description = "MCP frontend — agent-native tools over the same core API as the CLI (ROADMAP Phase 5)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "n0xis-mcp"
+path = "src/main.rs"
+
 [dependencies]
 n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+n0xis-core = { workspace = true }
 n0xis-pipeline = { workspace = true }
+n0xis-project = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+schemars = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+rmcp = { version = "2.2.0", features = ["schemars", "transport-io"] }

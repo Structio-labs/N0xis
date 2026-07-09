@@ -365,14 +365,54 @@ Goal: fuse the two worlds (CONCEPT §11) — the core capability.
   silently truncating the scan to 4096 bytes; generalized `LiveProcess::section_range`
   into `section_range_of` (any module, not just the main one) to fix it.
 
-## Phase 5 — MCP frontend (the moat) 🎯
+## Phase 5 — MCP frontend (the moat) 🎯 ✅
 Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powerful CLI *and* MCP").
-- ⬜ `n0xis-mcp` server exposing the pipeline as MCP tools over the same core API.
-- ⬜ Tools mirror CLI verbs + return the same schemas; add "explain" tools that
-  surface `n0xis.opt.delta.v1` / SSA / structuring reasoning to the agent.
-- ⬜ Session/attach state shared with CLI via `n0xis-project`.
-- **Exit test:** an agent drives attach → discover → decompile → explain end-to-end
-  through MCP only.
+- ✅ `n0xis-mcp` server exposing the same `n0xis-core`/`n0xis-sources` capabilities the
+  CLI drives, as MCP tools, built on the official [`rmcp`](https://docs.rs/rmcp) SDK's
+  macro pattern (`#[tool_router]`/`#[tool_handler(router = self.tool_router)]`) over
+  stdio transport. Binary: `n0xis-mcp`, spawned by an MCP client and driven over
+  JSON-RPC on stdin/stdout (`ServerHandler::serve(rmcp::transport::stdio())`).
+- ✅ **Tools mirror CLI verbs + return the same schemas**: 15 tools in `crates/n0xis-mcp/
+  src/tools.rs` — `doctor`, `process_ps`, `attach`, `module_list`, `disasm`,
+  `function_discover`, `function_trace`, `decomp_pseudo` (goto/structured/ssa),
+  `xref`, `xref_string`, `mem_read`, `mem_write`, `provenance_trace`, and the two
+  "explain" tools below. Every tool returns the exact serialized `{ok,data,meta}`
+  envelope (`n0xis_contracts::Response`) `n0xis-cli`'s `emit()` prints — an agent's
+  parsing code is identical whether it called the CLI or MCP (CONCEPT §3 rule 5).
+  Argument resolution (`pid`/`file` → a live/static source) lives in `n0xis-mcp::source`
+  — a scoped-down sibling of the CLI's `build_source` (no inline `--bytes`; MCP tool
+  calls always name a real target), not a shared crate yet since `n0xis-cli` is a
+  binary with no lib target — documented as worth hoisting into `n0xis-pipeline` if a
+  third frontend ever needs the same seam, rather than preemptively.
+  **Scoped out of this pass** (documented follow-on, not a silent gap): the CLI verbs
+  whose state today is bridged file-to-file across independent CLI invocations
+  (`scan value`/`filter`, `.n0xt` `table *`, `patch *`, `debug watch`) — an MCP server
+  is a long-lived process, so they deserve in-memory session state rather than a
+  straight port of the CLI's per-invocation file bridging; that's a separate design
+  decision from wiring the transport up in the first place.
+- ✅ **"Explain" tools surfacing decompiler reasoning**: `decomp_pseudo(style="ssa")`
+  already inlines the per-pass optimization delta (`PseudoFunction::delta`); on top of
+  that, `explain_opt_delta` runs the same pipeline and returns *only* `n0xis.opt.delta.v1`
+  (each entry: pass name, address, summary of what changed — copy/const/expr
+  propagation, DCE) — a dedicated "why" tool distinct from getting the full pseudo-C.
+  `provenance_trace` is the principal explain tool (Phase 4c's fusion, now reachable over
+  MCP): arms a real hardware watchpoint and returns the exact decompiled statement
+  responsible for a live memory access.
+- ✅ **Session/attach state shared with CLI via `n0xis-project`**: new `n0xis-project::
+  session` module (`.n0x/session.json`, same storage-only split as `selection`/`table`)
+  — `attach` (pid or file) records the session default; every other tool falls back to
+  it when `pid`/`file` is omitted, and the CLI reads the same file in the same
+  `.n0x/` project.
+- ✅ **Exit test** — [`crates/n0xis-mcp/tests/phase5_exit.rs`](crates/n0xis-mcp/tests/phase5_exit.rs):
+  spawns the *real* `n0xis-mcp` binary as a child process and drives it over raw
+  JSON-RPC/stdio — the same way an actual MCP client would, proving the transport
+  wiring rather than just the tool function bodies — against a real, disposable
+  Windows process (compiled at test time via `rustc`, same trick as `phase4c_exit.rs`).
+  Drives `attach{pid}` → `function_discover{}` (pid resolved from the session default,
+  not repeated) → `decomp_pseudo{addr,style:"ssa"}` → `explain_opt_delta{addr}`, and
+  also asserts `.n0x/session.json` was actually written to disk by `attach` (the
+  CLI-sharing contract, not just an in-memory convenience). 1/1 passing; zero warnings
+  workspace-wide.
 
 ## Phase 6 — Persistence, incremental, performance 🎯
 - ⬜ `n0xis-project` analysis DB as versioned truth (names/types/comments/patches).

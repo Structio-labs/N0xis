@@ -27,6 +27,7 @@
 pub mod dump;
 pub mod patch;
 pub mod selection;
+pub mod session;
 pub mod table;
 
 /// Guards `std::env::set_current_dir` across every test in this crate.
