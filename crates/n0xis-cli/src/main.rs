@@ -13,17 +13,17 @@
 mod emit;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use n0xis_arch::X64;
+use n0xis_arch::{Arch, Arm64, X64};
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
 use n0xis_core::{
     build_trampoline, parse_aob, resolve_pointer_path, AobInput, AobScanPass, CfgInput,
-    Ctx, DecompInput, DecompPass, DecompStyle, DiscoverInput, DiscoverPass, DissectInput,
-    DissectPass, FilterCriterion, FilterInput, FilterPass, ManifestCandidate, ManifestInput,
-    ManifestPass, Pass, PointerPathInput, PointerPathPass, PointerRoot, ProvenanceHit,
-    ProvenanceInput, ProvenancePass, ScanCriterion, ScanInput, ScanPass, ScanValue,
-    StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueType, XrefDir, XrefInput,
-    XrefPass,
+    Ctx, DecompInput, DecompPass, DecompStyle, DeobfuscatePass, DiffInput, DiffPass,
+    DiscoverInput, DiscoverPass, DissectInput, DissectPass, FilterCriterion, FilterInput,
+    FilterPass, ManifestCandidate, ManifestInput, ManifestPass, Pass, PointerPathInput,
+    PointerPathPass, PointerRoot, ProvenanceHit, ProvenanceInput, ProvenancePass,
+    ScanCriterion, ScanInput, ScanPass, ScanValue, SsaPass, StringXrefInput, StringXrefPass,
+    TraceInput, TracePass, ValueSetPass, ValueType, XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::{Pipeline, cfg_cached};
 use n0xis_sources::{
@@ -127,6 +127,49 @@ enum Command {
     /// SSH by the *other* machine, not run directly: e.g. locally, run
     /// `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...`.
     RemoteServe(RemoteServeArgs),
+    /// Structural diffing at the IR/pseudo level (Phase 7): agent-friendly
+    /// change reports between two functions (e.g. two builds of a binary).
+    #[command(subcommand)]
+    Diff(DiffCmd),
+}
+
+#[derive(Subcommand)]
+enum DiffCmd {
+    /// Decompile two functions (from two sources/addresses) and diff their
+    /// pseudo-C line-by-line.
+    Functions(DiffFunctionsArgs),
+}
+
+#[derive(Args)]
+struct DiffFunctionsArgs {
+    #[arg(long)]
+    a_pid: Option<u32>,
+    #[arg(long)]
+    a_file: Option<String>,
+    /// Inline bytes source for the `a` side, e.g. "48 89 c8 c3".
+    #[arg(long)]
+    a_bytes: Option<String>,
+    /// Function start address on the `a` (baseline) side.
+    #[arg(long)]
+    a_addr: String,
+    #[arg(long)]
+    b_pid: Option<u32>,
+    #[arg(long)]
+    b_file: Option<String>,
+    /// Inline bytes source for the `b` side.
+    #[arg(long)]
+    b_bytes: Option<String>,
+    /// Function start address on the `b` (comparison) side.
+    #[arg(long)]
+    b_addr: String,
+    #[arg(long, default_value_t = 4096)]
+    size: usize,
+    /// `goto` (default: stable/deterministic, best for diffing), `structured`, or `ssa`.
+    #[arg(long, value_enum, default_value_t = PseudoStyle::Goto)]
+    style: PseudoStyle,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -542,6 +585,9 @@ struct DiscoverArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
     /// Inline bytes source; requires `--start` for the base address.
     #[arg(long)]
     bytes: Option<String>,
@@ -641,6 +687,12 @@ enum IrCmd {
     Slice(IrSliceArgs),
     /// Per-function index with quality scoring, over discovered candidates.
     Manifest(ManifestArgs),
+    /// Light value-set / alias analysis over SSA (Phase 7): the bounded set
+    /// of possible values each SSA variable can hold.
+    ValueSet(IrArgs),
+    /// Pattern-based deobfuscation report (Phase 7): junk instructions and
+    /// value-set-provable opaque predicates.
+    Deobfuscate(IrArgs),
 }
 
 #[derive(Args)]
@@ -956,6 +1008,9 @@ struct IrArgs {
     /// Function start address (hex `0x…`, `…h`, or decimal).
     #[arg(long)]
     addr: String,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
     /// Byte window to analyze (the function's max extent).
     #[arg(long, default_value_t = 4096)]
     size: usize,
@@ -1067,6 +1122,8 @@ fn main() {
         Command::Ir(IrCmd::Dot(a)) => cmd_ir(a, IrView::Dot, pretty),
         Command::Ir(IrCmd::Slice(a)) => cmd_ir_slice(a, pretty),
         Command::Ir(IrCmd::Manifest(a)) => cmd_ir_manifest(a, pretty),
+        Command::Ir(IrCmd::ValueSet(a)) => cmd_ir_value_set(a, pretty),
+        Command::Ir(IrCmd::Deobfuscate(a)) => cmd_ir_deobfuscate(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Function(FunctionCmd::Trace(a)) => cmd_function_trace(a, pretty),
         Command::Decomp(DecompCmd::Pseudo(a)) => cmd_decomp(a, pretty),
@@ -1102,6 +1159,7 @@ fn main() {
         Command::Snapshot(SnapshotCmd::Info(a)) => cmd_snapshot_info(a, pretty),
         Command::Snapshot(SnapshotCmd::List) => cmd_snapshot_list(pretty),
         Command::RemoteServe(_) => unreachable!("handled before this match, see main()"),
+        Command::Diff(DiffCmd::Functions(a)) => cmd_diff_functions(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -1243,7 +1301,10 @@ where
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let arch = X64::new();
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(a) => a,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
     let input = CfgInput {
         start,
         max_bytes: a.size,
@@ -1264,10 +1325,10 @@ where
     // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
     // call targets resolve to names.
     match &src {
-        Src::Static(pe) => work(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, label),
-        Src::Live(l) => work(&Ctx::new(l.as_ref(), &arch), input, label),
-        Src::Snap(s) => work(&Ctx::new(s, &arch), input, label),
-        Src::Remote(r) => work(&Ctx::new(r.as_ref(), &arch), input, label),
+        Src::Static(pe) => work(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, label),
+        Src::Live(l) => work(&Ctx::new(l.as_ref(), arch.as_ref()), input, label),
+        Src::Snap(s) => work(&Ctx::new(s, arch.as_ref()), input, label),
+        Src::Remote(r) => work(&Ctx::new(r.as_ref(), arch.as_ref()), input, label),
     }
 }
 
@@ -1280,6 +1341,100 @@ fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
 fn cmd_decomp(a: DecompArgs, pretty: bool) -> bool {
     let style: DecompStyle = a.style.into();
     run_ir(&a.ir, pretty, move |ctx, input, label| finish_decomp(ctx, input, style, label, pretty))
+}
+
+fn cmd_ir_value_set(a: IrArgs, pretty: bool) -> bool {
+    run_ir(&a, pretty, |ctx, input, label| {
+        let cfg = match cfg_cached(ctx, input) {
+            Ok((c, _cached)) => c,
+            Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
+        };
+        let ssa = match SsaPass.run(ctx, cfg) {
+            Ok(s) => s,
+            Err(e) => return ir_err("ssa-failed", &e.to_string(), pretty),
+        };
+        match ValueSetPass.run(ctx, ssa) {
+            Ok(art) => emit(&Response::success(schema::v1::VALUE_SET, art).with_source(label), pretty),
+            Err(e) => ir_err("value-set-failed", &e.to_string(), pretty),
+        }
+    })
+}
+
+fn cmd_ir_deobfuscate(a: IrArgs, pretty: bool) -> bool {
+    run_ir(&a, pretty, |ctx, input, label| {
+        let cfg = match cfg_cached(ctx, input) {
+            Ok((c, _cached)) => c,
+            Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
+        };
+        match DeobfuscatePass.run(ctx, cfg) {
+            Ok(art) => emit(&Response::success(schema::v1::DEOBFUSCATE, art).with_source(label), pretty),
+            Err(e) => ir_err("deobfuscate-failed", &e.to_string(), pretty),
+        }
+    })
+}
+
+/// Decompile one function (`goto` style by default — stable/deterministic,
+/// the best shape to diff) and return its pseudo-C lines + provenance label.
+fn decompile_one(
+    pid: Option<u32>,
+    file: Option<&str>,
+    bytes: Option<&str>,
+    addr: Va,
+    size: usize,
+    style: DecompStyle,
+    arch: &dyn Arch,
+) -> Result<(Vec<String>, String), (String, String)> {
+    let (src, label, _) = build_source(pid, file, bytes, None, None, addr)?;
+    let input = CfgInput { start: addr, max_bytes: size, auto_end: true };
+    let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
+        let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
+        let pf = DecompPass
+            .run(ctx, DecompInput { cfg, style })
+            .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
+        Ok(pf.pseudo)
+    };
+    let pseudo = match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch)),
+        Src::Snap(s) => run(&Ctx::new(s, arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch)),
+    }?;
+    Ok((pseudo, label))
+}
+
+fn cmd_diff_functions(a: DiffFunctionsArgs, pretty: bool) -> bool {
+    let a_addr = match Va::parse(&a.a_addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let b_addr = match Va::parse(&a.b_addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let style: DecompStyle = a.style.into();
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(a) => a,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
+
+    let (pseudo_a, label_a) = match decompile_one(a.a_pid, a.a_file.as_deref(), a.a_bytes.as_deref(), a_addr, a.size, style, arch.as_ref()) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&format!("a-{c}"), &m, pretty),
+    };
+    let (pseudo_b, label_b) = match decompile_one(a.b_pid, a.b_file.as_deref(), a.b_bytes.as_deref(), b_addr, a.size, style, arch.as_ref()) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&format!("b-{c}"), &m, pretty),
+    };
+
+    let snap = Snapshot::builder().build();
+    let ctx = Ctx::new(&snap, arch.as_ref());
+    match DiffPass.run(&ctx, DiffInput { a: pseudo_a, b: pseudo_b }) {
+        Ok(art) => emit(
+            &Response::success(schema::v1::DIFF, art).with_source(format!("a={label_a} b={label_b}")),
+            pretty,
+        ),
+        Err(e) => ir_err("diff-failed", &e.to_string(), pretty),
+    }
 }
 
 fn finish_decomp(ctx: &Ctx, input: CfgInput, style: DecompStyle, label: String, pretty: bool) -> bool {
@@ -1313,6 +1468,17 @@ fn ir_err(code: &str, msg: &str, pretty: bool) -> bool {
 
 fn opt_hex(s: &Option<String>) -> Result<Option<Va>, String> {
     s.as_deref().map(Va::parse).transpose().map_err(|e| e.to_string())
+}
+
+/// Resolve `--arch` (default `x64`) into a concrete [`Arch`] (ROADMAP Phase 7:
+/// multi-arch via the ISA seam). `n0xis_core` never sees which one was
+/// picked — it only ever runs against `&dyn Arch`.
+fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
+    match name.unwrap_or("x64").to_ascii_lowercase().as_str() {
+        "x64" | "x86-64" | "x86_64" => Ok(Box::new(X64::new())),
+        "arm64" | "aarch64" => Ok(Box::new(Arm64::new())),
+        other => Err(format!("unknown --arch '{other}', expected x64|arm64")),
+    }
 }
 
 /// A resolved analysis source. Kept as an enum so the range-resolution and
@@ -1539,7 +1705,10 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-    let arch = X64::new();
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(a) => a,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
         Src::Live(l) => l.text_range(),
@@ -1560,10 +1729,10 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         }
     };
     match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
+        Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
     }
 }
 

@@ -15,7 +15,9 @@ mod aob;
 mod aslr;
 mod decode;
 mod decomp;
+mod deobfuscate;
 mod demangle;
+mod diff;
 mod discover;
 mod dissect;
 mod dom;
@@ -36,6 +38,7 @@ mod switch;
 mod trace;
 mod trampoline;
 mod typeinfer;
+mod valueset;
 mod xref;
 mod xref_string;
 
@@ -43,7 +46,9 @@ pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
 pub use aslr::{rebase, rva_of, va_at};
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
+pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBranch};
 pub use demangle::demangle;
+pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use discover::{DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
 pub use dot::{DotArtifact, dot};
@@ -71,6 +76,7 @@ pub use typeinfer::{
 };
 pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};
+pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 

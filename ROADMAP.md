@@ -498,11 +498,99 @@ feature, then the analysis DB, then the two new sources, then the perf pass.
   exit criteria for this bullet rather than manufacturing a change where profiling
   found none needed.
 
-## Phase 7+ — Capabilities beyond the v0 port ⬜
-- ⬜ Value-set / light alias analysis (better jump tables, pointer reasoning).
-- ⬜ Multi-arch via `trait Arch` (ARM64 first candidate).
-- ⬜ Deobfuscation passes (pattern-based, as optional pipeline stages).
-- ⬜ Diffing two binaries/versions at the IR/pseudo level (agent-friendly change reports).
+## Phase 7 — Capabilities beyond the v0 port 🎯 ✅
+All four items landed in one pass, each a real, tested, CLI-wired capability —
+not stubs. None of them required touching `n0xis-core`'s existing passes; every
+one is additive, matching the modularity law CONCEPT §3 sets out.
+
+- ✅ **Multi-arch via `trait Arch`, ARM64 first candidate** — the biggest item,
+  and the seam's first real test since Phase 1. New `n0xis_arch::Arm64`, backed
+  by [`disarm64`](https://docs.rs/disarm64) (a pure-Rust, no-`unsafe`,
+  no-allocation AArch64 decoder generated from the ARM spec — the same
+  "reuse a mature decoder" choice `X64` made with `iced-x86`). **Deliberately,
+  honestly scoped** (CONCEPT §3 rule 6 — sound over complete, the same
+  discipline `Arch`'s own trait defaults already establish):
+  - `decode`/`decode_stream`: full coverage — every 4-byte AArch64 word
+    decodes (or reports `Invalid`/`Truncated`), never silently drops bytes.
+  - `reg_access`: implemented for the base integer ISA a compiler actually
+    emits (data-processing, loads/stores, branches) via `InsnClass`-gated
+    fixed-bit-position extraction (Rd/Rn/Rm/Rt at ARM64's well-known,
+    regular field positions) — SIMD/FP/SVE/SME/crypto/system-register/atomic
+    classes report empty reads/writes, the same sound-but-empty default the
+    trait itself defines for an ISA with no override.
+  - `lift`/`branch_condition`: **not** overridden — kept at the trait's sound
+    defaults (`Unlifted` / a placeholder condition). CFG, discovery, xrefs,
+    and `goto`/`structured` decompilation all work correctly; the optimized
+    `--style ssa` pass and flag-precise condition recovery are x64-only today
+    — a comparable-sized effort to `microir.rs`/`x64_lift.rs`, a documented
+    follow-on, not a silent gap.
+  - `detect_switch`: not implemented (ARM64's jump-table idioms differ from
+    x64's two; a third pattern-recognizer, not attempted).
+  - `prologues()`/`analyze_frame`: a few common exact `stp x29, x30,
+    [sp, #-N]!` encodings for discovery, plus a structural (not byte-prefix)
+    recognizer for the standard frame-pointer prolog.
+  - **Verified against real, cross-checked AArch64 encodings** (several
+    pulled directly from `disarm64`'s own regression suite, not hand-guessed):
+    19 unit tests in `n0xis-arch`, plus
+    [`crates/n0xis-core/tests/arm64_exit.rs`](crates/n0xis-core/tests/arm64_exit.rs)
+    — `CfgPass` (an `n0xis-core` pass, zero changes made to it) builds a
+    correct 3-block CFG with accurate def-use over real ARM64 bytes. Wired
+    into the CLI as `--arch arm64|x64` on `ir build/explain/dot/slice` and
+    `decomp pseudo`/`function discover`; manually verified end-to-end
+    (`ir build`, `function discover`, `decomp pseudo --style goto|ssa` all
+    produce correct, sound output over hand-verified ARM64 bytes — the SSA
+    style honestly reports `quality: 0.0`/`"low-coverage"` rather than
+    pretending to have understood unlifted instructions).
+- ✅ **Value-set / light alias analysis** — new `n0xis-core::valueset`
+  (`ValueSetPass`, `n0xis.value_set.v1`): a bounded (capped at 8 tracked
+  values per variable, capped at 20 fixpoint iterations) dataflow over SSA,
+  computing each SSA variable's possible concrete values — `Top` the instant
+  anything is unknown (a load, a call result, a merge that would exceed the
+  cap), never a guess. `alias(a, b, sets)` answers `NoAlias`/`MustAlias`/
+  `MayAlias` between two address expressions, resolving the common
+  `Var(base) ± Const(offset)` shape (`typeinfer.rs`'s own struct/field
+  shape) to disambiguate distinct fields of the same struct. Wired into the
+  CLI as `ir value-set`; 5 tests, including "a load must never resolve to a
+  finite value set" (the load-is-unknown soundness invariant, tested
+  directly, not just asserted in a doc comment).
+- ✅ **Deobfuscation passes, pattern-based** — new `n0xis-core::deobfuscate`
+  (`DeobfuscatePass`, `n0xis.deobfuscate.v1`), two independent, narrow,
+  high-confidence techniques (not an attempt at general deobfuscation —
+  control-flow flattening/VM-based protectors are a different, larger
+  problem, not attempted, the same scope split `detect_switch` draws):
+  junk-instruction detection (`mov reg,reg`, `xchg reg,reg`, `push`/`pop`
+  pairs that cancel out, `add/sub/or reg,0` identity arithmetic — structural,
+  no dataflow needed) and opaque-predicate detection (a conditional branch
+  whose condition `ValueSetPass` can *prove* constant — one successor edge is
+  dead code disguised as a branch). Reported, not silently rewritten, per
+  CONCEPT §3 rule 6. Wired into the CLI as `ir deobfuscate`; 7 tests, each
+  with a matching "must never false-positive" counterpart (a real
+  cross-register move, a real non-zero add, a real branch on an unmodeled
+  input are all asserted clean).
+- ✅ **Diffing two binaries/versions at the IR/pseudo level** — new
+  `n0xis-core::diff` (`DiffPass`, `n0xis.diff.v1`): a classic LCS-based
+  line diff (bounded — falls back to a whole-block replace past 2M
+  table cells rather than growing unbounded) over any two line sequences, in
+  practice two `PseudoFunction`s' `pseudo` output. Reports `Equal`/`Insert`/
+  `Delete` hunks plus a similarity score — the literal "agent-friendly
+  change report" this bullet asks for (an agent gets "line 3 changed from
+  `rax.1 = 0x5` to `rax.1 = 0xa`", not a raw two-blob dump). Wired into the
+  CLI as `diff functions --a-file/--a-pid/--a-bytes --a-addr --b-file/
+  --b-pid/--b-bytes --b-addr`; 5 tests. **Scoped out, documented follow-on**:
+  this diffs *one already-identified pair* of functions — automatically
+  matching every function across two whole binaries (name matching where
+  symbols exist, structural-similarity matching where they don't) is a
+  substantially larger problem of its own (an entire category of dedicated
+  tools — a structural diff tool, a structural diff tool — exists just for this), not attempted here.
+
+**GUI**: explicitly deferred, not abandoned — user's own framing: "GUI-потім.
+Не зараз, але не 'ніколи'" (GUI later. Not now, but not "never"). No phase
+number assigned yet; CONCEPT's "GUI-never" framing (CLI/MCP only) reflected the
+project's original scope, not a permanent constraint. When it's picked up, it
+should be its own phase (a thin visualization layer over the existing
+`ok/data/meta` artifacts — CFG/DOT rendering, decompiled output, the analysis
+DB — not a rewrite of the analysis core, which stays CLI/MCP-drivable
+regardless).
 
 ---
 

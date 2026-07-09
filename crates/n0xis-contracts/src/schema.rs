@@ -79,6 +79,14 @@ pub mod v1 {
     pub const ANNOTATION: &str = "n0xis.annotation.v1";
     /// A captured, reloadable memory snapshot (`snapshot dump`, Phase 6).
     pub const SNAPSHOT: &str = "n0xis.snapshot.v1";
+    /// Per-SSA-variable value-set analysis (`ir value-set`, Phase 7).
+    pub const VALUE_SET: &str = "n0xis.value_set.v1";
+    /// Deobfuscated pseudo-C, with the removed junk logged (`decomp pseudo
+    /// --deobfuscate`, Phase 7).
+    pub const DEOBFUSCATE: &str = "n0xis.deobfuscate.v1";
+    /// A structural diff between two functions/binaries (`diff functions`,
+    /// Phase 7).
+    pub const DIFF: &str = "n0xis.diff.v1";
 
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }

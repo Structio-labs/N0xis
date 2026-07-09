@@ -11,6 +11,8 @@ n0xis-contracts = { workspace = true }
 serde = { workspace = true }
 iced-x86 = { workspace = true }
 thiserror = { workspace = true }
+disarm64 = "0.2.0"
+disarm64_defn = "0.2.0"
 
 [dev-dependencies]
 serde_json = { workspace = true }
