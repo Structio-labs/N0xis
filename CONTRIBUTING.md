@@ -1,0 +1,98 @@
+# Contributing to N0xis
+
+N0xis isn't public yet (see [README.md](README.md) for current status), but the
+contribution process is decided now so it doesn't need inventing under pressure
+once it is. This document explains how work gets found, claimed, and reviewed.
+
+## Where the rules come from
+
+- **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** — the non-negotiable
+  design rules (modularity, anti-hardcode, CLI+MCP parity, sound-over-complete).
+  Read this before writing code; PRs that violate it get sent back regardless of
+  how well they otherwise work.
+- **[CONCEPT.md](CONCEPT.md)** — why the architecture is shaped the way it is
+  (the crate boundaries, the pass model, the contract-first design).
+- **[ROADMAP.md](ROADMAP.md)** — what's built and how, phase by phase. Every
+  phase's write-up says what was verified and what was deliberately left out —
+  read the relevant phase before touching adjacent code.
+
+## How to build and test it
+
+See [README.md#building](README.md#building). Before opening a PR:
+
+```
+cargo build --workspace          # must be warning-free
+cargo test --workspace --features n0xis-pipeline/live
+```
+
+Zero warnings is enforced, not a suggestion — every phase in this project's
+history shipped with a clean build, and that's not going to change now.
+
+## How work gets claimed
+
+**[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** is the task list:
+new architecture ports, plugin-system design, deobfuscation extensions, MCP
+parity gaps, and everything else marked as a "documented follow-on" somewhere
+in `ROADMAP.md`. Each entry has a `Status` field.
+
+**Right now** (pre-launch, no Issues yet): open a PR against
+`docs/COMMUNITY_ROADMAP.md` changing an entry's `Status` from `Open` to
+`Claimed — @yourhandle`, in the same PR as your first commit, or as a
+standalone PR if you want to reserve it before writing code. This is a stopgap,
+not the intended long-term mechanism — editing a shared markdown file to claim
+work doesn't scale and doesn't notify anyone, which is exactly the failure mode
+GitHub Issues exist to solve.
+
+**Once the repo is public**, every `COMMUNITY_ROADMAP.md` entry becomes a
+GitHub Issue, and claiming works the way it does on any project of this shape —
+closest model is [Bevy](https://github.com/bevyengine/bevy), which runs
+contribution at real scale (hundreds of contributors) on exactly this system:
+
+- **Labels, not a shared checklist.** Issues get an area label (`A-*`, e.g.
+  `A-Arch`, `A-Decompiler`, `A-MCP`), a difficulty label (`D-Trivial` through
+  `D-Complex`), and a status label (`S-Ready-For-Implementation`,
+  `S-Needs-Design`, `S-Blocked`). You pick by area/difficulty, not by asking
+  permission first.
+- **Claim by comment or assignment**, not by editing a file. Comment "I'll take
+  this" (or self-assign, if you have that permission) before starting non-trivial
+  work, so two people don't build the same thing in parallel. Trivial fixes
+  don't need a claim — just open the PR.
+- **`S-Adopt-Me`** marks work whose original author stalled or stepped away —
+  explicitly available for someone else to pick up, no awkwardness about
+  "taking" someone's issue.
+- **Tracking issues** for large multi-part efforts (this project's own
+  `ROADMAP.md` phases are the analogue) — a checklist issue linking each
+  sub-task's own issue, so a big effort like "port to a new architecture" is
+  visible as one place to watch even though ten people might work on pieces
+  of it independently.
+
+This project will adopt the same shape at launch (a lightweight `A-`/`D-`/`S-`
+label set, not Bevy's full taxonomy — no point pre-building infrastructure for
+a scale we're not at yet).
+
+## What a good PR looks like here
+
+- **One module, one PR.** Don't bundle an architecture port with a decompiler
+  change — reviewers can't reason about coupled changes, and it makes bisecting
+  a regression harder later.
+- **Tests against real behavior, not just mocks.** Every phase in this
+  project's history that touched a live-process or on-disk-format capability
+  was verified against a real spawned process or a real system binary, not just
+  synthetic bytes. New capabilities should meet the same bar — see any
+  `tests/*_exit.rs` file for the pattern.
+- **Honest incompleteness over a silent gap.** If a capability doesn't cover
+  every case (a new architecture that doesn't yet implement `lift`, a pattern
+  matcher that only catches the common form), say so in a doc comment and
+  return the trait's sound default for the rest — never guess. This is
+  `docs/PRODUCT_POLICY.md`'s single most important rule and the one most PRs
+  get wrong on a first pass.
+- **No unrelated cleanup.** A feature PR that also reformats three unrelated
+  files makes review slower, not faster.
+
+## Design discussions
+
+For anything that changes a *contract* (a JSON schema shape, the `Arch` trait,
+the wire protocol a frontend depends on) — open a discussion before a PR.
+Once the repo is public this becomes a GitHub Discussion or an `S-Needs-Design`
+issue; for now, it's a conversation with the maintainer before you invest the
+implementation time.

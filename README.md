@@ -1,14 +1,20 @@
 # N0xis
 
-**Agent-native reverse-engineering *and* live-memory toolkit for x64/ARM64
-Windows** — a synthesis of other tools (another tool / another tool-a source-level decompiler / another tool)
-and a memory scanner-class dynamic memory work, driven entirely through a stable CLI
-+ MCP contract, analyzing both static PE files and live processes through one and
-the same analysis pipeline.
+**Agent-native reverse-engineering *and* live-memory toolkit for x64 Windows,
+with early ARM64 support** — a synthesis of other tools (another tool /
+another tool-a source-level decompiler / another tool) and a memory scanner-class dynamic memory work, driven
+entirely through a stable CLI + MCP contract, analyzing both static PE files
+and live processes through one and the same analysis pipeline.
 
 > **Status: alpha.** ROADMAP Phases 1–7 are complete (see [ROADMAP.md](ROADMAP.md)
-> for the full history). The JSON contract is versioned (`n0xis.*.v1`, breaking
-> shape changes bump the version) but hasn't been exercised by outside users yet —
+> for the full history) — **except ARM64, which is implemented and passes its
+> own test suite but needs substantially more real-world verification before
+> it should be trusted the way x64 is** (a real register-naming bug was found
+> and fixed only once tested against genuine compiler output — see ROADMAP.md's
+> Phase 7 for the full account; it's an argument for more testing, not a
+> reason to distrust everything, but "implemented" and "verified" aren't the
+> same claim). The JSON contract is versioned (`n0xis.*.v1`, breaking shape
+> changes bump the version) but hasn't been exercised by outside users yet —
 > expect some shapes to still move. The archived v0 implementation lives in
 > [`archive/`](archive/) and was the reference for this rewrite.
 
@@ -68,10 +74,12 @@ Engine capabilities before making this claim.)
   `annotate` command that keeps names/types/comments at an address as
   **versioned truth** — every change appended to history, nothing silently
   overwritten.
-- **Multi-arch**: x64 (via `iced-x86`, full pipeline) and **ARM64** (via
-  `disarm64`, a pure-Rust decoder — CFG/discovery/xrefs and `goto`/`structured`
-  decompilation; the optimized SSA pass and flag-precise conditions are x64-only
-  for now, a documented gap, not a silent one).
+- **Multi-arch**: x64 (via `iced-x86`, full pipeline, battle-tested) and
+  **ARM64** (via `disarm64`, a pure-Rust decoder — CFG/discovery/xrefs and
+  `goto`/`structured` decompilation; the optimized SSA pass and flag-precise
+  conditions are x64-only for now, a documented gap, not a silent one).
+  **ARM64 is early**: implemented and self-tested, but not yet verified to
+  the standard x64 is — see the status note above.
 - **Value-set / light alias analysis**: bounded dataflow over SSA answering
   "what values can this variable actually hold" and "can these two pointers
   touch the same memory."
@@ -189,6 +197,14 @@ archive/           v0 reference implementation
   the seams, the dynamic-memory layer, the `.n0xt` table format.
 - **[ROADMAP.md](ROADMAP.md)** — the full phased build history, Phase 1 through
   Phase 7, with what's verified and what's explicitly scoped out at each step.
+- **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** — the non-negotiable
+  design rules every change is held to (modularity, anti-hardcode, CLI+MCP
+  parity, sound-over-complete).
+- **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** — claimable work:
+  new architecture ports, the plugin-system proposal, and every gap the
+  project's own docs already flag as a "documented follow-on."
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to build, test, and claim work
+  from the community roadmap above.
 - **[docs/CLI_COMMANDS_v0.md](docs/CLI_COMMANDS_v0.md)** — the v0 CLI surface
   this rewrite preserved as a compatibility contract.
 - **[docs/KILLER_FEATURES.md](docs/KILLER_FEATURES.md)** — the scope

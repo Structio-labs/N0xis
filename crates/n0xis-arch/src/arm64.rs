@@ -219,16 +219,19 @@ fn direct_target(bits: u32, va: Va, class: InsnClass) -> Option<Va> {
 
 /// GPR name for encoded register number `n` (0-31), honoring the `sf` bit
 /// (bit 31, 1 = 64-bit `x`, 0 = 32-bit `w`) that selects width across nearly
-/// every base-ISA form. `sp_form` picks the `sp`/`wsp` vs `xzr`/`wzr` reading
-/// of register 31 — approximated as "true" (sp) for address-computation
-/// register positions (`Rn` in loads/stores/adds) and "false" (zr) for
-/// value positions (`Rd`/`Rm`/`Rt`), which matches the overwhelming majority
-/// of real encodings; a known, documented simplification (not a soundness
-/// issue — the name is still used consistently for def-use within one
-/// instruction).
-fn gpr_name(bits: u32, n: u32, sp_form: bool) -> String {
+/// every base-ISA form. `want_zr` selects which reading of register 31 this
+/// specific operand position permits: **not every instruction class can
+/// encode `sp`** — only `ADDSUB_IMM`'s `Rd`/`Rn` and a load/store's base
+/// `Rn` can; every other GPR position (register-form ALU operands, `Rt`
+/// transfer registers, branch registers) is architecturally `xzr`-only, and
+/// getting this backwards silently mislabels the classic `sub sp, sp, #N`
+/// prologue and any `xzr`-using idiom (`madd x, y, z, xzr`, `orr x0, xzr,
+/// xzr` as a `mov #0`) as touching the stack pointer instead — caught
+/// against real, compiler-generated AArch64 code, not just hand-picked
+/// bytes; see the call sites in [`Arch::reg_access`] for the per-class rule.
+fn gpr_name(bits: u32, n: u32, want_zr: bool) -> String {
     let is_64 = bitrange(bits, 31, 31) == 1;
-    get_int_reg_name(is_64, n as u8, sp_form).to_string()
+    get_int_reg_name(is_64, n as u8, want_zr).to_string()
 }
 
 fn build_insn(bits: u32, va: Va) -> DecodedInsn {
@@ -313,10 +316,17 @@ impl Arch for Arm64 {
         let rm = bitrange(bits, 20, 16);
         let rt2_ra = bitrange(bits, 14, 10);
 
+        // `want_zr = false` (sp-eligible) only for ADDSUB_IMM's Rd/Rn (the
+        // `add/sub sp, sp, #N` prologue idiom) and a load/store's base Rn
+        // (`ldr x0, [sp, #16]`) — every other GPR position on AArch64 cannot
+        // encode `sp` at all, so it's always `want_zr = true` there.
         match class {
-            InsnClass::ADDSUB_IMM | InsnClass::LOG_IMM | InsnClass::MOVEWIDE | InsnClass::BITFIELD
-            | InsnClass::PCRELADDR => {
+            InsnClass::ADDSUB_IMM => {
                 access.writes.push(gpr_name(bits, rd_rt, false));
+                access.reads.push(gpr_name(bits, rn, false));
+            }
+            InsnClass::LOG_IMM | InsnClass::MOVEWIDE | InsnClass::BITFIELD | InsnClass::PCRELADDR => {
+                access.writes.push(gpr_name(bits, rd_rt, true));
                 if !matches!(class, InsnClass::MOVEWIDE | InsnClass::PCRELADDR) {
                     access.reads.push(gpr_name(bits, rn, true));
                 }
@@ -324,60 +334,60 @@ impl Arch for Arm64 {
             InsnClass::ADDSUB_SHIFT | InsnClass::ADDSUB_EXT | InsnClass::ADDSUB_CARRY
             | InsnClass::LOG_SHIFT | InsnClass::EXTRACT | InsnClass::CONDSEL
             | InsnClass::CONDCMP_REG | InsnClass::DP_2SRC => {
-                access.writes.push(gpr_name(bits, rd_rt, false));
+                access.writes.push(gpr_name(bits, rd_rt, true));
                 access.reads.push(gpr_name(bits, rn, true));
-                access.reads.push(gpr_name(bits, rm, false));
+                access.reads.push(gpr_name(bits, rm, true));
             }
             InsnClass::CONDCMP_IMM => {
                 access.reads.push(gpr_name(bits, rn, true));
             }
             InsnClass::DP_1SRC => {
-                access.writes.push(gpr_name(bits, rd_rt, false));
-                access.reads.push(gpr_name(bits, rn, false));
+                access.writes.push(gpr_name(bits, rd_rt, true));
+                access.reads.push(gpr_name(bits, rn, true));
             }
             InsnClass::DP_3SRC => {
-                access.writes.push(gpr_name(bits, rd_rt, false));
-                access.reads.push(gpr_name(bits, rn, false));
-                access.reads.push(gpr_name(bits, rm, false));
-                access.reads.push(gpr_name(bits, rt2_ra, false)); // Ra (accumulator)
+                access.writes.push(gpr_name(bits, rd_rt, true));
+                access.reads.push(gpr_name(bits, rn, true));
+                access.reads.push(gpr_name(bits, rm, true));
+                access.reads.push(gpr_name(bits, rt2_ra, true)); // Ra (accumulator)
             }
             InsnClass::LDST_IMM9 | InsnClass::LDST_IMM10 | InsnClass::LDST_POS
             | InsnClass::LDST_UNSCALED | InsnClass::LDST_UNPRIV | InsnClass::LDSTEXCL => {
-                access.reads.push(gpr_name(bits, rn, true));
+                access.reads.push(gpr_name(bits, rn, false));
                 if mnemonic.starts_with("st") {
-                    access.reads.push(gpr_name(bits, rd_rt, false));
+                    access.reads.push(gpr_name(bits, rd_rt, true));
                 } else if mnemonic.starts_with("ld") {
-                    access.writes.push(gpr_name(bits, rd_rt, false));
+                    access.writes.push(gpr_name(bits, rd_rt, true));
                 }
             }
             InsnClass::LDST_REGOFF => {
-                access.reads.push(gpr_name(bits, rn, true));
-                access.reads.push(gpr_name(bits, rm, false));
+                access.reads.push(gpr_name(bits, rn, false));
+                access.reads.push(gpr_name(bits, rm, true));
                 if mnemonic.starts_with("st") {
-                    access.reads.push(gpr_name(bits, rd_rt, false));
+                    access.reads.push(gpr_name(bits, rd_rt, true));
                 } else if mnemonic.starts_with("ld") {
-                    access.writes.push(gpr_name(bits, rd_rt, false));
+                    access.writes.push(gpr_name(bits, rd_rt, true));
                 }
             }
             InsnClass::LDSTPAIR_OFF | InsnClass::LDSTPAIR_INDEXED | InsnClass::LDSTNAPAIR_OFFS => {
-                access.reads.push(gpr_name(bits, rn, true));
+                access.reads.push(gpr_name(bits, rn, false));
                 if mnemonic.starts_with("st") {
-                    access.reads.push(gpr_name(bits, rd_rt, false));
-                    access.reads.push(gpr_name(bits, rt2_ra, false));
+                    access.reads.push(gpr_name(bits, rd_rt, true));
+                    access.reads.push(gpr_name(bits, rt2_ra, true));
                 } else if mnemonic.starts_with("ld") {
-                    access.writes.push(gpr_name(bits, rd_rt, false));
-                    access.writes.push(gpr_name(bits, rt2_ra, false));
+                    access.writes.push(gpr_name(bits, rd_rt, true));
+                    access.writes.push(gpr_name(bits, rt2_ra, true));
                 }
             }
             InsnClass::LOADLIT => {
-                access.writes.push(gpr_name(bits, rd_rt, false));
+                access.writes.push(gpr_name(bits, rd_rt, true));
             }
             InsnClass::COMPBRANCH | InsnClass::TESTBRANCH => {
-                access.reads.push(gpr_name(bits, rd_rt, false));
+                access.reads.push(gpr_name(bits, rd_rt, true));
             }
             InsnClass::BRANCH_REG => {
                 if matches!(mnemonic, "br" | "blr") {
-                    access.reads.push(gpr_name(bits, rn, false));
+                    access.reads.push(gpr_name(bits, rn, true));
                 }
             }
             _ => {}
@@ -547,5 +557,55 @@ mod tests {
         let arch = Arm64::new();
         let err = arch.decode(&[0x01, 0x02], Va(0x1000));
         assert!(matches!(err, Err(DecodeError::Truncated(_))));
+    }
+
+    // The next three cases regression-test a real bug: `gpr_name`'s boolean
+    // parameter, passed straight through to `disarm64::get_int_reg_name`'s
+    // `with_zr`, was being set backwards for every register-form ALU/branch
+    // operand, which any hand-picked single-instruction test happened not to
+    // exercise. It surfaced only when a *real*, LLVM-compiled AArch64 object
+    // file (`rustc --target aarch64-linux-android --emit=obj`, no hand-picked
+    // bytes at all) decoded `xzr`-using idioms as reading/writing `sp`
+    // instead — e.g. `madd x9, x9, x10, xzr` reported `reads: ["x9","x10","sp"]`.
+    // These three encodings are the exact ones that caught it, still fixed
+    // and cross-checked against `disarm64`'s own decoder output before being
+    // hardcoded here (not re-derived by hand a second time).
+
+    #[test]
+    fn madd_reads_xzr_not_sp_for_a_discarded_accumulator() {
+        let arch = Arm64::new();
+        // madd x9, x9, x10, xzr — a real LLVM-emitted "x9 = x9*x10" idiom
+        // (multiply-add with the accumulate operand discarded via xzr).
+        let di = arch.decode(&le(0x9b0a7d29), Va(0x1000)).unwrap();
+        assert_eq!(di.mnemonic, "madd");
+        let access = arch.reg_access(&di);
+        assert_eq!(access.reads, vec!["x9".to_string(), "x10".to_string(), "xzr".to_string()]);
+        assert_eq!(access.writes, vec!["x9".to_string()]);
+    }
+
+    #[test]
+    fn orr_with_xzr_operands_reads_xzr_not_sp() {
+        let arch = Arm64::new();
+        // orr x0, xzr, xzr — LLVM's "mov x0, #0" idiom (register-form ORR
+        // with both source operands zeroed via xzr, not an immediate move).
+        let di = arch.decode(&le(0xaa1f03e0), Va(0x1000)).unwrap();
+        assert_eq!(di.mnemonic, "orr");
+        let access = arch.reg_access(&di);
+        assert_eq!(access.reads, vec!["xzr".to_string(), "xzr".to_string()]);
+        assert_eq!(access.writes, vec!["x0".to_string()]);
+    }
+
+    #[test]
+    fn addsub_imm_is_the_one_class_that_really_can_read_and_write_sp() {
+        let arch = Arm64::new();
+        // sub sp, sp, #0x20 — the standard stack-allocation prologue
+        // instruction; ADDSUB_IMM's Rd/Rn are the only GPR positions in the
+        // base ISA that can actually encode `sp` (register 31 elsewhere
+        // always means `xzr`).
+        let di = arch.decode(&le(0xd10083ff), Va(0x1000)).unwrap();
+        assert_eq!(di.mnemonic, "sub");
+        let access = arch.reg_access(&di);
+        assert_eq!(access.reads, vec!["sp".to_string()]);
+        assert_eq!(access.writes, vec!["sp".to_string()]);
     }
 }

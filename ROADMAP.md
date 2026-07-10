@@ -498,14 +498,20 @@ feature, then the analysis DB, then the two new sources, then the perf pass.
   exit criteria for this bullet rather than manufacturing a change where profiling
   found none needed.
 
-## Phase 7 — Capabilities beyond the v0 port 🎯 ✅
+## Phase 7 — Capabilities beyond the v0 port 🎯 ✅ (ARM64 ⚠️ needs more real-world verification)
 All four items landed in one pass, each a real, tested, CLI-wired capability —
 not stubs. None of them required touching `n0xis-core`'s existing passes; every
-one is additive, matching the modularity law CONCEPT §3 sets out.
+one is additive, matching the modularity law CONCEPT §3 sets out. **One caveat,
+called out where it applies below**: ARM64 support is implemented and passes
+its own test suite, but "passes its own tests" and "verified" are not the same
+claim — a real bug (see the ARM64 bullet) was found only by testing against
+genuine compiler output, after the first pass had already been reported as
+verified. Don't repeat that mistake when reading this phase as "done."
 
-- ✅ **Multi-arch via `trait Arch`, ARM64 first candidate** — the biggest item,
-  and the seam's first real test since Phase 1. New `n0xis_arch::Arm64`, backed
-  by [`disarm64`](https://docs.rs/disarm64) (a pure-Rust, no-`unsafe`,
+- ⚠️ **Multi-arch via `trait Arch`, ARM64 first candidate — implemented,
+  *not yet* verified enough to call solid.** The biggest item, and the seam's
+  first real test since Phase 1. New `n0xis_arch::Arm64`, backed by
+  [`disarm64`](https://docs.rs/disarm64) (a pure-Rust, no-`unsafe`,
   no-allocation AArch64 decoder generated from the ARM spec — the same
   "reuse a mature decoder" choice `X64` made with `iced-x86`). **Deliberately,
   honestly scoped** (CONCEPT §3 rule 6 — sound over complete, the same
@@ -529,18 +535,33 @@ one is additive, matching the modularity law CONCEPT §3 sets out.
   - `prologues()`/`analyze_frame`: a few common exact `stp x29, x30,
     [sp, #-N]!` encodings for discovery, plus a structural (not byte-prefix)
     recognizer for the standard frame-pointer prolog.
-  - **Verified against real, cross-checked AArch64 encodings** (several
-    pulled directly from `disarm64`'s own regression suite, not hand-guessed):
-    19 unit tests in `n0xis-arch`, plus
+  - **What's actually been checked, and why "verified" would overclaim it.**
+    The first pass (19 unit tests, hand-picked instruction words cross-checked
+    against `disarm64`'s own regression suite so the *encodings* were at least
+    real) plus
     [`crates/n0xis-core/tests/arm64_exit.rs`](crates/n0xis-core/tests/arm64_exit.rs)
-    — `CfgPass` (an `n0xis-core` pass, zero changes made to it) builds a
-    correct 3-block CFG with accurate def-use over real ARM64 bytes. Wired
-    into the CLI as `--arch arm64|x64` on `ir build/explain/dot/slice` and
-    `decomp pseudo`/`function discover`; manually verified end-to-end
-    (`ir build`, `function discover`, `decomp pseudo --style goto|ssa` all
-    produce correct, sound output over hand-verified ARM64 bytes — the SSA
-    style honestly reports `quality: 0.0`/`"low-coverage"` rather than
-    pretending to have understood unlifted instructions).
+    (`CfgPass` — zero changes made to it — building a correct 3-block CFG
+    over those bytes) all passed and were reported as "verified." **That was
+    premature.** Cross-compiling a real Rust program to a real AArch64 object
+    (`rustc --target aarch64-linux-android --emit=obj`, genuine LLVM-generated
+    code, no hand-picked bytes) immediately surfaced a real bug none of those
+    19 tests caught: `reg_access`'s `sp`-vs-`xzr` selection for register 31
+    was backwards for every register-form ALU/branch operand, so `xzr`-using
+    idioms LLVM actually emits (`madd x9, x9, x10, xzr`, `orr x0, xzr, xzr` as
+    `mov #0`) were misreported as touching the stack pointer. Fixed, and three
+    regression tests were added using the exact real encodings that caught it
+    (`madd_reads_xzr_not_sp_for_a_discarded_accumulator`,
+    `orr_with_xzr_operands_reads_xzr_not_sp`,
+    `addsub_imm_is_the_one_class_that_really_can_read_and_write_sp`), but this
+    is one ad hoc test against three small functions from one artificial
+    program — **not** a live ARM64 process, **not** a real-world binary of any
+    size, and the SIMD/FP/crypto/SVE code paths have never been exercised even
+    once, only reasoned about. Status: implemented, passes its own test suite,
+    wired into the CLI as `--arch arm64|x64` — genuinely usable for
+    exploration, but **needs substantially more real-world verification**
+    before the base integer ISA coverage should be trusted the way `X64`'s
+    is. Tracked as open, real work in
+    [docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md).
 - ✅ **Value-set / light alias analysis** — new `n0xis-core::valueset`
   (`ValueSetPass`, `n0xis.value_set.v1`): a bounded (capped at 8 tracked
   values per variable, capped at 20 fixpoint iterations) dataflow over SSA,
