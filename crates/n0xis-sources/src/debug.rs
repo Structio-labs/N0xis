@@ -39,8 +39,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, OpenThread, PROCESS_ALL_ACCESS, ResumeThread, SuspendThread, THREAD_GET_CONTEXT,
-    THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
+    OpenProcess, OpenThread, PROCESS_ALL_ACCESS, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION,
+    THREAD_SET_CONTEXT,
 };
 
 use crate::SourceError;
@@ -490,29 +490,14 @@ impl WatchGuard {
         let tids = list_thread_ids(pid)?;
         let mut entries = Vec::new();
         for tid in tids {
-            let h = unsafe {
-                OpenThread(
-                    THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME,
-                    0,
-                    tid,
-                )
-            };
+            let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, 0, tid) };
             if h.is_null() {
                 continue;
             }
             let _g = HandleGuard(h);
-            // `SetThreadContext` on a *running* thread is unreliable — the
-            // debug registers may silently fail to stick on a busy thread
-            // (exactly the hot worker threads whose writes we most want to
-            // trap). Suspend around the Get/Set so the DR0/DR7 write lands,
-            // then resume. Best-effort: if the suspend fails we still try.
-            let suspended = unsafe { SuspendThread(h) } != u32::MAX;
             let mut ctx = AlignedContext::zeroed();
             ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
             if unsafe { GetThreadContext(h, &mut ctx.0) } == 0 {
-                if suspended {
-                    unsafe { ResumeThread(h) };
-                }
                 continue;
             }
             let (orig_dr0, orig_dr7) = (ctx.Dr0, ctx.Dr7);
@@ -520,9 +505,6 @@ impl WatchGuard {
             ctx.Dr7 = orig_dr7 | dr7_bits;
             if unsafe { SetThreadContext(h, &ctx.0) } != 0 {
                 entries.push((tid, orig_dr0, orig_dr7));
-            }
-            if suspended {
-                unsafe { ResumeThread(h) };
             }
         }
         if entries.is_empty() {
@@ -533,21 +515,17 @@ impl WatchGuard {
 
     fn disarm(&mut self) {
         for (tid, orig_dr0, orig_dr7) in self.entries.drain(..) {
-            let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, 0, tid) };
+            let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, 0, tid) };
             if h.is_null() {
                 continue;
             }
             let _g = HandleGuard(h);
-            let suspended = unsafe { SuspendThread(h) } != u32::MAX;
             let mut ctx = AlignedContext::zeroed();
             ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
             if unsafe { GetThreadContext(h, &mut ctx.0) } != 0 {
                 ctx.Dr0 = orig_dr0;
                 ctx.Dr7 = orig_dr7;
                 unsafe { SetThreadContext(h, &ctx.0) };
-            }
-            if suspended {
-                unsafe { ResumeThread(h) };
             }
         }
     }
