@@ -128,11 +128,26 @@ fn explain_hit(ctx: &Ctx, hit: ProvenanceHit, module: Option<&Module>, scan_star
 const MAX_CANDIDATES_TRIED: usize = 8;
 const FUNCTION_MAX_BYTES: usize = 8192;
 
+/// How far back from `target` to look for the containing function's prologue.
+/// A single function is at most `FUNCTION_MAX_BYTES`; 64 KiB gives generous
+/// slack for discovery heuristics without scanning the whole module.
+const DISCOVER_WINDOW_BACK: u64 = 64 * 1024;
+
 fn find_function_containing(ctx: &Ctx, scan_start: Va, scan_size: usize, target: Va) -> Option<(Va, CfgArtifact)> {
     if target.get() < scan_start.get() {
         return None;
     }
-    let discovered = DiscoverPass.run(ctx, DiscoverInput { start: scan_start, size: scan_size, limit: 100_000 }).ok()?;
+    // We only need the *one* function that contains `target`. Discovering the
+    // entire `.text` here is pathologically slow over live memory (a hit's
+    // scan range is the whole module — thousands of ReadProcessMemory calls
+    // that made `provenance trace` appear to hang). The containing function's
+    // prologue sits at most a function's length before `target`, so window the
+    // discovery to a bounded region ending just past it.
+    let scan_end = scan_start.get().saturating_add(scan_size as u64);
+    let win_start = target.get().saturating_sub(DISCOVER_WINDOW_BACK).max(scan_start.get());
+    let win_end = target.get().saturating_add(16).min(scan_end);
+    let win_size = win_end.saturating_sub(win_start) as usize;
+    let discovered = DiscoverPass.run(ctx, DiscoverInput { start: Va(win_start), size: win_size, limit: 100_000 }).ok()?;
     let mut candidates: Vec<Va> = discovered.functions.iter().map(|f| f.va).filter(|&va| va.get() <= target.get()).collect();
     candidates.sort_by_key(|va| std::cmp::Reverse(va.get()));
 
