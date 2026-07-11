@@ -27,16 +27,14 @@ use serde::Serialize;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT,
-    EXCEPTION_SINGLE_STEP, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+    EXCEPTION_SINGLE_STEP, GetLastError, HANDLE, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
-    CONTEXT, CONTEXT_DEBUG_REGISTERS_AMD64, CONTEXT_FULL_AMD64, ContinueDebugEvent, DEBUG_EVENT,
-    DebugActiveProcess, DebugActiveProcessStop, DebugSetProcessKillOnExit, EXCEPTION_DEBUG_EVENT,
-    FlushInstructionCache, GetThreadContext, ReadProcessMemory, SetThreadContext,
-    WaitForDebugEvent, WriteProcessMemory,
-};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    CONTEXT, CONTEXT_DEBUG_REGISTERS_AMD64, CONTEXT_FULL_AMD64, CREATE_PROCESS_DEBUG_EVENT,
+    CREATE_THREAD_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcess,
+    DebugActiveProcessStop, DebugSetProcessKillOnExit, EXCEPTION_DEBUG_EVENT,
+    EXIT_THREAD_DEBUG_EVENT, FlushInstructionCache, GetThreadContext, ReadProcessMemory,
+    SetThreadContext, WaitForDebugEvent, WriteProcessMemory,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, OpenThread, PROCESS_ALL_ACCESS, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION,
@@ -454,63 +452,64 @@ fn dr7_slot0(kind: WatchKind, addr: Va, len: u8) -> Result<u64, SourceError> {
     Ok(1u64 | (1u64 << 10) | (rw << 16) | (lb << 18))
 }
 
-fn list_thread_ids(pid: u32) -> Result<Vec<u32>, SourceError> {
-    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snap == INVALID_HANDLE_VALUE {
-        return Err(SourceError::Os(format!("CreateToolhelp32Snapshot(THREAD) failed (GLE {})", unsafe { GetLastError() })));
-    }
-    let _guard = HandleGuard(snap);
-    let mut te: THREADENTRY32 = unsafe { mem::zeroed() };
-    te.dwSize = mem::size_of::<THREADENTRY32>() as u32;
-    let mut ids = Vec::new();
-    if unsafe { Thread32First(snap, &mut te) } != 0 {
-        loop {
-            if te.th32OwnerProcessID == pid {
-                ids.push(te.th32ThreadID);
-            }
-            if unsafe { Thread32Next(snap, &mut te) } == 0 {
-                break;
-            }
-        }
-    }
-    Ok(ids)
-}
-
 /// Owns the DR0/DR7 write on every thread it succeeded on; restores each
 /// thread's original values on drop unless already disarmed. Best-effort per
 /// thread — a thread we can't open (already exited, access denied) is just
-/// skipped, not a hard error, as long as at least one thread got armed.
+/// skipped.
+///
+/// Threads are armed one at a time from the debugger event loop, in response
+/// to `CREATE_PROCESS`/`CREATE_THREAD` debug events — at which point the
+/// thread is stopped, so `SetThreadContext` on its debug registers reliably
+/// sticks (writing DR on a *freely running* thread is unreliable, and misses
+/// exactly the busy worker threads we most want to trap). Because
+/// `DebugActiveProcess` synthesises a `CREATE_THREAD` event for every
+/// pre-existing thread on attach, and delivers a real one for every thread
+/// created afterwards, this covers the whole thread set — including workers
+/// spawned after arming, which an arm-once-at-attach implementation missed.
 struct WatchGuard {
+    addr: Va,
+    dr7_bits: u64,
     entries: Vec<(u32, u64, u64)>,
 }
 
 impl WatchGuard {
-    fn arm(pid: u32, addr: Va, kind: WatchKind, len: u8) -> Result<Self, SourceError> {
+    fn new(addr: Va, kind: WatchKind, len: u8) -> Result<Self, SourceError> {
         let dr7_bits = dr7_slot0(kind, addr, len)?;
-        let tids = list_thread_ids(pid)?;
-        let mut entries = Vec::new();
-        for tid in tids {
-            let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, 0, tid) };
-            if h.is_null() {
-                continue;
-            }
-            let _g = HandleGuard(h);
-            let mut ctx = AlignedContext::zeroed();
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
-            if unsafe { GetThreadContext(h, &mut ctx.0) } == 0 {
-                continue;
-            }
-            let (orig_dr0, orig_dr7) = (ctx.Dr0, ctx.Dr7);
-            ctx.Dr0 = addr.0;
-            ctx.Dr7 = orig_dr7 | dr7_bits;
-            if unsafe { SetThreadContext(h, &ctx.0) } != 0 {
-                entries.push((tid, orig_dr0, orig_dr7));
-            }
+        Ok(WatchGuard { addr, dr7_bits, entries: Vec::new() })
+    }
+
+    /// Arm DR0/DR7 slot 0 on a single thread by id. Intended to be called
+    /// while the thread is stopped at a debug event, where the context write
+    /// is reliable. Idempotent-ish: skips a tid already tracked so a stray
+    /// duplicate `CREATE_THREAD` can't stack a second (already-armed) orig.
+    fn arm_tid(&mut self, tid: u32) {
+        if self.entries.iter().any(|(t, _, _)| *t == tid) {
+            return;
         }
-        if entries.is_empty() {
-            return Err(SourceError::Os("failed to arm the hardware watchpoint on any thread".into()));
+        let h = unsafe {
+            OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, 0, tid)
+        };
+        if h.is_null() {
+            return;
         }
-        Ok(WatchGuard { entries })
+        let _g = HandleGuard(h);
+        let mut ctx = AlignedContext::zeroed();
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
+        if unsafe { GetThreadContext(h, &mut ctx.0) } == 0 {
+            return;
+        }
+        let (orig_dr0, orig_dr7) = (ctx.Dr0, ctx.Dr7);
+        ctx.Dr0 = self.addr.0;
+        ctx.Dr7 = orig_dr7 | self.dr7_bits;
+        if unsafe { SetThreadContext(h, &ctx.0) } != 0 {
+            self.entries.push((tid, orig_dr0, orig_dr7));
+        }
+    }
+
+    /// Drop tracking for a thread that has exited — its context is gone, and
+    /// its tid could be recycled, so we must not try to "restore" DR on it.
+    fn forget_tid(&mut self, tid: u32) {
+        self.entries.retain(|(t, _, _)| *t != tid);
     }
 
     fn disarm(&mut self) {
@@ -591,8 +590,14 @@ pub fn await_watchpoint_hit(
     }
     let _process_guard = HandleGuard(h_process);
 
-    let mut watch = WatchGuard::arm(pid, addr, kind, len)?;
+    // Attach BEFORE arming. We arm each thread from inside the event loop
+    // while it is stopped at its `CREATE_THREAD` event — the only place a
+    // `SetThreadContext` write to the debug registers reliably sticks (on a
+    // freely-running thread it can silently fail). `DebugActiveProcess`
+    // synthesises a `CREATE_THREAD` for every pre-existing thread and a real
+    // one for every thread spawned later, so the loop covers the full set.
     let _debug_guard = DebugGuard::attach(pid)?;
+    let mut watch = WatchGuard::new(addr, kind, len)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut hit: Option<BreakpointHit> = None;
@@ -634,6 +639,16 @@ pub fn await_watchpoint_hit(
             continue;
         }
 
+        // Non-exception events. `DebugActiveProcess` delivers one
+        // `CREATE_THREAD` per pre-existing thread on attach and a real one
+        // for every thread spawned afterwards — arm each as it stops here so
+        // the watchpoint covers the whole (evolving) thread set. Drop the
+        // tracking for a thread that exits so we never touch a recycled tid.
+        match ev.dwDebugEventCode {
+            CREATE_PROCESS_DEBUG_EVENT | CREATE_THREAD_DEBUG_EVENT => watch.arm_tid(ev.dwThreadId),
+            EXIT_THREAD_DEBUG_EVENT => watch.forget_tid(ev.dwThreadId),
+            _ => {}
+        }
         unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
     }
 
