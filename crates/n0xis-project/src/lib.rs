@@ -233,7 +233,10 @@ pub fn is_valid_kind(k: &str) -> bool {
 
 pub fn extension_for_kind(k: &str) -> &'static str {
     match k {
-        "ir" | "pseudo" | "scan" | "snapshot" => "json",
+        "ir" | "pseudo" | "snapshot" => "json",
+        // A scan working set is a compact binary snapshot (dense region bytes +
+        // sparse survivor slots), not JSON — see n0xis-core::ScanState::encode.
+        "scan" => "bin",
         "hex" => "hex",
         "raw" => "bin",
         "note" => "txt",

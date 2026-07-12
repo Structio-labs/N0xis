@@ -251,9 +251,28 @@ Goal: kill blanket `uint64_t` / `local_XX` / fixed 4-arg `void` signatures.
 Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9).
 - ✅ **Typed value scanning + iterative filtering** — `n0xis-core::ScanPass`/`FilterPass`
   (`scan.rs`): exact/in-range/unknown first scan, then increased/decreased/changed/
-  unchanged/exact/in-range rescan against the previous match set. Pure over the
-  `MemorySource` seam (region enumeration is the OS-specific part, stays in
-  `n0xis-sources`/`n0xis-cli`). `n0xis.scan.v1`.
+  unchanged/exact/in-range rescan. Pure over the `MemorySource` seam (region
+  enumeration is the OS-specific part, stays in `n0xis-sources`/`n0xis-cli`).
+  `n0xis.scan.v1`.
+  - ⚠️→✅ **Snapshot-backed narrowing (the correct scanning model), reworked 2026-07.**
+    The first cut materialized one match per hit and, on a common value (i32 `4`
+    in a game → millions of hits), capped at 200 000 via `break 'regions` — which
+    silently *stopped scanning every higher-address region*, so the real target
+    usually wasn't even looked at and no rescan could recover it. A partial,
+    order/timing-dependent working set returned as if usable — a direct
+    sound-over-complete violation (found in real use, not a unit test: a live
+    `scan` reported exactly `200000` + `truncated:true`). Rebuilt the way Cheat
+    Engine actually works: the first scan **never truncates** — `exact`/`in-range`
+    store surviving offsets, `unknown` stores the region bytes densely
+    (`ScanState::{Dense,Sparse}`) so a rescan knows the old value at every position
+    without an up-front address list; a rescan re-reads each region, narrows, and
+    keeps survivors' latest values; addresses are materialized only on demand,
+    bounded by a display budget; the full working set persists compactly (binary
+    `ScanState::encode`, `.n0x/dumps/scan/*.bin`, not fat JSON). Verified live:
+    exact i32==0 over a real process now reports the true `total_matches`
+    (7.8M across 931 regions, no cap) and the `unknown → changed` flow narrows a
+    real target from a snapshot. New exit coverage in `phase4b_exit.rs` drives
+    the `unknown→changed` path against a real spawned process.
 - ✅ **Pointer-path scanner** — `n0xis-core::PointerPathPass` (`pointer.rs`), built
   *compositionally* on `ScanPass` rather than a bespoke reverse-pointer index:
   "what points near X" **is** a value scan for X (± a plausible struct-offset window),
@@ -304,6 +323,28 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   Verified live end-to-end on a real spawned process: the watchpoint fired on the
   target's own write instruction, reporting the exact `rip` (`scan_target.exe+0x1862`)
   and full register/stack state, and the target resumed running correctly afterward.
+- ✅ **Cross-process x64 stack unwinding (true caller chain), added 2026-07.** A
+  hardware watchpoint lands *mid-function*, where `[rsp]` is not the return
+  address — so the raw stack window couldn't name the caller of a writing
+  instruction (the wall a live RE session hit: the specific caller of a generic
+  clamping setter was unreachable). `n0xis-sources::unwind` is a **from-scratch,
+  dependency-free cross-process reimplementation of `RtlVirtualUnwind`**: it reads
+  the target's own `.pdata` (`RUNTIME_FUNCTION`) + `.xdata` (`UNWIND_INFO`) and
+  replays the UWOP unwind codes, honoring the prologue-position rule (codes for
+  not-yet-executed prologue instructions are skipped), `UNW_FLAG_CHAININFO`, leaf
+  functions, and machine frames, across modules. Deliberately **not** `dbghelp`
+  (a stateful C symbol API foreign to this crate's direct `windows-sys` style) —
+  the pure unwinder is also unit-testable against a synthetic PE with zero OS
+  calls, the same boundary discipline the rest of the analysis holds. `capture_hit`
+  now fills `BreakpointHit.frames`, auto-surfaced by `debug watch`/`debug
+  await-hit`. Verified live: `debug watch` on a real target returned a full
+  12-frame chain (`leaf→mid→top→main→CRT→KERNEL32→ntdll`), cross-module, from a
+  mid-function watchpoint hit — exit test
+  [`crates/n0xis-pipeline/tests/unwind_exit.rs`](crates/n0xis-pipeline/tests/unwind_exit.rs).
+  Documented follow-on: `provenance trace` can now consume a real return address
+  to trace the writer's caller through the SSA pipeline (the natural next
+  integration); and a separate **provenance detach/re-attach hang** remains to be
+  root-caused.
 - ✅ **Exit test** — [`crates/n0xis-pipeline/tests/phase4b_exit.rs`](crates/n0xis-pipeline/tests/phase4b_exit.rs)
   (behind `--features live`, same opt-in-for-OS-tests convention as `n0xis-sources`
   itself): spawns a real disposable process, writes a known value via the proven

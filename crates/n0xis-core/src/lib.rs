@@ -62,8 +62,8 @@ pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, Pointe
 pub use provenance::{ProvenanceEntry, ProvenanceGraph, ProvenanceHit, ProvenanceInput, ProvenancePass};
 pub use render::{render_condition, render_expr, render_stmt, negate_condition, RenderNames};
 pub use scan::{
-    FilterCriterion, FilterInput, FilterPass, ScanArtifact, ScanCriterion, ScanInput, ScanMatch,
-    ScanPass, ScanValue, ValueType,
+    FilterCriterion, FilterInput, FilterPass, RegionData, RegionState, ScanCriterion, ScanInput,
+    ScanMatch, ScanPass, ScanReport, ScanState, ScanValue, Slot, ValueType, PREVIEW_LIMIT,
 };
 pub use signatures::{known_signature, KnownParam, KnownSignature};
 pub use slice::{SliceArtifact, SliceNode, slice};

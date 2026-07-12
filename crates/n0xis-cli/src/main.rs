@@ -22,7 +22,7 @@ use n0xis_core::{
     DiscoverInput, DiscoverPass, DissectInput, DissectPass, FilterCriterion, FilterInput,
     FilterPass, ManifestCandidate, ManifestInput, ManifestPass, Pass, PointerPathInput,
     PointerPathPass, PointerRoot, ProvenanceHit, ProvenanceInput, ProvenancePass,
-    ScanCriterion, ScanInput, ScanPass, ScanValue, SsaPass, StringXrefInput, StringXrefPass,
+    ScanCriterion, ScanInput, ScanPass, ScanState, ScanValue, SsaPass, StringXrefInput, StringXrefPass,
     TraceInput, TracePass, ValueSetPass, ValueType, XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::{Pipeline, cfg_cached};
@@ -2580,15 +2580,15 @@ fn finish_scan_value(
     force: bool,
     pretty: bool,
 ) -> bool {
-    let art = match ScanPass.run(ctx, ScanInput { regions, value_type, criterion, align }) {
-        Ok(a) => a,
+    let state = match ScanPass.run(ctx, ScanInput { regions, value_type, criterion, align }) {
+        Ok(s) => s,
         Err(e) => return ir_err("scan-failed", &e.to_string(), pretty),
     };
-    let bytes = serde_json::to_vec(&art).expect("ScanArtifact always serializes");
-    if let Err(e) = n0xis_project::dump::save(save_as, "scan", &bytes, force) {
+    // Persist the full working set compactly; emit only the bounded report.
+    if let Err(e) = n0xis_project::dump::save(save_as, "scan", &state.encode(), force) {
         return ir_err("save-failed", &e.to_string(), pretty);
     }
-    emit(&Response::success(schema::v1::SCAN, art).with_source(label), pretty)
+    emit(&Response::success(schema::v1::SCAN, state.report()).with_source(label), pretty)
 }
 
 fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
@@ -2600,7 +2600,7 @@ fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
         Ok(d) => d.bytes,
         Err(e) => return ir_err("no-scan", &e.to_string(), pretty),
     };
-    let prev: n0xis_core::ScanArtifact = match serde_json::from_slice(&prev_bytes) {
+    let prev: ScanState = match ScanState::decode(&prev_bytes) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-scan-dump", &e.to_string(), pretty),
     };
@@ -2612,7 +2612,7 @@ fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
         };
         let ctx = Ctx::new(&live, &arch);
-        let out = FilterPass.run(&ctx, FilterInput { previous: prev.matches, value_type: prev.value_type, criterion });
+        let out = FilterPass.run(&ctx, FilterInput { previous: prev, criterion });
         (out, live.label())
     } else if let Some(file) = a.file.as_deref() {
         let pe = match StaticPe::load(std::path::Path::new(file)) {
@@ -2620,7 +2620,7 @@ fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
         };
         let ctx = Ctx::new(&pe, &arch);
-        let out = FilterPass.run(&ctx, FilterInput { previous: prev.matches, value_type: prev.value_type, criterion });
+        let out = FilterPass.run(&ctx, FilterInput { previous: prev, criterion });
         (out, pe.label())
     } else {
         return ir_err("missing-source", "provide --pid or --file", pretty);
@@ -2629,11 +2629,11 @@ fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
         Ok(o) => o,
         Err(e) => return ir_err("filter-failed", &e.to_string(), pretty),
     };
-    let bytes = serde_json::to_vec(&out).expect("ScanArtifact always serializes");
-    if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &bytes, a.force) {
+    // Persist the narrowed working set; emit only the bounded report.
+    if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &out.encode(), a.force) {
         return ir_err("save-failed", &e.to_string(), pretty);
     }
-    emit(&Response::success(schema::v1::SCAN, out).with_source(label), pretty)
+    emit(&Response::success(schema::v1::SCAN, out.report()).with_source(label), pretty)
 }
 
 fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {

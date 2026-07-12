@@ -94,6 +94,18 @@ When you're tempted to make an assumption to fill a gap, don't — return
 `None`/empty/a placeholder and document the gap instead. This is the rule
 `CONTRIBUTING.md` calls out as the one most first-pass PRs get wrong.
 
+A concrete violation this project shipped and had to fix: `ScanPass`'s first
+cut capped a value scan at 200 000 matches and `break`-ed out of the region
+loop — so a common value silently stopped being scanned in every higher-address
+region, and the returned working set was partial and order-dependent while
+*looking* complete. It even set a `truncated` flag, which is not enough: a
+wrong-but-flagged answer that breaks the next step (no rescan could recover a
+target that was never scanned) is still the failure this rule is about. The fix
+was to make the scan genuinely complete — snapshot-backed narrowing that never
+truncates, materializing addresses only on demand (see ROADMAP Phase 4b). "We
+capped it and set a flag" is not "sound"; covering the whole input, or refusing
+with the true total, is.
+
 ## 6. No half-finished implementations, no scope creep
 
 A bug fix doesn't need surrounding cleanup. A one-shot capability doesn't need

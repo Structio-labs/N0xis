@@ -17,7 +17,10 @@ use std::time::Duration;
 
 use n0xis_arch::X64;
 use n0xis_contracts::{Table, TableEntry, TableLocator, TableValueType, Va};
-use n0xis_core::{Ctx, FilterCriterion, FilterInput, FilterPass, Pass, ScanCriterion, ScanInput, ScanPass, ScanValue, ValueType};
+use n0xis_core::{
+    Ctx, FilterCriterion, FilterInput, FilterPass, Pass, ScanCriterion, ScanInput, ScanPass,
+    ScanValue, ValueType, PREVIEW_LIMIT,
+};
 use n0xis_sources::{LiveProcess, MemorySource};
 
 struct DisposableProcess(Child);
@@ -75,15 +78,60 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
             },
         )
         .expect("first scan succeeds");
-    assert!(first.matches.iter().any(|m| m.addr == probe_addr), "expected to find our own written value");
+    assert!(
+        first.materialize(PREVIEW_LIMIT).iter().any(|m| m.addr == probe_addr),
+        "expected to find our own written value"
+    );
 
     // Narrow the world: bump the value up.
     live.write(probe_addr, &4300i32.to_le_bytes()).expect("write the increased value");
 
     let filtered = FilterPass
-        .run(&ctx, FilterInput { previous: first.matches, value_type: ValueType::I32, criterion: FilterCriterion::Increased })
+        .run(&ctx, FilterInput { previous: first, criterion: FilterCriterion::Increased })
         .expect("filter succeeds");
-    assert!(filtered.matches.iter().any(|m| m.addr == probe_addr), "the increased value must survive the filter");
+    assert!(
+        filtered.materialize(PREVIEW_LIMIT).iter().any(|m| m.addr == probe_addr),
+        "the increased value must survive the filter"
+    );
+
+    // --- The CE "value too common" flow, live: an `unknown` first scan
+    // (snapshot-backed / dense — no address list materialized up front),
+    // narrowed by what *changed*. Proves the snapshot-narrow path against a
+    // real process, not just a mock. Bounded to a small window so the dense
+    // capture stays cheap and deterministic.
+    let window: usize = 0x1000;
+    let unknown = ScanPass
+        .run(
+            &ctx,
+            ScanInput {
+                regions: vec![(region_start, window)],
+                value_type: ValueType::I32,
+                criterion: ScanCriterion::Unknown,
+                align: 4,
+            },
+        )
+        .expect("unknown first scan succeeds");
+    // Dense capture: every aligned slot in the window is a live candidate.
+    let unknown_total = unknown.total();
+    assert!(unknown_total >= window / 4 - 1, "unknown scan should capture the whole window densely");
+
+    // Change exactly one slot; a `changed` rescan must keep it (and drop the
+    // untouched slots, which the sleeping target doesn't write).
+    live.write(probe_addr, &1234i32.to_le_bytes()).expect("perturb one slot");
+    let changed = FilterPass
+        .run(&ctx, FilterInput { previous: unknown, criterion: FilterCriterion::Changed })
+        .expect("changed rescan succeeds");
+    assert!(
+        changed.materialize(PREVIEW_LIMIT).iter().any(|m| m.addr == probe_addr && m.value == ScanValue::Int(1234)),
+        "the one slot we changed must survive a `changed` rescan"
+    );
+    assert!(
+        changed.total() < unknown_total,
+        "a `changed` rescan of a mostly-static window must narrow the set"
+    );
+
+    // Restore the probe for the freeze-loop portion below.
+    live.write(probe_addr, &4300i32.to_le_bytes()).expect("restore the probe value");
 
     // Persist the narrowed result as a `.n0xt` table entry (CONCEPT §10) —
     // in a throwaway `.n0x/` project directory so this test never touches

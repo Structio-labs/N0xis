@@ -66,9 +66,15 @@ Engine capabilities before making this claim.)
 - **Types & signatures**: stack-slot coalescing, struct/field recovery, real
   arity/return-type recovery from register usage, a Win32/CRT signature table,
   Rust/MSVC/Itanium demangling.
-- **value-scanning dynamic memory**: typed value scan + iterative rescan,
+- **value-scanning dynamic memory**: typed value scan + iterative rescan
+  (**snapshot-backed narrowing, no truncated result cap** — an `unknown` first
+  scan stores region snapshots and narrows by what changed/stayed, so a common
+  value like `4` with millions of hits works the way it does in a memory scanner),
   AOB signature scan (`?`/`??` wildcards), multi-hop pointer-path finding, struct
-  dissection, freeze loops, code-cave detour hooks — all against a *live*
+  dissection, freeze loops, code-cave detour hooks, and **hardware watchpoints
+  with a real unwound call stack** (a from-scratch cross-process x64 unwinder
+  reads the target's own `.pdata`/`.xdata`, so a mid-function watchpoint hit
+  reports the true caller chain, not a raw `[rsp]` guess) — all against a *live*
   process, verified against real spawned targets.
 - **`.n0xt` tables + analysis DB**: persistent cheat/analysis tables, and an
   `annotate` command that keeps names/types/comments at an address as

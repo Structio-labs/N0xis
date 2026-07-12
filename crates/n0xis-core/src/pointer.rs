@@ -101,9 +101,13 @@ impl Pass for PointerPathPass {
                         align: input.pointer_size,
                     },
                 )?;
-                nodes_visited += scan.matches.len();
+                // A pointer-in-range scan is bounded by construction (only real
+                // pointers into a small window match), so materializing the whole
+                // set here is safe — no display cap needed.
+                let scan_matches = scan.materialize(usize::MAX);
+                nodes_visited += scan_matches.len();
 
-                for m in scan.matches {
+                for m in scan_matches {
                     let offset = pointee.get() as i64 - m.value.as_int();
                     let mut new_path = path_so_far.clone();
                     new_path.push(offset);
