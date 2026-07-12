@@ -178,6 +178,22 @@ not bundled into the first cut.
 - **Capture a `snapshot dump` directly from a `--remote-cmd` target** —
   `snapshot dump` currently accepts `--pid`/`--file` only, not
   `--remote-cmd`. `A-DynamicMemory` / `D-Trivial`. Status: Open.
+- **Feed the unwound caller chain into `provenance trace`** — `BreakpointHit`
+  now carries real unwound `frames` (`n0xis-sources::unwind`), but
+  `provenance trace` still explains only the hit instruction itself. Walking one
+  frame up to decompile the *caller* of a writing instruction (e.g. a generic
+  clamping setter's specific caller) through the SSA pipeline is the natural next
+  step. `A-DynamicMemory` / `D-Modest`. Status: Open.
+- **Root-cause the provenance detach/re-attach hang** — repeated
+  `provenance trace` / `debug watch` cycles can hang around the debugger
+  `DebugActiveProcessStop` → re-`DebugActiveProcess` path (or a lingering
+  suspended thread / DR state). Not yet diagnosed. `A-DynamicMemory` /
+  `D-Modest`. Status: Open.
+- **ARM64/AArch64 stack unwinding** — the x64 unwinder
+  (`n0xis-sources::unwind`) is `.pdata`/`.xdata`-specific; AArch64 Windows uses a
+  different unwind-code encoding. A sibling implementation would extend the true
+  caller chain to ARM64 targets. `A-DynamicMemory` / `A-Arch` / `D-Complex`.
+  Status: Open.
 
 ## Infrastructure
 

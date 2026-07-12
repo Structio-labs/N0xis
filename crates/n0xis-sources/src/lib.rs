@@ -35,6 +35,11 @@ mod debug;
 #[cfg(feature = "live")]
 pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, WatchKind, await_breakpoint_hit, await_watchpoint_hit};
 
+#[cfg(feature = "live")]
+mod unwind;
+#[cfg(feature = "live")]
+pub use unwind::{Frame, MemReader, ModuleRange, UnwindRegs, unwind};
+
 use n0xis_contracts::{Module, Symbol, Va};
 
 /// Something went wrong reading/writing a source.

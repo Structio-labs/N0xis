@@ -36,12 +36,16 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     EXIT_THREAD_DEBUG_EVENT, FlushInstructionCache, GetThreadContext, ReadProcessMemory,
     SetThreadContext, WaitForDebugEvent, WriteProcessMemory,
 };
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE,
+};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, OpenThread, PROCESS_ALL_ACCESS, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION,
-    THREAD_SET_CONTEXT,
+    GetProcessId, OpenProcess, OpenThread, PROCESS_ALL_ACCESS, THREAD_GET_CONTEXT,
+    THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT,
 };
 
 use crate::SourceError;
+use crate::unwind::{self, ModuleRange, UnwindRegs};
 
 /// `CONTEXT`'s floating-point/XMM save area needs 16-byte alignment — the
 /// kernel performs an aligned SIMD save/restore into it during
@@ -115,6 +119,11 @@ pub struct BreakpointHit {
     pub registers: Registers,
     /// Qwords read from the stack starting at `rsp`, in order.
     pub stack: Vec<u64>,
+    /// The recovered call-stack: frame 0 is `rip` (the hit site), each further
+    /// entry a real caller resolved through x64 unwind data (`.pdata`/`.xdata`),
+    /// not a raw `[rsp]` guess. Empty if unwinding couldn't start (e.g. no
+    /// module map). See [`crate::unwind`].
+    pub frames: Vec<unwind::Frame>,
 }
 
 /// Result of one [`await_breakpoint_hit`] call.
@@ -334,6 +343,23 @@ fn capture_hit(
         }
     }
 
+    // Recover the true caller chain by unwinding the target's stack through its
+    // own `.pdata`/`.xdata` — a hardware watchpoint lands mid-function, where
+    // `[rsp]` is *not* the return address, so a raw stack read gives the wrong
+    // caller. Best-effort: an empty `frames` (no module map, unreadable unwind
+    // data) degrades to "just registers + raw stack", never an error.
+    let pid = unsafe { GetProcessId(h_process) };
+    let modules = enumerate_modules(pid);
+    let reader = ProcMemReader(h_process);
+    let regs = UnwindRegs {
+        rip: ctx.Rip,
+        gpr: [
+            ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rsp, ctx.Rbp, ctx.Rsi, ctx.Rdi, ctx.R8, ctx.R9,
+            ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15,
+        ],
+    };
+    let frames = unwind::unwind(&reader, &modules, regs, MAX_UNWIND_FRAMES);
+
     Ok(BreakpointHit {
         thread_id: tid,
         rip,
@@ -357,7 +383,63 @@ fn capture_hit(
             r15: ctx.R15,
         },
         stack,
+        frames,
     })
+}
+
+/// Depth cap for stack unwinding — a bound against a corrupt frame chain
+/// looping forever, generous enough for any real call stack.
+const MAX_UNWIND_FRAMES: usize = 128;
+
+/// A [`crate::unwind::MemReader`] backed by `ReadProcessMemory` on the target.
+struct ProcMemReader(HANDLE);
+
+impl unwind::MemReader for ProcMemReader {
+    fn read(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        let mut got = 0usize;
+        let ok = unsafe {
+            ReadProcessMemory(self.0, addr as *const c_void, buf.as_mut_ptr() as *mut c_void, len, &mut got)
+        };
+        if ok == 0 || got != len {
+            return None;
+        }
+        Some(buf)
+    }
+}
+
+/// Enumerate the target's loaded modules `(base, size, name)` via a ToolHelp
+/// snapshot — the module map the unwinder needs to find each frame's `.pdata`
+/// and to label frames. Returns empty on failure (unwinding then no-ops).
+fn enumerate_modules(pid: u32) -> Vec<ModuleRange> {
+    let mut out = Vec::new();
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid) };
+    if snap.is_null() || snap == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return out;
+    }
+    let _guard = HandleGuard(snap);
+    let mut me: MODULEENTRY32W = unsafe { mem::zeroed() };
+    me.dwSize = mem::size_of::<MODULEENTRY32W>() as u32;
+    if unsafe { Module32FirstW(snap, &mut me) } == 0 {
+        return out;
+    }
+    loop {
+        out.push(ModuleRange {
+            base: me.modBaseAddr as u64,
+            size: me.modBaseSize as u64,
+            name: wide_to_string(&me.szModule),
+        });
+        if unsafe { Module32NextW(snap, &mut me) } == 0 {
+            break;
+        }
+    }
+    out
+}
+
+/// UTF-16 (NUL-terminated) to `String`, for ToolHelp's `szModule`.
+fn wide_to_string(w: &[u16]) -> String {
+    let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+    String::from_utf16_lossy(&w[..end])
 }
 
 /// After `int3`, `Rip` is past the patch byte; we restored only that one byte
