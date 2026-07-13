@@ -59,6 +59,27 @@ pub enum TableValueType {
     Aob,
 }
 
+impl TableValueType {
+    /// Encode a freeze/write value as little-endian bytes for this entry's
+    /// type — shared by any frontend that writes a `TableEntry`'s value into
+    /// a live process (the CLI's `table freeze`, n0xis-hud's menu toggles).
+    pub fn encode_value(self, v: f64) -> Result<Vec<u8>, String> {
+        Ok(match self {
+            TableValueType::I8 => (v as i8).to_le_bytes().to_vec(),
+            TableValueType::U8 => (v as u8).to_le_bytes().to_vec(),
+            TableValueType::I16 => (v as i16).to_le_bytes().to_vec(),
+            TableValueType::U16 => (v as u16).to_le_bytes().to_vec(),
+            TableValueType::I32 => (v as i32).to_le_bytes().to_vec(),
+            TableValueType::U32 => (v as u32).to_le_bytes().to_vec(),
+            TableValueType::I64 => (v as i64).to_le_bytes().to_vec(),
+            TableValueType::U64 => (v as u64).to_le_bytes().to_vec(),
+            TableValueType::F32 => (v as f32).to_le_bytes().to_vec(),
+            TableValueType::F64 => v.to_le_bytes().to_vec(),
+            TableValueType::Aob => return Err("cannot freeze an Aob-typed entry as a scalar value".to_string()),
+        })
+    }
+}
+
 /// Has this entry actually been confirmed live, and against which build?
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VerificationState {

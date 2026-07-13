@@ -27,6 +27,8 @@
 pub mod annotate;
 pub mod dump;
 pub mod ir_cache;
+#[cfg(feature = "live")]
+pub mod locator;
 pub mod patch;
 pub mod selection;
 pub mod session;

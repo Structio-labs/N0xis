@@ -16,7 +16,10 @@ n0xis-arch = { workspace = true }
 n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
 n0xis-core = { workspace = true }
 n0xis-pipeline = { workspace = true }
-n0xis-project = { workspace = true }
+n0xis-project = { workspace = true, features = ["live"] }
+n0xis-bitsquid = { workspace = true }
+n0xis-lua = { workspace = true }
+n0xis-luajit = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

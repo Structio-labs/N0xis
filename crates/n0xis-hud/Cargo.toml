@@ -1,0 +1,36 @@
+[package]
+name = "n0xis-hud"
+description = "N0xHUD: a universal, config-driven cheat-menu overlay over the n0xis engine. Its own binary (n0xis-hud); shares n0xis-core/project/sources as libraries, exactly like the CLI and MCP frontends do. See docs/n0xhud/CONCEPT.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "n0xis-hud"
+path = "src/main.rs"
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-core = { workspace = true }
+n0xis-sources = { workspace = true, features = ["live"] }
+n0xis-project = { workspace = true, features = ["live"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+# Overlay window + rendering. eframe gives a transparent/undecorated/
+# always-on-top viewport (winit) without hand-rolled DirectComposition code.
+eframe = "0.29"
+# .n0x/hud.toml config format.
+toml = "0.8"
+
+# This crate's own Win32 surface on top of the workspace's shared windows-sys
+# dependency: the global low-level keyboard hook + window show/hide, and the
+# activation beep (Beep lives under Diagnostics::Debug in windows-sys).
+windows-sys = { workspace = true, features = [
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Diagnostics_Debug",
+] }

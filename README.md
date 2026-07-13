@@ -194,6 +194,9 @@ n0xis-project/     .n0x/ analysis database (names, types, notes, patches, tables
 n0xis-pipeline/    wires source + arch into the core; artifact caching
 n0xis-cli/         thin clap frontend (binary: n0xis, alias n0x)
 n0xis-mcp/         MCP server frontend (binary: n0xis-mcp)
+n0xis-bitsquid/    Bitsquid/Stingray bundle format adapter (not depended on by core)
+n0xis-lua/         offline LuaJIT bytecode disassembler/patcher (not depended on by core)
+n0xis-luajit/      live LuaJIT VM introspection — GCstr discovery in a running process
 archive/           v0 reference implementation
 ```
 
@@ -209,6 +212,10 @@ archive/           v0 reference implementation
 - **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** — claimable work:
   new architecture ports, the plugin-system proposal, and every gap the
   project's own docs already flag as a "documented follow-on."
+- **[docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)** — **N0xHUD** (design
+  stage): a universal, config-driven cheat-menu overlay for any window, built as
+  a third frontend over this engine — see its
+  [ROADMAP.md](docs/n0xhud/ROADMAP.md).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to build, test, and claim work
   from the community roadmap above.
 - **[docs/CLI_COMMANDS_v0.md](docs/CLI_COMMANDS_v0.md)** — the v0 CLI surface

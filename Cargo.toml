@@ -43,6 +43,12 @@ n0xis-sources = { path = "crates/n0xis-sources" }
 n0xis-core = { path = "crates/n0xis-core" }
 n0xis-project = { path = "crates/n0xis-project" }
 n0xis-pipeline = { path = "crates/n0xis-pipeline" }
+# Pluggable game-asset-format adapters — no other crate depends on these two,
+# and n0xis-core never will (CONCEPT §4's "isolate an external system behind
+# an adapter" rule; these are engine/language formats, not ISA/OS seams).
+n0xis-bitsquid = { path = "crates/n0xis-bitsquid" }
+n0xis-lua = { path = "crates/n0xis-lua" }
+n0xis-luajit = { path = "crates/n0xis-luajit" }
 
 [profile.release]
 lto = "thin"

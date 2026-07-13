@@ -8,7 +8,16 @@ repository.workspace = true
 
 [dependencies]
 n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-core = { workspace = true }
+n0xis-sources = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
+
+[features]
+default = []
+# Gates `locator` (live-process `.n0xt` address resolution) so this crate's
+# default build/tests stay OS-free, same reasoning as n0xis-sources itself.
+live = ["dep:n0xis-sources", "n0xis-sources/live"]

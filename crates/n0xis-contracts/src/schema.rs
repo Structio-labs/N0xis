@@ -88,6 +88,15 @@ pub mod v1 {
     /// Phase 7).
     pub const DIFF: &str = "n0xis.diff.v1";
 
+    /// Bitsquid/Stingray bundle entry listing (`bundle list`).
+    pub const BUNDLE_LIST: &str = "n0xis.bundle.list.v1";
+    /// Bitsquid/Stingray bundle extraction result (`bundle extract`).
+    pub const BUNDLE_EXTRACT: &str = "n0xis.bundle.extract.v1";
+    /// Lua/LuaJIT bytecode disassembly (`lua disasm`).
+    pub const LUA_DISASM: &str = "n0xis.lua.disasm.v1";
+    /// Live LuaJIT GCstr discovery in a running process (`lua strings`).
+    pub const LUA_STRINGS: &str = "n0xis.lua.strings.v1";
+
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }
 

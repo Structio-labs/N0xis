@@ -5,7 +5,7 @@
 //! frontend's job, not this module's.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use n0xis_contracts::{Table, TableEntry};
@@ -16,23 +16,41 @@ fn table_path(name: &str) -> Result<PathBuf> {
     Ok(resolve()?.tables_dir().join(format!("{name}.n0xt")))
 }
 
+/// `<n0x_dir>/tables/<name>.n0xt` for an explicit `.n0x` directory.
+fn table_path_at(n0x_dir: &Path, name: &str) -> PathBuf {
+    n0x_dir.join("tables").join(format!("{name}.n0xt"))
+}
+
 /// Save a whole table, overwriting any existing file of the same name.
 pub fn save(table: &Table) -> Result<()> {
+    save_at(&resolve()?.dir, table)
+}
+
+pub fn load(name: &str) -> Result<Table> {
+    load_at(&resolve()?.dir, name)
+}
+
+/// Save into an explicit `.n0x` directory rather than the cwd-resolved one.
+/// A long-running GUI frontend (n0xis-hud) must use this: some windowing/GL
+/// init changes the process working directory out from under `resolve()`, so
+/// the HUD pins its project dir once at startup and always passes it here.
+pub fn save_at(n0x_dir: &Path, table: &Table) -> Result<()> {
     if table.name.is_empty() {
         bail!("table name must not be empty");
     }
-    let dir = resolve()?.tables_dir();
+    let dir = n0x_dir.join("tables");
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let path = table_path(&table.name)?;
+    let path = table_path_at(n0x_dir, &table.name);
     let json = serde_json::to_string_pretty(table).context("serialize table")?;
     fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
-pub fn load(name: &str) -> Result<Table> {
-    let path = table_path(name)?;
+/// Load from an explicit `.n0x` directory (see [`save_at`] for why).
+pub fn load_at(n0x_dir: &Path, name: &str) -> Result<Table> {
+    let path = table_path_at(n0x_dir, name);
     if !path.exists() {
-        bail!("no table named '{name}'");
+        bail!("no table named '{name}' in {}", path.display());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))

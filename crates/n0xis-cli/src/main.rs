@@ -17,7 +17,7 @@ use n0xis_arch::{Arch, Arm64, X64};
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
 use n0xis_core::{
-    build_trampoline, parse_aob, resolve_pointer_path, AobInput, AobScanPass, CfgInput,
+    build_trampoline, parse_aob, AobArtifact, AobInput, AobScanPass, CfgInput, CoreError,
     Ctx, DecompInput, DecompPass, DecompStyle, DeobfuscatePass, DiffInput, DiffPass,
     DiscoverInput, DiscoverPass, DissectInput, DissectPass, FilterCriterion, FilterInput,
     FilterPass, ManifestCandidate, ManifestInput, ManifestPass, Pass, PointerPathInput,
@@ -33,6 +33,8 @@ use n0xis_sources::{
 use serde_json::json;
 
 use emit::emit;
+
+use n0xis_bitsquid::{lua_resource, open_bundle, LuaFormat};
 
 /// N0xis — reverse-engineering and live-memory toolkit.
 #[derive(Parser)]
@@ -131,6 +133,139 @@ enum Command {
     /// change reports between two functions (e.g. two builds of a binary).
     #[command(subcommand)]
     Diff(DiffCmd),
+    /// Bitsquid/Stingray game-engine bundle files (chunked-zlib archive +
+    /// exploded-package entries/variants) — reading game assets, not process
+    /// memory.
+    #[command(subcommand)]
+    Bundle(BundleCmd),
+    /// Lua/LuaJIT bytecode disassembly.
+    #[command(subcommand)]
+    Lua(LuaCmd),
+}
+
+#[derive(Subcommand)]
+enum BundleCmd {
+    /// List a bundle's entries (type/path hash, variant sizes), optionally
+    /// filtered to one known type.
+    List(BundleListArgs),
+    /// Extract every variant of a given type to files on disk.
+    Extract(BundleExtractArgs),
+    /// Replace one variant's raw bytes with a same-length file and
+    /// recompress — the write-back half of `extract`/`n0xis-lua::patch_instruction`.
+    Repack(BundleRepackArgs),
+}
+
+#[derive(Args)]
+struct BundleListArgs {
+    /// The bundle (archive) file — a hash-named file under the game's
+    /// `contents/` directory.
+    #[arg(long)]
+    file: String,
+    /// The bundle's paired `.stream` file, if it has one. Defaults to
+    /// `<file>.stream` when present on disk.
+    #[arg(long)]
+    stream: Option<String>,
+    /// Only list entries of this known type (e.g. `lua`, `texture`).
+    #[arg(long)]
+    r#type: Option<String>,
+}
+
+#[derive(Args)]
+struct BundleExtractArgs {
+    #[arg(long)]
+    file: String,
+    #[arg(long)]
+    stream: Option<String>,
+    /// Only extract entries of this known type (e.g. `lua`).
+    #[arg(long)]
+    r#type: String,
+    /// Output directory; defaults to `./<bundle-filename>_<type>/`.
+    #[arg(long)]
+    out: Option<String>,
+}
+
+#[derive(Args)]
+struct BundleRepackArgs {
+    /// The original bundle (archive) file to repack.
+    #[arg(long)]
+    file: String,
+    #[arg(long)]
+    stream: Option<String>,
+    /// The entry's path_hash (hex, as printed by `bundle list`).
+    #[arg(long)]
+    path_hash: String,
+    /// Which variant of that entry to replace (default: 0).
+    #[arg(long, default_value_t = 0)]
+    variant: usize,
+    /// File whose bytes replace that variant's raw inline data. Must be
+    /// exactly the same length as the original (a same-size patch needs no
+    /// other field in the bundle updated; a different-length replacement
+    /// isn't supported by this command).
+    #[arg(long)]
+    replacement_file: String,
+    /// Output path for the repacked bundle.
+    #[arg(long)]
+    out: String,
+}
+
+#[derive(Subcommand)]
+enum LuaCmd {
+    /// Disassemble a Lua/LuaJIT bytecode chunk.
+    Disasm(LuaDisasmArgs),
+    /// Overwrite one instruction's raw 4-byte word in place.
+    Patch(LuaPatchArgs),
+    /// Find live LuaJIT GCstr objects in a running process's heap, by
+    /// decoding the real object header — no hand-picked byte pattern needed
+    /// per string.
+    Strings(LuaStringsArgs),
+}
+
+#[derive(Args)]
+struct LuaDisasmArgs {
+    /// Path to a Lua chunk file (source text, stock bytecode, or LuaJIT
+    /// bytecode — auto-detected from its header).
+    #[arg(long)]
+    file: String,
+}
+
+#[derive(Args)]
+struct LuaPatchArgs {
+    #[arg(long)]
+    file: String,
+    /// Prototype index (as shown by `lua disasm`).
+    #[arg(long)]
+    proto: usize,
+    /// Instruction index within that prototype (`idx` in `lua disasm`'s
+    /// output). Must be `>= 1` — index 0 is synthesized, not a real word.
+    #[arg(long)]
+    instr: u32,
+    /// The replacement instruction, as a raw hex u32 (little-endian fields:
+    /// opcode in the low byte, then A, then B/D — see `n0xis-lua::opcodes`).
+    #[arg(long)]
+    raw: String,
+    #[arg(long)]
+    out: String,
+}
+
+#[derive(Args)]
+struct LuaStringsArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Region start (hex). Omit (with `--size`) to scan every committed
+    /// writable region, same default as `scan aob`/`scan value`.
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long)]
+    size: Option<usize>,
+    /// Minimum string length (bytes) to accept as a candidate.
+    #[arg(long, default_value_t = 1)]
+    min_len: u32,
+    /// Maximum string length (bytes) to accept as a candidate.
+    #[arg(long, default_value_t = 64)]
+    max_len: u32,
+    /// Only report strings whose text contains this substring.
+    #[arg(long)]
+    contains: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -905,10 +1040,13 @@ struct ScanAobArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
+    /// Region start (hex). Defaults, on `--pid`, to every committed writable
+    /// region (the same default `scan value` uses); required for `--file`.
     #[arg(long)]
-    start: String,
+    start: Option<String>,
+    /// Region size in bytes (paired with `--start`).
     #[arg(long)]
-    size: usize,
+    size: Option<usize>,
     /// e.g. `"48 8B ?? 68"`.
     #[arg(long)]
     pattern: String,
@@ -1160,6 +1298,12 @@ fn main() {
         Command::Snapshot(SnapshotCmd::List) => cmd_snapshot_list(pretty),
         Command::RemoteServe(_) => unreachable!("handled before this match, see main()"),
         Command::Diff(DiffCmd::Functions(a)) => cmd_diff_functions(a, pretty),
+        Command::Bundle(BundleCmd::List(a)) => cmd_bundle_list(a, pretty),
+        Command::Bundle(BundleCmd::Extract(a)) => cmd_bundle_extract(a, pretty),
+        Command::Bundle(BundleCmd::Repack(a)) => cmd_bundle_repack(a, pretty),
+        Command::Lua(LuaCmd::Disasm(a)) => cmd_lua_disasm(a, pretty),
+        Command::Lua(LuaCmd::Patch(a)) => cmd_lua_patch(a, pretty),
+        Command::Lua(LuaCmd::Strings(a)) => cmd_lua_strings(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -2051,27 +2195,11 @@ fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
     };
-    if let Err(e) = live.write(addr, &desired) {
-        return ir_err("write-failed", &e.to_string(), pretty);
-    }
-    // Verify the write landed.
-    match live.read(addr, desired.len()) {
-        Ok(after) if after == desired => {}
-        Ok(_) => return ir_err("verify-failed", "post-write bytes do not match", pretty),
-        Err(e) => return ir_err("verify-read-failed", &e.to_string(), pretty),
-    }
-    let rec = pj::PatchRecord {
-        id: pj::new_patch_id(),
-        pid: a.pid,
-        address: addr.to_string(),
-        size: desired.len(),
-        before_hex: to_hex_spaced(&before),
-        after_hex: to_hex_spaced(&desired),
-        status: "applied".to_string(),
-        created_at_unix: pj::now_unix_secs(),
-        undone_at_unix: None,
+    let rec = match pj::apply(&live, a.pid, addr, &desired) {
+        Ok(r) => r,
+        Err(e) => return ir_err("patch-failed", &e.to_string(), pretty),
     };
-    let path = match pj::save(&rec) {
+    let path = match pj::record_path(&rec.id) {
         Ok(p) => p,
         Err(e) => return ir_err("journal-failed", &e.to_string(), pretty),
     };
@@ -2099,57 +2227,28 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("no-patches", &e.to_string(), pretty),
         },
     };
-    if rec.status != "applied" {
-        return ir_err(
-            "not-applied",
-            &format!("patch {} status is '{}', nothing to undo", rec.id, rec.status),
-            pretty,
-        );
-    }
-    let addr = match Va::parse(&rec.address) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let before = match parse_hex_bytes(&rec.before_hex) {
-        Ok(b) => b,
-        Err(e) => return ir_err("bad-record", &e, pretty),
-    };
-    let after = match parse_hex_bytes(&rec.after_hex) {
-        Ok(b) => b,
-        Err(e) => return ir_err("bad-record", &e, pretty),
-    };
     let pid = a.pid.unwrap_or(rec.pid);
     let live = match LiveProcess::attach(pid) {
         Ok(l) => l,
         Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
     };
-    // Safety: current bytes should still be the patched bytes unless --force.
-    match live.read(addr, after.len()) {
-        Ok(current) if current == after => {}
-        Ok(_) if a.force => {}
-        Ok(_) => {
-            return ir_err(
-                "undo-unsafe",
-                "current bytes no longer match the applied patch; re-run with --force",
-                pretty,
-            );
-        }
-        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+    let restored_len = match parse_hex_bytes(&rec.before_hex) {
+        Ok(b) => b.len(),
+        Err(e) => return ir_err("bad-record", &e, pretty),
+    };
+    if let Err(e) = pj::undo(&mut rec, &live, a.force) {
+        return ir_err("undo-failed", &e.to_string(), pretty);
     }
-    if let Err(e) = live.write(addr, &before) {
-        return ir_err("restore-failed", &e.to_string(), pretty);
-    }
-    rec.status = "undone".to_string();
-    rec.undone_at_unix = Some(pj::now_unix_secs());
-    if let Err(e) = pj::save(&rec) {
-        return ir_err("journal-failed", &e.to_string(), pretty);
-    }
+    let addr = match Va::parse(&rec.address) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
     let data = json!({
         "op": "undo",
         "id": rec.id,
         "pid": pid,
         "address": addr,
-        "restored": before.len(),
+        "restored": restored_len,
     });
     emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
 }
@@ -2503,24 +2602,13 @@ fn build_filter_criterion(name: &str, value: Option<f64>, min: Option<f64>, max:
     }
 }
 
-/// Committed regions worth scanning by default: readable+writable data, not
-/// the (usually huge, rarely value-bearing) read-only/executable code.
-fn is_scan_default_protect(p: &str) -> bool {
-    matches!(p, "rw-" | "rwx" | "rc-" | "rcx")
-}
-
 fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;
         let sz = size.ok_or("provide --size with --start")?;
         return Ok(vec![(va, sz)]);
     }
-    let regions: Vec<(Va, usize)> = live
-        .regions(1_000_000)
-        .into_iter()
-        .filter(|r| r.state == "commit" && is_scan_default_protect(&r.protect))
-        .map(|r| (r.base, r.size as usize))
-        .collect();
+    let regions = live.default_writable_regions();
     if regions.is_empty() {
         return Err("no committed writable regions found (and no --start/--size given)".to_string());
     }
@@ -2637,10 +2725,6 @@ fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
 }
 
 fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {
-    let start = match Va::parse(&a.start) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
     let pattern = match parse_aob(&a.pattern) {
         Ok(p) => p,
         Err(e) => return ir_err("bad-pattern", &e, pretty),
@@ -2653,19 +2737,48 @@ fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {
         };
         let label = live.label();
         let ctx = Ctx::new(&live, &arch);
-        return match AobScanPass.run(&ctx, AobInput { start, size: a.size, pattern }) {
-            Ok(art) => emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty),
-            Err(e) => ir_err("aob-failed", &e.to_string(), pretty),
+        // Explicit --start/--size scans exactly that one region; omitting
+        // both falls back to every committed writable region (the same
+        // default `scan value` uses) since a hit could be anywhere in the
+        // process's dynamically-allocated memory (e.g. a scripting VM's heap).
+        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
         };
+        let mut matches = Vec::new();
+        let mut bytes_scanned = 0usize;
+        for (start, size) in regions {
+            match AobScanPass.run(&ctx, AobInput { start, size, pattern: pattern.clone() }) {
+                Ok(art) => {
+                    matches.extend(art.matches);
+                    bytes_scanned += art.bytes_scanned;
+                }
+                // A region enumerated a moment ago can be freed/decommitted
+                // by the target process before this scan reaches it — skip
+                // it and keep scanning the rest, rather than aborting the
+                // whole multi-gigabyte sweep over one stale region.
+                Err(CoreError::Source(n0xis_sources::SourceError::Unmapped(_))) => continue,
+                Err(e) => return ir_err("aob-failed", &e.to_string(), pretty),
+            }
+        }
+        let art = AobArtifact { matches, bytes_scanned };
+        return emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty);
     }
     if let Some(file) = a.file.as_deref() {
+        let (Some(start_s), Some(size)) = (a.start.as_deref(), a.size) else {
+            return ir_err("missing-region", "provide --start and --size for --file", pretty);
+        };
+        let start = match Va::parse(start_s) {
+            Ok(v) => v,
+            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+        };
         let pe = match StaticPe::load(std::path::Path::new(file)) {
             Ok(p) => p,
             Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
         };
         let label = pe.label();
         let ctx = Ctx::new(&pe, &arch);
-        return match AobScanPass.run(&ctx, AobInput { start, size: a.size, pattern }) {
+        return match AobScanPass.run(&ctx, AobInput { start, size, pattern }) {
             Ok(art) => emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty),
             Err(e) => ir_err("aob-failed", &e.to_string(), pretty),
         };
@@ -3176,25 +3289,7 @@ fn cmd_table_rm(a: TableShowArgs, pretty: bool) -> bool {
     }
 }
 
-fn encode_scan_value(ty: TableValueType, v: f64) -> Result<Vec<u8>, String> {
-    Ok(match ty {
-        TableValueType::I8 => (v as i8).to_le_bytes().to_vec(),
-        TableValueType::U8 => (v as u8).to_le_bytes().to_vec(),
-        TableValueType::I16 => (v as i16).to_le_bytes().to_vec(),
-        TableValueType::U16 => (v as u16).to_le_bytes().to_vec(),
-        TableValueType::I32 => (v as i32).to_le_bytes().to_vec(),
-        TableValueType::U32 => (v as u32).to_le_bytes().to_vec(),
-        TableValueType::I64 => (v as i64).to_le_bytes().to_vec(),
-        TableValueType::U64 => (v as u64).to_le_bytes().to_vec(),
-        TableValueType::F32 => (v as f32).to_le_bytes().to_vec(),
-        TableValueType::F64 => v.to_le_bytes().to_vec(),
-        TableValueType::Aob => return Err("cannot freeze an Aob-typed entry as a scalar value".to_string()),
-    })
-}
-
 fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
-    use n0xis_sources::ModuleProvider;
-
     let table = match n0xis_project::table::load(&a.table) {
         Ok(t) => t,
         Err(e) => return ir_err("table-not-found", &e.to_string(), pretty),
@@ -3206,7 +3301,7 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
         Some(v) => v,
         None => return ir_err("no-value", "provide --value or set the entry's freeze_value first", pretty),
     };
-    let bytes = match encode_scan_value(entry.value_type, value) {
+    let bytes = match entry.value_type.encode_value(value) {
         Ok(b) => b,
         Err(e) => return ir_err("bad-value", &e, pretty),
     };
@@ -3215,44 +3310,9 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
         Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
     };
 
-    let addr = match &entry.locator {
-        TableLocator::Address { va } => *va,
-        TableLocator::PointerPath { module, root_offset, offsets } => {
-            let Some(m) = live.modules().iter().find(|m| m.name.eq_ignore_ascii_case(module)) else {
-                return ir_err("no-module", &format!("no module named '{module}' in this process"), pretty);
-            };
-            let root = PointerRoot { label: m.name.clone(), start: m.base, size: m.size };
-            let core_path = n0xis_core::PointerPath { root_label: root.label.clone(), root_offset: *root_offset, offsets: offsets.clone() };
-            let arch = X64::new();
-            let ctx = Ctx::new(&live, &arch);
-            match resolve_pointer_path(&ctx, &core_path, &[root], 8) {
-                Some(va) => va,
-                None => return ir_err("resolve-failed", "pointer path did not resolve (module layout changed?)", pretty),
-            }
-        }
-        TableLocator::Aob { pattern, offset_from_match, module } => {
-            let pattern_parsed = match parse_aob(pattern) {
-                Ok(p) => p,
-                Err(e) => return ir_err("bad-pattern", &e, pretty),
-            };
-            let (start, size) = match module.as_deref().and_then(|m| live.modules().iter().find(|mm| mm.name.eq_ignore_ascii_case(m))) {
-                Some(m) => (m.base, m.size as usize),
-                None => match live.text_range() {
-                    Some((s, sz)) => (s, sz as usize),
-                    None => return ir_err("no-range", "no default code range for this AOB entry; give it a --module", pretty),
-                },
-            };
-            let arch = X64::new();
-            let ctx = Ctx::new(&live, &arch);
-            let art = match AobScanPass.run(&ctx, AobInput { start, size, pattern: pattern_parsed }) {
-                Ok(a) => a,
-                Err(e) => return ir_err("aob-failed", &e.to_string(), pretty),
-            };
-            match art.matches.first() {
-                Some(&m) => Va((m.get() as i64 + offset_from_match) as u64),
-                None => return ir_err("no-match", "the entry's AOB pattern was not found", pretty),
-            }
-        }
+    let addr = match n0xis_project::locator::resolve_table_locator(&live, &entry.locator) {
+        Ok(va) => va,
+        Err(e) => return ir_err("resolve-failed", &e, pretty),
     };
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(a.duration_ms);
@@ -3309,4 +3369,189 @@ fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
         return Err("no bytes provided".to_string());
     }
     Ok(out)
+}
+
+/// Read a bundle file plus its paired `.stream` companion (if present) and
+/// parse it — shared by `bundle list`/`bundle extract`.
+fn load_bundle(file: &str, stream: Option<&str>) -> Result<n0xis_bitsquid::ExplodedPackage, String> {
+    let bytes = std::fs::read(file).map_err(|e| format!("read {file}: {e}"))?;
+    let stream_path = stream.map(str::to_string).unwrap_or_else(|| format!("{file}.stream"));
+    let stream_bytes = std::fs::read(&stream_path).ok();
+    open_bundle(&bytes, stream_bytes.as_deref()).map_err(|e| e.to_string())
+}
+
+fn cmd_bundle_list(a: BundleListArgs, pretty: bool) -> bool {
+    let pkg = match load_bundle(&a.file, a.stream.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return ir_err("bundle-load-failed", &e, pretty),
+    };
+    let entries: Vec<_> = pkg
+        .entries
+        .iter()
+        .filter(|e| a.r#type.as_deref().is_none_or(|t| e.type_name == Some(t)))
+        .map(|e| {
+            json!({
+                "type_hash": format!("{:016x}", e.type_hash),
+                "type_name": e.type_name,
+                "path_hash": format!("{:016x}", e.path_hash),
+                "variants": e.variants.iter().map(|v| json!({
+                    "inline_size": v.inline_size,
+                    "stream_size": v.stream_size,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let data = json!({ "count": entries.len(), "entries": entries });
+    emit(&Response::success(schema::v1::BUNDLE_LIST, data).with_source(a.file), pretty)
+}
+
+fn cmd_bundle_extract(a: BundleExtractArgs, pretty: bool) -> bool {
+    let pkg = match load_bundle(&a.file, a.stream.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return ir_err("bundle-load-failed", &e, pretty),
+    };
+    let bundle_stem = std::path::Path::new(&a.file).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".to_string());
+    let out_dir = a.out.clone().unwrap_or_else(|| format!("{bundle_stem}_{}", a.r#type));
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        return ir_err("mkdir-failed", &format!("create {out_dir}: {e}"), pretty);
+    }
+
+    let mut extracted = Vec::new();
+    for entry in pkg.entries.iter().filter(|e| e.type_name == Some(a.r#type.as_str())) {
+        for variant in &entry.variants {
+            let (bytes, format, ext) = if a.r#type == "lua" {
+                match lua_resource(variant) {
+                    Some(lr) => {
+                        let ext = match lr.format {
+                            LuaFormat::Source => "lua",
+                            LuaFormat::GenericBytecode | LuaFormat::LuaJit2 => "luac",
+                            LuaFormat::Bad(_) => "bin",
+                        };
+                        (lr.data, Some(format!("{:?}", lr.format)), ext)
+                    }
+                    None => (variant.inline_data.clone(), None, "bin"),
+                }
+            } else {
+                (variant.inline_data.clone(), None, "bin")
+            };
+            let out_path = format!("{out_dir}/{:016x}.{ext}", entry.path_hash);
+            if let Err(e) = std::fs::write(&out_path, &bytes) {
+                return ir_err("write-failed", &format!("write {out_path}: {e}"), pretty);
+            }
+            extracted.push(json!({
+                "path_hash": format!("{:016x}", entry.path_hash),
+                "out_path": out_path,
+                "size": bytes.len(),
+                "format": format,
+            }));
+        }
+    }
+    let data = json!({ "count": extracted.len(), "out_dir": out_dir, "extracted": extracted });
+    emit(&Response::success(schema::v1::BUNDLE_EXTRACT, data).with_source(a.file), pretty)
+}
+
+fn cmd_lua_disasm(a: LuaDisasmArgs, pretty: bool) -> bool {
+    let bytes = match std::fs::read(&a.file) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &format!("read {}: {e}", a.file), pretty),
+    };
+    match n0xis_lua::disassemble(&bytes) {
+        Ok(chunk) => emit(&Response::success(schema::v1::LUA_DISASM, chunk).with_source(a.file), pretty),
+        Err(e) => ir_err("lua-disasm-failed", &e.to_string(), pretty),
+    }
+}
+
+fn cmd_lua_patch(a: LuaPatchArgs, pretty: bool) -> bool {
+    let bytes = match std::fs::read(&a.file) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &format!("read {}: {e}", a.file), pretty),
+    };
+    let raw_str = a.raw.strip_prefix("0x").unwrap_or(&a.raw);
+    let raw = match u32::from_str_radix(raw_str, 16) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-raw", &format!("invalid hex u32 {:?}: {e}", a.raw), pretty),
+    };
+    let patched = match n0xis_lua::patch_instruction(&bytes, a.proto, a.instr, raw) {
+        Ok(p) => p,
+        Err(e) => return ir_err("patch-failed", &e.to_string(), pretty),
+    };
+    if let Err(e) = std::fs::write(&a.out, &patched) {
+        return ir_err("write-failed", &format!("write {}: {e}", a.out), pretty);
+    }
+    let data = json!({ "out": a.out, "size": patched.len(), "proto": a.proto, "instr": a.instr, "raw": format!("0x{raw:08x}") });
+    emit(&Response::success(schema::v1::LUA_DISASM, data).with_source(a.file), pretty)
+}
+
+fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        Ok(r) => r,
+        Err(e) => return ir_err("bad-region", &e, pretty),
+    };
+    let label = live.label();
+    let mut hits = n0xis_luajit::scan_strings(&live, &regions, n0xis_luajit::GcstrLayout::HELLDIVERS_GC64, a.min_len, a.max_len);
+    if let Some(needle) = &a.contains {
+        hits.retain(|h| h.text.contains(needle.as_str()));
+    }
+    let data = json!({ "matches": hits, "count": hits.len() });
+    emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+}
+
+fn cmd_bundle_repack(a: BundleRepackArgs, pretty: bool) -> bool {
+    let bytes = match std::fs::read(&a.file) {
+        Ok(b) => b,
+        Err(e) => return ir_err("read-failed", &format!("read {}: {e}", a.file), pretty),
+    };
+    let decompressed = match n0xis_bitsquid::decompress_archive(&bytes) {
+        Ok(d) => d,
+        Err(e) => return ir_err("decompress-failed", &e.to_string(), pretty),
+    };
+    let stream_path = a.stream.clone().unwrap_or_else(|| format!("{}.stream", a.file));
+    let stream_bytes = std::fs::read(&stream_path).ok();
+    let pkg = match n0xis_bitsquid::parse_exploded_package(&decompressed, stream_bytes.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return ir_err("parse-failed", &e.to_string(), pretty),
+    };
+
+    let target_hash = match u64::from_str_radix(a.path_hash.trim_start_matches("0x"), 16) {
+        Ok(h) => h,
+        Err(e) => return ir_err("bad-path-hash", &format!("invalid hex path_hash {:?}: {e}", a.path_hash), pretty),
+    };
+    let Some(entry) = pkg.entries.iter().find(|e| e.path_hash == target_hash) else {
+        return ir_err("no-such-entry", &format!("no entry with path_hash {:016x} in this bundle", target_hash), pretty);
+    };
+    let Some(variant) = entry.variants.get(a.variant) else {
+        return ir_err("no-such-variant", &format!("entry {:016x} has no variant {}", target_hash, a.variant), pretty);
+    };
+
+    let replacement = match std::fs::read(&a.replacement_file) {
+        Ok(r) => r,
+        Err(e) => return ir_err("read-failed", &format!("read {}: {e}", a.replacement_file), pretty),
+    };
+    if replacement.len() != variant.inline_data.len() {
+        return ir_err(
+            "length-mismatch",
+            &format!("replacement is {} bytes, original variant inline data is {} bytes — repack only supports same-length replacement", replacement.len(), variant.inline_data.len()),
+            pretty,
+        );
+    }
+
+    let new_archive = match n0xis_bitsquid::patch_and_recompress(&decompressed, variant.inline_data_offset, &replacement) {
+        Ok(a) => a,
+        Err(e) => return ir_err("repack-failed", &e.to_string(), pretty),
+    };
+    if let Err(e) = std::fs::write(&a.out, &new_archive) {
+        return ir_err("write-failed", &format!("write {}: {e}", a.out), pretty);
+    }
+    let data = json!({
+        "out": a.out,
+        "size": new_archive.len(),
+        "path_hash": format!("{:016x}", target_hash),
+        "variant": a.variant,
+        "patched_bytes": replacement.len(),
+    });
+    emit(&Response::success(schema::v1::BUNDLE_EXTRACT, data).with_source(a.file), pretty)
 }

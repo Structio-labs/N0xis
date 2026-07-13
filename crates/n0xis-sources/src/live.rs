@@ -50,6 +50,13 @@ pub struct MemRegion {
     pub kind: String,
 }
 
+/// Readable+writable data, not the (usually huge, rarely value-bearing)
+/// read-only/executable code — what [`LiveProcess::default_writable_regions`]
+/// filters to.
+pub fn is_default_scan_region(protect: &str) -> bool {
+    matches!(protect, "rw-" | "rwx" | "rc-" | "rcx")
+}
+
 fn state_str(s: u32) -> &'static str {
     match s {
         x if x == MEM_COMMIT => "commit",
@@ -214,6 +221,21 @@ impl LiveProcess {
             addr = next;
         }
         out
+    }
+
+    /// All committed, writable regions — the default region set a scan/AOB
+    /// search covers when no explicit `--start`/`--size` (or equivalent) is
+    /// given, since a value or pattern could be anywhere in the process's
+    /// dynamically-allocated memory. Shared by the CLI's `scan value`/
+    /// `scan aob` and by any other frontend driving a live-process search
+    /// (e.g. n0xis-hud's adapters) — one definition of "the default region
+    /// set", not a copy per caller.
+    pub fn default_writable_regions(&self) -> Vec<(Va, usize)> {
+        self.regions(1_000_000)
+            .into_iter()
+            .filter(|r| r.state == "commit" && is_default_scan_region(&r.protect))
+            .map(|r| (r.base, r.size as usize))
+            .collect()
     }
 
     /// Allocate `size` bytes of `RWX` memory in the target — a "code cave"

@@ -113,6 +113,9 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
 | `n0xis-pipeline` | Wires a source + arch + project into the core; `PassManager` schedules/caches passes. | all core-side crates | frontend concerns |
 | `n0xis-cli` | Thin clap frontend → pipeline calls → JSON. Preserves the v0 command surface. | pipeline, contracts | analysis internals |
 | `n0xis-mcp` | MCP server exposing the same pipeline as agent tools. | pipeline, contracts | analysis internals |
+| `n0xis-bitsquid` | Bitsquid/Stingray bundle format adapter (archives, resource types). Pluggable game-format adapter. | contracts | core (never depended on by it) |
+| `n0xis-lua` | Offline LuaJIT 2.0 bytecode dump decoder/patcher (header, prototypes, instructions, constants). Pluggable scripting-format adapter. | serde | core, OS |
+| `n0xis-luajit` | Live LuaJIT VM introspection: finds/decodes GC objects (starting with `GCstr`) directly in a running process's heap via `MemorySource`, no per-string hand-picked byte pattern. Sibling to `n0xis-lua` (live vs. offline), not a dependency of it. | contracts, sources (traits) | core, concrete OS calls |
 
 **Test of correct boundaries:** you can `cargo test -p n0xis-core` with a mock
 in-memory `MemorySource` and a mock `Arch`, with zero Windows APIs linked. If you

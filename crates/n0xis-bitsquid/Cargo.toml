@@ -1,0 +1,14 @@
+[package]
+name = "n0xis-bitsquid"
+description = "Bitsquid/Stingray game-engine bundle format: the chunked-zlib archive container + the exploded-package entry/variant layout. A pluggable asset-format adapter, not a core seam — n0xis-core never depends on this crate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+miniz_oxide = "0.8"
+
+[dev-dependencies]
