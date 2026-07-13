@@ -13,7 +13,6 @@
 use n0xis_contracts::Va;
 use serde::Serialize;
 
-use crate::scan::{ScanCriterion, ScanInput, ScanPass, ScanValue, ValueType};
 use crate::{Ctx, CoreError, Pass};
 
 /// A "static" anchor a pointer chain can be rooted in — typically a module's
@@ -78,7 +77,7 @@ impl Pass for PointerPathPass {
     }
 
     fn run(&self, ctx: &Ctx, input: PointerPathInput) -> Result<PointerPathArtifact, CoreError> {
-        let ptr_ty = if input.pointer_size >= 8 { ValueType::U64 } else { ValueType::U32 };
+        let ptr_size = input.pointer_size.max(4);
         let regions = &input.search_regions;
 
         let mut paths = Vec::new();
@@ -88,38 +87,40 @@ impl Pass for PointerPathPass {
         let mut frontier: Vec<(Va, Vec<i64>)> = vec![(input.target, Vec::new())];
 
         for _ in 0..input.max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+            // Build the pointer-value index ONCE per level, not once per
+            // frontier node. The original design re-read every search region
+            // from scratch for *each* frontier node ("what points near X" as a
+            // fresh ScanPass per node) — depth 4 against a live process's full
+            // writable address space turned into thousands of multi-hundred-MB
+            // rescans and never finished in practice. A single sorted index,
+            // binary-searched per node, turns that into one full-memory pass
+            // per level regardless of how wide the frontier is.
+            let index = build_pointer_index(ctx, regions, ptr_size);
+
             let mut next_frontier = Vec::new();
             for (pointee, path_so_far) in &frontier {
                 let lo = pointee.get() as i64 - input.max_offset as i64;
                 let hi = pointee.get() as i64 + input.max_offset as i64;
-                let scan = ScanPass.run(
-                    ctx,
-                    ScanInput {
-                        regions: regions.clone(),
-                        value_type: ptr_ty,
-                        criterion: ScanCriterion::InRange { min: ScanValue::Int(lo), max: ScanValue::Int(hi) },
-                        align: input.pointer_size,
-                    },
-                )?;
-                // A pointer-in-range scan is bounded by construction (only real
-                // pointers into a small window match), so materializing the whole
-                // set here is safe — no display cap needed.
-                let scan_matches = scan.materialize(usize::MAX);
-                nodes_visited += scan_matches.len();
+                let start = index.partition_point(|&(v, _)| (v as i64) < lo);
+                let end = index.partition_point(|&(v, _)| (v as i64) <= hi);
+                nodes_visited += end - start;
 
-                for m in scan_matches {
-                    let offset = pointee.get() as i64 - m.value.as_int();
+                for &(v, addr) in &index[start..end] {
+                    let offset = pointee.get() as i64 - v as i64;
                     let mut new_path = path_so_far.clone();
                     new_path.push(offset);
 
-                    if let Some(root) = input.roots.iter().find(|r| m.addr.get() >= r.start.get() && m.addr.get() < r.start.get() + r.size) {
+                    if let Some(root) = input.roots.iter().find(|r| addr.get() >= r.start.get() && addr.get() < r.start.get() + r.size) {
                         paths.push(PointerPath {
                             root_label: root.label.clone(),
-                            root_offset: m.addr.get() - root.start.get(),
+                            root_offset: addr.get() - root.start.get(),
                             offsets: new_path.clone(),
                         });
                     }
-                    next_frontier.push((m.addr, new_path));
+                    next_frontier.push((addr, new_path));
                 }
             }
             if next_frontier.is_empty() {
@@ -130,6 +131,29 @@ impl Pass for PointerPathPass {
 
         Ok(PointerPathArtifact { paths, nodes_visited })
     }
+}
+
+/// Read every region once and extract every `ptr_size`-aligned candidate
+/// value, sorted by value — the shared index each BFS level's frontier nodes
+/// query via binary search (`partition_point`) instead of a separate full
+/// region re-read per node.
+fn build_pointer_index(ctx: &Ctx, regions: &[(Va, usize)], ptr_size: usize) -> Vec<(u64, Va)> {
+    let mut index = Vec::new();
+    for &(start, len) in regions {
+        let Ok(bytes) = ctx.source.read(start, len) else { continue };
+        let mut off = 0usize;
+        while off + ptr_size <= bytes.len() {
+            let v = if ptr_size >= 8 {
+                u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap())
+            } else {
+                u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as u64
+            };
+            index.push((v, start.offset(off as u64)));
+            off += ptr_size;
+        }
+    }
+    index.sort_unstable_by_key(|&(v, _)| v);
+    index
 }
 
 /// Walk a discovered chain forward from its root to confirm/re-resolve where
