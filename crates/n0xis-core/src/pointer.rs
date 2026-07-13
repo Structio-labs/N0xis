@@ -10,10 +10,22 @@
 //! of the BFS is one [`ScanPass`] run against the previous level's
 //! addresses — a pass composing a pass, à la LLVM/Bevy systems (CONCEPT §5.3).
 
+use std::collections::HashSet;
+
 use n0xis_contracts::Va;
 use serde::Serialize;
 
 use crate::{Ctx, CoreError, Pass};
+
+/// Hard cap on how many distinct addresses one BFS level may carry forward.
+/// A wide `max_offset` at depth ≥4 can make the *same* address reachable via
+/// many different paths (the frontier is not naturally bounded the way the
+/// per-level pointer index is) — observed exhausting ~16GB and aborting the
+/// process at depth 5 / max_offset 16384 before this cap existed. Erroring
+/// out here is a deliberate "ask for a narrower search" rather than silently
+/// truncating the frontier (which would return an incomplete, order-dependent
+/// result set without saying so).
+const MAX_FRONTIER_NODES: usize = 2_000_000;
 
 /// A "static" anchor a pointer chain can be rooted in — typically a module's
 /// `.data`/`.bss` range, so `root_label + root_offset` reads the same
@@ -125,6 +137,18 @@ impl Pass for PointerPathPass {
             }
             if next_frontier.is_empty() {
                 break;
+            }
+            // Many distinct paths can converge on the same address; expanding
+            // each separately next level is redundant and is what let the
+            // frontier blow up unbounded. Keep only the first path found to
+            // each address.
+            let mut seen = HashSet::with_capacity(next_frontier.len());
+            next_frontier.retain(|(addr, _)| seen.insert(*addr));
+            if next_frontier.len() > MAX_FRONTIER_NODES {
+                return Err(CoreError::Other(format!(
+                    "pointer-path frontier grew to {} distinct nodes (cap {MAX_FRONTIER_NODES}) — narrow --max-offset or --max-depth",
+                    next_frontier.len()
+                )));
             }
             frontier = next_frontier;
         }

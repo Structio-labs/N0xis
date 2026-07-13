@@ -72,6 +72,9 @@ pub mod v1 {
     pub const FREEZE: &str = "n0xis.freeze.v1";
     /// Hardware-breakpoint watchpoint hit report (`debug watch`, Phase 4b).
     pub const WATCHPOINT: &str = "n0xis.debug.watchpoint.v1";
+    /// Plain attach-and-hold report (`debug attach`) — the anti-debug-vs-bug
+    /// isolation diagnostic.
+    pub const DEBUG_ATTACH: &str = "n0xis.debug.attach.v1";
 
     /// Provenance graph — the principal (Phase 4c, KF-1).
     pub const PROVENANCE: &str = "n0xis.provenance.v1";

@@ -33,7 +33,7 @@ pub use live::{LiveProcess, MemRegion, ProcInfo, list_processes};
 #[cfg(feature = "live")]
 mod debug;
 #[cfg(feature = "live")]
-pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, WatchKind, await_breakpoint_hit, await_watchpoint_hit};
+pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, WatchKind, attach_and_wait, await_breakpoint_hit, await_watchpoint_hit};
 
 #[cfg(feature = "live")]
 mod unwind;

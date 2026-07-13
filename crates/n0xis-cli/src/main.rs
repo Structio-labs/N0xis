@@ -27,7 +27,7 @@ use n0xis_core::{
 };
 use n0xis_pipeline::{Pipeline, cfg_cached};
 use n0xis_sources::{
-    LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, WatchKind, await_breakpoint_hit,
+    LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, WatchKind, attach_and_wait, await_breakpoint_hit,
     await_watchpoint_hit, list_processes, remote_serve_stdio,
 };
 use serde_json::json;
@@ -218,6 +218,10 @@ enum LuaCmd {
     /// decoding the real object header — no hand-picked byte pattern needed
     /// per string.
     Strings(LuaStringsArgs),
+    /// Decode a live LuaJIT table (`GCtab`) at an address: its array part and
+    /// hash part, with string values resolved to text. Walk the object graph
+    /// without a debugger (pure memory reads).
+    Table(LuaTableArgs),
 }
 
 #[derive(Args)]
@@ -268,6 +272,15 @@ struct LuaStringsArgs {
     contains: Option<String>,
 }
 
+#[derive(Args)]
+struct LuaTableArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Address of the `GCtab` object (hex `0x…`).
+    #[arg(long)]
+    addr: String,
+}
+
 #[derive(Subcommand)]
 enum DiffCmd {
     /// Decompile two functions (from two sources/addresses) and diff their
@@ -314,6 +327,20 @@ enum DebugCmd {
     /// Arm a hardware watchpoint (data read/write, or execute) and block
     /// until it fires (or times out) — no code byte is ever patched.
     Watch(DebugWatchArgs),
+    /// Become the target's debugger and hold the attach without arming
+    /// anything, then detach. Diagnostic: isolates whether a target's
+    /// instability comes from `DebugActiveProcess` itself (an anti-debug
+    /// check reacting to being debugged) versus a specific breakpoint or
+    /// watchpoint.
+    Attach(DebugAttachArgs),
+}
+
+#[derive(Args)]
+struct DebugAttachArgs {
+    #[arg(long)]
+    pid: u32,
+    #[arg(long, default_value_t = 10000)]
+    timeout_ms: u64,
 }
 
 #[derive(Args)]
@@ -1276,6 +1303,7 @@ fn main() {
         Command::Dump(c) => cmd_dump(c, pretty),
         Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
         Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
+        Command::Debug(DebugCmd::Attach(a)) => cmd_debug_attach(a, pretty),
         Command::Scan(ScanCmd::Value(a)) => cmd_scan_value(a, pretty),
         Command::Scan(ScanCmd::Filter(a)) => cmd_scan_filter(a, pretty),
         Command::Scan(ScanCmd::Aob(a)) => cmd_scan_aob(a, pretty),
@@ -1304,6 +1332,7 @@ fn main() {
         Command::Lua(LuaCmd::Disasm(a)) => cmd_lua_disasm(a, pretty),
         Command::Lua(LuaCmd::Patch(a)) => cmd_lua_patch(a, pretty),
         Command::Lua(LuaCmd::Strings(a)) => cmd_lua_strings(a, pretty),
+        Command::Lua(LuaCmd::Table(a)) => cmd_lua_table(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -2883,6 +2912,16 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
     }
 }
 
+fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
+    match attach_and_wait(a.pid, a.timeout_ms) {
+        Ok(()) => emit(
+            &Response::success(schema::v1::DEBUG_ATTACH, json!({ "pid": a.pid, "timeout_ms": a.timeout_ms, "detached": true })),
+            pretty,
+        ),
+        Err(e) => ir_err("attach-failed", &e.to_string(), pretty),
+    }
+}
+
 /// The principal ROADMAP Phase 4c loop, in one command: arm a hardware
 /// watchpoint on a value's address (Phase 4b), and on a hit, explain it —
 /// resolved module/function, decompiled statement (Phase 3's SSA
@@ -3497,6 +3536,55 @@ fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
         hits.retain(|h| h.text.contains(needle.as_str()));
     }
     let data = json!({ "matches": hits, "count": hits.len() });
+    emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+}
+
+/// Render one decoded `TValue` as JSON, resolving a string's text from the
+/// live process so the dump is readable (`{"kind":"str","text":"up"}`) rather
+/// than just an address to chase by hand.
+fn tvalue_json(v: &n0xis_luajit::TValue, live: &LiveProcess, layout: n0xis_luajit::LuaLayout) -> serde_json::Value {
+    use n0xis_luajit::TValue;
+    match v {
+        TValue::Nil => json!({ "kind": "nil" }),
+        TValue::Bool(b) => json!({ "kind": "bool", "value": b }),
+        TValue::Num(n) => json!({ "kind": "num", "value": n }),
+        TValue::Str { addr } => {
+            let text = n0xis_luajit::read_gcstr(live, *addr, layout);
+            json!({ "kind": "str", "addr": addr.to_string(), "text": text })
+        }
+        TValue::Tab { addr } => json!({ "kind": "tab", "addr": addr.to_string() }),
+        TValue::Func { addr } => json!({ "kind": "func", "addr": addr.to_string() }),
+        TValue::Other { itype, ptr } => json!({ "kind": "other", "itype": format!("0x{itype:x}"), "ptr": format!("0x{ptr:x}") }),
+    }
+}
+
+fn cmd_lua_table(a: LuaTableArgs, pretty: bool) -> bool {
+    let addr = match Va::parse(&a.addr) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let layout = n0xis_luajit::LuaLayout::HELLDIVERS;
+    let Some(dump) = n0xis_luajit::read_table(&live, addr, layout) else {
+        return ir_err("not-a-table", "could not decode a GCtab at this address (wrong address or layout needs calibration)", pretty);
+    };
+    let array: Vec<serde_json::Value> = dump.array.iter().map(|v| tvalue_json(v, &live, layout)).collect();
+    let hash: Vec<serde_json::Value> = dump
+        .hash
+        .iter()
+        .map(|(k, v)| json!({ "key": tvalue_json(k, &live, layout), "value": tvalue_json(v, &live, layout) }))
+        .collect();
+    let label = live.label();
+    let data = json!({
+        "addr": dump.addr.to_string(),
+        "asize": dump.asize,
+        "hmask": dump.hmask,
+        "array": array,
+        "hash": hash,
+    });
     emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
 }
 

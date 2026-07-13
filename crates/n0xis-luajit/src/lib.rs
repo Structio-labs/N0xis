@@ -19,6 +19,23 @@ use n0xis_contracts::Va;
 use n0xis_sources::MemorySource;
 use serde::Serialize;
 
+mod obj;
+pub use obj::{decode_tvalue, read_table, LuaLayout, TValue, TableDump};
+
+/// Read a `GCstr` object at `addr` and return its text, using `layout` for the
+/// `len`-field offset. `None` if the object or its bytes can't be read, or the
+/// string isn't valid UTF-8 (LuaJIT strings are byte strings; the tokens we
+/// care about are ASCII).
+pub fn read_gcstr(src: &dyn MemorySource, addr: Va, layout: LuaLayout) -> Option<String> {
+    let len_bytes = src.read(addr.offset(layout.gcstr_len_off), 4).ok()?;
+    let len = u32::from_le_bytes(len_bytes.get(..4)?.try_into().ok()?);
+    if len == 0 || len > 1 << 16 {
+        return None;
+    }
+    let data = src.read(addr.offset(layout.gcstr_len_off + 4), len as usize).ok()?;
+    String::from_utf8(data).ok()
+}
+
 /// `GCstr` header layout, offsets from the object's base address.
 ///
 /// Empirically confirmed against a live 64-bit Helldivers 1 process
