@@ -24,6 +24,7 @@ clap = { version = "4", features = ["derive"] }
 iced-x86 = "1"
 dirs = "6"
 goblin = "0.10"
+libloading = "0.8"
 rustc-demangle = "0.1.28"
 msvc-demangler = "0.11.0"
 cpp_demangle = "0.5.1"

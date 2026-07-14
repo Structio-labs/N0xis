@@ -222,6 +222,46 @@ enum LuaCmd {
     /// hash part, with string values resolved to text. Walk the object graph
     /// without a debugger (pure memory reads).
     Table(LuaTableArgs),
+    /// Find live Lua *arrays of known strings* in the heap by matching runs of
+    /// tagged `TValue`s against a target string set — layout-independent (needs
+    /// no `GCtab` calibration). Built for reading an interact-combo
+    /// `{"up","down",…}` straight out of memory, but general to any
+    /// array-of-known-tokens.
+    Combo(LuaComboArgs),
+    /// Recover an LCG seed from an observed sequence: scan a live process for a
+    /// 4-byte word whose `s'=s*a+c` LCG reproduces a known combo, locating the
+    /// seed field and validating the RNG model at once. Constants are flags
+    /// (default = the Helldivers/Numerical-Recipes pair).
+    Seedscan(LuaSeedscanArgs),
+}
+
+#[derive(Args)]
+struct LuaSeedscanArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Region start (hex); omit with `--size` to scan every committed writable
+    /// region.
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long)]
+    size: Option<usize>,
+    /// The observed combo as directions (`up,down,down,up`) — mapped to the
+    /// engine's `random(0,3)` codes `left=0,up=1,right=2,down=3`.
+    #[arg(long)]
+    combo: String,
+    /// LCG multiplier `a` (default: Numerical Recipes / Helldivers).
+    #[arg(long, default_value_t = 1664525)]
+    lcg_a: u32,
+    /// LCG increment `c` (default: Numerical Recipes / Helldivers).
+    #[arg(long, default_value_t = 1013904223)]
+    lcg_c: u32,
+    /// Range size `k` for `random(0, k-1)` (4 directions).
+    #[arg(long, default_value_t = 4)]
+    range: u32,
+    /// Constrain candidate seeds to `[1, 2^31-2]` (the game's `math.random`
+    /// range) to cut coincidental matches. Pass `--no-seed-bound` to disable.
+    #[arg(long = "no-seed-bound", action = clap::ArgAction::SetFalse)]
+    seed_bound: bool,
 }
 
 #[derive(Args)]
@@ -279,6 +319,26 @@ struct LuaTableArgs {
     /// Address of the `GCtab` object (hex `0x…`).
     #[arg(long)]
     addr: String,
+}
+
+#[derive(Args)]
+struct LuaComboArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Region start (hex). Omit (with `--size`) to scan every committed
+    /// writable region, same default as `lua strings`.
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long)]
+    size: Option<usize>,
+    /// Comma-separated token set the array elements must be drawn from. Default
+    /// is the four interact-combo directions.
+    #[arg(long, default_value = "up,down,left,right")]
+    strings: String,
+    /// Minimum consecutive matching elements to report as a run (filters
+    /// coincidental single string pointers).
+    #[arg(long, default_value_t = 2)]
+    min_run: usize,
 }
 
 #[derive(Subcommand)]
@@ -1339,6 +1399,8 @@ fn main() {
         Command::Lua(LuaCmd::Patch(a)) => cmd_lua_patch(a, pretty),
         Command::Lua(LuaCmd::Strings(a)) => cmd_lua_strings(a, pretty),
         Command::Lua(LuaCmd::Table(a)) => cmd_lua_table(a, pretty),
+        Command::Lua(LuaCmd::Combo(a)) => cmd_lua_combo(a, pretty),
+        Command::Lua(LuaCmd::Seedscan(a)) => cmd_lua_seedscan(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -2670,7 +2732,29 @@ fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Opti
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;
         let sz = size.ok_or("provide --size with --start")?;
-        return Ok(vec![(va, sz)]);
+        // Clip the requested window to the process's committed regions: a live
+        // range often spans unmapped gaps (e.g. LuaJIT's arena is many small
+        // committed blocks), and a single `ReadProcessMemory` across a gap
+        // fails *wholesale* — silently yielding zero hits. Intersecting with
+        // the region map turns one doomed read into per-block reads that
+        // actually land, and keeps a narrowed scan fast.
+        let lo = va.0;
+        let hi = va.0.saturating_add(sz as u64);
+        let mut clipped: Vec<(Va, usize)> = Vec::new();
+        for (rb, rs) in live.default_writable_regions() {
+            let a = rb.0.max(lo);
+            let b = (rb.0 + rs as u64).min(hi);
+            if a < b {
+                clipped.push((Va(a), (b - a) as usize));
+            }
+        }
+        if clipped.is_empty() {
+            // No committed writable page in the window — fall back to the raw
+            // range so a deliberate single-region read (e.g. an RX/RO area not
+            // in the writable set) still works as before.
+            return Ok(vec![(va, sz)]);
+        }
+        return Ok(clipped);
     }
     let regions = live.default_writable_regions();
     if regions.is_empty() {
@@ -3621,6 +3705,102 @@ fn cmd_lua_table(a: LuaTableArgs, pretty: bool) -> bool {
         "hash": hash,
     });
     emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+}
+
+fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        Ok(r) => r,
+        Err(e) => return ir_err("bad-region", &e, pretty),
+    };
+    let wanted: Vec<String> = a.strings.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    if wanted.is_empty() {
+        return ir_err("no-strings", "--strings must list at least one token", pretty);
+    }
+    let layout = n0xis_luajit::GcstrLayout::HELLDIVERS_GC64;
+    // Longest token bounds the GCstr scan; the combo tokens are short ASCII.
+    let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
+    // Every candidate GCstr whose text is one of the wanted tokens becomes a
+    // target address — the run cross-check discards any that aren't referenced.
+    let strs = n0xis_luajit::scan_strings(&live, &regions, layout, 1, max_len.max(1));
+    let mut targets: std::collections::HashMap<Va, String> = std::collections::HashMap::new();
+    for s in &strs {
+        if wanted.iter().any(|w| w == &s.text) {
+            targets.insert(s.object_base, s.text.clone());
+        }
+    }
+    if targets.is_empty() {
+        let data = json!({ "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
+        return emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(live.label()), pretty);
+    }
+    // A combo array may be laid out as 8-byte Lua `TValue`s or as a packed
+    // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
+    let mut runs_json: Vec<serde_json::Value> = Vec::new();
+    let tv = n0xis_luajit::find_string_runs(&live, &regions, &targets, a.min_run);
+    for r in &tv {
+        runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "tvalue8", "len": r.values.len(), "values": r.values }));
+    }
+    let gr = n0xis_luajit::find_gcref32_runs(&live, &regions, &targets, a.min_run);
+    for r in &gr {
+        runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "gcref4", "len": r.values.len(), "values": r.values }));
+    }
+    let count = tv.len() + gr.len();
+    let label = live.label();
+    let data = json!({
+        "targets": targets.iter().map(|(a, t)| json!({ "addr": a.to_string(), "text": t })).collect::<Vec<_>>(),
+        "runs": runs_json,
+        "count": count,
+    });
+    emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(label), pretty)
+}
+
+/// `random(0,3)` direction codes, from the game's `modify_random_combo_inputs`:
+/// `0=left, 1=up, 2=right, 3=down`.
+fn dir_to_code(d: &str) -> Option<u32> {
+    match d.trim() {
+        "left" => Some(0),
+        "up" => Some(1),
+        "right" => Some(2),
+        "down" => Some(3),
+        _ => None,
+    }
+}
+
+fn cmd_lua_seedscan(a: LuaSeedscanArgs, pretty: bool) -> bool {
+    let target: Result<Vec<u32>, String> = a
+        .combo
+        .split(',')
+        .map(|d| dir_to_code(d).ok_or_else(|| format!("unknown direction '{}'; use up/down/left/right", d.trim())))
+        .collect();
+    let target = match target {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => return ir_err("empty-combo", "--combo must list at least one direction", pretty),
+        Err(e) => return ir_err("bad-combo", &e, pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        Ok(r) => r,
+        Err(e) => return ir_err("bad-region", &e, pretty),
+    };
+    let lcg = n0xis_luajit::Lcg { a: a.lcg_a, c: a.lcg_c };
+    let bounds = if a.seed_bound { Some((1u32, 0x7FFF_FFFEu32)) } else { None };
+    let hits = n0xis_luajit::find_seeds(&live, &regions, &lcg, a.range, &target, bounds);
+    let label = live.label();
+    let data = json!({
+        "combo": a.combo,
+        "codes": target,
+        "lcg": { "a": a.lcg_a, "c": a.lcg_c, "range": a.range },
+        "seed_bounded": a.seed_bound,
+        "count": hits.len(),
+        "hits": hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
+    });
+    emit(&Response::success(schema::v1::LUA_SEEDSCAN, data).with_source(label), pretty)
 }
 
 fn cmd_bundle_repack(a: BundleRepackArgs, pretty: bool) -> bool {

@@ -19,8 +19,10 @@ use n0xis_contracts::Va;
 use n0xis_sources::MemorySource;
 use serde::Serialize;
 
+mod lcg;
 mod obj;
-pub use obj::{decode_tvalue, read_table, LuaLayout, TValue, TableDump};
+pub use lcg::{find_seeds, Lcg, SeedHit};
+pub use obj::{decode_tvalue, read_table, string_ref_candidates, LuaLayout, TValue, TableDump};
 
 /// Read a `GCstr` object at `addr` and return its text, using `layout` for the
 /// `len`-field offset. `None` if the object or its bytes can't be read, or the
@@ -128,6 +130,125 @@ fn is_plausible_ascii(bytes: &[u8]) -> bool {
     !bytes.is_empty() && bytes.iter().all(|&b| (0x20..0x7f).contains(&b))
 }
 
+/// One contiguous run of `TValue`s in the heap that all point to a
+/// `GCstr` in the caller's target set, decoded back to text.
+///
+/// This is how a Lua *array-of-known-strings* is found **without** needing the
+/// `GCtab` header layout ([`LuaLayout`]) calibrated: a Lua array's 1-based part
+/// is a flat `TValue[]`, and each element that holds an interned string is just
+/// `(LJ_TSTR<<47 | gcstr_addr)`. Matching those against the (few) known string
+/// object addresses recovers the sequence directly from its backing store —
+/// e.g. an interact-combo `{"up","down","down","up"}` reads straight out as
+/// `["up","down","down","up"]`. Coincidental single hits are filtered by
+/// `min_run`, and false-positive string addresses simply never get referenced.
+#[derive(Debug, Clone, Serialize)]
+pub struct StringRun {
+    /// Address of the first `TValue` in the run (the array element, not the
+    /// `GCstr`). For a Lua array this is `array_base + 1*8` (slot 0 unused).
+    pub addr: Va,
+    /// The decoded sequence, one entry per consecutive matching `TValue`.
+    pub values: Vec<String>,
+}
+
+/// Scan `regions` for runs of ≥`min_run` consecutive 8-byte-aligned `TValue`s
+/// that each reference one of `targets` (a map of `GCstr` object base → its
+/// text). Reuses [`decode_tvalue`], so it inherits the GC64 tag encoding and
+/// needs no table-layout constants. `targets` may legitimately contain several
+/// addresses mapping to the same text (every candidate `GCstr` the string scan
+/// turned up for a token) — only the ones actually referenced form runs.
+pub fn find_string_runs(
+    source: &dyn MemorySource,
+    regions: &[(Va, usize)],
+    targets: &std::collections::HashMap<Va, String>,
+    min_run: usize,
+) -> Vec<StringRun> {
+    let mut out = Vec::new();
+    for &(base, size) in regions {
+        let Ok(bytes) = source.read(base, size) else { continue };
+        let words = bytes.len() / 8;
+        let mut run_start: Option<usize> = None;
+        let mut run: Vec<String> = Vec::new();
+        for w in 0..words {
+            let raw = u64::from_le_bytes(bytes[w * 8..w * 8 + 8].try_into().unwrap());
+            // Try both TValue string encodings (GC64 and 32-bit GCRef); the
+            // membership check against `targets` disambiguates.
+            let hit = string_ref_candidates(raw)
+                .into_iter()
+                .flatten()
+                .find_map(|addr| targets.get(&addr).cloned());
+            match hit {
+                Some(text) => {
+                    if run_start.is_none() {
+                        run_start = Some(w);
+                    }
+                    run.push(text);
+                }
+                None => {
+                    if run.len() >= min_run {
+                        out.push(StringRun {
+                            addr: base.offset(run_start.unwrap() as u64 * 8),
+                            values: std::mem::take(&mut run),
+                        });
+                    }
+                    run.clear();
+                    run_start = None;
+                }
+            }
+        }
+        if run.len() >= min_run {
+            out.push(StringRun { addr: base.offset(run_start.unwrap() as u64 * 8), values: run });
+        }
+    }
+    out
+}
+
+/// Like [`find_string_runs`], but for a **packed 4-byte `GCRef` array** — the
+/// element layout of Bitsquid's own `array` container (and any place a build
+/// stores bare 32-bit object pointers back-to-back rather than as full 8-byte
+/// `TValue`s). Scans 4-byte-aligned words and matches each directly against the
+/// 32-bit `targets` addresses. An 8-byte `TValue` array won't masquerade as one
+/// of these: its interleaved `itype` word (`0xFFFFFFFB`) isn't a target, so it
+/// can only ever produce length-1 runs, which `min_run >= 2` rejects.
+pub fn find_gcref32_runs(
+    source: &dyn MemorySource,
+    regions: &[(Va, usize)],
+    targets: &std::collections::HashMap<Va, String>,
+    min_run: usize,
+) -> Vec<StringRun> {
+    let mut out = Vec::new();
+    for &(base, size) in regions {
+        let Ok(bytes) = source.read(base, size) else { continue };
+        let words = bytes.len() / 4;
+        let mut run_start: Option<usize> = None;
+        let mut run: Vec<String> = Vec::new();
+        for w in 0..words {
+            let raw = u32::from_le_bytes(bytes[w * 4..w * 4 + 4].try_into().unwrap());
+            match targets.get(&Va(raw as u64)).cloned() {
+                Some(text) => {
+                    if run_start.is_none() {
+                        run_start = Some(w);
+                    }
+                    run.push(text);
+                }
+                None => {
+                    if run.len() >= min_run {
+                        out.push(StringRun {
+                            addr: base.offset(run_start.unwrap() as u64 * 4),
+                            values: std::mem::take(&mut run),
+                        });
+                    }
+                    run.clear();
+                    run_start = None;
+                }
+            }
+        }
+        if run.len() >= min_run {
+            out.push(StringRun { addr: base.offset(run_start.unwrap() as u64 * 4), values: run });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +302,91 @@ mod tests {
         // "hello" is len 5; a max_len of 3 must exclude it.
         let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::HELLDIVERS_GC64, 1, 3);
         assert!(hits.iter().all(|h| h.text != "hello"));
+    }
+
+    /// GC64-tag a string pointer the way the VM stores it in an array `TValue`.
+    fn tvstr(addr: u64) -> u64 {
+        (0x1FFFBu64 << 47) | (addr & 0x0000_7FFF_FFFF_FFFF)
+    }
+
+    /// A combo array `{"up","down","down","up"}` laid out as a run of tagged
+    /// `TValue`s (with an unrelated word before and after) must decode back to
+    /// exactly that direction sequence — the layout-independent combo read.
+    #[test]
+    fn finds_a_combo_string_run_and_decodes_the_directions() {
+        use std::collections::HashMap;
+        let up = Va(0xA000);
+        let down = Va(0xB000);
+        let base = Va(0x5000);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0xDEAD_BEEFu64.to_le_bytes()); // noise / slot-0-ish
+        for &a in &[up.0, down.0, down.0, up.0] {
+            buf.extend_from_slice(&tvstr(a).to_le_bytes());
+        }
+        buf.extend_from_slice(&123.0f64.to_bits().to_le_bytes()); // a number, breaks the run
+        let snap = Snapshot::builder().region(base, buf).build();
+
+        let mut targets = HashMap::new();
+        targets.insert(up, "up".to_string());
+        targets.insert(down, "down".to_string());
+
+        let runs = find_string_runs(&snap, &[(base, 0x1000)], &targets, 2);
+        let combo = runs.iter().find(|r| r.values.len() == 4).expect("combo run found");
+        assert_eq!(combo.values, vec!["up", "down", "down", "up"]);
+        // The run starts at the second word (slot 0 was noise).
+        assert_eq!(combo.addr, base.offset(8));
+    }
+
+    /// A combo stored as a packed 4-byte `GCRef` array `[up,down,down,up]` must
+    /// be recovered by `find_gcref32_runs`, and an 8-byte `TValue` array of the
+    /// same must NOT masquerade as a 4-byte run (its itype word breaks it).
+    #[test]
+    fn finds_a_packed_gcref32_combo_run() {
+        use std::collections::HashMap;
+        let up = Va(0x3076d914);
+        let down = Va(0x3076d6d4);
+        let base = Va(0x7000);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // leading noise
+        for &a in &[up.0, down.0, down.0, up.0] {
+            buf.extend_from_slice(&(a as u32).to_le_bytes());
+        }
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        let snap = Snapshot::builder().region(base, buf).build();
+        let mut targets = HashMap::new();
+        targets.insert(up, "up".to_string());
+        targets.insert(down, "down".to_string());
+
+        let runs = find_gcref32_runs(&snap, &[(base, 0x1000)], &targets, 2);
+        let combo = runs.iter().find(|r| r.values.len() == 4).expect("gcref32 combo found");
+        assert_eq!(combo.values, vec!["up", "down", "down", "up"]);
+        assert_eq!(combo.addr, base.offset(4));
+
+        // The same addresses as 8-byte TValues must NOT yield a 4-byte run of
+        // length >= 2 (the 0xFFFFFFFB itype words sit between the pointers).
+        let mut tvbuf = Vec::new();
+        for &a in &[up.0, down.0] {
+            tvbuf.extend_from_slice(&tvstr(a).to_le_bytes());
+        }
+        let snap2 = Snapshot::builder().region(base, tvbuf).build();
+        assert!(find_gcref32_runs(&snap2, &[(base, 0x1000)], &targets, 2).is_empty());
+    }
+
+    /// A lone matching `TValue` (run length 1) must be rejected by `min_run` so
+    /// coincidental string pointers don't masquerade as combos.
+    #[test]
+    fn min_run_rejects_isolated_matches() {
+        use std::collections::HashMap;
+        let up = Va(0xA000);
+        let base = Va(0x6000);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1.0f64.to_bits().to_le_bytes());
+        buf.extend_from_slice(&tvstr(up.0).to_le_bytes()); // single hit
+        buf.extend_from_slice(&2.0f64.to_bits().to_le_bytes());
+        let snap = Snapshot::builder().region(base, buf).build();
+        let mut targets = HashMap::new();
+        targets.insert(up, "up".to_string());
+        let runs = find_string_runs(&snap, &[(base, 0x1000)], &targets, 2);
+        assert!(runs.is_empty());
     }
 }

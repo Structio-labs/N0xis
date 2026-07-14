@@ -99,6 +99,10 @@ pub mod v1 {
     pub const LUA_DISASM: &str = "n0xis.lua.disasm.v1";
     /// Live LuaJIT GCstr discovery in a running process (`lua strings`).
     pub const LUA_STRINGS: &str = "n0xis.lua.strings.v1";
+    /// Live Lua array-of-known-strings run discovery (`lua combo`).
+    pub const LUA_COMBO: &str = "n0xis.lua.combo.v1";
+    /// LCG seed recovery from an observed sequence (`lua seedscan`).
+    pub const LUA_SEEDSCAN: &str = "n0xis.lua.seedscan.v1";
 
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }

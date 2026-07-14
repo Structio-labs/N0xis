@@ -115,6 +115,31 @@ const LJ_TUDATA: u32 = 0x1FFF3;
 /// 47-bit pointer mask for a GC64 tagged value.
 const PTR47_MASK: u64 = 0x0000_7FFF_FFFF_FFFF;
 
+/// Every way `raw` (8 little-endian bytes at an array slot) could be a *string*
+/// `TValue`, as a candidate `GCstr` address — under both LuaJIT TValue encodings
+/// this toolkit has to support, because the boxing differs by build:
+///
+/// * **GC64** (NaN-boxed, 8-byte `GCRef`): `itype = raw>>47`, string if
+///   `itype == LJ_TSTR (0x1FFFB)`, pointer = low 47 bits.
+/// * **32-bit `GCRef`** (classic 2.0, objects in the low 4 GB): a `TValue` is
+///   `{ int32 itype; GCRef gcr; }` little-endian → low 4 bytes are the 32-bit
+///   object pointer, high 4 bytes are the itype `~LJ_TSTR = 0xFFFFFFFB`.
+///
+/// Returning *both* candidates and letting the caller intersect with a known
+/// target set is what makes the combo run-finder build-agnostic: only the
+/// encoding actually in use yields an address that's a real interned string.
+/// (Helldivers 1's heap sits in low memory — 32-bit `GCRef` — as confirmed live
+/// by the direction strings landing at `0x30xxxxxx` addresses.)
+pub fn string_ref_candidates(raw: u64) -> [Option<Va>; 2] {
+    let gc64 = (((raw >> ITYPE_SHIFT) as u32) == LJ_TSTR).then(|| Va(raw & PTR47_MASK));
+    let r32 = (((raw >> 32) as u32) == LJ_TSTR_32).then(|| Va(raw & 0xFFFF_FFFF));
+    [gc64, r32]
+}
+
+/// `~LJ_TSTR` for a 32-bit-`GCRef` build: string itype is `~4u = 0xFFFFFFFB`,
+/// stored in the high word of the `TValue`.
+const LJ_TSTR_32: u32 = 0xFFFF_FFFB;
+
 /// Decode one 8-byte GC64-style `TValue` from its raw little-endian bits.
 pub fn decode_tvalue(raw: u64) -> TValue {
     let itype = (raw >> ITYPE_SHIFT) as u32;

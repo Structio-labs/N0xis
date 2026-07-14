@@ -16,9 +16,16 @@ n0xis-arch = { workspace = true }
 n0xis-core = { workspace = true }
 n0xis-sources = { workspace = true, features = ["live"] }
 n0xis-project = { workspace = true, features = ["live"] }
+n0xis-luajit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+# Dynamic loader for interception.dll (Helldivers combo-solver's key sender —
+# the game rejects synthetic SendInput; see src/interception.rs). Loaded at
+# runtime from a `hud.toml`-configured path, never linked at build time, so
+# the crate builds fine on a machine without the driver installed.
+libloading = { workspace = true }
 
 # Overlay window + rendering. eframe gives a transparent/undecorated/
 # always-on-top viewport (winit) without hand-rolled DirectComposition code.

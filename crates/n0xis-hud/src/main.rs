@@ -10,10 +10,12 @@
 //! See `docs/n0xhud/CONCEPT.md` / `docs/n0xhud/ROADMAP.md`.
 
 mod adapters;
+mod combo_watcher;
 mod config;
 mod engine;
 mod freeze;
 mod input;
+mod interception;
 mod menu;
 mod sequence;
 mod sound;
@@ -98,6 +100,7 @@ fn main() -> eframe::Result<()> {
     let engine = Arc::new(Mutex::new(Engine::new(config, project_dir)));
     input::spawn(toggle_vk, engine.clone());
     watcher::spawn(engine.clone());
+    combo_watcher::spawn(engine.clone());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

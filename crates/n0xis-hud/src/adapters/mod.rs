@@ -4,6 +4,7 @@
 //! not the (unbuilt) stdio plugin protocol from `docs/COMMUNITY_ROADMAP.md`.
 
 pub mod helldivers;
+pub mod helldivers_combo;
 
 use n0xis_contracts::Va;
 use n0xis_project::patch::PatchRecord;

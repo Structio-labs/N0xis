@@ -19,6 +19,8 @@ pub struct HudConfig {
     pub adapters: Vec<AdapterBinding>,
     #[serde(default)]
     pub sequences: SequencesConfig,
+    #[serde(default)]
+    pub combo_solver: ComboSolverConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -135,6 +137,45 @@ pub struct ComboDef {
     /// Per-step delay override (ms); falls back to `default_delay_ms`.
     #[serde(default)]
     pub delay_ms: Option<u64>,
+}
+
+/// The Helldivers combo auto-solver (seed→LCG read + Interception replay —
+/// see `adapters::helldivers_combo`). Off by default: it needs the
+/// Interception driver installed, so a profile must opt in with a real DLL
+/// path rather than the solver silently no-op'ing on a machine without it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ComboSolverConfig {
+    pub enabled: bool,
+    /// Path to `interception.dll` (x64), loaded dynamically at runtime — see
+    /// `src/interception.rs` for why this is never a build-time link.
+    pub interception_dll: String,
+    /// Explicit Interception keyboard device (`INTERCEPTION_KEYBOARD(n)`,
+    /// 1-based); omit to auto-pick the first keyboard device found.
+    #[serde(default)]
+    pub device: Option<i32>,
+    pub hold_ms: u64,
+    pub gap_ms: u64,
+    /// How often (ms) the background loop rescans for a newly-activated
+    /// interact object while the game is running.
+    pub poll_ms: u64,
+    /// Safety cap on taps sent to one instance before giving up (protects
+    /// against a signature false-positive spinning forever).
+    pub max_steps: u32,
+}
+
+impl Default for ComboSolverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interception_dll: String::new(),
+            device: None,
+            hold_ms: 60,
+            gap_ms: 160,
+            poll_ms: 700,
+            max_steps: 24,
+        }
+    }
 }
 
 impl HudConfig {

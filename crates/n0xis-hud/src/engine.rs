@@ -40,11 +40,29 @@ struct SeqState {
     combos: HashMap<String, SeqOverride>,
 }
 
+/// Runtime overrides for the Helldivers combo auto-solver, layered over the
+/// `hud.toml` `[combo_solver]` defaults and persisted to
+/// `.n0x/combo_solver.json` (so the shipped config stays untouched, same
+/// pattern as `SeqOverride`). A `None` field means "use the config default".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComboSolverOverride {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub hold_ms: Option<u64>,
+    #[serde(default)]
+    pub gap_ms: Option<u64>,
+    /// A hotkey that toggles the solver on/off from in-game.
+    #[serde(default)]
+    pub hotkey: Option<String>,
+}
+
 /// What currently owns a hotkey — for conflict messages during rebind.
 pub enum HotkeyOwner {
     Window,
     Cheat(String),
     Sequence(String),
+    ComboSolver,
 }
 
 pub struct Engine {
@@ -61,11 +79,16 @@ pub struct Engine {
     pub rebind_capture: Option<EntryKey>,
     /// Set when rebinding a *sequence* (combo name) rather than a cheat entry.
     pub seq_rebind_capture: Option<String>,
+    /// Set when rebinding the combo-solver's on/off toggle hotkey.
+    pub combo_solver_rebind: bool,
     /// A conflict message for the entry currently being rebound (cleared each
     /// time a new key is offered).
     pub rebind_conflict: Option<String>,
     /// Per-combo overrides (hotkey/delay), persisted to `.n0x/sequences.json`.
     seq_overrides: HashMap<String, SeqOverride>,
+    /// Runtime overrides for the combo auto-solver, persisted to
+    /// `.n0x/combo_solver.json`.
+    combo_solver: ComboSolverOverride,
     log: Vec<String>,
 }
 
@@ -83,6 +106,7 @@ impl Engine {
             })
             .collect();
         let seq_overrides = Self::load_seq_state(&project_dir);
+        let combo_solver = Self::load_combo_solver_state(&project_dir);
         Self {
             config,
             project_dir,
@@ -92,10 +116,88 @@ impl Engine {
             adapter_records: HashMap::new(),
             rebind_capture: None,
             seq_rebind_capture: None,
+            combo_solver_rebind: false,
             rebind_conflict: None,
             seq_overrides,
+            combo_solver,
             log: Vec::new(),
         }
+    }
+
+    // -------- combo auto-solver runtime settings --------
+
+    fn combo_solver_state_path(project_dir: &std::path::Path) -> PathBuf {
+        project_dir.join("combo_solver.json")
+    }
+
+    fn load_combo_solver_state(project_dir: &std::path::Path) -> ComboSolverOverride {
+        std::fs::read_to_string(Self::combo_solver_state_path(project_dir))
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_combo_solver_state(&self) {
+        if let Ok(json) = serde_json::to_string_pretty(&self.combo_solver) {
+            let _ = std::fs::write(Self::combo_solver_state_path(&self.project_dir), json);
+        }
+    }
+
+    /// Effective solver settings (runtime override → `hud.toml` default).
+    pub fn combo_solver_enabled(&self) -> bool {
+        self.combo_solver.enabled.unwrap_or(self.config.combo_solver.enabled)
+    }
+    pub fn combo_solver_hold_ms(&self) -> u64 {
+        self.combo_solver.hold_ms.unwrap_or(self.config.combo_solver.hold_ms)
+    }
+    pub fn combo_solver_gap_ms(&self) -> u64 {
+        self.combo_solver.gap_ms.unwrap_or(self.config.combo_solver.gap_ms)
+    }
+    pub fn combo_solver_hotkey(&self) -> Option<String> {
+        self.combo_solver.hotkey.clone()
+    }
+    /// Static settings that stay config-only (no in-UI control for these).
+    pub fn combo_solver_dll(&self) -> &str {
+        &self.config.combo_solver.interception_dll
+    }
+    pub fn combo_solver_device(&self) -> Option<i32> {
+        self.config.combo_solver.device
+    }
+    pub fn combo_solver_poll_ms(&self) -> u64 {
+        self.config.combo_solver.poll_ms
+    }
+    pub fn combo_solver_max_steps(&self) -> u32 {
+        self.config.combo_solver.max_steps
+    }
+
+    pub fn set_combo_solver_enabled(&mut self, on: bool) {
+        self.combo_solver.enabled = Some(on);
+        self.save_combo_solver_state();
+        self.push_log(format!("combo-solver: {}", if on { "enabled" } else { "disabled" }));
+    }
+    pub fn set_combo_solver_hold_ms(&mut self, ms: u64) {
+        self.combo_solver.hold_ms = Some(ms);
+        self.save_combo_solver_state();
+    }
+    pub fn set_combo_solver_gap_ms(&mut self, ms: u64) {
+        self.combo_solver.gap_ms = Some(ms);
+        self.save_combo_solver_state();
+    }
+    pub fn try_set_combo_solver_hotkey(&mut self, key: String) -> Result<(), String> {
+        let vk = input::parse_vk(&key);
+        match self.hotkey_owner(vk) {
+            Some(HotkeyOwner::Window) => return Err(format!("{key} is the N0xHUD show/hide key — pick another")),
+            Some(HotkeyOwner::Cheat(c)) => return Err(format!("{key} is already bound to cheat \"{c}\"")),
+            Some(HotkeyOwner::Sequence(s)) => return Err(format!("{key} is already bound to combo \"{s}\"")),
+            _ => {}
+        }
+        self.combo_solver.hotkey = Some(key);
+        self.save_combo_solver_state();
+        Ok(())
+    }
+    pub fn clear_combo_solver_hotkey(&mut self) {
+        self.combo_solver.hotkey = None;
+        self.save_combo_solver_state();
     }
 
     fn seq_state_path(project_dir: &std::path::Path) -> PathBuf {
@@ -129,6 +231,13 @@ impl Engine {
     /// Most recent status lines, oldest first.
     pub fn log(&self) -> &[String] {
         &self.log
+    }
+
+    /// Append a status line from a background subsystem (the combo-solver
+    /// watcher) that has no `TableEntry`/adapter-result shape to report
+    /// through — same footer log as everything else.
+    pub fn note(&mut self, line: String) {
+        self.push_log(line);
     }
 
     fn push_log(&mut self, line: String) {
@@ -222,6 +331,11 @@ impl Engine {
     /// otherwise toggle a bound cheat entry. (The window show/hide key is
     /// intercepted earlier in `input.rs` and never reaches here.)
     pub fn handle_hotkey(&mut self, vk: u32) {
+        if vk != 0 && self.combo_solver_hotkey().map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
+            let on = self.combo_solver_enabled();
+            self.set_combo_solver_enabled(!on);
+            return;
+        }
         if let Some(name) = self.sequence_bound_to(vk) {
             self.run_sequence(&name);
             return;
@@ -255,6 +369,9 @@ impl Engine {
     /// Is `vk` bound to any HUD action (a combo or a cheat)? Used by the hook
     /// to swallow the key so it never also reaches the game.
     pub fn hotkey_bound(&self, vk: u32) -> bool {
+        if vk != 0 && self.combo_solver_hotkey().map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
+            return true;
+        }
         self.sequence_bound_to(vk).is_some() || self.entry_bound_to(vk, None).is_some()
     }
 
@@ -312,6 +429,9 @@ impl Engine {
                 return Some(HotkeyOwner::Sequence(c.name.clone()));
             }
         }
+        if self.combo_solver_hotkey().map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
+            return Some(HotkeyOwner::ComboSolver);
+        }
         None
     }
 
@@ -323,6 +443,7 @@ impl Engine {
             Some(HotkeyOwner::Window) => return Err(format!("{key} is the N0xHUD show/hide key — pick another")),
             Some(HotkeyOwner::Cheat(c)) => return Err(format!("{key} is already bound to cheat \"{c}\"")),
             Some(HotkeyOwner::Sequence(s)) if s != name => return Err(format!("{key} is already bound to \"{s}\"")),
+            Some(HotkeyOwner::ComboSolver) => return Err(format!("{key} is already the combo-solver toggle")),
             _ => {}
         }
         self.seq_overrides.entry(name.to_string()).or_default().hotkey = Some(key);
@@ -365,6 +486,7 @@ impl Engine {
             Some(HotkeyOwner::Window) => return Err(format!("{key} is the N0xHUD show/hide key — pick another")),
             Some(HotkeyOwner::Cheat(c)) if c != entry_name => return Err(format!("{key} is already bound to \"{c}\"")),
             Some(HotkeyOwner::Sequence(s)) => return Err(format!("{key} is already bound to combo \"{s}\"")),
+            Some(HotkeyOwner::ComboSolver) => return Err(format!("{key} is already the combo-solver toggle")),
             _ => {}
         }
         self.set_hotkey_unchecked(table_name, entry_name, Some(key));
