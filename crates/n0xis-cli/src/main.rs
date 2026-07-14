@@ -765,8 +765,14 @@ struct DiscoverArgs {
     /// Scan range size in bytes (defaults to the `.text` size).
     #[arg(long)]
     size: Option<usize>,
-    #[arg(long, default_value_t = 200)]
+    /// Cap on the number of prologue-scan candidates; `0` = unlimited (default).
+    #[arg(long, default_value_t = 0)]
     limit: usize,
+    /// Discover from the PE `.pdata` exception table instead of prologue
+    /// scanning: every function (with unwind info) with exact start+end, no
+    /// heuristic and no cap. x64 PE images only (`--pid`/`--file`).
+    #[arg(long)]
+    pdata: bool,
 }
 
 #[derive(Subcommand)]
@@ -1898,6 +1904,35 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
+    // `.pdata` discovery reads the whole module (headers + exception table), not
+    // a `.text` byte window — resolve the module base and dispatch before the
+    // range logic the prologue scan needs.
+    if a.pdata {
+        let module_base = match &src {
+            Src::Static(pe) => Some(pe.image_base()),
+            Src::Live(l) => l.main_module().map(|m| m.base),
+            Src::Snap(_) | Src::Remote(_) => None,
+        };
+        let Some(base) = module_base else {
+            return ir_err("no-module", "--pdata needs a PE image with a module base (--pid or --file)", pretty);
+        };
+        let run_pdata = |ctx: &Ctx| -> bool {
+            match n0xis_core::discover_pdata(ctx.source, base) {
+                Ok(functions) => {
+                    let art = n0xis_core::DiscoverArtifact { start: base, scanned_bytes: 0, count: functions.len(), functions };
+                    emit(&Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(label.clone()), pretty)
+                }
+                Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
+            }
+        };
+        return match &src {
+            Src::Static(pe) => run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
+            Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref())),
+            Src::Snap(s) => run_pdata(&Ctx::new(s, arch.as_ref())),
+            Src::Remote(r) => run_pdata(&Ctx::new(r.as_ref(), arch.as_ref())),
+        };
+    }
+
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
         Src::Live(l) => l.text_range(),

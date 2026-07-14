@@ -80,6 +80,7 @@ impl StaticPe {
             .ok_or_else(|| SourceError::Load("PE has no optional header".into()))?;
         let image_base = oh.windows_fields.image_base;
         let size_of_image = oh.windows_fields.size_of_image as u64;
+        let size_of_headers = oh.windows_fields.size_of_headers as u64;
 
         let module_name = path
             .file_name()
@@ -87,7 +88,21 @@ impl StaticPe {
             .unwrap_or("module")
             .to_string();
 
-        let mut sections = Vec::with_capacity(pe.sections.len());
+        let mut sections = Vec::with_capacity(pe.sections.len() + 1);
+        // The PE headers (DOS + NT + section table) map at the image base in a
+        // real process but aren't one of the enumerated sections. Serve them as
+        // a pseudo-section (RVA 0 → file offset 0) so header-driven passes
+        // (`.pdata`/exception-table discovery, section walks) read identically
+        // on a static image and a live module — the whole point of the seam.
+        if size_of_headers > 0 {
+            sections.push(SectionRange {
+                name: String::new(),
+                va_start: image_base,
+                va_end: image_base.saturating_add(size_of_headers),
+                file_offset: 0,
+                file_size: size_of_headers as usize,
+            });
+        }
         for s in &pe.sections {
             let name = s
                 .name()

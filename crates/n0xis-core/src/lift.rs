@@ -55,10 +55,25 @@ impl Pass for LiftPass {
         for block in &cfg.blocks {
             let mut stmts = Vec::new();
             for insn in &block.insns {
-                let bytes = ctx.source.read(insn.va, insn.len as usize)?;
-                let decoded = ctx.arch.decode(&bytes, insn.va)?;
-                for stmt in ctx.arch.lift(&decoded) {
-                    stmts.push(LiftedStmt { va: insn.va, stmt });
+                // A byte the linear decoder marked invalid (padding, an embedded
+                // jump table, data misread as code near a function's tail) must
+                // not sink the whole function: re-decoding it here would error.
+                // Emit it as an unlifted marker instead — sound (the byte is
+                // shown verbatim, never dropped) and lets the rest decompile.
+                let decoded = match ctx.source.read(insn.va, insn.len as usize) {
+                    Ok(bytes) => ctx.arch.decode(&bytes, insn.va).ok(),
+                    Err(_) => None,
+                };
+                match decoded {
+                    Some(decoded) => {
+                        for stmt in ctx.arch.lift(&decoded) {
+                            stmts.push(LiftedStmt { va: insn.va, stmt });
+                        }
+                    }
+                    None => stmts.push(LiftedStmt {
+                        va: insn.va,
+                        stmt: MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() },
+                    }),
                 }
             }
             blocks.push(LiftedBlock { id: block.id, stmts });

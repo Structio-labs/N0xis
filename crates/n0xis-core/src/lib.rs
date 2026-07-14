@@ -49,7 +49,7 @@ pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
 pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBranch};
 pub use demangle::demangle;
 pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
-pub use discover::{DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
+pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
 pub use dot::{DotArtifact, dot};
 pub use ir::{
