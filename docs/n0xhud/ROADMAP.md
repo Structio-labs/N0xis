@@ -7,8 +7,16 @@ The phased build plan, in the same shape as n0xis's own
 n0xis Product Policy §7. Scope deliberately cut from a phase is written down as
 a "documented follow-on", never silently dropped.
 
-Nothing here is built yet — every phase is 🎯 (planned). See
-[CONCEPT.md](CONCEPT.md) for the architecture these phases realize.
+**This plan has been overtaken by what shipped.** A working `n0xis-hud` binary
+exists (config-driven companion window, global hotkeys, write & freeze,
+watchers), but it got there by a different route than the phases below assume:
+it renders as its **own window** instead of drawing inside the target, so the
+in-target overlay work (an injected surface + a graphics-API present hook) is
+still unbuilt and the phase list still describes it as the starting point. Read
+the phases below as the overlay design that hasn't landed, not as the status of
+the shipped binary; they need re-cutting against what the companion-window model
+actually made unnecessary. See [CONCEPT.md](CONCEPT.md) for the architecture,
+and `crates/n0xis-hud/src/main.rs` for the shipped model's own rationale.
 
 ---
 

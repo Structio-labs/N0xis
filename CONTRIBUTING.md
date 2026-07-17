@@ -1,8 +1,9 @@
 # Contributing to N0xis
 
-N0xis isn't public yet (see [README.md](README.md) for current status), but the
-contribution process is decided now so it doesn't need inventing under pressure
-once it is. This document explains how work gets found, claimed, and reviewed.
+N0xis is public but early (see [README.md](README.md) for current status), and
+its issue tracker isn't populated yet — the process below was decided before
+launch so it didn't need inventing under pressure. This document explains how
+work gets found, claimed, and reviewed.
 
 ## Where the rules come from
 
@@ -35,7 +36,7 @@ new architecture ports, plugin-system design, deobfuscation extensions, MCP
 parity gaps, and everything else marked as a "documented follow-on" somewhere
 in `ROADMAP.md`. Each entry has a `Status` field.
 
-**Right now** (pre-launch, no Issues yet): open a PR against
+**Right now** (no Issues opened yet): open a PR against
 `docs/COMMUNITY_ROADMAP.md` changing an entry's `Status` from `Open` to
 `Claimed — @yourhandle`, in the same PR as your first commit, or as a
 standalone PR if you want to reserve it before writing code. This is a stopgap,
@@ -43,7 +44,7 @@ not the intended long-term mechanism — editing a shared markdown file to claim
 work doesn't scale and doesn't notify anyone, which is exactly the failure mode
 GitHub Issues exist to solve.
 
-**Once the repo is public**, every `COMMUNITY_ROADMAP.md` entry becomes a
+**Once the tracker is populated**, every `COMMUNITY_ROADMAP.md` entry becomes a
 GitHub Issue, and claiming works the way it does on any project of this shape —
 closest model is [Bevy](https://github.com/bevyengine/bevy), which runs
 contribution at real scale (hundreds of contributors) on exactly this system:
@@ -93,6 +94,17 @@ a scale we're not at yet).
 
 For anything that changes a *contract* (a JSON schema shape, the `Arch` trait,
 the wire protocol a frontend depends on) — open a discussion before a PR.
-Once the repo is public this becomes a GitHub Discussion or an `S-Needs-Design`
-issue; for now, it's a conversation with the maintainer before you invest the
-implementation time.
+Once Discussions and the label set are set up this becomes a GitHub Discussion
+or an `S-Needs-Design` issue; for now, it's a conversation with the maintainer
+before you invest the implementation time.
+
+## Licensing of contributions
+
+N0xis is [AGPL-3.0](LICENSE), and contributions are accepted under that same
+license — by opening a PR you're licensing your work to the project under it.
+
+Copyright is currently held entirely by the author, which keeps a commercial
+license possible for users who can't take AGPL terms. To preserve that, a
+contributor licence agreement may be required before a non-trivial PR is
+merged. There's no CLA to sign yet — if that changes it'll be stated here and
+on the PR, never applied retroactively to work already merged.

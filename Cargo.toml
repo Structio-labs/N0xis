@@ -10,8 +10,8 @@ exclude = ["archive/n0x-cli-rs-v0"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/n0xis-re/n0xis"
+license = "AGPL-3.0-only"
+repository = "https://github.com/LargoScript/n0xis"
 rust-version = "1.90"
 
 [workspace.dependencies]

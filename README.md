@@ -2,7 +2,7 @@
 
 **Agent-native reverse-engineering *and* live-memory toolkit for x64 Windows,
 with early ARM64 support** — a synthesis of other tools (another tool /
-another tool-a source-level decompiler / another tool) and a memory scanner-class dynamic memory work, driven
+another tool-a source-level decompiler / another tool) and first-class live dynamic memory analysis, driven
 entirely through a stable CLI + MCP contract, analyzing both static PE files
 and live processes through one and the same analysis pipeline.
 
@@ -30,11 +30,15 @@ work (scanning, pointer paths, AOB, freeze, hooks) is a first-class peer of stat
 analysis, not a separate tool. Live-process and on-disk analysis run through the
 identical pipeline — the only difference is which input adapter supplies bytes.
 
-A GUI is **deferred, not ruled out** — the original design bias was
-"contract-first, GUI-never" (see [CONCEPT.md](CONCEPT.md)); the current position
-is "not now, but not never," and if/when it lands it'll be a thin visualization
-layer over the existing `ok/data/meta` artifacts, not a rewrite of the
-CLI/MCP-drivable analysis core.
+An **RE workbench GUI** (graph views, a disassembly/decompiler workspace) is
+**deferred, not ruled out** — the original design bias was "contract-first,
+GUI-never" (see [CONCEPT.md](CONCEPT.md)); the current position is "not now, but
+not never," and if/when it lands it'll be a thin visualization layer over the
+existing `ok/data/meta` artifacts, not a rewrite of the CLI/MCP-drivable
+analysis core. [N0xHUD](docs/n0xhud/CONCEPT.md) — a companion window for driving
+runtime instrumentation against a live target — already exists as a third
+frontend and is exactly that shape: a window over the engine, sharing the same
+crates the CLI and MCP frontends use.
 
 ### The principal: Provenance-Driven Memory Intelligence
 
@@ -66,7 +70,7 @@ Engine capabilities before making this claim.)
 - **Types & signatures**: stack-slot coalescing, struct/field recovery, real
   arity/return-type recovery from register usage, a Win32/CRT signature table,
   Rust/MSVC/Itanium demangling.
-- **value-scanning dynamic memory**: typed value scan + iterative rescan
+- **Live dynamic memory analysis**: typed value scan + iterative rescan
   (**snapshot-backed narrowing, no truncated result cap** — an `unknown` first
   scan stores region snapshots and narrows by what changed/stayed, so a common
   value like `4` with millions of hits works the way it does in a memory scanner),
@@ -76,7 +80,8 @@ Engine capabilities before making this claim.)
   reads the target's own `.pdata`/`.xdata`, so a mid-function watchpoint hit
   reports the true caller chain, not a raw `[rsp]` guess) — all against a *live*
   process, verified against real spawned targets.
-- **`.n0xt` tables + analysis DB**: persistent cheat/analysis tables, and an
+- **`.n0xt` tables + analysis DB**: persistent analysis tables (findings,
+  evidence, verification state), and an
   `annotate` command that keeps names/types/comments at an address as
   **versioned truth** — every change appended to history, nothing silently
   overwritten.
@@ -111,10 +116,12 @@ Tools). From the repo root:
 cargo build --workspace --release
 ```
 
-This produces two binaries in `target/release/`:
+This produces three binaries in `target/release/`:
 
 - **`n0xis`** (also invocable as `n0x`) — the CLI.
 - **`n0xis-mcp`** — the MCP server.
+- **`n0xis-hud`** — N0xHUD, the companion window (see
+  [docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)).
 
 Run the test suite (some tests spawn real disposable processes and need the
 `live` feature):
@@ -141,7 +148,7 @@ n0xis decomp pseudo --file game.exe --addr 0x140012a00 --style ssa --pretty
 n0xis process ps --filter game
 n0xis decomp pseudo --pid 4821 --addr 0x140012a00 --style ssa
 
-# value-scanning scanning against a live process
+# Value scanning against a live process (snapshot-backed narrowing)
 n0xis scan value --pid 4821 --type i32 --criterion unknown --save-as hp
 n0xis scan filter --pid 4821 --from hp --criterion increased --save-as hp
 
@@ -194,6 +201,7 @@ n0xis-project/     .n0x/ analysis database (names, types, notes, patches, tables
 n0xis-pipeline/    wires source + arch into the core; artifact caching
 n0xis-cli/         thin clap frontend (binary: n0xis, alias n0x)
 n0xis-mcp/         MCP server frontend (binary: n0xis-mcp)
+n0xis-hud/         N0xHUD companion-window frontend (binary: n0xis-hud)
 n0xis-bitsquid/    Bitsquid/Stingray bundle format adapter (not depended on by core)
 n0xis-lua/         offline LuaJIT bytecode disassembler/patcher (not depended on by core)
 n0xis-luajit/      live LuaJIT VM introspection — GCstr discovery in a running process
@@ -212,10 +220,13 @@ archive/           v0 reference implementation
 - **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** — claimable work:
   new architecture ports, the plugin-system proposal, and every gap the
   project's own docs already flag as a "documented follow-on."
-- **[docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)** — **N0xHUD** (design
-  stage): a universal, config-driven cheat-menu overlay for any window, built as
-  a third frontend over this engine — see its
-  [ROADMAP.md](docs/n0xhud/ROADMAP.md).
+- **[docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)** — **N0xHUD**: a
+  config-driven companion window that drives the engine's runtime
+  instrumentation (write & freeze, watchers, global hotkeys) against a live
+  target, built as a third frontend over the same crates the CLI and MCP use.
+  A working binary exists; note that it deliberately renders as its own window
+  rather than drawing inside the target — see its
+  [ROADMAP.md](docs/n0xhud/ROADMAP.md) for what that does and doesn't cover.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to build, test, and claim work
   from the community roadmap above.
 - **[docs/CLI_COMMANDS_v0.md](docs/CLI_COMMANDS_v0.md)** — the v0 CLI surface
@@ -226,5 +237,15 @@ archive/           v0 reference implementation
 
 ## License
 
-Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache License, Version 2.0](LICENSE-APACHE),
-at your option — matching `Cargo.toml`'s `license = "MIT OR Apache-2.0"`.
+[GNU Affero General Public License v3.0](LICENSE) — matching `Cargo.toml`'s
+`license = "AGPL-3.0-only"`.
+
+**Using** N0xis is unrestricted: run it on whatever you like, including at work
+and for commercial reverse-engineering, with no obligation to share anything.
+The copyleft only binds *distribution* — ship a modified build, or offer one to
+users over a network, and that build's source has to be available under the AGPL
+too. Fork it, hack it, learn from it; just don't make it proprietary.
+
+Copyright is held solely by the author, so a commercial license for anyone who
+needs terms other than the AGPL is available on request — open an issue or reach
+out.
