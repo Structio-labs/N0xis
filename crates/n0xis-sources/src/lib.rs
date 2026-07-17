@@ -40,6 +40,11 @@ mod unwind;
 #[cfg(feature = "live")]
 pub use unwind::{Frame, MemReader, ModuleRange, UnwindRegs, unwind};
 
+#[cfg(feature = "live")]
+mod input;
+#[cfg(feature = "live")]
+pub use input::{probe_actuation, MethodResult, ProbeReport, DEFAULT_PROBE_VK};
+
 use n0xis_contracts::{Module, Symbol, Va};
 
 /// Something went wrong reading/writing a source.

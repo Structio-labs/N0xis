@@ -13,6 +13,8 @@
 
 mod aob;
 mod aslr;
+mod bindings;
+mod constident;
 mod decode;
 mod decomp;
 mod deobfuscate;
@@ -22,6 +24,7 @@ mod discover;
 mod dissect;
 mod dom;
 mod dot;
+mod gamegrep;
 mod ir;
 mod lift;
 mod manifest;
@@ -34,6 +37,7 @@ mod signatures;
 mod slice;
 mod ssa;
 mod structure;
+mod sigvalidate;
 mod switch;
 mod trace;
 mod trampoline;
@@ -44,6 +48,13 @@ mod xref_string;
 
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
 pub use aslr::{rebase, rva_of, va_at};
+pub use bindings::{Binding, BindingsArtifact, BindingsInput, BindingsPass};
+pub use constident::{identify_f64, identify_u64, ConstMatch};
+pub use gamegrep::{rank as game_grep_rank, Document, GameGrepArtifact, RankOptions, RankedHit, TermHit};
+pub use sigvalidate::{
+    parse_mask, parse_sample, validate as sig_validate, MaskByte, MaskFinding, SigValidateArtifact,
+    SigValidateInput, MIN_INDEPENDENT_SAMPLES,
+};
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
 pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBranch};
