@@ -104,6 +104,22 @@ pub mod v1 {
     /// LCG seed recovery from an observed sequence (`lua seedscan`).
     pub const LUA_SEEDSCAN: &str = "n0xis.lua.seedscan.v1";
 
+    // --- Phase 8: spec-first method tooling ---
+    /// Vocabulary-cluster search+rank over scripts/data/strings (`game grep`).
+    pub const GAME_GREP: &str = "n0xis.game.grep.v1";
+    /// Transition-diff localization workflow (`locate by-transition`).
+    pub const LOCATE_TRANSITION: &str = "n0xis.locate.transition.v1";
+    /// Actuation-path probe: which injection methods a target will register
+    /// (`input probe`).
+    pub const INPUT_PROBE: &str = "n0xis.input.probe.v1";
+    /// Canonical magic-constant identification (`const identify`).
+    pub const CONST_IDENTIFY: &str = "n0xis.const.identify.v1";
+    /// Script-VM native-binding enumeration (`bindings list`).
+    pub const BINDINGS: &str = "n0xis.bindings.v1";
+    /// Signature invariance validation, refusing <3 independent samples
+    /// (`sig validate`).
+    pub const SIG_VALIDATE: &str = "n0xis.sig.validate.v1";
+
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }
 

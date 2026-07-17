@@ -17,18 +17,20 @@ use n0xis_arch::{Arch, Arm64, X64};
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
 use n0xis_core::{
-    build_trampoline, parse_aob, AobArtifact, AobInput, AobScanPass, CfgInput, CoreError,
-    Ctx, DecompInput, DecompPass, DecompStyle, DeobfuscatePass, DiffInput, DiffPass,
-    DiscoverInput, DiscoverPass, DissectInput, DissectPass, FilterCriterion, FilterInput,
-    FilterPass, ManifestCandidate, ManifestInput, ManifestPass, Pass, PointerPathInput,
-    PointerPathPass, PointerRoot, ProvenanceHit, ProvenanceInput, ProvenancePass,
-    ScanCriterion, ScanInput, ScanPass, ScanState, ScanValue, SsaPass, StringXrefInput, StringXrefPass,
-    TraceInput, TracePass, ValueSetPass, ValueType, XrefDir, XrefInput, XrefPass,
+    build_trampoline, game_grep_rank, identify_f64, identify_u64, parse_aob, parse_mask,
+    parse_sample, sig_validate, AobArtifact, AobInput, AobScanPass, BindingsInput, BindingsPass,
+    CfgInput, ConstMatch, CoreError, Ctx, DecompInput, DecompPass, DecompStyle, DeobfuscatePass,
+    DiffInput, DiffPass, DiscoverInput, DiscoverPass, DissectInput, DissectPass, Document,
+    FilterCriterion, FilterInput, FilterPass, ManifestCandidate, ManifestInput, ManifestPass,
+    MaskByte, Pass, PointerPathInput, PointerPathPass, PointerRoot, ProvenanceHit, ProvenanceInput,
+    ProvenancePass, RankOptions, ScanCriterion, ScanInput, ScanPass, ScanState, ScanValue,
+    SigValidateInput, SsaPass, StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueSetPass,
+    ValueType, XrefDir, XrefInput, XrefPass,
 };
 use n0xis_pipeline::{Pipeline, cfg_cached};
 use n0xis_sources::{
     LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, WatchKind, attach_and_wait, await_breakpoint_hit,
-    await_watchpoint_hit, list_processes, remote_serve_stdio,
+    await_watchpoint_hit, list_processes, probe_actuation, remote_serve_stdio, DEFAULT_PROBE_VK,
 };
 use serde_json::json;
 
@@ -141,6 +143,250 @@ enum Command {
     /// Lua/LuaJIT bytecode disassembly.
     #[command(subcommand)]
     Lua(LuaCmd),
+    /// Spec-first game RE (Phase 8): search a target's scripts/data/strings
+    /// for a feature's vocabulary and rank by cluster density — the "climb the
+    /// spec ladder, don't reverse runtime state" front door (RE_METHOD F2).
+    #[command(subcommand)]
+    Game(GameCmd),
+    /// Localize a value by the *transition diff* — snapshot, let the operator
+    /// toggle one thing, rescan, keep only what changed (Phase 8; RE_METHOD W1,
+    /// the only localization technique that ever reliably worked).
+    #[command(subcommand)]
+    Locate(LocateCmd),
+    /// Probe the input *actuation* path before building on it — which injection
+    /// methods a target will actually register (Phase 8; RE_METHOD F4).
+    #[command(subcommand)]
+    Input(InputCmd),
+    /// Identify canonical magic constants (LCG multipliers, hash seeds, CRC
+    /// polynomials, float normalizers) in a value, a function, or a Lua chunk
+    /// (Phase 8; RE_METHOD W3).
+    #[command(subcommand)]
+    Const(ConstCmd),
+    /// Enumerate a script VM's native bindings — pair each registration *name*
+    /// with its C function pointer (Phase 8; RE_METHOD W2).
+    #[command(subcommand)]
+    Bindings(BindingsCmd),
+    /// Validate a byte signature against multiple samples: report which bytes
+    /// are actually invariant and refuse to bless one from <3 independent,
+    /// deliberately-varied samples (Phase 8; RE_METHOD F3).
+    #[command(subcommand)]
+    Sig(SigCmd),
+}
+
+#[derive(Subcommand)]
+enum GameCmd {
+    /// Rank scripts/data/strings by how densely they cluster a concept's
+    /// vocabulary. `<concept>` is the vocabulary (comma/space/pipe-separated),
+    /// e.g. `"combo,interact,stratagem"`.
+    Grep(GameGrepArgs),
+}
+
+#[derive(Args)]
+struct GameGrepArgs {
+    /// The concept vocabulary — comma / whitespace / `|`-separated terms.
+    concept: String,
+    /// Directory of extracted scripts/data to search (repeatable). LuaJIT
+    /// bytecode files are decoded to text automatically.
+    #[arg(long = "dir", required = true)]
+    dirs: Vec<String>,
+    /// Extra vocabulary term (repeatable), added to `<concept>`.
+    #[arg(long = "term")]
+    terms: Vec<String>,
+    /// Require at least this many *distinct* concept terms per file (raise to
+    /// 2+ to cut single-word noise).
+    #[arg(long, default_value_t = 1)]
+    min_distinct: usize,
+    /// Max ranked files to report.
+    #[arg(long, default_value_t = 40)]
+    limit: usize,
+    /// Max context snippets per file.
+    #[arg(long, default_value_t = 3)]
+    max_snippets: usize,
+}
+
+#[derive(Subcommand)]
+enum LocateCmd {
+    /// Snapshot → operator toggles one thing → rescan → keep only what changed.
+    ByTransition(LocateByTransitionArgs),
+}
+
+#[derive(Args)]
+struct LocateByTransitionArgs {
+    #[arg(long)]
+    pid: u32,
+    #[arg(long, value_enum, default_value_t = ValueTypeArg::I32)]
+    r#type: ValueTypeArg,
+    /// Region start (hex). Omit (with `--size`) to snapshot every committed
+    /// writable region — the default a memory scanner scan set.
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long)]
+    size: Option<usize>,
+    /// Byte stride between candidates; defaults to the value's natural size.
+    #[arg(long)]
+    align: Option<usize>,
+    /// The transition to keep: `changed` (default), `increased`, or `decreased`.
+    #[arg(long, default_value = "changed")]
+    transition: String,
+    /// Instead of pausing for the operator, wait this many milliseconds between
+    /// the snapshot and the rescan (for scripted/agent use).
+    #[arg(long)]
+    wait_ms: Option<u64>,
+    /// After the transition filter, keep only survivors whose new value equals
+    /// this (a structural predicate over the survivors).
+    #[arg(long)]
+    expect: Option<f64>,
+    /// After the transition filter, keep only survivors whose new value is in
+    /// `[--min, --max]`.
+    #[arg(long)]
+    min: Option<f64>,
+    #[arg(long)]
+    max: Option<f64>,
+    /// Persist the final working set under `.n0x/dumps/scan/<name>.json` so a
+    /// later `scan filter` can narrow it further.
+    #[arg(long)]
+    save_as: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Subcommand)]
+enum InputCmd {
+    /// Try each actuation method and report which the OS input stack registers
+    /// and whether each carries the `LLKHF_INJECTED` flag a target may filter.
+    Probe(InputProbeArgs),
+}
+
+#[derive(Args)]
+struct InputProbeArgs {
+    /// Optional target pid, recorded for context (injected input routes to the
+    /// foreground window, so the probe is desktop-global).
+    #[arg(long)]
+    pid: Option<u32>,
+    /// Virtual-key code to actuate (decimal or `0x..`). Defaults to VK_F15
+    /// (0x7E), an almost-never-bound key.
+    #[arg(long)]
+    vk: Option<String>,
+    /// Per-method wait for the event, in milliseconds.
+    #[arg(long, default_value_t = 400)]
+    timeout_ms: u32,
+}
+
+#[derive(Subcommand)]
+enum ConstCmd {
+    /// Recognize magic constants. Provide `--value`, or a function
+    /// (`--file/--pid/--snapshot` + `--addr`), or a Lua chunk (`--lua`).
+    Identify(ConstIdentifyArgs),
+}
+
+#[derive(Args)]
+struct ConstIdentifyArgs {
+    /// A single constant to identify: hex (`0x5bd1e995`), decimal (`1664525`),
+    /// or a float (`2.3283064e-10`).
+    #[arg(long)]
+    value: Option<String>,
+    /// Decompile this function and identify every numeric literal in it.
+    #[arg(long)]
+    addr: Option<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Byte window for the function decompile (with `--addr`).
+    #[arg(long, default_value_t = 4096)]
+    func_size: usize,
+    /// Decode this Lua/LuaJIT chunk and identify its number constants.
+    #[arg(long)]
+    lua: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum BindingsCmd {
+    /// List native bindings by pairing name strings with function pointers.
+    List(BindingsListArgs),
+}
+
+#[derive(Args)]
+struct BindingsListArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// On a live process, restrict the scan to this module's `.text`/`.rdata`
+    /// (by name substring); defaults to the main module.
+    #[arg(long)]
+    module: Option<String>,
+    /// Only look for these exact binding names (repeatable); default is every
+    /// identifier-like string in the data window.
+    #[arg(long = "name")]
+    names: Vec<String>,
+    /// Data window override (defaults to `.rdata`).
+    #[arg(long)]
+    data_start: Option<String>,
+    #[arg(long)]
+    data_size: Option<usize>,
+    /// Code window override (defaults to `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long)]
+    size: Option<usize>,
+    /// Instructions on each side of a name-load to search for the paired
+    /// function-pointer load.
+    #[arg(long, default_value_t = 8)]
+    window: usize,
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
+    /// Drop bindings below this confidence (0.0..=1.0).
+    #[arg(long, default_value_t = 0.0)]
+    min_confidence: f32,
+}
+
+#[derive(Subcommand)]
+enum SigCmd {
+    /// Report which bytes are invariant across samples; refuse to bless a
+    /// signature from <3 deliberately-varied samples.
+    Validate(SigValidateArgs),
+}
+
+#[derive(Args)]
+struct SigValidateArgs {
+    /// A concrete byte sample, hex (`"CF 01 A0 00"`); repeatable. A sample is
+    /// observed reality — no wildcards.
+    #[arg(long = "sample")]
+    samples: Vec<String>,
+    /// A file whose raw bytes are one sample (repeatable).
+    #[arg(long = "sample-file")]
+    sample_files: Vec<String>,
+    /// Read a sample of `--len` bytes at this address from a live/static source
+    /// (repeatable; needs `--pid`/`--file` and `--len`).
+    #[arg(long = "at")]
+    ats: Vec<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Length of each `--at` sample.
+    #[arg(long)]
+    len: Option<usize>,
+    /// The proposed signature to audit (`"48 8B ?? 68"`, `??` = wildcard).
+    #[arg(long)]
+    signature: Option<String>,
+    /// Which axes you deliberately varied across the samples
+    /// (`map,mission,seed`). Required to bless — an invariant is only
+    /// meaningful relative to what changed.
+    #[arg(long)]
+    varied: Option<String>,
+    /// Independence bar (default 3).
+    #[arg(long, default_value_t = 3)]
+    min_independent: usize,
 }
 
 #[derive(Subcommand)]
@@ -1401,6 +1647,12 @@ fn main() {
         Command::Lua(LuaCmd::Table(a)) => cmd_lua_table(a, pretty),
         Command::Lua(LuaCmd::Combo(a)) => cmd_lua_combo(a, pretty),
         Command::Lua(LuaCmd::Seedscan(a)) => cmd_lua_seedscan(a, pretty),
+        Command::Game(GameCmd::Grep(a)) => cmd_game_grep(a, pretty),
+        Command::Locate(LocateCmd::ByTransition(a)) => cmd_locate_by_transition(a, pretty),
+        Command::Input(InputCmd::Probe(a)) => cmd_input_probe(a, pretty),
+        Command::Const(ConstCmd::Identify(a)) => cmd_const_identify(a, pretty),
+        Command::Bindings(BindingsCmd::List(a)) => cmd_bindings_list(a, pretty),
+        Command::Sig(SigCmd::Validate(a)) => cmd_sig_validate(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -3857,4 +4109,552 @@ fn cmd_bundle_repack(a: BundleRepackArgs, pretty: bool) -> bool {
         "patched_bytes": replacement.len(),
     });
     emit(&Response::success(schema::v1::BUNDLE_EXTRACT, data).with_source(a.file), pretty)
+}
+
+// ============================================================================
+// Phase 8 — spec-first method tooling
+// ============================================================================
+
+/// Split a `<concept>` argument into vocabulary terms on commas, `|`, or
+/// whitespace — so `"combo,interact|stratagem"` and `"combo interact"` both work.
+fn split_concept(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c == ',' || c == '|' || c.is_whitespace())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Flatten a decoded LuaJIT chunk into searchable text: its name, every string
+/// constant, and every instruction's rendered text (which carries operands and
+/// the referenced constant names).
+fn lua_chunk_to_text(chunk: &n0xis_lua::LuaChunk) -> String {
+    use n0xis_lua::GcConst;
+    let mut out = String::new();
+    if let Some(name) = &chunk.chunk_name {
+        out.push_str(name);
+        out.push('\n');
+    }
+    for p in &chunk.protos {
+        for gc in &p.gc_constants {
+            if let GcConst::Str(s) = gc {
+                out.push_str(s);
+                out.push('\n');
+            }
+        }
+        for ins in &p.instructions {
+            out.push_str(&ins.text);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Extract printable-ASCII runs (>= `min_len`) from a binary blob, one per line
+/// — the fallback for a file that isn't UTF-8 text or Lua bytecode.
+fn extract_ascii_runs(bytes: &[u8], min_len: usize) -> String {
+    let mut out = String::new();
+    let mut run = String::new();
+    for &b in bytes {
+        if (32..=126).contains(&b) {
+            run.push(b as char);
+        } else {
+            if run.len() >= min_len {
+                out.push_str(&run);
+                out.push('\n');
+            }
+            run.clear();
+        }
+    }
+    if run.len() >= min_len {
+        out.push_str(&run);
+    }
+    out
+}
+
+/// Turn one file into a searchable [`Document`], decoding Lua bytecode and
+/// falling back to UTF-8 text or ASCII-string extraction.
+fn file_to_document(path: &std::path::Path) -> Option<Document> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let id = path.to_string_lossy().to_string();
+    if bytes.starts_with(&[0x1b, b'L', b'J']) {
+        if let Ok(chunk) = n0xis_lua::disassemble(&bytes) {
+            return Some(Document { id, kind: "lua".into(), text: lua_chunk_to_text(&chunk) });
+        }
+    }
+    match std::str::from_utf8(&bytes) {
+        Ok(s) => Some(Document { id, kind: "text".into(), text: s.to_string() }),
+        Err(_) => {
+            let text = extract_ascii_runs(&bytes, 4);
+            if text.is_empty() { None } else { Some(Document { id, kind: "strings".into(), text }) }
+        }
+    }
+}
+
+/// Recursively collect files under `dir` into `docs` (bounded so a pathological
+/// tree can't run away).
+fn collect_documents(dir: &std::path::Path, docs: &mut Vec<Document>, budget: &mut usize) {
+    if *budget == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if *budget == 0 {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_documents(&path, docs, budget);
+        } else if let Some(doc) = file_to_document(&path) {
+            docs.push(doc);
+            *budget -= 1;
+        }
+    }
+}
+
+fn cmd_game_grep(a: GameGrepArgs, pretty: bool) -> bool {
+    let mut terms = split_concept(&a.concept);
+    terms.extend(a.terms.iter().cloned());
+    if terms.is_empty() {
+        return ir_err("empty-concept", "provide at least one vocabulary term in <concept>", pretty);
+    }
+
+    let mut docs = Vec::new();
+    let mut budget = 200_000usize; // hard ceiling on files scanned
+    for dir in &a.dirs {
+        let p = std::path::Path::new(dir);
+        if !p.exists() {
+            return ir_err("no-dir", &format!("directory not found: {dir}"), pretty);
+        }
+        collect_documents(p, &mut docs, &mut budget);
+    }
+
+    let opts = RankOptions { limit: a.limit, max_snippets: a.max_snippets, min_distinct: a.min_distinct.max(1) };
+    let art = game_grep_rank(&terms, &docs, &opts);
+    emit(
+        &Response::success(schema::v1::GAME_GREP, art).with_source(a.dirs.join(",")),
+        pretty,
+    )
+}
+
+fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
+    let value_type: ValueType = a.r#type.into();
+    let align = a.align.unwrap_or_else(|| value_type.size());
+    let transition = match a.transition.as_str() {
+        "changed" => FilterCriterion::Changed,
+        "increased" => FilterCriterion::Increased,
+        "decreased" => FilterCriterion::Decreased,
+        other => return ir_err("bad-transition", &format!("unknown --transition '{other}' (changed|increased|decreased)"), pretty),
+    };
+    let arch = X64::new();
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        Ok(r) => r,
+        Err(e) => return ir_err("bad-region", &e, pretty),
+    };
+    let label = live.label();
+    let ctx = Ctx::new(&live, &arch);
+
+    // 1) Snapshot the region set (unknown = capture every value densely).
+    let before = match ScanPass.run(&ctx, ScanInput { regions, value_type, criterion: ScanCriterion::Unknown, align }) {
+        Ok(s) => s,
+        Err(e) => return ir_err("snapshot-failed", &e.to_string(), pretty),
+    };
+    let snapshot_count = before.total();
+    eprintln!("[n0x] snapshot: {snapshot_count} candidate values captured across the region set");
+
+    // 2) Let the operator toggle exactly one thing (or wait a fixed delay).
+    if let Some(ms) = a.wait_ms {
+        eprintln!("[n0x] toggle exactly one thing in the target now — rescanning in {ms}ms");
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    } else {
+        eprintln!("[n0x] toggle exactly one thing in the target, then press Enter to rescan…");
+        let mut _line = String::new();
+        let _ = std::io::stdin().read_line(&mut _line);
+    }
+
+    // 3) Rescan and keep only what changed (the transition = the signal).
+    let mut state = match FilterPass.run(&ctx, FilterInput { previous: before, criterion: transition }) {
+        Ok(s) => s,
+        Err(e) => return ir_err("rescan-failed", &e.to_string(), pretty),
+    };
+    let after_transition = state.total();
+
+    // 4) Optional structural predicate over the survivors (a second filter).
+    let predicate = if let Some(v) = a.expect {
+        Some(FilterCriterion::Exact { value: to_scan_value(v) })
+    } else if a.min.is_some() || a.max.is_some() {
+        match (a.min, a.max) {
+            (Some(min), Some(max)) => Some(FilterCriterion::InRange { min: to_scan_value(min), max: to_scan_value(max) }),
+            _ => return ir_err("bad-predicate", "--min and --max must be given together", pretty),
+        }
+    } else {
+        None
+    };
+    let predicate_label = predicate.as_ref().map(|_| if a.expect.is_some() { "expect" } else { "in-range" });
+    if let Some(crit) = predicate {
+        state = match FilterPass.run(&ctx, FilterInput { previous: state, criterion: crit }) {
+            Ok(s) => s,
+            Err(e) => return ir_err("predicate-failed", &e.to_string(), pretty),
+        };
+    }
+    let final_count = state.total();
+
+    // 5) Persist the working set so `scan filter` can continue narrowing it.
+    if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &state.encode(), a.force) {
+        return ir_err("save-failed", &e.to_string(), pretty);
+    }
+
+    let report = state.report();
+    let report_v = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+    let note = if final_count == 1 {
+        "exactly one survivor — the transition diff localized the value (RE_METHOD W1)".to_string()
+    } else if final_count == 0 {
+        "zero survivors — either nothing toggled, the wrong value type, or the change was outside the scanned regions".to_string()
+    } else {
+        format!("{final_count} survivors — toggle again and run `scan filter --from {} --criterion changed` to narrow further", a.save_as)
+    };
+    let data = json!({
+        "snapshot_count": snapshot_count,
+        "after_transition": after_transition,
+        "final_count": final_count,
+        "transition": a.transition,
+        "predicate": predicate_label,
+        "saved_as": a.save_as,
+        "report": report_v,
+        "note": note,
+    });
+    emit(&Response::success(schema::v1::LOCATE_TRANSITION, data).with_source(label), pretty)
+}
+
+fn cmd_input_probe(a: InputProbeArgs, pretty: bool) -> bool {
+    let vk = match a.vk.as_deref() {
+        Some(s) => {
+            let parsed = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                u16::from_str_radix(hex, 16)
+            } else {
+                s.parse::<u16>()
+            };
+            match parsed {
+                Ok(v) => v,
+                Err(_) => return ir_err("bad-vk", &format!("invalid --vk '{s}' (decimal or 0x..)"), pretty),
+            }
+        }
+        None => DEFAULT_PROBE_VK,
+    };
+    match probe_actuation(vk, a.pid, a.timeout_ms) {
+        Ok(report) => emit(&Response::success(schema::v1::INPUT_PROBE, report), pretty),
+        Err(e) => ir_err("probe-failed", &e, pretty),
+    }
+}
+
+/// One numeric literal pulled from text, tagged by how to identify it.
+enum NumLiteral {
+    Int(u64),
+    Float(f64),
+}
+
+/// Parse a single `--value` (hex `0x..`, decimal, or float).
+fn parse_const_value(s: &str) -> Result<NumLiteral, String> {
+    let t = s.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).map(NumLiteral::Int).map_err(|e| format!("bad hex {t:?}: {e}"));
+    }
+    // A float only if it has a fractional/exponent form with a dot.
+    if t.contains('.') {
+        return t.parse::<f64>().map(NumLiteral::Float).map_err(|e| format!("bad float {t:?}: {e}"));
+    }
+    if let Ok(u) = t.parse::<u64>() {
+        return Ok(NumLiteral::Int(u));
+    }
+    if let Ok(i) = t.parse::<i64>() {
+        return Ok(NumLiteral::Int(i as u64));
+    }
+    t.parse::<f64>().map(NumLiteral::Float).map_err(|e| format!("unrecognized value {t:?}: {e}"))
+}
+
+/// Scan free text for distinct numeric literals (hex, decimal, float). Used to
+/// pull constants out of decompiled pseudo-C.
+fn extract_numbers(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        // Hex literal.
+        if c == '0' && i + 1 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+            let start = i;
+            i += 2;
+            while i < bytes.len() && (bytes[i] as char).is_ascii_hexdigit() {
+                i += 1;
+            }
+            if i > start + 2 {
+                out.push(text[start..i].to_string());
+            }
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let start = i;
+            let mut is_float = false;
+            while i < bytes.len() {
+                let d = bytes[i] as char;
+                if d.is_ascii_digit() {
+                    i += 1;
+                } else if d == '.' && !is_float {
+                    is_float = true;
+                    i += 1;
+                } else if (d == 'e' || d == 'E') && is_float {
+                    i += 1;
+                    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                        i += 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+            out.push(text[start..i].to_string());
+            continue;
+        }
+        i += 1;
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Build the `matches` array for a batch of literals; only literals that
+/// identify something are included.
+fn identify_literals(literals: &[String]) -> Vec<serde_json::Value> {
+    let mut hits = Vec::new();
+    for lit in literals {
+        let Ok(parsed) = parse_const_value(lit) else { continue };
+        let matches: Vec<ConstMatch> = match parsed {
+            NumLiteral::Int(u) => identify_u64(u),
+            NumLiteral::Float(f) => identify_f64(f),
+        };
+        if matches.is_empty() {
+            continue;
+        }
+        let m_v = serde_json::to_value(&matches).unwrap_or(serde_json::Value::Null);
+        hits.push(json!({ "literal": lit, "matches": m_v }));
+    }
+    hits
+}
+
+fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
+    // Mode A: a single --value.
+    if let Some(v) = &a.value {
+        let parsed = match parse_const_value(v) {
+            Ok(p) => p,
+            Err(e) => return ir_err("bad-value", &e, pretty),
+        };
+        let matches = match parsed {
+            NumLiteral::Int(u) => identify_u64(u),
+            NumLiteral::Float(f) => identify_f64(f),
+        };
+        let m_v = serde_json::to_value(&matches).unwrap_or(serde_json::Value::Null);
+        let data = json!({ "value": v, "match_count": matches.len(), "matches": m_v });
+        return emit(&Response::success(schema::v1::CONST_IDENTIFY, data), pretty);
+    }
+
+    // Mode C: a Lua chunk's number constants.
+    if let Some(luapath) = &a.lua {
+        let bytes = match std::fs::read(luapath) {
+            Ok(b) => b,
+            Err(e) => return ir_err("read-failed", &format!("read {luapath}: {e}"), pretty),
+        };
+        let chunk = match n0xis_lua::disassemble(&bytes) {
+            Ok(c) => c,
+            Err(e) => return ir_err("lua-disasm-failed", &e.to_string(), pretty),
+        };
+        use n0xis_lua::NumConst;
+        let mut literals = Vec::new();
+        for p in &chunk.protos {
+            for nc in &p.num_constants {
+                match nc {
+                    NumConst::Int(i) => literals.push(i.to_string()),
+                    NumConst::Num(f) => literals.push(format!("{f}")),
+                }
+            }
+        }
+        literals.sort();
+        literals.dedup();
+        let hits = identify_literals(&literals);
+        let data = json!({ "source": luapath, "literals_scanned": literals.len(), "identified": hits.len(), "hits": hits });
+        return emit(&Response::success(schema::v1::CONST_IDENTIFY, data).with_source(luapath.clone()), pretty);
+    }
+
+    // Mode B: decompile a function and identify its literals.
+    let Some(addr_s) = &a.addr else {
+        return ir_err("missing-input", "provide --value, --lua <chunk>, or a function (--addr with --file/--pid/--snapshot)", pretty);
+    };
+    let addr = match Va::parse(addr_s) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+    };
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, a.snapshot.as_deref(), a.remote_cmd.as_deref(), addr) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let arch = X64::new();
+    let input = CfgInput { start: addr, max_bytes: a.func_size, auto_end: true };
+    let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
+        let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
+        let pf = DecompPass
+            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto })
+            .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
+        Ok(pf.pseudo)
+    };
+    let pseudo = match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
+    };
+    let pseudo = match pseudo {
+        Ok(p) => p,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let literals = extract_numbers(&pseudo.join("\n"));
+    let hits = identify_literals(&literals);
+    let data = json!({ "addr": addr, "literals_scanned": literals.len(), "identified": hits.len(), "hits": hits });
+    emit(&Response::success(schema::v1::CONST_IDENTIFY, data).with_source(label), pretty)
+}
+
+fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
+    let explicit_code_start = match opt_hex(&a.start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let explicit_data_start = match opt_hex(&a.data_start) {
+        Ok(v) => v,
+        Err(e) => return ir_err("bad-addr", &e, pretty),
+    };
+    let bytes_base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
+    let (src, label, region_len) = match build_source(a.pid, a.file.as_deref(), None, a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let arch = X64::new();
+
+    let (default_text, default_data) = match &src {
+        Src::Static(pe) => (pe.text_range(), pe.section_range(".rdata").or_else(|| pe.text_range())),
+        Src::Live(l) => {
+            if let Some(modname) = &a.module {
+                use n0xis_sources::ModuleProvider;
+                let needle = modname.to_lowercase();
+                match l.modules().iter().find(|m| m.name.to_lowercase().contains(&needle)).map(|m| m.base) {
+                    Some(base) => (
+                        l.section_range_of(base, ".text"),
+                        l.section_range_of(base, ".rdata").or_else(|| l.section_range_of(base, ".text")),
+                    ),
+                    None => return ir_err("no-module", &format!("no loaded module name contains '{modname}'"), pretty),
+                }
+            } else {
+                (l.text_range(), l.section_range(".rdata").or_else(|| l.text_range()))
+            }
+        }
+        Src::Snap(_) | Src::Remote(_) => (None, None),
+    };
+    let (code_start, code_size) = scan_range(default_text, region_len, explicit_code_start, a.size, bytes_base);
+    let (data_start, data_size) = scan_range(default_data, region_len, explicit_data_start, a.data_size, bytes_base);
+    if code_size == 0 || data_size == 0 {
+        return ir_err("no-range", "could not resolve a data/code range; pass --data-start/--data-size and --start/--size", pretty);
+    }
+
+    let min_conf = a.min_confidence;
+    let names = a.names.clone();
+    let run = |ctx: &Ctx| -> bool {
+        let input = BindingsInput {
+            data_start,
+            data_size,
+            code_start,
+            code_size,
+            names: names.clone(),
+            window: a.window,
+            limit: a.limit,
+        };
+        match BindingsPass.run(ctx, input) {
+            Ok(mut art) => {
+                if min_conf > 0.0 {
+                    art.bindings.retain(|b| b.confidence >= min_conf);
+                    art.count = art.bindings.len();
+                    art.named = art.bindings.iter().map(|b| b.name.as_str()).collect::<std::collections::HashSet<_>>().len();
+                }
+                emit(&Response::success(schema::v1::BINDINGS, art).with_source(label.clone()), pretty)
+            }
+            Err(e) => ir_err("bindings-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
+        Src::Snap(s) => run(&Ctx::new(s, &arch)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
+    }
+}
+
+fn cmd_sig_validate(a: SigValidateArgs, pretty: bool) -> bool {
+    let mut samples: Vec<Vec<u8>> = Vec::new();
+
+    // Inline hex samples.
+    for s in &a.samples {
+        match parse_sample(s) {
+            Ok(b) => samples.push(b),
+            Err(e) => return ir_err("bad-sample", &e, pretty),
+        }
+    }
+    // File samples.
+    for f in &a.sample_files {
+        match std::fs::read(f) {
+            Ok(b) => samples.push(b),
+            Err(e) => return ir_err("read-failed", &format!("read {f}: {e}"), pretty),
+        }
+    }
+    // Read-at samples from a live/static source.
+    if !a.ats.is_empty() {
+        let Some(len) = a.len else {
+            return ir_err("missing-len", "--at needs --len <bytes>", pretty);
+        };
+        for at in &a.ats {
+            let addr = match Va::parse(at) {
+                Ok(v) => v,
+                Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+            };
+            let (src, _label, _) = match build_source(a.pid, a.file.as_deref(), None, None, None, addr) {
+                Ok(x) => x,
+                Err((c, m)) => return ir_err(&c, &m, pretty),
+            };
+            match src.as_mem().read(addr, len) {
+                Ok(b) => samples.push(b),
+                Err(e) => return ir_err("read-failed", &format!("read {addr}: {e}"), pretty),
+            }
+        }
+    }
+
+    if samples.is_empty() {
+        return ir_err("no-samples", "provide samples via --sample, --sample-file, or --at (with --pid/--file and --len)", pretty);
+    }
+
+    let proposed: Option<Vec<MaskByte>> = match &a.signature {
+        Some(sig) => match parse_mask(sig) {
+            Ok(m) => Some(m),
+            Err(e) => return ir_err("bad-signature", &e, pretty),
+        },
+        None => None,
+    };
+    let varied_axes: Vec<String> = a
+        .varied
+        .as_deref()
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+        .unwrap_or_default();
+
+    let input = SigValidateInput { samples, proposed, varied_axes, min_independent: a.min_independent };
+    let art = sig_validate(&input);
+    emit(&Response::success(schema::v1::SIG_VALIDATE, art), pretty)
 }

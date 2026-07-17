@@ -645,6 +645,194 @@ verified. Don't repeat that mistake when reading this phase as "done."
   substantially larger problem of its own (an entire category of dedicated
   tools — a structural diff tool, a structural diff tool — exists just for this), not attempted here.
 
+## Phase 8 — Method tooling: spec-first RE 🎯 ⏳ (6/7 commands landed 2026-07-17)
+Goal: turn [`docs/RE_METHOD.md`](docs/RE_METHOD.md) into tools. That doc is the
+post-mortem of one complete campaign (auto-solving a game's directional
+interact-combo mini-game). It succeeded — and **~90% of the effort went into
+reverse-engineering runtime *state* to recover information that was
+declaratively *specified* in the game's own scripts and data**. The finished
+solver reads 4 bytes from memory (a seed) and computes the rest.
+
+Every item below traces to a **specific, named failure** from that campaign, not
+to speculation. Ordered by (pain avoided × generality), which is also roughly
+dependency order.
+
+- ✅ **`game grep <concept>` — search a target's scripts/data/strings for a
+  feature's vocabulary** *(fixes RE_METHOD F2 — the campaign's root cause)*.
+  Rank extracted script files + data + binary strings by vocabulary-cluster
+  density for a concept, print hits with context. Builds on what already exists
+  (`bundle list/extract`, `lua disasm`, `xref string`) — the missing piece is
+  the *search-and-rank* front door, not the readers.
+  **Why first**: this is literally the thing that cracked the campaign, and it
+  was hand-rolled in throwaway Python. One grep for `combo|interact|stratagem`
+  found the component, the algorithm module, the RNG class, and every data
+  template in ~30 minutes — after weeks of native RE had found none of it.
+  Highest payoff on this list.
+  Scope note: ranking is the interesting part (a file mentioning 5 of the
+  concept's words matters more than one mentioning a word 50 times); engine
+  detection ("is there a script layer at all, and where") belongs here too.
+
+- ✅ **`locate --by-transition` — the diff locator as a first-class workflow**
+  *(formalizes RE_METHOD W1; fixes F7's repetition)*. Snapshot → wait for the
+  operator to toggle exactly one thing → rescan → diff → filter survivors by a
+  structural predicate → report. The pieces exist (`scan value --criterion
+  unknown`, `scan filter --criterion changed`); what's missing is the *workflow*
+  as one command, including the operator-in-the-loop pause and the
+  structural-predicate filter over survivors.
+  **Why**: this was the **only** localization technique that ever worked, across
+  the entire campaign — every single successful find used it, and it returned
+  *exactly one* result each time, where static value-matching returned 651,
+  1025, and 1844 false positives. It was hand-rolled three separate times.
+  The principle it encodes: *the change is the signal; the value is not.*
+
+- ✅ **`input probe --pid <p>` — verify the actuation path before building on it**
+  *(fixes RE_METHOD F4)*. Try each injection method (SendInput / keybd_event /
+  Interception / raw HID) against a live target and report which ones it
+  actually registers.
+  **Why**: an entire input feature was built, shipped, and believed working —
+  and had **never once registered in the game**, which filters injected input
+  (`LLKHF_INJECTED`). Discovered only at the very end, after the read half was
+  already perfect. A one-key probe on day one would have caught it.
+  The general rule this encodes: a memory tool has a **read** half and a
+  **write** half — prove each independently *before* integrating.
+
+- ✅ **`const identify` — recognize canonical magic constants** *(automates
+  RE_METHOD W3)*. Match constants in decompiled output/data against a table of
+  well-known algorithm fingerprints: LCG multipliers (e.g. `1664525`/`1013904223`
+  → Numerical Recipes), hash seeds (`0x5bd1e995` → MurmurHash2, FNV/xxhash/CRC
+  polys), float normalizers (`1/2^32`).
+  **Why**: recognizing two constants by memory identified two whole algorithms
+  instantly, with zero reversing — the LCG *is* the combo generator, and the
+  Murmur2 hit correctly told us we were looking at a texture-atlas lookup (i.e.
+  the wrong layer). This is cheap to automate and pays off on every campaign.
+
+- ✅ **`bindings list --module <m>` — enumerate a script VM's native bindings**
+  *(generalizes RE_METHOD W2)*. Find registration calls and pair each name
+  string with its C function pointer.
+  **Why**: finding `Math.next_random`'s native implementation took ~20 minutes
+  by hand — string → RIP-relative xref → `register(L, ns, "name", cfunc)` → the
+  function pointer is right there as an argument. That's a mechanical lookup
+  masquerading as reverse engineering. It turns "where is the native
+  implementation of X" into a query, and it's exactly the bridge the spec-first
+  ladder (below) needs between rung 2 (scripts) and rung 4 (native code).
+
+- ✅ **`sig validate` — refuse to bless a signature from <3 independent samples**
+  *(fixes RE_METHOD F3)*. Given a candidate signature and ≥2 instances, report
+  which bytes are *actually* invariant; refuse (or loudly flag) a signature
+  derived from fewer than 3 **deliberately-varied** samples, and ask which axis
+  was varied.
+  **Why**: a marker (`0xCF` at `+0x18`) matched two live instances and was
+  **shipped** — the two were repeated test missions sharing a generated-level
+  seed, i.e. a coincidence promoted to an invariant. A third instance on a new
+  map broke it. Same class of error twice more (`state == 0` = "active", refuted
+  in one minute; a structural scan whose false-positive math assumed *uniformly
+  random* memory, giving 1844 hits in 4 MB). This is a guardrail against a bias
+  that demonstrably ships bugs.
+  Scope note: the useful output isn't pass/fail, it's *which bytes vary* — that
+  turns a broken signature into a corrected one.
+
+- ⬜ **Ergonomics + scan resilience** *(fixes RE_METHOD F6/F7)*. Small, but each
+  one cost real debugging rounds:
+  - Live scans **skip unreadable regions and continue**, never abort. Region
+    lists are inherently racy (a region enumerated is not a region readable —
+    the target allocates/frees constantly); one transiently-freed region aborted
+    a whole scan and the background solver silently found nothing while looking
+    healthy. Also: "0 results" must be distinguishable from "the scan died".
+  - Accept **hex** for `--min`/`--max` (and anywhere else taking an
+    address/value). Hand-converting hex→decimal produced wrong ranges twice,
+    each time burning a scan round on an address that wasn't even close.
+  - **Region caching** as a built-in scan option rather than per-caller
+    hand-rolling (full-address-space rescans per poll are the default failure
+    mode otherwise).
+
+> **Implementation notes (2026-07-17) — the six named commands landed.** All
+> follow the crate discipline the earlier phases set: the *algorithm* is a pure,
+> unit-tested module (OS-free where possible, so the `n0xis-core` boundary test
+> still shows zero windows crates in its tree), and the CLI is thin wiring over
+> it. Every command emits the standard `ok/data/meta` envelope with its own v1
+> schema id (`n0xis.{game.grep,locate.transition,input.probe,const.identify,
+> bindings,sig.validate}.v1`). +17 new core unit tests, all green; each command
+> verified end-to-end against the compiled `n0xis.exe`.
+>
+> - **`game grep`** → `n0xis-core::gamegrep` (pure `rank()`), CLI `game grep
+>   <concept> --dir <path>…`. The scoring *is* the feature: cluster **breadth**
+>   (distinct concept terms present) is squared and weighted so it always
+>   outranks raw frequency, with a log-damped frequency tail only breaking ties —
+>   exactly the ROADMAP scope note ("5 words beats one word ×50"). The CLI walks
+>   the corpus, auto-decoding LuaJIT bytecode files to text (name + string
+>   constants + rendered instructions) via `n0xis-lua`, falling back to UTF-8 or
+>   printable-ASCII-run extraction for other files. Verified: the 3-distinct-term
+>   algorithm file outranked a config (2 terms) and a UI file repeating one term
+>   ×7.
+> - **`locate by-transition`** → CLI orchestration composing the existing
+>   `ScanPass` (unknown snapshot) + `FilterPass` (changed/increased/decreased) —
+>   no new pass, the transition workflow *is* the composition. Pauses for the
+>   operator (stdin) or a fixed `--wait-ms` (agent/scripted), applies an optional
+>   structural predicate (`--expect`/`--min`/`--max`) as a second filter, and
+>   persists the working set so `scan filter` can keep narrowing. Both underlying
+>   passes already skip unreadable regions (F6-safe). Verified live: 13.6M
+>   snapshot → changed rescan narrowed to 19k, with a "toggle again to narrow"
+>   note and a saved dump.
+> - **`input probe`** → `n0xis-sources::input` (behind `live`), CLI `input probe`.
+>   Installs its own `WH_KEYBOARD_LL` hook — the exact vantage point a game's
+>   anti-injection filter uses — actuates a benign key (VK_F15) through each
+>   method, and reports per method whether the OS input stack saw it **and
+>   whether it carried `LLKHF_INJECTED`**. `SendInput`/`keybd_event` are actively
+>   exercised; `Interception`/raw-HID availability is *detected* (LoadLibrary
+>   probe / honest "needs a driver") rather than faked. Verified live: both
+>   active methods delivered **with** the injected flag — the exact F4 finding,
+>   now catchable on day one, with the recommendation pointing at the
+>   driver-based fix.
+> - **`const identify`** → `n0xis-core::constident` (a flat fingerprint table +
+>   `identify_u64`/`identify_f64`). Recognizes LCG multipliers/increments
+>   (Numerical Recipes, MSVC, glibc, PCG), hash seeds (MurmurHash2/3, FNV,
+>   xxHash), CRC-32/32C polynomials, golden-ratio/SplitMix, and `1/2^n` float
+>   normalizers; a 32-bit fingerprint also matches the value's low 32 bits
+>   (sign/zero-extension in a 64-bit decompilation). CLI takes `--value`, a
+>   function (`--addr` + source → decompile → scan its literals), or a Lua chunk
+>   (`--lua` → its number pool). Verified: `0x5bd1e995`→MurmurHash2,
+>   `1664525`→NR-LCG, `2.328e-10`→`1/2^32`, `42`→nothing.
+> - **`bindings list`** → `n0xis-core::bindings` (`BindingsPass`), CLI `bindings
+>   list`. One linear sweep of the decoded `.text` indexes every `lea reg,[name]`
+>   whose target is a valid identifier in `.rdata`, then pairs each with the
+>   nearest `lea reg,[cfunc]` landing in executable code — the W2 walk, with a
+>   confidence (proximity + a nearby `call`) rather than a claimed certainty.
+>   (The first cut was O(names×insns) and hung on a real module; the indexed
+>   sweep is the "index once" perf discipline from earlier phases.) Verified on
+>   `n0xis.exe`: found real name→pointer pairs (`GetTempPath2W`,
+>   `SetThreadDescription`) with a call between the loads.
+> - **`sig validate`** → `n0xis-core::sigvalidate` (pure `validate()`), CLI `sig
+>   validate`. Reports per-offset invariance across ≥2 samples, derives the
+>   honest signature (agreed bytes fixed, the rest `??`), audits a proposed
+>   signature for false-invariants/contradictions/loose-wildcards, and **refuses
+>   to bless** unless there are ≥3 samples *and* a varied axis is named. Samples
+>   come from `--sample` hex, files, or live/static reads. Verified: N=2 refused
+>   even when the bytes agree (the exact F3 trap), N=3 varied blessed with the
+>   right derived mask, and a false-invariant signature audited and blocked.
+>
+> **Still open (bullet 7 above):** the ergonomics/scan-resilience cluster is
+> *partially* pre-satisfied — live scans already skip unreadable regions
+> (`ScanPass`/`FilterPass` `unwrap_or_default`/`continue`), and `game grep`/
+> `const identify` accept hex — but built-in region caching as a scan option and
+> a uniform hex-everywhere audit of `--min`/`--max` are not done here; left as
+> the remaining Phase 8 item.
+
+**The re-framing this phase encodes** (RE_METHOD's "spec-first ladder") — climb
+it **top-down**, each rung cheaper and more stable than the one below:
+
+| # | Layer | Gives you | Cost |
+|---|---|---|---|
+| 1 | Data / config | templates, tables, tuning — declarative truth | trivial |
+| 2 | Script layer | the algorithm, readable | low |
+| 3 | Native bindings | only what scripts call into — findable *by name* | low |
+| 4 | Native code | one specific function | medium |
+| 5 | Runtime memory | only the irreducible inputs (seeds, handles) | high, brittle |
+
+The campaign climbed it backwards (5→1). Corollary the tools should encourage:
+**minimize the memory read surface** — every byte read from a live process is
+transient, ASLR'd, version-fragile and race-prone; prefer *computed* over
+*observed* wherever the game itself derives the value.
+
 **GUI**: explicitly deferred, not abandoned — user's own framing: "GUI-потім.
 Не зараз, але не 'ніколи'" (GUI later. Not now, but not "never"). No phase
 number assigned yet; CONCEPT's "GUI-never" framing (CLI/MCP only) reflected the
@@ -665,3 +853,13 @@ regardless).
   a thin frontend, and it's the biggest capability, so don't defer it to the end.
 - The ISA seam (`trait Arch`) is built in Phase 1 **even with one implementation**, so
   x64 knowledge never leaks back into the passes (the mistake that sank v0).
+- **Phase 8 is different in kind from 0–7.** Those phases built *capabilities*
+  (decompile, scan, hook, unwind). Phase 8 builds *method* — tooling derived
+  from a post-mortem of using those capabilities in anger for a full campaign.
+  Its items are small next to Phase 3's decompiler, but they attack the thing
+  that actually dominated wall-clock time: not missing capability, but **working
+  the layers in the wrong order** and **trusting under-evidenced patterns**.
+  Sequence it by payoff, not by size — `game grep` (F2) and `locate
+  --by-transition` (W1) are worth more than the rest combined, because one
+  attacks the root cause and the other formalizes the only technique that ever
+  reliably worked.
