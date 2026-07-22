@@ -33,7 +33,10 @@ pub use live::{LiveProcess, MemRegion, ProcInfo, list_processes};
 #[cfg(feature = "live")]
 mod debug;
 #[cfg(feature = "live")]
-pub use debug::{AwaitHitOutcome, BreakpointHit, Registers, WatchKind, attach_and_wait, await_breakpoint_hit, await_watchpoint_hit};
+pub use debug::{
+    AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, attach_and_wait, await_breakpoint_hit, await_watchpoint_hit,
+    await_watchpoint_hit_where,
+};
 
 #[cfg(feature = "live")]
 mod unwind;
@@ -44,6 +47,15 @@ pub use unwind::{Frame, MemReader, ModuleRange, UnwindRegs, unwind};
 mod input;
 #[cfg(feature = "live")]
 pub use input::{probe_actuation, MethodResult, ProbeReport, DEFAULT_PROBE_VK};
+
+#[cfg(feature = "live")]
+mod window;
+#[cfg(feature = "live")]
+pub use window::{
+    b64_encode, best_window, classify_frame, encode_png, focus, list_windows, screenshot,
+    window_pid, CaptureAttempt, CaptureError, CaptureMethod, FocusResult, FrameStats, FrameVerdict,
+    Screenshot, WindowInfo,
+};
 
 use n0xis_contracts::{Module, Symbol, Va};
 

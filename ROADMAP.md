@@ -1006,11 +1006,13 @@ names a missing tool.
   > `candidates_tested`/`bytes_scanned` always cover the whole window, so "0
   > matches" can never be confused with "gave up partway" (RE_METHOD F6).
   > **Not** a runnable `scan structural` subcommand — it is `ui locate`'s
-  > internal engine (and the guide's `guide_category` has no `ui` arm yet, so the
-  > auto-catalog currently buckets `ui locate` under "Other").
+  > internal engine. (The guide's `guide_category` now has a `ui` arm, so the
+  > `ui *` commands group under "UI-layer localization (Phase 9)" in the
+  > auto-catalog rather than "Other".)
 
-- ⏳ **Agent target-selection tooling — `ui windows` / `ui screenshot` /
-  `ui focus`** *(the operator's proposal: an agent driving `ui locate` needs to
+- ⚠️ **Agent target-selection tooling — `ui windows` / `ui screenshot` /
+  `ui focus`** — implemented and mspaint-verified, **needs real-target testing**
+  *(the operator's proposal: an agent driving `ui locate` needs to
   see the target and name a window before it can choose a rect)*. The `ui
   locate` brief's no-pixels rule governs how widgets are *found* (by their data,
   not their appearance); it does not forbid *showing the operator/agent the
@@ -1020,18 +1022,51 @@ names a missing tool.
     than guess an HWND. Read-only.
   - **`ui screenshot --pid <p> [--out <png>]`** — capture the target window to
     a PNG (or base64 in the envelope) via external Win32 only (no injection, no
-    D3D hook). **The load-bearing risk**, being researched before implementation:
-    GDI `BitBlt`/`PrintWindow` return an all-black frame for many
-    DirectX-accelerated windows, and an agent must never mistake a black capture
-    for "the UI is empty" — so the command must *detect and report* a blank
-    capture rather than hand back a misleading image.
+    D3D hook). **The load-bearing risk**: GDI `BitBlt`/`PrintWindow` return an
+    all-black frame for many DirectX-accelerated windows, and an agent must
+    never mistake a black capture for "the UI is empty" — so the command must
+    *detect and report* a blank capture rather than hand back a misleading image.
   - **`ui focus --pid <p> --hwnd <h>`** — bring a window forward (window
     selector). Unlike the rest of Phase 9 this is **not** purely read-only (it
-    activates a window on the target); it will be labeled as such in the
-    command contract. Marked "if needed" by the operator.
-  **Status**: in progress this session — `ui locate`/structural-scan landed
-  first; these build on the same `n0xis-sources` (Win32, `live` feature) seam.
-  Not yet implemented.
+    activates a window on the target); it is labeled as such in the command
+    contract. Marked "if needed" by the operator.
+  > **Implemented (2026-07-21).** `n0xis-sources::window` (behind `live`), wired
+  > into both the CLI (`ui windows|screenshot|focus`) and MCP (`ui_windows`/
+  > `ui_screenshot`/`ui_focus`, verified via `tools/list`). Backed by a research
+  > pass on Windows capture (GDI / PrintWindow / DXGI-DDA / WGC) that decided the
+  > dependency budget up front.
+  > - **`ui windows`** — `EnumWindows` filtered by pid, best-guess game window
+  >   first (visible, non-tool, non-cloaked, largest). Reports all three rects
+  >   unambiguously — `rect_window` (raw, DWM-shadow-inflated), `rect_frame`
+  >   (`DWMWA_EXTENDED_FRAME_BOUNDS`, the canonical one), `rect_client` (client
+  >   in screen coords) — plus per-window DPI, and sets per-monitor-v2 DPI
+  >   awareness so coordinates are physical pixels (`meta.coords`).
+  > - **`ui screenshot`** — GDI window-DC `BitBlt` + `PrintWindow(PW_RENDERFULLCONTENT
+  >   | PW_CLIENTONLY)`, `--method auto|window-dc|printwindow`, into a
+  >   client-sized top-down BGRA→RGBA buffer (alpha forced to 255 — the #1
+  >   self-inflicted false-black). Ships the **blank-frame contract**: pre-flight
+  >   (minimized / cloaked / `GetWindowDisplayAffinity` / off-screen → specific
+  >   reason), a luma/distinct-color classifier (`Ok`/`Suspect`/`BlankBlack`/
+  >   `BlankUniform`), and a top-level `confidence` (`ok`/`low`/`blank`) so a
+  >   near-blank `Suspect` frame is never served as crisp. A blank capture is
+  >   returned as `ok:true, data.blank:true` (the envelope's failure arm carries
+  >   no diagnostics) with a loud "do not treat as empty UI" note.
+  > - **`ui focus`** — `SetForegroundWindow` via the `AttachThreadInput`
+  >   workaround (no injection), verified with `GetForegroundWindow` (the return
+  >   value lies). An explicit `--hwnd` is checked to actually belong to `--pid`.
+  > - **Verified live** on `mspaint`: `ui windows` ranked the paint window first;
+  >   `ui screenshot` produced a real non-blank, client-aligned PNG
+  >   (`confidence:ok`, 1076×575 matching the client rect); `ui focus` reached
+  >   `foreground:true`. Two capture-alignment bugs (window-vs-client origin) and
+  >   a conditional DIB leak, found by an adversarial review, were fixed and
+  >   re-verified.
+  > - **Documented follow-on (the honest gap):** GDI/PrintWindow are **blank for
+  >   flip-model / DirectComposition** DirectX windows — which many modern games
+  >   are. The correct path there is Windows.Graphics.Capture (or DXGI Desktop
+  >   Duplication), which requires the heavy `windows` crate (WinRT/DXGI/D3D11 —
+  >   windows-sys has none of it). Not done here; the tool reports the blank
+  >   honestly instead, so a flip-model target is a *known, visible* limitation
+  >   rather than a silent wrong answer. This is the next rung of Phase 9.
 
 ---
 

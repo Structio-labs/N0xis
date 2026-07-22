@@ -10,12 +10,14 @@
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
-    CfgInput, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass, DecompStyle,
-    DiscoverInput, DiscoverPass, Pass, ProvenanceHit, ProvenanceInput, ProvenancePass, TraceInput,
-    TracePass, XrefDir, XrefInput, XrefPass, StringXrefInput, StringXrefPass,
+    AabbLayout, CfgInput, CoordSpace, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass,
+    DecompStyle, DiscoverInput, DiscoverPass, Pass, ProvenanceHit, ProvenanceInput, ProvenancePass,
+    Rect, TraceInput, TracePass, UiLocateInput, UiLocatePass, XrefDir, XrefInput, XrefPass,
+    StringXrefInput, StringXrefPass,
 };
 use n0xis_sources::{
-    LiveProcess, MemorySource, ModuleProvider, WatchKind, await_watchpoint_hit, list_processes,
+    LiveProcess, MemorySource, ModuleProvider, WatchKind, await_watchpoint_hit, best_window,
+    encode_png, focus, list_processes, list_windows, screenshot, CaptureMethod,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
@@ -314,6 +316,180 @@ pub struct AnnotateSetRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnnotateShowRequest {
     pub addr: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UiLocateRequest {
+    /// Live process to hit-test. `ui locate` is live-only: it reads the
+    /// target's current retained scene graph.
+    pub pid: u32,
+    /// Query rectangle as `"x0,y0,x1,y1"` (any corner order).
+    pub rect: String,
+    /// `"auto"` (default), `"screen"`, or `"ndc"`. `auto` uses a permissive
+    /// bound and reports the observed coordinate range, so you can tell which
+    /// space the target's boxes are actually in instead of guessing.
+    #[serde(default = "default_space")]
+    pub space: String,
+    /// Region start (hex). Omit (with `size`) to scan every committed
+    /// writable region.
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub size: Option<usize>,
+    /// Byte stride between candidate positions (fields are dword-aligned).
+    #[serde(default = "default_ui_align")]
+    pub align: usize,
+    #[serde(default = "default_ui_limit")]
+    pub limit: usize,
+    /// Persist this query's addresses under `.n0x/dumps/ui_locate/<name>.json`
+    /// so a later query can `exclude_from` it (spatial-diff workflow).
+    #[serde(default)]
+    pub save_as: Option<String>,
+    #[serde(default)]
+    pub force: bool,
+    /// Exclude every address found in these previously-saved queries — the
+    /// spatial-diff filter (save a rect where the widget is absent, exclude it
+    /// from one where it is present).
+    #[serde(default)]
+    pub exclude_from: Vec<String>,
+}
+fn default_space() -> String {
+    "auto".to_string()
+}
+fn default_ui_align() -> usize {
+    4
+}
+fn default_ui_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UiWindowsRequest {
+    pub pid: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UiScreenshotRequest {
+    pub pid: u32,
+    /// Specific window HWND (from `ui_windows`); defaults to the best-guess
+    /// game window for the pid.
+    #[serde(default)]
+    pub hwnd: Option<usize>,
+    /// `"auto"` (default), `"window-dc"`, or `"printwindow"`.
+    #[serde(default = "default_capture_method")]
+    pub method: String,
+    /// Write the PNG here (server-side path). Written even on a blank capture.
+    #[serde(default)]
+    pub out: Option<String>,
+    /// Embed the PNG as base64 in the response. Off by default — a full-window
+    /// PNG can be large.
+    #[serde(default)]
+    pub base64: bool,
+}
+fn default_capture_method() -> String {
+    "auto".to_string()
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UiFocusRequest {
+    pub pid: u32,
+    #[serde(default)]
+    pub hwnd: Option<usize>,
+}
+
+/// Accepts exactly the CLI's canonical method names (kept in lock-step so the
+/// two frontends never diverge on valid input).
+fn parse_capture_methods(s: &str) -> Result<Vec<CaptureMethod>, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => Ok(vec![CaptureMethod::PrintWindow, CaptureMethod::WindowDc]),
+        "window-dc" => Ok(vec![CaptureMethod::WindowDc]),
+        "printwindow" => Ok(vec![CaptureMethod::PrintWindow]),
+        other => Err(format!("unknown method '{other}', expected auto|window-dc|printwindow")),
+    }
+}
+
+/// Resolve `hwnd` (verified to belong to `pid`) or the best-guess game window
+/// for `pid`. Mirrors the CLI's `resolve_ui_window`.
+fn resolve_ui_hwnd(pid: u32, hwnd: Option<usize>) -> Result<usize, String> {
+    if let Some(h) = hwnd {
+        let owner = n0xis_sources::window_pid(h);
+        if owner == 0 {
+            return Err(format!("hwnd 0x{h:x} is not a valid window"));
+        }
+        if owner != pid {
+            return Err(format!("hwnd 0x{h:x} belongs to pid {owner}, not the requested pid {pid}"));
+        }
+        return Ok(h);
+    }
+    best_window(pid)
+        .map(|w| w.hwnd)
+        .ok_or_else(|| format!("no visible top-level window for pid {pid} (run ui_windows to inspect)"))
+}
+
+fn parse_space(s: &str) -> Result<CoordSpace, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => Ok(CoordSpace::Auto),
+        "screen" => Ok(CoordSpace::Screen),
+        "ndc" => Ok(CoordSpace::Ndc),
+        other => Err(format!("unknown space '{other}', expected auto|screen|ndc")),
+    }
+}
+
+fn parse_rect(s: &str) -> Result<Rect, String> {
+    let parts: Vec<&str> = s.split(',').map(|t| t.trim()).collect();
+    let [a, b, c, d] = parts.as_slice() else {
+        return Err(format!("rect needs exactly 4 comma-separated numbers, got {s:?}"));
+    };
+    let p = |t: &str| t.parse::<f32>().map_err(|e| format!("invalid rect coordinate {t:?}: {e}"));
+    Ok(Rect::new(p(a)?, p(b)?, p(c)?, p(d)?))
+}
+
+/// The live scan set, mirroring the CLI's `resolve_scan_regions_live`: an
+/// explicit `start`/`size` window clipped to committed regions (a single read
+/// spanning an unmapped gap fails wholesale), else every committed writable
+/// region.
+fn ui_scan_regions(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
+    if let Some(s) = start {
+        let va = Va::parse(s).map_err(|e| e.to_string())?;
+        let sz = size.ok_or("provide size with start")?;
+        let lo = va.0;
+        let hi = va.0.saturating_add(sz as u64);
+        let mut clipped = Vec::new();
+        for (rb, rs) in live.default_writable_regions() {
+            let a = rb.0.max(lo);
+            let b = (rb.0 + rs as u64).min(hi);
+            if a < b {
+                clipped.push((Va(a), (b - a) as usize));
+            }
+        }
+        if clipped.is_empty() {
+            return Ok(vec![(va, sz)]);
+        }
+        return Ok(clipped);
+    }
+    let regions = live.default_writable_regions();
+    if regions.is_empty() {
+        return Err("no committed writable regions found (and no start/size given)".to_string());
+    }
+    Ok(regions)
+}
+
+/// Load the address sets of previously-saved `ui locate` queries, up front —
+/// a missing/corrupt name must fail before the (tens-of-seconds) scan runs.
+fn ui_excluded_addresses(names: &[String]) -> Result<std::collections::HashSet<Va>, (String, String)> {
+    let mut excluded = std::collections::HashSet::new();
+    for name in names {
+        let saved = n0xis_project::dump::show(name, Some("ui_locate"))
+            .map_err(|e| ("no-such-save".to_string(), format!("exclude_from {name:?}: {e}")))?;
+        let parsed: serde_json::Value = serde_json::from_slice(&saved.bytes)
+            .map_err(|e| ("bad-save".to_string(), format!("{name:?} is not a valid ui_locate save: {e}")))?;
+        for e in parsed.get("elements").and_then(|v| v.as_array()).into_iter().flatten() {
+            if let Some(addr) = e.get("address").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok()) {
+                excluded.insert(addr);
+            }
+        }
+    }
+    Ok(excluded)
 }
 
 fn parse_watch_kind(s: &str) -> Result<WatchKind, String> {
@@ -707,6 +883,153 @@ impl N0xisServer {
             Ok(records) => emit(Response::success(schema::v1::ANNOTATION, json!({ "count": records.len(), "records": records }))),
             Err(e) => err("annotate-failed", e.to_string()),
         }
+    }
+
+    #[tool(
+        description = "Screen region -> memory addresses: hit-test a live target's own UI bounding boxes and report the elements drawing inside a rectangle. Read-only (no breakpoints, no writes). Use `space:\"auto\"` first and read `observed_range` to learn which coordinate space the target's boxes are in. For noisy results, run once over a rect where the widget is ABSENT with `save_as`, then re-run over the rect where it is PRESENT with `exclude_from` — the spatial diff drops structures that overlap every rect."
+    )]
+    fn ui_locate(&self, Parameters(a): Parameters<UiLocateRequest>) -> String {
+        let rect = match parse_rect(&a.rect) {
+            Ok(r) => r,
+            Err(e) => return err("bad-rect", e),
+        };
+        let space = match parse_space(&a.space) {
+            Ok(s) => s,
+            Err(e) => return err("bad-space", e),
+        };
+        let excluded = match ui_excluded_addresses(&a.exclude_from) {
+            Ok(e) => e,
+            Err((c, m)) => return err(&c, m),
+        };
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return err("attach-failed", e.to_string()),
+        };
+        let regions = match ui_scan_regions(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return err("bad-region", e),
+        };
+        let label = live.label();
+        let arch = X64::new();
+        let ctx = Ctx::new(&live, &arch);
+        let input = UiLocateInput {
+            regions,
+            rect,
+            space,
+            layout: AabbLayout::HELLDIVERS,
+            align: a.align.max(1),
+        };
+        let mut art = match UiLocatePass.run(&ctx, input) {
+            Ok(v) => v,
+            Err(e) => return err("ui-locate-failed", e.to_string()),
+        };
+        if !excluded.is_empty() {
+            art.elements.retain(|e| !excluded.contains(&e.address));
+            art.count = art.elements.len();
+        }
+        if let Some(name) = &a.save_as {
+            let bytes = match serde_json::to_vec(&art) {
+                Ok(b) => b,
+                Err(e) => return err("serialize-failed", e.to_string()),
+            };
+            if let Err(e) = n0xis_project::dump::save(name, "ui_locate", &bytes, a.force) {
+                return err("save-failed", e.to_string());
+            }
+        }
+        // `count` stays the true total; only the reported list is capped.
+        art.elements.truncate(a.limit);
+        emit(Response::success(schema::v1::UI_LOCATE, art).with_source(label))
+    }
+
+    #[tool(
+        description = "List a target process's top-level windows (title, class, visibility, rects, DPI), best-guess game window first. Read-only. Use it to pick an hwnd for ui_screenshot / ui_focus, or to see why a capture is blank (minimized / cloaked / off-screen). rect_frame is the canonical visible bounds; rect_client is where the game renders."
+    )]
+    fn ui_windows(&self, Parameters(a): Parameters<UiWindowsRequest>) -> String {
+        let windows = list_windows(a.pid);
+        emit(Response::success(
+            schema::v1::UI_WINDOWS,
+            json!({ "pid": a.pid, "count": windows.len(), "windows": windows, "coords": "physical" }),
+        )
+        .with_source(format!("pid:{}", a.pid)))
+    }
+
+    #[tool(
+        description = "Capture a target window to a PNG so you can visually choose a rect for ui_locate. Read-only-ish (window-dc is fully read-only; printwindow makes the target's UI thread render). CRITICAL: GDI/PrintWindow return an all-black frame for flip-model DirectX windows — this tool detects that and sets data.blank=true with a reason; NEVER treat a blank capture as an empty UI. Key on data.blank, not on ok. Pass out=<path> to write the PNG, base64=true to embed it."
+    )]
+    fn ui_screenshot(&self, Parameters(a): Parameters<UiScreenshotRequest>) -> String {
+        let hwnd = match resolve_ui_hwnd(a.pid, a.hwnd) {
+            Ok(h) => h,
+            Err(e) => return err("no-window", e),
+        };
+        let methods = match parse_capture_methods(&a.method) {
+            Ok(m) => m,
+            Err(e) => return err("bad-method", e),
+        };
+        let shot = match screenshot(hwnd, &methods) {
+            Ok(s) => s,
+            Err(e) => {
+                return emit(
+                    Response::<serde_json::Value>::error("capture-failed", e.reason)
+                        .with_hint("run ui_windows to check the window is visible and on-screen"),
+                );
+            }
+        };
+        let confidence = match shot.verdict {
+            n0xis_sources::FrameVerdict::Ok => "ok",
+            n0xis_sources::FrameVerdict::Suspect => "low",
+            _ => "blank",
+        };
+        let mut out_written: Option<String> = None;
+        let mut png_b64: Option<String> = None;
+        if a.out.is_some() || a.base64 {
+            match encode_png(&shot.rgba, shot.width, shot.height) {
+                Ok(png) => {
+                    if let Some(path) = &a.out {
+                        if let Err(e) = std::fs::write(path, &png) {
+                            return err("write-failed", format!("write {path}: {e}"));
+                        }
+                        out_written = Some(path.clone());
+                    }
+                    if a.base64 {
+                        png_b64 = Some(n0xis_sources::b64_encode(&png));
+                    }
+                }
+                Err(e) => return err("png-failed", e),
+            }
+        }
+        emit(Response::success(
+            schema::v1::UI_SCREENSHOT,
+            json!({
+                "pid": a.pid, "hwnd": hwnd, "width": shot.width, "height": shot.height,
+                "method": shot.method, "blank": shot.blank, "confidence": confidence,
+                "reason": shot.reason, "attempts": shot.attempts, "client_rect": shot.client_rect,
+                "dpi": shot.dpi, "out": out_written, "png_base64": png_b64, "coords": "physical",
+                "note": if shot.blank {
+                    "BLANK — key on data.blank, not ok. GDI/PrintWindow can't capture flip-model DirectX; diagnostic artifact only."
+                } else if confidence == "low" {
+                    "LOW-CONFIDENCE (near-blank, few distinct colors) — a rect from this may be unreliable; confirm the window shows content."
+                } else {
+                    "pick a rect (physical px, window top-left origin) for ui_locate."
+                },
+            }),
+        )
+        .with_source(format!("pid:{}", a.pid)))
+    }
+
+    #[tool(
+        description = "Bring a window to the foreground (window selector). NOT read-only — it activates a window on the target. Verifies success via GetForegroundWindow (data.foreground), since the OS often only flashes the taskbar instead of truly focusing."
+    )]
+    fn ui_focus(&self, Parameters(a): Parameters<UiFocusRequest>) -> String {
+        let hwnd = match resolve_ui_hwnd(a.pid, a.hwnd) {
+            Ok(h) => h,
+            Err(e) => return err("no-window", e),
+        };
+        let r = focus(hwnd);
+        emit(Response::success(
+            schema::v1::UI_FOCUS,
+            json!({ "pid": a.pid, "hwnd": r.hwnd, "foreground": r.foreground, "method": r.method }),
+        )
+        .with_source(format!("pid:{}", a.pid)))
     }
 }
 

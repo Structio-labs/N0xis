@@ -106,6 +106,65 @@ pub struct Registers {
     pub r15: u64,
 }
 
+impl Registers {
+    /// Read a register by lowercase name, for condition matching.
+    pub fn by_name(&self, name: &str) -> Option<u64> {
+        Some(match name {
+            "rax" => self.rax,
+            "rbx" => self.rbx,
+            "rcx" => self.rcx,
+            "rdx" => self.rdx,
+            "rsi" => self.rsi,
+            "rdi" => self.rdi,
+            "rbp" => self.rbp,
+            "r8" => self.r8,
+            "r9" => self.r9,
+            "r10" => self.r10,
+            "r11" => self.r11,
+            "r12" => self.r12,
+            "r13" => self.r13,
+            "r14" => self.r14,
+            "r15" => self.r15,
+            _ => return None,
+        })
+    }
+}
+
+/// A condition a hit must satisfy to be reported, e.g. `r9=4`.
+///
+/// Without this a breakpoint on a hot function is close to useless: the first
+/// hit is whatever ran first, and re-arming just returns the same caller every
+/// time (live: a UI draw routine kept reporting `r9=6` across six consecutive
+/// arms, never the 4-arrow call we were after). Filtering in the debug loop lets
+/// the interesting call be singled out instead of hoping to land on it.
+#[derive(Clone, Debug)]
+pub struct RegCond {
+    pub reg: String,
+    pub value: u64,
+}
+
+impl RegCond {
+    /// Parse `"<reg>=<value>"`; value may be decimal or `0x`-prefixed.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let (reg, val) = s.split_once('=').ok_or_else(|| format!("expected <reg>=<value>, got `{s}`"))?;
+        let reg = reg.trim().to_ascii_lowercase();
+        let val = val.trim();
+        let value = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16).map_err(|e| format!("bad hex value `{val}`: {e}"))?
+        } else {
+            val.parse::<u64>().map_err(|e| format!("bad value `{val}`: {e}"))?
+        };
+        if Registers::default().by_name(&reg).is_none() {
+            return Err(format!("unknown register `{reg}`"));
+        }
+        Ok(RegCond { reg, value })
+    }
+
+    fn matches(&self, r: &Registers) -> bool {
+        r.by_name(&self.reg) == Some(self.value)
+    }
+}
+
 /// One breakpoint hit.
 #[derive(Clone, Debug, Serialize)]
 pub struct BreakpointHit {
@@ -744,6 +803,24 @@ pub fn await_watchpoint_hit(
     stack_qwords: usize,
     module: Option<&Module>,
 ) -> Result<AwaitHitOutcome, SourceError> {
+    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, None)
+}
+
+/// [`await_watchpoint_hit`], but only reports a hit whose registers satisfy
+/// `cond` — hits that don't match are resumed with the watchpoint still armed.
+/// This is what makes a breakpoint on a hot function usable: it singles out the
+/// one call of interest instead of returning whichever call happened to run first.
+#[allow(clippy::too_many_arguments)]
+pub fn await_watchpoint_hit_where(
+    pid: u32,
+    addr: Va,
+    kind: WatchKind,
+    len: u8,
+    timeout_ms: u64,
+    stack_qwords: usize,
+    module: Option<&Module>,
+    cond: Option<&RegCond>,
+) -> Result<AwaitHitOutcome, SourceError> {
     let h_process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
     if h_process.is_null() {
         return Err(SourceError::Os(format!(
@@ -768,6 +845,9 @@ pub fn await_watchpoint_hit(
     // notification — must be `DBG_CONTINUE`d, not handed back to the target
     // (doing so crashes it: the cause of the "watchpoint kills the game" bug).
     let mut first_bp_seen = false;
+    // Budget for non-matching conditional hits — see the bail-out below.
+    const MAX_CONDITION_MISSES: u32 = 300;
+    let mut misses: u32 = 0;
 
     loop {
         if Instant::now() >= deadline {
@@ -795,6 +875,33 @@ pub fn await_watchpoint_hit(
                 // leave the hitting thread stopped at an un-continued debug
                 // event, so detaching (guard drop) would hang or crash it.
                 let captured = capture_hit(h_process, ev.dwThreadId, module, stack_qwords);
+                // Not the call we asked for: resume it with the watchpoint still
+                // armed and keep waiting. Disarming here (as the unconditional
+                // path does) would end the wait on the wrong hit.
+                if let (Some(c), Ok(h)) = (cond, captured.as_ref()) {
+                    if !c.matches(&h.registers) {
+                        clear_dr6(ev.dwThreadId);
+                        unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
+                        misses += 1;
+                        // Every miss is a full stop/inspect/resume round-trip for
+                        // the target thread. On a per-frame function that is
+                        // thousands of them, and the target effectively runs
+                        // single-stepped — enough to kill a game (it did). Bail
+                        // with an explanation instead of grinding it to death:
+                        // a condition this rare needs a colder trap site.
+                        if misses >= MAX_CONDITION_MISSES {
+                            watch.disarm();
+                            drain_pending_events();
+                            return Err(SourceError::Os(format!(
+                                "condition `{}={}` did not match in {MAX_CONDITION_MISSES} hits — this trap site is too hot to \
+                                 filter on (every non-matching hit stops the target). Pick a colder address, or watch a data \
+                                 address instead of an executed one.",
+                                c.reg, c.value
+                            )));
+                        }
+                        continue;
+                    }
+                }
                 watch.disarm();
                 clear_dr6(ev.dwThreadId);
                 unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };

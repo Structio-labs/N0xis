@@ -120,11 +120,25 @@ pub mod v1 {
     /// (`sig validate`).
     pub const SIG_VALIDATE: &str = "n0xis.sig.validate.v1";
 
+    // --- Phase 9: UI-layer localization ---
+    /// Structural-predicate scan: matches by relations between fields, not
+    /// byte constants (the generalized primitive `ui locate` is built on).
+    pub const SCAN_STRUCTURAL: &str = "n0xis.scan.structural.v1";
+    /// Screen region -> candidate memory addresses, by hit-testing a live
+    /// target's own retained-scene-graph bounding boxes (`ui locate`).
+    pub const UI_LOCATE: &str = "n0xis.ui.locate.v1";
+    /// A target process's top-level windows + rects/DPI (`ui windows`).
+    pub const UI_WINDOWS: &str = "n0xis.ui.windows.v1";
+    /// A window capture + its honest blank-frame verdict (`ui screenshot`).
+    pub const UI_SCREENSHOT: &str = "n0xis.ui.screenshot.v1";
+    /// Foreground-focus attempt result (`ui focus`).
+    pub const UI_FOCUS: &str = "n0xis.ui.focus.v1";
+
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }
 
 /// Reserved v0 (`n0x.*`) schema ids — the compatibility contract from
-/// [`docs/CLI_COMMANDS_v0.md`](../../../docs/CLI_COMMANDS_v0.md). Kept so the
+/// [`docs/CLI_COMMANDS.md`](../../../docs/CLI_COMMANDS.md). Kept so the
 /// port preserves the exact wire names agents already depend on.
 pub mod v0 {
     pub const IR: &str = "n0x.ir.v1";

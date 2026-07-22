@@ -55,7 +55,7 @@ pub const SHIM_NAME: &str = "n0x.cmd";
 /// Global fallback directory name under local app data. **Kept as `n0x`.**
 pub const GLOBAL_DIR_NAME: &str = "n0x";
 
-pub const DUMP_KINDS: &[&str] = &["ir", "pseudo", "hex", "raw", "note", "scan", "snapshot"];
+pub const DUMP_KINDS: &[&str] = &["ir", "pseudo", "hex", "raw", "note", "scan", "snapshot", "ui_locate"];
 
 /// A resolved project root.
 #[derive(Debug, Clone)]
@@ -235,7 +235,7 @@ pub fn is_valid_kind(k: &str) -> bool {
 
 pub fn extension_for_kind(k: &str) -> &'static str {
     match k {
-        "ir" | "pseudo" | "snapshot" => "json",
+        "ir" | "pseudo" | "snapshot" | "ui_locate" => "json",
         // A scan working set is a compact binary snapshot (dense region bytes +
         // sparse survivor slots), not JSON — see n0xis-core::ScanState::encode.
         "scan" => "bin",

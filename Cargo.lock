@@ -2297,6 +2297,7 @@ version = "0.1.0"
 dependencies = [
  "goblin",
  "n0xis-contracts",
+ "png",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -27,11 +27,13 @@ use n0xis_core::{
     SigValidateInput, SsaPass, StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueSetPass,
     ValueType, XrefDir, XrefInput, XrefPass,
 };
+use n0xis_core::{AabbLayout, CoordSpace, Rect, UiLocateInput, UiLocatePass};
 use n0xis_pipeline::{Pipeline, cfg_cached};
 use n0xis_sources::{
     LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, WatchKind, attach_and_wait, await_breakpoint_hit,
-    await_watchpoint_hit, list_processes, probe_actuation, remote_serve_stdio, DEFAULT_PROBE_VK,
+    await_watchpoint_hit, await_watchpoint_hit_where, list_processes, probe_actuation, remote_serve_stdio, RegCond, DEFAULT_PROBE_VK,
 };
+use n0xis_sources::{best_window, encode_png, focus as window_focus, list_windows, screenshot as window_screenshot, CaptureMethod};
 use serde_json::json;
 
 use emit::emit;
@@ -61,12 +63,26 @@ struct GlobalArgs {
     quiet: bool,
 }
 
+#[derive(Args)]
+struct GuideArgs {
+    /// Filter the catalog to commands whose path contains this substring
+    /// (e.g. `scan`, `provenance`, `game`). Omit for the full catalog.
+    topic: Option<String>,
+    /// Include the per-argument detail for every command (on by default; pass
+    /// `--brief` to drop it for a shorter overview).
+    #[arg(long)]
+    brief: bool,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Environment / readiness check.
     Doctor,
-    /// Built-in quick reference.
-    Guide,
+    /// Agent-oriented capability catalog: every command, its arguments, and
+    /// composable workflow recipes — structured JSON an AI agent can read to
+    /// understand what the tool can do and how to drive it. `guide <topic>`
+    /// filters to matching commands (e.g. `guide scan`).
+    Guide(GuideArgs),
     /// Create a `.n0x/` project (config, dirs, `n0x.cmd` shim).
     Init(InitArgs),
     /// Project introspection.
@@ -171,6 +187,136 @@ enum Command {
     /// deliberately-varied samples (Phase 8; RE_METHOD F3).
     #[command(subcommand)]
     Sig(SigCmd),
+    /// Screen region -> memory addresses, by hit-testing a live target's own
+    /// retained scene graph from outside (Phase 9). No graphics-API hooking,
+    /// no frame capture, no pixels — see docs/PHASE9_UI_LOCATE_BRIEF.md.
+    #[command(subcommand)]
+    Ui(UiCmd),
+}
+
+#[derive(Subcommand)]
+enum UiCmd {
+    /// Enumerate live UI elements whose bounding box intersects a screen rect.
+    Locate(UiLocateArgs),
+    /// List a process's top-level windows (title/class/rects/DPI) so an agent
+    /// can name the game window before capturing or locating.
+    Windows(UiWindowsArgs),
+    /// Capture a window to a PNG so an agent can visually choose a rect. Honest
+    /// about blank frames (GDI/PrintWindow return black for flip-model DirectX)
+    /// — never reports a blank capture as a real image.
+    Screenshot(UiScreenshotArgs),
+    /// Bring a window to the foreground (window selector). NOT read-only — it
+    /// activates a window on the target.
+    Focus(UiFocusArgs),
+}
+
+#[derive(Args)]
+struct UiWindowsArgs {
+    #[arg(long)]
+    pid: u32,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CaptureMethodArg {
+    /// Try PrintWindow (composited content), then window-DC BitBlt.
+    Auto,
+    /// `BitBlt` from the window DC — cheapest, occlusion-immune; blank for
+    /// flip-model/DComp.
+    WindowDc,
+    /// `PrintWindow(PW_RENDERFULLCONTENT)` — composited content; disturbs the
+    /// target's UI thread.
+    Printwindow,
+}
+
+#[derive(Args)]
+struct UiScreenshotArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Capture this specific window (HWND, as printed by `ui windows`);
+    /// defaults to the best-guess game window for the pid.
+    #[arg(long)]
+    hwnd: Option<usize>,
+    /// Capture path. `auto` (default) tries composited then GDI and returns the
+    /// first non-blank frame.
+    #[arg(long, value_enum, default_value_t = CaptureMethodArg::Auto)]
+    method: CaptureMethodArg,
+    /// Write the PNG here. Written even on a blank/diagnostic capture (with
+    /// `blank:true` in the envelope) — never silently.
+    #[arg(long)]
+    out: Option<String>,
+    /// Also embed the PNG as base64 in the envelope (for agents with no file
+    /// access). Off by default — a full-window PNG is large.
+    #[arg(long)]
+    base64: bool,
+}
+
+#[derive(Args)]
+struct UiFocusArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Window to focus (HWND from `ui windows`); defaults to the best-guess
+    /// game window for the pid.
+    #[arg(long)]
+    hwnd: Option<usize>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SpaceArg {
+    Auto,
+    Screen,
+    Ndc,
+}
+
+impl From<SpaceArg> for CoordSpace {
+    fn from(s: SpaceArg) -> Self {
+        match s {
+            SpaceArg::Auto => CoordSpace::Auto,
+            SpaceArg::Screen => CoordSpace::Screen,
+            SpaceArg::Ndc => CoordSpace::Ndc,
+        }
+    }
+}
+
+#[derive(Args)]
+struct UiLocateArgs {
+    #[arg(long)]
+    pid: u32,
+    /// The query rectangle as `x0,y0,x1,y1` (any corner order; normalized
+    /// internally).
+    #[arg(long)]
+    rect: String,
+    /// Coordinate space the AABBs are read in: `auto` (default, permissive
+    /// bound + reports the observed range so you can tell which space it
+    /// really is), `screen` (pixels), or `ndc` (normalized device coords).
+    #[arg(long, value_enum, default_value_t = SpaceArg::Auto)]
+    space: SpaceArg,
+    /// Region start (hex). Omit (with `--size`) to scan every committed
+    /// writable region — the same default `scan value`/`scan aob` use.
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    size: Option<usize>,
+    /// Byte stride between candidate positions (fields are dword-aligned).
+    #[arg(long, default_value_t = 4)]
+    align: usize,
+    /// Cap on ranked elements reported (highest overlap first).
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    /// Persist this query's rect + result addresses under
+    /// `.n0x/dumps/ui_locate/<name>.json`, so a later query can exclude them
+    /// (spatial-diff workflow: save a rect where the widget is *absent*,
+    /// then exclude it from a query where it's present — anything left over
+    /// is specific to the present rect, not an ambient/global structure that
+    /// overlaps every rect, e.g. a coincidentally AABB-shaped shader constant
+    /// buffer).
+    #[arg(long)]
+    save_as: Option<String>,
+    #[arg(long)]
+    force: bool,
+    /// Exclude every address found in a previously `--save-as`d query (by
+    /// name) from this result — the spatial-diff filter. Repeatable.
+    #[arg(long = "exclude-from")]
+    exclude_from: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -220,7 +366,7 @@ struct LocateByTransitionArgs {
     /// writable region — the default a memory scanner scan set.
     #[arg(long)]
     start: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Byte stride between candidates; defaults to the value's natural size.
     #[arg(long)]
@@ -238,9 +384,9 @@ struct LocateByTransitionArgs {
     expect: Option<f64>,
     /// After the transition filter, keep only survivors whose new value is in
     /// `[--min, --max]`.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     min: Option<f64>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     max: Option<f64>,
     /// Persist the final working set under `.n0x/dumps/scan/<name>.json` so a
     /// later `scan filter` can narrow it further.
@@ -297,7 +443,7 @@ struct ConstIdentifyArgs {
     #[arg(long)]
     remote_cmd: Option<String>,
     /// Byte window for the function decompile (with `--addr`).
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     func_size: usize,
     /// Decode this Lua/LuaJIT chunk and identify its number constants.
     #[arg(long)]
@@ -331,12 +477,12 @@ struct BindingsListArgs {
     /// Data window override (defaults to `.rdata`).
     #[arg(long)]
     data_start: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     data_size: Option<usize>,
     /// Code window override (defaults to `.text`).
     #[arg(long)]
     start: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Instructions on each side of a name-load to search for the paired
     /// function-pointer load.
@@ -374,7 +520,7 @@ struct SigValidateArgs {
     #[arg(long)]
     file: Option<String>,
     /// Length of each `--at` sample.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     len: Option<usize>,
     /// The proposed signature to audit (`"48 8B ?? 68"`, `??` = wildcard).
     #[arg(long)]
@@ -489,7 +635,7 @@ struct LuaSeedscanArgs {
     /// region.
     #[arg(long)]
     start: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// The observed combo as directions (`up,down,down,up`) — mapped to the
     /// engine's `random(0,3)` codes `left=0,up=1,right=2,down=3`.
@@ -545,7 +691,7 @@ struct LuaStringsArgs {
     /// writable region, same default as `scan aob`/`scan value`.
     #[arg(long)]
     start: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Minimum string length (bytes) to accept as a candidate.
     #[arg(long, default_value_t = 1)]
@@ -575,7 +721,7 @@ struct LuaComboArgs {
     /// writable region, same default as `lua strings`.
     #[arg(long)]
     start: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Comma-separated token set the array elements must be drawn from. Default
     /// is the four interact-combo directions.
@@ -616,7 +762,7 @@ struct DiffFunctionsArgs {
     /// Function start address on the `b` (comparison) side.
     #[arg(long)]
     b_addr: String,
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     size: usize,
     /// `goto` (default: stable/deterministic, best for diffing), `structured`, or `ssa`.
     #[arg(long, value_enum, default_value_t = PseudoStyle::Goto)]
@@ -669,6 +815,12 @@ struct DebugWatchArgs {
     timeout_ms: u64,
     #[arg(long, default_value_t = 16)]
     stack_qwords: usize,
+    /// Only report a hit whose registers match, e.g. `--when r9=4` (value may be
+    /// decimal or `0x`-prefixed). Non-matching hits are resumed with the
+    /// watchpoint still armed. Essential on a hot function, where the first hit
+    /// is simply whichever call ran first and re-arming keeps returning it.
+    #[arg(long)]
+    when: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -768,7 +920,7 @@ struct SnapshotDumpArgs {
     #[arg(long)]
     start: Option<String>,
     /// Region size in bytes; defaults to the `.text` size.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Name to save the snapshot under.
     #[arg(long)]
@@ -904,7 +1056,7 @@ enum MemCmd {
 struct MemReadArgs {
     #[arg(long)]
     addr: String,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 64, value_parser = parse_hex_or_decimal_usize)]
     size: usize,
     #[arg(long)]
     pid: Option<u32>,
@@ -968,7 +1120,7 @@ struct PatchDetourArgs {
     hook_at: String,
     /// Cave size in bytes; must fit the relocated hook bytes + a 5-byte jump
     /// back (the CLI reports the minimum needed if this is too small).
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 64, value_parser = parse_hex_or_decimal_usize)]
     cave_size: usize,
 }
 
@@ -1043,7 +1195,7 @@ struct FunctionTraceArgs {
     #[arg(long, default_value_t = 500)]
     max_nodes: usize,
     /// Byte window handed to `ir build` for each visited function.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
 }
 
@@ -1069,7 +1221,7 @@ struct DiscoverArgs {
     #[arg(long)]
     start: Option<String>,
     /// Scan range size in bytes (defaults to the `.text` size).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Cap on the number of prologue-scan candidates; `0` = unlimited (default).
     #[arg(long, default_value_t = 0)]
@@ -1112,13 +1264,13 @@ struct XrefStringArgs {
     #[arg(long)]
     data_start: Option<String>,
     /// Data window size (defaults to the resolved section's size).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     data_size: Option<usize>,
     /// Code window to scan for referencing `lea` (defaults to `.text`).
     #[arg(long)]
     start: Option<String>,
     /// Code window size (defaults to the `.text` size).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     #[arg(long, default_value_t = 50)]
     limit: usize,
@@ -1145,7 +1297,7 @@ struct XrefArgs {
     #[arg(long)]
     start: Option<String>,
     /// Code window size (defaults to the `.text` size).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
 }
 
@@ -1188,13 +1340,13 @@ struct ManifestArgs {
     #[arg(long)]
     start: Option<String>,
     /// Discovery scan range size in bytes (defaults to the `.text` size).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Cap on discovered candidates to summarize.
     #[arg(long, default_value_t = 200)]
     limit: usize,
     /// Byte window handed to `ir build` per candidate.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
 }
 
@@ -1317,7 +1469,7 @@ struct ScanRegionArgs {
     #[arg(long)]
     start: Option<String>,
     /// Region size in bytes (paired with `--start`).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
 }
 
@@ -1331,11 +1483,11 @@ struct ScanValueArgs {
     /// `unknown` (record every value — the "unknown initial value" scan).
     #[arg(long, default_value = "exact")]
     criterion: String,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     value: Option<f64>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     min: Option<f64>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     max: Option<f64>,
     /// Byte stride between candidates; defaults to the value's natural size.
     #[arg(long)]
@@ -1361,11 +1513,11 @@ struct ScanFilterArgs {
     /// `unchanged`, or `in-range` (needs `--min`/`--max`).
     #[arg(long)]
     criterion: String,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     value: Option<f64>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     min: Option<f64>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     max: Option<f64>,
     #[arg(long)]
     save_as: String,
@@ -1384,7 +1536,7 @@ struct ScanAobArgs {
     #[arg(long)]
     start: Option<String>,
     /// Region size in bytes (paired with `--start`).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// e.g. `"48 8B ?? 68"`.
     #[arg(long)]
@@ -1399,7 +1551,7 @@ struct ScanDissectArgs {
     file: Option<String>,
     #[arg(long)]
     start: String,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 64, value_parser = parse_hex_or_decimal_usize)]
     size: usize,
 }
 
@@ -1416,7 +1568,7 @@ struct PointerPathArgs {
     modules: Vec<String>,
     #[arg(long, default_value_t = 3)]
     max_depth: usize,
-    #[arg(long, default_value_t = 0x1000)]
+    #[arg(long, default_value_t = 0x1000, value_parser = parse_hex_or_decimal_u64)]
     max_offset: u64,
 }
 
@@ -1472,7 +1624,7 @@ struct TableFreezeArgs {
     pid: u32,
     /// Value to (re-)write every interval — defaults to the entry's stored
     /// `freeze_value`.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
     value: Option<f64>,
     #[arg(long, default_value_t = 100)]
     interval_ms: u64,
@@ -1489,7 +1641,7 @@ struct IrArgs {
     #[arg(long)]
     arch: Option<String>,
     /// Byte window to analyze (the function's max extent).
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     size: usize,
     /// Disable auto end-of-function detection (decode the whole window).
     #[arg(long)]
@@ -1588,7 +1740,7 @@ fn main() {
     }
     let ok = match cli.command {
         Command::Doctor => cmd_doctor(pretty),
-        Command::Guide => cmd_guide(pretty),
+        Command::Guide(a) => cmd_guide(a, pretty),
         Command::Init(a) => cmd_init(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
@@ -1653,6 +1805,10 @@ fn main() {
         Command::Const(ConstCmd::Identify(a)) => cmd_const_identify(a, pretty),
         Command::Bindings(BindingsCmd::List(a)) => cmd_bindings_list(a, pretty),
         Command::Sig(SigCmd::Validate(a)) => cmd_sig_validate(a, pretty),
+        Command::Ui(UiCmd::Locate(a)) => cmd_ui_locate(a, pretty),
+        Command::Ui(UiCmd::Windows(a)) => cmd_ui_windows(a, pretty),
+        Command::Ui(UiCmd::Screenshot(a)) => cmd_ui_screenshot(a, pretty),
+        Command::Ui(UiCmd::Focus(a)) => cmd_ui_focus(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -1680,40 +1836,209 @@ fn cmd_doctor(pretty: bool) -> bool {
     emit(&Response::success(schema::v1::DOCTOR, data), pretty)
 }
 
-fn cmd_guide(pretty: bool) -> bool {
+/// Which category a top-level command belongs to (curated grouping — clap
+/// doesn't model categories, so this is the one hand-maintained mapping).
+fn guide_category(top: &str) -> &'static str {
+    match top {
+        "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" => "Environment & project",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" => "Static analysis & decompilation",
+        "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory (a memory scanner class)",
+        "provenance" | "annotate" | "snapshot" => "Provenance, annotations & snapshots",
+        "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
+        "ui" => "UI-layer localization (Phase 9)",
+        "bundle" | "lua" => "Game-engine assets (Bitsquid/LuaJIT)",
+        _ => "Other",
+    }
+}
+
+/// Render one clap argument as an agent-readable JSON descriptor. Returns `None`
+/// for the auto `help`/`version` args and for `global` flags (those are listed
+/// once in the preamble, not repeated on every command).
+fn guide_arg_json(arg: &clap::Arg) -> Option<serde_json::Value> {
+    use clap::ArgAction;
+    let id = arg.get_id().as_str();
+    if id == "help" || id == "version" || arg.is_global_set() {
+        return None;
+    }
+    let is_flag = matches!(arg.get_action(), ArgAction::SetTrue | ArgAction::SetFalse);
+    let long = arg.get_long();
+    let name = match long {
+        Some(l) => format!("--{l}"),
+        None => format!("<{id}>"),
+    };
+    let values: Vec<String> = arg.get_possible_values().iter().map(|p| p.get_name().to_string()).collect();
+    Some(json!({
+        "name": name,
+        "positional": long.is_none() && !is_flag,
+        "required": arg.is_required_set(),
+        "takes_value": !is_flag,
+        "help": arg.get_help().map(|s| s.to_string()),
+        "choices": if values.is_empty() { serde_json::Value::Null } else { json!(values) },
+    }))
+}
+
+/// Walk the clap command tree, emitting one entry per *leaf* command (a command
+/// with no subcommands), with its full `path` (`"scan value"`), the `about` text
+/// straight from the clap definition, and its arguments. Derived from the real
+/// CLI definition, so the catalog can never drift from what the binary accepts.
+fn guide_collect(cmd: &clap::Command, prefix: &str, brief: bool, out: &mut Vec<serde_json::Value>) {
+    let subs: Vec<&clap::Command> = cmd.get_subcommands().filter(|c| c.get_name() != "help").collect();
+    if subs.is_empty() {
+        let path = prefix.trim().to_string();
+        if path.is_empty() {
+            return;
+        }
+        let top = path.split(' ').next().unwrap_or("");
+        let mut entry = json!({
+            "path": path,
+            "category": guide_category(top),
+            "summary": cmd.get_about().map(|s| s.to_string()),
+        });
+        if let Some(d) = cmd.get_long_about() {
+            entry["detail"] = json!(d.to_string());
+        }
+        if !brief {
+            let args: Vec<_> = cmd.get_arguments().filter_map(guide_arg_json).collect();
+            entry["args"] = json!(args);
+        }
+        out.push(entry);
+    } else {
+        for s in subs {
+            let child = if prefix.is_empty() { s.get_name().to_string() } else { format!("{prefix} {}", s.get_name()) };
+            guide_collect(s, &child, brief, out);
+        }
+    }
+}
+
+/// Curated workflow recipes — the *method*, not the command list. This is what
+/// turns "here are the commands" into "here is how to approach an RE task", each
+/// traced to the RE_METHOD note it encodes. clap can't derive these; they are
+/// the deliberate agent-guidance layer over the auto-generated catalog.
+fn guide_workflows() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "name": "spec-first ladder (start here for any game feature)",
+            "when": "you want to understand a game mechanic (a combo, a timer, a drop table). Climb top-down: data → scripts → native bindings → native code → memory. Each rung is cheaper and more stable than the one below.",
+            "maps_to": "RE_METHOD F2/W4 — ~90% of a campaign was wasted reversing runtime state that was declaratively specified in scripts.",
+            "steps": [
+                "bundle list --file <archive>            # is there a script layer? extract it",
+                "bundle extract --file <archive> --type lua --out ./scripts",
+                "game grep \"combo,interact,stratagem\" --dir ./scripts   # find the feature's vocabulary cluster",
+                "lua disasm --file ./scripts/<hit>.luac  # read the algorithm out of the script",
+                "const identify --lua ./scripts/<hit>.luac  # recognize the RNG/hash by its constants",
+                "bindings list --file <game.exe> --name next_random   # only now go native, and only for what scripts call",
+                "# read memory ONLY for the irreducible input (a seed/handle), never the whole object graph"
+            ]
+        }),
+        json!({
+            "name": "transition-diff localization (find an address)",
+            "when": "you need the address of a value you can toggle on screen (a flag, a counter, a state). The only technique that reliably returns exactly one result.",
+            "maps_to": "RE_METHOD W1 — the change is the signal; the value is not.",
+            "steps": [
+                "locate by-transition --pid <p> --type i32 --save-as loc   # snapshot, then toggle ONE thing when prompted (or --wait-ms N)",
+                "# repeat to narrow: toggle again, then:",
+                "scan filter --pid <p> --from loc --criterion changed --save-as loc2",
+                "table add --name found --pid <p> --address <hit> --type i32   # pin the survivor"
+            ]
+        }),
+        json!({
+            "name": "explain a runtime value (what code wrote it)",
+            "when": "you have an address and want the source-level statement responsible — the fusion of live watchpoint + decompiler.",
+            "maps_to": "Phase 4c principal; RE_METHOD F1 (stop chasing view/cache indirection).",
+            "steps": [
+                "debug watch --pid <p> --addr <hex> --kind write   # catch the writing instruction + caller chain",
+                "provenance trace --pid <p> --addr <hex> --kind write   # decompile the exact writing statement"
+            ]
+        }),
+        json!({
+            "name": "prove the write path BEFORE building on it",
+            "when": "you are about to build any input/automation feature. Verify the target actually registers your actuation first.",
+            "maps_to": "RE_METHOD F4 — an entire input feature was shipped that never once registered (LLKHF_INJECTED filtered).",
+            "steps": [
+                "input probe --pid <p>   # reports which methods carry LLKHF_INJECTED (a filtering game ignores those)"
+            ]
+        }),
+        json!({
+            "name": "validate a signature before trusting it",
+            "when": "you have a candidate byte pattern / marker and want to know if it is real or an N=2 coincidence.",
+            "maps_to": "RE_METHOD F3 — a marker matched two same-seed instances and shipped broken.",
+            "steps": [
+                "sig validate --sample <hex-a> --sample <hex-b> --sample <hex-c> --varied map,mission,seed --signature \"48 8B ?? 68\"",
+                "# refuses to bless <3 deliberately-varied samples; reports which bytes are actually invariant"
+            ]
+        }),
+        json!({
+            "name": "identify an algorithm from its constants",
+            "when": "a function/data blob has magic numbers and you want to know the algorithm without reversing the arithmetic.",
+            "maps_to": "RE_METHOD W3 — 0x5bd1e995 = MurmurHash2, 1664525 = Numerical-Recipes LCG.",
+            "steps": [
+                "const identify --value 0x5bd1e995            # a single constant",
+                "const identify --file <pe> --addr <hex>      # every literal in a decompiled function",
+                "const identify --lua <chunk.luac>            # a Lua chunk's number pool"
+            ]
+        }),
+        json!({
+            "name": "decompile a function",
+            "when": "you have (or discovered) a function address and want readable pseudo-C.",
+            "maps_to": "Phase 3 decompiler.",
+            "steps": [
+                "function discover --file <pe>                # find function entry points",
+                "ir manifest --file <pe>                      # rank candidates by quality before spending a full decompile",
+                "decomp pseudo --file <pe> --addr <hex> --style ssa   # optimized + structured pseudo-C"
+            ]
+        }),
+    ]
+}
+
+fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
+    let root = <Cli as clap::CommandFactory>::command();
+    let mut commands = Vec::new();
+    guide_collect(&root, "", a.brief, &mut commands);
+
+    // Optional topic filter over command paths.
+    if let Some(topic) = &a.topic {
+        let t = topic.to_lowercase();
+        commands.retain(|c| c["path"].as_str().is_some_and(|p| p.to_lowercase().contains(&t)));
+    }
+
+    // Category → command-paths index, derived from the (possibly filtered) set.
+    let mut categories: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for c in &commands {
+        if let (Some(cat), Some(path)) = (c["category"].as_str(), c["path"].as_str()) {
+            categories.entry(cat.to_string()).or_default().push(path.to_string());
+        }
+    }
+
+    // Workflows, filtered to the topic when one was given.
+    let mut workflows = guide_workflows();
+    if let Some(topic) = &a.topic {
+        let t = topic.to_lowercase();
+        workflows.retain(|w| serde_json::to_string(w).unwrap_or_default().to_lowercase().contains(&t));
+    }
+
     let data = json!({
         "tool": "n0xis",
-        "tagline": "Agent-native reverse-engineering + live-memory toolkit — contract-first CLI and MCP over the same pipeline, static PE and live process alike. GUI is planned, not ruled out; not built yet.",
-        "sources": "most commands accept exactly one of --pid <live process>, --file <static PE>, --snapshot <captured .n0x/dumps/snapshot/*>, --remote-cmd \"<argv, e.g. ssh host n0xis remote-serve --pid N>\", or --bytes \"<hex>\" (inline)",
-        "commands": {
-            "doctor": "environment / readiness check",
-            "guide": "this quick reference",
-            "init": "create a .n0x/ project",
-            "project info": "resolved project paths & config",
-            "process ps": "list live processes",
-            "module list": "loaded modules (live or static)",
-            "disasm": "linear disassembly",
-            "ir build|explain|dot|slice|manifest|value-set|deobfuscate": "CFG/def-use IR, human summary, Graphviz DOT, backward register slice, per-function quality index, value-set/alias analysis, junk+opaque-predicate report",
-            "function discover|trace": "heuristic function discovery, call-graph walk",
-            "decomp pseudo --style goto|structured|ssa": "pseudo-C decompilation (ssa = optimized + structured, the main path)",
-            "xref to|from|string": "cross-references and string-literal xrefs",
-            "mem read|write|map": "raw memory access, address-space map",
-            "patch dry-run|apply|list|show|undo|detour": "byte patches with a persisted undo journal, plus detour/trampoline hooks",
-            "selection save|list|show|rm": "named memory-range anchors",
-            "dump save|list|show|rm": "persistent artifact store (ir/pseudo/hex/raw/note/scan/snapshot)",
-            "debug await-hit|watch": "block until a software breakpoint or hardware watchpoint fires",
-            "scan value|filter|aob|pointer-path|dissect": "value-scanning typed value scan/rescan, AOB signature scan, pointer-path finding, struct dissection",
-            "table add|list|show|rm|freeze": ".n0xt cheat/analysis tables with a freeze loop",
-            "provenance trace": "the principal: fuse a live watchpoint hit with the SSA decompiler to explain exactly which source-level statement wrote a runtime value",
-            "annotate name|type|comment|show|list|rm": "names/types/comments at an address, kept as versioned truth (full history, never silently overwritten)",
-            "snapshot dump|info|list": "capture a reproducible offline memory snapshot; reload it later via --snapshot",
-            "remote-serve": "serve a live process over the remote-agent protocol (the far side of --remote-cmd, typically invoked over ssh)",
-            "diff functions": "decompile two functions and diff their pseudo-C line by line — agent-friendly change reports",
-        },
-        "architectures": ["x64 (iced-x86, full: CFG/SSA/types/decompile)", "arm64 (disarm64, CFG/discover/xref/goto+structured decompile; SSA optimization is x64-only for now)"],
-        "envelope": "every command emits { ok, data, meta } or { ok:false, error }; meta.schema names the payload shape (n0xis.*.v1, or the archived n0x.*.v1 for ported v0 shapes)",
-        "docs": ["README.md", "CONCEPT.md", "ROADMAP.md", "docs/KILLER_FEATURES.md"],
-        "mcp": "the same pipeline is also exposed as an MCP server (binary n0xis-mcp) for agent tool-calling over stdio — see README.md",
+        "version": env!("CARGO_PKG_VERSION"),
+        "tagline": "Agent-native reverse-engineering + live-memory toolkit — contract-first CLI and MCP over the same pipeline, static PE and live process alike.",
+        "usage_model": "Pick a command from `commands` (or a recipe from `workflows`). Every command emits the same { ok, data, meta } envelope on stdout; add --pretty for indented JSON; meta.schema names the payload shape. Progress goes to stderr with a [n0x] prefix (safe to ignore, or silence with --quiet). Non-zero exit on ok:false.",
+        "global_flags": [
+            { "name": "--pretty", "help": "indent the JSON envelope" },
+            { "name": "--json", "help": "strict JSON-only stdout (already the default)" },
+            { "name": "--quiet", "help": "suppress [n0x] stderr progress" }
+        ],
+        "sources": "commands that read a target accept exactly one of: --pid <live process>, --file <static PE>, --snapshot <name of a captured snapshot dump>, --remote-cmd \"<argv, e.g. ssh host n0xis remote-serve --pid N>\", or --bytes \"<hex>\" (inline). Live VAs respect ASLR; static VAs use the image's preferred base.",
+        "envelope": "every command emits { ok, data, meta } or { ok:false, error:{code,message,hint?} }; meta.schema is the payload id (n0xis.*.v1, or the archived n0x.*.v1 for ported v0 shapes).",
+        "architectures": [
+            "x64 — iced-x86, full pipeline: CFG / SSA / type recovery / optimized decompile",
+            "arm64 — disarm64, CFG / discover / xref / goto+structured decompile (SSA optimization is x64-only so far); pass --arch arm64"
+        ],
+        "categories": categories,
+        "command_count": commands.len(),
+        "commands": commands,
+        "workflows": workflows,
+        "mcp": "the same pipeline is exposed as an MCP server (binary n0xis-mcp) over stdio, with the same tool names and { ok, data, meta } shapes — an agent's parsing code is identical whether it calls the CLI or MCP.",
+        "docs": ["README.md", "CONCEPT.md", "ROADMAP.md", "docs/RE_METHOD.md"],
+        "hint": "narrow with `n0x guide <topic>` (e.g. `n0x guide scan`, `n0x guide game`); every command also has clap `--help` for the exact usage line. `n0x guide --brief` drops per-arg detail.",
     });
     emit(&Response::success(schema::v1::GUIDE, data), pretty)
 }
@@ -1977,6 +2302,55 @@ fn ir_err(code: &str, msg: &str, pretty: bool) -> bool {
 
 fn opt_hex(s: &Option<String>) -> Result<Option<Va>, String> {
     s.as_deref().map(Va::parse).transpose().map_err(|e| e.to_string())
+}
+
+/// Split `"0x…"`/`"0X…"`/`"…h"`/`"…H"` off a hex-formatted number, same
+/// acceptance as [`Va::parse`]; returns the bare digits, or `None` for a plain
+/// decimal string.
+fn strip_hex_marker(t: &str) -> Option<&str> {
+    t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).or_else(|| t.strip_suffix('h').or_else(|| t.strip_suffix('H')))
+}
+
+/// clap `value_parser` for byte-count-like `usize` fields (`--size`,
+/// `--*-size`, `--max-bytes`, `--len`, `--cave-size`, …): accepts hex
+/// (`0x1000`) or decimal, the same acceptance `--addr`/`--start` already get
+/// via `Va::parse`. Sizes taken from a PE section header or a `dump`/`scan`
+/// report are routinely read off in hex; forcing a hand hex→decimal
+/// conversion is exactly the ergonomics gap RE_METHOD F7 called out for
+/// `--min`/`--max` ("burned two scan rounds on a range that wasn't even
+/// close") — the same fix, applied everywhere a byte length is taken.
+fn parse_hex_or_decimal_usize(s: &str) -> Result<usize, String> {
+    let t = s.trim();
+    let v = match strip_hex_marker(t) {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => t.parse::<u64>(),
+    };
+    v.map(|v| v as usize).map_err(|_| format!("invalid size {s:?} (want decimal or 0x-prefixed hex)"))
+}
+
+/// Same acceptance as [`parse_hex_or_decimal_usize`], for `u64`-typed fields
+/// (e.g. `--max-offset`).
+fn parse_hex_or_decimal_u64(s: &str) -> Result<u64, String> {
+    let t = s.trim();
+    match strip_hex_marker(t) {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => t.parse::<u64>(),
+    }
+    .map_err(|_| format!("invalid value {s:?} (want decimal or 0x-prefixed hex)"))
+}
+
+/// clap `value_parser` for scan value/bound fields (`--value`, `--min`,
+/// `--max`): accepts hex, decimal, or a float. Falls through to
+/// `f64::from_str` when there's no hex marker, since a scan criterion can
+/// compare against a genuine float (`3.14`), which plain hex can't represent.
+fn parse_hex_or_decimal_f64(s: &str) -> Result<f64, String> {
+    let t = s.trim();
+    if let Some(hex) = strip_hex_marker(t) {
+        return u64::from_str_radix(hex, 16)
+            .map(|v| v as f64)
+            .map_err(|_| format!("invalid value {s:?} (want decimal, float, or 0x-prefixed hex)"));
+    }
+    t.parse::<f64>().map_err(|_| format!("invalid value {s:?} (want decimal, float, or 0x-prefixed hex)"))
 }
 
 /// Resolve `--arch` (default `x64`) into a concrete [`Arch`] (ROADMAP Phase 7:
@@ -3277,7 +3651,12 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
         addr
     };
     let kind: WatchKind = a.kind.into();
-    match await_watchpoint_hit(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref()) {
+    let cond = match a.when.as_deref().map(RegCond::parse).transpose() {
+        Ok(c) => c,
+        Err(e) => return ir_err("bad-when", &e, pretty),
+    };
+    match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), cond.as_ref())
+    {
         Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
         Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
     }
@@ -4657,4 +5036,238 @@ fn cmd_sig_validate(a: SigValidateArgs, pretty: bool) -> bool {
     let input = SigValidateInput { samples, proposed, varied_axes, min_independent: a.min_independent };
     let art = sig_validate(&input);
     emit(&Response::success(schema::v1::SIG_VALIDATE, art), pretty)
+}
+
+// ============================================================================
+// Phase 9 — UI-layer localization (docs/PHASE9_UI_LOCATE_BRIEF.md)
+// ============================================================================
+
+/// Parse `"x0,y0,x1,y1"` into a [`Rect`] (any corner order — `Rect::new`
+/// normalizes).
+fn parse_rect(s: &str) -> Result<Rect, String> {
+    let parts: Vec<&str> = s.split(',').map(|t| t.trim()).collect();
+    let [a, b, c, d] = parts.as_slice() else {
+        return Err(format!("--rect needs exactly 4 comma-separated numbers, got {:?}", s));
+    };
+    let p = |t: &str| t.parse::<f32>().map_err(|e| format!("invalid --rect coordinate {t:?}: {e}"));
+    Ok(Rect::new(p(a)?, p(b)?, p(c)?, p(d)?))
+}
+
+/// Load every `--exclude-from`d save's address set up front, before running
+/// the (potentially tens-of-seconds) full-region scan — a bad/missing name
+/// should fail immediately, not after the expensive part already ran.
+fn load_excluded_addresses(names: &[String]) -> Result<std::collections::HashSet<Va>, (String, String)> {
+    let mut excluded = std::collections::HashSet::new();
+    for name in names {
+        let saved = n0xis_project::dump::show(name, Some("ui_locate"))
+            .map_err(|e| ("no-such-save".to_string(), format!("--exclude-from {name:?}: {e}")))?;
+        let parsed: serde_json::Value = serde_json::from_slice(&saved.bytes)
+            .map_err(|e| ("bad-save".to_string(), format!("{name:?} is not a valid ui_locate save: {e}")))?;
+        for e in parsed.get("elements").and_then(|v| v.as_array()).into_iter().flatten() {
+            if let Some(addr) = e.get("address").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok()) {
+                excluded.insert(addr);
+            }
+        }
+    }
+    Ok(excluded)
+}
+
+fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
+    let rect = match parse_rect(&a.rect) {
+        Ok(r) => r,
+        Err(e) => return ir_err("bad-rect", &e, pretty),
+    };
+    let excluded = match load_excluded_addresses(&a.exclude_from) {
+        Ok(e) => e,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let live = match LiveProcess::attach(a.pid) {
+        Ok(l) => l,
+        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+    };
+    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        Ok(r) => r,
+        Err(e) => return ir_err("bad-region", &e, pretty),
+    };
+    let label = live.label();
+    let arch = X64::new();
+    let ctx = Ctx::new(&live, &arch);
+
+    let input = UiLocateInput {
+        regions,
+        rect,
+        space: a.space.into(),
+        layout: AabbLayout::HELLDIVERS,
+        align: a.align.max(1),
+    };
+    let mut art = match UiLocatePass.run(&ctx, input) {
+        Ok(a) => a,
+        Err(e) => return ir_err("ui-locate-failed", &e.to_string(), pretty),
+    };
+
+    // Spatial-diff filter: exclude anything also found in a previously
+    // `--save-as`d query (typically one over a rect where the widget is
+    // known to be *absent*) — what's left is specific to this rect, not an
+    // ambient/global structure whose (mis)computed box happens to overlap
+    // everything (e.g. a coincidentally AABB-shaped shader constant buffer).
+    if !excluded.is_empty() {
+        art.elements.retain(|e| !excluded.contains(&e.address));
+        // The exclusion is a real filter, not a display cap — `count` reflects
+        // it immediately.
+        art.count = art.elements.len();
+    }
+
+    if let Some(name) = &a.save_as {
+        let bytes = match serde_json::to_vec(&art) {
+            Ok(b) => b,
+            Err(e) => return ir_err("serialize-failed", &e.to_string(), pretty),
+        };
+        if let Err(e) = n0xis_project::dump::save(name, "ui_locate", &bytes, a.force) {
+            return ir_err("save-failed", &e.to_string(), pretty);
+        }
+    }
+
+    // `count` stays the true total (sound-over-complete: a `--limit` cap must
+    // never look like "that's everything") — only the reported list is capped.
+    art.elements.truncate(a.limit);
+    emit(&Response::success(schema::v1::UI_LOCATE, art).with_source(label), pretty)
+}
+
+fn cmd_ui_windows(a: UiWindowsArgs, pretty: bool) -> bool {
+    let windows = list_windows(a.pid);
+    let data = json!({
+        "pid": a.pid,
+        "count": windows.len(),
+        "windows": windows,
+        "coords": "physical",
+        "note": "rect_frame is the canonical visible bounds for capture/input; rect_window includes the DWM shadow; rect_client is where the game renders. Pass an hwnd to `ui screenshot`/`ui focus`.",
+    });
+    emit(&Response::success(schema::v1::UI_WINDOWS, data).with_source(format!("pid:{}", a.pid)), pretty)
+}
+
+/// Resolve the target window: an explicit `--hwnd` (verified to actually belong
+/// to `pid`, so a stale/foreign handle can't silently screenshot another
+/// process while the envelope reports this pid), else the best-guess game
+/// window for the pid. Returns the HWND integer or an error payload.
+fn resolve_ui_window(pid: u32, hwnd: Option<usize>, pretty: bool) -> Result<usize, bool> {
+    if let Some(h) = hwnd {
+        let owner = n0xis_sources::window_pid(h);
+        if owner == 0 {
+            return Err(ir_err("bad-hwnd", &format!("hwnd 0x{h:x} is not a valid window"), pretty));
+        }
+        if owner != pid {
+            return Err(ir_err(
+                "hwnd-pid-mismatch",
+                &format!("hwnd 0x{h:x} belongs to pid {owner}, not the requested pid {pid}"),
+                pretty,
+            ));
+        }
+        return Ok(h);
+    }
+    match best_window(pid) {
+        Some(w) => Ok(w.hwnd),
+        None => Err(ir_err(
+            "no-window",
+            &format!("no visible top-level window found for pid {pid}; run `ui windows --pid {pid}` to inspect (it may be minimized, cloaked, or borderless-fullscreen)"),
+            pretty,
+        )),
+    }
+}
+
+fn cmd_ui_screenshot(a: UiScreenshotArgs, pretty: bool) -> bool {
+    let hwnd = match resolve_ui_window(a.pid, a.hwnd, pretty) {
+        Ok(h) => h,
+        Err(rc) => return rc,
+    };
+    let methods: Vec<CaptureMethod> = match a.method {
+        CaptureMethodArg::Auto => vec![CaptureMethod::PrintWindow, CaptureMethod::WindowDc],
+        CaptureMethodArg::WindowDc => vec![CaptureMethod::WindowDc],
+        CaptureMethodArg::Printwindow => vec![CaptureMethod::PrintWindow],
+    };
+    let shot = match window_screenshot(hwnd, &methods) {
+        Ok(s) => s,
+        // A hard pre-flight failure (minimized / display-affinity / offscreen):
+        // an honest, specific reason, not a black image.
+        Err(e) => {
+            return emit(
+                &Response::<serde_json::Value>::error("capture-failed", e.reason)
+                    .with_hint("run `ui windows` to check the window is visible and on-screen"),
+                pretty,
+            );
+        }
+    };
+
+    let mut out_path_written: Option<String> = None;
+    let mut png_b64: Option<String> = None;
+    if a.out.is_some() || a.base64 {
+        match encode_png(&shot.rgba, shot.width, shot.height) {
+            Ok(png) => {
+                if let Some(path) = &a.out {
+                    if let Err(e) = std::fs::write(path, &png) {
+                        return ir_err("write-failed", &format!("write {path}: {e}"), pretty);
+                    }
+                    out_path_written = Some(path.clone());
+                }
+                if a.base64 {
+                    png_b64 = Some(n0xis_sources::b64_encode(&png));
+                }
+            }
+            Err(e) => return ir_err("png-failed", &e, pretty),
+        }
+    }
+
+    // Confidence is derived from the winning frame's verdict, surfaced at the
+    // top level so an agent told to "key on blank" also sees a low-confidence
+    // near-blank (Suspect) frame for what it is, instead of trusting it as crisp.
+    let confidence = match shot.verdict {
+        n0xis_sources::FrameVerdict::Ok => "ok",
+        n0xis_sources::FrameVerdict::Suspect => "low",
+        _ => "blank",
+    };
+    let data = json!({
+        "pid": a.pid,
+        "hwnd": hwnd,
+        "width": shot.width,
+        "height": shot.height,
+        "method": shot.method,
+        "blank": shot.blank,
+        "confidence": confidence,
+        "reason": shot.reason,
+        "attempts": shot.attempts,
+        "client_rect": shot.client_rect,
+        "dpi": shot.dpi,
+        "out": out_path_written,
+        "png_base64": png_b64,
+        "coords": "physical",
+        "note": if shot.blank {
+            "BLANK capture — do NOT treat this as an empty UI. GDI/PrintWindow return black for flip-model DirectX windows; the real answer needs Windows.Graphics.Capture (a documented follow-on). Key on data.blank, not on ok. The image (if written) is a diagnostic artifact only."
+        } else if confidence == "low" {
+            "LOW-CONFIDENCE capture (near-blank: very few distinct colors). A rect picked from this may be unreliable — confirm the window is really showing content, or try --method window-dc/printwindow explicitly."
+        } else {
+            "pick a rect from this image (physical pixels, origin at the window's top-left) and pass it to `ui locate --rect`."
+        },
+    });
+    // The envelope's failure arm carries no data, and the per-method
+    // diagnostics (attempts/stats/reason) are exactly what an operator needs to
+    // understand a blank result — so a blank capture is emitted as a success
+    // envelope with a prominent `blank: true` (brief §E's sanctioned option: an
+    // agent keys on `data.blank`, never mistaking it for a real screenshot),
+    // rather than a data-less error that would throw the diagnostics away.
+    emit(&Response::success(schema::v1::UI_SCREENSHOT, data).with_source(format!("pid:{}", a.pid)), pretty)
+}
+
+fn cmd_ui_focus(a: UiFocusArgs, pretty: bool) -> bool {
+    let hwnd = match resolve_ui_window(a.pid, a.hwnd, pretty) {
+        Ok(h) => h,
+        Err(rc) => return rc,
+    };
+    let result = window_focus(hwnd);
+    let data = json!({
+        "pid": a.pid,
+        "hwnd": result.hwnd,
+        "foreground": result.foreground,
+        "method": result.method,
+        "note": if result.foreground { "window is now foreground" } else { "focus was denied or only partial (Z-order/taskbar flash) — Windows blocks foreground stealing while the user is active" },
+    });
+    emit(&Response::success(schema::v1::UI_FOCUS, data).with_source(format!("pid:{}", a.pid)), pretty)
 }

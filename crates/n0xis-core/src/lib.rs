@@ -36,12 +36,14 @@ mod scan;
 mod signatures;
 mod slice;
 mod ssa;
+mod structural;
 mod structure;
 mod sigvalidate;
 mod switch;
 mod trace;
 mod trampoline;
 mod typeinfer;
+mod ui_locate;
 mod valueset;
 mod xref;
 mod xref_string;
@@ -54,6 +56,11 @@ pub use gamegrep::{rank as game_grep_rank, Document, GameGrepArtifact, RankOptio
 pub use sigvalidate::{
     parse_mask, parse_sample, validate as sig_validate, MaskByte, MaskFinding, SigValidateArtifact,
     SigValidateInput, MIN_INDEPENDENT_SAMPLES,
+};
+pub use structural::{FieldSpec, StructuralHit, StructuralScanArtifact, StructuralScanInput, StructuralScanPass};
+pub use ui_locate::{
+    aabb_plausible, rect_overlap, Aabb, AabbLayout, CoordSpace, Rect, SpaceBound, UiElementHit,
+    UiLocateArtifact, UiLocateInput, UiLocatePass,
 };
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};

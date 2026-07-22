@@ -127,7 +127,7 @@ impl ScanValue {
         }
     }
 
-    fn read(bytes: &[u8], ty: ValueType) -> Option<ScanValue> {
+    pub(crate) fn read(bytes: &[u8], ty: ValueType) -> Option<ScanValue> {
         Some(match ty {
             ValueType::I8 => ScanValue::Int(i8::from_le_bytes(bytes.try_into().ok()?) as i64),
             ValueType::U8 => ScanValue::Int(u8::from_le_bytes(bytes.try_into().ok()?) as i64),

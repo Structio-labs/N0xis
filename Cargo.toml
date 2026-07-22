@@ -30,15 +30,24 @@ msvc-demangler = "0.11.0"
 cpp_demangle = "0.5.1"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_Xps",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Kernel",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Threading",
+  "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# Pure-Rust PNG encoder for `ui screenshot` (only heavy dep is miniz_oxide,
+# already in the tree via other crates). Deliberately not `image` — we need
+# only the encoder. Gated to the `live` feature in n0xis-sources so the default
+# OS-free build (the n0xis-core boundary test) never links it.
+png = "0.18"
 
 # --- internal crates (path deps; the workspace is the graph in CONCEPT §4) ---
 n0xis-contracts = { path = "crates/n0xis-contracts" }
