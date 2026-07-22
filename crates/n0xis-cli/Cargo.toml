@@ -13,13 +13,23 @@ path = "src/main.rs"
 [dependencies]
 n0xis-contracts = { workspace = true }
 n0xis-arch = { workspace = true }
-n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
 n0xis-core = { workspace = true }
 n0xis-pipeline = { workspace = true }
-n0xis-project = { workspace = true, features = ["live"] }
 n0xis-bitsquid = { workspace = true }
 n0xis-lua = { workspace = true }
 n0xis-luajit = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Live-process (Win32/windows-sys) analysis has no meaningful "on" state on a
+# non-Windows target, so it's keyed on the real compile target (cfg(windows)),
+# not a synthetic feature flag — a plain Windows `cargo build --workspace
+# --release` sees byte-identical enabled features to before this split.
+[target.'cfg(windows)'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+n0xis-project = { workspace = true, features = ["live"] }
+
+[target.'cfg(not(windows))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe"] }
+n0xis-project = { workspace = true }

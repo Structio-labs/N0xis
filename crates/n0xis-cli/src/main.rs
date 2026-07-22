@@ -29,10 +29,20 @@ use n0xis_core::{
 };
 use n0xis_core::{AabbLayout, CoordSpace, Rect, UiLocateInput, UiLocatePass};
 use n0xis_pipeline::{Pipeline, cfg_cached};
+// Cross-platform sources: `MemorySource` (the trait), `Snapshot`/`StaticPe`
+// (offline sources), `RemoteAgent`/`remote_serve_stdio` (the SSH/remote-serve
+// transport — a Linux box can drive a *remote* Windows target over this
+// without itself needing Win32) — none of these require the `live` feature.
+use n0xis_sources::{MemorySource, RemoteAgent, Snapshot, StaticPe, remote_serve_stdio};
+// Live-process (Win32) sources: only ever compiled in on Windows, matching
+// n0xis-sources' own `#[cfg(feature = "live")]` gates (see its lib.rs) and
+// this crate's Cargo.toml `[target.'cfg(windows)'.dependencies]` split.
+#[cfg(windows)]
 use n0xis_sources::{
-    LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, WatchKind, attach_and_wait, await_breakpoint_hit,
-    await_watchpoint_hit, await_watchpoint_hit_where, list_processes, probe_actuation, remote_serve_stdio, RegCond, DEFAULT_PROBE_VK,
+    LiveProcess, WatchKind, attach_and_wait, await_breakpoint_hit,
+    await_watchpoint_hit, await_watchpoint_hit_where, list_processes, probe_actuation, RegCond, DEFAULT_PROBE_VK,
 };
+#[cfg(windows)]
 use n0xis_sources::{best_window, encode_png, focus as window_focus, list_windows, screenshot as window_screenshot, CaptureMethod};
 use serde_json::json;
 
@@ -858,6 +868,7 @@ struct ProvenanceTraceArgs {
     entry: Option<String>,
 }
 
+#[cfg(windows)]
 impl From<WatchKindArg> for WatchKind {
     fn from(k: WatchKindArg) -> Self {
         match k {
@@ -2095,6 +2106,12 @@ fn cmd_project_info(pretty: bool) -> bool {
 }
 
 fn cmd_process_ps(a: PsArgs, pretty: bool) -> bool {
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "process ps requires a Windows build (needs Win32 process enumeration)", pretty);
+    }
+    #[cfg(windows)]
     match list_processes() {
         Ok(mut procs) => {
             if let Some(f) = a.filter.as_deref() {
@@ -2160,6 +2177,7 @@ where
     // call targets resolve to names.
     match &src {
         Src::Static(pe) => work(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, label),
+        #[cfg(windows)]
         Src::Live(l) => work(&Ctx::new(l.as_ref(), arch.as_ref()), input, label),
         Src::Snap(s) => work(&Ctx::new(s, arch.as_ref()), input, label),
         Src::Remote(r) => work(&Ctx::new(r.as_ref(), arch.as_ref()), input, label),
@@ -2229,6 +2247,7 @@ fn decompile_one(
     };
     let pseudo = match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch)),
         Src::Snap(s) => run(&Ctx::new(s, arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch)),
@@ -2367,6 +2386,7 @@ fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
 /// A resolved analysis source. Kept as an enum so the range-resolution and
 /// symbol wiring can differ per adapter while the passes stay uniform.
 enum Src {
+    #[cfg(windows)]
     Live(Box<LiveProcess>),
     Static(Box<StaticPe>),
     Snap(Snapshot),
@@ -2385,9 +2405,14 @@ fn build_source(
     bytes_base: Va,
 ) -> Result<(Src, String, Option<usize>), (String, String)> {
     if let Some(pid) = pid {
-        let live = LiveProcess::attach(pid).map_err(|e| ("attach-failed".into(), e.to_string()))?;
-        let label = live.label();
-        return Ok((Src::Live(Box::new(live)), label, None));
+        #[cfg(not(windows))]
+        return Err(("live-unsupported".into(), "--pid (live-process analysis) requires a Windows build (needs LiveProcess/Win32 APIs)".into()));
+        #[cfg(windows)]
+        {
+            let live = LiveProcess::attach(pid).map_err(|e| ("attach-failed".into(), e.to_string()))?;
+            let label = live.label();
+            return Ok((Src::Live(Box::new(live)), label, None));
+        }
     }
     if let Some(file) = file {
         let pe = StaticPe::load(std::path::Path::new(file))
@@ -2425,6 +2450,7 @@ fn build_source(
 impl Src {
     fn as_mem(&self) -> &dyn MemorySource {
         match self {
+            #[cfg(windows)]
             Src::Live(l) => l.as_ref(),
             Src::Static(p) => p.as_ref(),
             Src::Snap(s) => s,
@@ -2435,6 +2461,7 @@ impl Src {
     fn text_range(&self) -> Option<(Va, u64)> {
         match self {
             Src::Static(pe) => pe.text_range(),
+            #[cfg(windows)]
             Src::Live(l) => l.text_range(),
             Src::Snap(_) | Src::Remote(_) => None,
         }
@@ -2445,6 +2472,7 @@ impl Src {
     fn modules(&self) -> Vec<n0xis_contracts::Module> {
         use n0xis_sources::ModuleProvider;
         match self {
+            #[cfg(windows)]
             Src::Live(l) => l.modules().to_vec(),
             Src::Static(p) => p.modules().to_vec(),
             Src::Snap(_) | Src::Remote(_) => Vec::new(),
@@ -2547,6 +2575,7 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
     let arch = X64::new();
     let module_base = match &src {
         Src::Static(pe) => Some(pe.image_base()),
+        #[cfg(windows)]
         Src::Live(l) => l.main_module().map(|m| m.base),
         Src::Snap(_) | Src::Remote(_) => None,
     };
@@ -2571,6 +2600,7 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -2598,6 +2628,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     if a.pdata {
         let module_base = match &src {
             Src::Static(pe) => Some(pe.image_base()),
+            #[cfg(windows)]
             Src::Live(l) => l.main_module().map(|m| m.base),
             Src::Snap(_) | Src::Remote(_) => None,
         };
@@ -2615,6 +2646,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         };
         return match &src {
             Src::Static(pe) => run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
+            #[cfg(windows)]
             Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref())),
             Src::Snap(s) => run_pdata(&Ctx::new(s, arch.as_ref())),
             Src::Remote(r) => run_pdata(&Ctx::new(r.as_ref(), arch.as_ref())),
@@ -2623,6 +2655,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
 
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
+        #[cfg(windows)]
         Src::Live(l) => l.text_range(),
         Src::Snap(_) | Src::Remote(_) => None,
     };
@@ -2642,6 +2675,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
@@ -2664,6 +2698,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
     let arch = X64::new();
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
+        #[cfg(windows)]
         Src::Live(l) => l.text_range(),
         Src::Snap(_) | Src::Remote(_) => None,
     };
@@ -2692,6 +2727,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -2716,6 +2752,7 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
     let arch = X64::new();
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
+        #[cfg(windows)]
         Src::Live(l) => l.text_range(),
         Src::Snap(_) | Src::Remote(_) => None,
     };
@@ -2736,6 +2773,7 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -2764,11 +2802,13 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
     let arch = X64::new();
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
+        #[cfg(windows)]
         Src::Live(l) => l.text_range(),
         Src::Snap(_) | Src::Remote(_) => None,
     };
     let default_data = match &src {
         Src::Static(pe) => pe.section_range(".rdata").or_else(|| pe.text_range()),
+        #[cfg(windows)]
         Src::Live(l) => l.section_range(".rdata").or_else(|| l.text_range()),
         Src::Snap(_) | Src::Remote(_) => None,
     };
@@ -2803,6 +2843,7 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -2842,28 +2883,43 @@ fn cmd_mem_write(a: MemWriteArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("bad-bytes", &e, pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    match live.write(addr, &bytes) {
-        Ok(()) => {
-            let data = json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) });
-            emit(&Response::success(schema::v1::MEM_WRITE, data).with_source(live.label()), pretty)
+    #[cfg(not(windows))]
+    {
+        return ir_err("live-unsupported", "mem write requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        match live.write(addr, &bytes) {
+            Ok(()) => {
+                let data = json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) });
+                emit(&Response::success(schema::v1::MEM_WRITE, data).with_source(live.label()), pretty)
+            }
+            Err(e) => ir_err("write-failed", &e.to_string(), pretty),
         }
-        Err(e) => ir_err("write-failed", &e.to_string(), pretty),
     }
 }
 
 fn cmd_mem_map(a: MemMapArgs, pretty: bool) -> bool {
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let regions = live.regions(a.limit);
-    let regions_v = serde_json::to_value(&regions).unwrap_or(serde_json::Value::Null);
-    let data = json!({ "count": regions.len(), "regions": regions_v });
-    emit(&Response::success(schema::v1::MEM_MAP, data).with_source(live.label()), pretty)
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "mem map requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let regions = live.regions(a.limit);
+        let regions_v = serde_json::to_value(&regions).unwrap_or(serde_json::Value::Null);
+        let data = json!({ "count": regions.len(), "regions": regions_v });
+        emit(&Response::success(schema::v1::MEM_MAP, data).with_source(live.label()), pretty)
+    }
 }
 
 fn cmd_patch(cmd: PatchCmd, pretty: bool) -> bool {
@@ -2908,25 +2964,32 @@ fn patch_dry_run(a: PatchWriteArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("bad-bytes", &e, pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let current = match live.read(addr, desired.len()) {
-        Ok(b) => b,
-        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
-    };
-    let data = json!({
-        "op": "dry-run",
-        "pid": a.pid,
-        "address": addr,
-        "size": desired.len(),
-        "currentHex": to_hex_spaced(&current),
-        "desiredHex": to_hex_spaced(&desired),
-        "wouldChange": current != desired,
-        "diffBytes": byte_diff_count(&current, &desired),
-    });
-    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+    #[cfg(not(windows))]
+    {
+        return ir_err("live-unsupported", "patch dry-run requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let current = match live.read(addr, desired.len()) {
+            Ok(b) => b,
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
+        let data = json!({
+            "op": "dry-run",
+            "pid": a.pid,
+            "address": addr,
+            "size": desired.len(),
+            "currentHex": to_hex_spaced(&current),
+            "desiredHex": to_hex_spaced(&desired),
+            "wouldChange": current != desired,
+            "diffBytes": byte_diff_count(&current, &desired),
+        });
+        emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+    }
 }
 
 fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
@@ -2939,32 +3002,39 @@ fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("bad-bytes", &e, pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let before = match live.read(addr, desired.len()) {
-        Ok(b) => b,
-        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
-    };
-    let rec = match pj::apply(&live, a.pid, addr, &desired) {
-        Ok(r) => r,
-        Err(e) => return ir_err("patch-failed", &e.to_string(), pretty),
-    };
-    let path = match pj::record_path(&rec.id) {
-        Ok(p) => p,
-        Err(e) => return ir_err("journal-failed", &e.to_string(), pretty),
-    };
-    let data = json!({
-        "op": "apply",
-        "id": rec.id,
-        "recordPath": path.to_string_lossy(),
-        "pid": a.pid,
-        "address": addr,
-        "size": rec.size,
-        "diffBytes": byte_diff_count(&before, &desired),
-    });
-    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+    #[cfg(not(windows))]
+    {
+        return ir_err("live-unsupported", "patch apply requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let before = match live.read(addr, desired.len()) {
+            Ok(b) => b,
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
+        let rec = match pj::apply(&live, a.pid, addr, &desired) {
+            Ok(r) => r,
+            Err(e) => return ir_err("patch-failed", &e.to_string(), pretty),
+        };
+        let path = match pj::record_path(&rec.id) {
+            Ok(p) => p,
+            Err(e) => return ir_err("journal-failed", &e.to_string(), pretty),
+        };
+        let data = json!({
+            "op": "apply",
+            "id": rec.id,
+            "recordPath": path.to_string_lossy(),
+            "pid": a.pid,
+            "address": addr,
+            "size": rec.size,
+            "diffBytes": byte_diff_count(&before, &desired),
+        });
+        emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+    }
 }
 
 fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
@@ -2980,29 +3050,36 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
         },
     };
     let pid = a.pid.unwrap_or(rec.pid);
-    let live = match LiveProcess::attach(pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let restored_len = match parse_hex_bytes(&rec.before_hex) {
-        Ok(b) => b.len(),
-        Err(e) => return ir_err("bad-record", &e, pretty),
-    };
-    if let Err(e) = pj::undo(&mut rec, &live, a.force) {
-        return ir_err("undo-failed", &e.to_string(), pretty);
+    #[cfg(not(windows))]
+    {
+        return ir_err("live-unsupported", "patch undo requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-    let addr = match Va::parse(&rec.address) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let data = json!({
-        "op": "undo",
-        "id": rec.id,
-        "pid": pid,
-        "address": addr,
-        "restored": restored_len,
-    });
-    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let restored_len = match parse_hex_bytes(&rec.before_hex) {
+            Ok(b) => b.len(),
+            Err(e) => return ir_err("bad-record", &e, pretty),
+        };
+        if let Err(e) = pj::undo(&mut rec, &live, a.force) {
+            return ir_err("undo-failed", &e.to_string(), pretty);
+        }
+        let addr = match Va::parse(&rec.address) {
+            Ok(v) => v,
+            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+        };
+        let data = json!({
+            "op": "undo",
+            "id": rec.id,
+            "pid": pid,
+            "address": addr,
+            "restored": restored_len,
+        });
+        emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
+    }
 }
 
 fn cmd_selection(cmd: SelectionCmd, pretty: bool) -> bool {
@@ -3145,34 +3222,42 @@ fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    // Attach only long enough to resolve the main module (for --addr-rva and
-    // the relative_rip label on a hit) — the debug session itself opens its
-    // own handle and becomes the process's debugger independently.
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let module = live.main_module().cloned();
-    let label = live.label();
-    drop(live);
+    #[cfg(not(windows))]
+    {
+        let _ = addr;
+        return ir_err("live-unsupported", "debug await-hit requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        // Attach only long enough to resolve the main module (for --addr-rva and
+        // the relative_rip label on a hit) — the debug session itself opens its
+        // own handle and becomes the process's debugger independently.
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let module = live.main_module().cloned();
+        let label = live.label();
+        drop(live);
 
-    let bp_va = if a.addr_rva {
-        match &module {
-            Some(m) => m.base.offset(addr.0),
-            None => {
-                return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty);
+        let bp_va = if a.addr_rva {
+            match &module {
+                Some(m) => m.base.offset(addr.0),
+                None => {
+                    return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty);
+                }
             }
-        }
-    } else {
-        addr
-    };
+        } else {
+            addr
+        };
 
-    match await_breakpoint_hit(a.pid, bp_va, a.timeout_ms, a.stack_qwords, module.as_ref()) {
-        Ok(outcome) => emit(
-            &Response::success(schema::v1::DEBUG_AWAIT_HIT, outcome).with_source(label),
-            pretty,
-        ),
-        Err(e) => ir_err("await-hit-failed", &e.to_string(), pretty),
+        match await_breakpoint_hit(a.pid, bp_va, a.timeout_ms, a.stack_qwords, module.as_ref()) {
+            Ok(outcome) => emit(
+                &Response::success(schema::v1::DEBUG_AWAIT_HIT, outcome).with_source(label),
+                pretty,
+            ),
+            Err(e) => ir_err("await-hit-failed", &e.to_string(), pretty),
+        }
     }
 }
 
@@ -3180,8 +3265,16 @@ fn cmd_module_list(a: ModuleListArgs, pretty: bool) -> bool {
     use n0xis_contracts::Module;
     use n0xis_sources::ModuleProvider;
 
-    let mut modules: Vec<Module> = if let Some(pid) = a.pid {
-        match LiveProcess::attach(pid) {
+    let mut modules: Vec<Module> = if let Some(_pid) = a.pid {
+        #[cfg(not(windows))]
+        {
+            return emit(
+                &Response::<serde_json::Value>::error("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)"),
+                pretty,
+            );
+        }
+        #[cfg(windows)]
+        match LiveProcess::attach(_pid) {
             Ok(l) => l.modules().to_vec(),
             Err(e) => {
                 return emit(
@@ -3229,26 +3322,37 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
 
     // Source selection: --pid (live) XOR --file (static PE) XOR --bytes (inline).
     if let Some(pid) = a.pid {
-        let live = match LiveProcess::attach(pid) {
-            Ok(l) => l,
-            Err(e) => {
-                return emit(
-                    &Response::<serde_json::Value>::error("attach-failed", e.to_string()),
-                    pretty,
-                );
-            }
-        };
-        if !live.contains(start) {
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
             return emit(
-                &Response::<serde_json::Value>::error(
-                    "addr-not-committed",
-                    format!("{start} is not a committed/readable region in pid {pid}"),
-                )
-                .with_hint("use a runtime VA (respecting ASLR); `n0xis process ps` finds the pid"),
+                &Response::<serde_json::Value>::error("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)"),
                 pretty,
             );
         }
-        return run_disasm(&live, start, a.count, pretty);
+        #[cfg(windows)]
+        {
+            let live = match LiveProcess::attach(pid) {
+                Ok(l) => l,
+                Err(e) => {
+                    return emit(
+                        &Response::<serde_json::Value>::error("attach-failed", e.to_string()),
+                        pretty,
+                    );
+                }
+            };
+            if !live.contains(start) {
+                return emit(
+                    &Response::<serde_json::Value>::error(
+                        "addr-not-committed",
+                        format!("{start} is not a committed/readable region in pid {pid}"),
+                    )
+                    .with_hint("use a runtime VA (respecting ASLR); `n0xis process ps` finds the pid"),
+                    pretty,
+                );
+            }
+            return run_disasm(&live, start, a.count, pretty);
+        }
     }
 
     if let Some(file) = a.file.as_deref() {
@@ -3354,6 +3458,7 @@ fn build_filter_criterion(name: &str, value: Option<f64>, min: Option<f64>, max:
     }
 }
 
+#[cfg(windows)]
 fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;
@@ -3399,17 +3504,25 @@ fn cmd_scan_value(a: ScanValueArgs, pretty: bool) -> bool {
     let arch = X64::new();
 
     if let Some(pid) = a.region.pid {
-        let live = match LiveProcess::attach(pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let regions = match resolve_scan_regions_live(&live, a.region.start.as_deref(), a.region.size) {
-            Ok(r) => r,
-            Err(e) => return ir_err("bad-region", &e, pretty),
-        };
-        let label = live.label();
-        let ctx = Ctx::new(&live, &arch);
-        return finish_scan_value(&ctx, regions, value_type, criterion, align, label, &a.save_as, a.force, pretty);
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        }
+        #[cfg(windows)]
+        {
+            let live = match LiveProcess::attach(pid) {
+                Ok(l) => l,
+                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            };
+            let regions = match resolve_scan_regions_live(&live, a.region.start.as_deref(), a.region.size) {
+                Ok(r) => r,
+                Err(e) => return ir_err("bad-region", &e, pretty),
+            };
+            let label = live.label();
+            let ctx = Ctx::new(&live, &arch);
+            return finish_scan_value(&ctx, regions, value_type, criterion, align, label, &a.save_as, a.force, pretty);
+        }
     }
     if let Some(file) = a.region.file.as_deref() {
         let pe = match StaticPe::load(std::path::Path::new(file)) {
@@ -3469,13 +3582,21 @@ fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
     let arch = X64::new();
 
     let (out, label) = if let Some(pid) = a.pid {
-        let live = match LiveProcess::attach(pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let ctx = Ctx::new(&live, &arch);
-        let out = FilterPass.run(&ctx, FilterInput { previous: prev, criterion });
-        (out, live.label())
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        }
+        #[cfg(windows)]
+        {
+            let live = match LiveProcess::attach(pid) {
+                Ok(l) => l,
+                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            };
+            let ctx = Ctx::new(&live, &arch);
+            let out = FilterPass.run(&ctx, FilterInput { previous: prev, criterion });
+            (out, live.label())
+        }
     } else if let Some(file) = a.file.as_deref() {
         let pe = match StaticPe::load(std::path::Path::new(file)) {
             Ok(p) => p,
@@ -3505,38 +3626,46 @@ fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {
     };
     let arch = X64::new();
     if let Some(pid) = a.pid {
-        let live = match LiveProcess::attach(pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let label = live.label();
-        let ctx = Ctx::new(&live, &arch);
-        // Explicit --start/--size scans exactly that one region; omitting
-        // both falls back to every committed writable region (the same
-        // default `scan value` uses) since a hit could be anywhere in the
-        // process's dynamically-allocated memory (e.g. a scripting VM's heap).
-        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-            Ok(r) => r,
-            Err(e) => return ir_err("bad-region", &e, pretty),
-        };
-        let mut matches = Vec::new();
-        let mut bytes_scanned = 0usize;
-        for (start, size) in regions {
-            match AobScanPass.run(&ctx, AobInput { start, size, pattern: pattern.clone() }) {
-                Ok(art) => {
-                    matches.extend(art.matches);
-                    bytes_scanned += art.bytes_scanned;
-                }
-                // A region enumerated a moment ago can be freed/decommitted
-                // by the target process before this scan reaches it — skip
-                // it and keep scanning the rest, rather than aborting the
-                // whole multi-gigabyte sweep over one stale region.
-                Err(CoreError::Source(n0xis_sources::SourceError::Unmapped(_))) => continue,
-                Err(e) => return ir_err("aob-failed", &e.to_string(), pretty),
-            }
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
         }
-        let art = AobArtifact { matches, bytes_scanned };
-        return emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty);
+        #[cfg(windows)]
+        {
+            let live = match LiveProcess::attach(pid) {
+                Ok(l) => l,
+                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            };
+            let label = live.label();
+            let ctx = Ctx::new(&live, &arch);
+            // Explicit --start/--size scans exactly that one region; omitting
+            // both falls back to every committed writable region (the same
+            // default `scan value` uses) since a hit could be anywhere in the
+            // process's dynamically-allocated memory (e.g. a scripting VM's heap).
+            let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+                Ok(r) => r,
+                Err(e) => return ir_err("bad-region", &e, pretty),
+            };
+            let mut matches = Vec::new();
+            let mut bytes_scanned = 0usize;
+            for (start, size) in regions {
+                match AobScanPass.run(&ctx, AobInput { start, size, pattern: pattern.clone() }) {
+                    Ok(art) => {
+                        matches.extend(art.matches);
+                        bytes_scanned += art.bytes_scanned;
+                    }
+                    // A region enumerated a moment ago can be freed/decommitted
+                    // by the target process before this scan reaches it — skip
+                    // it and keep scanning the rest, rather than aborting the
+                    // whole multi-gigabyte sweep over one stale region.
+                    Err(CoreError::Source(n0xis_sources::SourceError::Unmapped(_))) => continue,
+                    Err(e) => return ir_err("aob-failed", &e.to_string(), pretty),
+                }
+            }
+            let art = AobArtifact { matches, bytes_scanned };
+            return emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty);
+        }
     }
     if let Some(file) = a.file.as_deref() {
         let (Some(start_s), Some(size)) = (a.start.as_deref(), a.size) else {
@@ -3567,16 +3696,24 @@ fn cmd_scan_dissect(a: ScanDissectArgs, pretty: bool) -> bool {
     };
     let arch = X64::new();
     if let Some(pid) = a.pid {
-        let live = match LiveProcess::attach(pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let label = live.label();
-        let ctx = Ctx::new(&live, &arch);
-        return match DissectPass.run(&ctx, DissectInput { start, size: a.size }) {
-            Ok(art) => emit(&Response::success(schema::v1::DISSECT, art).with_source(label), pretty),
-            Err(e) => ir_err("dissect-failed", &e.to_string(), pretty),
-        };
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        }
+        #[cfg(windows)]
+        {
+            let live = match LiveProcess::attach(pid) {
+                Ok(l) => l,
+                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            };
+            let label = live.label();
+            let ctx = Ctx::new(&live, &arch);
+            return match DissectPass.run(&ctx, DissectInput { start, size: a.size }) {
+                Ok(art) => emit(&Response::success(schema::v1::DISSECT, art).with_source(label), pretty),
+                Err(e) => ir_err("dissect-failed", &e.to_string(), pretty),
+            };
+        }
     }
     if let Some(file) = a.file.as_deref() {
         let pe = match StaticPe::load(std::path::Path::new(file)) {
@@ -3594,38 +3731,46 @@ fn cmd_scan_dissect(a: ScanDissectArgs, pretty: bool) -> bool {
 }
 
 fn cmd_pointer_path(a: PointerPathArgs, pretty: bool) -> bool {
-    use n0xis_sources::ModuleProvider;
     let target = match Va::parse(&a.target) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let mods = live.modules();
-    let mut roots = Vec::new();
-    for name in &a.modules {
-        let Some(m) = mods.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else {
-            return ir_err("no-module", &format!("no module named '{name}' in this process"), pretty);
-        };
-        roots.push(PointerRoot { label: m.name.clone(), start: m.base, size: m.size });
+    #[cfg(not(windows))]
+    {
+        let _ = (&a, target);
+        return ir_err("live-unsupported", "pointer path requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-    let search_regions: Vec<(Va, usize)> = live
-        .regions(1_000_000)
-        .into_iter()
-        .filter(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx" | "rc-" | "rcx" | "r--" | "r-x"))
-        .map(|r| (r.base, r.size as usize))
-        .collect();
-    let arch = X64::new();
-    let label = live.label();
-    let ctx = Ctx::new(&live, &arch);
-    match PointerPathPass.run(
-        &ctx,
-        PointerPathInput { target, search_regions, roots, max_depth: a.max_depth, max_offset: a.max_offset, pointer_size: 8 },
-    ) {
-        Ok(art) => emit(&Response::success(schema::v1::POINTER_PATH, art).with_source(label), pretty),
-        Err(e) => ir_err("pointer-path-failed", &e.to_string(), pretty),
+    #[cfg(windows)]
+    {
+        use n0xis_sources::ModuleProvider;
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let mods = live.modules();
+        let mut roots = Vec::new();
+        for name in &a.modules {
+            let Some(m) = mods.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else {
+                return ir_err("no-module", &format!("no module named '{name}' in this process"), pretty);
+            };
+            roots.push(PointerRoot { label: m.name.clone(), start: m.base, size: m.size });
+        }
+        let search_regions: Vec<(Va, usize)> = live
+            .regions(1_000_000)
+            .into_iter()
+            .filter(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx" | "rc-" | "rcx" | "r--" | "r-x"))
+            .map(|r| (r.base, r.size as usize))
+            .collect();
+        let arch = X64::new();
+        let label = live.label();
+        let ctx = Ctx::new(&live, &arch);
+        match PointerPathPass.run(
+            &ctx,
+            PointerPathInput { target, search_regions, roots, max_depth: a.max_depth, max_offset: a.max_offset, pointer_size: 8 },
+        ) {
+            Ok(art) => emit(&Response::success(schema::v1::POINTER_PATH, art).with_source(label), pretty),
+            Err(e) => ir_err("pointer-path-failed", &e.to_string(), pretty),
+        }
     }
 }
 
@@ -3634,35 +3779,49 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let module = live.main_module().cloned();
-    let label = live.label();
-    drop(live);
-
-    let watch_va = if a.addr_rva {
-        match &module {
-            Some(m) => m.base.offset(addr.0),
-            None => return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty),
-        }
-    } else {
-        addr
-    };
-    let kind: WatchKind = a.kind.into();
-    let cond = match a.when.as_deref().map(RegCond::parse).transpose() {
-        Ok(c) => c,
-        Err(e) => return ir_err("bad-when", &e, pretty),
-    };
-    match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), cond.as_ref())
+    #[cfg(not(windows))]
     {
-        Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
-        Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
+        let _ = addr;
+        return ir_err("live-unsupported", "debug watch requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let module = live.main_module().cloned();
+        let label = live.label();
+        drop(live);
+
+        let watch_va = if a.addr_rva {
+            match &module {
+                Some(m) => m.base.offset(addr.0),
+                None => return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty),
+            }
+        } else {
+            addr
+        };
+        let kind: WatchKind = a.kind.into();
+        let cond = match a.when.as_deref().map(RegCond::parse).transpose() {
+            Ok(c) => c,
+            Err(e) => return ir_err("bad-when", &e, pretty),
+        };
+        match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), cond.as_ref())
+        {
+            Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
+            Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
+        }
     }
 }
 
 fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "debug attach requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+    }
+    #[cfg(windows)]
     match attach_and_wait(a.pid, a.timeout_ms) {
         Ok(()) => emit(
             &Response::success(schema::v1::DEBUG_ATTACH, json!({ "pid": a.pid, "timeout_ms": a.timeout_ms, "detached": true })),
@@ -3678,102 +3837,110 @@ fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
 /// decompiler) — then optionally record that explanation onto a `.n0xt`
 /// entry ("record with provenance", CONCEPT §10/§11).
 fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
-    use n0xis_sources::ModuleProvider;
-
     let addr = match Va::parse(&a.addr) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let main_module = live.main_module().cloned();
-    let label = live.label();
-    drop(live);
-
-    let kind: WatchKind = a.kind.into();
-    let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
-        Ok(o) => o,
-        Err(e) => return ir_err("watch-failed", &e.to_string(), pretty),
-    };
-    let Some(hit) = outcome.hit else {
-        let data = json!({ "value_addr": addr, "entries": [], "timedOut": true });
-        return emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty);
-    };
-
-    // Re-attach fresh: the accessing instruction (rip) may belong to a
-    // different module than the one owning the watched data address, and we
-    // need a live `Ctx` to decompile it.
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
-    let arch = X64::new();
-    let ctx = Ctx::new(&live, &arch);
-
-    let access_kind = match a.kind {
-        WatchKindArg::Execute => "execute",
-        WatchKindArg::Write => "write",
-        WatchKindArg::ReadOrWrite => "read-or-write",
-    };
-    let (code_scan_start, code_scan_size) = match insn_module.as_ref().and_then(|m| live.section_range_of(m.base, ".text")) {
-        Some((start, size)) => (Some(start), size as usize),
-        None => (None, 0),
-    };
-    let graph = match ProvenancePass.run(
-        &ctx,
-        ProvenanceInput {
-            value_addr: addr,
-            hits: vec![ProvenanceHit { instruction_va: hit.rip, access_kind: access_kind.to_string() }],
-            module: insn_module,
-            code_scan_start,
-            code_scan_size,
-        },
-    ) {
-        Ok(g) => g,
-        Err(e) => return ir_err("provenance-failed", &e.to_string(), pretty),
-    };
-
-    let mut saved_to: Option<String> = None;
-    if let (Some(table_name), Some(entry_name)) = (&a.save_to_table, &a.entry) {
-        let mut entry = n0xis_project::table::load(table_name)
-            .ok()
-            .and_then(|t| t.entries.into_iter().find(|e| e.name.eq_ignore_ascii_case(entry_name)))
-            .unwrap_or_else(|| TableEntry {
-                name: entry_name.clone(),
-                locator: TableLocator::Address { va: addr },
-                value_type: TableValueType::U32,
-                description: None,
-                hotkey: None,
-                groups: Vec::new(),
-                frozen: false,
-                freeze_value: None,
-                provenance: Default::default(),
-                verification: Default::default(),
-            });
-        if let Some(e) = graph.entries.first() {
-            let note = e.decompiled_context.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
-            entry.provenance = n0xis_contracts::Provenance {
-                function_va: e.function_va,
-                struct_type: None,
-                field_offset: None,
-                note: (!note.is_empty()).then_some(note),
-            };
-        }
-        entry.verification.last_confirmed_unix = Some(n0xis_project::patch::now_unix_secs());
-        match n0xis_project::table::add_entry(table_name, entry) {
-            Ok(_) => saved_to = Some(format!("{table_name}::{entry_name}")),
-            Err(e) => return ir_err("table-save-failed", &e.to_string(), pretty),
-        }
+    #[cfg(not(windows))]
+    {
+        let _ = addr;
+        return ir_err("live-unsupported", "provenance trace requires a Windows build (needs LiveProcess/debug APIs)", pretty);
     }
+    #[cfg(windows)]
+    {
+        use n0xis_sources::ModuleProvider;
 
-    let mut data = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
-    if let (Some(s), serde_json::Value::Object(map)) = (saved_to, &mut data) {
-        map.insert("savedTo".to_string(), json!(s));
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let main_module = live.main_module().cloned();
+        let label = live.label();
+        drop(live);
+
+        let kind: WatchKind = a.kind.into();
+        let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
+            Ok(o) => o,
+            Err(e) => return ir_err("watch-failed", &e.to_string(), pretty),
+        };
+        let Some(hit) = outcome.hit else {
+            let data = json!({ "value_addr": addr, "entries": [], "timedOut": true });
+            return emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty);
+        };
+
+        // Re-attach fresh: the accessing instruction (rip) may belong to a
+        // different module than the one owning the watched data address, and we
+        // need a live `Ctx` to decompile it.
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
+        let arch = X64::new();
+        let ctx = Ctx::new(&live, &arch);
+
+        let access_kind = match a.kind {
+            WatchKindArg::Execute => "execute",
+            WatchKindArg::Write => "write",
+            WatchKindArg::ReadOrWrite => "read-or-write",
+        };
+        let (code_scan_start, code_scan_size) = match insn_module.as_ref().and_then(|m| live.section_range_of(m.base, ".text")) {
+            Some((start, size)) => (Some(start), size as usize),
+            None => (None, 0),
+        };
+        let graph = match ProvenancePass.run(
+            &ctx,
+            ProvenanceInput {
+                value_addr: addr,
+                hits: vec![ProvenanceHit { instruction_va: hit.rip, access_kind: access_kind.to_string() }],
+                module: insn_module,
+                code_scan_start,
+                code_scan_size,
+            },
+        ) {
+            Ok(g) => g,
+            Err(e) => return ir_err("provenance-failed", &e.to_string(), pretty),
+        };
+
+        let mut saved_to: Option<String> = None;
+        if let (Some(table_name), Some(entry_name)) = (&a.save_to_table, &a.entry) {
+            let mut entry = n0xis_project::table::load(table_name)
+                .ok()
+                .and_then(|t| t.entries.into_iter().find(|e| e.name.eq_ignore_ascii_case(entry_name)))
+                .unwrap_or_else(|| TableEntry {
+                    name: entry_name.clone(),
+                    locator: TableLocator::Address { va: addr },
+                    value_type: TableValueType::U32,
+                    description: None,
+                    hotkey: None,
+                    groups: Vec::new(),
+                    frozen: false,
+                    freeze_value: None,
+                    provenance: Default::default(),
+                    verification: Default::default(),
+                });
+            if let Some(e) = graph.entries.first() {
+                let note = e.decompiled_context.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+                entry.provenance = n0xis_contracts::Provenance {
+                    function_va: e.function_va,
+                    struct_type: None,
+                    field_offset: None,
+                    note: (!note.is_empty()).then_some(note),
+                };
+            }
+            entry.verification.last_confirmed_unix = Some(n0xis_project::patch::now_unix_secs());
+            match n0xis_project::table::add_entry(table_name, entry) {
+                Ok(_) => saved_to = Some(format!("{table_name}::{entry_name}")),
+                Err(e) => return ir_err("table-save-failed", &e.to_string(), pretty),
+            }
+        }
+
+        let mut data = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
+        if let (Some(s), serde_json::Value::Object(map)) = (saved_to, &mut data) {
+            map.insert("savedTo".to_string(), json!(s));
+        }
+        emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty)
     }
-    emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty)
 }
 
 // ============================================================================
@@ -3909,106 +4076,123 @@ fn cmd_snapshot_list(pretty: bool) -> bool {
 /// `ok/data/meta` envelope here — this is a persistent transport, not a
 /// single response.
 fn cmd_remote_serve(a: &RemoteServeArgs) {
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[n0xis] remote-serve: attach failed: {e}");
+    #[cfg(not(windows))]
+    {
+        let _ = a;
+        eprintln!("[n0xis] remote-serve: live-process analysis requires a Windows build (needs LiveProcess/Win32 APIs)");
+        std::process::exit(2);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[n0xis] remote-serve: attach failed: {e}");
+                std::process::exit(2);
+            }
+        };
+        if let Err(e) = remote_serve_stdio(&live, std::io::stdin(), std::io::stdout()) {
+            eprintln!("[n0xis] remote-serve: {e}");
             std::process::exit(2);
         }
-    };
-    if let Err(e) = remote_serve_stdio(&live, std::io::stdin(), std::io::stdout()) {
-        eprintln!("[n0xis] remote-serve: {e}");
-        std::process::exit(2);
     }
 }
 
 fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
-    use n0xis_arch::Arch;
-    use n0xis_project::patch as pj;
-
     let hook_at = match Va::parse(&a.hook_at) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
+    #[cfg(not(windows))]
+    {
+        let _ = hook_at;
+        return ir_err("live-unsupported", "patch detour requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        use n0xis_arch::Arch;
+        use n0xis_project::patch as pj;
 
-    // Decode whole instructions until we've covered >= 5 bytes (a near jmp),
-    // so the hook never splits an instruction mid-way.
-    let arch = X64::new();
-    let probe = match live.read(hook_at, 32) {
-        Ok(b) => b,
-        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
-    };
-    let insns = arch.decode_stream(&probe, hook_at, 16);
-    let mut hook_len = 0usize;
-    for ins in &insns {
-        if hook_len >= 5 {
-            break;
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+
+        // Decode whole instructions until we've covered >= 5 bytes (a near jmp),
+        // so the hook never splits an instruction mid-way.
+        let arch = X64::new();
+        let probe = match live.read(hook_at, 32) {
+            Ok(b) => b,
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
+        let insns = arch.decode_stream(&probe, hook_at, 16);
+        let mut hook_len = 0usize;
+        for ins in &insns {
+            if hook_len >= 5 {
+                break;
+            }
+            hook_len += ins.len as usize;
         }
-        hook_len += ins.len as usize;
-    }
-    if hook_len < 5 || hook_len > probe.len() {
-        return ir_err("decode-failed", "could not decode >= 5 bytes of whole instructions at --hook-at", pretty);
-    }
-    let original = probe[..hook_len].to_vec();
+        if hook_len < 5 || hook_len > probe.len() {
+            return ir_err("decode-failed", "could not decode >= 5 bytes of whole instructions at --hook-at", pretty);
+        }
+        let original = probe[..hook_len].to_vec();
 
-    let cave = match live.alloc_code_cave(a.cave_size) {
-        Ok(c) => c,
-        Err(e) => return ir_err("alloc-failed", &e.to_string(), pretty),
-    };
-    let (cave_bytes, hook_jmp) = match build_trampoline(&original, hook_at, cave) {
-        Ok(v) => v,
-        Err(e) => {
+        let cave = match live.alloc_code_cave(a.cave_size) {
+            Ok(c) => c,
+            Err(e) => return ir_err("alloc-failed", &e.to_string(), pretty),
+        };
+        let (cave_bytes, hook_jmp) = match build_trampoline(&original, hook_at, cave) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = live.free_code_cave(cave);
+                return ir_err("trampoline-failed", &e, pretty);
+            }
+        };
+        if cave_bytes.len() > a.cave_size {
             let _ = live.free_code_cave(cave);
-            return ir_err("trampoline-failed", &e, pretty);
+            return ir_err(
+                "cave-too-small",
+                &format!("need at least {} bytes for this hook, got --cave-size {}", cave_bytes.len(), a.cave_size),
+                pretty,
+            );
         }
-    };
-    if cave_bytes.len() > a.cave_size {
-        let _ = live.free_code_cave(cave);
-        return ir_err(
-            "cave-too-small",
-            &format!("need at least {} bytes for this hook, got --cave-size {}", cave_bytes.len(), a.cave_size),
-            pretty,
-        );
-    }
-    if let Err(e) = live.write(cave, &cave_bytes) {
-        let _ = live.free_code_cave(cave);
-        return ir_err("cave-write-failed", &e.to_string(), pretty);
-    }
-    // Only the hook-site overwrite is journaled: it's the destructive part
-    // (existing code replaced) and the only one `patch undo` needs to
-    // reverse. The cave is freshly allocated memory with no "original state."
-    if let Err(e) = live.write(hook_at, &hook_jmp) {
-        return ir_err("hook-write-failed", &e.to_string(), pretty);
-    }
-    match live.read(hook_at, hook_jmp.len()) {
-        Ok(after) if after == hook_jmp => {}
-        Ok(_) => return ir_err("verify-failed", "post-write hook bytes do not match", pretty),
-        Err(e) => return ir_err("verify-read-failed", &e.to_string(), pretty),
-    }
+        if let Err(e) = live.write(cave, &cave_bytes) {
+            let _ = live.free_code_cave(cave);
+            return ir_err("cave-write-failed", &e.to_string(), pretty);
+        }
+        // Only the hook-site overwrite is journaled: it's the destructive part
+        // (existing code replaced) and the only one `patch undo` needs to
+        // reverse. The cave is freshly allocated memory with no "original state."
+        if let Err(e) = live.write(hook_at, &hook_jmp) {
+            return ir_err("hook-write-failed", &e.to_string(), pretty);
+        }
+        match live.read(hook_at, hook_jmp.len()) {
+            Ok(after) if after == hook_jmp => {}
+            Ok(_) => return ir_err("verify-failed", "post-write hook bytes do not match", pretty),
+            Err(e) => return ir_err("verify-read-failed", &e.to_string(), pretty),
+        }
 
-    let rec = pj::PatchRecord {
-        id: pj::new_patch_id(),
-        pid: a.pid,
-        address: hook_at.to_string(),
-        size: hook_jmp.len(),
-        before_hex: to_hex_spaced(&original),
-        after_hex: to_hex_spaced(&hook_jmp),
-        status: "applied".to_string(),
-        created_at_unix: pj::now_unix_secs(),
-        undone_at_unix: None,
-    };
-    if let Err(e) = pj::save(&rec) {
-        return ir_err("journal-failed", &e.to_string(), pretty);
+        let rec = pj::PatchRecord {
+            id: pj::new_patch_id(),
+            pid: a.pid,
+            address: hook_at.to_string(),
+            size: hook_jmp.len(),
+            before_hex: to_hex_spaced(&original),
+            after_hex: to_hex_spaced(&hook_jmp),
+            status: "applied".to_string(),
+            created_at_unix: pj::now_unix_secs(),
+            undone_at_unix: None,
+        };
+        if let Err(e) = pj::save(&rec) {
+            return ir_err("journal-failed", &e.to_string(), pretty);
+        }
+        let data = json!({
+            "op": "detour", "pid": a.pid, "hookAt": hook_at, "hookLen": hook_len,
+            "cave": cave, "caveSize": a.cave_size, "patchId": rec.id,
+        });
+        emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
     }
-    let data = json!({
-        "op": "detour", "pid": a.pid, "hookAt": hook_at, "hookLen": hook_len,
-        "cave": cave, "caveSize": a.cave_size, "patchId": rec.id,
-    });
-    emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
 }
 
 // ============================================================================
@@ -4094,34 +4278,42 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("bad-value", &e, pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-
-    let addr = match n0xis_project::locator::resolve_table_locator(&live, &entry.locator) {
-        Ok(va) => va,
-        Err(e) => return ir_err("resolve-failed", &e, pretty),
-    };
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(a.duration_ms);
-    let mut writes = 0usize;
-    let mut errors = 0usize;
-    loop {
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        match live.write(addr, &bytes) {
-            Ok(()) => writes += 1,
-            Err(_) => errors += 1,
-        }
-        std::thread::sleep(std::time::Duration::from_millis(a.interval_ms.max(1)));
+    #[cfg(not(windows))]
+    {
+        let _ = &bytes;
+        return ir_err("live-unsupported", "table freeze requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-    let data = json!({
-        "table": a.table, "entry": a.name, "address": addr, "value": value,
-        "writes": writes, "errors": errors, "durationMs": a.duration_ms, "intervalMs": a.interval_ms,
-    });
-    emit(&Response::success(schema::v1::FREEZE, data).with_source(live.label()), pretty)
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+
+        let addr = match n0xis_project::locator::resolve_table_locator(&live, &entry.locator) {
+            Ok(va) => va,
+            Err(e) => return ir_err("resolve-failed", &e, pretty),
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(a.duration_ms);
+        let mut writes = 0usize;
+        let mut errors = 0usize;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            match live.write(addr, &bytes) {
+                Ok(()) => writes += 1,
+                Err(_) => errors += 1,
+            }
+            std::thread::sleep(std::time::Duration::from_millis(a.interval_ms.max(1)));
+        }
+        let data = json!({
+            "table": a.table, "entry": a.name, "address": addr, "value": value,
+            "writes": writes, "errors": errors, "durationMs": a.duration_ms, "intervalMs": a.interval_ms,
+        });
+        emit(&Response::success(schema::v1::FREEZE, data).with_source(live.label()), pretty)
+    }
 }
 
 /// Parse a hex byte string: accepts spaces, commas and `0x` prefixes, e.g.
@@ -4272,26 +4464,35 @@ fn cmd_lua_patch(a: LuaPatchArgs, pretty: bool) -> bool {
 }
 
 fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-        Ok(r) => r,
-        Err(e) => return ir_err("bad-region", &e, pretty),
-    };
-    let label = live.label();
-    let mut hits = n0xis_luajit::scan_strings(&live, &regions, n0xis_luajit::GcstrLayout::HELLDIVERS_GC64, a.min_len, a.max_len);
-    if let Some(needle) = &a.contains {
-        hits.retain(|h| h.text.contains(needle.as_str()));
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "lua strings requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-    let data = json!({ "matches": hits, "count": hits.len() });
-    emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
+        };
+        let label = live.label();
+        let mut hits = n0xis_luajit::scan_strings(&live, &regions, n0xis_luajit::GcstrLayout::HELLDIVERS_GC64, a.min_len, a.max_len);
+        if let Some(needle) = &a.contains {
+            hits.retain(|h| h.text.contains(needle.as_str()));
+        }
+        let data = json!({ "matches": hits, "count": hits.len() });
+        emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+    }
 }
 
 /// Render one decoded `TValue` as JSON, resolving a string's text from the
 /// live process so the dump is readable (`{"kind":"str","text":"up"}`) rather
 /// than just an address to chase by hand.
+#[cfg(windows)]
 fn tvalue_json(v: &n0xis_luajit::TValue, live: &LiveProcess, layout: n0xis_luajit::LuaLayout) -> serde_json::Value {
     use n0xis_luajit::TValue;
     match v {
@@ -4313,79 +4514,95 @@ fn cmd_lua_table(a: LuaTableArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let layout = n0xis_luajit::LuaLayout::HELLDIVERS;
-    let Some(dump) = n0xis_luajit::read_table(&live, addr, layout) else {
-        return ir_err("not-a-table", "could not decode a GCtab at this address (wrong address or layout needs calibration)", pretty);
-    };
-    let array: Vec<serde_json::Value> = dump.array.iter().map(|v| tvalue_json(v, &live, layout)).collect();
-    let hash: Vec<serde_json::Value> = dump
-        .hash
-        .iter()
-        .map(|(k, v)| json!({ "key": tvalue_json(k, &live, layout), "value": tvalue_json(v, &live, layout) }))
-        .collect();
-    let label = live.label();
-    let data = json!({
-        "addr": dump.addr.to_string(),
-        "asize": dump.asize,
-        "hmask": dump.hmask,
-        "array": array,
-        "hash": hash,
-    });
-    emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+    #[cfg(not(windows))]
+    {
+        let _ = addr;
+        return ir_err("live-unsupported", "lua table requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let layout = n0xis_luajit::LuaLayout::HELLDIVERS;
+        let Some(dump) = n0xis_luajit::read_table(&live, addr, layout) else {
+            return ir_err("not-a-table", "could not decode a GCtab at this address (wrong address or layout needs calibration)", pretty);
+        };
+        let array: Vec<serde_json::Value> = dump.array.iter().map(|v| tvalue_json(v, &live, layout)).collect();
+        let hash: Vec<serde_json::Value> = dump
+            .hash
+            .iter()
+            .map(|(k, v)| json!({ "key": tvalue_json(k, &live, layout), "value": tvalue_json(v, &live, layout) }))
+            .collect();
+        let label = live.label();
+        let data = json!({
+            "addr": dump.addr.to_string(),
+            "asize": dump.asize,
+            "hmask": dump.hmask,
+            "array": array,
+            "hash": hash,
+        });
+        emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+    }
 }
 
 fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-        Ok(r) => r,
-        Err(e) => return ir_err("bad-region", &e, pretty),
-    };
-    let wanted: Vec<String> = a.strings.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-    if wanted.is_empty() {
-        return ir_err("no-strings", "--strings must list at least one token", pretty);
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "lua combo requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-    let layout = n0xis_luajit::GcstrLayout::HELLDIVERS_GC64;
-    // Longest token bounds the GCstr scan; the combo tokens are short ASCII.
-    let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
-    // Every candidate GCstr whose text is one of the wanted tokens becomes a
-    // target address — the run cross-check discards any that aren't referenced.
-    let strs = n0xis_luajit::scan_strings(&live, &regions, layout, 1, max_len.max(1));
-    let mut targets: std::collections::HashMap<Va, String> = std::collections::HashMap::new();
-    for s in &strs {
-        if wanted.iter().any(|w| w == &s.text) {
-            targets.insert(s.object_base, s.text.clone());
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
+        };
+        let wanted: Vec<String> = a.strings.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        if wanted.is_empty() {
+            return ir_err("no-strings", "--strings must list at least one token", pretty);
         }
+        let layout = n0xis_luajit::GcstrLayout::HELLDIVERS_GC64;
+        // Longest token bounds the GCstr scan; the combo tokens are short ASCII.
+        let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
+        // Every candidate GCstr whose text is one of the wanted tokens becomes a
+        // target address — the run cross-check discards any that aren't referenced.
+        let strs = n0xis_luajit::scan_strings(&live, &regions, layout, 1, max_len.max(1));
+        let mut targets: std::collections::HashMap<Va, String> = std::collections::HashMap::new();
+        for s in &strs {
+            if wanted.iter().any(|w| w == &s.text) {
+                targets.insert(s.object_base, s.text.clone());
+            }
+        }
+        if targets.is_empty() {
+            let data = json!({ "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
+            return emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(live.label()), pretty);
+        }
+        // A combo array may be laid out as 8-byte Lua `TValue`s or as a packed
+        // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
+        let mut runs_json: Vec<serde_json::Value> = Vec::new();
+        let tv = n0xis_luajit::find_string_runs(&live, &regions, &targets, a.min_run);
+        for r in &tv {
+            runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "tvalue8", "len": r.values.len(), "values": r.values }));
+        }
+        let gr = n0xis_luajit::find_gcref32_runs(&live, &regions, &targets, a.min_run);
+        for r in &gr {
+            runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "gcref4", "len": r.values.len(), "values": r.values }));
+        }
+        let count = tv.len() + gr.len();
+        let label = live.label();
+        let data = json!({
+            "targets": targets.iter().map(|(a, t)| json!({ "addr": a.to_string(), "text": t })).collect::<Vec<_>>(),
+            "runs": runs_json,
+            "count": count,
+        });
+        emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(label), pretty)
     }
-    if targets.is_empty() {
-        let data = json!({ "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
-        return emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(live.label()), pretty);
-    }
-    // A combo array may be laid out as 8-byte Lua `TValue`s or as a packed
-    // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
-    let mut runs_json: Vec<serde_json::Value> = Vec::new();
-    let tv = n0xis_luajit::find_string_runs(&live, &regions, &targets, a.min_run);
-    for r in &tv {
-        runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "tvalue8", "len": r.values.len(), "values": r.values }));
-    }
-    let gr = n0xis_luajit::find_gcref32_runs(&live, &regions, &targets, a.min_run);
-    for r in &gr {
-        runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "gcref4", "len": r.values.len(), "values": r.values }));
-    }
-    let count = tv.len() + gr.len();
-    let label = live.label();
-    let data = json!({
-        "targets": targets.iter().map(|(a, t)| json!({ "addr": a.to_string(), "text": t })).collect::<Vec<_>>(),
-        "runs": runs_json,
-        "count": count,
-    });
-    emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(label), pretty)
 }
 
 /// `random(0,3)` direction codes, from the game's `modify_random_combo_inputs`:
@@ -4411,27 +4628,35 @@ fn cmd_lua_seedscan(a: LuaSeedscanArgs, pretty: bool) -> bool {
         Ok(_) => return ir_err("empty-combo", "--combo must list at least one direction", pretty),
         Err(e) => return ir_err("bad-combo", &e, pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-        Ok(r) => r,
-        Err(e) => return ir_err("bad-region", &e, pretty),
-    };
-    let lcg = n0xis_luajit::Lcg { a: a.lcg_a, c: a.lcg_c };
-    let bounds = if a.seed_bound { Some((1u32, 0x7FFF_FFFEu32)) } else { None };
-    let hits = n0xis_luajit::find_seeds(&live, &regions, &lcg, a.range, &target, bounds);
-    let label = live.label();
-    let data = json!({
-        "combo": a.combo,
-        "codes": target,
-        "lcg": { "a": a.lcg_a, "c": a.lcg_c, "range": a.range },
-        "seed_bounded": a.seed_bound,
-        "count": hits.len(),
-        "hits": hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
-    });
-    emit(&Response::success(schema::v1::LUA_SEEDSCAN, data).with_source(label), pretty)
+    #[cfg(not(windows))]
+    {
+        let _ = &target;
+        return ir_err("live-unsupported", "lua seedscan requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+        };
+        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
+        };
+        let lcg = n0xis_luajit::Lcg { a: a.lcg_a, c: a.lcg_c };
+        let bounds = if a.seed_bound { Some((1u32, 0x7FFF_FFFEu32)) } else { None };
+        let hits = n0xis_luajit::find_seeds(&live, &regions, &lcg, a.range, &target, bounds);
+        let label = live.label();
+        let data = json!({
+            "combo": a.combo,
+            "codes": target,
+            "lcg": { "a": a.lcg_a, "c": a.lcg_c, "range": a.range },
+            "seed_bounded": a.seed_bound,
+            "count": hits.len(),
+            "hits": hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
+        });
+        emit(&Response::success(schema::v1::LUA_SEEDSCAN, data).with_source(label), pretty)
+    }
 }
 
 fn cmd_bundle_repack(a: BundleRepackArgs, pretty: bool) -> bool {
@@ -4627,108 +4852,124 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         "decreased" => FilterCriterion::Decreased,
         other => return ir_err("bad-transition", &format!("unknown --transition '{other}' (changed|increased|decreased)"), pretty),
     };
-    let arch = X64::new();
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-        Ok(r) => r,
-        Err(e) => return ir_err("bad-region", &e, pretty),
-    };
-    let label = live.label();
-    let ctx = Ctx::new(&live, &arch);
-
-    // 1) Snapshot the region set (unknown = capture every value densely).
-    let before = match ScanPass.run(&ctx, ScanInput { regions, value_type, criterion: ScanCriterion::Unknown, align }) {
-        Ok(s) => s,
-        Err(e) => return ir_err("snapshot-failed", &e.to_string(), pretty),
-    };
-    let snapshot_count = before.total();
-    eprintln!("[n0x] snapshot: {snapshot_count} candidate values captured across the region set");
-
-    // 2) Let the operator toggle exactly one thing (or wait a fixed delay).
-    if let Some(ms) = a.wait_ms {
-        eprintln!("[n0x] toggle exactly one thing in the target now — rescanning in {ms}ms");
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    } else {
-        eprintln!("[n0x] toggle exactly one thing in the target, then press Enter to rescan…");
-        let mut _line = String::new();
-        let _ = std::io::stdin().read_line(&mut _line);
+    #[cfg(not(windows))]
+    {
+        let _ = (&a, value_type, align, &transition);
+        return ir_err("live-unsupported", "locate by-transition requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-
-    // 3) Rescan and keep only what changed (the transition = the signal).
-    let mut state = match FilterPass.run(&ctx, FilterInput { previous: before, criterion: transition }) {
-        Ok(s) => s,
-        Err(e) => return ir_err("rescan-failed", &e.to_string(), pretty),
-    };
-    let after_transition = state.total();
-
-    // 4) Optional structural predicate over the survivors (a second filter).
-    let predicate = if let Some(v) = a.expect {
-        Some(FilterCriterion::Exact { value: to_scan_value(v) })
-    } else if a.min.is_some() || a.max.is_some() {
-        match (a.min, a.max) {
-            (Some(min), Some(max)) => Some(FilterCriterion::InRange { min: to_scan_value(min), max: to_scan_value(max) }),
-            _ => return ir_err("bad-predicate", "--min and --max must be given together", pretty),
-        }
-    } else {
-        None
-    };
-    let predicate_label = predicate.as_ref().map(|_| if a.expect.is_some() { "expect" } else { "in-range" });
-    if let Some(crit) = predicate {
-        state = match FilterPass.run(&ctx, FilterInput { previous: state, criterion: crit }) {
-            Ok(s) => s,
-            Err(e) => return ir_err("predicate-failed", &e.to_string(), pretty),
+    #[cfg(windows)]
+    {
+        let arch = X64::new();
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
         };
-    }
-    let final_count = state.total();
+        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
+        };
+        let label = live.label();
+        let ctx = Ctx::new(&live, &arch);
 
-    // 5) Persist the working set so `scan filter` can continue narrowing it.
-    if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &state.encode(), a.force) {
-        return ir_err("save-failed", &e.to_string(), pretty);
-    }
+        // 1) Snapshot the region set (unknown = capture every value densely).
+        let before = match ScanPass.run(&ctx, ScanInput { regions, value_type, criterion: ScanCriterion::Unknown, align }) {
+            Ok(s) => s,
+            Err(e) => return ir_err("snapshot-failed", &e.to_string(), pretty),
+        };
+        let snapshot_count = before.total();
+        eprintln!("[n0x] snapshot: {snapshot_count} candidate values captured across the region set");
 
-    let report = state.report();
-    let report_v = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
-    let note = if final_count == 1 {
-        "exactly one survivor — the transition diff localized the value (RE_METHOD W1)".to_string()
-    } else if final_count == 0 {
-        "zero survivors — either nothing toggled, the wrong value type, or the change was outside the scanned regions".to_string()
-    } else {
-        format!("{final_count} survivors — toggle again and run `scan filter --from {} --criterion changed` to narrow further", a.save_as)
-    };
-    let data = json!({
-        "snapshot_count": snapshot_count,
-        "after_transition": after_transition,
-        "final_count": final_count,
-        "transition": a.transition,
-        "predicate": predicate_label,
-        "saved_as": a.save_as,
-        "report": report_v,
-        "note": note,
-    });
-    emit(&Response::success(schema::v1::LOCATE_TRANSITION, data).with_source(label), pretty)
+        // 2) Let the operator toggle exactly one thing (or wait a fixed delay).
+        if let Some(ms) = a.wait_ms {
+            eprintln!("[n0x] toggle exactly one thing in the target now — rescanning in {ms}ms");
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        } else {
+            eprintln!("[n0x] toggle exactly one thing in the target, then press Enter to rescan…");
+            let mut _line = String::new();
+            let _ = std::io::stdin().read_line(&mut _line);
+        }
+
+        // 3) Rescan and keep only what changed (the transition = the signal).
+        let mut state = match FilterPass.run(&ctx, FilterInput { previous: before, criterion: transition }) {
+            Ok(s) => s,
+            Err(e) => return ir_err("rescan-failed", &e.to_string(), pretty),
+        };
+        let after_transition = state.total();
+
+        // 4) Optional structural predicate over the survivors (a second filter).
+        let predicate = if let Some(v) = a.expect {
+            Some(FilterCriterion::Exact { value: to_scan_value(v) })
+        } else if a.min.is_some() || a.max.is_some() {
+            match (a.min, a.max) {
+                (Some(min), Some(max)) => Some(FilterCriterion::InRange { min: to_scan_value(min), max: to_scan_value(max) }),
+                _ => return ir_err("bad-predicate", "--min and --max must be given together", pretty),
+            }
+        } else {
+            None
+        };
+        let predicate_label = predicate.as_ref().map(|_| if a.expect.is_some() { "expect" } else { "in-range" });
+        if let Some(crit) = predicate {
+            state = match FilterPass.run(&ctx, FilterInput { previous: state, criterion: crit }) {
+                Ok(s) => s,
+                Err(e) => return ir_err("predicate-failed", &e.to_string(), pretty),
+            };
+        }
+        let final_count = state.total();
+
+        // 5) Persist the working set so `scan filter` can continue narrowing it.
+        if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &state.encode(), a.force) {
+            return ir_err("save-failed", &e.to_string(), pretty);
+        }
+
+        let report = state.report();
+        let report_v = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+        let note = if final_count == 1 {
+            "exactly one survivor — the transition diff localized the value (RE_METHOD W1)".to_string()
+        } else if final_count == 0 {
+            "zero survivors — either nothing toggled, the wrong value type, or the change was outside the scanned regions".to_string()
+        } else {
+            format!("{final_count} survivors — toggle again and run `scan filter --from {} --criterion changed` to narrow further", a.save_as)
+        };
+        let data = json!({
+            "snapshot_count": snapshot_count,
+            "after_transition": after_transition,
+            "final_count": final_count,
+            "transition": a.transition,
+            "predicate": predicate_label,
+            "saved_as": a.save_as,
+            "report": report_v,
+            "note": note,
+        });
+        emit(&Response::success(schema::v1::LOCATE_TRANSITION, data).with_source(label), pretty)
+    }
 }
 
 fn cmd_input_probe(a: InputProbeArgs, pretty: bool) -> bool {
-    let vk = match a.vk.as_deref() {
-        Some(s) => {
-            let parsed = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-                u16::from_str_radix(hex, 16)
-            } else {
-                s.parse::<u16>()
-            };
-            match parsed {
-                Ok(v) => v,
-                Err(_) => return ir_err("bad-vk", &format!("invalid --vk '{s}' (decimal or 0x..)"), pretty),
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "input probe requires a Windows build (needs Win32 input APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let vk = match a.vk.as_deref() {
+            Some(s) => {
+                let parsed = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                    u16::from_str_radix(hex, 16)
+                } else {
+                    s.parse::<u16>()
+                };
+                match parsed {
+                    Ok(v) => v,
+                    Err(_) => return ir_err("bad-vk", &format!("invalid --vk '{s}' (decimal or 0x..)"), pretty),
+                }
             }
+            None => DEFAULT_PROBE_VK,
+        };
+        match probe_actuation(vk, a.pid, a.timeout_ms) {
+            Ok(report) => emit(&Response::success(schema::v1::INPUT_PROBE, report), pretty),
+            Err(e) => ir_err("probe-failed", &e, pretty),
         }
-        None => DEFAULT_PROBE_VK,
-    };
-    match probe_actuation(vk, a.pid, a.timeout_ms) {
-        Ok(report) => emit(&Response::success(schema::v1::INPUT_PROBE, report), pretty),
-        Err(e) => ir_err("probe-failed", &e, pretty),
     }
 }
 
@@ -4891,6 +5132,7 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
     };
     let pseudo = match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -4923,6 +5165,7 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
 
     let (default_text, default_data) = match &src {
         Src::Static(pe) => (pe.text_range(), pe.section_range(".rdata").or_else(|| pe.text_range())),
+        #[cfg(windows)]
         Src::Live(l) => {
             if let Some(modname) = &a.module {
                 use n0xis_sources::ModuleProvider;
@@ -4972,6 +5215,7 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -5081,74 +5325,91 @@ fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
         Ok(e) => e,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let live = match LiveProcess::attach(a.pid) {
-        Ok(l) => l,
-        Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-    };
-    let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-        Ok(r) => r,
-        Err(e) => return ir_err("bad-region", &e, pretty),
-    };
-    let label = live.label();
-    let arch = X64::new();
-    let ctx = Ctx::new(&live, &arch);
-
-    let input = UiLocateInput {
-        regions,
-        rect,
-        space: a.space.into(),
-        layout: AabbLayout::HELLDIVERS,
-        align: a.align.max(1),
-    };
-    let mut art = match UiLocatePass.run(&ctx, input) {
-        Ok(a) => a,
-        Err(e) => return ir_err("ui-locate-failed", &e.to_string(), pretty),
-    };
-
-    // Spatial-diff filter: exclude anything also found in a previously
-    // `--save-as`d query (typically one over a rect where the widget is
-    // known to be *absent*) — what's left is specific to this rect, not an
-    // ambient/global structure whose (mis)computed box happens to overlap
-    // everything (e.g. a coincidentally AABB-shaped shader constant buffer).
-    if !excluded.is_empty() {
-        art.elements.retain(|e| !excluded.contains(&e.address));
-        // The exclusion is a real filter, not a display cap — `count` reflects
-        // it immediately.
-        art.count = art.elements.len();
+    #[cfg(not(windows))]
+    {
+        let _ = (&a, rect, &excluded);
+        return ir_err("live-unsupported", "ui locate requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
     }
-
-    if let Some(name) = &a.save_as {
-        let bytes = match serde_json::to_vec(&art) {
-            Ok(b) => b,
-            Err(e) => return ir_err("serialize-failed", &e.to_string(), pretty),
+    #[cfg(windows)]
+    {
+        let live = match LiveProcess::attach(a.pid) {
+            Ok(l) => l,
+            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
         };
-        if let Err(e) = n0xis_project::dump::save(name, "ui_locate", &bytes, a.force) {
-            return ir_err("save-failed", &e.to_string(), pretty);
-        }
-    }
+        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+            Ok(r) => r,
+            Err(e) => return ir_err("bad-region", &e, pretty),
+        };
+        let label = live.label();
+        let arch = X64::new();
+        let ctx = Ctx::new(&live, &arch);
 
-    // `count` stays the true total (sound-over-complete: a `--limit` cap must
-    // never look like "that's everything") — only the reported list is capped.
-    art.elements.truncate(a.limit);
-    emit(&Response::success(schema::v1::UI_LOCATE, art).with_source(label), pretty)
+        let input = UiLocateInput {
+            regions,
+            rect,
+            space: a.space.into(),
+            layout: AabbLayout::HELLDIVERS,
+            align: a.align.max(1),
+        };
+        let mut art = match UiLocatePass.run(&ctx, input) {
+            Ok(a) => a,
+            Err(e) => return ir_err("ui-locate-failed", &e.to_string(), pretty),
+        };
+
+        // Spatial-diff filter: exclude anything also found in a previously
+        // `--save-as`d query (typically one over a rect where the widget is
+        // known to be *absent*) — what's left is specific to this rect, not an
+        // ambient/global structure whose (mis)computed box happens to overlap
+        // everything (e.g. a coincidentally AABB-shaped shader constant buffer).
+        if !excluded.is_empty() {
+            art.elements.retain(|e| !excluded.contains(&e.address));
+            // The exclusion is a real filter, not a display cap — `count` reflects
+            // it immediately.
+            art.count = art.elements.len();
+        }
+
+        if let Some(name) = &a.save_as {
+            let bytes = match serde_json::to_vec(&art) {
+                Ok(b) => b,
+                Err(e) => return ir_err("serialize-failed", &e.to_string(), pretty),
+            };
+            if let Err(e) = n0xis_project::dump::save(name, "ui_locate", &bytes, a.force) {
+                return ir_err("save-failed", &e.to_string(), pretty);
+            }
+        }
+
+        // `count` stays the true total (sound-over-complete: a `--limit` cap must
+        // never look like "that's everything") — only the reported list is capped.
+        art.elements.truncate(a.limit);
+        emit(&Response::success(schema::v1::UI_LOCATE, art).with_source(label), pretty)
+    }
 }
 
 fn cmd_ui_windows(a: UiWindowsArgs, pretty: bool) -> bool {
-    let windows = list_windows(a.pid);
-    let data = json!({
-        "pid": a.pid,
-        "count": windows.len(),
-        "windows": windows,
-        "coords": "physical",
-        "note": "rect_frame is the canonical visible bounds for capture/input; rect_window includes the DWM shadow; rect_client is where the game renders. Pass an hwnd to `ui screenshot`/`ui focus`.",
-    });
-    emit(&Response::success(schema::v1::UI_WINDOWS, data).with_source(format!("pid:{}", a.pid)), pretty)
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "ui windows requires a Windows build (needs Win32 window enumeration)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let windows = list_windows(a.pid);
+        let data = json!({
+            "pid": a.pid,
+            "count": windows.len(),
+            "windows": windows,
+            "coords": "physical",
+            "note": "rect_frame is the canonical visible bounds for capture/input; rect_window includes the DWM shadow; rect_client is where the game renders. Pass an hwnd to `ui screenshot`/`ui focus`.",
+        });
+        emit(&Response::success(schema::v1::UI_WINDOWS, data).with_source(format!("pid:{}", a.pid)), pretty)
+    }
 }
 
 /// Resolve the target window: an explicit `--hwnd` (verified to actually belong
 /// to `pid`, so a stale/foreign handle can't silently screenshot another
 /// process while the envelope reports this pid), else the best-guess game
 /// window for the pid. Returns the HWND integer or an error payload.
+#[cfg(windows)]
 fn resolve_ui_window(pid: u32, hwnd: Option<usize>, pretty: bool) -> Result<usize, bool> {
     if let Some(h) = hwnd {
         let owner = n0xis_sources::window_pid(h);
@@ -5175,99 +5436,115 @@ fn resolve_ui_window(pid: u32, hwnd: Option<usize>, pretty: bool) -> Result<usiz
 }
 
 fn cmd_ui_screenshot(a: UiScreenshotArgs, pretty: bool) -> bool {
-    let hwnd = match resolve_ui_window(a.pid, a.hwnd, pretty) {
-        Ok(h) => h,
-        Err(rc) => return rc,
-    };
-    let methods: Vec<CaptureMethod> = match a.method {
-        CaptureMethodArg::Auto => vec![CaptureMethod::PrintWindow, CaptureMethod::WindowDc],
-        CaptureMethodArg::WindowDc => vec![CaptureMethod::WindowDc],
-        CaptureMethodArg::Printwindow => vec![CaptureMethod::PrintWindow],
-    };
-    let shot = match window_screenshot(hwnd, &methods) {
-        Ok(s) => s,
-        // A hard pre-flight failure (minimized / display-affinity / offscreen):
-        // an honest, specific reason, not a black image.
-        Err(e) => {
-            return emit(
-                &Response::<serde_json::Value>::error("capture-failed", e.reason)
-                    .with_hint("run `ui windows` to check the window is visible and on-screen"),
-                pretty,
-            );
-        }
-    };
-
-    let mut out_path_written: Option<String> = None;
-    let mut png_b64: Option<String> = None;
-    if a.out.is_some() || a.base64 {
-        match encode_png(&shot.rgba, shot.width, shot.height) {
-            Ok(png) => {
-                if let Some(path) = &a.out {
-                    if let Err(e) = std::fs::write(path, &png) {
-                        return ir_err("write-failed", &format!("write {path}: {e}"), pretty);
-                    }
-                    out_path_written = Some(path.clone());
-                }
-                if a.base64 {
-                    png_b64 = Some(n0xis_sources::b64_encode(&png));
-                }
-            }
-            Err(e) => return ir_err("png-failed", &e, pretty),
-        }
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "ui screenshot requires a Windows build (needs Win32 GDI/window capture)", pretty);
     }
+    #[cfg(windows)]
+    {
+        let hwnd = match resolve_ui_window(a.pid, a.hwnd, pretty) {
+            Ok(h) => h,
+            Err(rc) => return rc,
+        };
+        let methods: Vec<CaptureMethod> = match a.method {
+            CaptureMethodArg::Auto => vec![CaptureMethod::PrintWindow, CaptureMethod::WindowDc],
+            CaptureMethodArg::WindowDc => vec![CaptureMethod::WindowDc],
+            CaptureMethodArg::Printwindow => vec![CaptureMethod::PrintWindow],
+        };
+        let shot = match window_screenshot(hwnd, &methods) {
+            Ok(s) => s,
+            // A hard pre-flight failure (minimized / display-affinity / offscreen):
+            // an honest, specific reason, not a black image.
+            Err(e) => {
+                return emit(
+                    &Response::<serde_json::Value>::error("capture-failed", e.reason)
+                        .with_hint("run `ui windows` to check the window is visible and on-screen"),
+                    pretty,
+                );
+            }
+        };
 
-    // Confidence is derived from the winning frame's verdict, surfaced at the
-    // top level so an agent told to "key on blank" also sees a low-confidence
-    // near-blank (Suspect) frame for what it is, instead of trusting it as crisp.
-    let confidence = match shot.verdict {
-        n0xis_sources::FrameVerdict::Ok => "ok",
-        n0xis_sources::FrameVerdict::Suspect => "low",
-        _ => "blank",
-    };
-    let data = json!({
-        "pid": a.pid,
-        "hwnd": hwnd,
-        "width": shot.width,
-        "height": shot.height,
-        "method": shot.method,
-        "blank": shot.blank,
-        "confidence": confidence,
-        "reason": shot.reason,
-        "attempts": shot.attempts,
-        "client_rect": shot.client_rect,
-        "dpi": shot.dpi,
-        "out": out_path_written,
-        "png_base64": png_b64,
-        "coords": "physical",
-        "note": if shot.blank {
-            "BLANK capture — do NOT treat this as an empty UI. GDI/PrintWindow return black for flip-model DirectX windows; the real answer needs Windows.Graphics.Capture (a documented follow-on). Key on data.blank, not on ok. The image (if written) is a diagnostic artifact only."
-        } else if confidence == "low" {
-            "LOW-CONFIDENCE capture (near-blank: very few distinct colors). A rect picked from this may be unreliable — confirm the window is really showing content, or try --method window-dc/printwindow explicitly."
-        } else {
-            "pick a rect from this image (physical pixels, origin at the window's top-left) and pass it to `ui locate --rect`."
-        },
-    });
-    // The envelope's failure arm carries no data, and the per-method
-    // diagnostics (attempts/stats/reason) are exactly what an operator needs to
-    // understand a blank result — so a blank capture is emitted as a success
-    // envelope with a prominent `blank: true` (brief §E's sanctioned option: an
-    // agent keys on `data.blank`, never mistaking it for a real screenshot),
-    // rather than a data-less error that would throw the diagnostics away.
-    emit(&Response::success(schema::v1::UI_SCREENSHOT, data).with_source(format!("pid:{}", a.pid)), pretty)
+        let mut out_path_written: Option<String> = None;
+        let mut png_b64: Option<String> = None;
+        if a.out.is_some() || a.base64 {
+            match encode_png(&shot.rgba, shot.width, shot.height) {
+                Ok(png) => {
+                    if let Some(path) = &a.out {
+                        if let Err(e) = std::fs::write(path, &png) {
+                            return ir_err("write-failed", &format!("write {path}: {e}"), pretty);
+                        }
+                        out_path_written = Some(path.clone());
+                    }
+                    if a.base64 {
+                        png_b64 = Some(n0xis_sources::b64_encode(&png));
+                    }
+                }
+                Err(e) => return ir_err("png-failed", &e, pretty),
+            }
+        }
+
+        // Confidence is derived from the winning frame's verdict, surfaced at the
+        // top level so an agent told to "key on blank" also sees a low-confidence
+        // near-blank (Suspect) frame for what it is, instead of trusting it as crisp.
+        let confidence = match shot.verdict {
+            n0xis_sources::FrameVerdict::Ok => "ok",
+            n0xis_sources::FrameVerdict::Suspect => "low",
+            _ => "blank",
+        };
+        let data = json!({
+            "pid": a.pid,
+            "hwnd": hwnd,
+            "width": shot.width,
+            "height": shot.height,
+            "method": shot.method,
+            "blank": shot.blank,
+            "confidence": confidence,
+            "reason": shot.reason,
+            "attempts": shot.attempts,
+            "client_rect": shot.client_rect,
+            "dpi": shot.dpi,
+            "out": out_path_written,
+            "png_base64": png_b64,
+            "coords": "physical",
+            "note": if shot.blank {
+                "BLANK capture — do NOT treat this as an empty UI. GDI/PrintWindow return black for flip-model DirectX windows; the real answer needs Windows.Graphics.Capture (a documented follow-on). Key on data.blank, not on ok. The image (if written) is a diagnostic artifact only."
+            } else if confidence == "low" {
+                "LOW-CONFIDENCE capture (near-blank: very few distinct colors). A rect picked from this may be unreliable — confirm the window is really showing content, or try --method window-dc/printwindow explicitly."
+            } else {
+                "pick a rect from this image (physical pixels, origin at the window's top-left) and pass it to `ui locate --rect`."
+            },
+        });
+        // The envelope's failure arm carries no data, and the per-method
+        // diagnostics (attempts/stats/reason) are exactly what an operator needs to
+        // understand a blank result — so a blank capture is emitted as a success
+        // envelope with a prominent `blank: true` (brief §E's sanctioned option: an
+        // agent keys on `data.blank`, never mistaking it for a real screenshot),
+        // rather than a data-less error that would throw the diagnostics away.
+        emit(&Response::success(schema::v1::UI_SCREENSHOT, data).with_source(format!("pid:{}", a.pid)), pretty)
+    }
 }
 
 fn cmd_ui_focus(a: UiFocusArgs, pretty: bool) -> bool {
-    let hwnd = match resolve_ui_window(a.pid, a.hwnd, pretty) {
-        Ok(h) => h,
-        Err(rc) => return rc,
-    };
-    let result = window_focus(hwnd);
-    let data = json!({
-        "pid": a.pid,
-        "hwnd": result.hwnd,
-        "foreground": result.foreground,
-        "method": result.method,
-        "note": if result.foreground { "window is now foreground" } else { "focus was denied or only partial (Z-order/taskbar flash) — Windows blocks foreground stealing while the user is active" },
-    });
-    emit(&Response::success(schema::v1::UI_FOCUS, data).with_source(format!("pid:{}", a.pid)), pretty)
+    #[cfg(not(windows))]
+    {
+        let _ = &a;
+        return ir_err("live-unsupported", "ui focus requires a Windows build (needs Win32 window APIs)", pretty);
+    }
+    #[cfg(windows)]
+    {
+        let hwnd = match resolve_ui_window(a.pid, a.hwnd, pretty) {
+            Ok(h) => h,
+            Err(rc) => return rc,
+        };
+        let result = window_focus(hwnd);
+        let data = json!({
+            "pid": a.pid,
+            "hwnd": result.hwnd,
+            "foreground": result.foreground,
+            "method": result.method,
+            "note": if result.foreground { "window is now foreground" } else { "focus was denied or only partial (Z-order/taskbar flash) — Windows blocks foreground stealing while the user is active" },
+        });
+        emit(&Response::success(schema::v1::UI_FOCUS, data).with_source(format!("pid:{}", a.pid)), pretty)
+    }
 }

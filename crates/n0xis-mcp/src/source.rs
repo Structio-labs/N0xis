@@ -8,9 +8,12 @@
 //! no use for it).
 
 use n0xis_contracts::Va;
-use n0xis_sources::{LiveProcess, MemorySource, RemoteAgent, Snapshot, StaticPe, split_command_line};
+#[cfg(windows)]
+use n0xis_sources::LiveProcess;
+use n0xis_sources::{MemorySource, RemoteAgent, Snapshot, StaticPe, split_command_line};
 
 pub enum Src {
+    #[cfg(windows)]
     Live(Box<LiveProcess>),
     Static(Box<StaticPe>),
     Snap(Snapshot),
@@ -20,6 +23,7 @@ pub enum Src {
 impl Src {
     pub fn as_mem(&self) -> &dyn MemorySource {
         match self {
+            #[cfg(windows)]
             Src::Live(l) => l.as_ref(),
             Src::Static(p) => p.as_ref(),
             Src::Snap(s) => s,
@@ -29,6 +33,7 @@ impl Src {
 
     pub fn text_range(&self) -> Option<(Va, u64)> {
         match self {
+            #[cfg(windows)]
             Src::Live(l) => l.text_range(),
             Src::Static(p) => p.text_range(),
             Src::Snap(_) | Src::Remote(_) => None,
@@ -37,6 +42,7 @@ impl Src {
 
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
         match self {
+            #[cfg(windows)]
             Src::Live(l) => l.section_range(name),
             Src::Static(p) => p.section_range(name),
             Src::Snap(_) | Src::Remote(_) => None,
@@ -49,9 +55,23 @@ impl Src {
 
     pub fn module_base(&self) -> Option<Va> {
         match self {
+            #[cfg(windows)]
             Src::Live(l) => l.main_module().map(|m| m.base),
             Src::Static(p) => Some(p.image_base()),
             Src::Snap(_) | Src::Remote(_) => None,
+        }
+    }
+
+    /// Modules known to this source (empty for `Snap`/`Remote`, which don't
+    /// implement `ModuleProvider`). Centralized here so callers never need to
+    /// match on `Src::Live` themselves (that arm only exists on Windows).
+    pub fn modules(&self) -> Vec<n0xis_contracts::Module> {
+        use n0xis_sources::ModuleProvider;
+        match self {
+            #[cfg(windows)]
+            Src::Live(l) => l.modules().to_vec(),
+            Src::Static(p) => p.modules().to_vec(),
+            Src::Snap(_) | Src::Remote(_) => Vec::new(),
         }
     }
 }
@@ -77,8 +97,16 @@ pub fn resolve(pid: Option<u32>, file: Option<&str>, snapshot: Option<&str>, rem
     };
 
     if let Some(pid) = pid {
-        let live = LiveProcess::attach(pid).map_err(|e| ("attach-failed".to_string(), e.to_string()))?;
-        return Ok(Src::Live(Box::new(live)));
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            return Err(("live-unsupported".to_string(), "pid (live-process analysis) requires a Windows build (needs LiveProcess/Win32 APIs)".to_string()));
+        }
+        #[cfg(windows)]
+        {
+            let live = LiveProcess::attach(pid).map_err(|e| ("attach-failed".to_string(), e.to_string()))?;
+            return Ok(Src::Live(Box::new(live)));
+        }
     }
     if let Some(file) = file {
         let pe = StaticPe::load(std::path::Path::new(&file))
