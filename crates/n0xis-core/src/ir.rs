@@ -69,6 +69,14 @@ pub struct CfgStats {
     pub calls: usize,
     pub indirect_branches: usize,
     pub tail_calls: usize,
+    /// Calls to a well-known noreturn import (`ExitProcess`, `abort`, …) —
+    /// each one ends its block like a `ret` (terminator `"call-noreturn"`),
+    /// since nothing after it is reachable (ROADMAP Phase 10, CFG fidelity).
+    /// `#[serde(default)]` so a pre-existing `.n0x/ir-cache/*.json` entry
+    /// (Phase 6) from before this field existed still deserializes (as `0`,
+    /// same observable behavior as the old code) instead of erroring.
+    #[serde(default)]
+    pub noreturn_calls: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,7 +85,8 @@ pub struct CfgBlock {
     pub start: Va,
     pub end: Va,
     /// How the block leaves: `fall` / `jmp` / `cjmp` / `ijmp` / `ret` / `int` /
-    /// `tail-call`.
+    /// `tail-call` / `call-noreturn` (a call to a well-known noreturn import —
+    /// zero successors, nothing after it is reachable).
     pub terminator: String,
     pub successors: Vec<Successor>,
     pub insns: Vec<IrInsn>,
@@ -270,12 +279,21 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                 }
             }
 
-            // Resolve a direct target's name via the symbol seam, if any.
-            let target_name = ins.target.and_then(|t| {
-                ctx.symbols
-                    .and_then(|s| s.symbol_at(t))
-                    .map(|sym| format!("{}!{}", sym.module, sym.name))
-            });
+            // Resolve a direct target's name via the symbol seam, if any —
+            // falling back to the RIP-relative memory operand (an IAT slot,
+            // the common shape of `call qword ptr [rip+disp]` to an import)
+            // when there's no direct near-branch target. Without this
+            // fallback, the overwhelming majority of real import calls
+            // (ExitProcess/abort/etc. via the IAT) would never resolve a
+            // name at all, silently defeating noreturn detection below.
+            let target_name = ins
+                .target
+                .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
+                .or_else(|| {
+                    ins.rip_target
+                        .and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t)))
+                })
+                .map(|sym| format!("{}!{}", sym.module, sym.name));
 
             let is_tail = ins.kind == InsnKind::Jump
                 && ins
@@ -369,13 +387,28 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                 }
                 InsnKind::Call => {
                     stats.calls += 1;
+                    // A call to a well-known noreturn import (ExitProcess,
+                    // abort, …) ends the block like a `ret`: nothing after it
+                    // is reachable, so — unlike an ordinary call — it must
+                    // not be treated as falling through (ROADMAP Phase 10).
+                    let is_noreturn = target_name
+                        .as_deref()
+                        .and_then(|n| n.rsplit('!').next())
+                        .map(crate::noreturn::is_known_noreturn)
+                        .unwrap_or(false);
                     callsites.push(Callsite {
                         from: ins.va,
                         kind: if target_name.is_some() { "named" } else { "direct" }.into(),
                         target: ins.target,
                         target_name,
                     });
-                    // Calls do not end a basic block.
+                    if is_noreturn {
+                        stats.noreturn_calls += 1;
+                        terminator = "call-noreturn".into();
+                        i += 1;
+                        break;
+                    }
+                    // Otherwise: calls do not end a basic block.
                 }
                 _ => {}
             }
@@ -431,8 +464,12 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
         art.start, art.end, art.insn_count, art.block_count
     ));
     lines.push(format!(
-        "stats: {} returns, {} calls, {} indirect branches, {} tail calls",
-        art.stats.returns, art.stats.calls, art.stats.indirect_branches, art.stats.tail_calls
+        "stats: {} returns, {} calls, {} indirect branches, {} tail calls, {} noreturn calls",
+        art.stats.returns,
+        art.stats.calls,
+        art.stats.indirect_branches,
+        art.stats.tail_calls,
+        art.stats.noreturn_calls
     ));
     if art.frame.frame_size > 0 || art.frame.uses_rbp || !art.frame.spilled_regs.is_empty() {
         lines.push(format!(
@@ -610,5 +647,104 @@ mod tests {
             vec![Va(0x1000), Va(0x1001), Va(0x1005), Va(0x1008)],
             "the nop ends the prolog scan"
         );
+    }
+
+    #[test]
+    fn call_to_known_noreturn_ends_the_block_with_no_successors() {
+        // 0x1000 call 0x2000        e8 fb 0f 00 00   (direct near call)
+        // 0x1005 mov rax, 1         48 c7 c0 01 00 00 00   -- dead, unreachable
+        // 0x100c ret                c3                     -- dead, unreachable
+        let code = vec![
+            0xe8, 0xfb, 0x0f, 0x00, 0x00, // call 0x2000
+            0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // mov rax, 1 (dead)
+            0xc3, // ret (dead)
+        ];
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .symbol(n0xis_contracts::Symbol {
+                va: Va(0x2000),
+                module: "kernel32".into(),
+                name: "ExitProcess".into(),
+                kind: n0xis_contracts::SymKind::Export,
+            })
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        let entry = &art.blocks[0];
+        assert_eq!(entry.terminator, "call-noreturn");
+        assert!(
+            entry.successors.is_empty(),
+            "a noreturn call must not get a fall-through successor"
+        );
+        assert_eq!(art.stats.noreturn_calls, 1);
+    }
+
+    #[test]
+    fn iat_call_to_known_noreturn_ends_the_block() {
+        // call qword ptr [rip+disp] -> an IAT slot at 0x3000, holding ExitProcess.
+        let insn_va = 0x1000i64;
+        let insn_len = 6i64; // ff 15 + disp32
+        let slot_va = 0x3000i64;
+        let disp = (slot_va - (insn_va + insn_len)) as i32;
+        let mut code = vec![0xff, 0x15];
+        code.extend_from_slice(&disp.to_le_bytes());
+
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .iat_symbol(
+                Va(0x3000),
+                n0xis_contracts::Symbol {
+                    va: Va(0x3000),
+                    module: "kernel32".into(),
+                    name: "ExitProcess".into(),
+                    kind: n0xis_contracts::SymKind::Import,
+                },
+            )
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(
+            art.blocks[0].terminator, "call-noreturn",
+            "the rip_target/iat_slot fallback must resolve the IAT call's name"
+        );
+        assert_eq!(art.stats.noreturn_calls, 1);
+    }
+
+    #[test]
+    fn call_to_a_non_noreturn_named_function_does_not_end_the_block() {
+        // call to CloseHandle (named, but not noreturn), then ret — must stay reachable.
+        let code = vec![
+            0xe8, 0xfb, 0x0f, 0x00, 0x00, // call 0x2000 (CloseHandle)
+            0xc3, // ret
+        ];
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .symbol(n0xis_contracts::Symbol {
+                va: Va(0x2000),
+                module: "kernel32".into(),
+                name: "CloseHandle".into(),
+                kind: n0xis_contracts::SymKind::Export,
+            })
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(art.block_count, 1, "call+ret should be a single fallthrough block");
+        assert_eq!(art.blocks[0].terminator, "ret");
+        assert_eq!(art.stats.noreturn_calls, 0);
     }
 }

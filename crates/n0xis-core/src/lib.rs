@@ -28,6 +28,7 @@ mod gamegrep;
 mod ir;
 mod lift;
 mod manifest;
+mod noreturn;
 mod optimize;
 mod pointer;
 mod provenance;
@@ -75,6 +76,7 @@ pub use ir::{
 };
 pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
+pub use noreturn::is_known_noreturn;
 pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};
 pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, PointerPathInput, PointerPathPass, PointerRoot};
 pub use provenance::{ProvenanceEntry, ProvenanceGraph, ProvenanceHit, ProvenanceInput, ProvenancePass};

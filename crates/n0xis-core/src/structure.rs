@@ -172,6 +172,7 @@ fn emit_block_body_and_terminator(ctx: &mut Ctx, n: usize, until: Option<usize>)
             // Body lift already pushed `return ...;`.
         }
         "int" => ctx.out.push(format!("{}// int / abort", pad(ctx.indent))),
+        "call-noreturn" => ctx.out.push(format!("{}// unreachable: call does not return", pad(ctx.indent))),
         "ijmp" if !is_switch => {
             ctx.out.push(format!("{}// indirect jump (unrecovered)", pad(ctx.indent)));
         }
@@ -415,7 +416,7 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
     let (succ, pred) = block_graph(cfg);
     let dom = dominators_fwd(n, &pred);
     let idom = immediate_doms(&dom);
-    let is_exit: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "ret" | "tail-call" | "int")).collect();
+    let is_exit: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "ret" | "tail-call" | "int" | "call-noreturn")).collect();
     let pdom = dominators_rev(n, &succ, &is_exit);
     let ipdom = immediate_doms(&pdom);
     let _ = &idom; // idom itself isn't needed beyond computing dom sets for back-edge detection

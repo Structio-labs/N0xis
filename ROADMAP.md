@@ -421,7 +421,8 @@ Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powe
   `xref`, `xref_string`, `mem_read`, `mem_write`, `provenance_trace`, and the
   `explain_opt_delta` tool below (`provenance_trace`, the other "explain" tool, is
   already named above). (Later phases add `annotate_set`/`annotate_get`/`annotate_list`
-  in Phase 6 and `ui_locate` in Phase 9, for **18** exposed tools in the working tree.)
+  in Phase 6 and `ui_locate`/`ui_windows`/`ui_screenshot`/`ui_focus` in Phase 9, for
+  **21** exposed tools in the working tree.)
   Every tool returns the exact serialized `{ok,data,meta}`
   envelope (`n0xis_contracts::Response`) `n0xis-cli`'s `emit()` prints — an agent's
   parsing code is identical whether it called the CLI or MCP (CONCEPT §3 rule 5).
@@ -844,8 +845,8 @@ dependency order.
 > decompile — that teach an agent *how* to compose the verbs, not just what they
 > are. `guide <topic>` filters; `--brief` drops per-arg detail. clap `--help`
 > stays as the human per-command usage. This is the discovery surface an AI agent
-> reads first. (Phase 9's working-tree `ui locate` brings a rebuild to 78 leaf
-> commands.)
+> reads first. (Phase 9's `ui locate`/`windows`/`screenshot`/`focus` bring a
+> rebuild to 81 leaf commands.)
 
 **The re-framing this phase encodes** (RE_METHOD's "spec-first ladder") — climb
 it **top-down**, each rung cheaper and more stable than the one below:
@@ -877,12 +878,12 @@ regardless).
 
 ## Phase 9 — Seeing what the target sees: UI-layer localization 🎯 ⏳
 
-> **Status (2026-07-22) — working tree, uncommitted.** Nothing in this phase is on
-> `main` yet. Every ⚠️ item below is **implemented and self-tested** (unit tests
-> over synthetic snapshots — the AABB predicate, the overlap maths, the
-> mirrored-dword relation, the real 348k-noise sample), but the decisive
-> **live-target validation** — the §9.3 appearance-correlation test on a running
-> game — **has not been run**. Read the ⚠️ markers as *implemented, pending live
+> **Status (2026-07-22) — committed to branch `feat/phase9-ui-locate` (`fbf7a5f`),
+> not yet merged to `main`.** Every ⚠️ item below is **implemented and self-tested**
+> (unit tests over synthetic snapshots — the AABB predicate, the overlap maths, the
+> mirrored-dword relation, the real 348k-noise sample) and the GDI capture path is
+> mspaint-verified, but the decisive **live-target validation** — the §9.3
+> appearance-correlation test on a running game — **has not been run**. Read the ⚠️ markers as *implemented, pending live
 > validation*, never *verified to `X64`'s standard* (same discipline as the ARM64
 > caveat in Phase 7).
 
@@ -1066,7 +1067,30 @@ names a missing tool.
   >   Duplication), which requires the heavy `windows` crate (WinRT/DXGI/D3D11 —
   >   windows-sys has none of it). Not done here; the tool reports the blank
   >   honestly instead, so a flip-model target is a *known, visible* limitation
-  >   rather than a silent wrong answer. This is the next rung of Phase 9.
+  >   rather than a silent wrong answer. This is the next rung of Phase 9 —
+  >   tracked as its own ⬜ item below.
+
+- ⬜ **Flip-model / DirectComposition capture — WGC or DXGI Desktop Duplication**
+  *(promotes the `ui screenshot` follow-on note above from prose to a tracked
+  item: "reports blank honestly" is the floor, not the finish line)*. Modern
+  DirectX games render flip-model, where GDI `BitBlt`/`PrintWindow` come back
+  black; the correct capture path is Windows.Graphics.Capture (or DXGI Desktop
+  Duplication), which pulls in the heavy `windows` crate (WinRT/DXGI/D3D11 —
+  `windows-sys` has none of it). Scoped as its own item so the dependency-budget
+  call — add `windows` only behind the `live` feature, keep the `n0xis-core`
+  boundary OS-free — is made deliberately, not smuggled in alongside something
+  else. Until it lands, a flip-model target stays a *known, visible* limitation
+  rather than a silent wrong answer.
+
+- ⬜ **Exit test — the live acceptance gate that flips ⚠️ → ✅.** The §9.3
+  appearance-correlation test on a **running DirectX game** (per the brief): open
+  a UI element at a known screen rect, `ui locate --rect` it, then move/toggle the
+  element and confirm the returned addresses track its real bounding box — and
+  that the spatial-diff `--exclude-from` flow drops ambient structure. This is the
+  single outstanding step for the whole phase: every ⚠️ item above reads
+  "implemented, pending live validation" *because this has not been run yet*. No
+  synthetic substitute counts — passing unit tests and an mspaint capture are
+  necessary, not sufficient (the exact lesson Phase 7's ARM64 caveat records).
 
 ---
 
@@ -1099,7 +1123,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
 | Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
 | Tail-call detection | 🚧 partial — edge class only, no semantic promotion |
-| noreturn analysis | 🚧 partial — triage flag, not interprocedural |
+| noreturn analysis | 🚧 partial — known-import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) correctly end a block ✅ 2026-07-22; self-discovered-function propagation still not attempted |
 | Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
 | Memory SSA | ❌ missing |
 | Interprocedural propagation | ❌ missing (bar the known-API table) |
@@ -1114,7 +1138,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 |---|---|---|
 | Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | ❌ `.pdata`/`.xdata` read for **unwinding only**; no EH edges in the graph |
 | Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | 🚧 `tail` exists as an **edge class**; no semantic promotion |
-| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 `no-return` is a **triage flag**; not propagated into caller CFGs |
+| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. **Still open**: propagating noreturn-ness across N0xis's *own discovered* functions (a whole-program call-graph fixpoint) is not attempted; `truncate_to_function` (the whole-function-end heuristic) still doesn't know about calls, so a function's reported `end` may still over-extend past a noreturn call even though the per-block CFG is now correct — both documented follow-ons, not silent gaps. |
 | Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
 | Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
 | Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
@@ -1125,13 +1149,41 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 
 ### Prioritized plan (ordered by leverage × cost, not size)
 
-0. ⬜ **CFG fidelity — the correctness debt. Do this first.** Interprocedural
+0. ⏳ **CFG fidelity — the correctness debt. Do this first.** Interprocedural
    `noreturn` propagation, tail-call promotion, exception edges. It is *cheap* —
    the data already exists (`.xdata` is already parsed for the unwinder; `no-return`
    and `tail` are already computed) — and it is **correctness, not prettiness**.
    Memory SSA over a wrong CFG is precise nonsense: for a *sound-over-complete* tool
    (CONCEPT §3 rule 6), a wrong control graph yields *confidently-wrong* C, which is
    worse than an honest `asm` node.
+   - ✅ *(2026-07-22)* **Known-noreturn-import CFG fix landed** — a call to a
+     well-known noreturn API (`ExitProcess`/`abort`/`TerminateProcess`/
+     `_CxxThrowException`/`__fastfail`/…, new `n0xis-core::noreturn`, mirroring
+     `signatures.rs`'s table shape) now ends its block (`terminator:
+     "call-noreturn"`, zero successors, new `CfgStats.noreturn_calls`) instead of
+     treating dead bytes after it as reachable. Required fixing a real,
+     independently-discovered gap along the way: `target_name` resolution only
+     ever consulted `ins.target` (a direct near-branch operand), never
+     `ins.rip_target`/`SymbolProvider::iat_slot` — so the overwhelming common
+     case (an import called through the IAT, `call qword ptr [rip+disp]`) never
+     resolved a name at all; fixed with an `.or_else` fallback at the same site.
+     Wired into `structure.rs`'s post-dominator exit-set (load-bearing — a
+     noreturn-call block with zero successors must be a recognized graph exit or
+     `ipdom` corrupts silently for blocks that dominate it) and its goto-render
+     arm, plus `decomp.rs`'s flat-goto renderer, plus a new `manifest.rs`
+     `"calls-noreturn"` triage flag. 8 new tests (2 in `noreturn.rs`, 3 in
+     `ir.rs` — including one proving the IAT/`rip_target` fallback fires via a
+     new `Snapshot::iat_symbol` test builder — 1 in `manifest.rs` proving the
+     existing `no-return` flag becomes accurate for this case for free, plus
+     the pre-existing suite unchanged), `n0xis-core` lib tests 114→122, zero
+     regressions. **Still open, this pass deliberately didn't attempt**:
+     propagating noreturn-ness across N0xis's *own discovered* functions (a
+     whole-program call-graph fixpoint — the deeper, second noreturn sub-item);
+     `truncate_to_function` (the whole-function-end heuristic) still doesn't
+     know about calls, so a function's reported `end` may still over-extend past
+     a noreturn call even though the per-block CFG is now correct; tail-call
+     promotion and exception-edge recovery (this bullet's other two sub-items)
+     are untouched.
 1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.

@@ -182,6 +182,9 @@ fn flags(art: &CfgArtifact) -> Vec<&'static str> {
     if art.stats.returns == 0 && art.stats.tail_calls == 0 {
         out.push("no-return");
     }
+    if art.stats.noreturn_calls > 0 {
+        out.push("calls-noreturn");
+    }
     out
 }
 
@@ -234,6 +237,36 @@ mod tests {
         );
         assert!(stub_entry.flags.contains(&"stub"));
         assert!(real_entry.flags.contains(&"leaf"));
+    }
+
+    #[test]
+    fn a_function_whose_only_exit_is_a_noreturn_call_is_flagged_both_ways() {
+        // A function whose entire body is a call to ExitProcess: never
+        // returns and never tail-calls, so the pre-existing "no-return"
+        // heuristic becomes accurate for this case for free, alongside the
+        // new "calls-noreturn" flag naming why.
+        let code = vec![0xe8, 0xfb, 0x0f, 0x00, 0x00]; // call 0x2000
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .symbol(n0xis_contracts::Symbol {
+                va: Va(0x2000),
+                module: "kernel32".into(),
+                name: "ExitProcess".into(),
+                kind: n0xis_contracts::SymKind::Export,
+            })
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let input = ManifestInput {
+            candidates: vec![ManifestCandidate { name: "dies".into(), va: Va(0x1000) }],
+            max_bytes: 64,
+        };
+        let art = ManifestPass.run(&ctx, input).expect("manifest builds");
+
+        let entry = &art.entries[0];
+        assert!(entry.flags.contains(&"no-return"));
+        assert!(entry.flags.contains(&"calls-noreturn"));
     }
 
     #[test]

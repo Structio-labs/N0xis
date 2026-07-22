@@ -37,6 +37,11 @@ pub struct Snapshot {
     regions: Vec<Region>,
     modules: Vec<Module>,
     symbols: BTreeMap<u64, Symbol>,
+    /// IAT slot address -> the imported symbol it resolves to (see
+    /// [`SymbolProvider::iat_slot`]) — a separate map from `symbols` because a
+    /// slot address holds a *pointer to* the function, not the function's own
+    /// entry address.
+    iat_symbols: BTreeMap<u64, Symbol>,
     label: String,
 }
 
@@ -85,6 +90,10 @@ impl SymbolProvider for Snapshot {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         self.symbols.get(&va.0).cloned()
     }
+
+    fn iat_slot(&self, va: Va) -> Option<Symbol> {
+        self.iat_symbols.get(&va.0).cloned()
+    }
 }
 
 impl ModuleProvider for Snapshot {
@@ -99,6 +108,7 @@ pub struct SnapshotBuilder {
     regions: Vec<Region>,
     modules: Vec<Module>,
     symbols: BTreeMap<u64, Symbol>,
+    iat_symbols: BTreeMap<u64, Symbol>,
     label: Option<String>,
 }
 
@@ -119,6 +129,13 @@ impl SnapshotBuilder {
         self.symbols.insert(symbol.va.0, symbol);
         self
     }
+    /// Register `symbol` as reachable through the IAT slot at `va` — i.e. `va`
+    /// holds a *pointer to* `symbol`, the way a `call qword ptr [rip+disp]`
+    /// resolves an imported function. Looked up via [`SymbolProvider::iat_slot`].
+    pub fn iat_symbol(mut self, va: Va, symbol: Symbol) -> Self {
+        self.iat_symbols.insert(va.0, symbol);
+        self
+    }
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -129,6 +146,7 @@ impl SnapshotBuilder {
             regions: self.regions,
             modules: self.modules,
             symbols: self.symbols,
+            iat_symbols: self.iat_symbols,
             label: self.label.unwrap_or_else(|| "snapshot".to_string()),
         }
     }
