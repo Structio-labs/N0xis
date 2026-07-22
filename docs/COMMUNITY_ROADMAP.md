@@ -14,6 +14,16 @@ gap is explicitly documented — none of this is guesswork about what might be
 missing; it's the project's own honest "not attempted, here's why" notes,
 collected into one place.
 
+The Phase 8 spec-first method commands (`game grep`, `locate by-transition`,
+`input probe`, `const identify`, `bindings list`, `sig validate`) have **landed**
+and are documented in [CLI_COMMANDS.md](CLI_COMMANDS.md) — they are no longer
+claimable. Phase 9's `ui locate`, the structural-predicate scan primitive it's
+built on (`n0xis-core::structural`, an internal engine — **not** a runnable
+`scan structural` command), and the conditional hardware watchpoint
+(`debug watch --when`) are **implemented in the working tree** (unit-tested
+against synthetic snapshots, pending live-target validation — not yet on `main`)
+and likewise off this list. What's below is what's still genuinely open.
+
 Labels follow [Bevy](https://github.com/bevyengine/bevy)'s shape, scaled down:
 **A-** (area), **D-** (difficulty: `Trivial` → `Complex`), **S-** (status).
 
@@ -55,18 +65,25 @@ target ISA, that's worth flagging before investing implementation time.
 verification — it's implemented and self-tested, not battle-tested.** One
 ad-hoc test against genuine LLVM-compiled AArch64 code (not the hand-picked
 bytes the unit tests use) already found and fixed a real `reg_access` bug
-(see `ROADMAP.md`'s Phase 7 write-up) that 19 passing unit tests + a passing
-exit test had missed. **A genuinely valuable, claimable task on its own**:
-run `n0xis function discover`/`ir build`/`decomp pseudo --arch arm64` against
+(the `sp`-vs-`xzr` aliasing of register 31; see `ROADMAP.md`'s Phase 7
+write-up) that the passing unit tests + a passing exit test had missed.
+**A genuinely valuable, claimable task on its own**: run
+`n0xis function discover`/`ir build`/`decomp pseudo --arch arm64` against
 larger real ARM64 binaries (more cross-compiled Rust/C programs, a real
 ARM64 Windows PE if you have access to one) and file/fix whatever else turns
 up — this doesn't need new features, just more real bytes thrown at what
-already exists. `A-Arch` / `D-Straightforward` / `S-Ready-For-Implementation`.
+already exists. This is *the* main open item for the ARM64 track: until
+it's done, the whole ARM64 path stays "implemented and self-tested," never
+"verified." `A-Arch` / `D-Straightforward` / `S-Ready-For-Implementation`.
 Status: Open.
 
 - **`Arch::lift`/SSA optimization parity with x64** — `n0xis-arch/src/x64_lift.rs`
   is the template (typed micro-IR + flags-as-a-real-dataflow-value). Comparable
   effort to the original Phase 3 work. `A-Arch` / `D-Complex`. Status: Open.
+- **`Arch::branch_condition` for ARM64** — flag-precise conditions are x64-only;
+  ARM64's `NZCV` condition model needs its own lifter before conditional-edge
+  labelling and structured decompilation match x64's fidelity. Naturally paired
+  with the `lift` work above. `A-Arch` / `D-Complex`. Status: Open.
 - **`Arch::detect_switch` for ARM64** — ARM64 jump-table idioms differ from
   x64's two (`switch.rs`'s `SwitchKind::MemIndexed`/`RegRel32`); needs its own
   idiom recognition. `A-Arch` / `D-Modest`. Status: Open.
@@ -132,11 +149,23 @@ not bundled into the first cut.
 
 ## MCP parity gaps
 
+The MCP server ([`n0xis-mcp`](../crates/n0xis-mcp/src/tools.rs)) exposes 18
+tools today — the read-oriented static/dynamic workflow plus the working-tree
+`ui_locate`. The stateful, cross-invocation verbs are the gap.
+
 - **Mirror `scan`/`table`/`patch`/`debug watch` as MCP tools** — these CLI
   verbs bridge state across independent process invocations via `.n0x/dumps/`;
   the long-lived MCP server should use real in-memory session state instead of
   a straight port of that file-bridging (see `n0xis-mcp`'s module doc for the
   reasoning already written down). `A-MCP` / `D-Modest`. Status: Open.
+- **Port the remaining single-shot verbs to MCP** — beyond the stateful set
+  above, the broader static/dynamic surface isn't exposed yet either
+  (`ir build/explain/dot/slice/manifest/value-set/deobfuscate`,
+  `scan aob/pointer-path/dissect`, `selection`, `dump`, `snapshot`, `diff`,
+  `bundle`, `lua *`, `game grep`, `locate by-transition`, `input probe`,
+  `const identify`, `bindings list`, `sig validate`, `mem map`). Each is a
+  near-mechanical wrapper around a verb the CLI already drives — good, low-risk
+  first contributions. `A-MCP` / `D-Straightforward`. Status: Open.
 
 ## Binary diffing
 
@@ -170,6 +199,18 @@ not bundled into the first cut.
 
 ## Dynamic memory
 
+- **Region caching as a built-in scan option** — the one remaining Phase 8
+  ergonomics item (`ROADMAP.md`), and the last open piece of Phase 8. A scan
+  against a live process with no `--start` re-enumerates every committed
+  writable region on every call, so a `scan value` → `scan filter` →
+  `scan filter` loop pays that enumeration cost each pass. Caching the
+  discovered region set as an opt-in scan flag — invalidated on module
+  load/unload so it can never narrow onto a stale map — would cut the
+  steady-state cost without changing results. N0xHUD's interact-combo solver
+  already does exactly this ad-hoc for its own pool region
+  ([`combo_watcher.rs`](../crates/n0xis-hud/src/combo_watcher.rs)); this task
+  promotes it to a first-class `scan` option. `A-DynamicMemory` / `D-Modest`.
+  Status: Open.
 - **Smarter `alloc_code_cave` placement** — currently a plain `VirtualAllocEx`
   with no "near this address" search, so `patch detour`'s rel32-range check
   correctly *refuses* rather than corrupts a jump when the cave lands too far
@@ -210,4 +251,6 @@ Explicitly deferred, not ruled out (see [README.md](../README.md)). Needs a
 design discussion before implementation work starts — likely a thin
 visualization layer over existing `ok/data/meta` artifacts (CFG/DOT rendering,
 decompiled output, the analysis DB), not a rewrite of the CLI/MCP-drivable
-core. `A-GUI` / `D-Complex` / `S-Needs-Design`. Status: Open, not yet scoped.
+core. N0xHUD already exists as a third frontend of exactly that shape (a window
+over the same crates), so any GUI would be sibling to it, not a replacement.
+`A-GUI` / `D-Complex` / `S-Needs-Design`. Status: Open, not yet scoped.

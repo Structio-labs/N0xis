@@ -1,12 +1,12 @@
 //! [`DecompPass`] — the top of the pipeline: wires lift → SSA → (optimize) →
 //! (structure) → render into the three `decomp pseudo` styles
-//! (`docs/CLI_COMMANDS_v0.md`): `goto` (flat, labeled), `structured`
+//! (`docs/CLI_COMMANDS.md`): `goto` (flat, labeled), `structured`
 //! (`if`/`while`/…, unoptimized), `ssa` (structured *and* optimized — the
 //! ROADMAP Phase 3 target style). All three already get **exact** branch
 //! conditions from [`crate::SsaPass`] — that correctness fix isn't gated
 //! behind `--style ssa`, only the expression-collapsing prettification is.
 //!
-//! Reuses the v0 wire schema (`n0x.decomp.pseudo.v1`, `docs/CLI_COMMANDS_v0.md`)
+//! Reuses the v0 wire schema (`n0x.decomp.pseudo.v1`, `docs/CLI_COMMANDS.md`)
 //! rather than minting a new one: `--style ssa` is documented as an additive
 //! style on the *same* command, not a new capability.
 

@@ -5,19 +5,21 @@
 > re-deriving them from a blank page. Each phase ends with the tool **buildable and
 > usable** — no phase leaves `main`/CLI broken.
 
-Legend: 🎯 milestone · ✅ done · ⏳ in progress · ⬜ todo.
+Legend: 🎯 milestone · ✅ done · ⏳ in progress · ⬜ todo · ⚠️ caveat.
 
 ---
 
 ## Phase 0 — Reset & docs ✅
 - ✅ Archive v0 to `archive/` (code + docs).
 - ✅ Delete the web/Tauri frontend prototype entirely.
-- ✅ Preserve the CLI surface → [`docs/CLI_COMMANDS_v0.md`](docs/CLI_COMMANDS_v0.md).
+- ✅ Preserve the CLI surface → [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md) (originally captured as `CLI_COMMANDS_v0.md`; since **renamed** and now the current command reference, not a frozen snapshot).
 - ✅ Concept + roadmap.
 
 ## Phase 1 — Workspace skeleton & seams ✅
 Goal: the empty-but-correct architecture. No analysis yet; the boundaries exist.
-- ✅ Cargo workspace with all 8 crates from CONCEPT §4 (`crates/*`).
+- ✅ Cargo workspace with the 8 core crates CONCEPT §4 originally specified
+  (`crates/*`) — the 4 companion crates (`hud`/`bitsquid`/`lua`/`luajit`) were
+  added in later phases (see the companion-tooling section; 12 crates today).
 - ✅ `n0xis-contracts`: `Va` (hex-string wire form), `Symbol`, `Module`, `Reg`, the
   `ok/data/meta` `Response` envelope, and v0 + v1 schema ids reserved.
 - ✅ `n0xis-sources`: `MemorySource` / `SymbolProvider` / `ModuleProvider` traits +
@@ -413,11 +415,14 @@ Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powe
   macro pattern (`#[tool_router]`/`#[tool_handler(router = self.tool_router)]`) over
   stdio transport. Binary: `n0xis-mcp`, spawned by an MCP client and driven over
   JSON-RPC on stdin/stdout (`ServerHandler::serve(rmcp::transport::stdio())`).
-- ✅ **Tools mirror CLI verbs + return the same schemas**: 15 tools in `crates/n0xis-mcp/
-  src/tools.rs` — `doctor`, `process_ps`, `attach`, `module_list`, `disasm`,
-  `function_discover`, `function_trace`, `decomp_pseudo` (goto/structured/ssa),
-  `xref`, `xref_string`, `mem_read`, `mem_write`, `provenance_trace`, and the two
-  "explain" tools below. Every tool returns the exact serialized `{ok,data,meta}`
+- ✅ **Tools mirror CLI verbs + return the same schemas**: 14 tools in `crates/n0xis-mcp/
+  src/tools.rs` at this phase's exit — `doctor`, `process_ps`, `attach`, `module_list`,
+  `disasm`, `function_discover`, `function_trace`, `decomp_pseudo` (goto/structured/ssa),
+  `xref`, `xref_string`, `mem_read`, `mem_write`, `provenance_trace`, and the
+  `explain_opt_delta` tool below (`provenance_trace`, the other "explain" tool, is
+  already named above). (Later phases add `annotate_set`/`annotate_get`/`annotate_list`
+  in Phase 6 and `ui_locate` in Phase 9, for **18** exposed tools in the working tree.)
+  Every tool returns the exact serialized `{ok,data,meta}`
   envelope (`n0xis_contracts::Response`) `n0xis-cli`'s `emit()` prints — an agent's
   parsing code is identical whether it called the CLI or MCP (CONCEPT §3 rule 5).
   Argument resolution (`pid`/`file` → a live/static source) lives in `n0xis-mcp::source`
@@ -645,7 +650,7 @@ verified. Don't repeat that mistake when reading this phase as "done."
   substantially larger problem of its own (an entire category of dedicated
   tools — a structural diff tool, a structural diff tool — exists just for this), not attempted here.
 
-## Phase 8 — Method tooling: spec-first RE 🎯 ⏳ (6/7 commands landed 2026-07-17)
+## Phase 8 — Method tooling: spec-first RE 🎯 ⏳ (merged to main `a0a9168` — all 6 named commands + the hex-everywhere audit done; still ⏳ solely for the one ⬜ item, region caching as a built-in scan option)
 Goal: turn [`docs/RE_METHOD.md`](docs/RE_METHOD.md) into tools. That doc is the
 post-mortem of one complete campaign (auto-solving a game's directional
 interact-combo mini-game). It succeeded — and **~90% of the effort went into
@@ -731,19 +736,20 @@ dependency order.
   Scope note: the useful output isn't pass/fail, it's *which bytes vary* — that
   turns a broken signature into a corrected one.
 
-- ⬜ **Ergonomics + scan resilience** *(fixes RE_METHOD F6/F7)*. Small, but each
+- ⏳ **Ergonomics + scan resilience** *(fixes RE_METHOD F6/F7)*. Small, but each
   one cost real debugging rounds:
-  - Live scans **skip unreadable regions and continue**, never abort. Region
+  - ✅ Live scans **skip unreadable regions and continue**, never abort. Region
     lists are inherently racy (a region enumerated is not a region readable —
     the target allocates/frees constantly); one transiently-freed region aborted
     a whole scan and the background solver silently found nothing while looking
     healthy. Also: "0 results" must be distinguishable from "the scan died".
-  - Accept **hex** for `--min`/`--max` (and anywhere else taking an
+  - ✅ Accept **hex** for `--min`/`--max` (and anywhere else taking an
     address/value). Hand-converting hex→decimal produced wrong ranges twice,
     each time burning a scan round on an address that wasn't even close.
-  - **Region caching** as a built-in scan option rather than per-caller
+  - ⬜ **Region caching** as a built-in scan option rather than per-caller
     hand-rolling (full-address-space rescans per poll are the default failure
-    mode otherwise).
+    mode otherwise). **The one remaining Phase 8 item** — everything else in this
+    phase is done and on `main`.
 
 > **Implementation notes (2026-07-17) — the six named commands landed.** All
 > follow the crate discipline the earlier phases set: the *algorithm* is a pure,
@@ -810,12 +816,36 @@ dependency order.
 >   even when the bytes agree (the exact F3 trap), N=3 varied blessed with the
 >   right derived mask, and a false-invariant signature audited and blocked.
 >
-> **Still open (bullet 7 above):** the ergonomics/scan-resilience cluster is
-> *partially* pre-satisfied — live scans already skip unreadable regions
-> (`ScanPass`/`FilterPass` `unwrap_or_default`/`continue`), and `game grep`/
-> `const identify` accept hex — but built-in region caching as a scan option and
-> a uniform hex-everywhere audit of `--min`/`--max` are not done here; left as
-> the remaining Phase 8 item.
+> **Follow-up (2026-07-18) — hex-everywhere audit closed.** Every numeric CLI
+> field that represents a byte length or a scan bound now accepts hex
+> (`0x1000`) as well as decimal, via two new clap `value_parser`s
+> (`parse_hex_or_decimal_usize`/`_u64` for sizes/offsets, `parse_hex_or_decimal_f64`
+> for scan values, which still falls through to a real float since a criterion
+> can compare against `3.14`) applied to all 22 `--*size`/`--len`/`--max-bytes`
+> fields, `--max-offset`, and all 9 `--value`/`--min`/`--max` fields across
+> `scan`/`locate`/`table freeze`. `--addr`/`--start` already had this via
+> `Va::parse`; this closes the gap RE_METHOD F7 named for everything else that
+> takes a byte count or a bound. Verified: `mem read --size 0x100`,
+> `scan pointer-path --max-offset 0x2000`, and `scan value --value 3.14` all
+> parse correctly; a garbage value reports a clear clap-level error instead of
+> a silent misparse. **Still open:** region caching as a built-in scan option
+> (bullet 3 above) is the one remaining Phase 8 item.
+
+> **Follow-up (2026-07-18) — `guide` reworked into an agent capability
+> catalog.** The old `guide` was a hand-maintained prose list that drifted from
+> the binary. It now walks the real clap command tree via `CommandFactory`, so
+> the catalog is generated from the actual definitions and *cannot* drift: every
+> leaf command (77 in the installed binary at this point) with its full path,
+> summary, and per-argument detail (name, required, takes-value, choices),
+> grouped into curated categories, plus a preamble (usage model, global flags,
+> the `--pid/--file/--snapshot/…` source model, envelope shape) and hand-written
+> **workflow recipes** — the spec-first ladder, transition-diff localization,
+> provenance-explain, input-probe-before-build, sig-validate, const-identify,
+> decompile — that teach an agent *how* to compose the verbs, not just what they
+> are. `guide <topic>` filters; `--brief` drops per-arg detail. clap `--help`
+> stays as the human per-command usage. This is the discovery surface an AI agent
+> reads first. (Phase 9's working-tree `ui locate` brings a rebuild to 78 leaf
+> commands.)
 
 **The re-framing this phase encodes** (RE_METHOD's "spec-first ladder") — climb
 it **top-down**, each rung cheaper and more stable than the one below:
@@ -835,12 +865,343 @@ transient, ASLR'd, version-fragile and race-prone; prefer *computed* over
 
 **GUI**: explicitly deferred, not abandoned — user's own framing: "GUI-потім.
 Не зараз, але не 'ніколи'" (GUI later. Not now, but not "never"). No phase
-number assigned yet; CONCEPT's "GUI-never" framing (CLI/MCP only) reflected the
-project's original scope, not a permanent constraint. When it's picked up, it
+number assigned yet; the original "GUI-never" framing (CLI/MCP only) reflected
+the project's original scope, not a permanent constraint — CONCEPT §2 now retires
+it explicitly. When it's picked up, it
 should be its own phase (a thin visualization layer over the existing
 `ok/data/meta` artifacts — CFG/DOT rendering, decompiled output, the analysis
 DB — not a rewrite of the analysis core, which stays CLI/MCP-drivable
 regardless).
+
+---
+
+## Phase 9 — Seeing what the target sees: UI-layer localization 🎯 ⏳
+
+> **Status (2026-07-22) — working tree, uncommitted.** Nothing in this phase is on
+> `main` yet. Every ⚠️ item below is **implemented and self-tested** (unit tests
+> over synthetic snapshots — the AABB predicate, the overlap maths, the
+> mirrored-dword relation, the real 348k-noise sample), but the decisive
+> **live-target validation** — the §9.3 appearance-correlation test on a running
+> game — **has not been run**. Read the ⚠️ markers as *implemented, pending live
+> validation*, never *verified to `X64`'s standard* (same discipline as the ARM64
+> caveat in Phase 7).
+
+Goal: close the last gap the combo campaign hit — **there is no way to get from
+"the thing I can see on screen" to "the memory that drives it."**
+
+Like Phase 8, every item traces to a **named failure from a real campaign**
+(2026-07-20, universalizing the interact-combo solver — full post-mortem in the
+game's `AUTO_COMBO_PLAN.md` §12; that planning doc is not tracked in this repo —
+see the companion-tooling doc-debt note below). Context: the solver was finished
+and working via *computed* combos (template + seed), but the operator wanted the
+more general path — read the arrows the game is drawing, which would cover object
+types no catalogue knows. That hunt failed four separate ways, and each failure
+names a missing tool.
+
+- ⚠️ **`debug watch --when <reg>=<value>` — conditional hardware breakpoint**
+  *(implemented 2026-07-20; working tree — the guarded path has not been
+  re-validated live since the `MAX_CONDITION_MISSES` guard was added: the
+  motivating "killed the game" story below is the failure that *prompted* the
+  guard, not a passing post-guard run)*. Non-matching hits are resumed with the watchpoint still
+  armed, so a specific call can be singled out.
+  **Why**: an execute breakpoint on a UI draw routine returned the *same*
+  high-frequency caller (`r9=6`) on six consecutive arms — the interesting call
+  (`r9=4`, the four-arrow draw) was unreachable by re-arming and hoping.
+  **Ships with a hard safety limit** (`MAX_CONDITION_MISSES = 300`), because the
+  first version of exactly this feature **killed the game**: a per-frame
+  function turns every non-matching hit into a full stop/inspect/resume
+  round-trip, effectively single-stepping the target. The limit aborts with an
+  explanation instead of grinding the process to death.
+  **Rule this encodes**: conditional traps are for *rare* events (a write to one
+  address). On a hot site, filtering costs more than it saves — the guard makes
+  that failure loud instead of fatal.
+
+- ⚠️ **`ui locate --rect <x0,y0,x1,y1>` — screen region → candidate addresses**
+  — implemented and wired (CLI `ui locate` + MCP `ui_locate`), pending live
+  validation *(the operator's own proposal; fixes the campaign's terminal dead end)*.
+  **Implementation brief**:
+  [`docs/PHASE9_UI_LOCATE_BRIEF.md`](docs/PHASE9_UI_LOCATE_BRIEF.md) — spec,
+  verified offsets, rejected alternatives, validation plan.
+  Enumerate live structures whose stored bounding box intersects a
+  caller-supplied screen rectangle, and report their addresses. A hit-test over
+  the target's own retained scene graph, performed from outside.
+  **Why it's feasible, not speculative**: the draw path was already decompiled
+  during the campaign, and UI elements keep their own AABB in memory —
+  `+0xa4/+0xa8/+0xac` min, `+0xb0/+0xb4/+0xb8` max, `+0xbc` radius, `+0xa0`
+  dirty flag (from `sub_1400ce800`, the arrow vertex-buffer builder). The game
+  already answers "what occupies this part of the screen"; nothing needs to be
+  inferred from pixels.
+  **Why it matters**: this is the only remaining route to the arrow widgets.
+  Blind scanning is exhausted — direction arrays were searched in six encodings
+  (u8/u32 enums, LuaJIT doubles, rotation in radians and degrees), as Lua string
+  arrays, and differentially (two open snapshots intersected, minus closed).
+  All returned zero, because the arrows are **separate widgets**: their
+  directions are not adjacent in memory, so no contiguous-array search can ever
+  find them. Structure-by-address is the wrong question; **position-by-region**
+  is the right one.
+  **Explicitly not required**: graphics-API hooking, frame capture, or reading
+  pixels. Those were considered and rejected — they add a rendering dependency
+  to a memory tool, and the operator had already ruled out screen-reading
+  (arrow positions move in multiplayer). Reading widget *data* is immune to that.
+  Design notes: the AABB init sentinel (`FLT_MAX` ×3) is **not** a usable
+  signature — it is transient, overwritten with real bounds within the same
+  frame rebuild (verified live: zero hits while the window was open). Candidate
+  enumeration must therefore test *plausible screen-space bounds*, not a fixed
+  byte pattern. An interactive overlay for drawing the rectangle is a GUI
+  concern (see the deferred-GUI note above); the command itself should take
+  coordinates, so it stays CLI/MCP-drivable.
+  > **Implemented (2026-07-21).** `n0xis-core::ui_locate` (`UiLocatePass`,
+  > `n0xis.ui.locate.v1`), a thin configuration of the new structural-scan
+  > primitive (below) for one shape: the seven contiguous `f32`s of an AABB +
+  > radius. Wired into the CLI (`ui locate`) and MCP (`ui_locate`, verified via
+  > `tools/list`). Read-only throughout — `ReadProcessMemory` over the
+  > committed-writable region set only, no breakpoints / writes / thread
+  > suspension (brief §7). The AABB layout is a passed-in `AabbLayout` config
+  > value (`HELLDIVERS` = `min.x@+0xa4 … radius@+0xbc`), not inlined — a
+  > different build/engine gets a different layout, per the anti-hardcode rule.
+  > - **`--space auto|screen|ndc`** is *observable, not assumed* (brief §4):
+  >   `auto` runs a permissive bound and reports the `observed_range` across
+  >   every plausible AABB, so the operator can see which space the numbers are
+  >   in; `screen`/`ndc` apply a concrete bound.
+  > - **Plausibility ≠ relevance.** `aabb_plausible` (finite, `min<=max`,
+  >   in-bound, radius consistent with the half-diagonal, **and a per-space
+  >   size floor**) is the engine-level "is this a real box"; `rect_overlap` is
+  >   the query-specific "does it touch the rect". Real bug found in testing: a
+  >   first cut without the size floor returned **~348k** hits on an *empty*
+  >   process — arbitrary memory is full of runs that decode as valid-but-
+  >   sub-pixel boxes passing every other check. A one-pixel (screen) /
+  >   one-thousandth (NDC) minimum extent is what makes it a shape test, not a
+  >   finiteness test. (`auto` stays deliberately permissive — that's its job.)
+  > - **Spatial-diff filter** (`--save-as` / `--exclude-from`, the operator's
+  >   own idea): save a query over a rect where the widget is *absent*, then
+  >   `--exclude-from` it in a query where the widget is *present*. What's left
+  >   drops any ambient/global structure whose (mis)computed box overlaps every
+  >   rect. Persisted as a new `ui_locate` dump kind; the exclude set loads
+  >   *before* the (tens-of-seconds) scan so a bad name fails fast, not after.
+  > - Unit-tested per brief §9.1 (synthetic AABB at a known offset, exact
+  >   overlap maths, `FLT_MAX`-sentinel rejection, the real 348k-noise sample,
+  >   a flat-z 2D widget accepted). **Not** validated against the live game —
+  >   the §9.3 appearance-correlation test needs the running target and is the
+  >   remaining acceptance step, called out honestly rather than claimed.
+
+- ⚠️ **Structural-predicate scanning as a first-class primitive** — implemented
+  as a core-internal primitive (`n0xis-core::structural`, **not** a standalone
+  CLI subcommand), pending live validation *(generalizes
+  the above; also fixes a limitation hit repeatedly in the campaign)*. `scan
+  aob` cannot express "four dwords where `d0 == d3` and `d1 == d2`", nor "six
+  floats forming a valid bounding box" — both were needed and both had to be
+  abandoned. AOB patterns match *constants*; what was wanted was *relations*
+  between fields.
+  **Why**: every localization attempt that failed for lack of expressiveness
+  failed here. It is the scanning counterpart to `locate --by-transition`: that
+  one encodes *the change is the signal*; this one encodes *the shape is the
+  signal*.
+  > **Implemented (2026-07-21).** `n0xis-core::structural` (`StructuralScanPass`,
+  > `n0xis.scan.structural.v1`): reads a list of typed `FieldSpec`s at each
+  > aligned position in a window and hands them to a caller-supplied predicate
+  > `Fn(&[ScanValue]) -> Option<f64>` (score), which decides accept/reject by
+  > *relations between the fields* rather than any fixed constant. `ui locate`'s
+  > AABB test is its first consumer; the mirrored-dword relation
+  > (`d0==d3 && d1==d2`) the campaign needed is a unit test. Sound-over-complete:
+  > `candidates_tested`/`bytes_scanned` always cover the whole window, so "0
+  > matches" can never be confused with "gave up partway" (RE_METHOD F6).
+  > **Not** a runnable `scan structural` subcommand — it is `ui locate`'s
+  > internal engine (and the guide's `guide_category` has no `ui` arm yet, so the
+  > auto-catalog currently buckets `ui locate` under "Other").
+
+- ⏳ **Agent target-selection tooling — `ui windows` / `ui screenshot` /
+  `ui focus`** *(the operator's proposal: an agent driving `ui locate` needs to
+  see the target and name a window before it can choose a rect)*. The `ui
+  locate` brief's no-pixels rule governs how widgets are *found* (by their data,
+  not their appearance); it does not forbid *showing the operator/agent the
+  window so they can pick a rectangle* — a distinct, read-only concern.
+  - **`ui windows --pid <p>`** — enumerate a process's top-level windows
+    (title, class, on-screen rect), so an agent can name the game window rather
+    than guess an HWND. Read-only.
+  - **`ui screenshot --pid <p> [--out <png>]`** — capture the target window to
+    a PNG (or base64 in the envelope) via external Win32 only (no injection, no
+    D3D hook). **The load-bearing risk**, being researched before implementation:
+    GDI `BitBlt`/`PrintWindow` return an all-black frame for many
+    DirectX-accelerated windows, and an agent must never mistake a black capture
+    for "the UI is empty" — so the command must *detect and report* a blank
+    capture rather than hand back a misleading image.
+  - **`ui focus --pid <p> --hwnd <h>`** — bring a window forward (window
+    selector). Unlike the rest of Phase 9 this is **not** purely read-only (it
+    activates a window on the target); it will be labeled as such in the
+    command contract. Marked "if needed" by the operator.
+  **Status**: in progress this session — `ui locate`/structural-scan landed
+  first; these build on the same `n0xis-sources` (Win32, `live` feature) seam.
+  Not yet implemented.
+
+---
+
+## Phase 10 — Decompiler analysis depth (true x64 parity with other tools) 🎯 ⬜
+
+The honest reframing this phase exists to encode: **parity with another tool /
+another tool is not the presence of components — it is analysis quality.** N0xis already
+has the full *plumbing* (decode → CFG → dominance → SSA → optimize → structure →
+render), and on that plumbing it holds x64 parity. But a real decompiler is the
+*90%* that comes after: the long tail of interprocedural analysis, memory
+modeling, and compiler-idiom coverage that turns "we built SSA" into "we chewed
+ten years of edge cases." On *that* axis N0xis is early even restricted to x64.
+This phase is that work. It is deliberately **not** one sprint; sequence by
+leverage, ship incrementally, and never mark a dimension done until it holds on a
+real x64 corpus (not synthetic samples).
+
+### Where we stand (capability maturity)
+
+Legend: ✅ production · 🚧 partial / early · ❌ missing.
+
+| Component | Status |
+|---|---|
+| Decode (x64, iced-x86) | ✅ production |
+| CFG | ✅ production *(but see the CFG-fidelity debt in priority 0)* |
+| Dominance / SSA | ✅ production |
+| Control structuring | ✅ production |
+| Optimizer (copy/const/expr-prop, DCE) | ✅ production |
+| Renderer (pseudo-C) | ✅ production |
+| Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (narrower idiom set than other tools) |
+| Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
+| Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
+| Tail-call detection | 🚧 partial — edge class only, no semantic promotion |
+| noreturn analysis | 🚧 partial — triage flag, not interprocedural |
+| Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
+| Memory SSA | ❌ missing |
+| Interprocedural propagation | ❌ missing (bar the known-API table) |
+| Exception-edge recovery | ❌ missing — `.xdata` parsed for unwinding only |
+| Indirect / virtual call resolution | ❌ missing — IAT/direct only |
+| SIMD / FP lift | ❌ missing — integer set only; degrades to `asm` nodes |
+| PDB / type ingestion | ❌ missing |
+
+### The gap in detail (what parity actually requires)
+
+| Analysis | What real parity needs | N0xis today |
+|---|---|---|
+| Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | ❌ `.pdata`/`.xdata` read for **unwinding only**; no EH edges in the graph |
+| Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | 🚧 `tail` exists as an **edge class**; no semantic promotion |
+| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 `no-return` is a **triage flag**; not propagated into caller CFGs |
+| Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
+| Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
+| Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
+| Alias analysis | a real memory-alias oracle | 🚧 light/bounded (`ValueSetPass::alias`, `Var±Const` only, `Top` on load) |
+| Memory SSA | SSA over memory (versioned store/load) | ❌ SSA over registers/flags only — **why** expr-prop is conservative |
+| Interprocedural propagation | types / values / CC across the call graph | ❌ intraprocedural; only the ~30-entry API table crosses a call |
+| Compiler idioms | magic-division, `rep`-string→`mem*`, stack canary, strlen-inlining, cmov→min/max, SSE idioms, … | 🚧 a handful (`const identify`, junk, opaque predicates) |
+
+### Prioritized plan (ordered by leverage × cost, not size)
+
+0. ⬜ **CFG fidelity — the correctness debt. Do this first.** Interprocedural
+   `noreturn` propagation, tail-call promotion, exception edges. It is *cheap* —
+   the data already exists (`.xdata` is already parsed for the unwinder; `no-return`
+   and `tail` are already computed) — and it is **correctness, not prettiness**.
+   Memory SSA over a wrong CFG is precise nonsense: for a *sound-over-complete* tool
+   (CONCEPT §3 rule 6), a wrong control graph yields *confidently-wrong* C, which is
+   worse than an honest `asm` node.
+1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
+   propagation is conservative *today only because* nothing can prove a load/call
+   safe to move past a store. Memory SSA is what unblocks everything downstream.
+2. ⬜ **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
+   recovery — chicken-and-egg: alias precision needs types, type recovery needs
+   alias. Climb 1–2 together; neither is precise alone.
+3. ⬜ **Function-summary IPA — the high-ROI slice.** Per-function summaries
+   (returns / `noreturn` / clobber set / arg & return types / side effects), **not**
+   full context-sensitive interprocedural analysis. Composes directly with the
+   existing `ManifestPass`, which already computes per-function flags — so this is
+   an extension, not a new subsystem.
+4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
+   decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
+   it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few
+   lines, and today those functions decompile half to `asm` nodes. Ranked up
+   accordingly.
+5. ⬜ **PDB / type ingestion — corpus-dependent rank.** High value for
+   system/Microsoft binaries (public symbol servers short-circuit type recovery with
+   ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL
+   work, below it for game work.
+6. ⬜ **Compiler-idiom library — the endless backlog.** The "hundreds of idioms"
+   that are 20 years of a source-level decompiler/another tool rules. Each idiom is independent and
+   individually cheap; grow the library continuously. Never "done."
+
+### Two framing rules this phase encodes
+
+- **The right priority is a function of the target corpus.** N0xis's is game
+  engines on x64 Windows — which pulls **SIMD up** (a floor problem, not coverage)
+  and **PDB down** (game builds are usually stripped). A general-purpose x64
+  decompiler would order these differently. State the corpus *before* arguing the
+  order.
+- **Correctness before power.** The lowest foundation is a *correct* CFG, not a
+  *powerful* memory model over an incorrect one. `sound over complete` makes a wrong
+  graph the worst outcome — fix the graph (priority 0) before deepening the data
+  flow over it.
+
+> **Why this is the right shape of work, not a smaller feature list.** The missing
+> pieces classify cleanly into a handful of *independent* projects — Memory SSA,
+> interprocedural analysis, EH recovery, SIMD lift, an idiom library — rather than
+> "we don't know how." That is a maturity signal: the decompiler core exists, and
+> what remains is heuristics and depth. This phase also feeds CONCEPT §2's
+> north-star directly — the interprocedural summary layer it builds (priority 3) is
+> what materializes the persistent "program model" that turns *one pipeline* into
+> *one model, many projections*.
+
+---
+
+## Companion tooling (not a numbered phase) — N0xHUD, game-asset & LuaJIT track
+
+A parallel track landed outside the numbered roadmap (commits `4cc5f4e`,
+`d6580f2`) and isn't otherwise represented here. These capabilities **exist and
+are wired**; framed correctly they are **runtime instrumentation / live-memory
+analysis + input actuation** over the very crates the CLI and MCP drive — a third
+frontend plus some format adapters, not a separate product. (These four extra
+crates — `n0xis-hud`, `n0xis-bitsquid`, `n0xis-lua`, `n0xis-luajit` — bring the
+workspace from Phase 1's 8 crates to **12** today.)
+
+- ✅ **N0xHUD — a third frontend** (`crates/n0xis-hud`, binary `n0xis-hud`). A
+  config-driven **companion window**, *not* an in-game overlay: a plain
+  always-on-top `eframe`/`egui` window that does **not** draw inside the target
+  (the a separate always-on-top window model), launched from a game's `.n0x/` project and driven by
+  `.n0x/hud.toml`. One shared `Engine` behind three background threads — a global
+  low-level keyboard hook (hotkeys), a process watcher that auto-applies adapters
+  when the target appears, and the combo watcher. Shipped: config-driven bindings
+  (nothing hardcoded), write & freeze over the Phase 4b primitives (pointer-path
+  locators included), global hotkeys with in-UI rebind + conflict detection, and
+  an in-binary adapter registry (today only `helldivers-infinite-mags`, an
+  AOB-anchored live LuaJIT-bytecode patch journaled so toggle-off restores the
+  original bytes).
+  ⚠️ Doc debt: the design docs under [`docs/n0xhud/`](docs/n0xhud/) still describe
+  the *unbuilt* overlay/injection plan and use cheat-menu framing — stale, flagged
+  for a rewrite; the shipped binary is the companion-window shape above.
+- ✅ **Interception-driver actuation** (`interception.rs`). Dynamically loads a
+  user-configured `interception.dll` (path from `hud.toml`, never hardcoded) and
+  sends keystrokes through the kernel-class driver — needed because Helldivers
+  filters `LLKHF_INJECTED` and ignores the identical scancode sent via
+  `SendInput` (confirmed live). Two macro subsystems ride on top: fixed
+  **sequences / "Combinations"** replay (via `SendInput`) and **stratagem
+  macros** (via Interception).
+- ✅ **Bitsquid/Stingray + LuaJIT asset tooling** (`crates/n0xis-bitsquid`,
+  `n0xis-lua`, `n0xis-luajit`; CLI `bundle {list,extract,repack}` and
+  `lua {disasm,patch,strings,table,combo,seedscan}`). Offline bundle
+  read/extract/repack and LuaJIT bytecode disasm/patch, plus **live GCstr/GCtab
+  introspection** — decoding real LuaJIT object headers out of a running process's
+  heap with pure memory reads (no debugger). None of these three crates is
+  depended on by `n0xis-core` (the boundary law still holds).
+- ⚠️ **Helldivers interact-combo auto-solver** (`combo_watcher.rs` +
+  `adapters/helldivers_combo.rs` + `interception.rs`) — the main HUD
+  capability, framed as *dynamic analysis in a loop*: detect an active
+  interact-combo component in live memory, recover its small-integer seed, and
+  recompute the deterministic sequence from the game's own LCG
+  (`s' = s*1664525 + 1013904223`, reverse-engineered from the native
+  `Math.next_random` binding and validated live against two independent
+  activations), actuate through Interception, and re-read live `progress` before
+  each tap — stopping the instant the window closes.
+  - **Mines/UXO (default)**: solved **exactly** from the seed, **never**
+    brute-forced (a wrong tap detonates) — the validated, always-safe path.
+  - **Universal (opt-in)**: detects any interact object by diffing
+    `interacting_unit` between polls, solving seed-first with a per-position
+    brute fallback (safe because a wrong *non-mine* input only resets progress;
+    **mines are never brute-forced regardless**). Explicitly **gated behind its
+    own live-validation checkpoint** — implemented, not verified.
+  ⚠️ Doc debt: the solver code cites planning docs (`AUTO_COMBO_PLAN.md`,
+  `cheats_research.md`) that don't exist in this repo, and it has **zero**
+  coverage under `docs/n0xhud/` — to reconcile in the HUD doc rewrite.
 
 ---
 

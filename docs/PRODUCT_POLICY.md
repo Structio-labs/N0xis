@@ -23,7 +23,9 @@ Concretely, in this codebase:
 - The CLI and MCP frontends are **equal peers** over the same
   `n0xis-pipeline`/`n0xis-core` API, both driven only through
   `n0xis-contracts`'s versioned schemas. Neither is "the real one" with the
-  other bolted on.
+  other bolted on. N0xHUD (`n0xis-hud`, the companion window) later rode the
+  same crates as a third frontend without a line of core change — the seam
+  holding a second time (see §3 for the parity rules that bind it).
 - A duplicated schema or constant across two sides (e.g. a wire message
   shape defined twice) is a signal to extract it into
   `n0xis-contracts` — the single source of truth — not a style nitpick.
@@ -55,6 +57,24 @@ lands in only one frontend, that's a tracked gap (see
 
 Both frontends are driven from the outside through a stable interface — never
 only from inside the code. A human and an agent get the same power.
+
+**A third frontend, same law.** N0xHUD (`n0xis-hud`) — the config-driven
+companion window — is a legitimate third frontend, but a *focused* one, not a
+full peer of the parity rule above. It is built over the **same crates**: it
+drives `n0xis-project`, `n0xis-sources`, and the analysis/patch passes through
+their contracts and stays honest to the same `ok/data/meta`-shaped artifacts;
+it never reaches around the engine to touch a target through a private path. It
+is a window *over* the engine, not a bypass *of* it. The every-capability
+parity obligation binds the **CLI↔MCP pair**; N0xHUD's obligation is narrower —
+honor those same contracts, don't fork them — so it is free to expose only the
+runtime-instrumentation surface it needs (process-watch/auto-apply, write &
+freeze, input actuation) rather than re-exposing every verb.
+
+That focused shape is also the standing answer on a GUI. CLI-and-MCP-first is
+the rule — but it is **not** "GUI-never." If a graphical layer ever lands it
+must stay a thin visualization/drive layer over the existing `ok/data/meta`
+artifacts, exactly the shape N0xHUD already is, never a second implementation
+of the core with its own private paths.
 
 ## 4. Anti-hardcode policy
 

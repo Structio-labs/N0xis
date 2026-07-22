@@ -1,23 +1,62 @@
 ---
-tags: [moc, index, project/n0x]
-aliases: [Index, Project Map, Hub]
+tags: [moc, index, project/n0xis]
+aliases: [Index, Project Map, Hub, MOC]
 ---
 
-# N0x — Project Map
+# N0xis — Project Map
 
-Central navigation hub for the N0x reverse engineering toolkit. Open this folder (`D:\Projects\N0x\`) as an **Obsidian vault** to get bidirectional navigation, backlinks, and the graph view across all documents.
+Central navigation hub (map-of-content) for **N0xis** — an agent-native reverse-engineering + live-memory toolkit. Open this folder (`D:\Projects\N0x\`) as an **Obsidian vault** for backlinks, the graph view, and bidirectional navigation across every document below.
 
-> Navigation: [[PROJECTS|Map]] · [[CLI_FEATURES_SPEC|CLI Spec]] · [[BACKEND_SPEC|Backend Spec]] · [[README|Frontend README]] · [[n0x-cli-rs/README|CLI README]] · [[n0x-cli-rs/DEVLOG|CLI DevLog]] · [[n0x-cli-rs/DEBUGGER_BREAKPOINTS_ROADMAP|Debugger breakpoints]]
+N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a cheat/trainer maker. Status: **alpha**, AGPL-3.0-only, public at `github.com/LargoScript/n0xis`.
+
+> Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[KILLER_FEATURES]] · [[PRODUCT_POLICY]] · [[RE_METHOD]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
 
 ---
 
 ## High-level architecture
 
-- **Frontend** — React 19 + TypeScript + Tailwind. Runs in the browser today, designed for Tauri later.
-  See [[BACKEND_SPEC]] for the contract the frontend expects from the native side.
-- **Backend CLI** — Rust crate `n0x-cli-rs`. CLI-first, JSON-on-stdout. Ground truth for every analysis capability.
-  See [[CLI_FEATURES_SPEC]] for the complete command surface and roadmap.
-- **Single source of data** — both AI agents and (future) UI talk to the same CLI in JSON. No duplicate code paths.
+Three frontends drive **one** analysis engine. Everything goes in and comes back as the same JSON envelope, so a human at a terminal, an MCP client, and the companion window all speak to identical code paths.
+
+### Frontends (3)
+- **`n0xis` (alias `n0x`)** — the CLI. Thin clap frontend. See [[CLI_COMMANDS]].
+- **`n0xis-mcp`** — MCP server over stdio; same `{ok,data,meta}` envelope, tool names mirror CLI verbs (18 tools exposed today).
+- **`n0xis-hud` (N0xHUD)** — a config-driven, always-on-top companion window over the same crates. Runtime instrumentation / live-memory analysis with an on-screen face — **not** an in-game overlay, **not** a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]].
+
+### The pass pipeline (source → arch → core → project)
+```
+source adapter  →  arch decode  →  core analysis passes  →  project (.n0x/) persistence
+  (I/O + OS)       (ISA trait)      (pure, no I/O, no OS)      names/types/patches/tables
+                         └──────── n0xis-pipeline wires all three + content-addressed caching ────────┘
+```
+`cargo test -p n0xis-core` links **zero** Windows/OS crates — the boundary law that keeps analysis pure and portable.
+
+### The source-adapter seam
+Analysis commands take **exactly one** target source, or fall back to the `.n0x/` session default:
+`--pid` (live process) · `--file` (static PE) · `--snapshot <name>` (reloaded capture) · `--remote-cmd "<argv>"` (SSH/Tailscale remote agent) · `--bytes "<hex>"` (inline, some commands). Same passes run against any of them.
+
+### The 12 crates (Cargo workspace, members = `crates/*`)
+| Crate | Role | Depended on by core? |
+|---|---|---|
+| `n0xis-contracts` | All wire schemas (`n0xis.*.vN`) + shared value types (`Va`, `Symbol`, `Reg`). Single source of truth. | — |
+| `n0xis-arch` | ISA abstraction (`trait Arch`) + **X64** (iced-x86, full pipeline) + **Arm64** (disarm64; CFG/discover/xref/goto+structured decomp). SSA-opt & flag-precise conditions are x64-only. | — |
+| `n0xis-sources` | Input adapters: `LiveProcess` (Win32), `StaticPe` (goblin), `Snapshot`, `RemoteAgent`, plus `debug` (sw/hw breakpoints, unwind) and `input` (injection probe). | — |
+| `n0xis-core` | Pure analysis passes — CFG/SSA/opt/DCE/typeinfer/structure/render/xref/slice/scan/aob/pointer/dissect/valueset/deobfuscate/diff/provenance/gamegrep/constident/bindings/sigvalidate/structural/ui_locate. **No I/O, no OS.** | — |
+| `n0xis-project` | `.n0x/` analysis DB: names/types/comments (annotate), selections, patches, dumps, `.n0xt` tables, session, ir-cache. | — |
+| `n0xis-pipeline` | Wires source + arch + project into core; content-addressed artifact caching. | — |
+| `n0xis-cli` | Clap frontend (binary `n0xis`, alias `n0x`). | — |
+| `n0xis-mcp` | MCP server frontend (binary `n0xis-mcp`). | — |
+| `n0xis-hud` | N0xHUD companion-window frontend (binary `n0xis-hud`). | — |
+| `n0xis-bitsquid` | Bitsquid/Stingray bundle format adapter. | **No** |
+| `n0xis-lua` | Offline LuaJIT 2.0 bytecode disassembler/patcher. | **No** |
+| `n0xis-luajit` | Live LuaJIT VM introspection (GCstr discovery in a running process). | **No** |
+
+### Status at a glance (verify against [[ROADMAP]] before quoting)
+- **Phases 1–7: done.** Phase 3 optimizing SSA decompiler is the main; 4b live memory (scanner-class); 4c provenance (principal); 5 MCP; 6 persistence/caching/snapshot/remote/perf; 7 ARM64 + value-set + deobfuscation + diffing.
+- ⚠️ **ARM64 caveat (standing):** implemented and self-tested, **not** verified to x64's standard. Say "implemented and self-tested," never "working/verified."
+- **Phase 8 (spec-first method tooling):** 6/7 named commands landed + hex-everywhere audit closed (merged into `main`). ⬜ **Region caching as a built-in scan option is the single open item.**
+- **Phase 9 (UI-layer localization):** `ui locate`, the structural-predicate scan primitive, and `debug watch --when` are **implemented in the working tree, uncommitted, and pending live-target validation.** Unit-tested on synthetic buffers; the decisive live appearance-correlation test has **not** run. Say "implemented, pending live validation," never "verified." See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].
+
+The **installed** binary reports **77 leaf commands** via `n0x guide` (auto-generated from the clap tree, so it never drifts); the **working tree** adds `ui locate`, so a rebuild reports **78**.
 
 ---
 
@@ -25,35 +64,57 @@ Central navigation hub for the N0x reverse engineering toolkit. Open this folder
 
 | Document | Role | Audience |
 |---|---|---|
-| [[PROJECTS]] | Navigation hub (this file) | everyone |
-| [[CLI_FEATURES_SPEC]] | CLI command surface, IR plan, output contract, live progress | AI agent, dev, reviewer |
-| [[BACKEND_SPEC]] | What the React frontend expects from native backend (Tauri model) | frontend dev, backend dev |
-| [[README]] | Frontend project root README (npm scripts, dev workflow) | frontend dev |
-| [[n0x-cli-rs/README]] | CLI build instructions and quick-start examples | CLI user, AI agent |
-| [[n0x-cli-rs/DEVLOG]] | Chronological log of every backend change | dev, future-you |
-| [[n0x-cli-rs/DEBUGGER_BREAKPOINTS_ROADMAP|Debugger breakpoints roadmap]] | Що додати для breakpoints та debug-attach через Win32 API; JSON для агентів; ризики | dev, AI agent |
+| [MAP.md](MAP.md) — [[MAP]] | This hub — map of content, architecture summary, navigation | everyone |
+| [README.md](README.md) — [[README]] | Project front door: what it is, install/build, quick start | everyone |
+| [CONCEPT.md](CONCEPT.md) — [[CONCEPT]] | Vision & design philosophy (agent-native RE, positioning, GUI stance) | dev, reviewer, agent |
+| [ROADMAP.md](ROADMAP.md) — [[ROADMAP]] | Phase-by-phase plan + live status (legend 🎯✅⏳⬜⚠️) | dev, agent |
+| [docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md) — [[CLI_COMMANDS]] | **Current** command reference — every leaf command, args, schemas | agent, dev, user |
+| [docs/KILLER_FEATURES.md](docs/KILLER_FEATURES.md) — [[KILLER_FEATURES]] | What N0xis does that any other reverse-engineering tool/CE don't (honest, fact-checked) | evaluator, agent |
+| [docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md) — [[PRODUCT_POLICY]] | Positioning, scope, and ethics — RE/dynamic-analysis, single-player | contributor, user |
+| [docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md) — [[COMMUNITY_ROADMAP]] | Community/backlog items and how contributions slot in | contributor |
+| [docs/RE_METHOD.md](docs/RE_METHOD.md) — [[RE_METHOD]] | Historical RE-method post-mortem; source of Phase 8's W/F recipes | agent, dev |
+| [docs/PHASE9_UI_LOCATE_BRIEF.md](docs/PHASE9_UI_LOCATE_BRIEF.md) — [[docs/PHASE9_UI_LOCATE_BRIEF\|Phase 9 brief]] | Phase 9 design + definition-of-done (incl. the live §9.3 test still owed) | dev, agent |
+| [docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md) — [[docs/n0xhud/CONCEPT\|N0xHUD concept]] | N0xHUD design & rationale (companion window, not overlay) | dev, agent |
+| [docs/n0xhud/ROADMAP.md](docs/n0xhud/ROADMAP.md) — [[docs/n0xhud/ROADMAP\|N0xHUD roadmap]] | N0xHUD phase plan + landed-vs-open status | dev, agent |
+| [CONTRIBUTING.md](CONTRIBUTING.md) — [[CONTRIBUTING]] | How to build, test, and contribute; CLA note for outside PRs | contributor |
+
+> Archived v0 documentation lives under [`archive/`](archive/) (`archive/README.md`, `archive/docs-v0/`, `archive/n0x-cli-rs-v0/`). It describes the superseded React/Tauri frontend and the old `n0x-cli-rs` crate — **superseded, do not cite it.** The current command reference is [[CLI_COMMANDS]] (`docs/CLI_COMMANDS.md`), which was renamed from the old `CLI_COMMANDS_v0.md` and is now the live reference, not a frozen snapshot.
 
 ---
 
 ## By topic
 
-### Reverse engineering capabilities
-- Process / module / memory primitives — see [[CLI_FEATURES_SPEC#3) CLI Command Surface]] and the Quick Start in [[n0x-cli-rs/README]].
-- Cross-references — [[CLI_FEATURES_SPEC#3.5 Cross References (Critical)]].
-- Planned: debugger breakpoints (Win32 attach, sw/hw BP, JSON hits) — [[n0x-cli-rs/DEBUGGER_BREAKPOINTS_ROADMAP|DEBUGGER_BREAKPOINTS_ROADMAP]].
+### Static analysis & the decompiler
+The Phase 3 optimizing SSA decompiler is the main. Build IR, decompile to pseudo-C, slice, xref, discover/trace functions, diff.
+- Commands: `ir {build,explain,dot,slice,manifest,value-set,deobfuscate}`, `decomp pseudo --style goto|structured|ssa`, `function {discover,trace}`, `xref {to,from,string}`, `diff functions`. Full detail in [[CLI_COMMANDS]].
+- ISA support: x64 (full) and ARM64 (⚠️ implemented and self-tested; SSA-opt & flag-precise conditions x64-only) — [[ROADMAP]] Phase 7.
+- Where it lives: `n0xis-arch` (decode) + `n0xis-core` (passes).
 
-### Decompilation / IR layer
-- Plan and schema overview — [[CLI_FEATURES_SPEC#Decompilation / IR Layer Plan]] and [[CLI_FEATURES_SPEC#IR Schema v1 (`n0x.ir.v1`)]].
-- Implementation history — [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1 (`src/ir.rs`)]] · [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.1]] · [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.2 — slicing / view levels]] · [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.3 — cross-module symbols, IAT, switch hints, constant tracking]] · [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.4 — memory-side switch resolution]] · [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.5 — `ir manifest`]] · [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.6 — `decomp pseudo` (template-based v0)]] · [[n0x-cli-rs/DEVLOG#Added — Decompilation / IR Layer v1.7 — structured control reconstruction|v1.7 structured control reconstruction]] · [[n0x-cli-rs/DEVLOG#Added — IR Layer v1.8 — backward register slicing (`ir slice`)|v1.8 backward register slicing]] · [[n0x-cli-rs/DEVLOG#Added — IR Layer v1.9 — DOT CFG export (`ir dot`)|v1.9 DOT export]] · [[n0x-cli-rs/DEVLOG#Added — IR Layer v1.10 — edge confidence on CFG successors|v1.10 edge confidence]] · [[n0x-cli-rs/DEVLOG#Added — Decomp Structured v2 (`decomp pseudo --style structured`)|decomp structured v2]] · [[n0x-cli-rs/DEVLOG#Added — Static PE --file for IR and decomp pseudo|static PE (--file)]] · [[n0x-cli-rs/DEVLOG#Added — Static-first RE surface (single PE, read-only)|static-first RE surface]].
-- Live commands — `ir build` / `ir explain` / `ir cfg` / `ir dot` / `ir slice` / `selection ir`. Examples in [[n0x-cli-rs/README]].
+### Dynamic memory / live analysis (a memory scanner class)
+Value scanning with true snapshot-backed narrowing, AOB, pointer paths, region dissect, patches with an undo journal, tables, breakpoints/watchpoints.
+- Commands: `scan {value,filter,aob,pointer-path,dissect}`, `mem {read,write,map}`, `patch {dry-run,apply,list,show,undo,detour}`, `table {add,list,show,rm,freeze}`, `debug {await-hit,watch,attach}`. See [[CLI_COMMANDS]].
+- ⬜ Region caching as a built-in scan option is the one open Phase 8 item ([[ROADMAP]]).
 
-### AI agent contract
-- View levels for IR (`full | minimal | cfg | block`) and slicing (`--block`, `--range`) — [[n0x-cli-rs/DEVLOG#Decompilation / IR Layer v1.2 — slicing / view levels]].
-- Safe write workflow (`patch dry-run|apply|undo`, `.n0x/patches` journal, rollback guard) — [[n0x-cli-rs/DEVLOG#Added — Patch pipeline v1 (`patch dry-run|apply|undo`)]].
+### Provenance (Phase 4c principal)
+Watchpoint × decompiler: arm a hardware watchpoint on a value, wait for one real hit, and explain the exact decompiled statement responsible — with a true cross-process x64 caller chain from `.pdata`/`.xdata`.
+- Command: `provenance trace` (also exposed over MCP). See [[CLI_COMMANDS]] and [[KILLER_FEATURES]].
 
-### Frontend expectations
-- Required services (Process Manager / Memory Engine / Debugger / Pattern Engine) — [[BACKEND_SPEC#Core Services Needed]].
-- Tauri `invoke` / `listen` model — [[BACKEND_SPEC#Communication Pattern]].
+### Game-engine assets & LuaJIT
+Bitsquid/Stingray bundles + offline and live LuaJIT introspection.
+- Commands: `bundle {list,extract,repack}`, `lua {disasm,patch,strings,table,combo,seedscan}`. See [[CLI_COMMANDS]].
+- Crates: `n0xis-bitsquid`, `n0xis-lua` (offline), `n0xis-luajit` (live GCstr discovery) — none depended on by core.
+
+### Spec-first method tooling (Phase 8)
+Turning the [[RE_METHOD]] post-mortem's repeatable recipes into commands: `game grep`, `locate by-transition`, `input probe`, `const identify`, `bindings list`, `sig validate`. 6/7 landed and merged into `main`. See [[CLI_COMMANDS]].
+
+### UI-layer localization (Phase 9 — working tree)
+Hit-test a live target's own retained scene-graph AABBs from outside — no graphics-API hooking, no frame capture. `ui locate --rect` (CLI + MCP), built on the internal `scan structural` primitive (`n0xis.scan.structural.v1` — a core primitive, **not** a runnable CLI subcommand), plus the conditional HW watchpoint `debug watch --when`. ⚠️ Implemented, unit-tested, **uncommitted, pending live validation.** See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].
+
+### N0xHUD (companion window)
+The interactive, on-screen face of the same engine: a config-driven always-on-top `eframe`/`egui` window (`.n0x/hud.toml`), a process-watcher auto-apply loop, global hotkeys via a low-level keyboard hook, write & freeze, Interception kernel-driver actuation, stratagem/sequence macros, and the Helldivers interact-combo auto-solver (read a generator seed live, recompute the deterministic sequence, actuate + verify). Framed as runtime instrumentation, never a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]] and [[docs/n0xhud/ROADMAP|N0xHUD roadmap]].
+
+### The agent contract — `{ok,data,meta}`
+Every command emits exactly one JSON object: `{"ok":true,"data":{…},"meta":{"schema":"n0xis.*.vN",…}}` on success, `{"ok":false,"error":{…}}` on failure. `--pretty` indents; non-zero exit on `ok:false`; stderr progress is prefixed `[n0x]` (safe to ignore in scripts). New v1 schemas are `n0xis.*.vN`; a few ported shapes keep the archived `n0x.*.v1` id for back-compat. `meta.schema` names the payload shape and is defined once in `n0xis-contracts`. The same envelope is what the MCP server returns as a string. See [[CLI_COMMANDS]] (envelope + schema map) and [[CONCEPT]].
 
 ---
 
@@ -61,12 +122,18 @@ Central navigation hub for the N0x reverse engineering toolkit. Open this folder
 
 | Goal | Read first | Then |
 |---|---|---|
-| Run the CLI for the first time | [[n0x-cli-rs/README]] | [[CLI_FEATURES_SPEC]] |
-| Wire the React UI to a real backend | [[BACKEND_SPEC]] | [[CLI_FEATURES_SPEC]] (use the CLI as the backend) |
+| First run — understand & try it | [[README]] | [[CLI_COMMANDS]] → run `n0x guide` |
+| Continue implementation | [[ROADMAP]] | [[CLI_COMMANDS]] → the relevant crate under `crates/` |
+| Drive it from an agent (CLI or MCP) | [[CLI_COMMANDS]] (envelope + schemas) | `n0x guide` (auto-generated catalog) → [[KILLER_FEATURES]] |
+| Onboard into the project | [[MAP]] (this file) | [[CONCEPT]] → [[ROADMAP]] → [[CONTRIBUTING]] |
+| Contribute / open a PR | [[CONTRIBUTING]] | [[PRODUCT_POLICY]] → [[COMMUNITY_ROADMAP]] |
+| Work on N0xHUD | [[docs/n0xhud/CONCEPT\|N0xHUD concept]] | [[docs/n0xhud/ROADMAP\|N0xHUD roadmap]] → `crates/n0xis-hud/src/` |
 
 ---
 
-## Documentation rules
+## Conventions for this vault
 
-- Roadmap progress (checkboxes) lives in [[CLI_FEATURES_SPEC#Implementation Progress (Live)]].
-- This hub ([[PROJECTS]]) only references — never duplicates content.
+- The auto-generated `n0x guide` (from the live clap tree) is the source of truth for the command catalog — [[CLI_COMMANDS]] mirrors it in prose but the binary never drifts.
+- Keep **"implemented and self-tested"** strictly distinct from **"verified."** ARM64 and Phase 9 `ui locate` are the standing examples: self-tested, not live-verified.
+- Roadmap legend everywhere: 🎯 milestone · ✅ done · ⏳ in progress · ⬜ todo · ⚠️ caveat.
+- This hub only references — it never duplicates content. If a fact lives in two places, one of them is wrong.
