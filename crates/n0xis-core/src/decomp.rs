@@ -45,6 +45,16 @@ impl DecompStyle {
 pub struct DecompInput {
     pub cfg: CfgArtifact,
     pub style: DecompStyle,
+    /// Carry the per-round optimization delta in the result
+    /// ([`PseudoFunction::delta`]).
+    ///
+    /// Off by default because it is **larger than the pseudocode it explains**
+    /// — measured on a real function: 59 518 bytes of delta against 42 306
+    /// bytes of pseudo-C, 59% of the whole payload. A caller asking "what does
+    /// this function do" should not pay for the answer to "why did the
+    /// optimizer render it that way"; that question has its own command
+    /// (`ir explain`).
+    pub explain: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -59,9 +69,9 @@ pub struct PseudoFunction {
     pub quality: f32,
     pub flags: Vec<&'static str>,
     pub instruction_count: usize,
-    /// What each optimization round changed — only populated for
-    /// `--style ssa` (`n0xis.opt.delta.v1`'s content, inlined here for
-    /// convenience; also independently requestable via `ir ssa`/`opt`).
+    /// What each optimization round changed (`n0xis.opt.delta.v1`'s content).
+    /// Populated only for `--style ssa` **and** only when the caller asked via
+    /// [`DecompInput::explain`] — see that field for why it is not free.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub delta: Vec<OptDeltaEntry>,
 }
@@ -99,7 +109,8 @@ impl Pass for DecompPass {
             }
             DecompStyle::Ssa => {
                 let out = structure(&cfg, &opt.blocks, &names);
-                (out.lines, out.has_loop, out.fallback_count, opt.delta)
+                let delta = if input.explain { opt.delta } else { Vec::new() };
+                (out.lines, out.has_loop, out.fallback_count, delta)
             }
         };
 
@@ -236,7 +247,7 @@ mod tests {
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
-        DecompPass.run(&ctx, DecompInput { cfg, style }).unwrap()
+        DecompPass.run(&ctx, DecompInput { cfg, style, explain: true }).unwrap()
     }
 
     /// The Phase 3 exit-test property (ROADMAP Phase 3 / CONCEPT §6.3):

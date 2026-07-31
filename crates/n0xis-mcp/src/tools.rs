@@ -15,7 +15,7 @@ use n0xis_core::{
     Rect, TraceInput, TracePass, UiLocateInput, UiLocatePass, XrefDir, XrefInput, XrefPass,
     StringXrefInput, StringXrefPass,
 };
-use n0xis_sources::MemorySource;
+use n0xis_sources::{plugin_call_once, split_command_line, MemorySource};
 #[cfg(windows)]
 use n0xis_sources::{
     LiveProcess, ModuleProvider, WatchKind, await_watchpoint_hit, best_window,
@@ -136,6 +136,10 @@ pub struct DiscoverRequest {
     pub size: Option<usize>,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Skip this many candidates before collecting — page through a range
+    /// together with `limit`.
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 fn default_limit() -> usize {
     64
@@ -192,6 +196,11 @@ pub struct DecompRequest {
     /// One of `"goto"`, `"structured"`, `"ssa"` (default: `"ssa"`, the optimized + structured style).
     #[serde(default = "default_style")]
     pub style: String,
+    /// Also return the per-round optimization delta (`ssa` style only). Off by
+    /// default: measured larger than the pseudocode itself (59% of the
+    /// payload). The `ir_opt_delta` tool is the dedicated way to ask for it.
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 fn default_style() -> String {
     "ssa".to_string()
@@ -319,6 +328,18 @@ pub struct AnnotateSetRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnnotateShowRequest {
     pub addr: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PluginRunRequest {
+    /// Which registered plugin (`.n0x/plugins.json`) to invoke.
+    pub name: String,
+    /// Artifact kind label sent to the plugin alongside `artifact`
+    /// (`"cfg"`/`"pseudo"`/`"discover"`, or any caller-chosen string for a
+    /// manual test invocation).
+    pub kind: String,
+    /// The artifact JSON to send on the plugin's stdin.
+    pub artifact: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -612,9 +633,13 @@ impl N0xisServer {
         let Some((start, size)) = source::scan_range(src.text_range(), explicit_start, a.size) else {
             return err("no-range", "could not resolve a scan range; pass start and size");
         };
-        let out = with_ctx(&src, |ctx| DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit }));
+        let out = with_ctx(&src, |ctx| DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: a.offset.unwrap_or(0) }));
         match out {
-            Ok(art) => emit(Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(src.label())),
+            Ok(art) => {
+                let (returned, truncated) = (art.count, art.truncated);
+                let resp = Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(src.label());
+                emit(if truncated { resp.with_cap(returned) } else { resp })
+            }
             Err(e) => err("discover-failed", e.to_string()),
         }
     }
@@ -660,7 +685,7 @@ impl N0xisServer {
         let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
         let out = with_ctx(&src, |ctx| -> Result<_, String> {
             let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
-            DecompPass.run(ctx, DecompInput { cfg, style }).map_err(|e| e.to_string())
+            DecompPass.run(ctx, DecompInput { cfg, style, explain: a.explain.unwrap_or(false) }).map_err(|e| e.to_string())
         });
         match out {
             Ok(pf) => emit(Response::success(schema::v0::DECOMP_PSEUDO, pf).with_source(src.label())),
@@ -684,7 +709,8 @@ impl N0xisServer {
         let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
         let out = with_ctx(&src, |ctx| -> Result<_, String> {
             let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
-            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa }).map_err(|e| e.to_string())
+            // This tool *is* the delta, so it always asks for it.
+            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true }).map_err(|e| e.to_string())
         });
         match out {
             Ok(pf) => emit(
@@ -906,6 +932,33 @@ impl N0xisServer {
         }
     }
 
+    #[tool(description = "Every registered analysis plugin (name -> spawn command + declared artifact kinds), from .n0x/plugins.json.")]
+    fn plugin_list(&self) -> String {
+        match n0xis_project::plugins::list() {
+            Ok(items) => emit(Response::success(schema::v1::PLUGIN, json!({ "count": items.len(), "plugins": items }))),
+            Err(e) => err("plugin-list-failed", e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Manually invoke one registered plugin by name against an arbitrary JSON artifact and return its response. Fails visibly (never panics) if the plugin isn't registered, its command can't spawn, or it crashes/times out — matching PluginHost's own fail-open-but-visible posture."
+    )]
+    fn plugin_run(&self, Parameters(a): Parameters<PluginRunRequest>) -> String {
+        let record = match n0xis_project::plugins::get(&a.name) {
+            Ok(r) => r,
+            Err(e) => return err("plugin-not-found", e.to_string()),
+        };
+        let argv = match split_command_line(&record.command) {
+            Ok(argv) => argv,
+            Err(e) => return err("bad-plugin-command", e),
+        };
+        let request = json!({ "kind": a.kind, "artifact": a.artifact });
+        match plugin_call_once(&argv, &request, std::time::Duration::from_secs(10)) {
+            Ok(resp) => emit(Response::success(schema::v1::PLUGIN, json!({ "plugin": a.name, "findings": resp }))),
+            Err(e) => err("plugin-run-failed", e),
+        }
+    }
+
     #[tool(
         description = "Screen region -> memory addresses: hit-test a live target's own UI bounding boxes and report the elements drawing inside a rectangle. Read-only (no breakpoints, no writes). Use `space:\"auto\"` first and read `observed_range` to learn which coordinate space the target's boxes are in. For noisy results, run once over a rect where the widget is ABSENT with `save_as`, then re-run over the rect where it is PRESENT with `exclude_from` — the spatial diff drops structures that overlap every rect."
     )]
@@ -944,7 +997,7 @@ impl N0xisServer {
                 regions,
                 rect,
                 space,
-                layout: AabbLayout::HELLDIVERS,
+                layout: AabbLayout::STINGRAY,
                 align: a.align.max(1),
             };
             let mut art = match UiLocatePass.run(&ctx, input) {

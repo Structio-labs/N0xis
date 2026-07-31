@@ -34,13 +34,13 @@ those are rejected rather than merely unnecessary.
 ## 2. Why this exists — the failure that motivated it
 
 This is not speculative tooling. It comes from a completed campaign
-(2026-07-20) whose full post-mortem lives in the game's `AUTO_COMBO_PLAN.md`
-§12. Short version:
+(2026-07-20) against a Bitsquid/Stingray-engine game, whose full post-mortem
+lives in that project's own planning docs (external to this repo). Short version:
 
-The target is Helldivers 1 (Bitsquid/Stingray engine). It has an interact
-mini-game: a terminal shows a row of **direction arrows** (`up, down, down,
-up`), the player types them, a progress counter advances. The goal was a solver
-that reads the required combination and inputs it.
+The target had an interact mini-game: a terminal shows a row of **direction
+arrows** (`up, down, down, up`), the player types them, a progress counter
+advances. The goal was a solver that reads the required combination and
+inputs it.
 
 That goal **was achieved**, but by *computing* the combination (a template from
 the game's own script bundles + a per-object `seed` read from memory), not by
@@ -69,8 +69,8 @@ its own bounding box.
 
 ## 3. What the target already gives us (verified, from decompilation)
 
-All offsets confirmed by decompiling `binaries/x64/helldivers.exe` (image base
-`0x140000000`; use `n0x decomp pseudo --file … --addr …`).
+All offsets confirmed by decompiling the target game's main executable (image
+base `0x140000000`; use `n0x decomp pseudo --file … --addr …`).
 
 `sub_1400ce800` (the arrow/UI vertex-buffer builder) and `sub_1400cc860` (the
 per-frame reset) both write the same element layout:

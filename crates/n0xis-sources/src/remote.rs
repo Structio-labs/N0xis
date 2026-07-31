@@ -22,6 +22,7 @@ use std::sync::Mutex;
 use n0xis_contracts::Va;
 use serde_json::{Value, json};
 
+use crate::linewire::{read_line_json as linewire_read, write_line_json as linewire_write};
 use crate::{MemorySource, SourceError};
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -77,21 +78,15 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
 }
 
-/// One line of the wire protocol, either direction: read the next JSON value
-/// from `r`, or bail with an I/O-flavored error if the stream closed.
+/// One line of the wire protocol, either direction — thin `SourceError`
+/// wrappers over the shared [`crate::linewire`] framing (also used by
+/// [`crate::plugin`]'s transport, so the line-protocol logic lives once).
 fn read_line_json(r: &mut impl BufRead) -> Result<Value, SourceError> {
-    let mut line = String::new();
-    let n = r.read_line(&mut line).map_err(|e| SourceError::Os(e.to_string()))?;
-    if n == 0 {
-        return Err(SourceError::Os("remote agent closed the connection".to_string()));
-    }
-    serde_json::from_str(line.trim()).map_err(|e| SourceError::Os(format!("bad remote response: {e}")))
+    linewire_read(r).map_err(SourceError::Os)
 }
 
 fn write_line_json(w: &mut impl Write, v: &Value) -> Result<(), SourceError> {
-    let mut line = serde_json::to_string(v).map_err(|e| SourceError::Os(e.to_string()))?;
-    line.push('\n');
-    w.write_all(line.as_bytes()).and_then(|_| w.flush()).map_err(|e| SourceError::Os(e.to_string()))
+    linewire_write(w, v).map_err(SourceError::Os)
 }
 
 struct RemoteIo {

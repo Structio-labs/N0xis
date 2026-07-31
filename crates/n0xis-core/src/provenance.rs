@@ -111,7 +111,7 @@ fn explain_hit(ctx: &Ctx, hit: ProvenanceHit, module: Option<&Module>, scan_star
             .find(|b| b.start.get() <= hit.instruction_va.get() && hit.instruction_va.get() < b.end.get())
             .map(|b| b.id);
         if let Some(block_id) = block_id
-            && let Ok(pseudo) = DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa })
+            && let Ok(pseudo) = DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false })
         {
             decompiled_context = extract_block_context(&pseudo.pseudo, block_id);
         }
@@ -147,7 +147,7 @@ fn find_function_containing(ctx: &Ctx, scan_start: Va, scan_size: usize, target:
     let win_start = target.get().saturating_sub(DISCOVER_WINDOW_BACK).max(scan_start.get());
     let win_end = target.get().saturating_add(16).min(scan_end);
     let win_size = win_end.saturating_sub(win_start) as usize;
-    let discovered = DiscoverPass.run(ctx, DiscoverInput { start: Va(win_start), size: win_size, limit: 100_000 }).ok()?;
+    let discovered = DiscoverPass.run(ctx, DiscoverInput { start: Va(win_start), size: win_size, limit: 100_000, offset: 0 }).ok()?;
     let mut candidates: Vec<Va> = discovered.functions.iter().map(|f| f.va).filter(|&va| va.get() <= target.get()).collect();
     candidates.sort_by_key(|va| std::cmp::Reverse(va.get()));
 

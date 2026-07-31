@@ -230,8 +230,8 @@ fn parse_proto_body(body: &[u8], body_file_offset: usize, strip: bool, available
         // sizedbg alone without replicating lineinfo-width heuristics; since
         // this crate doesn't render source lines/var names, the simplest
         // sound move is to require STRIP for now rather than guess at debug
-        // blob length. Real Helldivers script dumps are stripped (verified),
-        // so this isn't in the way of the target use case.
+        // blob length. Real Bitsquid/Stingray-engine script dumps are
+        // stripped (verified), so this isn't in the way of the target use case.
         if sizedbg > 0 {
             return Err(LuaError::Malformed("non-stripped debug info is not decoded (documented follow-on)"));
         }

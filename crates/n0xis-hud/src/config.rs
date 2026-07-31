@@ -19,8 +19,69 @@ pub struct HudConfig {
     pub adapters: Vec<AdapterBinding>,
     #[serde(default)]
     pub sequences: SequencesConfig,
+    /// Interception driver settings, shared by every feature that needs
+    /// driver-level input (some games' anti-cheat/input filtering ignores
+    /// `SendInput`) — stratagem macros today; any adapter plugin needing a
+    /// `KeySender` in the future reads the same section rather than each
+    /// carrying its own DLL-path/device config.
     #[serde(default)]
-    pub combo_solver: ComboSolverConfig,
+    pub interception: InterceptionConfig,
+    /// Hotkey-bound stratagem macros (hold a modifier, tap a direction code) —
+    /// run through the Interception driver, since some games ignore SendInput.
+    #[serde(default)]
+    pub stratagem: Vec<StratagemMacro>,
+    /// Default speed for stratagem macros. Adjustable live from the HUD's
+    /// "Stratagems" panel.
+    #[serde(default)]
+    pub stratagem_speed: StratagemSpeedConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct StratagemSpeedConfig {
+    pub hold_ms: u64,
+    pub gap_ms: u64,
+}
+
+impl Default for StratagemSpeedConfig {
+    fn default() -> Self {
+        Self { hold_ms: 20, gap_ms: 20 }
+    }
+}
+
+/// Where to load the Interception driver from and which device to use —
+/// generic (no per-feature copy), see [`HudConfig::interception`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct InterceptionConfig {
+    /// Path to `interception.dll` (x64), loaded dynamically at runtime — see
+    /// `src/interception.rs` for why this is never a build-time link.
+    pub dll: String,
+    /// Explicit Interception keyboard device (`INTERCEPTION_KEYBOARD(n)`,
+    /// 1-based); omit to auto-pick the first keyboard device found.
+    #[serde(default)]
+    pub device: Option<i32>,
+}
+
+impl Default for InterceptionConfig {
+    fn default() -> Self {
+        Self { dll: String::new(), device: None }
+    }
+}
+
+/// One stratagem input macro: a name, the direction sequence, an optional
+/// in-game hotkey, and the held modifier key (default Left-Ctrl). Directions
+/// use the same `up/down/left/right` tokens and WASD scancodes as the combo
+/// solver.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StratagemMacro {
+    pub name: String,
+    pub steps: Vec<String>,
+    #[serde(default)]
+    pub hotkey: Option<String>,
+    /// Held modifier key name; only `"ctrl"` supported today (default).
+    #[serde(default)]
+    pub modifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,19 +112,34 @@ impl Default for OverlayConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WatchConfig {
-    /// Executable name to poll for (e.g. `"helldivers.exe"`), matched
+    /// Executable name to poll for (e.g. `"mygame.exe"`), matched
     /// case-insensitively against `n0xis_sources::list_processes()`.
     pub process_name: String,
 }
 
-/// Maps one `.n0xt` entry to a native adapter (CONCEPT.md's "for anything
-/// needing logic, the profile declares a plugin/adapter") instead of the
-/// plain locator-based freeze path.
+/// Maps one `.n0xt` entry to a process-based plugin (CONCEPT.md's "for
+/// anything needing logic, the profile declares a plugin/adapter") instead of
+/// the plain locator-based freeze path. `n0xis-hud` never compiles in
+/// game-specific logic itself — `command` is the plugin's spawn argv (parsed
+/// the same way as `--remote-cmd`), speaking the `on_launch`/`toggle_on`/
+/// `toggle_off`/`poll` JSON protocol over its stdio
+/// (`docs/COMMUNITY_ROADMAP.md`'s "Plugin system").
 #[derive(Debug, Clone, Deserialize)]
 pub struct AdapterBinding {
     pub name: String,
     pub table: String,
     pub entry: String,
+    /// The plugin's spawn command. `None` disables the binding (no adapter
+    /// configured for this entry — the menu still shows the row, toggling
+    /// it is just a no-op, same as an unrecognized name was before).
+    #[serde(default)]
+    pub command: Option<String>,
+    /// How often (ms) the background poller should call this plugin's
+    /// `"poll"` op while a target is attached. `None` means never polled —
+    /// only `on_launch`/`toggle_on`/`toggle_off` fire, driven by the menu/
+    /// watcher as before.
+    #[serde(default)]
+    pub poll_ms: Option<u64>,
 }
 
 /// Input-macro combos (variant A: replay a fixed direction sequence via
@@ -137,45 +213,6 @@ pub struct ComboDef {
     /// Per-step delay override (ms); falls back to `default_delay_ms`.
     #[serde(default)]
     pub delay_ms: Option<u64>,
-}
-
-/// The Helldivers combo auto-solver (seed→LCG read + Interception replay —
-/// see `adapters::helldivers_combo`). Off by default: it needs the
-/// Interception driver installed, so a profile must opt in with a real DLL
-/// path rather than the solver silently no-op'ing on a machine without it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct ComboSolverConfig {
-    pub enabled: bool,
-    /// Path to `interception.dll` (x64), loaded dynamically at runtime — see
-    /// `src/interception.rs` for why this is never a build-time link.
-    pub interception_dll: String,
-    /// Explicit Interception keyboard device (`INTERCEPTION_KEYBOARD(n)`,
-    /// 1-based); omit to auto-pick the first keyboard device found.
-    #[serde(default)]
-    pub device: Option<i32>,
-    pub hold_ms: u64,
-    pub gap_ms: u64,
-    /// How often (ms) the background loop rescans for a newly-activated
-    /// interact object while the game is running.
-    pub poll_ms: u64,
-    /// Safety cap on taps sent to one instance before giving up (protects
-    /// against a signature false-positive spinning forever).
-    pub max_steps: u32,
-}
-
-impl Default for ComboSolverConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            interception_dll: String::new(),
-            device: None,
-            hold_ms: 60,
-            gap_ms: 160,
-            poll_ms: 700,
-            max_steps: 24,
-        }
-    }
 }
 
 impl HudConfig {

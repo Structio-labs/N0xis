@@ -88,6 +88,12 @@ struct GuideArgs {
 enum Command {
     /// Environment / readiness check.
     Doctor,
+    /// Profile a target before analyzing it: image facts (sections, exports,
+    /// branch stubs, folded addresses, `.pdata`), the runtime/engine it was
+    /// built with, and **which commands will be ineffective on it and why**.
+    /// Run this first on an unfamiliar binary — it answers in one call what is
+    /// otherwise learned by a sequence of empty results.
+    Profile(ProfileArgs),
     /// Agent-oriented capability catalog: every command, its arguments, and
     /// composable workflow recipes — structured JSON an AI agent can read to
     /// understand what the tool can do and how to drive it. `guide <topic>`
@@ -127,6 +133,10 @@ enum Command {
     /// Named memory-range anchors, persisted under `.n0x/selections.json`.
     #[command(subcommand)]
     Selection(SelectionCmd),
+    /// Registered analysis plugins, persisted under `.n0x/plugins.json`
+    /// (`docs/COMMUNITY_ROADMAP.md`'s "Plugin system").
+    #[command(subcommand)]
+    Plugin(PluginCmd),
     /// Persistent artifact store under `.n0x/dumps/<kind>/`.
     #[command(subcommand)]
     Dump(DumpCmd),
@@ -633,7 +643,7 @@ enum LuaCmd {
     /// Recover an LCG seed from an observed sequence: scan a live process for a
     /// 4-byte word whose `s'=s*a+c` LCG reproduces a known combo, locating the
     /// seed field and validating the RNG model at once. Constants are flags
-    /// (default = the Helldivers/Numerical-Recipes pair).
+    /// (default = the commonly observed Numerical-Recipes pair).
     Seedscan(LuaSeedscanArgs),
 }
 
@@ -651,10 +661,10 @@ struct LuaSeedscanArgs {
     /// engine's `random(0,3)` codes `left=0,up=1,right=2,down=3`.
     #[arg(long)]
     combo: String,
-    /// LCG multiplier `a` (default: Numerical Recipes / Helldivers).
+    /// LCG multiplier `a` (default: Numerical Recipes).
     #[arg(long, default_value_t = 1664525)]
     lcg_a: u32,
-    /// LCG increment `c` (default: Numerical Recipes / Helldivers).
+    /// LCG increment `c` (default: Numerical Recipes).
     #[arg(long, default_value_t = 1013904223)]
     lcg_c: u32,
     /// Range size `k` for `random(0, k-1)` (4 directions).
@@ -851,9 +861,15 @@ enum ProvenanceCmd {
 struct ProvenanceTraceArgs {
     #[arg(long)]
     pid: u32,
-    /// The value's address to explain (hex `0x…`).
+    /// The value's address to explain (hex `0x…`). Absolute VA unless
+    /// `--addr-rva`.
     #[arg(long)]
     addr: String,
+    /// Interpret `--addr` as an RVA from the main module's base — the same
+    /// flag `debug watch` takes, so an address recorded from one is usable in
+    /// the other without a hand conversion.
+    #[arg(long)]
+    addr_rva: bool,
     #[arg(long, value_enum, default_value_t = WatchKindArg::Write)]
     kind: WatchKindArg,
     #[arg(long, default_value_t = 4)]
@@ -994,6 +1010,38 @@ struct SelectionSaveArgs {
 
 #[derive(Args)]
 struct SelectionShowArgs {
+    #[arg(long)]
+    name: String,
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// Register (or overwrite, by name) a plugin: an executable spawned with
+    /// an artifact as JSON on stdin, expected to reply with one JSON findings
+    /// object on stdout.
+    Add(PluginAddArgs),
+    /// List registered plugins.
+    List,
+    /// Remove a plugin by name.
+    Rm(PluginRmArgs),
+}
+
+#[derive(Args)]
+struct PluginAddArgs {
+    #[arg(long)]
+    name: String,
+    /// The argv to spawn, as one string (parsed the same way as
+    /// `--remote-cmd`; `"..."` quotes a segment containing spaces).
+    #[arg(long)]
+    command: String,
+    /// Artifact kind(s) this plugin wants to see: `cfg`, `pseudo`, `discover`
+    /// (repeatable, e.g. `--handles cfg --handles pseudo`).
+    #[arg(long = "handles", required = true)]
+    handles: Vec<String>,
+}
+
+#[derive(Args)]
+struct PluginRmArgs {
     #[arg(long)]
     name: String,
 }
@@ -1211,6 +1259,28 @@ struct FunctionTraceArgs {
 }
 
 #[derive(Args)]
+struct ProfileArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Instruction set used to decode export stubs: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+    /// Which loaded module to profile (case-insensitive substring). Defaults
+    /// to the main module — worth overriding on any target whose real code is
+    /// in a DLL: a Unity player EXE profiles as 2 exports and 319 functions
+    /// while `--module GameAssembly.dll` is where the other 277 199 live.
+    #[arg(long)]
+    module: Option<String>,
+    /// Include the full export table (name → address → branch target). Off by
+    /// default: a runtime DLL can export hundreds of names, and the summary
+    /// counts are what you usually need.
+    #[arg(long)]
+    exports: bool,
+}
+
+#[derive(Args)]
 struct DiscoverArgs {
     #[arg(long)]
     pid: Option<u32>,
@@ -1234,12 +1304,21 @@ struct DiscoverArgs {
     /// Scan range size in bytes (defaults to the `.text` size).
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
-    /// Cap on the number of prologue-scan candidates; `0` = unlimited (default).
+    /// Cap on the number of candidates returned; `0` = unlimited (default).
+    /// Applies to **both** discovery modes — a large image's `.pdata` table
+    /// holds hundreds of thousands of entries, so cap it unless you are
+    /// redirecting the output to a file.
     #[arg(long, default_value_t = 0)]
     limit: usize,
+    /// Skip this many candidates before collecting — page through a range with
+    /// `--limit`. Counted from the start of the range/table, so a given page is
+    /// the same set of addresses however you got there.
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
     /// Discover from the PE `.pdata` exception table instead of prologue
     /// scanning: every function (with unwind info) with exact start+end, no
-    /// heuristic and no cap. x64 PE images only (`--pid`/`--file`).
+    /// heuristic. x64 PE images only (`--pid`/`--file`). Honours
+    /// `--limit`/`--offset`; `meta.total` reports the true table size.
     #[arg(long)]
     pdata: bool,
 }
@@ -1387,6 +1466,13 @@ struct DecompArgs {
     /// `ssa` (structured *and* optimized — the ROADMAP Phase 3 target style).
     #[arg(long, value_enum, default_value_t = PseudoStyle::Ssa)]
     style: PseudoStyle,
+    /// Also return the per-round optimization delta (`--style ssa` only):
+    /// what each pass changed and why. Off by default because on a real
+    /// function it measured **larger than the pseudocode itself** (59 KB of
+    /// delta vs 42 KB of pseudo-C — 59% of the payload). Ask for it when you
+    /// are auditing the decompiler; `ir explain` is the dedicated command.
+    #[arg(long)]
+    explain: bool,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -1645,9 +1731,21 @@ struct TableFreezeArgs {
 
 #[derive(Args)]
 struct IrArgs {
-    /// Function start address (hex `0x…`, `…h`, or decimal).
+    /// Function start address (hex `0x…`, `…h`, or decimal). Absolute VA
+    /// unless `--addr-rva`.
     #[arg(long)]
     addr: String,
+    /// Interpret `--addr` as an RVA from the target module's base. An RVA is
+    /// the only address form that survives a restart (live VAs move with
+    /// ASLR), so it is what you should be recording and passing back in.
+    #[arg(long)]
+    addr_rva: bool,
+    /// Which module `--addr-rva` is relative to (case-insensitive substring).
+    /// Defaults to the main module — which is the *wrong* one whenever the
+    /// code you care about lives in a DLL, as it does in every Unity/IL2CPP
+    /// game (`--addr-module GameAssembly.dll`).
+    #[arg(long)]
+    addr_module: Option<String>,
     /// Instruction set to decode: `x64` (default) or `arm64`.
     #[arg(long)]
     arch: Option<String>,
@@ -1751,6 +1849,7 @@ fn main() {
     }
     let ok = match cli.command {
         Command::Doctor => cmd_doctor(pretty),
+        Command::Profile(a) => cmd_profile(a, pretty),
         Command::Guide(a) => cmd_guide(a, pretty),
         Command::Init(a) => cmd_init(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
@@ -1775,6 +1874,7 @@ fn main() {
         Command::Mem(MemCmd::Map(a)) => cmd_mem_map(a, pretty),
         Command::Patch(c) => cmd_patch(c, pretty),
         Command::Selection(c) => cmd_selection(c, pretty),
+        Command::Plugin(c) => cmd_plugin(c, pretty),
         Command::Dump(c) => cmd_dump(c, pretty),
         Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
         Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
@@ -1851,10 +1951,10 @@ fn cmd_doctor(pretty: bool) -> bool {
 /// doesn't model categories, so this is the one hand-maintained mapping).
 fn guide_category(top: &str) -> &'static str {
     match top {
-        "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" => "Environment & project",
+        "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" => "Environment & project",
         "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory (a memory scanner class)",
-        "provenance" | "annotate" | "snapshot" => "Provenance, annotations & snapshots",
+        "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
         "ui" => "UI-layer localization (Phase 9)",
         "bundle" | "lua" => "Game-engine assets (Bitsquid/LuaJIT)",
@@ -1949,7 +2049,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
                 "locate by-transition --pid <p> --type i32 --save-as loc   # snapshot, then toggle ONE thing when prompted (or --wait-ms N)",
                 "# repeat to narrow: toggle again, then:",
                 "scan filter --pid <p> --from loc --criterion changed --save-as loc2",
-                "table add --name found --pid <p> --address <hit> --type i32   # pin the survivor"
+                "table add --table main --name found --addr <hit> --type i32   # pin the survivor"
             ]
         }),
         json!({
@@ -2048,7 +2148,7 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
         "commands": commands,
         "workflows": workflows,
         "mcp": "the same pipeline is exposed as an MCP server (binary n0xis-mcp) over stdio, with the same tool names and { ok, data, meta } shapes — an agent's parsing code is identical whether it calls the CLI or MCP.",
-        "docs": ["README.md", "CONCEPT.md", "ROADMAP.md", "docs/RE_METHOD.md"],
+        "docs": ["README.md", "CONCEPT.md", "ROADMAP.md"],
         "hint": "narrow with `n0x guide <topic>` (e.g. `n0x guide scan`, `n0x guide game`); every command also has clap `--help` for the exact usage line. `n0x guide --brief` drops per-arg detail.",
     });
     emit(&Response::success(schema::v1::GUIDE, data), pretty)
@@ -2148,7 +2248,7 @@ fn run_ir<F>(a: &IrArgs, pretty: bool, work: F) -> bool
 where
     F: FnOnce(&Ctx, CfgInput, String) -> bool,
 {
-    let start = match Va::parse(&a.addr) {
+    let addr = match Va::parse(&a.addr) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
@@ -2156,22 +2256,34 @@ where
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
-    let input = CfgInput {
-        start,
-        max_bytes: a.size,
-        auto_end: !a.no_auto_end,
-    };
 
+    // With `--addr-rva` the real address isn't known until the source is open
+    // (the module base comes from it), so the source is built first and the
+    // inline-bytes base falls back to 0 — `--bytes` has no module and is
+    // rejected below anyway.
     let (src, label, _) = match build_source(
         a.pid,
         a.file.as_deref(),
         a.bytes.as_deref(),
         a.snapshot.as_deref(),
         a.remote_cmd.as_deref(),
-        start,
+        if a.addr_rva { Va(0) } else { addr },
     ) {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let start = if a.addr_rva {
+        match base_for_module(&src, a.addr_module.as_deref()) {
+            Ok(base) => base.offset(addr.0),
+            Err(e) => return ir_err("no-module", &e, pretty),
+        }
+    } else {
+        addr
+    };
+    let input = CfgInput {
+        start,
+        max_bytes: a.size,
+        auto_end: !a.no_auto_end,
     };
     // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
     // call targets resolve to names.
@@ -2192,7 +2304,8 @@ fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
 
 fn cmd_decomp(a: DecompArgs, pretty: bool) -> bool {
     let style: DecompStyle = a.style.into();
-    run_ir(&a.ir, pretty, move |ctx, input, label| finish_decomp(ctx, input, style, label, pretty))
+    let explain = a.explain;
+    run_ir(&a.ir, pretty, move |ctx, input, label| finish_decomp(ctx, input, style, explain, label, pretty))
 }
 
 fn cmd_ir_value_set(a: IrArgs, pretty: bool) -> bool {
@@ -2241,7 +2354,7 @@ fn decompile_one(
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
         let pf = DecompPass
-            .run(ctx, DecompInput { cfg, style })
+            .run(ctx, DecompInput { cfg, style, explain: false })
             .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
         Ok(pf.pseudo)
     };
@@ -2290,13 +2403,25 @@ fn cmd_diff_functions(a: DiffFunctionsArgs, pretty: bool) -> bool {
     }
 }
 
-fn finish_decomp(ctx: &Ctx, input: CfgInput, style: DecompStyle, label: String, pretty: bool) -> bool {
+fn finish_decomp(ctx: &Ctx, input: CfgInput, style: DecompStyle, explain: bool, label: String, pretty: bool) -> bool {
     let cfg = match cfg_cached(ctx, input) {
         Ok((a, _cached)) => a,
         Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
     };
-    match DecompPass.run(ctx, DecompInput { cfg, style }) {
-        Ok(pf) => emit(&Response::success(schema::v0::DECOMP_PSEUDO, pf).with_source(label), pretty),
+    match DecompPass.run(ctx, DecompInput { cfg, style, explain }) {
+        Ok(pf) => {
+            let resp = Response::success(schema::v0::DECOMP_PSEUDO, pf).with_source(label);
+            // `data.delta` used to ride along unconditionally on `--style ssa`.
+            // Dropping it by default is a real change to a shipped payload, so
+            // say where it went instead of letting it silently vanish — a
+            // caller that depended on it gets a breadcrumb, not a mystery.
+            let resp = if style == DecompStyle::Ssa && !explain {
+                resp.with_note("optimizer delta omitted (it measured larger than the pseudocode); pass --explain for it, or use `ir explain`")
+            } else {
+                resp
+            };
+            emit(&resp, pretty)
+        }
         Err(e) => ir_err("decomp-failed", &e.to_string(), pretty),
     }
 }
@@ -2391,6 +2516,63 @@ enum Src {
     Static(Box<StaticPe>),
     Snap(Snapshot),
     Remote(Box<RemoteAgent>),
+}
+
+/// The base a `--*-rva` address is measured from: a static image's preferred
+/// base, or a live process's main module base. `None` for sources that are not
+/// a mapped image (inline bytes, a bare snapshot region, a remote agent) —
+/// there is no module to be relative *to*, and guessing one would silently
+/// produce addresses that are wrong by a whole image base.
+fn module_base_of(src: &Src) -> Option<Va> {
+    match src {
+        Src::Static(pe) => Some(pe.image_base()),
+        #[cfg(windows)]
+        Src::Live(l) => l.main_module().map(|m| m.base),
+        Src::Snap(_) | Src::Remote(_) => None,
+    }
+}
+
+/// The base for an RVA that is relative to a *named* module rather than the
+/// main one.
+///
+/// This exists because the main-module default is wrong for the most common
+/// real target there is: in a Unity game the executable is a thin player and
+/// every interesting address lives in `GameAssembly.dll`. Measured on a live
+/// target — `--addr 0xA54EC0 --addr-rva` resolved against the 319-function
+/// player EXE and landed on unmapped memory, when the RVA belonged to a 96 MB
+/// DLL loaded elsewhere. Matching is case-insensitive and accepts a substring,
+/// so `--addr-module gameassembly` is enough.
+fn base_for_module(src: &Src, name: Option<&str>) -> Result<Va, String> {
+    let Some(name) = name else {
+        return module_base_of(src).ok_or_else(|| {
+            "no module base in this source (inline bytes, snapshots and remote agents have none); pass --file or --pid".to_string()
+        });
+    };
+    let needle = name.to_lowercase();
+    match src {
+        Src::Static(pe) => {
+            // A static PE is one image; naming a different one is a mistake
+            // worth reporting rather than silently ignoring.
+            let modules = <StaticPe as n0xis_sources::ModuleProvider>::modules(pe.as_ref());
+            match modules.iter().find(|m| m.name.to_lowercase().contains(&needle)) {
+                Some(m) => Ok(m.base),
+                None => Err(format!(
+                    "this file is `{}`, which does not match --addr-module `{name}`",
+                    modules.first().map(|m| m.name.as_str()).unwrap_or("<unnamed>")
+                )),
+            }
+        }
+        #[cfg(windows)]
+        Src::Live(l) => {
+            let modules = <LiveProcess as n0xis_sources::ModuleProvider>::modules(l.as_ref());
+            modules
+                .iter()
+                .find(|m| m.name.to_lowercase().contains(&needle))
+                .map(|m| m.base)
+                .ok_or_else(|| format!("no loaded module matches --addr-module `{name}`; list them with `module list --pid <n>`"))
+        }
+        Src::Snap(_) | Src::Remote(_) => Err("--addr-module needs a source with a module table (--pid or --file)".to_string()),
+    }
 }
 
 /// Resolve `--pid` / `--file` / `--snapshot` / `--remote-cmd` / `--bytes` into
@@ -2607,6 +2789,106 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
     }
 }
 
+/// Locate a Unity IL2CPP metadata blob next to `image_path`, if one exists.
+///
+/// Lives here rather than in `n0xis-core::profile` because it touches the
+/// filesystem, and the core crate's whole boundary discipline is that it
+/// cannot. Unity's layout is `<Game>/<Game>_Data/il2cpp_data/Metadata/
+/// global-metadata.dat`, with the executable/`GameAssembly.dll` beside the
+/// `*_Data` directory — so the search is "any sibling directory ending in
+/// `_Data`", never a hardcoded game name.
+fn find_il2cpp_metadata(image_path: &str) -> Option<String> {
+    // `Path::new("GameAssembly.dll").parent()` is `""`, not the current
+    // directory — reading that fails, and the metadata would be silently
+    // "absent" whenever the target was passed as a bare filename.
+    let dir = match std::path::Path::new(image_path).parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    for entry in std::fs::read_dir(dir).ok()? {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_name().to_string_lossy().ends_with("_Data") {
+            continue;
+        }
+        let candidate = entry.path().join("il2cpp_data").join("Metadata").join("global-metadata.dat");
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// The IL2CPP metadata format version, read straight from the blob's header:
+/// a `0xFAB11BAF` sanity word followed by an `i32` version. Reported rather
+/// than inferred — the version decides every layout question downstream, and
+/// guessing it from the Unity release is exactly the kind of almost-right
+/// answer this command exists to replace.
+fn il2cpp_metadata_version(path: &str) -> Option<u32> {
+    let bytes = std::fs::read(path).ok()?;
+    let sanity = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+    if sanity != 0xFAB1_1BAF {
+        return None;
+    }
+    Some(u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?))
+}
+
+fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
+    if a.pid.is_none() && a.file.is_none() {
+        return ir_err("no-source", "profile needs a PE image: pass --file <pe> or --pid <n>", pretty);
+    }
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, None, None, Va(0)) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let base = match base_for_module(&src, a.module.as_deref()) {
+        Ok(b) => b,
+        Err(e) => return ir_err("no-module", &e, pretty),
+    };
+
+    // The image path: the file we were handed, or the live module's own path.
+    // The *metadata* search is deliberately anchored to the main module's
+    // directory either way — a Unity game's `*_Data` folder sits beside the
+    // player executable, not necessarily beside whichever DLL is being
+    // profiled.
+    let image_path = match (&a.file, &src) {
+        (Some(f), _) => Some(f.clone()),
+        #[cfg(windows)]
+        (None, Src::Live(l)) => l.main_module().and_then(|m| m.path.clone()),
+        _ => None,
+    };
+    let metadata = image_path.as_deref().and_then(find_il2cpp_metadata);
+    let metadata_version = metadata.as_deref().and_then(il2cpp_metadata_version);
+
+    let run = |ctx: &Ctx| -> bool {
+        match n0xis_core::profile_image(ctx.source, ctx.arch, base, a.exports) {
+            Ok(profile) => {
+                let advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+                let data = json!({
+                    "image": profile,
+                    "il2cpp": metadata.as_ref().map(|p| json!({
+                        "metadata_path": p,
+                        "metadata_version": metadata_version,
+                    })),
+                    "advisories": advisories,
+                });
+                emit(&Response::success(schema::v1::PROFILE, data).with_source(label.clone()), pretty)
+            }
+            Err(e) => ir_err("profile-failed", &e.to_string(), pretty),
+        }
+    };
+    match &src {
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref())),
+        #[cfg(windows)]
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
+        Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
+    }
+}
+
 fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     let explicit_start = match opt_hex(&a.start) {
         Ok(v) => v,
@@ -2626,20 +2908,37 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     // a `.text` byte window — resolve the module base and dispatch before the
     // range logic the prologue scan needs.
     if a.pdata {
-        let module_base = match &src {
-            Src::Static(pe) => Some(pe.image_base()),
-            #[cfg(windows)]
-            Src::Live(l) => l.main_module().map(|m| m.base),
-            Src::Snap(_) | Src::Remote(_) => None,
-        };
-        let Some(base) = module_base else {
+        let Some(base) = module_base_of(&src) else {
             return ir_err("no-module", "--pdata needs a PE image with a module base (--pid or --file)", pretty);
         };
         let run_pdata = |ctx: &Ctx| -> bool {
             match n0xis_core::discover_pdata(ctx.source, base) {
-                Ok(functions) => {
-                    let art = n0xis_core::DiscoverArtifact { start: base, scanned_bytes: 0, count: functions.len(), functions };
-                    emit(&Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(label.clone()), pretty)
+                Ok(all) => {
+                    // `.pdata` is an exact table, so the total is known for
+                    // free — and it *must* be reported. A 94 MB PE yields
+                    // ~277k entries; handing those back whole (as this path
+                    // did while silently ignoring `--limit`) is 17 MB of JSON
+                    // that no caller asked for.
+                    let total = all.len();
+                    let functions: Vec<_> = all
+                        .into_iter()
+                        .skip(a.offset)
+                        .take(if a.limit == 0 { usize::MAX } else { a.limit })
+                        .collect();
+                    let returned = functions.len();
+                    let art = n0xis_core::DiscoverArtifact {
+                        start: base,
+                        scanned_bytes: 0,
+                        count: returned,
+                        functions,
+                        truncated: a.offset + returned < total,
+                    };
+                    emit(
+                        &Response::success(schema::v1::FUNCTION_DISCOVER, art)
+                            .with_source(label.clone())
+                            .with_page(total, returned),
+                        pretty,
+                    )
                 }
                 Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
             }
@@ -2665,11 +2964,15 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     }
 
     let run = |ctx: &Ctx| -> bool {
-        match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit }) {
-            Ok(art) => emit(
-                &Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(label.clone()),
-                pretty,
-            ),
+        match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: a.offset }) {
+            Ok(art) => {
+                // The prologue scan stops at the cap on purpose, so the true
+                // total is unknown — say "truncated" without inventing one.
+                let (returned, truncated) = (art.count, art.truncated);
+                let resp = Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(label.clone());
+                let resp = if truncated { resp.with_cap(returned) } else { resp };
+                emit(&resp, pretty)
+            }
             Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
         }
     };
@@ -2708,7 +3011,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
     }
 
     let run = |ctx: &Ctx| -> bool {
-        let discovered = match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit }) {
+        let discovered = match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: 0 }) {
             Ok(d) => d,
             Err(e) => return ir_err("discover-failed", &e.to_string(), pretty),
         };
@@ -3135,6 +3438,37 @@ fn cmd_selection(cmd: SelectionCmd, pretty: bool) -> bool {
             ),
             Ok(false) => ir_err("selection-not-found", &format!("no selection named '{}'", a.name), pretty),
             Err(e) => ir_err("selection-clear-failed", &e.to_string(), pretty),
+        },
+    }
+}
+
+fn cmd_plugin(cmd: PluginCmd, pretty: bool) -> bool {
+    use n0xis_project::plugins as pl;
+    match cmd {
+        PluginCmd::Add(a) => match pl::add(&a.name, &a.command, a.handles) {
+            Ok(rec) => {
+                let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
+                emit(&Response::success(schema::v1::PLUGIN, json!({ "op": "add", "plugin": rec_v })), pretty)
+            }
+            Err(e) => ir_err("plugin-add-failed", &e.to_string(), pretty),
+        },
+        PluginCmd::List => match pl::list() {
+            Ok(items) => {
+                let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
+                emit(
+                    &Response::success(schema::v1::PLUGIN, json!({ "op": "list", "count": items.len(), "plugins": items_v })),
+                    pretty,
+                )
+            }
+            Err(e) => ir_err("plugin-list-failed", &e.to_string(), pretty),
+        },
+        PluginCmd::Rm(a) => match pl::remove(&a.name) {
+            Ok(true) => emit(
+                &Response::success(schema::v1::PLUGIN, json!({ "op": "rm", "name": a.name, "removed": true })),
+                pretty,
+            ),
+            Ok(false) => ir_err("plugin-not-found", &format!("no plugin named '{}'", a.name), pretty),
+            Err(e) => ir_err("plugin-rm-failed", &e.to_string(), pretty),
         },
     }
 }
@@ -3858,6 +4192,14 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
         let label = live.label();
         drop(live);
 
+        let addr = if a.addr_rva {
+            match &main_module {
+                Some(m) => m.base.offset(addr.0),
+                None => return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty),
+            }
+        } else {
+            addr
+        };
         let kind: WatchKind = a.kind.into();
         let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
             Ok(o) => o,
@@ -4480,7 +4822,7 @@ fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
         let label = live.label();
-        let mut hits = n0xis_luajit::scan_strings(&live, &regions, n0xis_luajit::GcstrLayout::HELLDIVERS_GC64, a.min_len, a.max_len);
+        let mut hits = n0xis_luajit::scan_strings(&live, &regions, n0xis_luajit::GcstrLayout::STINGRAY_GC64, a.min_len, a.max_len);
         if let Some(needle) = &a.contains {
             hits.retain(|h| h.text.contains(needle.as_str()));
         }
@@ -4525,7 +4867,7 @@ fn cmd_lua_table(a: LuaTableArgs, pretty: bool) -> bool {
             Ok(l) => l,
             Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
         };
-        let layout = n0xis_luajit::LuaLayout::HELLDIVERS;
+        let layout = n0xis_luajit::LuaLayout::STINGRAY_LUAJIT;
         let Some(dump) = n0xis_luajit::read_table(&live, addr, layout) else {
             return ir_err("not-a-table", "could not decode a GCtab at this address (wrong address or layout needs calibration)", pretty);
         };
@@ -4567,7 +4909,7 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         if wanted.is_empty() {
             return ir_err("no-strings", "--strings must list at least one token", pretty);
         }
-        let layout = n0xis_luajit::GcstrLayout::HELLDIVERS_GC64;
+        let layout = n0xis_luajit::GcstrLayout::STINGRAY_GC64;
         // Longest token bounds the GCstr scan; the combo tokens are short ASCII.
         let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
         // Every candidate GCstr whose text is one of the wanted tokens becomes a
@@ -5126,7 +5468,7 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
         let pf = DecompPass
-            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto })
+            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto, explain: false })
             .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
         Ok(pf.pseudo)
     };
@@ -5348,7 +5690,7 @@ fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
             regions,
             rect,
             space: a.space.into(),
-            layout: AabbLayout::HELLDIVERS,
+            layout: AabbLayout::STINGRAY,
             align: a.align.max(1),
         };
         let mut art = match UiLocatePass.run(&ctx, input) {
@@ -5546,5 +5888,110 @@ fn cmd_ui_focus(a: UiFocusArgs, pretty: bool) -> bool {
             "note": if result.foreground { "window is now foreground" } else { "focus was denied or only partial (Z-order/taskbar flash) — Windows blocks foreground stealing while the user is active" },
         });
         emit(&Response::success(schema::v1::UI_FOCUS, data).with_source(format!("pid:{}", a.pid)), pretty)
+    }
+}
+
+/// The guide is generated from the clap tree, so the *command list* can never
+/// drift. Its `workflows` recipes are hand-written prose, and they drifted:
+/// one shipped `table add --name f --pid <p> --address <hit>` when the real
+/// command takes `--addr`, has no `--pid`, and requires `--table`. An agent
+/// following that recipe gets a usage error from the tool that is supposed to
+/// be teaching it.
+///
+/// These tests hold the recipes to the same standard as everything else the
+/// guide emits: every command path in a step must exist, and every long flag
+/// must be one that command actually accepts.
+#[cfg(test)]
+mod guide_recipe_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Longest-prefix match of a step's leading words against the clap tree,
+    /// so `scan filter` resolves to the subcommand and `bundle list` doesn't
+    /// stop at `bundle`. Returns the resolved leaf and how many words it ate.
+    fn resolve<'a>(root: &'a clap::Command, words: &[&str]) -> Option<(&'a clap::Command, usize)> {
+        let mut cur = root;
+        let mut eaten = 0;
+        for w in words {
+            match cur.get_subcommands().find(|c| c.get_name() == *w || c.get_all_aliases().any(|a| a == *w)) {
+                Some(next) => {
+                    cur = next;
+                    eaten += 1;
+                }
+                None => break,
+            }
+        }
+        (eaten > 0).then_some((cur, eaten))
+    }
+
+    fn accepts_flag(cmd: &clap::Command, flag: &str) -> bool {
+        cmd.get_arguments().any(|a| {
+            a.get_long() == Some(flag) || a.get_all_aliases().is_some_and(|al| al.iter().any(|x| *x == flag))
+        })
+    }
+
+    /// Strip the trailing `# …` explanation every recipe step carries.
+    fn code_of(step: &str) -> &str {
+        step.split('#').next().unwrap_or("").trim()
+    }
+
+    #[test]
+    fn every_recipe_step_names_a_real_command_with_real_flags() {
+        let root = Cli::command();
+        let mut problems: Vec<String> = Vec::new();
+
+        for wf in guide_workflows() {
+            let name = wf["name"].as_str().unwrap_or("<unnamed>").to_string();
+            for step in wf["steps"].as_array().into_iter().flatten() {
+                let step = step.as_str().unwrap_or_default();
+                let code = code_of(step);
+                if code.is_empty() {
+                    continue; // a pure `# commentary` line
+                }
+                let words: Vec<&str> = code.split_whitespace().collect();
+                let Some((cmd, eaten)) = resolve(&root, &words) else {
+                    problems.push(format!("[{name}] no such command: `{code}`"));
+                    continue;
+                };
+                // Required args must appear, or the recipe cannot run as written.
+                for arg in cmd.get_arguments() {
+                    if arg.is_required_set()
+                        && let Some(long) = arg.get_long()
+                        && !words.iter().any(|w| *w == format!("--{long}"))
+                    {
+                        problems.push(format!("[{name}] `{code}` omits required --{long}"));
+                    }
+                }
+                for w in words.iter().skip(eaten) {
+                    let Some(flag) = w.strip_prefix("--") else { continue };
+                    let flag = flag.split('=').next().unwrap_or(flag);
+                    if !accepts_flag(cmd, flag) {
+                        problems.push(format!("[{name}] `{code}` passes --{flag}, which that command does not accept"));
+                    }
+                }
+            }
+        }
+
+        assert!(problems.is_empty(), "guide recipes drifted from the command tree:\n  {}", problems.join("\n  "));
+    }
+
+    /// A cheap guard on the other half of the contract: a recipe that names no
+    /// runnable command is documentation, not a recipe.
+    #[test]
+    fn every_recipe_has_at_least_one_runnable_step() {
+        let root = Cli::command();
+        for wf in guide_workflows() {
+            let name = wf["name"].as_str().unwrap_or("<unnamed>");
+            let runnable = wf["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str())
+                .any(|s| {
+                    let words: Vec<&str> = code_of(s).split_whitespace().collect();
+                    !words.is_empty() && resolve(&root, &words).is_some()
+                });
+            assert!(runnable, "recipe `{name}` has no runnable step");
+        }
     }
 }

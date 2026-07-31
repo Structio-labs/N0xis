@@ -8,7 +8,8 @@ project matures — not written once.
 See [`../CONCEPT.md`](../CONCEPT.md) §11 for the summary; this file holds the detail.
 The runnable command surface for everything referenced here is
 [`CLI_COMMANDS.md`](CLI_COMMANDS.md); the method-first thinking behind the Phase 8
-tooling is the post-mortem in [`RE_METHOD.md`](RE_METHOD.md).
+tooling comes from a real RE campaign's post-mortem, written up in
+[`../ROADMAP.md`](../ROADMAP.md)'s Phase 8 section.
 
 ---
 
@@ -166,8 +167,9 @@ distinct from "verified".
 - **Gap:** the reliable RE *techniques* live in tutorials and muscle memory, not in the
   tool surface. An agent can't invoke "the technique that reliably returns exactly one
   result".
-- **Feature:** a category of commands that encode named RE methods (post-mortem in
-  [`RE_METHOD.md`](RE_METHOD.md)), each with a deterministic JSON schema:
+- **Feature:** a category of commands that encode named RE methods (post-mortem
+  written up in [`../ROADMAP.md`](../ROADMAP.md)'s Phase 8 section), each with a
+  deterministic JSON schema:
   - [`locate by-transition`](CLI_COMMANDS.md) — snapshot → operator toggles one thing →
     rescan → keep only what changed; **the only localization technique that reliably
     returns exactly one result** (RE_METHOD W1). Supports structural predicates over

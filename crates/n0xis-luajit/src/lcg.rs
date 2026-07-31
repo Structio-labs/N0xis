@@ -105,7 +105,7 @@ mod tests {
     use super::*;
     use n0xis_sources::Snapshot;
 
-    // Helldivers' observed constants (Numerical Recipes).
+    // Observed live in a Bitsquid/Stingray-engine game (Numerical Recipes).
     const A: u32 = 1664525;
     const C: u32 = 1013904223;
 

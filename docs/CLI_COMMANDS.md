@@ -92,6 +92,22 @@ Environment / readiness check (arch decoders, project resolution).
 - Args: none.
 - Schema: `n0xis.doctor.v1`
 
+### `profile --file <pe> | --pid <u32> [--arch <isa>] [--exports]`
+**Run this first on an unfamiliar target.** Reports what the image *is* and which commands
+will not work on it — the answer that is otherwise assembled from a sequence of empty
+results.
+- `data.image` — machine, sections, `export_count` vs `export_distinct_addresses` (they
+  differ when the linker folded identical bodies), `folded` groups, `thunk_count` (exports
+  that are branch stubs, whose real implementation lives at the branch target),
+  `pdata_present` / `pdata_functions`, and `engine_hints` with the evidence for each.
+- `data.il2cpp` — metadata path and format version, read from the blob header, when a
+  Unity IL2CPP layout is found beside the image.
+- `data.advisories` — per-command `{command, verdict: ineffective|degraded, reason}`.
+  Every entry is derived from the evidence above, never a static list.
+- `--exports` — include the full export table (name → address → branch target); off by
+  default because a runtime DLL exports hundreds of names.
+- Schema: `n0xis.profile.v1`
+
 ### `guide [<topic>] [--brief]`
 Agent-oriented capability catalog: every command, its args, and composable workflow recipes, as
 structured JSON derived from the live clap tree.
@@ -522,7 +538,7 @@ Recover an LCG seed from an observed sequence: scan a live process for a 4-byte 
 once.
 - `--combo` (required) — observed directions (`up,down,down,up`), mapped `left=0,up=1,right=2,down=3`.
 - `--start`/`--size` (omit to scan every committed writable region); `--lcg-a` (default
-  1664525); `--lcg-c` (default 1013904223); `--range` (default 4 — the Helldivers /
+  1664525); `--lcg-c` (default 1013904223); `--range` (default 4 — the commonly observed
   Numerical-Recipes pair); `--no-seed-bound` (disable constraining seeds to `[1, 2^31-2]`). Live
   only.
 - Schema: `n0xis.lua.seedscan.v1`
@@ -532,8 +548,9 @@ once.
 ## Spec-first method tooling (Phase 8)
 
 The named Phase-8 commands (game grep, locate by-transition, input probe, const identify,
-bindings list, sig validate) are **committed to `main`** (`a0a9168`). Each cross-references a
-technique in [`RE_METHOD.md`](./RE_METHOD.md). The one remaining Phase-8 item — region caching as
+bindings list, sig validate) are **committed to `main`** (`a0a9168`). Each traces back to a
+specific technique from a real RE campaign's post-mortem — see `ROADMAP.md`'s Phase 8 section
+for the full write-up. The one remaining Phase-8 item — region caching as
 a built-in scan option — is still **open**; see [`../ROADMAP.md`](../ROADMAP.md).
 
 ### `game grep <concept> --dir <path>`

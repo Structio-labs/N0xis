@@ -9,7 +9,7 @@ Central navigation hub (map-of-content) for **N0xis** — an agent-native revers
 
 N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a cheat/trainer maker. Status: **alpha**, AGPL-3.0-only, public at `github.com/LargoScript/n0xis`.
 
-> Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[KILLER_FEATURES]] · [[PRODUCT_POLICY]] · [[RE_METHOD]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
+> Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[KILLER_FEATURES]] · [[PRODUCT_POLICY]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
 
 ---
 
@@ -72,7 +72,6 @@ The **installed** binary reports **77 leaf commands** via `n0x guide` (auto-gene
 | [docs/KILLER_FEATURES.md](docs/KILLER_FEATURES.md) — [[KILLER_FEATURES]] | What N0xis does that any other reverse-engineering tool/CE don't (honest, fact-checked) | evaluator, agent |
 | [docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md) — [[PRODUCT_POLICY]] | Positioning, scope, and ethics — RE/dynamic-analysis, single-player | contributor, user |
 | [docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md) — [[COMMUNITY_ROADMAP]] | Community/backlog items and how contributions slot in | contributor |
-| [docs/RE_METHOD.md](docs/RE_METHOD.md) — [[RE_METHOD]] | Historical RE-method post-mortem; source of Phase 8's W/F recipes | agent, dev |
 | [docs/PHASE9_UI_LOCATE_BRIEF.md](docs/PHASE9_UI_LOCATE_BRIEF.md) — [[docs/PHASE9_UI_LOCATE_BRIEF\|Phase 9 brief]] | Phase 9 design + definition-of-done (incl. the live §9.3 test still owed) | dev, agent |
 | [docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md) — [[docs/n0xhud/CONCEPT\|N0xHUD concept]] | N0xHUD design & rationale (companion window, not overlay) | dev, agent |
 | [docs/n0xhud/ROADMAP.md](docs/n0xhud/ROADMAP.md) — [[docs/n0xhud/ROADMAP\|N0xHUD roadmap]] | N0xHUD phase plan + landed-vs-open status | dev, agent |
@@ -105,13 +104,13 @@ Bitsquid/Stingray bundles + offline and live LuaJIT introspection.
 - Crates: `n0xis-bitsquid`, `n0xis-lua` (offline), `n0xis-luajit` (live GCstr discovery) — none depended on by core.
 
 ### Spec-first method tooling (Phase 8)
-Turning the [[RE_METHOD]] post-mortem's repeatable recipes into commands: `game grep`, `locate by-transition`, `input probe`, `const identify`, `bindings list`, `sig validate`. 6/7 landed and merged into `main`. See [[CLI_COMMANDS]].
+Turning a repeatable RE methodology's recipes into commands: `game grep`, `locate by-transition`, `input probe`, `const identify`, `bindings list`, `sig validate`. 6/7 landed and merged into `main`. See [[CLI_COMMANDS]].
 
 ### UI-layer localization (Phase 9 — working tree)
 Hit-test a live target's own retained scene-graph AABBs from outside — no graphics-API hooking, no frame capture. `ui locate --rect` (CLI + MCP), built on the internal `scan structural` primitive (`n0xis.scan.structural.v1` — a core primitive, **not** a runnable CLI subcommand), plus the conditional HW watchpoint `debug watch --when`. ⚠️ Implemented, unit-tested, **uncommitted, pending live validation.** See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].
 
 ### N0xHUD (companion window)
-The interactive, on-screen face of the same engine: a config-driven always-on-top `eframe`/`egui` window (`.n0x/hud.toml`), a process-watcher auto-apply loop, global hotkeys via a low-level keyboard hook, write & freeze, Interception kernel-driver actuation, stratagem/sequence macros, and the Helldivers interact-combo auto-solver (read a generator seed live, recompute the deterministic sequence, actuate + verify). Framed as runtime instrumentation, never a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]] and [[docs/n0xhud/ROADMAP|N0xHUD roadmap]].
+The interactive, on-screen face of the same engine: a config-driven always-on-top `eframe`/`egui` window (`.n0x/hud.toml`), a process-watcher auto-apply loop, global hotkeys via a low-level keyboard hook, write & freeze, Interception kernel-driver actuation, stratagem/sequence macros, and a process-based plugin protocol (`on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio) for game-specific automation — the engine itself stays game-agnostic; all per-game logic (e.g. reading a generator seed live and recomputing/actuating a deterministic sequence) lives in an external plugin process, not compiled in. Framed as runtime instrumentation, never a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]] and [[docs/n0xhud/ROADMAP|N0xHUD roadmap]].
 
 ### The agent contract — `{ok,data,meta}`
 Every command emits exactly one JSON object: `{"ok":true,"data":{…},"meta":{"schema":"n0xis.*.vN",…}}` on success, `{"ok":false,"error":{…}}` on failure. `--pretty` indents; non-zero exit on `ok:false`; stderr progress is prefixed `[n0x]` (safe to ignore in scripts). New v1 schemas are `n0xis.*.vN`; a few ported shapes keep the archived `n0x.*.v1` id for back-compat. `meta.schema` names the payload shape and is defined once in `n0xis-contracts`. The same envelope is what the MCP server returns as a string. See [[CLI_COMMANDS]] (envelope + schema map) and [[CONCEPT]].

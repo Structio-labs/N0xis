@@ -6,7 +6,8 @@
 //! unwinder is unit-tested against a synthetic PE, but a watchpoint lands
 //! mid-function in *real* compiler output, which is exactly where a naive stack
 //! read fails and where this feature earns its keep (recovering the caller of
-//! the writing instruction — the thing the Helldivers session couldn't reach).
+//! a writing instruction from a mid-function hit, which a raw `[rsp]` guess
+//! can't reach).
 //!
 //! Gated behind `--features live`, same as the other dynamic-memory exit tests.
 

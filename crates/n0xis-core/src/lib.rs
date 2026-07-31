@@ -31,6 +31,7 @@ mod manifest;
 mod noreturn;
 mod optimize;
 mod pointer;
+mod profile;
 mod provenance;
 mod render;
 mod scan;
@@ -69,6 +70,7 @@ pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBran
 pub use demangle::demangle;
 pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
+pub use profile::{advisories, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
 pub use dot::{DotArtifact, dot};
 pub use ir::{

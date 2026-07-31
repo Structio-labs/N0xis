@@ -13,14 +13,18 @@ use n0xis_project::patch::PatchRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::adapters;
-use crate::config::HudConfig;
+use crate::config::{AdapterBinding, HudConfig};
 use crate::freeze::FreezeWorker;
 use crate::{input, sequence, sound};
 
 pub type EntryKey = (String, String); // (table name, entry name)
 
 /// How many recent status lines to keep for the footer log.
-const LOG_CAPACITY: usize = 6;
+/// Lines kept in the footer log. Generous because the log is the only record of
+/// what the background solver did: at the old value of 6 a single combo solve
+/// scrolled its own detection line out of existence before it could be read.
+/// The footer scrolls, so a large buffer costs nothing but memory.
+const LOG_CAPACITY: usize = 500;
 
 /// Per-combo user overrides, persisted to `.n0x/sequences.json` so the shipped
 /// combo definitions in `hud.toml` stay untouched.
@@ -40,21 +44,15 @@ struct SeqState {
     combos: HashMap<String, SeqOverride>,
 }
 
-/// Runtime overrides for the Helldivers combo auto-solver, layered over the
-/// `hud.toml` `[combo_solver]` defaults and persisted to
-/// `.n0x/combo_solver.json` (so the shipped config stays untouched, same
-/// pattern as `SeqOverride`). A `None` field means "use the config default".
+/// Runtime speed override for stratagem macros, persisted to
+/// `.n0x/stratagem_speed.json` — independent of the combo-solver's timing
+/// (see `StratagemSpeedConfig`'s doc comment).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ComboSolverOverride {
-    #[serde(default)]
-    pub enabled: Option<bool>,
+pub struct StratagemSpeedOverride {
     #[serde(default)]
     pub hold_ms: Option<u64>,
     #[serde(default)]
     pub gap_ms: Option<u64>,
-    /// A hotkey that toggles the solver on/off from in-game.
-    #[serde(default)]
-    pub hotkey: Option<String>,
 }
 
 /// What currently owns a hotkey — for conflict messages during rebind.
@@ -62,7 +60,7 @@ pub enum HotkeyOwner {
     Window,
     Cheat(String),
     Sequence(String),
-    ComboSolver,
+    Stratagem(String),
 }
 
 pub struct Engine {
@@ -74,21 +72,29 @@ pub struct Engine {
     pid: Option<u32>,
     freeze_workers: HashMap<EntryKey, FreezeWorker>,
     adapter_records: HashMap<EntryKey, PatchRecord>,
+    /// One persistent plugin process per `[[adapters]]` binding name, lazily
+    /// spawned on first use (`ensure_plugin_session`) and held open for the
+    /// lifetime of the HUD — see `crate::adapters`' module doc for why a
+    /// persistent session, not a spawn-per-call.
+    plugin_sessions: HashMap<String, n0xis_sources::PluginSession>,
     /// Set by the UI when the gear button is clicked; consumed by the rebind
     /// popup. Lives here so it survives across frames.
     pub rebind_capture: Option<EntryKey>,
     /// Set when rebinding a *sequence* (combo name) rather than a cheat entry.
     pub seq_rebind_capture: Option<String>,
-    /// Set when rebinding the combo-solver's on/off toggle hotkey.
-    pub combo_solver_rebind: bool,
+    /// Set (to the macro name) when rebinding a stratagem macro's hotkey.
+    pub stratagem_rebind: Option<String>,
     /// A conflict message for the entry currently being rebound (cleared each
     /// time a new key is offered).
     pub rebind_conflict: Option<String>,
     /// Per-combo overrides (hotkey/delay), persisted to `.n0x/sequences.json`.
     seq_overrides: HashMap<String, SeqOverride>,
-    /// Runtime overrides for the combo auto-solver, persisted to
-    /// `.n0x/combo_solver.json`.
-    combo_solver: ComboSolverOverride,
+    /// Runtime speed override for stratagem macros, persisted to
+    /// `.n0x/stratagem_speed.json`.
+    stratagem_speed: StratagemSpeedOverride,
+    /// Per-macro hotkey overrides, persisted to `.n0x/stratagem_hotkeys.json`
+    /// (same "shipped config stays untouched" pattern as `SeqOverride`).
+    stratagem_hotkeys: HashMap<String, Option<String>>,
     log: Vec<String>,
 }
 
@@ -106,7 +112,8 @@ impl Engine {
             })
             .collect();
         let seq_overrides = Self::load_seq_state(&project_dir);
-        let combo_solver = Self::load_combo_solver_state(&project_dir);
+        let stratagem_speed = Self::load_stratagem_speed_state(&project_dir);
+        let stratagem_hotkeys = Self::load_stratagem_hotkey_state(&project_dir);
         Self {
             config,
             project_dir,
@@ -114,90 +121,87 @@ impl Engine {
             pid: None,
             freeze_workers: HashMap::new(),
             adapter_records: HashMap::new(),
+            plugin_sessions: HashMap::new(),
             rebind_capture: None,
             seq_rebind_capture: None,
-            combo_solver_rebind: false,
+            stratagem_rebind: None,
             rebind_conflict: None,
             seq_overrides,
-            combo_solver,
+            stratagem_speed,
+            stratagem_hotkeys,
             log: Vec::new(),
         }
     }
 
-    // -------- combo auto-solver runtime settings --------
+    // -------- stratagem macro speed + hotkey overrides --------
 
-    fn combo_solver_state_path(project_dir: &std::path::Path) -> PathBuf {
-        project_dir.join("combo_solver.json")
+    fn stratagem_speed_state_path(project_dir: &std::path::Path) -> PathBuf {
+        project_dir.join("stratagem_speed.json")
     }
-
-    fn load_combo_solver_state(project_dir: &std::path::Path) -> ComboSolverOverride {
-        std::fs::read_to_string(Self::combo_solver_state_path(project_dir))
+    fn load_stratagem_speed_state(project_dir: &std::path::Path) -> StratagemSpeedOverride {
+        std::fs::read_to_string(Self::stratagem_speed_state_path(project_dir))
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default()
     }
-
-    fn save_combo_solver_state(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.combo_solver) {
-            let _ = std::fs::write(Self::combo_solver_state_path(&self.project_dir), json);
+    fn save_stratagem_speed_state(&self) {
+        if let Ok(json) = serde_json::to_string_pretty(&self.stratagem_speed) {
+            let _ = std::fs::write(Self::stratagem_speed_state_path(&self.project_dir), json);
         }
     }
-
-    /// Effective solver settings (runtime override → `hud.toml` default).
-    pub fn combo_solver_enabled(&self) -> bool {
-        self.combo_solver.enabled.unwrap_or(self.config.combo_solver.enabled)
+    pub fn stratagem_hold_ms(&self) -> u64 {
+        self.stratagem_speed.hold_ms.unwrap_or(self.config.stratagem_speed.hold_ms)
     }
-    pub fn combo_solver_hold_ms(&self) -> u64 {
-        self.combo_solver.hold_ms.unwrap_or(self.config.combo_solver.hold_ms)
+    pub fn stratagem_gap_ms(&self) -> u64 {
+        self.stratagem_speed.gap_ms.unwrap_or(self.config.stratagem_speed.gap_ms)
     }
-    pub fn combo_solver_gap_ms(&self) -> u64 {
-        self.combo_solver.gap_ms.unwrap_or(self.config.combo_solver.gap_ms)
+    pub fn set_stratagem_hold_ms(&mut self, ms: u64) {
+        self.stratagem_speed.hold_ms = Some(ms);
+        self.save_stratagem_speed_state();
     }
-    pub fn combo_solver_hotkey(&self) -> Option<String> {
-        self.combo_solver.hotkey.clone()
-    }
-    /// Static settings that stay config-only (no in-UI control for these).
-    pub fn combo_solver_dll(&self) -> &str {
-        &self.config.combo_solver.interception_dll
-    }
-    pub fn combo_solver_device(&self) -> Option<i32> {
-        self.config.combo_solver.device
-    }
-    pub fn combo_solver_poll_ms(&self) -> u64 {
-        self.config.combo_solver.poll_ms
-    }
-    pub fn combo_solver_max_steps(&self) -> u32 {
-        self.config.combo_solver.max_steps
+    pub fn set_stratagem_gap_ms(&mut self, ms: u64) {
+        self.stratagem_speed.gap_ms = Some(ms);
+        self.save_stratagem_speed_state();
     }
 
-    pub fn set_combo_solver_enabled(&mut self, on: bool) {
-        self.combo_solver.enabled = Some(on);
-        self.save_combo_solver_state();
-        self.push_log(format!("combo-solver: {}", if on { "enabled" } else { "disabled" }));
+    fn stratagem_hotkey_state_path(project_dir: &std::path::Path) -> PathBuf {
+        project_dir.join("stratagem_hotkeys.json")
     }
-    pub fn set_combo_solver_hold_ms(&mut self, ms: u64) {
-        self.combo_solver.hold_ms = Some(ms);
-        self.save_combo_solver_state();
+    fn load_stratagem_hotkey_state(project_dir: &std::path::Path) -> HashMap<String, Option<String>> {
+        std::fs::read_to_string(Self::stratagem_hotkey_state_path(project_dir))
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
     }
-    pub fn set_combo_solver_gap_ms(&mut self, ms: u64) {
-        self.combo_solver.gap_ms = Some(ms);
-        self.save_combo_solver_state();
+    fn save_stratagem_hotkey_state(&self) {
+        if let Ok(json) = serde_json::to_string_pretty(&self.stratagem_hotkeys) {
+            let _ = std::fs::write(Self::stratagem_hotkey_state_path(&self.project_dir), json);
+        }
     }
-    pub fn try_set_combo_solver_hotkey(&mut self, key: String) -> Result<(), String> {
+    /// Effective hotkey for a stratagem macro: runtime override (including an
+    /// explicit unbind) wins over the `hud.toml` definition.
+    pub fn stratagem_hotkey(&self, name: &str) -> Option<String> {
+        match self.stratagem_hotkeys.get(name) {
+            Some(over) => over.clone(),
+            None => self.config.stratagem.iter().find(|m| m.name == name).and_then(|m| m.hotkey.clone()),
+        }
+    }
+    pub fn try_set_stratagem_hotkey(&mut self, name: &str, key: String) -> Result<(), String> {
         let vk = input::parse_vk(&key);
         match self.hotkey_owner(vk) {
             Some(HotkeyOwner::Window) => return Err(format!("{key} is the N0xHUD show/hide key — pick another")),
             Some(HotkeyOwner::Cheat(c)) => return Err(format!("{key} is already bound to cheat \"{c}\"")),
             Some(HotkeyOwner::Sequence(s)) => return Err(format!("{key} is already bound to combo \"{s}\"")),
+            Some(HotkeyOwner::Stratagem(s)) if s != name => return Err(format!("{key} is already bound to \"{s}\"")),
             _ => {}
         }
-        self.combo_solver.hotkey = Some(key);
-        self.save_combo_solver_state();
+        self.stratagem_hotkeys.insert(name.to_string(), Some(key));
+        self.save_stratagem_hotkey_state();
         Ok(())
     }
-    pub fn clear_combo_solver_hotkey(&mut self) {
-        self.combo_solver.hotkey = None;
-        self.save_combo_solver_state();
+    pub fn clear_stratagem_hotkey(&mut self, name: &str) {
+        self.stratagem_hotkeys.insert(name.to_string(), None);
+        self.save_stratagem_hotkey_state();
     }
 
     fn seq_state_path(project_dir: &std::path::Path) -> PathBuf {
@@ -231,6 +235,10 @@ impl Engine {
     /// Most recent status lines, oldest first.
     pub fn log(&self) -> &[String] {
         &self.log
+    }
+
+    pub fn clear_log(&mut self) {
+        self.log.clear();
     }
 
     /// Append a status line from a background subsystem (the combo-solver
@@ -281,6 +289,45 @@ impl Engine {
         }
     }
 
+    /// Lazily spawn (once per binding name) and hold open the plugin process
+    /// `binding.command` names. A binding with no `command` (nothing
+    /// configured for this entry) is silently a no-op, same as an
+    /// unrecognized adapter name was before this became generic.
+    fn ensure_plugin_session(&mut self, binding: &AdapterBinding) {
+        let Some(command) = binding.command.as_deref() else { return };
+        if self.plugin_sessions.contains_key(&binding.name) {
+            return;
+        }
+        let spawned = n0xis_sources::split_command_line(command).and_then(|argv| n0xis_sources::PluginSession::spawn(&argv));
+        match spawned {
+            Ok(session) => {
+                self.plugin_sessions.insert(binding.name.clone(), session);
+            }
+            Err(e) => self.push_log(format!("{}: plugin unavailable ({e})", binding.name)),
+        }
+    }
+
+    /// One `{"op":"poll"}` round trip for the named binding, for
+    /// `crate::plugin_poll`'s periodic loop. `None` if the binding doesn't
+    /// exist or has no `command` configured — nothing to poll.
+    pub fn poll_adapter(&mut self, name: &str) -> Option<Result<Option<String>, String>> {
+        let pid = self.pid?;
+        let binding = self.config.adapters.iter().find(|a| a.name == name)?.clone();
+        self.ensure_plugin_session(&binding);
+        let session = self.plugin_sessions.get(&binding.name)?;
+        Some(adapters::poll(session, pid))
+    }
+
+    /// One `{"op":"on_launch"}` round trip for the named binding, for
+    /// `crate::watcher`'s attach-retry loop. `None` if the binding doesn't
+    /// exist or has no `command` configured — nothing to retry.
+    pub fn run_adapter_on_launch(&mut self, name: &str, pid: u32) -> Option<Result<PatchRecord, String>> {
+        let binding = self.config.adapters.iter().find(|a| a.name == name)?.clone();
+        self.ensure_plugin_session(&binding);
+        let session = self.plugin_sessions.get(&binding.name)?;
+        Some(adapters::on_launch(session, pid))
+    }
+
     /// Turn one entry on/off — the single funnel for the checkbox, an in-game
     /// hotkey, and (via `set_adapter_result`) the watcher. No-op with no target.
     pub fn apply_toggle(&mut self, table_name: &str, entry: &TableEntry, want_on: bool) {
@@ -288,23 +335,27 @@ impl Engine {
         let key: EntryKey = (table_name.to_string(), entry.name.clone());
 
         if let Some(binding) = self.config.adapter_for(table_name, &entry.name).cloned() {
+            self.ensure_plugin_session(&binding);
             if want_on {
                 // Re-enable at the already-known address if we have one (fast);
                 // only fall back to a full rescan the very first time.
-                let result = match self.adapter_records.get(&key) {
-                    Some(rec) => match Va::parse(&rec.address) {
-                        Ok(addr) => adapters::toggle_on(&binding.name, addr, pid),
-                        Err(e) => Some(Err(e.to_string())),
+                let result = match self.adapter_records.get(&key).cloned() {
+                    Some(rec) => match (Va::parse(&rec.address), self.plugin_sessions.get(&binding.name)) {
+                        (Ok(addr), Some(session)) => Some(adapters::toggle_on(session, addr, pid)),
+                        (Err(e), _) => Some(Err(e.to_string())),
+                        (_, None) => None,
                     },
-                    None => adapters::run_on_launch(&binding.name, pid),
+                    None => self.plugin_sessions.get(&binding.name).map(|session| adapters::on_launch(session, pid)),
                 };
                 if let Some(result) = result {
                     self.set_adapter_result(table_name, &entry.name, result);
                 }
-            } else if let Some(rec) = self.adapter_records.get_mut(&key) {
+            } else if let Some(mut rec) = self.adapter_records.get(&key).cloned() {
                 // Keep the record (now status "undone") so re-enable is fast.
-                match adapters::toggle_off(&binding.name, rec, pid) {
+                let outcome = self.plugin_sessions.get(&binding.name).map(|session| adapters::toggle_off(session, &mut rec, pid));
+                match outcome {
                     Some(Ok(())) => {
+                        self.adapter_records.insert(key, rec);
                         self.push_log(format!("{}: off", entry.name));
                         sound::deactivate();
                     }
@@ -331,9 +382,8 @@ impl Engine {
     /// otherwise toggle a bound cheat entry. (The window show/hide key is
     /// intercepted earlier in `input.rs` and never reaches here.)
     pub fn handle_hotkey(&mut self, vk: u32) {
-        if vk != 0 && self.combo_solver_hotkey().map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
-            let on = self.combo_solver_enabled();
-            self.set_combo_solver_enabled(!on);
+        if let Some(name) = self.stratagem_bound_to(vk) {
+            self.run_stratagem_macro(&name);
             return;
         }
         if let Some(name) = self.sequence_bound_to(vk) {
@@ -344,6 +394,43 @@ impl Engine {
             let on = self.is_on(&table_name, &entry);
             self.apply_toggle(&table_name, &entry, !on);
         }
+    }
+
+    // -------- stratagem macros (Ctrl-held direction code via Interception) --------
+
+    fn stratagem_bound_to(&self, vk: u32) -> Option<String> {
+        if vk == 0 {
+            return None;
+        }
+        self.config
+            .stratagem
+            .iter()
+            .map(|m| m.name.clone())
+            .find(|name| self.stratagem_hotkey(name).map(|h| input::parse_vk(&h) == vk).unwrap_or(false))
+    }
+
+    /// Fire a stratagem macro through the Interception driver (the game ignores
+    /// SendInput). Runs off-thread so the input hook never blocks for the whole
+    /// sequence.
+    pub fn run_stratagem_macro(&mut self, name: &str) {
+        let Some(m) = self.config.stratagem.iter().find(|m| m.name == name).cloned() else { return };
+        let dll = self.config.interception.dll.clone();
+        if dll.trim().is_empty() {
+            self.push_log(format!("{name}: no interception dll set (needs [interception] dll)"));
+            return;
+        }
+        let device = self.config.interception.device;
+        let hold = self.stratagem_hold_ms();
+        let gap = self.stratagem_gap_ms();
+        let steps = m.steps.clone();
+        let name = name.to_string();
+        self.push_log(format!("{name}: {}", steps.join(" ")));
+        std::thread::spawn(move || match crate::interception::KeySender::open(&dll, device, hold, gap) {
+            Ok(sender) => {
+                sender.run_stratagem(crate::interception::LEFT_CTRL, &steps);
+            }
+            Err(e) => eprintln!("[n0xis-hud] stratagem '{name}': Interception unavailable ({e})"),
+        });
     }
 
     // -------- sequences (variant A: replay a fixed direction combo) --------
@@ -369,10 +456,9 @@ impl Engine {
     /// Is `vk` bound to any HUD action (a combo or a cheat)? Used by the hook
     /// to swallow the key so it never also reaches the game.
     pub fn hotkey_bound(&self, vk: u32) -> bool {
-        if vk != 0 && self.combo_solver_hotkey().map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
-            return true;
-        }
-        self.sequence_bound_to(vk).is_some() || self.entry_bound_to(vk, None).is_some()
+        self.stratagem_bound_to(vk).is_some()
+            || self.sequence_bound_to(vk).is_some()
+            || self.entry_bound_to(vk, None).is_some()
     }
 
     fn sequence_bound_to(&self, vk: u32) -> Option<String> {
@@ -429,8 +515,10 @@ impl Engine {
                 return Some(HotkeyOwner::Sequence(c.name.clone()));
             }
         }
-        if self.combo_solver_hotkey().map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
-            return Some(HotkeyOwner::ComboSolver);
+        for m in &self.config.stratagem {
+            if self.stratagem_hotkey(&m.name).map(|h| input::parse_vk(&h) == vk).unwrap_or(false) {
+                return Some(HotkeyOwner::Stratagem(m.name.clone()));
+            }
         }
         None
     }
@@ -443,7 +531,7 @@ impl Engine {
             Some(HotkeyOwner::Window) => return Err(format!("{key} is the N0xHUD show/hide key — pick another")),
             Some(HotkeyOwner::Cheat(c)) => return Err(format!("{key} is already bound to cheat \"{c}\"")),
             Some(HotkeyOwner::Sequence(s)) if s != name => return Err(format!("{key} is already bound to \"{s}\"")),
-            Some(HotkeyOwner::ComboSolver) => return Err(format!("{key} is already the combo-solver toggle")),
+            Some(HotkeyOwner::Stratagem(s)) => return Err(format!("{key} is already bound to stratagem \"{s}\"")),
             _ => {}
         }
         self.seq_overrides.entry(name.to_string()).or_default().hotkey = Some(key);
@@ -486,7 +574,7 @@ impl Engine {
             Some(HotkeyOwner::Window) => return Err(format!("{key} is the N0xHUD show/hide key — pick another")),
             Some(HotkeyOwner::Cheat(c)) if c != entry_name => return Err(format!("{key} is already bound to \"{c}\"")),
             Some(HotkeyOwner::Sequence(s)) => return Err(format!("{key} is already bound to combo \"{s}\"")),
-            Some(HotkeyOwner::ComboSolver) => return Err(format!("{key} is already the combo-solver toggle")),
+            Some(HotkeyOwner::Stratagem(s)) => return Err(format!("{key} is already bound to stratagem \"{s}\"")),
             _ => {}
         }
         self.set_hotkey_unchecked(table_name, entry_name, Some(key));

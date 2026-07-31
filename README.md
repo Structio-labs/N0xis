@@ -143,7 +143,7 @@ Full phase-by-phase history (Phase 1 → 9) and the decompiler-depth plan (Phase
 - **[ROADMAP.md](ROADMAP.md)** — phased build history + the honest decompiler-parity gap (Phase 10).
 - **[docs/KILLER_FEATURES.md](docs/KILLER_FEATURES.md)** — what's actually unique vs. other tools, kept honest against re-checks.
 - **[docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)** — **N0xHUD**, the companion-window frontend (a window over the engine, not a GUI rewrite of it).
-- **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** · **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[docs/RE_METHOD.md](docs/RE_METHOD.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
+- **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** · **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## License
 

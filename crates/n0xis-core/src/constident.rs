@@ -60,7 +60,7 @@ struct Fingerprint {
 /// returns *every* match, and the caller sees all plausible readings.
 static FINGERPRINTS: &[Fingerprint] = &[
     // ---- Linear congruential generators (multiplier a, increment c) ----
-    Fingerprint { value: 1664525, width: 32, algorithm: "LCG", role: "multiplier a", formula: Some("s' = s*1664525 + 1013904223 (mod 2^32)"), note: Some("Numerical Recipes / Helldivers combo RNG — pairs with c=1013904223") },
+    Fingerprint { value: 1664525, width: 32, algorithm: "LCG", role: "multiplier a", formula: Some("s' = s*1664525 + 1013904223 (mod 2^32)"), note: Some("Numerical Recipes — observed live in a Bitsquid/Stingray-engine game's combo RNG — pairs with c=1013904223") },
     Fingerprint { value: 1013904223, width: 32, algorithm: "LCG", role: "increment c", formula: Some("s' = s*1664525 + 1013904223 (mod 2^32)"), note: Some("Numerical Recipes — pairs with a=1664525") },
     Fingerprint { value: 214013, width: 32, algorithm: "LCG", role: "multiplier a", formula: Some("s' = s*214013 + 2531011 (mod 2^31)"), note: Some("MSVC rand() — pairs with c=2531011") },
     Fingerprint { value: 2531011, width: 32, algorithm: "LCG", role: "increment c", formula: Some("s' = s*214013 + 2531011"), note: Some("MSVC rand()") },

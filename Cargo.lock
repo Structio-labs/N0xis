@@ -2274,6 +2274,7 @@ dependencies = [
  "n0xis-core",
  "n0xis-project",
  "n0xis-sources",
+ "serde",
  "serde_json",
 ]
 

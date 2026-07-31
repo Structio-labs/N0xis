@@ -1,6 +1,6 @@
 //! # n0xis-bitsquid — the Bitsquid/Stingray bundle-format adapter
 //!
-//! Bitsquid/Stingray (the engine behind Helldivers 1 and others) ships game
+//! Bitsquid/Stingray (the engine behind several shipped games) ships game
 //! assets as **archives**: a small header, then a stream of 64 KiB chunks
 //! (each either raw or zlib-compressed), which decompress to an **exploded
 //! package** — a flat list of entries (`type_hash` + `path_hash`, both
@@ -16,10 +16,9 @@
 //! bytes off disk and hands them to [`open_bundle`]; this crate never touches
 //! a filesystem or process itself.
 //!
-//! Format cross-validated from two independent, non-code sources: the
-//! [Zekfad/helldivers](https://github.com/Zekfad/helldivers) hex-pattern patterns
-//! (`archive.hexpat`/`exploded_package.hexpat`) and the decompiled
-//! `bsunp` tool in
+//! Format cross-validated from two independent, non-code sources: community
+//! hex-pattern patterns for this bundle format (`archive.hexpat`/
+//! `exploded_package.hexpat`) and the decompiled `bsunp` tool in
 //! [xyx0826/Bitsquid-Toolchain](https://github.com/xyx0826/Bitsquid-Toolchain)
 //! (itself a recompile of a much older `zenhax` tool) — both describe the same
 //! byte layout, which is what this module implements fresh in Rust.

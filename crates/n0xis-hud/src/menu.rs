@@ -33,7 +33,7 @@ pub fn render(ui: &mut egui::Ui, ctx: &egui::Context, engine: &mut Engine) {
     }
 
     render_sequences(ui, engine, pid);
-    render_combo_solver(ui, engine);
+    render_stratagems(ui, engine, pid);
 
     if rows.is_empty() && engine.config().sequences.combo.is_empty() {
         ui.weak("No entries. Check hud.toml's `tables = [...]` / `[[sequences.combo]]`.");
@@ -45,70 +45,66 @@ pub fn render(ui: &mut egui::Ui, ctx: &egui::Context, engine: &mut Engine) {
     if let Some(name) = engine.seq_rebind_capture.clone() {
         render_seq_rebind_popup(ctx, engine, &name);
     }
-    if engine.combo_solver_rebind {
-        render_combo_solver_rebind_popup(ctx, engine);
+    if let Some(name) = engine.stratagem_rebind.clone() {
+        render_stratagem_rebind_popup(ctx, engine, &name);
     }
 }
 
-/// The Helldivers combo auto-solver section: an on/off toggle (and its bindable
-/// in-game hotkey), the replay speed controls, and a hint that the pressed
-/// keys land in the footer log. Only shown when a profile has configured it
-/// (an Interception DLL path in `hud.toml`) — otherwise it's inert and hidden.
-fn render_combo_solver(ui: &mut egui::Ui, engine: &mut Engine) {
-    if engine.combo_solver_dll().trim().is_empty() {
+/// Stratagem input macros (Ctrl-held direction code, sent via Interception —
+/// the game ignores SendInput). Speed (hold/gap) and hotkey are both runtime-
+/// adjustable, same shape as the Combo Solver panel below, but as their own
+/// independent settings (a stratagem code has no wrong-input penalty, so it
+/// wants to run much faster than the combo solver's deliberately-conservative
+/// per-mine timing).
+fn render_stratagems(ui: &mut egui::Ui, engine: &mut Engine, pid: Option<u32>) {
+    let macros = engine.config().stratagem.clone();
+    if macros.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(egui::RichText::new("Combo Solver").strong()).default_open(true).show(ui, |ui| {
-        let mut enabled = engine.combo_solver_enabled();
-        let mut hold = engine.combo_solver_hold_ms();
-        let mut gap = engine.combo_solver_gap_ms();
-        let hotkey = engine.combo_solver_hotkey();
-
+    egui::CollapsingHeader::new(egui::RichText::new("Stratagems").strong()).default_open(true).show(ui, |ui| {
+        let mut hold = engine.stratagem_hold_ms();
+        let mut gap = engine.stratagem_gap_ms();
         ui.horizontal(|ui| {
-            if ui
-                .add(egui::Checkbox::new(&mut enabled, "Auto-solve interact combos"))
-                .on_hover_text("Detects the open combo window (mine/terminal), reads its combo from memory, and replays it via the Interception driver.")
-                .changed()
-            {
-                engine.set_combo_solver_enabled(enabled);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("\u{2699}").on_hover_text("Bind / unbind an in-game on/off hotkey").clicked() {
-                    engine.combo_solver_rebind = true;
-                    engine.rebind_conflict = None;
-                }
-                if let Some(hk) = &hotkey {
-                    ui.label(
-                        egui::RichText::new(format!(" {hk} "))
-                            .monospace()
-                            .background_color(ui.visuals().widgets.inactive.bg_fill),
-                    );
-                }
-            });
-        });
-
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
             ui.weak("key hold");
             if ui.add(egui::DragValue::new(&mut hold).suffix(" ms").range(1..=500).speed(1.0)).changed() {
-                engine.set_combo_solver_hold_ms(hold);
+                engine.set_stratagem_hold_ms(hold);
             }
             ui.add_space(8.0);
             ui.weak("gap");
-            if ui.add(egui::DragValue::new(&mut gap).suffix(" ms").range(1..=1000).speed(1.0)).changed() {
-                engine.set_combo_solver_gap_ms(gap);
+            if ui.add(egui::DragValue::new(&mut gap).suffix(" ms").range(1..=500).speed(1.0)).changed() {
+                engine.set_stratagem_gap_ms(gap);
             }
         });
-        ui.weak("Pressed keys are logged at the bottom of the window.");
+        ui.add_space(2.0);
+        for m in &macros {
+            let hotkey = engine.stratagem_hotkey(&m.name);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(pid.is_some(), egui::Button::new("\u{25B6}")).on_hover_text("Run now").clicked() {
+                    engine.run_stratagem_macro(&m.name);
+                }
+                ui.label(&m.name).on_hover_text(m.steps.join(" · "));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("\u{2699}").on_hover_text("Bind / unbind a hotkey").clicked() {
+                        engine.stratagem_rebind = Some(m.name.clone());
+                        engine.rebind_conflict = None;
+                    }
+                    if let Some(hk) = &hotkey {
+                        ui.label(egui::RichText::new(format!(" {hk} ")).monospace().background_color(
+                            ui.visuals().widgets.inactive.bg_fill,
+                        ));
+                    }
+                });
+            });
+        }
     });
     ui.add_space(4.0);
 }
 
-fn render_combo_solver_rebind_popup(ctx: &egui::Context, engine: &mut Engine) {
+fn render_stratagem_rebind_popup(ctx: &egui::Context, engine: &mut Engine, name: &str) {
     let mut done = false;
-    let current = engine.combo_solver_hotkey();
-    egui::Window::new("Bind key: Combo Solver toggle").collapsible(false).resizable(false).show(ctx, |ui| {
-        ui.label("Press a key to toggle the solver on/off in-game...");
+    let current = engine.stratagem_hotkey(name);
+    egui::Window::new(format!("Bind key: {name}")).collapsible(false).resizable(false).show(ctx, |ui| {
+        ui.label("Press a key...");
         if let Some(hk) = &current {
             ui.weak(format!("Currently bound to {hk}."));
         }
@@ -122,14 +118,14 @@ fn render_combo_solver_rebind_popup(ctx: &egui::Context, engine: &mut Engine) {
             })
         });
         if let Some(k) = pressed {
-            match engine.try_set_combo_solver_hotkey(k) {
+            match engine.try_set_stratagem_hotkey(name, k) {
                 Ok(()) => done = true,
                 Err(e) => engine.rebind_conflict = Some(e),
             }
         }
         ui.horizontal(|ui| {
             if current.is_some() && ui.button("Unbind").clicked() {
-                engine.clear_combo_solver_hotkey();
+                engine.clear_stratagem_hotkey(name);
                 done = true;
             }
             if ui.button("Cancel").clicked() {
@@ -138,7 +134,7 @@ fn render_combo_solver_rebind_popup(ctx: &egui::Context, engine: &mut Engine) {
         });
     });
     if done {
-        engine.combo_solver_rebind = false;
+        engine.stratagem_rebind = None;
         engine.rebind_conflict = None;
     }
 }

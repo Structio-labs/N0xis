@@ -1,15 +1,16 @@
 //! LuaJIT object model — `TValue` decoding and `GCtab` (Lua table) traversal,
 //! parameterized by a [`LuaLayout`] so the same logic serves different builds.
 //!
-//! **Why parameterized, not hardcoded.** Helldivers ships a *patched* LuaJIT
-//! 2.0.3 (the `helldivers.exe` strings confirm the version) whose `GCstr`
-//! header empirically has `len` at offset `0x10` / data at `0x14` — 4 bytes
-//! past where a stock 32-bit-`GCRef` 2.0 build would put them (`0xC`/`0x10`).
-//! That +4 is the signature of an **8-byte `GCRef`**: `nextgc(8) + marked(1) +
-//! gct(1) + reserved(1) + unused(1) = 0xC`, then `hash(4)@0xC`, `len(4)@0x10`,
+//! **Why parameterized, not hardcoded.** A Bitsquid/Stingray-engine game
+//! observed live ships a *patched* LuaJIT 2.0.3 (confirmed via its own live
+//! version/GCstr strings) whose `GCstr` header empirically has `len` at
+//! offset `0x10` / data at `0x14` — 4 bytes past where a stock
+//! 32-bit-`GCRef` 2.0 build would put them (`0xC`/`0x10`). That +4 is the
+//! signature of an **8-byte `GCRef`**: `nextgc(8) + marked(1) + gct(1) +
+//! reserved(1) + unused(1) = 0xC`, then `hash(4)@0xC`, `len(4)@0x10`,
 //! data`@0x14`. Bitsquid/Stingray is known to patch LuaJIT internals, so we do
 //! not assume the stock layout; every magic offset lives in [`LuaLayout`] and
-//! is meant to be *calibrated* (see [`LuaLayout::HELLDIVERS`], and the
+//! is meant to be *calibrated* (see [`LuaLayout::STINGRAY_LUAJIT`], and the
 //! calibration notes below) rather than trusted blindly.
 //!
 //! The `TValue` decoding here assumes a **GC64-style 8-byte tagged value**
@@ -51,12 +52,13 @@ pub struct LuaLayout {
 }
 
 impl LuaLayout {
-    /// Best-hypothesis layout for Helldivers 1's patched LuaJIT 2.0.3 (8-byte
-    /// `GCRef`, GC64-style 8-byte `TValue`). The `GCstr` offset is empirically
-    /// confirmed; the `GCtab`/`Node` offsets are derived from the standard 2.0
-    /// field order scaled to an 8-byte ref and **need live calibration** before
-    /// being trusted (a `Node` here is `val(8) key(8) next(8)` = 24 bytes).
-    pub const HELLDIVERS: LuaLayout = LuaLayout {
+    /// Best-hypothesis layout for a Bitsquid/Stingray-engine game's patched
+    /// LuaJIT 2.0.3 (8-byte `GCRef`, GC64-style 8-byte `TValue`). The `GCstr`
+    /// offset is empirically confirmed; the `GCtab`/`Node` offsets are derived
+    /// from the standard 2.0 field order scaled to an 8-byte ref and **need
+    /// live calibration** before being trusted (a `Node` here is `val(8)
+    /// key(8) next(8)` = 24 bytes).
+    pub const STINGRAY_LUAJIT: LuaLayout = LuaLayout {
         ref_size: 8,
         gcstr_len_off: 0x10,
         // GCHeader(nextgc 8, marked 1, gct 1) + nomm 1 + colo 1 = 0xC, then
@@ -128,8 +130,9 @@ const PTR47_MASK: u64 = 0x0000_7FFF_FFFF_FFFF;
 /// Returning *both* candidates and letting the caller intersect with a known
 /// target set is what makes the combo run-finder build-agnostic: only the
 /// encoding actually in use yields an address that's a real interned string.
-/// (Helldivers 1's heap sits in low memory — 32-bit `GCRef` — as confirmed live
-/// by the direction strings landing at `0x30xxxxxx` addresses.)
+/// (One Bitsquid/Stingray-engine game's heap sits in low memory — 32-bit
+/// `GCRef` — as confirmed live by observed strings landing at `0x30xxxxxx`
+/// addresses.)
 pub fn string_ref_candidates(raw: u64) -> [Option<Va>; 2] {
     let gc64 = (((raw >> ITYPE_SHIFT) as u32) == LJ_TSTR).then(|| Va(raw & PTR47_MASK));
     let r32 = (((raw >> 32) as u32) == LJ_TSTR_32).then(|| Va(raw & 0xFFFF_FFFF));
@@ -261,12 +264,12 @@ mod tests {
         }
     }
 
-    /// Build a minimal `GCtab` (HELLDIVERS layout) with a 3-element array part
+    /// Build a minimal `GCtab` (STINGRAY_LUAJIT layout) with a 3-element array part
     /// holding string TValues, plus one hash entry, and confirm `read_table`
     /// recovers exactly that.
     #[test]
     fn reads_array_and_hash_parts_of_a_hand_built_table() {
-        let layout = LuaLayout::HELLDIVERS;
+        let layout = LuaLayout::STINGRAY_LUAJIT;
         let tab = Va(0x1000);
         let array_base = Va(0x2000);
         let node_base = Va(0x3000);
@@ -308,7 +311,7 @@ mod tests {
 
     #[test]
     fn rejects_absurd_sizes_instead_of_over_allocating() {
-        let layout = LuaLayout::HELLDIVERS;
+        let layout = LuaLayout::STINGRAY_LUAJIT;
         let tab = Va(0x1000);
         let mut tabbytes = vec![0u8; 0x40];
         // A wild asize (as if pointed at a non-table): must be rejected.

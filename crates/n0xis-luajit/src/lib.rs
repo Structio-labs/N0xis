@@ -40,15 +40,14 @@ pub fn read_gcstr(src: &dyn MemorySource, addr: Va, layout: LuaLayout) -> Option
 
 /// `GCstr` header layout, offsets from the object's base address.
 ///
-/// Empirically confirmed against a live 64-bit Helldivers 1 process
-/// (`n0xis-hud`'s combo-cheat investigation, see `cheats_research.md`): the
-/// `len` field sits 0x10 bytes after the object base, with the string's raw
-/// bytes immediately following it. This matches a GC64-mode LuaJIT build
-/// (an 8-byte compressed `GCRef` in the header, vs. 4 bytes in the classic
-/// 32-bit layout) but was *not* independently cross-checked against LuaJIT's
-/// own `lj_obj.h` this session — treat it as a validated constant for this
-/// game/build, not a general LuaJIT-version law. A different build may need
-/// a different `GcstrLayout`.
+/// Empirically confirmed against a live 64-bit Bitsquid/Stingray-engine game
+/// process: the `len` field sits 0x10 bytes after the object base, with the
+/// string's raw bytes immediately following it. This matches a GC64-mode
+/// LuaJIT build (an 8-byte compressed `GCRef` in the header, vs. 4 bytes in
+/// the classic 32-bit layout) but was *not* independently cross-checked
+/// against LuaJIT's own `lj_obj.h` this session — treat it as a validated
+/// constant for this game/build, not a general LuaJIT-version law. A
+/// different build may need a different `GcstrLayout`.
 #[derive(Debug, Clone, Copy)]
 pub struct GcstrLayout {
     /// Offset of the `len` field (u32 LE) from the object base.
@@ -56,8 +55,8 @@ pub struct GcstrLayout {
 }
 
 impl GcstrLayout {
-    /// The layout confirmed against Helldivers 1 (GC64-mode LuaJIT).
-    pub const HELLDIVERS_GC64: GcstrLayout = GcstrLayout { len_offset: 0x10 };
+    /// The layout confirmed against a Bitsquid/Stingray-engine game (GC64-mode LuaJIT).
+    pub const STINGRAY_GC64: GcstrLayout = GcstrLayout { len_offset: 0x10 };
 }
 
 /// One `GCstr` found live in a process's heap.
@@ -255,7 +254,7 @@ mod tests {
     use n0xis_sources::Snapshot;
 
     /// Lay out one `GCstr("up")` by hand at a chosen base, using the
-    /// Helldivers GC64 layout, surrounded by unrelated filler bytes so the
+    /// Stingray-engine GC64 layout, surrounded by unrelated filler bytes so the
     /// scan has to actually find it rather than trivially matching offset 0.
     fn build_region(base: Va, needle_off: usize, text: &str) -> Vec<u8> {
         let mut buf = vec![0xABu8; needle_off];
@@ -274,12 +273,12 @@ mod tests {
         let bytes = build_region(base, needle_off, "up");
         let snap = Snapshot::builder().region(base, bytes).build();
 
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::HELLDIVERS_GC64, 1, 16);
+        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::STINGRAY_GC64, 1, 16);
 
         let hit = hits.iter().find(|h| h.text == "up").expect("must find the planted GCstr");
         assert_eq!(hit.len, 2);
         assert_eq!(hit.len_addr, base.offset(needle_off as u64));
-        assert_eq!(hit.object_base, base.offset(needle_off as u64 - GcstrLayout::HELLDIVERS_GC64.len_offset));
+        assert_eq!(hit.object_base, base.offset(needle_off as u64 - GcstrLayout::STINGRAY_GC64.len_offset));
         assert_eq!(hit.data_addr, base.offset(needle_off as u64 + 4));
     }
 
@@ -290,7 +289,7 @@ mod tests {
         let mut bytes = vec![3u8, 0, 0, 0, 0x00, 0x01, 0x02];
         bytes.extend_from_slice(&[0u8; 32]);
         let snap = Snapshot::builder().region(base, bytes).build();
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::HELLDIVERS_GC64, 1, 16);
+        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::STINGRAY_GC64, 1, 16);
         assert!(hits.is_empty());
     }
 
@@ -300,7 +299,7 @@ mod tests {
         let bytes = build_region(base, 16, "hello");
         let snap = Snapshot::builder().region(base, bytes).build();
         // "hello" is len 5; a max_len of 3 must exclude it.
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::HELLDIVERS_GC64, 1, 3);
+        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::STINGRAY_GC64, 1, 3);
         assert!(hits.iter().all(|h| h.text != "hello"));
     }
 

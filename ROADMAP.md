@@ -652,9 +652,9 @@ verified. Don't repeat that mistake when reading this phase as "done."
   tools — a structural diff tool, a structural diff tool — exists just for this), not attempted here.
 
 ## Phase 8 — Method tooling: spec-first RE 🎯 ⏳ (merged to main `a0a9168` — all 6 named commands + the hex-everywhere audit done; still ⏳ solely for the one ⬜ item, region caching as a built-in scan option)
-Goal: turn [`docs/RE_METHOD.md`](docs/RE_METHOD.md) into tools. That doc is the
-post-mortem of one complete campaign (auto-solving a game's directional
-interact-combo mini-game). It succeeded — and **~90% of the effort went into
+Goal: turn a real RE campaign's post-mortem into tools. That campaign
+(auto-solving a game's directional interact-combo mini-game) succeeded — and
+**~90% of the effort went into
 reverse-engineering runtime *state* to recover information that was
 declaratively *specified* in the game's own scripts and data**. The finished
 solver reads 4 bytes from memory (a seed) and computes the rest.
@@ -958,7 +958,7 @@ names a missing tool.
   > `tools/list`). Read-only throughout — `ReadProcessMemory` over the
   > committed-writable region set only, no breakpoints / writes / thread
   > suspension (brief §7). The AABB layout is a passed-in `AabbLayout` config
-  > value (`HELLDIVERS` = `min.x@+0xa4 … radius@+0xbc`), not inlined — a
+  > value (`STINGRAY` = `min.x@+0xa4 … radius@+0xbc`), not inlined — a
   > different build/engine gets a different layout, per the anti-hardcode rule.
   > - **`--space auto|screen|ndc`** is *observable, not assumed* (brief §4):
   >   `auto` runs a permissive bound and reports the `observed_range` across
@@ -1246,23 +1246,29 @@ workspace from Phase 1's 8 crates to **12** today.)
   always-on-top `eframe`/`egui` window that does **not** draw inside the target
   (the a separate always-on-top window model), launched from a game's `.n0x/` project and driven by
   `.n0x/hud.toml`. One shared `Engine` behind three background threads — a global
-  low-level keyboard hook (hotkeys), a process watcher that auto-applies adapters
-  when the target appears, and the combo watcher. Shipped: config-driven bindings
-  (nothing hardcoded), write & freeze over the Phase 4b primitives (pointer-path
-  locators included), global hotkeys with in-UI rebind + conflict detection, and
-  an in-binary adapter registry (today only `helldivers-infinite-mags`, an
-  AOB-anchored live LuaJIT-bytecode patch journaled so toggle-off restores the
-  original bytes).
+  low-level keyboard hook (hotkeys), a process watcher that auto-applies adapter
+  plugins when the target appears, and a generic periodic plugin poller
+  (`plugin_poll.rs`). Shipped: config-driven bindings (nothing hardcoded), write
+  & freeze over the Phase 4b primitives (pointer-path locators included),
+  global hotkeys with in-UI rebind + conflict detection, and (2026-07-22,
+  **superseding** an earlier in-binary adapter registry) a **process-based
+  plugin dispatch**: an `[[adapters]]` binding's `command` spawns a persistent
+  `n0xis_sources::PluginSession`, and `on_launch`/`toggle_on`/`toggle_off`/
+  `poll` become JSON ops on that session instead of a compiled-in Rust match —
+  `n0xis-hud` itself carries **zero** game-specific logic; all of it lives in
+  an external plugin process the user builds and points `command` at (see
+  `docs/COMMUNITY_ROADMAP.md`'s "Plugin system", whose transport this reuses).
   ⚠️ Doc debt: the design docs under [`docs/n0xhud/`](docs/n0xhud/) still describe
   the *unbuilt* overlay/injection plan and use cheat-menu framing — stale, flagged
   for a rewrite; the shipped binary is the companion-window shape above.
 - ✅ **Interception-driver actuation** (`interception.rs`). Dynamically loads a
   user-configured `interception.dll` (path from `hud.toml`, never hardcoded) and
-  sends keystrokes through the kernel-class driver — needed because Helldivers
-  filters `LLKHF_INJECTED` and ignores the identical scancode sent via
-  `SendInput` (confirmed live). Two macro subsystems ride on top: fixed
-  **sequences / "Combinations"** replay (via `SendInput`) and **stratagem
-  macros** (via Interception).
+  sends keystrokes through the kernel-class driver — needed because some games
+  filter `LLKHF_INJECTED` and ignore the identical scancode sent via
+  `SendInput` (confirmed live; `input probe` detects this directly). Two macro
+  subsystems ride on top: fixed **sequences / "Combinations"** replay (via
+  `SendInput`) and **stratagem macros** (via Interception) — both fully
+  generic, config-driven, no game-specific code.
 - ✅ **Bitsquid/Stingray + LuaJIT asset tooling** (`crates/n0xis-bitsquid`,
   `n0xis-lua`, `n0xis-luajit`; CLI `bundle {list,extract,repack}` and
   `lua {disasm,patch,strings,table,combo,seedscan}`). Offline bundle
@@ -1270,25 +1276,97 @@ workspace from Phase 1's 8 crates to **12** today.)
   introspection** — decoding real LuaJIT object headers out of a running process's
   heap with pure memory reads (no debugger). None of these three crates is
   depended on by `n0xis-core` (the boundary law still holds).
-- ⚠️ **Helldivers interact-combo auto-solver** (`combo_watcher.rs` +
-  `adapters/helldivers_combo.rs` + `interception.rs`) — the main HUD
-  capability, framed as *dynamic analysis in a loop*: detect an active
-  interact-combo component in live memory, recover its small-integer seed, and
-  recompute the deterministic sequence from the game's own LCG
-  (`s' = s*1664525 + 1013904223`, reverse-engineered from the native
-  `Math.next_random` binding and validated live against two independent
-  activations), actuate through Interception, and re-read live `progress` before
-  each tap — stopping the instant the window closes.
-  - **Mines/UXO (default)**: solved **exactly** from the seed, **never**
-    brute-forced (a wrong tap detonates) — the validated, always-safe path.
-  - **Universal (opt-in)**: detects any interact object by diffing
-    `interacting_unit` between polls, solving seed-first with a per-position
-    brute fallback (safe because a wrong *non-mine* input only resets progress;
-    **mines are never brute-forced regardless**). Explicitly **gated behind its
-    own live-validation checkpoint** — implemented, not verified.
-  ⚠️ Doc debt: the solver code cites planning docs (`AUTO_COMBO_PLAN.md`,
-  `cheats_research.md`) that don't exist in this repo, and it has **zero**
-  coverage under `docs/n0xhud/` — to reconcile in the HUD doc rewrite.
+- ✅ **Process-based plugin protocol** (`n0xis_sources::plugin` — `PluginCall`
+  single-shot + `PluginSession` persistent, built on the same line-protocol
+  plumbing `remote.rs` already proved; `.n0x/plugins.json` registry mirroring
+  `selection.rs`'s storage pattern; `n0xis-pipeline::PluginHost` for
+  analysis-result plugins; CLI `plugin {list,add,rm}`; MCP `plugin_list`/
+  `plugin_run`) — the previously-only-*proposed* design in
+  `docs/COMMUNITY_ROADMAP.md` now built and exercised by N0xHUD's own adapter
+  dispatch above. Validated end-to-end (2026-07-22) by porting a real,
+  previously in-binary game automation feature — an interact-combo auto-solver
+  (transition-diff detection of a just-opened UI window, seed-derived exact
+  solving for a high-stakes case, a safe brute fallback for the rest) — out of
+  this repo entirely into an external plugin process, proving the protocol
+  handles genuinely stateful, long-running automation, not just simple
+  one-shot patches.
+
+---
+
+## Phase 11 — Agent consumability 🎯 ✅ (working tree)
+
+Derived, like Phase 8, from a post-mortem rather than a wish list — this time from an
+agent's session log against a Unity/IL2CPP target, with every claim re-measured against
+the real binary before anything was built. The thesis of this project is *agent-native*;
+these are the places the output was quietly hostile to its primary consumer.
+
+- ✅ **Truncation is part of the contract** (`n0xis-contracts::Meta`) — `returned` /
+  `total` / `truncated`, plus `note` for a *successful* result that reads as something it
+  is not (`error.hint` only covers failures). Without this a reader cannot tell "40
+  results" from "the first 40 of 277 199" and will conclude from a fragment. `with_page`
+  derives `truncated`; `with_cap` reports it **without inventing a `total`** for producers
+  that stop early on purpose.
+- ✅ **`function discover --pdata` honours `--limit`** — it silently ignored it, returning
+  **17.7 MB of JSON** (277 199 entries) on a 94 MB `GameAssembly.dll` when asked for 3.
+  Now 459 bytes, with `meta.total` reporting the real count. `--offset` added to both
+  discovery modes for paging; the prologue scan pages from the start of the range so a
+  given page is the same set of addresses however it was reached.
+- ✅ **The optimizer delta is opt-in** (`decomp pseudo --explain`). Measured on a real
+  function: 59 518 bytes of delta against 42 306 bytes of pseudo-C — **the explanation was
+  larger than the code it explained**, 59% of every payload, on the most-used command.
+  It also duplicated `ir explain`, which is its dedicated home (CONCEPT §3 rule 3).
+  `--explain` restores the byte-identical old payload.
+- ✅ **`--addr-rva` hoisted into the shared source args** — was on three commands, absent
+  from every `ir`/`decomp` command and from `provenance trace` *despite* pairing with
+  `debug watch`, which had it. An RVA is the only address form that survives a restart, so
+  the flag missing is exactly what pushes callers back to hand-computed absolute VAs.
+- ✅ **`--addr-module` / `profile --module`** — found by running against the live game
+  rather than reasoning about it. `--addr-rva` resolved against the *main* module, which
+  is the wrong one for the most common real target there is: a Unity player EXE is 2
+  exports and 319 functions while the 277 199 that matter are in `GameAssembly.dll`.
+  `--addr 0xA54EC0 --addr-rva` landed on unmapped memory. Now selectable by
+  case-insensitive substring, and a name that matches nothing fails loudly with the
+  command that lists them. Verified live: `--addr-module GameAssembly.dll` produced a
+  decompile byte-identical in extent to the static one at the same RVA.
+  ⚠️ `debug watch` / `debug await-hit` / `provenance trace` still resolve `--addr-rva`
+  against the main module only — same trap, not yet fixed there.
+- ✅ **Indirect relays resolved, and detours detected** — also a live finding. Static and
+  live thunk counts disagreed by one; the culprit was `il2cpp_resolve_icall`, `e9 …`
+  (`jmp rel32`) on disk and `ff 25 …` (`jmp [rip+…]`) in memory. Thunk resolution now
+  follows the pointer slot, with the read itself as the validation: a static image's
+  unbound import slot points nowhere mapped and is correctly refused instead of yielding
+  a confident wrong address. An indirect relay whose target lands *outside* the image is
+  reported as `detoured_exports` + an advisory — the code running is not the code in the
+  file, which silently invalidates static reasoning if nobody says so. On the live target
+  it names all five MelonLoader hooks (`il2cpp_alloc`, `il2cpp_free`,
+  `il2cpp_resolve_icall`, `mono_metadata_free_mh`, `mono_string_free`); the detour target
+  belongs to no loaded module at all, i.e. an allocated trampoline. Computed
+  unconditionally, **not** gated behind `--exports`: an advisory that only fires when the
+  caller happened to ask for the full table is one that will be missed exactly when it
+  matters.
+- ✅ **`n0x profile`** (`n0xis-core::profile`, `n0xis.profile.v1`) — the "what am I even
+  looking at" command. Image facts (sections, exports vs *distinct* addresses, branch
+  stubs, `.pdata`), engine detection from export fingerprints held as **data**, IL2CPP
+  metadata path + format version read from the blob header, and an `advisories` list
+  naming which commands will be ineffective or degraded **on this target, with the
+  reason**. Verified against the real target: reproduces in one call every fact that
+  previously took a hand-written PE parser and a dozen steps — 386 exports on 279 distinct
+  addresses, 39 folded groups, 49 thunks, 277 199 `.pdata` functions, metadata v31.
+  Motivating failure: an agent ran `xref string` and `bindings list`, got `count: 0` from
+  both, and concluded there were no references — when the format simply keeps those things
+  outside the image. **A silent zero is the most misleading shape a result can take.**
+- ✅ **The guide's recipes are now tested against the clap tree**
+  (`guide_recipe_tests`) — the command list was generated and could not drift, but the
+  hand-written `workflows` prose did: one recipe shipped `table add --name f --pid <p>
+  --address <hit>` when the command takes `--addr`, has no `--pid`, and *requires*
+  `--table`. The test asserts every step resolves to a real command, passes only flags
+  that command accepts, and omits no required one. It caught all four defects on its
+  first run; the recipe is fixed.
+
+⬜ **Open follow-ons.** ICF folding means one address can carry many unrelated names
+(measured: 23 on one address) — `profile` reports the groups, but the decompiler's
+renderer does not yet know to refuse to pick one. And MCP still exposes 23 of the CLI's
+85 commands, omitting the entire live-memory half that is the project's capability.
 
 ---
 

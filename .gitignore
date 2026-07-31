@@ -22,3 +22,4 @@ n0x.zip
 # Obsidian workspace state (keep config, drop transient state)
 .obsidian/workspace*.json
 .obsidian/cache
+.nexus/

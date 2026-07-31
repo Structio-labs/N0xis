@@ -21,8 +21,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 
-# Dynamic loader for interception.dll (Helldivers combo-solver's key sender —
-# the game rejects synthetic SendInput; see src/interception.rs). Loaded at
+# Dynamic loader for interception.dll (the stratagem-macro key sender — some
+# games reject synthetic SendInput; see src/interception.rs). Loaded at
 # runtime from a `hud.toml`-configured path, never linked at build time, so
 # the crate builds fine on a machine without the driver installed.
 libloading = { workspace = true }

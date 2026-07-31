@@ -1,12 +1,12 @@
 //! Background process watcher: detects the configured game launching (and
-//! relaunching) and drives each adapter's auto-apply, writing straight into
-//! the shared [`Engine`] so state is current even when the UI isn't ticking.
+//! relaunching) and drives each adapter plugin's auto-apply, writing straight
+//! into the shared [`Engine`] so state is current even when the UI isn't
+//! ticking.
 //!
-//! An adapter can legitimately fail right after launch — the Helldivers
-//! infinite-mags AOB isn't in memory at the title screen, only once a mission
-//! loads the weapon's Lua chunk — so each adapter is **retried until it
-//! succeeds**, then left alone. That is what delivers "it just turns on when I
-//! get into a mission".
+//! A plugin can legitimately fail right after launch — its target signature
+//! may not be resident yet at the title screen, only once real gameplay loads
+//! it — so each adapter is **retried until it succeeds**, then left alone.
+//! That is what delivers "it just turns on once I'm in".
 
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,15 +14,12 @@ use std::time::Duration;
 
 use n0xis_sources::{list_processes, LiveProcess};
 
-use crate::adapters;
 use crate::engine::Engine;
 
 /// Cheap "has it appeared / is it still alive" poll.
 const POLL_INTERVAL: Duration = Duration::from_millis(1000);
-/// Retry for an adapter that hasn't landed yet. Each attempt scans the full
-/// writable address space twice (once for the original bytes, once for
-/// already-patched — see helldivers.rs's idempotency note), so this is
-/// deliberately not aggressive.
+/// Retry for an adapter plugin that hasn't landed yet — deliberately not
+/// aggressive, since a plugin's own `on_launch` scan may be expensive.
 const RETRY_INTERVAL: Duration = Duration::from_millis(3000);
 
 pub fn spawn(engine: Arc<Mutex<Engine>>) {
@@ -49,9 +46,11 @@ fn watch_loop(engine: Arc<Mutex<Engine>>) {
             if !pending.is_empty() {
                 let mut still_pending = Vec::new();
                 for name in pending.drain(..) {
-                    // Scan/patch happens outside the lock; only the result
-                    // write takes it, so a multi-second scan never freezes UI.
-                    match adapters::run_on_launch(&name, pid) {
+                    // The plugin call happens through one short lock
+                    // (`run_adapter_on_launch`); a slow plugin scan blocks the
+                    // watcher thread, not the UI thread.
+                    let result = engine.lock().ok().and_then(|mut e| e.run_adapter_on_launch(&name, pid));
+                    match result {
                         Some(Ok(rec)) => {
                             if let Some((table, entry)) = binding_target(&engine, &name)
                                 && let Ok(mut e) = engine.lock()
@@ -68,7 +67,7 @@ fn watch_loop(engine: Arc<Mutex<Engine>>) {
                             }
                             still_pending.push(name);
                         }
-                        None => {} // unknown adapter name: nothing to retry
+                        None => {} // no plugin configured for this binding: nothing to retry
                     }
                 }
                 pending = still_pending;

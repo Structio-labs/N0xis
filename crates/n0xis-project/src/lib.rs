@@ -18,6 +18,7 @@
 //!   project.toml      # project name, optional core_path override, targets
 //!   session.json      # which PID is currently attached (per-project)
 //!   selections.json   # named memory ranges (per-project)
+//!   plugins.json      # registered analysis plugins (name -> spawn command)
 //!   dumps/{ir,pseudo,hex,raw,note}/
 //!   tables/           # .n0xt cheat/analysis tables (CONCEPT §10)
 //!   ir-cache/         # reserved for the PassManager artifact cache (Phase 6)
@@ -30,6 +31,7 @@ pub mod ir_cache;
 #[cfg(feature = "live")]
 pub mod locator;
 pub mod patch;
+pub mod plugins;
 pub mod selection;
 pub mod session;
 pub mod table;
@@ -73,6 +75,9 @@ impl ProjectRoot {
     }
     pub fn selections_path(&self) -> PathBuf {
         self.dir.join("selections.json")
+    }
+    pub fn plugins_path(&self) -> PathBuf {
+        self.dir.join("plugins.json")
     }
     pub fn project_toml_path(&self) -> PathBuf {
         self.dir.join("project.toml")

@@ -8,8 +8,8 @@ const HEAD1: u8 = 0x1b;
 const HEAD2: u8 = b'L';
 const HEAD3: u8 = b'J';
 
-/// LuaJIT 2.0's dump format version. Bundled Helldivers 1 scripts (LuaJIT
-/// 2.0.3) use exactly this; a different byte here means either a different
+/// LuaJIT 2.0's dump format version. Bundled Bitsquid/Stingray-engine scripts
+/// (LuaJIT 2.0.3) use exactly this; a different byte here means either a different
 /// LuaJIT branch (2.1 added `BCDUMP_F_FR2`) or a non-LuaJIT dump, and this
 /// crate reports that as an error rather than guessing at a layout it hasn't
 /// verified.

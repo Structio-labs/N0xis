@@ -59,8 +59,9 @@ status, not as the original overlay design:
 - ✅ **Interception driver input** — dynamically loads a user-configured
   `interception.dll` (path from `hud.toml`, no build-time link) and sends
   keyboard strokes through the kernel-class driver, indistinguishable from
-  hardware. Exists because Helldivers 1 accepts a real keypress but ignores the
-  identical scancode via `SendInput` (it filters `LLKHF_INJECTED`). `interception.rs`.
+  hardware. Exists for the class of games that accept a real keypress but
+  ignore the identical scancode via `SendInput` (they filter
+  `LLKHF_INJECTED`). `interception.rs`.
 - ✅ **Declarative menu from `.n0xt` tables** — grouped `TableEntry` rows honoring
   each entry's `hotkey`; rebind popups; solver/stratagem/sequences panels. `menu.rs`.
 - ✅ **Stratagem macros** — hold Ctrl + tap a direction code, sent via Interception,
@@ -68,8 +69,14 @@ status, not as the original overlay design:
 - ✅ **Sequences / "Combinations" replay** — replay a fixed direction combo via
   `SendInput`, configurable per-step delay + hold; run button or bindable hotkey.
   `sequence.rs`.
-- ✅ **Helldivers interact-combo auto-solver** — the main shipped capability
-  (§Phase 5+). `combo_watcher.rs`, `adapters/helldivers_combo.rs`, `interception.rs`.
+- ✅ **Process-based plugin protocol** — `adapters/mod.rs` dispatches every
+  binding's `on_launch`/`toggle_on`/`toggle_off`/`poll` to a spawned,
+  long-lived plugin process over newline-delimited JSON on stdio
+  (`n0xis_sources::PluginSession`), instead of an in-binary Rust match. Any
+  per-game logic — AOB patches, live-memory automation, whatever a specific
+  title needs — lives entirely in an external plugin executable named in
+  `hud.toml`, never compiled into `n0xis-hud` itself. `adapters/mod.rs`,
+  `plugin_poll.rs`, `engine.rs`.
 
 **Unbuilt** (the original overlay design; still a legitimate follow-on):
 
@@ -79,8 +86,6 @@ status, not as the original overlay design:
   no "menu open" concept; the hook only ever swallows the *specific* HUD-bound keys.
 - ⬜ The separate crates `n0xis-overlay` and `n0xis-input` were **never created** —
   everything lives inside `n0xis-hud/src/` (single crate).
-- ⬜ The stdio plugin adapter protocol — `adapters/mod.rs` is a plain **in-binary
-  Rust function registry**, not the JSON-over-stdio plugin the plan describes.
 - ⬜ Hot-reload of `.n0xt` / `hud.toml` (tables load once at startup).
 - ⬜ In-menu value editing (rows are on/off freeze checkboxes only), value-scanner
   panel, profile import/export bundle.
@@ -178,85 +183,53 @@ Goal: a menu toggle performs a real n0xis memory operation against a live proces
 **Exit test**: met for freeze (toggle holds a value, untoggle releases it) against
 a real live process; the value-edit path is not present.
 
-## Phase 5 — Per-game adapters & the Helldivers profile 🎯 — ✅ result works, ⚠️ via in-binary adapter
+## Phase 5 — Per-game adapters via the plugin protocol 🎯 — ✅ done
 
-Goal: a game with real logic plugs in as a profile, and the principal Helldivers
-"infinite magazines" toggle works end to end.
+Goal: a game with real logic plugs in as an external process, with no
+game-specific Rust compiled into `n0xis-hud` itself.
 
-- ✅ **Infinite magazines works** — but via the **in-binary adapter**
-  `"helldivers-infinite-mags"` (`adapters/helldivers.rs`), the **only** registered
-  adapter today. It AOB-scans the LuaJIT bytecode of the firearm-ammo component in
-  live memory and patches one instruction (`TGETS r9 → KPRI r9,true`) so the
-  reload path treats `infinite_mags` as always true. It is idempotent (matches both
-  original and already-patched patterns), disambiguates the live GC copy from stale
-  buffers by smallest containing region, and journals a `PatchRecord` so toggle-off
-  restores the original bytes. The patch dies with the *game* process, so it
-  outlives a HUD restart. ⚠️ Note: this is an **AOB-anchored live LuaJIT-bytecode
-  patch**, not the "live pointer-path freeze" the plan named as the natural fit.
-- ⬜ **Stdio plugin adapter protocol** — **not built**. `adapters/mod.rs` is a plain
-  in-binary function registry (its own doc: *"a plain function registry today, not
-  the (unbuilt) stdio plugin protocol"*). The `COMMUNITY_ROADMAP` protocol it
-  points to just isn't implemented. ⚠️ Documented follow-on.
+- ✅ **Process-based plugin dispatch** — `adapters/mod.rs` resolves a
+  `PluginSession` per `[[adapters]]` binding (spawned from the `command` in
+  `hud.toml`) and sends `on_launch`/`toggle_on`/`toggle_off`/`poll` requests
+  over stdio JSON. There is no in-binary game match anymore; a binding is just
+  config plus a spawned executable.
+- ✅ **Generic periodic polling** — `plugin_poll.rs` drives each binding's
+  `poll_ms` cadence and forwards a `"poll"` op to its session, so a stateful
+  external adapter (one that caches a scanned region, tracks progress, etc.)
+  can run its own loop against live memory without `n0xis-hud` knowing
+  anything about what it's polling for.
+- ✅ **`n0xis-hud` is game-agnostic** — no title-specific AOB signatures,
+  component layouts, or automation logic remain in this crate; that logic now
+  lives entirely in whichever external plugin project a `hud.toml` points at.
 
-**Exit test**: met — with Helldivers running, the menu's infinite-mags toggle stops
-reserve magazines from decreasing, verified in-game — but through the in-binary
-adapter path, not the plugin path.
+**Exit test**: met — a stub plugin executable registered in `hud.toml`
+receives `on_launch`/`toggle_on`/`toggle_off`/`poll` over stdio and the menu's
+toggle rows drive it exactly like they drove the old in-binary adapters, with
+zero change in UX.
 
-### Phase 5+ — Helldivers interact-combo auto-solver 🎯 — ✅ mines validated, ⚠️ universal opt-in gated
+### Phase 5+ — Stateful automation lives in the plugin, not here 🎯 — ✅ protocol done, per-plugin logic external
 
-**The biggest shipped feature, anticipated by no original phase.** Frame it as
-*dynamic analysis in a loop*: read a generator seed out of the live process,
-recompute the deterministic sequence, actuate it, and verify against live state at
-each step. `combo_watcher.rs` (background loop) + `adapters/helldivers_combo.rs`
-(detect/compute/solve) + `interception.rs` (actuation).
+**The plugin protocol's `poll` op is designed for exactly this class of
+feature**: a background loop that reads live process state (a generator seed,
+a progress counter, an object handle), recomputes a deterministic result, and
+actuates it — "dynamic analysis in a loop." `n0xis-hud` provides the polling
+cadence (`plugin_poll.rs`), the session transport, and Interception-based
+actuation as a *library* (`n0xis_sources`, `n0xis_core`, `interception.rs`
+patterns) that an external plugin can reuse; it does not implement any
+specific game's detect/compute/solve logic itself.
 
-Pipeline:
+What used to be an in-binary "interact-combo auto-solver" for one specific
+title has been relocated in full to that title's own external plugin project,
+which independently depends on `n0xis-core`/`n0xis-sources` (including the
+LuaJIT LCG helper in `n0xis-luajit::lcg`) as ordinary libraries. Its
+detect/compute/solve pipeline, safety gating (step caps, stall limits, abort
+on progress reset), and universal-vs-narrow solving modes are that project's
+own concern and its own documentation, not n0xis's — this repo carries no
+description of any single game's automation logic.
 
-1. **Detect** an active interact-combo component in the running game's memory. The
-   default (mine/UXO) path AOB-scans the mine/UXO type signature, then reads three
-   component fields — `progress`, `interacting_unit`, `seed` — filtering
-   coincidental hits by 4-byte alignment, a uint31 seed floor, and a
-   plausible-progress cap. (The type `marker` is matched via the AOB *signature*,
-   not read as a field; the extra `state` dword is read only in universal mode —
-   see below.)
-2. **Compute** the combo from the integer `seed` — no screen-reading, no hardcoded
-   combo. The game generates it via a Numerical-Recipes LCG
-   (`s' = s*1664525 + 1013904223 mod 2^32`, draw = `floor(u*4)`,
-   `0=left 1=up 2=right 3=down`), **reverse-engineered from the native
-   `Math.next_random` binding** and validated live against two independent activations.
-3. **Actuate + verify** — each iteration re-reads live `interacting_unit` before
-   tapping, reads live `progress` as the source of truth for the next direction,
-   taps it through Interception, and confirms `progress` advanced. It stops the
-   instant the window closes. Safety: `max_steps` cap, `MAX_STALLS = 3`, aborts on
-   a progress reset (wrong input) — all surfaced to the footer log.
-
-The **background loop** (`combo_watcher.rs`) caches the mine-pool region so
-steady-state scans read kilobytes not gigabytes (with a periodic full rescan to
-survive relocation), and keys `attempted` on the `(anchor, seed)` pair because the
-component is a persistent slot reused across activations.
-
-Two modes:
-
-- ✅ **Default = mines/UXO only** — solved **exactly** from the seed and **never
-  brute-forced** (a wrong tap detonates). This is the validated, always-safe path.
-- ⚠️ **Universal (opt-in checkbox)** — detects *any* interact object with no
-  per-type marker, by diffing `interacting_unit` `0xFFFF → handle` between polls
-  (it reads `marker`/`state` here to enumerate slots); solves seed-first with a
-  per-position brute fallback (safe only because a wrong non-mine input merely
-  *resets* progress — **mines are never brute-forced regardless**), backed by an
-  offline combo-template catalogue and a `learned_solutions` cache that carries
-  confirmed sequences across an objective's stages. **Explicitly gated behind a
-  separate live-validation checkpoint** — treat as *implemented, pending live
-  validation*, not verified.
-
-UX: solver is **off by default** and its whole panel is **hidden unless an
-Interception DLL path is set** in `hud.toml`. Every detection and every pressed key
-is logged to the footer.
-
-⚠️ **Doc-reconciliation follow-on**: the solver code cites planning docs
-`AUTO_COMBO_PLAN.md` and `cheats_research.md` in many places — **neither file
-exists in the repo**. Either add the doc(s) or drop/redirect the citations. Until
-then, [CONCEPT.md](CONCEPT.md) is the solver's primary doc coverage.
+**Exit test**: met for the protocol (`poll` round-trips a stateful external
+adapter correctly against a live process); any specific game's solver logic is
+verified inside that game's own plugin project, out of scope for this repo.
 
 ## Phase 6 — Injected backend for exclusive-fullscreen 🎯 — ⬜ unbuilt, ⚠️ premise reframed
 
@@ -299,13 +272,8 @@ export/re-import does not exist.
   `n0xis-overlay`/`n0xis-input` crate split if it's worth it).
 - **True input isolation** — wire up the parsed-but-unused `isolate_input`, add a
   "menu open" concept and mouse hook.
-- **Stdio plugin adapters** — replace the in-binary registry with the
-  JSON-over-stdio plugin protocol from n0xis's
-  [COMMUNITY_ROADMAP](../COMMUNITY_ROADMAP.md), so games plug in as data + a plugin
-  rather than a recompile.
 - **Hot-reload** `.n0xt` / `hud.toml`, and an **in-menu value-edit widget**.
 - **Value-scanner panel** + **profile import/export bundle** (Phase 7 leftovers).
-- **Universal combo solver — finish live validation** past the gated checkpoint.
 - **Linux/X11/Wayland** surface backend behind the same seam (once the seam exists).
 - **Controller (gamepad) binds** alongside keyboard, in the same config model.
 - **Drive the menu over n0xis MCP** — let an agent flip instrumentation / inspect

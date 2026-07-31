@@ -22,6 +22,11 @@ pub struct DiscoverInput {
     /// Cap on the number of candidates; `0` = unlimited (the prologue scan is
     /// bounded by the range anyway, so "no cap" is a sane default).
     pub limit: usize,
+    /// How many matches to skip before collecting — pagination over a range
+    /// too big to return at once. Skipped matches are still *found* (the scan
+    /// is sequential), just not carried, so the cost is the scan, not the
+    /// payload.
+    pub offset: usize,
 }
 
 /// A discovered function candidate.
@@ -86,8 +91,15 @@ pub fn discover_pdata(source: &dyn MemorySource, module_base: Va) -> Result<Vec<
 pub struct DiscoverArtifact {
     pub start: Va,
     pub scanned_bytes: usize,
+    /// How many candidates `functions` carries (**not** how many exist — see
+    /// `meta.total`/`meta.truncated` on the envelope).
     pub count: usize,
     pub functions: Vec<FunctionCandidate>,
+    /// `true` when the scan stopped at `limit` with bytes left unscanned, so
+    /// more candidates exist beyond what is returned. The exact remaining count
+    /// is deliberately not computed — finishing the scan is the work the cap
+    /// exists to avoid.
+    pub truncated: bool,
 }
 
 /// Function discovery pass.
@@ -112,15 +124,29 @@ impl Pass for DiscoverPass {
         let max_pat = prologues.iter().map(|p| p.len()).max().unwrap_or(0);
         // `limit == 0` means unlimited — the range itself bounds the scan.
         let unlimited = input.limit == 0;
-        while i + max_pat <= bytes.len() && (unlimited || functions.len() < input.limit) {
+        // Matches seen so far, including the ones `offset` skips: pagination
+        // counts from the start of the range, so page N is the same set of
+        // addresses no matter how it was reached.
+        let mut seen = 0usize;
+        let mut hit_limit = false;
+        while i + max_pat <= bytes.len() {
             let window = &bytes[i..];
             if prologues.iter().any(|p| window.starts_with(p)) {
-                let va = Va(input.start.0 + i as u64);
-                functions.push(FunctionCandidate {
-                    name: format!("sub_{:X}", va.0),
-                    va,
-                    end: None,
-                });
+                if seen >= input.offset {
+                    if !unlimited && functions.len() >= input.limit {
+                        // One match past the cap — enough to know more exist
+                        // without scanning the rest.
+                        hit_limit = true;
+                        break;
+                    }
+                    let va = Va(input.start.0 + i as u64);
+                    functions.push(FunctionCandidate {
+                        name: format!("sub_{:X}", va.0),
+                        va,
+                        end: None,
+                    });
+                }
+                seen += 1;
                 // Skip ahead so overlapping patterns in one prologue count once.
                 i += 8;
                 continue;
@@ -133,6 +159,7 @@ impl Pass for DiscoverPass {
             scanned_bytes: bytes.len(),
             count: functions.len(),
             functions,
+            truncated: hit_limit,
         })
     }
 }
@@ -156,11 +183,55 @@ mod tests {
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
         let art = DiscoverPass
-            .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100 })
+            .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
             .unwrap();
         assert_eq!(art.count, 2);
+        assert!(!art.truncated);
         assert_eq!(art.functions[0].va, Va(0x1000));
         assert_eq!(art.functions[0].name, "sub_1000");
         assert_eq!(art.functions[1].va, Va(0x1008));
+    }
+
+    /// The blob from the test above, three prologues instead of two, so a
+    /// limit/offset pair has something to slice.
+    fn three_prologue_ctx() -> Snapshot {
+        let code = vec![
+            0x55, 0x48, 0x8B, 0xEC, // 0x1000 push rbp; mov rbp,rsp
+            0x90, 0x90, 0x90, 0x90, //
+            0x48, 0x83, 0xEC, 0x20, // 0x1008 sub rsp, 0x20
+            0x90, 0x90, 0x90, 0x90, //
+            0x48, 0x83, 0xEC, 0x20, // 0x1010 sub rsp, 0x20
+            0xC3,
+        ];
+        Snapshot::builder().region(Va(0x1000), code).build()
+    }
+
+    #[test]
+    fn limit_caps_the_result_and_says_so() {
+        let snap = three_prologue_ctx();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let art = DiscoverPass
+            .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 2, offset: 0 })
+            .unwrap();
+        assert_eq!(art.count, 2, "capped");
+        assert!(art.truncated, "a capped scan must admit that more exist");
+        assert_eq!(art.functions[0].va, Va(0x1000));
+        assert_eq!(art.functions[1].va, Va(0x1008));
+    }
+
+    #[test]
+    fn offset_pages_from_the_start_of_the_range() {
+        let snap = three_prologue_ctx();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let page2 = DiscoverPass
+            .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 2, offset: 2 })
+            .unwrap();
+        // Page 1 was [0x1000, 0x1008]; page 2 continues at the third match and
+        // runs out of range rather than being cut off.
+        assert_eq!(page2.count, 1);
+        assert_eq!(page2.functions[0].va, Va(0x1010));
+        assert!(!page2.truncated, "the range ended; nothing was withheld");
     }
 }

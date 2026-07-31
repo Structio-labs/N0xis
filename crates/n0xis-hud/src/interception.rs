@@ -3,14 +3,13 @@
 //! hardcoded install path — the anti-hardcode rule: the DLL path is a
 //! `hud.toml` setting, not baked into this crate).
 //!
-//! **Why not `SendInput`.** Confirmed live against Helldivers 1: the game
-//! accepts a real keypress (`interact_progress` advances) but ignores the
-//! identical scancode sent via `SendInput`, even with the game window
-//! focused — it filters synthetic/injected input (the standard
-//! `LLKHF_INJECTED` check games use against cheat input). Interception
-//! delivers strokes through the keyboard class driver itself, indistinguishable
-//! from hardware, so the game accepts them — verified live (see
-//! `AUTO_COMBO_PLAN.md`'s Interception section).
+//! **Why not `SendInput`.** Confirmed live against a real target: some games
+//! accept a real keypress but ignore the identical scancode sent via
+//! `SendInput`, even with the game window focused — they filter
+//! synthetic/injected input (the standard `LLKHF_INJECTED` check games use
+//! against cheat input; see `input probe`, which detects this directly).
+//! Interception delivers strokes through the keyboard class driver itself,
+//! indistinguishable from hardware, so such a game accepts them.
 
 use std::ffi::c_void;
 use std::time::Duration;
@@ -94,21 +93,39 @@ impl KeySender {
         }
     }
 
-    /// Tap one direction (key-down, hold, key-up). Returns `false` for an
-    /// unmapped direction token.
-    pub fn tap(&self, direction: &str) -> bool {
-        let Some(code) = scancode(direction) else { return false };
-        unsafe {
-            let down = key_stroke(code, KEY_DOWN);
-            (self.send)(self.ctx, self.device, down.as_ptr(), 1);
+    /// Press or release one raw scancode (for a held modifier like Ctrl).
+    fn key(&self, code: u16, down: bool) {
+        let s = key_stroke(code, if down { KEY_DOWN } else { KEY_UP });
+        unsafe { (self.send)(self.ctx, self.device, s.as_ptr(), 1) };
+    }
+
+    /// Run a stratagem macro: hold `modifier` (a raw scancode, e.g. Left-Ctrl
+    /// `0x1D`) down for the whole input, tap each direction (each held for
+    /// `self.hold_ms`, `self.gap_ms` between taps — the same speed knobs the
+    /// HUD's "Stratagems" panel exposes), then release the modifier last. This
+    /// is the generic "hold a modifier, tap the directions" shape a
+    /// stratagem/macro code is read with. Returns `false` on an unmapped
+    /// direction.
+    pub fn run_stratagem(&self, modifier: u16, directions: &[String]) -> bool {
+        let codes: Vec<u16> = match directions.iter().map(|d| scancode(d)).collect::<Option<_>>() {
+            Some(c) => c,
+            None => return false,
+        };
+        self.key(modifier, true);
+        std::thread::sleep(Duration::from_millis(self.hold_ms));
+        for code in codes {
+            self.key(code, true);
             std::thread::sleep(Duration::from_millis(self.hold_ms));
-            let up = key_stroke(code, KEY_UP);
-            (self.send)(self.ctx, self.device, up.as_ptr(), 1);
+            self.key(code, false);
+            std::thread::sleep(Duration::from_millis(self.gap_ms));
         }
-        std::thread::sleep(Duration::from_millis(self.gap_ms));
+        self.key(modifier, false);
         true
     }
 }
+
+/// Left-Ctrl scancode — a common stratagem/macro-input modifier key.
+pub const LEFT_CTRL: u16 = 0x1D;
 
 impl Drop for KeySender {
     fn drop(&mut self) {

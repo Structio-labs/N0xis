@@ -16,9 +16,15 @@ mod snapshot;
 
 pub use snapshot::{Snapshot, SnapshotBuilder};
 
+mod linewire;
+
 mod remote;
 
 pub use remote::{RemoteAgent, serve_stdio as remote_serve_stdio, split_command_line};
+
+mod plugin;
+
+pub use plugin::{call_once as plugin_call_once, PluginSession};
 
 #[cfg(feature = "static-pe")]
 mod static_pe;

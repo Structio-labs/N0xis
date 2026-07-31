@@ -10,7 +10,7 @@
 //! See `docs/n0xhud/CONCEPT.md` / `docs/n0xhud/ROADMAP.md`.
 
 mod adapters;
-mod combo_watcher;
+mod plugin_poll;
 mod config;
 mod engine;
 mod freeze;
@@ -61,14 +61,35 @@ impl eframe::App for HudApp {
             ui.add_space(4.0);
         });
 
-        egui::TopBottomPanel::bottom("hint").min_height(0.0).show(ctx, |ui| {
+        // Resizable so the log can be dragged taller when something is being
+        // diagnosed, and scrollable so a long run stays readable from the start.
+        egui::TopBottomPanel::bottom("hint").min_height(0.0).resizable(true).show(ctx, |ui| {
             ui.add_space(2.0);
-            ui.weak(format!("{toggle_key} hides/shows this window · cheat hotkeys work in-game"));
+            ui.horizontal(|ui| {
+                ui.weak(format!("{toggle_key} hides/shows this window · cheat hotkeys work in-game"));
+                if !log.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("clear").on_hover_text("Clear the log").clicked() {
+                            e.clear_log();
+                        }
+                        if ui.small_button("copy").on_hover_text("Copy the whole log to the clipboard").clicked() {
+                            ui.output_mut(|o| o.copied_text = log.join("\n"));
+                        }
+                    });
+                }
+            });
             if !log.is_empty() {
                 ui.separator();
-                for line in &log {
-                    ui.weak(line);
-                }
+                // Sticks to the newest line, but scrolls back to the very first.
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for line in &log {
+                            ui.weak(line);
+                        }
+                    });
             }
             ui.add_space(2.0);
         });
@@ -100,7 +121,7 @@ fn main() -> eframe::Result<()> {
     let engine = Arc::new(Mutex::new(Engine::new(config, project_dir)));
     input::spawn(toggle_vk, engine.clone());
     watcher::spawn(engine.clone());
-    combo_watcher::spawn(engine.clone());
+    plugin_poll::spawn(engine.clone());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

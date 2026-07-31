@@ -520,12 +520,12 @@ mod tests {
         let ret = BASE + 0x4192B;
         m.put_u64(rsp + 0x30, ret);
 
-        let modules = [ModuleRange { base: BASE, size: 0x100_0000, name: "helldivers.exe".into() }];
+        let modules = [ModuleRange { base: BASE, size: 0x100_0000, name: "testgame.exe".into() }];
         let frames = unwind(&m, &modules, regs_at(BASE + 0x2050, rsp), 8);
         assert_eq!(frames.len(), 2, "hit frame + one caller");
-        assert_eq!(frames[0].symbol.as_deref(), Some("helldivers.exe+0x2050"));
+        assert_eq!(frames[0].symbol.as_deref(), Some("testgame.exe+0x2050"));
         assert_eq!(frames[1].rip, ret);
-        assert_eq!(frames[1].symbol.as_deref(), Some("helldivers.exe+0x4192b"));
+        assert_eq!(frames[1].symbol.as_deref(), Some("testgame.exe+0x4192b"));
     }
 
     #[test]

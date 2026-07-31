@@ -25,10 +25,10 @@ use crate::{CoreError, Ctx, Pass};
 /// Where the six AABB floats + radius sit **relative to the element's own
 /// base address** — a config value, not a hardcode (PRODUCT_POLICY §4 anti-hardcode
 /// rule): a different engine/build gets a different `AabbLayout`, passed in,
-/// never inlined into the algorithm below. `HELLDIVERS` is the one verified
-/// layout so far (brief §3, confirmed by decompiling
-/// `binaries/x64/helldivers.exe`): `min.x` at `+0xa4`, ..., `radius` at
-/// `+0xbc`, all `f32`, contiguous.
+/// never inlined into the algorithm below. `STINGRAY` is the one verified
+/// layout so far (brief §3, confirmed by decompiling a Bitsquid/Stingray-engine
+/// game binary): `min.x` at `+0xa4`, ..., `radius` at `+0xbc`, all `f32`,
+/// contiguous.
 #[derive(Clone, Copy, Debug)]
 pub struct AabbLayout {
     /// Byte offset of `min.x` from the element's base. The remaining six
@@ -39,7 +39,7 @@ pub struct AabbLayout {
 }
 
 impl AabbLayout {
-    pub const HELLDIVERS: AabbLayout = AabbLayout { min_x_offset: 0xa4 };
+    pub const STINGRAY: AabbLayout = AabbLayout { min_x_offset: 0xa4 };
 
     /// The seven contiguous `f32` fields, relative to wherever the scanner is
     /// currently probing (i.e. relative to `min.x`'s own position, since the
@@ -338,7 +338,7 @@ mod tests {
     use n0xis_sources::Snapshot;
 
     /// Encode one AABB (7 contiguous `f32`s: min.x/y/z, max.x/y/z, radius) at
-    /// `min_x_offset` inside a byte buffer, per [`AabbLayout::HELLDIVERS`].
+    /// `min_x_offset` inside a byte buffer, per [`AabbLayout::STINGRAY`].
     fn encode_aabb(buf: &mut [u8], min_x_offset: usize, min: [f32; 3], max: [f32; 3], radius: f32) {
         let floats = [min[0], min[1], min[2], max[0], max[1], max[2], radius];
         for (i, v) in floats.iter().enumerate() {
@@ -358,7 +358,7 @@ mod tests {
     fn finds_a_known_aabb_and_computes_correct_overlap() {
         let mut buf = vec![0xCCu8; 0x200]; // junk everywhere else
         let elem_base = 0x40usize;
-        let layout = AabbLayout::HELLDIVERS;
+        let layout = AabbLayout::STINGRAY;
         // A 10x10x10 box at (0,0,0)-(10,10,10), radius = half-diagonal exactly.
         let half_diag = ((10.0f32 * 10.0 * 3.0).sqrt()) / 2.0;
         encode_aabb(&mut buf, elem_base + layout.min_x_offset, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0], half_diag);
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn an_aabb_outside_the_query_rect_is_not_reported() {
         let mut buf = vec![0u8; 0x200];
-        let layout = AabbLayout::HELLDIVERS;
+        let layout = AabbLayout::STINGRAY;
         encode_aabb(&mut buf, layout.min_x_offset, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], 0.87);
 
         let (snap, arch) = ctx_over(buf.clone());
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn observed_range_reports_across_the_permissive_auto_bound() {
         let mut buf = vec![0u8; 0x100];
-        let layout = AabbLayout::HELLDIVERS;
+        let layout = AabbLayout::STINGRAY;
         encode_aabb(&mut buf, layout.min_x_offset, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5], 0.87);
         let (snap, arch) = ctx_over(buf.clone());
         let ctx = Ctx::new(&snap, &arch);

@@ -45,6 +45,9 @@ pub mod v1 {
     pub const DUMP: &str = "n0xis.dump.v1";
     /// Environment / readiness report (`doctor`).
     pub const DOCTOR: &str = "n0xis.doctor.v1";
+    /// Target profile: image facts + engine detection + per-command
+    /// advisories (`profile`).
+    pub const PROFILE: &str = "n0xis.profile.v1";
     /// Built-in quick reference (`guide`).
     pub const GUIDE: &str = "n0xis.guide.v1";
     /// Project init report (`init`).
@@ -133,6 +136,10 @@ pub mod v1 {
     pub const UI_SCREENSHOT: &str = "n0xis.ui.screenshot.v1";
     /// Foreground-focus attempt result (`ui focus`).
     pub const UI_FOCUS: &str = "n0xis.ui.focus.v1";
+
+    /// Registered analysis plugin (`plugin list/add/rm`, `docs/COMMUNITY_ROADMAP.md`
+    /// "Plugin system").
+    pub const PLUGIN: &str = "n0xis.plugin.v1";
 
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }
