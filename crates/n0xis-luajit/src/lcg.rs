@@ -79,10 +79,10 @@ pub fn find_seeds(
         let words = bytes.len() / 4;
         for w in 0..words {
             let seed = u32::from_le_bytes(bytes[w * 4..w * 4 + 4].try_into().unwrap());
-            if let Some((lo, hi)) = seed_bounds {
-                if seed < lo || seed > hi {
-                    continue;
-                }
+            if let Some((lo, hi)) = seed_bounds
+                && (seed < lo || seed > hi)
+            {
+                continue;
             }
             // Cheap reject on the first draw before generating the whole seq.
             let first = {

@@ -226,7 +226,7 @@ fn cached_pdata<'a>(
 fn exception_functions(reader: &dyn MemReader, base: u64) -> Option<Vec<RuntimeFunction>> {
     // DOS header: 'MZ', e_lfanew at 0x3C.
     let mz = reader.read(base, 2)?;
-    if mz != [b'M', b'Z'] {
+    if mz != *b"MZ" {
         return None;
     }
     let e_lfanew = reader.u32(base + 0x3C)? as u64;

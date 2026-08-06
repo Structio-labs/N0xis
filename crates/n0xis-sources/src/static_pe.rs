@@ -141,7 +141,17 @@ impl StaticPe {
 
         let mut iat: BTreeMap<u64, Symbol> = BTreeMap::new();
         for import in &pe.imports {
-            let slot_va = image_base.saturating_add(import.rva as u64);
+            // The IAT **slot** RVA is goblin's `Import::offset` — despite the
+            // name it is an RVA (`import_address_table_rva + i * word_size`),
+            // not a file offset. `Import::rva` is the hint/name-table entry
+            // (the `IMAGE_IMPORT_BY_NAME` struct), which is *not* what a
+            // `call qword ptr [rip+disp]` points at — keying this map by it
+            // meant no real import call ever resolved a name, silently
+            // defeating every analysis that depends on callee names
+            // (noreturn-call CFG closure, thunk tail calls, known-API
+            // signatures). Ordinal-only imports have no hint/name entry at
+            // all, so they were doubly invisible; they resolve fine here.
+            let slot_va = image_base.saturating_add(import.offset as u64);
             let dll = import.dll.trim_end_matches('\0');
             let dll_short = Path::new(dll)
                 .file_name()
@@ -230,3 +240,4 @@ impl ModuleProvider for StaticPe {
         &self.modules
     }
 }
+

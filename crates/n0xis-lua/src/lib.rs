@@ -111,7 +111,9 @@ mod tests {
         // then 1 bytecode word: KSTR r0, kgc[0]  (op=KSTR a=0 d=0)
         // then kgc: tp=STR(5)+len(2) "hi"
         let kstr_op = opcodes::OPCODES.iter().position(|o| o.name == "KSTR").unwrap() as u32;
-        let instr: u32 = kstr_op | (0u32 << 8) | (0u32 << 16); // a=0, d=0
+        // Full word is `op | a<<8 | d<<16`; both operands are 0 here, so the
+        // opcode byte alone *is* the instruction.
+        let instr: u32 = kstr_op;
         let mut body = vec![0u8, 0, 2, 0]; // flags, numparams, framesize, numuv
         body.push(1); // sizekgc uleb = 1
         body.push(0); // sizekn uleb = 0

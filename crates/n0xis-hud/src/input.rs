@@ -73,7 +73,7 @@ pub fn parse_vk(name: &str) -> u32 {
 /// Is `vk` one of the extended keys that `SendInput` must flag with
 /// `KEYEVENTF_EXTENDEDKEY` (arrow keys, nav cluster) to register correctly?
 pub fn is_extended_key(vk: u16) -> bool {
-    matches!(vk, 0x25 | 0x26 | 0x27 | 0x28) // LEFT/UP/RIGHT/DOWN
+    matches!(vk, 0x25..=0x28) // LEFT/UP/RIGHT/DOWN
 }
 
 fn handle_key_down(vk: u32) {

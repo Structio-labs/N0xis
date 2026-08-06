@@ -556,7 +556,7 @@ unsafe fn capture_one(hwnd: HWND, method: CaptureMethod, w: u32, h: u32) -> Opti
             biHeight: -(h as i32), // negative = top-down
             biPlanes: 1,
             biBitCount: 32,
-            biCompression: BI_RGB as u32,
+            biCompression: BI_RGB,
             biSizeImage: 0,
             biXPelsPerMeter: 0,
             biYPelsPerMeter: 0,

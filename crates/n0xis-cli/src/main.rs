@@ -14,18 +14,21 @@ mod emit;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use n0xis_arch::{Arch, Arm64, X64};
+// The shared frontend seam (source resolution, ISA selection, argument
+// parsing) — `n0xis-mcp` goes through the exact same functions, so `--pid`
+// and `"pid"` cannot mean different things (CONCEPT §3 rules 3 and 5).
+use n0xis_frontend::source::{Src, SourceSpec, base_for_module, load_snapshot, module_base_of, scan_range_or as scan_range};
+use n0xis_frontend::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, resolve_arch};
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
 use n0xis_core::{
-    build_trampoline, game_grep_rank, identify_f64, identify_u64, parse_aob, parse_mask,
-    parse_sample, sig_validate, AobArtifact, AobInput, AobScanPass, BindingsInput, BindingsPass,
-    CfgInput, ConstMatch, CoreError, Ctx, DecompInput, DecompPass, DecompStyle, DeobfuscatePass,
-    DiffInput, DiffPass, DiscoverInput, DiscoverPass, DissectInput, DissectPass, Document,
-    FilterCriterion, FilterInput, FilterPass, ManifestCandidate, ManifestInput, ManifestPass,
-    MaskByte, Pass, PointerPathInput, PointerPathPass, PointerRoot, ProvenanceHit, ProvenanceInput,
-    ProvenancePass, RankOptions, ScanCriterion, ScanInput, ScanPass, ScanState, ScanValue,
-    SigValidateInput, SsaPass, StringXrefInput, StringXrefPass, TraceInput, TracePass, ValueSetPass,
-    ValueType, XrefDir, XrefInput, XrefPass,
+    build_trampoline, game_grep_rank, identify_f64, identify_u64, BindingsInput, BindingsPass,
+    CfgInput, ConstMatch, Ctx, DecompInput, DecompPass, DecompStyle,
+    DiscoverInput, DiscoverPass, Document,
+    FilterCriterion, FilterInput, FilterPass,
+    Pass, ProvenanceHit, ProvenanceInput,
+    ProvenancePass, RankOptions, ScanCriterion, ScanInput, ScanPass, ScanValue,
+    ValueType, XrefDir,
 };
 use n0xis_core::{AabbLayout, CoordSpace, Rect, UiLocateInput, UiLocatePass};
 use n0xis_pipeline::{Pipeline, cfg_cached};
@@ -33,14 +36,14 @@ use n0xis_pipeline::{Pipeline, cfg_cached};
 // (offline sources), `RemoteAgent`/`remote_serve_stdio` (the SSH/remote-serve
 // transport — a Linux box can drive a *remote* Windows target over this
 // without itself needing Win32) — none of these require the `live` feature.
-use n0xis_sources::{MemorySource, RemoteAgent, Snapshot, StaticPe, remote_serve_stdio};
+use n0xis_sources::{MemorySource, Snapshot, StaticPe, remote_serve_stdio};
 // Live-process (Win32) sources: only ever compiled in on Windows, matching
 // n0xis-sources' own `#[cfg(feature = "live")]` gates (see its lib.rs) and
 // this crate's Cargo.toml `[target.'cfg(windows)'.dependencies]` split.
 #[cfg(windows)]
 use n0xis_sources::{
     LiveProcess, WatchKind, attach_and_wait, await_breakpoint_hit,
-    await_watchpoint_hit, await_watchpoint_hit_where, list_processes, probe_actuation, RegCond, DEFAULT_PROBE_VK,
+    await_watchpoint_hit, await_watchpoint_hit_where, probe_actuation, RegCond, DEFAULT_PROBE_VK,
 };
 #[cfg(windows)]
 use n0xis_sources::{best_window, encode_png, focus as window_focus, list_windows, screenshot as window_screenshot, CaptureMethod};
@@ -137,6 +140,10 @@ enum Command {
     /// (`docs/COMMUNITY_ROADMAP.md`'s "Plugin system").
     #[command(subcommand)]
     Plugin(PluginCmd),
+    /// The capability registry: everything this build can do, built-in and
+    /// plugin-provided, through one contract (`n0xis-frontend::registry`).
+    #[command(subcommand)]
+    Capability(CapabilityCmd),
     /// Persistent artifact store under `.n0x/dumps/<kind>/`.
     #[command(subcommand)]
     Dump(DumpCmd),
@@ -513,6 +520,9 @@ struct BindingsListArgs {
     /// Drop bindings below this confidence (0.0..=1.0).
     #[arg(long, default_value_t = 0.0)]
     min_confidence: f32,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -882,6 +892,9 @@ struct ProvenanceTraceArgs {
     save_to_table: Option<String>,
     #[arg(long)]
     entry: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[cfg(windows)]
@@ -1012,6 +1025,24 @@ struct SelectionSaveArgs {
 struct SelectionShowArgs {
     #[arg(long)]
     name: String,
+}
+
+#[derive(Subcommand)]
+enum CapabilityCmd {
+    /// List every registered capability with its origin and emitted schema —
+    /// the catalog an agent should read instead of guessing.
+    List,
+    /// Run a capability by name with JSON arguments.
+    Run(CapabilityRunArgs),
+}
+
+#[derive(Args)]
+struct CapabilityRunArgs {
+    /// Capability name, as reported by `capability list` (e.g. `decode`).
+    name: String,
+    /// Arguments as a JSON object, e.g. `{"file":"game.exe","addr":"0x140001000"}`.
+    #[arg(long, default_value = "{}")]
+    args: String,
 }
 
 #[derive(Subcommand)]
@@ -1181,6 +1212,9 @@ struct PatchDetourArgs {
     /// back (the CLI reports the minimum needed if this is too small).
     #[arg(long, default_value_t = 64, value_parser = parse_hex_or_decimal_usize)]
     cave_size: usize,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Args)]
@@ -1256,6 +1290,9 @@ struct FunctionTraceArgs {
     /// Byte window handed to `ir build` for each visited function.
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Args)]
@@ -1364,6 +1401,9 @@ struct XrefStringArgs {
     size: Option<usize>,
     #[arg(long, default_value_t = 50)]
     limit: usize,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Args)]
@@ -1389,6 +1429,9 @@ struct XrefArgs {
     /// Code window size (defaults to the `.text` size).
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1438,6 +1481,9 @@ struct ManifestArgs {
     /// Byte window handed to `ir build` per candidate.
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Args)]
@@ -1836,6 +1882,9 @@ struct DisasmArgs {
     /// PE file on disk (Phase 2 — reserved).
     #[arg(long)]
     file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 fn main() {
@@ -1875,6 +1924,7 @@ fn main() {
         Command::Patch(c) => cmd_patch(c, pretty),
         Command::Selection(c) => cmd_selection(c, pretty),
         Command::Plugin(c) => cmd_plugin(c, pretty),
+        Command::Capability(c) => cmd_capability(c, pretty),
         Command::Dump(c) => cmd_dump(c, pretty),
         Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
         Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
@@ -1951,7 +2001,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 /// doesn't model categories, so this is the one hand-maintained mapping).
 fn guide_category(top: &str) -> &'static str {
     match top {
-        "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" => "Environment & project",
+        "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
         "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory (a memory scanner class)",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
@@ -2206,31 +2256,7 @@ fn cmd_project_info(pretty: bool) -> bool {
 }
 
 fn cmd_process_ps(a: PsArgs, pretty: bool) -> bool {
-    #[cfg(not(windows))]
-    {
-        let _ = &a;
-        return ir_err("live-unsupported", "process ps requires a Windows build (needs Win32 process enumeration)", pretty);
-    }
-    #[cfg(windows)]
-    match list_processes() {
-        Ok(mut procs) => {
-            if let Some(f) = a.filter.as_deref() {
-                let needle = f.to_lowercase();
-                procs.retain(|p| p.name.to_lowercase().contains(&needle));
-            }
-            procs.sort_by_key(|p| p.name.to_lowercase());
-            let list: Vec<_> = procs
-                .iter()
-                .map(|p| json!({ "pid": p.pid, "name": p.name }))
-                .collect();
-            let data = json!({ "count": list.len(), "processes": list });
-            emit(&Response::success(schema::v1::PROCESS_PS, data), pretty)
-        }
-        Err(e) => emit(
-            &Response::<serde_json::Value>::error("ps-failed", e.to_string()),
-            pretty,
-        ),
-    }
+    run_capability("process.ps", json!({ "filter": a.filter }), pretty)
 }
 
 /// Which presentation of the CFG artifact to emit.
@@ -2241,343 +2267,96 @@ enum IrView {
     Dot,
 }
 
-/// Resolve `--pid`/`--file`/`--bytes` into a `Ctx` and run `work` with it — the
-/// one place IR-family verbs (`build`/`explain`/`dot`/`slice`) share the source
-/// wiring, so the pipeline stays identical across live + static + bytes.
-fn run_ir<F>(a: &IrArgs, pretty: bool, work: F) -> bool
-where
-    F: FnOnce(&Ctx, CfgInput, String) -> bool,
-{
-    let addr = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let arch = match resolve_arch(a.arch.as_deref()) {
-        Ok(a) => a,
-        Err(e) => return ir_err("bad-arch", &e, pretty),
-    };
 
-    // With `--addr-rva` the real address isn't known until the source is open
-    // (the module base comes from it), so the source is built first and the
-    // inline-bytes base falls back to 0 — `--bytes` has no module and is
-    // rejected below anyway.
-    let (src, label, _) = match build_source(
-        a.pid,
-        a.file.as_deref(),
-        a.bytes.as_deref(),
-        a.snapshot.as_deref(),
-        a.remote_cmd.as_deref(),
-        if a.addr_rva { Va(0) } else { addr },
-    ) {
-        Ok(x) => x,
-        Err((c, m)) => return ir_err(&c, &m, pretty),
-    };
-    let start = if a.addr_rva {
-        match base_for_module(&src, a.addr_module.as_deref()) {
-            Ok(base) => base.offset(addr.0),
-            Err(e) => return ir_err("no-module", &e, pretty),
-        }
-    } else {
-        addr
-    };
-    let input = CfgInput {
-        start,
-        max_bytes: a.size,
-        auto_end: !a.no_auto_end,
-    };
-    // StaticPe is also a SymbolProvider + ModuleProvider — feed the seams so
-    // call targets resolve to names.
-    match &src {
-        Src::Static(pe) => work(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, label),
-        #[cfg(windows)]
-        Src::Live(l) => work(&Ctx::new(l.as_ref(), arch.as_ref()), input, label),
-        Src::Snap(s) => work(&Ctx::new(s, arch.as_ref()), input, label),
-        Src::Remote(r) => work(&Ctx::new(r.as_ref(), arch.as_ref()), input, label),
-    }
+/// The function-scoped target arguments as the capability registry's JSON.
+/// One conversion, used by every command that dispatches a function-scoped
+/// capability — the CLI's job here is flags-to-JSON and nothing else.
+fn ir_args_json(a: &IrArgs) -> serde_json::Value {
+    json!({
+        "addr": a.addr,
+        "addr_rva": a.addr_rva,
+        "addr_module": a.addr_module,
+        "arch": a.arch,
+        "size": a.size,
+        "no_auto_end": a.no_auto_end,
+        "pid": a.pid,
+        "file": a.file,
+        "bytes": a.bytes,
+        "snapshot": a.snapshot,
+        "remote_cmd": a.remote_cmd,
+    })
+}
+
+/// Dispatch a capability and print its envelope. Every handler below is now
+/// this one line plus its argument mapping; the analysis lives in
+/// `n0xis-frontend::registry`, shared with MCP.
+fn run_capability(name: &str, args: serde_json::Value, pretty: bool) -> bool {
+    emit(&n0xis_frontend::build_registry().dispatch(name, &args), pretty)
 }
 
 fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
-    run_ir(&a, pretty, |ctx, input, label| {
-        finish_ir(ctx, input, view, label, pretty)
-    })
+    let name = match view {
+        IrView::Cfg => "ir.cfg",
+        IrView::Explain => "ir.explain",
+        IrView::Dot => "ir.dot",
+    };
+    run_capability(name, ir_args_json(&a), pretty)
 }
 
 fn cmd_decomp(a: DecompArgs, pretty: bool) -> bool {
-    let style: DecompStyle = a.style.into();
-    let explain = a.explain;
-    run_ir(&a.ir, pretty, move |ctx, input, label| finish_decomp(ctx, input, style, explain, label, pretty))
+    let mut args = ir_args_json(&a.ir);
+    args["style"] = json!(match DecompStyle::from(a.style) {
+        DecompStyle::Goto => "goto",
+        DecompStyle::Structured => "structured",
+        DecompStyle::Ssa => "ssa",
+    });
+    args["explain"] = json!(a.explain);
+    run_capability("decomp.pseudo", args, pretty)
 }
 
 fn cmd_ir_value_set(a: IrArgs, pretty: bool) -> bool {
-    run_ir(&a, pretty, |ctx, input, label| {
-        let cfg = match cfg_cached(ctx, input) {
-            Ok((c, _cached)) => c,
-            Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
-        };
-        let ssa = match SsaPass.run(ctx, cfg) {
-            Ok(s) => s,
-            Err(e) => return ir_err("ssa-failed", &e.to_string(), pretty),
-        };
-        match ValueSetPass.run(ctx, ssa) {
-            Ok(art) => emit(&Response::success(schema::v1::VALUE_SET, art).with_source(label), pretty),
-            Err(e) => ir_err("value-set-failed", &e.to_string(), pretty),
-        }
-    })
+    run_capability("ir.value-set", ir_args_json(&a), pretty)
 }
 
 fn cmd_ir_deobfuscate(a: IrArgs, pretty: bool) -> bool {
-    run_ir(&a, pretty, |ctx, input, label| {
-        let cfg = match cfg_cached(ctx, input) {
-            Ok((c, _cached)) => c,
-            Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
-        };
-        match DeobfuscatePass.run(ctx, cfg) {
-            Ok(art) => emit(&Response::success(schema::v1::DEOBFUSCATE, art).with_source(label), pretty),
-            Err(e) => ir_err("deobfuscate-failed", &e.to_string(), pretty),
-        }
-    })
+    run_capability("ir.deobfuscate", ir_args_json(&a), pretty)
 }
 
-/// Decompile one function (`goto` style by default — stable/deterministic,
-/// the best shape to diff) and return its pseudo-C lines + provenance label.
-fn decompile_one(
-    pid: Option<u32>,
-    file: Option<&str>,
-    bytes: Option<&str>,
-    addr: Va,
-    size: usize,
-    style: DecompStyle,
-    arch: &dyn Arch,
-) -> Result<(Vec<String>, String), (String, String)> {
-    let (src, label, _) = build_source(pid, file, bytes, None, None, addr)?;
-    let input = CfgInput { start: addr, max_bytes: size, auto_end: true };
-    let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
-        let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
-        let pf = DecompPass
-            .run(ctx, DecompInput { cfg, style, explain: false })
-            .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
-        Ok(pf.pseudo)
-    };
-    let pseudo = match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch)),
-        Src::Snap(s) => run(&Ctx::new(s, arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch)),
-    }?;
-    Ok((pseudo, label))
-}
 
 fn cmd_diff_functions(a: DiffFunctionsArgs, pretty: bool) -> bool {
-    let a_addr = match Va::parse(&a.a_addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let b_addr = match Va::parse(&a.b_addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let style: DecompStyle = a.style.into();
-    let arch = match resolve_arch(a.arch.as_deref()) {
-        Ok(a) => a,
-        Err(e) => return ir_err("bad-arch", &e, pretty),
-    };
-
-    let (pseudo_a, label_a) = match decompile_one(a.a_pid, a.a_file.as_deref(), a.a_bytes.as_deref(), a_addr, a.size, style, arch.as_ref()) {
-        Ok(x) => x,
-        Err((c, m)) => return ir_err(&format!("a-{c}"), &m, pretty),
-    };
-    let (pseudo_b, label_b) = match decompile_one(a.b_pid, a.b_file.as_deref(), a.b_bytes.as_deref(), b_addr, a.size, style, arch.as_ref()) {
-        Ok(x) => x,
-        Err((c, m)) => return ir_err(&format!("b-{c}"), &m, pretty),
-    };
-
-    let snap = Snapshot::builder().build();
-    let ctx = Ctx::new(&snap, arch.as_ref());
-    match DiffPass.run(&ctx, DiffInput { a: pseudo_a, b: pseudo_b }) {
-        Ok(art) => emit(
-            &Response::success(schema::v1::DIFF, art).with_source(format!("a={label_a} b={label_b}")),
-            pretty,
-        ),
-        Err(e) => ir_err("diff-failed", &e.to_string(), pretty),
-    }
+    run_capability(
+        "diff.functions",
+        json!({
+            "a_addr": a.a_addr, "a_pid": a.a_pid, "a_file": a.a_file, "a_bytes": a.a_bytes,
+            "b_addr": a.b_addr, "b_pid": a.b_pid, "b_file": a.b_file, "b_bytes": a.b_bytes,
+            "size": a.size,
+            "style": match DecompStyle::from(a.style) {
+                DecompStyle::Goto => "goto",
+                DecompStyle::Structured => "structured",
+                DecompStyle::Ssa => "ssa",
+            },
+            "arch": a.arch,
+        }),
+        pretty,
+    )
 }
 
-fn finish_decomp(ctx: &Ctx, input: CfgInput, style: DecompStyle, explain: bool, label: String, pretty: bool) -> bool {
-    let cfg = match cfg_cached(ctx, input) {
-        Ok((a, _cached)) => a,
-        Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
-    };
-    match DecompPass.run(ctx, DecompInput { cfg, style, explain }) {
-        Ok(pf) => {
-            let resp = Response::success(schema::v0::DECOMP_PSEUDO, pf).with_source(label);
-            // `data.delta` used to ride along unconditionally on `--style ssa`.
-            // Dropping it by default is a real change to a shipped payload, so
-            // say where it went instead of letting it silently vanish — a
-            // caller that depended on it gets a breadcrumb, not a mystery.
-            let resp = if style == DecompStyle::Ssa && !explain {
-                resp.with_note("optimizer delta omitted (it measured larger than the pseudocode); pass --explain for it, or use `ir explain`")
-            } else {
-                resp
-            };
-            emit(&resp, pretty)
-        }
-        Err(e) => ir_err("decomp-failed", &e.to_string(), pretty),
-    }
-}
 
 fn cmd_ir_slice(a: IrSliceArgs, pretty: bool) -> bool {
-    let at = match &a.at {
-        Some(s) => match Va::parse(s) {
-            Ok(v) => Some(v),
-            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-        },
-        None => None,
-    };
-    let reg = a.reg.clone();
-    run_ir(&a.ir, pretty, move |ctx, input, label| {
-        finish_slice(ctx, input, &reg, at, label, pretty)
-    })
+    let mut args = ir_args_json(&a.ir);
+    args["reg"] = json!(a.reg);
+    args["at"] = json!(a.at);
+    run_capability("ir.slice", args, pretty)
 }
 
 fn ir_err(code: &str, msg: &str, pretty: bool) -> bool {
     emit(&Response::<serde_json::Value>::error(code, msg), pretty)
 }
 
-fn opt_hex(s: &Option<String>) -> Result<Option<Va>, String> {
-    s.as_deref().map(Va::parse).transpose().map_err(|e| e.to_string())
-}
-
-/// Split `"0x…"`/`"0X…"`/`"…h"`/`"…H"` off a hex-formatted number, same
-/// acceptance as [`Va::parse`]; returns the bare digits, or `None` for a plain
-/// decimal string.
-fn strip_hex_marker(t: &str) -> Option<&str> {
-    t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).or_else(|| t.strip_suffix('h').or_else(|| t.strip_suffix('H')))
-}
-
-/// clap `value_parser` for byte-count-like `usize` fields (`--size`,
-/// `--*-size`, `--max-bytes`, `--len`, `--cave-size`, …): accepts hex
-/// (`0x1000`) or decimal, the same acceptance `--addr`/`--start` already get
-/// via `Va::parse`. Sizes taken from a PE section header or a `dump`/`scan`
-/// report are routinely read off in hex; forcing a hand hex→decimal
-/// conversion is exactly the ergonomics gap RE_METHOD F7 called out for
-/// `--min`/`--max` ("burned two scan rounds on a range that wasn't even
-/// close") — the same fix, applied everywhere a byte length is taken.
-fn parse_hex_or_decimal_usize(s: &str) -> Result<usize, String> {
-    let t = s.trim();
-    let v = match strip_hex_marker(t) {
-        Some(hex) => u64::from_str_radix(hex, 16),
-        None => t.parse::<u64>(),
-    };
-    v.map(|v| v as usize).map_err(|_| format!("invalid size {s:?} (want decimal or 0x-prefixed hex)"))
-}
-
-/// Same acceptance as [`parse_hex_or_decimal_usize`], for `u64`-typed fields
-/// (e.g. `--max-offset`).
-fn parse_hex_or_decimal_u64(s: &str) -> Result<u64, String> {
-    let t = s.trim();
-    match strip_hex_marker(t) {
-        Some(hex) => u64::from_str_radix(hex, 16),
-        None => t.parse::<u64>(),
-    }
-    .map_err(|_| format!("invalid value {s:?} (want decimal or 0x-prefixed hex)"))
-}
-
-/// clap `value_parser` for scan value/bound fields (`--value`, `--min`,
-/// `--max`): accepts hex, decimal, or a float. Falls through to
-/// `f64::from_str` when there's no hex marker, since a scan criterion can
-/// compare against a genuine float (`3.14`), which plain hex can't represent.
-fn parse_hex_or_decimal_f64(s: &str) -> Result<f64, String> {
-    let t = s.trim();
-    if let Some(hex) = strip_hex_marker(t) {
-        return u64::from_str_radix(hex, 16)
-            .map(|v| v as f64)
-            .map_err(|_| format!("invalid value {s:?} (want decimal, float, or 0x-prefixed hex)"));
-    }
-    t.parse::<f64>().map_err(|_| format!("invalid value {s:?} (want decimal, float, or 0x-prefixed hex)"))
-}
-
-/// Resolve `--arch` (default `x64`) into a concrete [`Arch`] (ROADMAP Phase 7:
-/// multi-arch via the ISA seam). `n0xis_core` never sees which one was
-/// picked — it only ever runs against `&dyn Arch`.
-fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
-    match name.unwrap_or("x64").to_ascii_lowercase().as_str() {
-        "x64" | "x86-64" | "x86_64" => Ok(Box::new(X64::new())),
-        "arm64" | "aarch64" => Ok(Box::new(Arm64::new())),
-        other => Err(format!("unknown --arch '{other}', expected x64|arm64")),
-    }
-}
-
-/// A resolved analysis source. Kept as an enum so the range-resolution and
-/// symbol wiring can differ per adapter while the passes stay uniform.
-enum Src {
-    #[cfg(windows)]
-    Live(Box<LiveProcess>),
-    Static(Box<StaticPe>),
-    Snap(Snapshot),
-    Remote(Box<RemoteAgent>),
-}
-
-/// The base a `--*-rva` address is measured from: a static image's preferred
-/// base, or a live process's main module base. `None` for sources that are not
-/// a mapped image (inline bytes, a bare snapshot region, a remote agent) —
-/// there is no module to be relative *to*, and guessing one would silently
-/// produce addresses that are wrong by a whole image base.
-fn module_base_of(src: &Src) -> Option<Va> {
-    match src {
-        Src::Static(pe) => Some(pe.image_base()),
-        #[cfg(windows)]
-        Src::Live(l) => l.main_module().map(|m| m.base),
-        Src::Snap(_) | Src::Remote(_) => None,
-    }
-}
-
-/// The base for an RVA that is relative to a *named* module rather than the
-/// main one.
-///
-/// This exists because the main-module default is wrong for the most common
-/// real target there is: in a Unity game the executable is a thin player and
-/// every interesting address lives in `GameAssembly.dll`. Measured on a live
-/// target — `--addr 0xA54EC0 --addr-rva` resolved against the 319-function
-/// player EXE and landed on unmapped memory, when the RVA belonged to a 96 MB
-/// DLL loaded elsewhere. Matching is case-insensitive and accepts a substring,
-/// so `--addr-module gameassembly` is enough.
-fn base_for_module(src: &Src, name: Option<&str>) -> Result<Va, String> {
-    let Some(name) = name else {
-        return module_base_of(src).ok_or_else(|| {
-            "no module base in this source (inline bytes, snapshots and remote agents have none); pass --file or --pid".to_string()
-        });
-    };
-    let needle = name.to_lowercase();
-    match src {
-        Src::Static(pe) => {
-            // A static PE is one image; naming a different one is a mistake
-            // worth reporting rather than silently ignoring.
-            let modules = <StaticPe as n0xis_sources::ModuleProvider>::modules(pe.as_ref());
-            match modules.iter().find(|m| m.name.to_lowercase().contains(&needle)) {
-                Some(m) => Ok(m.base),
-                None => Err(format!(
-                    "this file is `{}`, which does not match --addr-module `{name}`",
-                    modules.first().map(|m| m.name.as_str()).unwrap_or("<unnamed>")
-                )),
-            }
-        }
-        #[cfg(windows)]
-        Src::Live(l) => {
-            let modules = <LiveProcess as n0xis_sources::ModuleProvider>::modules(l.as_ref());
-            modules
-                .iter()
-                .find(|m| m.name.to_lowercase().contains(&needle))
-                .map(|m| m.base)
-                .ok_or_else(|| format!("no loaded module matches --addr-module `{name}`; list them with `module list --pid <n>`"))
-        }
-        Src::Snap(_) | Src::Remote(_) => Err("--addr-module needs a source with a module table (--pid or --file)".to_string()),
-    }
-}
-
 /// Resolve `--pid` / `--file` / `--snapshot` / `--remote-cmd` / `--bytes` into
-/// a source (checked in that order). Returns the source, a provenance label,
-/// and (for inline bytes) the mapped region length.
+/// a source. The resolution itself is [`n0xis_frontend::source::resolve`] —
+/// this is only the CLI's flag shape adapted onto it, so the CLI and MCP can
+/// never disagree about what a target argument means.
 fn build_source(
     pid: Option<u32>,
     file: Option<&str>,
@@ -2586,80 +2365,8 @@ fn build_source(
     remote_cmd: Option<&str>,
     bytes_base: Va,
 ) -> Result<(Src, String, Option<usize>), (String, String)> {
-    if let Some(pid) = pid {
-        #[cfg(not(windows))]
-        return Err(("live-unsupported".into(), "--pid (live-process analysis) requires a Windows build (needs LiveProcess/Win32 APIs)".into()));
-        #[cfg(windows)]
-        {
-            let live = LiveProcess::attach(pid).map_err(|e| ("attach-failed".into(), e.to_string()))?;
-            let label = live.label();
-            return Ok((Src::Live(Box::new(live)), label, None));
-        }
-    }
-    if let Some(file) = file {
-        let pe = StaticPe::load(std::path::Path::new(file))
-            .map_err(|e| ("load-failed".into(), e.to_string()))?;
-        let label = pe.label();
-        return Ok((Src::Static(Box::new(pe)), label, None));
-    }
-    if let Some(name) = snapshot {
-        let snap = load_snapshot(name).map_err(|e| ("snapshot-load-failed".into(), e))?;
-        let label = snap.label();
-        return Ok((Src::Snap(snap), label, None));
-    }
-    if let Some(cmd) = remote_cmd {
-        let argv = n0xis_sources::split_command_line(cmd).map_err(|e| ("bad-remote-cmd".into(), e))?;
-        if argv.is_empty() {
-            return Err(("bad-remote-cmd".into(), "--remote-cmd must not be empty".into()));
-        }
-        let agent = RemoteAgent::connect(argv).map_err(|e| ("remote-connect-failed".into(), e.to_string()))?;
-        let label = agent.label();
-        return Ok((Src::Remote(Box::new(agent)), label, None));
-    }
-    if let Some(b) = bytes {
-        let parsed = parse_hex_bytes(b).map_err(|e| ("bad-bytes".into(), e))?;
-        let len = parsed.len();
-        let snap = Snapshot::builder()
-            .region(bytes_base, parsed)
-            .label(format!("bytes@{bytes_base}"))
-            .build();
-        let label = snap.label();
-        return Ok((Src::Snap(snap), label, Some(len)));
-    }
-    Err(("missing-source".into(), "provide --pid, --file, --snapshot, --remote-cmd, or --bytes".into()))
-}
-
-impl Src {
-    fn as_mem(&self) -> &dyn MemorySource {
-        match self {
-            #[cfg(windows)]
-            Src::Live(l) => l.as_ref(),
-            Src::Static(p) => p.as_ref(),
-            Src::Snap(s) => s,
-            Src::Remote(r) => r.as_ref(),
-        }
-    }
-
-    fn text_range(&self) -> Option<(Va, u64)> {
-        match self {
-            Src::Static(pe) => pe.text_range(),
-            #[cfg(windows)]
-            Src::Live(l) => l.text_range(),
-            Src::Snap(_) | Src::Remote(_) => None,
-        }
-    }
-
-    /// Modules known to this source (empty for `Snap`/`Remote`, which don't
-    /// implement `ModuleProvider` yet).
-    fn modules(&self) -> Vec<n0xis_contracts::Module> {
-        use n0xis_sources::ModuleProvider;
-        match self {
-            #[cfg(windows)]
-            Src::Live(l) => l.modules().to_vec(),
-            Src::Static(p) => p.modules().to_vec(),
-            Src::Snap(_) | Src::Remote(_) => Vec::new(),
-        }
-    }
+    let spec = SourceSpec { pid, file, snapshot, remote_cmd, bytes, bytes_base: Some(bytes_base) };
+    n0xis_frontend::source::resolve(spec).map(|r| (r.src, r.label, r.region_len))
 }
 
 fn to_hex_spaced(bytes: &[u8]) -> String {
@@ -2670,123 +2377,26 @@ fn byte_diff_count(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b.iter()).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len())
 }
 
-/// Choose a scan `(start, size)`: explicit flags win, else the module's `.text`,
-/// else the inline region.
-fn scan_range(
-    default_text: Option<(Va, u64)>,
-    region_len: Option<usize>,
-    explicit_start: Option<Va>,
-    explicit_size: Option<usize>,
-    fallback_start: Va,
-) -> (Va, usize) {
-    let start = explicit_start
-        .or(default_text.map(|d| d.0))
-        .unwrap_or(fallback_start);
-    let size = explicit_size
-        .or(default_text.map(|d| d.1 as usize))
-        .or(region_len)
-        .unwrap_or(0);
-    (start, size)
-}
 
-fn finish_ir(ctx: &Ctx, input: CfgInput, view: IrView, label: String, pretty: bool) -> bool {
-    let art = match cfg_cached(ctx, input) {
-        Ok((a, _cached)) => a,
-        Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
-    };
-    match view {
-        IrView::Cfg => emit(
-            &Response::success(schema::v1::IR_CFG, art).with_source(label),
-            pretty,
-        ),
-        IrView::Explain => {
-            let lines = n0xis_core::explain(&art);
-            emit(
-                &Response::success(schema::v1::IR_EXPLAIN, json!({ "lines": lines }))
-                    .with_source(label),
-                pretty,
-            )
-        }
-        IrView::Dot => emit(
-            &Response::success(schema::v1::IR_DOT, n0xis_core::dot(&art)).with_source(label),
-            pretty,
-        ),
-    }
-}
-
-/// Build the CFG, then take a backward register slice over it. `at` defaults to
-/// the function's last instruction (slice the final value of `reg`).
-fn finish_slice(
-    ctx: &Ctx,
-    input: CfgInput,
-    reg: &str,
-    at: Option<Va>,
-    label: String,
-    pretty: bool,
-) -> bool {
-    let start = input.start;
-    let art = match cfg_cached(ctx, input) {
-        Ok((a, _cached)) => a,
-        Err(e) => return ir_err("ir-failed", &e.to_string(), pretty),
-    };
-    // Default the query point to the last decoded instruction.
-    let query = at.unwrap_or_else(|| {
-        art.blocks
-            .iter()
-            .flat_map(|b| &b.insns)
-            .map(|i| i.va)
-            .max_by_key(|v| v.get())
-            .unwrap_or(start)
-    });
-    let sl = n0xis_core::slice(ctx.arch, &art, query, reg);
-    emit(
-        &Response::success(schema::v1::IR_SLICE, sl).with_source(label),
-        pretty,
-    )
-}
 
 fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
-    let addr = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), addr) {
-        Ok(x) => x,
-        Err((c, m)) => return ir_err(&c, &m, pretty),
-    };
-    let arch = X64::new();
-    let module_base = match &src {
-        Src::Static(pe) => Some(pe.image_base()),
-        #[cfg(windows)]
-        Src::Live(l) => l.main_module().map(|m| m.base),
-        Src::Snap(_) | Src::Remote(_) => None,
-    };
-    let root = if a.addr_rva {
-        match module_base {
-            Some(base) => base.offset(addr.0),
-            None => return ir_err("no-module", "no module base resolved for --addr-rva", pretty),
-        }
-    } else {
-        addr
-    };
-
-    let input = TraceInput { root, depth: a.depth, max_nodes: a.max_nodes, max_bytes: a.max_bytes };
-    let run = |ctx: &Ctx| -> bool {
-        match TracePass.run(ctx, input) {
-            Ok(art) => emit(
-                &Response::success(schema::v1::FUNCTION_TRACE, art).with_source(label.clone()),
-                pretty,
-            ),
-            Err(e) => ir_err("trace-failed", &e.to_string(), pretty),
-        }
-    };
-    match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
-    }
+    run_capability(
+        "function.trace",
+        json!({
+            "addr": a.addr,
+            "addr_rva": a.addr_rva,
+            "depth": a.depth,
+            "max_nodes": a.max_nodes,
+            "max_bytes": a.max_bytes,
+            "arch": a.arch,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
 }
 
 /// Locate a Unity IL2CPP metadata blob next to `image_path`, if one exists.
@@ -2988,99 +2598,41 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
 /// Discover candidates over the scan range, then reduce each to a manifest
 /// entry — the same two passes an agent would otherwise chain by hand.
 fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
-    let explicit_start = match opt_hex(&a.start) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e, pretty),
-    };
-    let bytes_base = explicit_start.unwrap_or(Va(0));
-    let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
-            Ok(x) => x,
-            Err((c, m)) => return ir_err(&c, &m, pretty),
-        };
-    let arch = X64::new();
-    let default_text = match &src {
-        Src::Static(pe) => pe.text_range(),
-        #[cfg(windows)]
-        Src::Live(l) => l.text_range(),
-        Src::Snap(_) | Src::Remote(_) => None,
-    };
-    let (start, size) = scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
-    if size == 0 {
-        return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
-    }
-
-    let run = |ctx: &Ctx| -> bool {
-        let discovered = match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: 0 }) {
-            Ok(d) => d,
-            Err(e) => return ir_err("discover-failed", &e.to_string(), pretty),
-        };
-        let candidates = discovered
-            .functions
-            .into_iter()
-            .map(|f| ManifestCandidate { name: f.name, va: f.va })
-            .collect();
-        match ManifestPass.run(ctx, ManifestInput { candidates, max_bytes: a.max_bytes }) {
-            Ok(art) => emit(
-                &Response::success(schema::v1::IR_MANIFEST, art).with_source(label.clone()),
-                pretty,
-            ),
-            Err(e) => ir_err("manifest-failed", &e.to_string(), pretty),
-        }
-    };
-    match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
-    }
+    run_capability(
+        "ir.manifest",
+        json!({
+            "start": a.start,
+            "size": a.size,
+            "limit": a.limit,
+            "max_bytes": a.max_bytes,
+            "arch": a.arch,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
-    let addr = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let explicit_start = match opt_hex(&a.start) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e, pretty),
-    };
-    let bytes_base = explicit_start.unwrap_or(Va(0));
-    let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
-            Ok(x) => x,
-            Err((c, m)) => return ir_err(&c, &m, pretty),
-        };
-    let arch = X64::new();
-    let default_text = match &src {
-        Src::Static(pe) => pe.text_range(),
-        #[cfg(windows)]
-        Src::Live(l) => l.text_range(),
-        Src::Snap(_) | Src::Remote(_) => None,
-    };
-    let (scan_start, size) =
-        scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
-    if size == 0 {
-        return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
-    }
-
-    let run = |ctx: &Ctx| -> bool {
-        match XrefPass.run(ctx, XrefInput { scan_start, size, addr, dir }) {
-            Ok(art) => emit(
-                &Response::success(schema::v1::XREF, art).with_source(label.clone()),
-                pretty,
-            ),
-            Err(e) => ir_err("xref-failed", &e.to_string(), pretty),
-        }
-    };
-    match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
-    }
+    run_capability(
+        "xref",
+        json!({
+            "addr": a.addr,
+            "dir": match dir { XrefDir::To => "to", XrefDir::From => "from" },
+            "start": a.start,
+            "size": a.size,
+            "arch": a.arch,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
 }
 
 /// Search a data window for `--query` and a code window for referencing
@@ -3088,141 +2640,48 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
 /// back to `.text`), code to `.text` — string literals and the code that
 /// points to them usually live in different sections.
 fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
-    let explicit_code_start = match opt_hex(&a.start) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e, pretty),
-    };
-    let explicit_data_start = match opt_hex(&a.data_start) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e, pretty),
-    };
-    let bytes_base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
-    let (src, label, region_len) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), bytes_base) {
-            Ok(x) => x,
-            Err((c, m)) => return ir_err(&c, &m, pretty),
-        };
-    let arch = X64::new();
-    let default_text = match &src {
-        Src::Static(pe) => pe.text_range(),
-        #[cfg(windows)]
-        Src::Live(l) => l.text_range(),
-        Src::Snap(_) | Src::Remote(_) => None,
-    };
-    let default_data = match &src {
-        Src::Static(pe) => pe.section_range(".rdata").or_else(|| pe.text_range()),
-        #[cfg(windows)]
-        Src::Live(l) => l.section_range(".rdata").or_else(|| l.text_range()),
-        Src::Snap(_) | Src::Remote(_) => None,
-    };
-    let (code_start, code_size) =
-        scan_range(default_text, region_len, explicit_code_start, a.size, bytes_base);
-    let (data_start, data_size) =
-        scan_range(default_data, region_len, explicit_data_start, a.data_size, bytes_base);
-    if code_size == 0 || data_size == 0 {
-        return ir_err(
-            "no-range",
-            "could not resolve a data/code range; pass --data-start/--data-size and --start/--size",
-            pretty,
-        );
-    }
-
-    let run = |ctx: &Ctx| -> bool {
-        let input = StringXrefInput {
-            data_start,
-            data_size,
-            code_start,
-            code_size,
-            query: a.query.clone(),
-            limit: a.limit,
-        };
-        match StringXrefPass.run(ctx, input) {
-            Ok(art) => emit(
-                &Response::success(schema::v1::XREF_STRING, art).with_source(label.clone()),
-                pretty,
-            ),
-            Err(e) => ir_err("xref-string-failed", &e.to_string(), pretty),
-        }
-    };
-    match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
-    }
+    run_capability(
+        "xref.string",
+        json!({
+            "query": a.query,
+            "start": a.start,
+            "size": a.size,
+            "data_start": a.data_start,
+            "data_size": a.data_size,
+            "limit": a.limit,
+            "arch": a.arch,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_mem_read(a: MemReadArgs, pretty: bool) -> bool {
-    let addr = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let (src, label, _) =
-        match build_source(a.pid, a.file.as_deref(), a.bytes.as_deref(), a.snapshot.as_deref(), a.remote_cmd.as_deref(), addr) {
-            Ok(x) => x,
-            Err((c, m)) => return ir_err(&c, &m, pretty),
-        };
-    match src.as_mem().read(addr, a.size) {
-        Ok(bytes) => {
-            let data = json!({
-                "address": addr,
-                "requested": a.size,
-                "read": bytes.len(),
-                "hex": to_hex_spaced(&bytes),
-            });
-            emit(&Response::success(schema::v1::MEM_READ, data).with_source(label), pretty)
-        }
-        Err(e) => ir_err("read-failed", &e.to_string(), pretty),
-    }
+    run_capability(
+        "mem.read",
+        json!({
+            "addr": a.addr,
+            "size": a.size,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_mem_write(a: MemWriteArgs, pretty: bool) -> bool {
-    let addr = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let bytes = match parse_hex_bytes(&a.bytes) {
-        Ok(b) => b,
-        Err(e) => return ir_err("bad-bytes", &e, pretty),
-    };
-    #[cfg(not(windows))]
-    {
-        return ir_err("live-unsupported", "mem write requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        match live.write(addr, &bytes) {
-            Ok(()) => {
-                let data = json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) });
-                emit(&Response::success(schema::v1::MEM_WRITE, data).with_source(live.label()), pretty)
-            }
-            Err(e) => ir_err("write-failed", &e.to_string(), pretty),
-        }
-    }
+    run_capability("mem.write", json!({ "addr": a.addr, "bytes": a.bytes, "pid": a.pid }), pretty)
 }
 
 fn cmd_mem_map(a: MemMapArgs, pretty: bool) -> bool {
-    #[cfg(not(windows))]
-    {
-        let _ = &a;
-        return ir_err("live-unsupported", "mem map requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let regions = live.regions(a.limit);
-        let regions_v = serde_json::to_value(&regions).unwrap_or(serde_json::Value::Null);
-        let data = json!({ "count": regions.len(), "regions": regions_v });
-        emit(&Response::success(schema::v1::MEM_MAP, data).with_source(live.label()), pretty)
-    }
+    run_capability("mem.map", json!({ "pid": a.pid, "limit": a.limit }), pretty)
 }
 
 fn cmd_patch(cmd: PatchCmd, pretty: bool) -> bool {
@@ -3386,59 +2845,38 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
 }
 
 fn cmd_selection(cmd: SelectionCmd, pretty: bool) -> bool {
-    use n0xis_project::selection as sel;
     match cmd {
-        SelectionCmd::Save(a) => {
-            let start = match Va::parse(&a.start) {
+        SelectionCmd::Save(a) => run_capability(
+            "selection.save",
+            json!({ "name": a.name, "start": a.start, "end": a.end, "label": a.label }),
+            pretty,
+        ),
+        SelectionCmd::List => run_capability("selection.list", json!({}), pretty),
+        SelectionCmd::Show(a) => run_capability("selection.show", json!({ "name": a.name }), pretty),
+        SelectionCmd::Clear(a) => run_capability("selection.clear", json!({ "name": a.name }), pretty),
+    }
+}
+
+/// `capability list` / `capability run` — the frontend half of the registry.
+/// Note how little there is here: the CLI does not know what capabilities
+/// exist, it asks. A new capability (built-in or plugin) shows up in both
+/// subcommands without this file changing at all, which is the whole point of
+/// the single composition point in `n0xis-frontend::registry::build_registry`.
+fn cmd_capability(cmd: CapabilityCmd, pretty: bool) -> bool {
+    let reg = n0xis_frontend::build_registry();
+    match cmd {
+        CapabilityCmd::List => emit(
+            &Response::success(schema::v1::CAPABILITY_LIST, reg.describe()),
+            pretty,
+        ),
+        CapabilityCmd::Run(a) => {
+            let args: serde_json::Value = match serde_json::from_str(&a.args) {
                 Ok(v) => v,
-                Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
+                Err(e) => return ir_err("bad-args", &format!("--args must be a JSON object: {e}"), pretty),
             };
-            let end = match Va::parse(&a.end) {
-                Ok(v) => v,
-                Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-            };
-            match sel::save(&a.name, start, end, a.label) {
-                Ok(rec) => {
-                    let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
-                    emit(
-                        &Response::success(schema::v1::SELECTION, json!({ "op": "save", "selection": rec_v })),
-                        pretty,
-                    )
-                }
-                Err(e) => ir_err("selection-save-failed", &e.to_string(), pretty),
-            }
+            let resp = reg.dispatch(&a.name, &args);
+            emit(&resp, pretty)
         }
-        SelectionCmd::List => match sel::list() {
-            Ok(items) => {
-                let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
-                emit(
-                    &Response::success(
-                        schema::v1::SELECTION,
-                        json!({ "op": "list", "count": items.len(), "selections": items_v }),
-                    ),
-                    pretty,
-                )
-            }
-            Err(e) => ir_err("selection-list-failed", &e.to_string(), pretty),
-        },
-        SelectionCmd::Show(a) => match sel::get(&a.name) {
-            Ok(rec) => {
-                let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
-                emit(
-                    &Response::success(schema::v1::SELECTION, json!({ "op": "show", "selection": rec_v })),
-                    pretty,
-                )
-            }
-            Err(e) => ir_err("selection-not-found", &e.to_string(), pretty),
-        },
-        SelectionCmd::Clear(a) => match sel::remove(&a.name) {
-            Ok(true) => emit(
-                &Response::success(schema::v1::SELECTION, json!({ "op": "clear", "name": a.name, "removed": true })),
-                pretty,
-            ),
-            Ok(false) => ir_err("selection-not-found", &format!("no selection named '{}'", a.name), pretty),
-            Err(e) => ir_err("selection-clear-failed", &e.to_string(), pretty),
-        },
     }
 }
 
@@ -3474,80 +2912,35 @@ fn cmd_plugin(cmd: PluginCmd, pretty: bool) -> bool {
 }
 
 fn cmd_dump(cmd: DumpCmd, pretty: bool) -> bool {
-    use n0xis_project::dump as dp;
     match cmd {
         DumpCmd::Save(a) => {
-            let bytes: Vec<u8> = if let Some(c) = a.content {
-                c.into_bytes()
-            } else if let Some(f) = a.file.as_deref() {
-                match std::fs::read(f) {
-                    Ok(b) => b,
-                    Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
-                }
+            // stdin is the CLI's affordance, not the capability's: read it here
+            // and hand the bytes over as `content`.
+            let content = if let Some(c) = a.content {
+                c
+            } else if a.file.is_some() {
+                String::new()
             } else {
                 use std::io::Read;
-                let mut buf = Vec::new();
-                if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+                let mut buf = String::new();
+                if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
                     return ir_err("stdin-failed", &e.to_string(), pretty);
                 }
                 buf
             };
-            match dp::save(&a.name, &a.kind, &bytes, a.force) {
-                Ok(saved) => {
-                    let v = serde_json::to_value(&saved).unwrap_or(serde_json::Value::Null);
-                    emit(&Response::success(schema::v1::DUMP, json!({ "op": "save", "dump": v })), pretty)
-                }
-                Err(e) => ir_err("dump-save-failed", &e.to_string(), pretty),
+            let mut args = json!({ "name": a.name, "kind": a.kind, "force": a.force });
+            if let Some(f) = a.file {
+                args["file"] = json!(f);
+            } else {
+                args["content"] = json!(content);
             }
+            run_capability("dump.save", args, pretty)
         }
-        DumpCmd::List(a) => match dp::list(a.kind.as_deref()) {
-            Ok(items) => {
-                let v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
-                emit(
-                    &Response::success(schema::v1::DUMP, json!({ "op": "list", "count": items.len(), "items": v })),
-                    pretty,
-                )
-            }
-            Err(e) => ir_err("dump-list-failed", &e.to_string(), pretty),
-        },
-        DumpCmd::Show(a) => match dp::show(&a.name, a.kind.as_deref()) {
-            Ok(content) => {
-                let is_binaryish = content.kind == "raw" || content.kind == "hex";
-                let preview = if is_binaryish {
-                    let n = a.preview.min(content.bytes.len());
-                    to_hex_spaced(&content.bytes[..n])
-                } else {
-                    String::from_utf8_lossy(&content.bytes).into_owned()
-                };
-                let truncated = is_binaryish && a.preview < content.bytes.len();
-                emit(
-                    &Response::success(
-                        schema::v1::DUMP,
-                        json!({
-                            "op": "show",
-                            "name": content.name,
-                            "kind": content.kind,
-                            "path": content.path,
-                            "size": content.size,
-                            "content": preview,
-                            "truncated": truncated,
-                        }),
-                    ),
-                    pretty,
-                )
-            }
-            Err(e) => ir_err("dump-show-failed", &e.to_string(), pretty),
-        },
-        DumpCmd::Rm(a) => match dp::remove(&a.name, a.kind.as_deref()) {
-            Ok(removed) => {
-                let v = serde_json::to_value(&removed).unwrap_or(serde_json::Value::Null);
-                emit(
-                    &Response::success(schema::v1::DUMP, json!({ "op": "rm", "name": a.name, "removed": v })),
-                    pretty,
-                )
-            }
-            Err(e) => ir_err("dump-rm-failed", &e.to_string(), pretty),
-        },
+        DumpCmd::List(a) => run_capability("dump.list", json!({ "kind": a.kind }), pretty),
+        DumpCmd::Show(a) => {
+            run_capability("dump.show", json!({ "name": a.name, "kind": a.kind, "preview": a.preview }), pretty)
+        }
+        DumpCmd::Rm(a) => run_capability("dump.rm", json!({ "name": a.name, "kind": a.kind }), pretty),
     }
 }
 
@@ -3596,51 +2989,11 @@ fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
 }
 
 fn cmd_module_list(a: ModuleListArgs, pretty: bool) -> bool {
-    use n0xis_contracts::Module;
-    use n0xis_sources::ModuleProvider;
-
-    let mut modules: Vec<Module> = if let Some(_pid) = a.pid {
-        #[cfg(not(windows))]
-        {
-            return emit(
-                &Response::<serde_json::Value>::error("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)"),
-                pretty,
-            );
-        }
-        #[cfg(windows)]
-        match LiveProcess::attach(_pid) {
-            Ok(l) => l.modules().to_vec(),
-            Err(e) => {
-                return emit(
-                    &Response::<serde_json::Value>::error("attach-failed", e.to_string()),
-                    pretty,
-                );
-            }
-        }
-    } else if let Some(file) = a.file.as_deref() {
-        match StaticPe::load(std::path::Path::new(file)) {
-            Ok(pe) => pe.modules().to_vec(),
-            Err(e) => {
-                return emit(
-                    &Response::<serde_json::Value>::error("load-failed", e.to_string()),
-                    pretty,
-                );
-            }
-        }
-    } else {
-        return emit(
-            &Response::<serde_json::Value>::error("missing-source", "provide --pid or --file"),
-            pretty,
-        );
-    };
-
-    if let Some(f) = a.filter.as_deref() {
-        let needle = f.to_lowercase();
-        modules.retain(|m| m.name.to_lowercase().contains(&needle));
-    }
-    let modules_v = serde_json::to_value(&modules).unwrap_or(serde_json::Value::Null);
-    let data = json!({ "count": modules.len(), "modules": modules_v });
-    emit(&Response::success(schema::v1::MODULE_LIST, data), pretty)
+    run_capability(
+        "module.list",
+        json!({ "pid": a.pid, "file": a.file, "filter": a.filter }),
+        pretty,
+    )
 }
 
 fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
@@ -3652,6 +3005,11 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
                 pretty,
             );
         }
+    };
+
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
     };
 
     // Source selection: --pid (live) XOR --file (static PE) XOR --bytes (inline).
@@ -3685,7 +3043,7 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
                     pretty,
                 );
             }
-            return run_disasm(&live, start, a.count, pretty);
+            return run_disasm(&live, start, a.count, arch.as_ref(), pretty);
         }
     }
 
@@ -3712,7 +3070,7 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
                 pretty,
             );
         }
-        return run_disasm(&pe, start, a.count, pretty);
+        return run_disasm(&pe, start, a.count, arch.as_ref(), pretty);
     }
 
     let Some(bytes_str) = a.bytes else {
@@ -3735,16 +3093,15 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
         .region(start, bytes)
         .label(label)
         .build();
-    run_disasm(&snap, start, a.count, pretty)
+    run_disasm(&snap, start, a.count, arch.as_ref(), pretty)
 }
 
 /// Disassemble ~`count` instructions from `start` over any memory source and
 /// emit the `n0xis.decode.v1` envelope. The single place all `disasm` sources
 /// converge — proving the "one pipeline, any source" thesis at the frontend.
-fn run_disasm(source: &dyn MemorySource, start: Va, count: usize, pretty: bool) -> bool {
-    let arch = X64::new();
+fn run_disasm(source: &dyn MemorySource, start: Va, count: usize, arch: &dyn Arch, pretty: bool) -> bool {
     let label = source.label();
-    let pipe = Pipeline::new(source, &arch);
+    let pipe = Pipeline::new(source, arch);
     match pipe.disassemble(start, count) {
         Ok(out) => emit(
             &Response::success(schema::v1::DECODE, out).with_source(label),
@@ -3765,32 +3122,6 @@ fn to_scan_value(v: f64) -> ScanValue {
     if v.fract() == 0.0 && v.abs() < 9.2e18 { ScanValue::Int(v as i64) } else { ScanValue::Float(v) }
 }
 
-fn build_scan_criterion(name: &str, value: Option<f64>, min: Option<f64>, max: Option<f64>) -> Result<ScanCriterion, String> {
-    match name {
-        "exact" => Ok(ScanCriterion::Exact { value: to_scan_value(value.ok_or("exact criterion needs --value")?) }),
-        "in-range" | "inrange" => Ok(ScanCriterion::InRange {
-            min: to_scan_value(min.ok_or("in-range needs --min")?),
-            max: to_scan_value(max.ok_or("in-range needs --max")?),
-        }),
-        "unknown" => Ok(ScanCriterion::Unknown),
-        other => Err(format!("unknown scan criterion '{other}' (exact|in-range|unknown)")),
-    }
-}
-
-fn build_filter_criterion(name: &str, value: Option<f64>, min: Option<f64>, max: Option<f64>) -> Result<FilterCriterion, String> {
-    match name {
-        "exact" => Ok(FilterCriterion::Exact { value: to_scan_value(value.ok_or("exact needs --value")?) }),
-        "increased" => Ok(FilterCriterion::Increased),
-        "decreased" => Ok(FilterCriterion::Decreased),
-        "changed" => Ok(FilterCriterion::Changed),
-        "unchanged" => Ok(FilterCriterion::Unchanged),
-        "in-range" | "inrange" => Ok(FilterCriterion::InRange {
-            min: to_scan_value(min.ok_or("in-range needs --min")?),
-            max: to_scan_value(max.ok_or("in-range needs --max")?),
-        }),
-        other => Err(format!("unknown filter criterion '{other}' (exact|increased|decreased|changed|unchanged|in-range)")),
-    }
-}
 
 #[cfg(windows)]
 fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
@@ -3828,284 +3159,96 @@ fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Opti
     Ok(regions)
 }
 
-fn cmd_scan_value(a: ScanValueArgs, pretty: bool) -> bool {
-    let value_type: ValueType = a.r#type.into();
-    let criterion = match build_scan_criterion(&a.criterion, a.value, a.min, a.max) {
-        Ok(c) => c,
-        Err(e) => return ir_err("bad-criterion", &e, pretty),
-    };
-    let align = a.align.unwrap_or_else(|| value_type.size());
-    let arch = X64::new();
 
-    if let Some(pid) = a.region.pid {
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
-            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-        }
-        #[cfg(windows)]
-        {
-            let live = match LiveProcess::attach(pid) {
-                Ok(l) => l,
-                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-            };
-            let regions = match resolve_scan_regions_live(&live, a.region.start.as_deref(), a.region.size) {
-                Ok(r) => r,
-                Err(e) => return ir_err("bad-region", &e, pretty),
-            };
-            let label = live.label();
-            let ctx = Ctx::new(&live, &arch);
-            return finish_scan_value(&ctx, regions, value_type, criterion, align, label, &a.save_as, a.force, pretty);
-        }
+/// `ValueTypeArg` as the capability registry's type name. The clap enum and
+/// the JSON name are deliberately the same spelling.
+fn scan_type_name(t: ValueTypeArg) -> &'static str {
+    match t {
+        ValueTypeArg::I8 => "i8",
+        ValueTypeArg::U8 => "u8",
+        ValueTypeArg::I16 => "i16",
+        ValueTypeArg::U16 => "u16",
+        ValueTypeArg::I32 => "i32",
+        ValueTypeArg::U32 => "u32",
+        ValueTypeArg::I64 => "i64",
+        ValueTypeArg::U64 => "u64",
+        ValueTypeArg::F32 => "f32",
+        ValueTypeArg::F64 => "f64",
     }
-    if let Some(file) = a.region.file.as_deref() {
-        let pe = match StaticPe::load(std::path::Path::new(file)) {
-            Ok(p) => p,
-            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
-        };
-        let (Some(start_s), Some(size)) = (a.region.start.as_deref(), a.region.size) else {
-            return ir_err("missing-region", "provide --start and --size for --file", pretty);
-        };
-        let start = match Va::parse(start_s) {
-            Ok(v) => v,
-            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-        };
-        let label = pe.label();
-        let ctx = Ctx::new(&pe, &arch);
-        return finish_scan_value(&ctx, vec![(start, size)], value_type, criterion, align, label, &a.save_as, a.force, pretty);
-    }
-    ir_err("missing-source", "provide --pid or --file", pretty)
 }
-
-#[allow(clippy::too_many_arguments)]
-fn finish_scan_value(
-    ctx: &Ctx,
-    regions: Vec<(Va, usize)>,
-    value_type: ValueType,
-    criterion: ScanCriterion,
-    align: usize,
-    label: String,
-    save_as: &str,
-    force: bool,
-    pretty: bool,
-) -> bool {
-    let state = match ScanPass.run(ctx, ScanInput { regions, value_type, criterion, align }) {
-        Ok(s) => s,
-        Err(e) => return ir_err("scan-failed", &e.to_string(), pretty),
-    };
-    // Persist the full working set compactly; emit only the bounded report.
-    if let Err(e) = n0xis_project::dump::save(save_as, "scan", &state.encode(), force) {
-        return ir_err("save-failed", &e.to_string(), pretty);
-    }
-    emit(&Response::success(schema::v1::SCAN, state.report()).with_source(label), pretty)
+fn cmd_scan_value(a: ScanValueArgs, pretty: bool) -> bool {
+    run_capability(
+        "scan.value",
+        json!({
+            "type": scan_type_name(a.r#type),
+            "criterion": a.criterion,
+            "value": a.value,
+            "min": a.min,
+            "max": a.max,
+            "align": a.align,
+            "save_as": a.save_as,
+            "force": a.force,
+            "start": a.region.start,
+            "size": a.region.size,
+            "pid": a.region.pid,
+            "file": a.region.file,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_scan_filter(a: ScanFilterArgs, pretty: bool) -> bool {
-    let criterion = match build_filter_criterion(&a.criterion, a.value, a.min, a.max) {
-        Ok(c) => c,
-        Err(e) => return ir_err("bad-criterion", &e, pretty),
-    };
-    let prev_bytes = match n0xis_project::dump::show(&a.from, Some("scan")) {
-        Ok(d) => d.bytes,
-        Err(e) => return ir_err("no-scan", &e.to_string(), pretty),
-    };
-    let prev: ScanState = match ScanState::decode(&prev_bytes) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-scan-dump", &e.to_string(), pretty),
-    };
-    let arch = X64::new();
-
-    let (out, label) = if let Some(pid) = a.pid {
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
-            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-        }
-        #[cfg(windows)]
-        {
-            let live = match LiveProcess::attach(pid) {
-                Ok(l) => l,
-                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-            };
-            let ctx = Ctx::new(&live, &arch);
-            let out = FilterPass.run(&ctx, FilterInput { previous: prev, criterion });
-            (out, live.label())
-        }
-    } else if let Some(file) = a.file.as_deref() {
-        let pe = match StaticPe::load(std::path::Path::new(file)) {
-            Ok(p) => p,
-            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
-        };
-        let ctx = Ctx::new(&pe, &arch);
-        let out = FilterPass.run(&ctx, FilterInput { previous: prev, criterion });
-        (out, pe.label())
-    } else {
-        return ir_err("missing-source", "provide --pid or --file", pretty);
-    };
-    let out = match out {
-        Ok(o) => o,
-        Err(e) => return ir_err("filter-failed", &e.to_string(), pretty),
-    };
-    // Persist the narrowed working set; emit only the bounded report.
-    if let Err(e) = n0xis_project::dump::save(&a.save_as, "scan", &out.encode(), a.force) {
-        return ir_err("save-failed", &e.to_string(), pretty);
-    }
-    emit(&Response::success(schema::v1::SCAN, out.report()).with_source(label), pretty)
+    run_capability(
+        "scan.filter",
+        json!({
+            "from": a.from,
+            "criterion": a.criterion,
+            "value": a.value,
+            "min": a.min,
+            "max": a.max,
+            "save_as": a.save_as,
+            "force": a.force,
+            "pid": a.pid,
+            "file": a.file,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {
-    let pattern = match parse_aob(&a.pattern) {
-        Ok(p) => p,
-        Err(e) => return ir_err("bad-pattern", &e, pretty),
-    };
-    let arch = X64::new();
-    if let Some(pid) = a.pid {
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
-            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-        }
-        #[cfg(windows)]
-        {
-            let live = match LiveProcess::attach(pid) {
-                Ok(l) => l,
-                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-            };
-            let label = live.label();
-            let ctx = Ctx::new(&live, &arch);
-            // Explicit --start/--size scans exactly that one region; omitting
-            // both falls back to every committed writable region (the same
-            // default `scan value` uses) since a hit could be anywhere in the
-            // process's dynamically-allocated memory (e.g. a scripting VM's heap).
-            let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
-                Ok(r) => r,
-                Err(e) => return ir_err("bad-region", &e, pretty),
-            };
-            let mut matches = Vec::new();
-            let mut bytes_scanned = 0usize;
-            for (start, size) in regions {
-                match AobScanPass.run(&ctx, AobInput { start, size, pattern: pattern.clone() }) {
-                    Ok(art) => {
-                        matches.extend(art.matches);
-                        bytes_scanned += art.bytes_scanned;
-                    }
-                    // A region enumerated a moment ago can be freed/decommitted
-                    // by the target process before this scan reaches it — skip
-                    // it and keep scanning the rest, rather than aborting the
-                    // whole multi-gigabyte sweep over one stale region.
-                    Err(CoreError::Source(n0xis_sources::SourceError::Unmapped(_))) => continue,
-                    Err(e) => return ir_err("aob-failed", &e.to_string(), pretty),
-                }
-            }
-            let art = AobArtifact { matches, bytes_scanned };
-            return emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty);
-        }
-    }
-    if let Some(file) = a.file.as_deref() {
-        let (Some(start_s), Some(size)) = (a.start.as_deref(), a.size) else {
-            return ir_err("missing-region", "provide --start and --size for --file", pretty);
-        };
-        let start = match Va::parse(start_s) {
-            Ok(v) => v,
-            Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-        };
-        let pe = match StaticPe::load(std::path::Path::new(file)) {
-            Ok(p) => p,
-            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
-        };
-        let label = pe.label();
-        let ctx = Ctx::new(&pe, &arch);
-        return match AobScanPass.run(&ctx, AobInput { start, size, pattern }) {
-            Ok(art) => emit(&Response::success(schema::v1::AOB_SCAN, art).with_source(label), pretty),
-            Err(e) => ir_err("aob-failed", &e.to_string(), pretty),
-        };
-    }
-    ir_err("missing-source", "provide --pid or --file", pretty)
+    run_capability(
+        "scan.aob",
+        json!({
+            "pattern": a.pattern,
+            "start": a.start,
+            "size": a.size,
+            "pid": a.pid,
+            "file": a.file,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_scan_dissect(a: ScanDissectArgs, pretty: bool) -> bool {
-    let start = match Va::parse(&a.start) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let arch = X64::new();
-    if let Some(pid) = a.pid {
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
-            return ir_err("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-        }
-        #[cfg(windows)]
-        {
-            let live = match LiveProcess::attach(pid) {
-                Ok(l) => l,
-                Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-            };
-            let label = live.label();
-            let ctx = Ctx::new(&live, &arch);
-            return match DissectPass.run(&ctx, DissectInput { start, size: a.size }) {
-                Ok(art) => emit(&Response::success(schema::v1::DISSECT, art).with_source(label), pretty),
-                Err(e) => ir_err("dissect-failed", &e.to_string(), pretty),
-            };
-        }
-    }
-    if let Some(file) = a.file.as_deref() {
-        let pe = match StaticPe::load(std::path::Path::new(file)) {
-            Ok(p) => p,
-            Err(e) => return ir_err("load-failed", &e.to_string(), pretty),
-        };
-        let label = pe.label();
-        let ctx = Ctx::new(&pe, &arch);
-        return match DissectPass.run(&ctx, DissectInput { start, size: a.size }) {
-            Ok(art) => emit(&Response::success(schema::v1::DISSECT, art).with_source(label), pretty),
-            Err(e) => ir_err("dissect-failed", &e.to_string(), pretty),
-        };
-    }
-    ir_err("missing-source", "provide --pid or --file", pretty)
+    run_capability(
+        "scan.dissect",
+        json!({ "start": a.start, "size": a.size, "pid": a.pid, "file": a.file }),
+        pretty,
+    )
 }
 
 fn cmd_pointer_path(a: PointerPathArgs, pretty: bool) -> bool {
-    let target = match Va::parse(&a.target) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    #[cfg(not(windows))]
-    {
-        let _ = (&a, target);
-        return ir_err("live-unsupported", "pointer path requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        use n0xis_sources::ModuleProvider;
-        let live = match LiveProcess::attach(a.pid) {
-            Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
-        };
-        let mods = live.modules();
-        let mut roots = Vec::new();
-        for name in &a.modules {
-            let Some(m) = mods.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else {
-                return ir_err("no-module", &format!("no module named '{name}' in this process"), pretty);
-            };
-            roots.push(PointerRoot { label: m.name.clone(), start: m.base, size: m.size });
-        }
-        let search_regions: Vec<(Va, usize)> = live
-            .regions(1_000_000)
-            .into_iter()
-            .filter(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx" | "rc-" | "rcx" | "r--" | "r-x"))
-            .map(|r| (r.base, r.size as usize))
-            .collect();
-        let arch = X64::new();
-        let label = live.label();
-        let ctx = Ctx::new(&live, &arch);
-        match PointerPathPass.run(
-            &ctx,
-            PointerPathInput { target, search_regions, roots, max_depth: a.max_depth, max_offset: a.max_offset, pointer_size: 8 },
-        ) {
-            Ok(art) => emit(&Response::success(schema::v1::POINTER_PATH, art).with_source(label), pretty),
-            Err(e) => ir_err("pointer-path-failed", &e.to_string(), pretty),
-        }
-    }
+    run_capability(
+        "pointer.path",
+        json!({
+            "target": a.target,
+            "modules": a.modules,
+            "max_depth": a.max_depth,
+            "max_offset": a.max_offset,
+            "pid": a.pid,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
@@ -4218,8 +3361,11 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
         };
         let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
-        let arch = X64::new();
-        let ctx = Ctx::new(&live, &arch);
+        let arch = match resolve_arch(a.arch.as_deref()) {
+            Ok(x) => x,
+            Err(e) => return ir_err("bad-arch", &e, pretty),
+        };
+        let ctx = Ctx::new(&live, arch.as_ref());
 
         let access_kind = match a.kind {
             WatchKindArg::Execute => "execute",
@@ -4290,50 +3436,19 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
 // ============================================================================
 
 fn cmd_annotate_set(field: &str, a: AnnotateSetArgs, pretty: bool) -> bool {
-    let va = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let result = match field {
-        "name" => n0xis_project::annotate::set_name(va, a.value.clone()),
-        "type" => n0xis_project::annotate::set_type(va, a.value.clone()),
-        "comment" => n0xis_project::annotate::set_comment(va, a.value.clone()),
-        _ => unreachable!(),
-    };
-    match result {
-        Ok(rec) => emit(&Response::success(schema::v1::ANNOTATION, rec), pretty),
-        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
-    }
+    run_capability("annotate.set", json!({ "field": field, "addr": a.addr, "value": a.value }), pretty)
 }
 
 fn cmd_annotate_show(a: AnnotateShowArgs, pretty: bool) -> bool {
-    let va = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    match n0xis_project::annotate::get(va) {
-        Ok(Some(rec)) => emit(&Response::success(schema::v1::ANNOTATION, rec), pretty),
-        Ok(None) => ir_err("not-found", &format!("no annotations recorded at {va}"), pretty),
-        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
-    }
+    run_capability("annotate.show", json!({ "addr": a.addr }), pretty)
 }
 
 fn cmd_annotate_list(pretty: bool) -> bool {
-    match n0xis_project::annotate::list() {
-        Ok(records) => emit(&Response::success(schema::v1::ANNOTATION, json!({ "count": records.len(), "records": records })), pretty),
-        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
-    }
+    run_capability("annotate.list", json!({}), pretty)
 }
 
 fn cmd_annotate_rm(a: AnnotateShowArgs, pretty: bool) -> bool {
-    let va = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    match n0xis_project::annotate::remove(va) {
-        Ok(removed) => emit(&Response::success(schema::v1::ANNOTATION, json!({ "va": va, "removed": removed })), pretty),
-        Err(e) => ir_err("annotate-failed", &e.to_string(), pretty),
-    }
+    run_capability("annotate.rm", json!({ "addr": a.addr }), pretty)
 }
 
 // ============================================================================
@@ -4380,11 +3495,6 @@ fn cmd_snapshot_dump(a: SnapshotDumpArgs, pretty: bool) -> bool {
         ),
         Err(e) => ir_err("snapshot-save-failed", &e.to_string(), pretty),
     }
-}
-
-fn load_snapshot(name: &str) -> Result<Snapshot, String> {
-    let content = n0xis_project::dump::show(name, Some("snapshot")).map_err(|e| e.to_string())?;
-    serde_json::from_slice(&content.bytes).map_err(|e| format!("parse snapshot '{name}': {e}"))
 }
 
 fn cmd_snapshot_info(a: SnapshotInfoArgs, pretty: bool) -> bool {
@@ -4452,7 +3562,6 @@ fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
     }
     #[cfg(windows)]
     {
-        use n0xis_arch::Arch;
         use n0xis_project::patch as pj;
 
         let live = match LiveProcess::attach(a.pid) {
@@ -4462,7 +3571,10 @@ fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
 
         // Decode whole instructions until we've covered >= 5 bytes (a near jmp),
         // so the hook never splits an instruction mid-way.
-        let arch = X64::new();
+        let arch = match resolve_arch(a.arch.as_deref()) {
+            Ok(x) => x,
+            Err(e) => return ir_err("bad-arch", &e, pretty),
+        };
         let probe = match live.read(hook_at, 32) {
             Ok(b) => b,
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
@@ -4542,66 +3654,29 @@ fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
 // ============================================================================
 
 fn cmd_table_add(a: TableAddArgs, pretty: bool) -> bool {
-    let va = match Va::parse(&a.addr) {
-        Ok(v) => v,
-        Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-    };
-    let entry = TableEntry {
-        name: a.name.clone(),
-        locator: TableLocator::Address { va },
-        value_type: a.r#type.into(),
-        description: a.description.clone(),
-        hotkey: None,
-        groups: Vec::new(),
-        frozen: false,
-        freeze_value: None,
-        provenance: Default::default(),
-        verification: Default::default(),
-    };
-    match n0xis_project::table::add_entry(&a.table, entry) {
-        Ok(t) => emit(&Response::success(schema::v1::TABLE, t).with_source(format!("table:{}", a.table)), pretty),
-        Err(e) => ir_err("table-add-failed", &e.to_string(), pretty),
-    }
+    run_capability(
+        "table.add",
+        json!({
+            "table": a.table,
+            "name": a.name,
+            "addr": a.addr,
+            "type": scan_type_name(a.r#type),
+            "description": a.description,
+        }),
+        pretty,
+    )
 }
 
 fn cmd_table_list(a: TableListArgs, pretty: bool) -> bool {
-    match &a.table {
-        Some(name) => match n0xis_project::table::load(name) {
-            Ok(t) => emit(&Response::success(schema::v1::TABLE, t), pretty),
-            Err(e) => ir_err("table-not-found", &e.to_string(), pretty),
-        },
-        None => match n0xis_project::table::list() {
-            Ok(names) => emit(&Response::success(schema::v1::TABLE, json!({ "tables": names })), pretty),
-            Err(e) => ir_err("table-list-failed", &e.to_string(), pretty),
-        },
-    }
+    run_capability("table.list", json!({ "table": a.table }), pretty)
 }
 
 fn cmd_table_show(a: TableShowArgs, pretty: bool) -> bool {
-    let table = match n0xis_project::table::load(&a.table) {
-        Ok(t) => t,
-        Err(e) => return ir_err("table-not-found", &e.to_string(), pretty),
-    };
-    match &a.name {
-        Some(name) => match table.entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) {
-            Some(entry) => emit(&Response::success(schema::v1::TABLE, entry), pretty),
-            None => ir_err("entry-not-found", &format!("no entry named '{name}' in table '{}'", a.table), pretty),
-        },
-        None => emit(&Response::success(schema::v1::TABLE, table), pretty),
-    }
+    run_capability("table.show", json!({ "table": a.table, "name": a.name }), pretty)
 }
 
 fn cmd_table_rm(a: TableShowArgs, pretty: bool) -> bool {
-    match &a.name {
-        Some(name) => match n0xis_project::table::remove_entry(&a.table, name) {
-            Ok(removed) => emit(&Response::success(schema::v1::TABLE, json!({ "removed": removed })), pretty),
-            Err(e) => ir_err("table-rm-failed", &e.to_string(), pretty),
-        },
-        None => match n0xis_project::table::delete(&a.table) {
-            Ok(removed) => emit(&Response::success(schema::v1::TABLE, json!({ "removedTable": removed })), pretty),
-            Err(e) => ir_err("table-rm-failed", &e.to_string(), pretty),
-        },
-    }
+    run_capability("table.rm", json!({ "table": a.table, "name": a.name }), pretty)
 }
 
 fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
@@ -4660,40 +3735,6 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
 
 /// Parse a hex byte string: accepts spaces, commas and `0x` prefixes, e.g.
 /// `"48 89 c8"`, `"4889c8"`, or `"0x48,0x89,0xc8"`.
-fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
-    let cleaned: String = s
-        .replace("0x", " ")
-        .replace("0X", " ")
-        .chars()
-        .filter(|c| c.is_ascii_hexdigit() || c.is_whitespace() || *c == ',')
-        .collect();
-    let tokens: Vec<&str> = cleaned.split([' ', ',', '\t', '\n']).filter(|t| !t.is_empty()).collect();
-
-    let mut out = Vec::new();
-    if tokens.iter().all(|t| t.len() <= 2) && !tokens.is_empty() {
-        // Token-per-byte form ("48 89 c8").
-        for t in tokens {
-            out.push(u8::from_str_radix(t, 16).map_err(|_| format!("invalid byte: {t:?}"))?);
-        }
-    } else {
-        // Contiguous form ("4889c8") — join and split into pairs.
-        let joined: String = tokens.concat();
-        if !joined.len().is_multiple_of(2) {
-            return Err("odd number of hex digits".to_string());
-        }
-        let mut i = 0;
-        while i < joined.len() {
-            let pair = &joined[i..i + 2];
-            out.push(u8::from_str_radix(pair, 16).map_err(|_| format!("invalid byte: {pair:?}"))?);
-            i += 2;
-        }
-    }
-    if out.is_empty() {
-        return Err("no bytes provided".to_string());
-    }
-    Ok(out)
-}
-
 /// Read a bundle file plus its paired `.stream` companion (if present) and
 /// parse it — shared by `bundle list`/`bundle extract`.
 fn load_bundle(file: &str, stream: Option<&str>) -> Result<n0xis_bitsquid::ExplodedPackage, String> {
@@ -5125,10 +4166,10 @@ fn file_to_document(path: &std::path::Path) -> Option<Document> {
         return None;
     }
     let id = path.to_string_lossy().to_string();
-    if bytes.starts_with(&[0x1b, b'L', b'J']) {
-        if let Ok(chunk) = n0xis_lua::disassemble(&bytes) {
-            return Some(Document { id, kind: "lua".into(), text: lua_chunk_to_text(&chunk) });
-        }
+    if bytes.starts_with(&[0x1b, b'L', b'J'])
+        && let Ok(chunk) = n0xis_lua::disassemble(&bytes)
+    {
+        return Some(Document { id, kind: "lua".into(), text: lua_chunk_to_text(&chunk) });
     }
     match std::str::from_utf8(&bytes) {
         Ok(s) => Some(Document { id, kind: "text".into(), text: s.to_string() }),
@@ -5201,6 +4242,8 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
     }
     #[cfg(windows)]
     {
+        // Data-side command: nothing here decodes an instruction, so the ISA is
+        // only what `Ctx` requires structurally — not a bypassed seam.
         let arch = X64::new();
         let live = match LiveProcess::attach(a.pid) {
             Ok(l) => l,
@@ -5463,6 +4506,8 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
+    // Data-side command: nothing here decodes an instruction, so the ISA is
+    // only what `Ctx` requires structurally — not a bypassed seam.
     let arch = X64::new();
     let input = CfgInput { start: addr, max_bytes: a.func_size, auto_end: true };
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
@@ -5503,7 +4548,10 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let arch = X64::new();
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
 
     let (default_text, default_data) = match &src {
         Src::Static(pe) => (pe.text_range(), pe.section_range(".rdata").or_else(|| pe.text_range())),
@@ -5556,72 +4604,30 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
         }
     };
     match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
         #[cfg(windows)]
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
+        Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
     }
 }
 
 fn cmd_sig_validate(a: SigValidateArgs, pretty: bool) -> bool {
-    let mut samples: Vec<Vec<u8>> = Vec::new();
-
-    // Inline hex samples.
-    for s in &a.samples {
-        match parse_sample(s) {
-            Ok(b) => samples.push(b),
-            Err(e) => return ir_err("bad-sample", &e, pretty),
-        }
-    }
-    // File samples.
-    for f in &a.sample_files {
-        match std::fs::read(f) {
-            Ok(b) => samples.push(b),
-            Err(e) => return ir_err("read-failed", &format!("read {f}: {e}"), pretty),
-        }
-    }
-    // Read-at samples from a live/static source.
-    if !a.ats.is_empty() {
-        let Some(len) = a.len else {
-            return ir_err("missing-len", "--at needs --len <bytes>", pretty);
-        };
-        for at in &a.ats {
-            let addr = match Va::parse(at) {
-                Ok(v) => v,
-                Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
-            };
-            let (src, _label, _) = match build_source(a.pid, a.file.as_deref(), None, None, None, addr) {
-                Ok(x) => x,
-                Err((c, m)) => return ir_err(&c, &m, pretty),
-            };
-            match src.as_mem().read(addr, len) {
-                Ok(b) => samples.push(b),
-                Err(e) => return ir_err("read-failed", &format!("read {addr}: {e}"), pretty),
-            }
-        }
-    }
-
-    if samples.is_empty() {
-        return ir_err("no-samples", "provide samples via --sample, --sample-file, or --at (with --pid/--file and --len)", pretty);
-    }
-
-    let proposed: Option<Vec<MaskByte>> = match &a.signature {
-        Some(sig) => match parse_mask(sig) {
-            Ok(m) => Some(m),
-            Err(e) => return ir_err("bad-signature", &e, pretty),
-        },
-        None => None,
-    };
-    let varied_axes: Vec<String> = a
-        .varied
-        .as_deref()
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
-        .unwrap_or_default();
-
-    let input = SigValidateInput { samples, proposed, varied_axes, min_independent: a.min_independent };
-    let art = sig_validate(&input);
-    emit(&Response::success(schema::v1::SIG_VALIDATE, art), pretty)
+    run_capability(
+        "sig.validate",
+        json!({
+            "samples": a.samples,
+            "sample_files": a.sample_files,
+            "ats": a.ats,
+            "pid": a.pid,
+            "file": a.file,
+            "len": a.len,
+            "signature": a.signature,
+            "varied": a.varied,
+            "min_independent": a.min_independent,
+        }),
+        pretty,
+    )
 }
 
 // ============================================================================
@@ -5683,6 +4689,8 @@ fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
         let label = live.label();
+        // Data-side command: nothing here decodes an instruction, so the ISA is
+        // only what `Ctx` requires structurally — not a bypassed seam.
         let arch = X64::new();
         let ctx = Ctx::new(&live, &arch);
 
@@ -5926,7 +4934,7 @@ mod guide_recipe_tests {
 
     fn accepts_flag(cmd: &clap::Command, flag: &str) -> bool {
         cmd.get_arguments().any(|a| {
-            a.get_long() == Some(flag) || a.get_all_aliases().is_some_and(|al| al.iter().any(|x| *x == flag))
+            a.get_long() == Some(flag) || a.get_all_aliases().is_some_and(|al| al.contains(&flag))
         })
     }
 

@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the old run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build on any rustc warning. CONTRIBUTING.md already says
+  # `cargo build --workspace` must be warning-free — this is that rule, enforced.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # The boundary law (CONCEPT §3.2 / §4), the one property the whole layering
+  # rests on: the pure crates never name an OS. Runs on Linux precisely because
+  # a Linux runner cannot accidentally satisfy a Windows dependency.
+  boundary:
+    name: boundary law (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # rust-toolchain.toml pins the Windows-gnu host toolchain (it documents
+      # why); that triple cannot execute here, so this job uses plain stable.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: n0xis-core / arch / contracts link no OS, format or frontend crate
+        run: sh scripts/check_boundary.sh
+
+      - name: Pure crates build and test with zero OS deps
+        run: cargo test -p n0xis-contracts -p n0xis-arch -p n0xis-core
+
+      # Keeps the property added in a6bde70 from rotting: both frontends must
+      # still compile where the `live` adapter does not exist.
+      - name: CLI and MCP still compile off Windows
+        run: cargo build -p n0xis-cli -p n0xis-mcp
+
+  # The full workspace, including everything gated on cfg(windows): the live
+  # process adapter, the debugger, N0xHUD.
+  windows:
+    name: build + test (windows)
+    runs-on: windows-latest
+    # Not decoration: parts of this suite spawn real child processes
+    # (`phase5_exit` drives a real `n0xis-mcp`, `phase4c_exit` a compiled
+    # target). When such a test fails, cargo can wait forever on a child that
+    # still holds the pipe — measured locally. Without a cap that burns the
+    # runner's full 6h default.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # No toolchain action here on purpose: rust-toolchain.toml pins
+      # stable-x86_64-pc-windows-gnu and rustup honors it, so CI compiles with
+      # the same toolchain the release binary is built with. If the gnu
+      # toolchain ever becomes the blocker, set RUSTUP_TOOLCHAIN on this job.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the whole workspace (warning-free)
+        run: cargo build --workspace
+
+      # `n0xis-pipeline/live` opts the pipeline tests into the real
+      # LiveProcess adapter; the plugin/remote tests skip themselves when no
+      # python3 is present, so they are safe on a runner.
+      - name: Test
+        run: cargo test --workspace --features n0xis-pipeline/live
+
+  clippy:
+    name: clippy (windows, all targets)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # --all-targets covers tests and benches too, so a lint cannot hide in a
+      # #[cfg(test)] module. Windows is the superset target: it is the only one
+      # that compiles n0xis-hud and the live/debug code paths.
+      #
+      # Deliberately NOT gated here: `cargo fmt --check`. This codebase uses
+      # hand-tuned layout (single-line struct literals in tables, aligned
+      # register descriptors) that rustfmt would reflow; adding it would be a
+      # repo-wide reformat, not a CI change.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

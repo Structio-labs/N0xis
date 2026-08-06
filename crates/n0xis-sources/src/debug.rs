@@ -878,29 +878,29 @@ pub fn await_watchpoint_hit_where(
                 // Not the call we asked for: resume it with the watchpoint still
                 // armed and keep waiting. Disarming here (as the unconditional
                 // path does) would end the wait on the wrong hit.
-                if let (Some(c), Ok(h)) = (cond, captured.as_ref()) {
-                    if !c.matches(&h.registers) {
+                if let (Some(c), Ok(h)) = (cond, captured.as_ref())
+                    && !c.matches(&h.registers)
+                {
                         clear_dr6(ev.dwThreadId);
-                        unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
-                        misses += 1;
-                        // Every miss is a full stop/inspect/resume round-trip for
-                        // the target thread. On a per-frame function that is
-                        // thousands of them, and the target effectively runs
-                        // single-stepped — enough to kill a game (it did). Bail
-                        // with an explanation instead of grinding it to death:
-                        // a condition this rare needs a colder trap site.
-                        if misses >= MAX_CONDITION_MISSES {
-                            watch.disarm();
-                            drain_pending_events();
-                            return Err(SourceError::Os(format!(
-                                "condition `{}={}` did not match in {MAX_CONDITION_MISSES} hits — this trap site is too hot to \
-                                 filter on (every non-matching hit stops the target). Pick a colder address, or watch a data \
-                                 address instead of an executed one.",
-                                c.reg, c.value
-                            )));
-                        }
-                        continue;
+                    unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
+                    misses += 1;
+                    // Every miss is a full stop/inspect/resume round-trip for
+                    // the target thread. On a per-frame function that is
+                    // thousands of them, and the target effectively runs
+                    // single-stepped — enough to kill a game (it did). Bail
+                    // with an explanation instead of grinding it to death:
+                    // a condition this rare needs a colder trap site.
+                    if misses >= MAX_CONDITION_MISSES {
+                        watch.disarm();
+                        drain_pending_events();
+                        return Err(SourceError::Os(format!(
+                            "condition `{}={}` did not match in {MAX_CONDITION_MISSES} hits — this trap site is too hot to \
+                             filter on (every non-matching hit stops the target). Pick a colder address, or watch a data \
+                             address instead of an executed one.",
+                            c.reg, c.value
+                        )));
                     }
+                    continue;
                 }
                 watch.disarm();
                 clear_dr6(ev.dwThreadId);

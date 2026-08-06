@@ -191,6 +191,66 @@ fn call_clobbers(regs: &RegisterFile, cc: &CallConv) -> Vec<String> {
         .collect()
 }
 
+/// The forwarded argument expressions of a call: the convention's integer
+/// argument registers, in order. Taken from [`CallConv`] rather than spelled
+/// out inline so a second x64 convention (SysV) needs no edit here. Arity is
+/// *not* narrowed at this stage — `TypeInferPass` recovers how many are real.
+fn call_args(regs: &RegisterFile, cc: &CallConv) -> Vec<MicroExpr> {
+    cc.int_args.iter().filter_map(|&r| regs.name(r)).map(MicroExpr::var).collect()
+}
+
+/// The convention's integer return register (`rax` on Win64).
+fn ret_reg(regs: &RegisterFile, cc: &CallConv) -> String {
+    regs.name(cc.ret).unwrap_or("rax").to_string()
+}
+
+/// The callee expression of a call-like instruction: a direct near-branch
+/// operand, else the RIP-relative memory operand (the IAT-slot shape of both
+/// `call qword ptr [rip+disp]` and an import thunk's `jmp qword ptr
+/// [rip+disp]`), else whatever the first operand reads. Shared by `call` and
+/// by [`lift_tail_call`] — the two differ in what happens *after* the call,
+/// never in how the callee is addressed.
+fn call_target(instr: &Instruction, insn: &DecodedInsn) -> CallTarget {
+    match insn.target {
+        Some(va) => CallTarget::Direct { va },
+        None => match insn.rip_target {
+            Some(slot) => CallTarget::Indirect(Box::new(MicroExpr::load(
+                MicroExpr::constant(slot.0 as i128, 64),
+                64,
+                false,
+            ))),
+            None => CallTarget::Indirect(Box::new(read_operand(instr, 0))),
+        },
+    }
+}
+
+/// Lower a **tail call** — a `jmp` the CFG determined leaves this function
+/// (ROADMAP Phase 10, priority 0: "recognize `jmp func` as call+return").
+/// Semantically it is `return f(args)`: the callee runs on this frame and its
+/// result *is* this function's result. `lift` cannot see that — it is handed
+/// one instruction, not the function bounds — so [`crate::Arch::lift_tail_call`]
+/// is a separate entry point the core calls only for a block whose terminator
+/// is `tail-call`.
+///
+/// No clobber invalidation and no flags statement follow the call here (as
+/// they do for an ordinary call): control returns to *this function's* caller,
+/// so nothing in this frame can observe a clobbered register afterwards.
+pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
+    let Some(instr) = decode_raw(insn) else {
+        return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+    };
+    let cc = &arch.calling_conventions()[0];
+    let ret = ret_reg(arch.regs(), cc);
+    vec![
+        MicroStmt::Call {
+            target: call_target(&instr, insn),
+            args: call_args(arch.regs(), cc),
+            ret: Some(ret.clone()),
+        },
+        MicroStmt::Return(Some(MicroExpr::var(ret))),
+    ]
+}
+
 pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
     let Some(instr) = decode_raw(insn) else {
         return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
@@ -319,25 +379,12 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
             out.push(MicroStmt::Return(Some(MicroExpr::var("rax"))));
         }
         Mnemonic::Call => {
-            let target = match insn.target {
-                Some(va) => CallTarget::Direct { va },
-                None => match insn.rip_target {
-                    Some(slot) => CallTarget::Indirect(Box::new(MicroExpr::load(
-                        MicroExpr::constant(slot.0 as i128, 64),
-                        64,
-                        false,
-                    ))),
-                    None => CallTarget::Indirect(Box::new(read_operand(&instr, 0))),
-                },
-            };
-            let args = vec![
-                MicroExpr::var("rcx"),
-                MicroExpr::var("rdx"),
-                MicroExpr::var("r8"),
-                MicroExpr::var("r9"),
-            ];
-            out.push(MicroStmt::Call { target, args, ret: Some("rax".to_string()) });
             let cc = &arch.calling_conventions()[0];
+            out.push(MicroStmt::Call {
+                target: call_target(&instr, insn),
+                args: call_args(arch.regs(), cc),
+                ret: Some(ret_reg(arch.regs(), cc)),
+            });
             for clobbered in call_clobbers(arch.regs(), cc) {
                 out.push(MicroStmt::Assign {
                     dst: clobbered,
@@ -518,5 +565,44 @@ mod tests {
             s,
             MicroStmt::Assign { dst, value: MicroExpr::Unknown(_) } if dst == "rcx"
         )));
+    }
+
+    fn lift_tail_one(bytes: &[u8]) -> Vec<MicroStmt> {
+        let arch = X64::new();
+        let insns = arch.decode_stream(bytes, Va(0x1000), 4);
+        arch.lift_tail_call(&insns[0])
+    }
+
+    #[test]
+    fn a_plain_jmp_lifts_to_nothing_but_a_tail_jmp_lifts_to_call_plus_return() {
+        // jmp +0 — as an intra-function branch it carries no dataflow (the CFG
+        // edge is the whole story); as a *tail call* it is `return f(...)`.
+        let branch = &[0xE9, 0x00, 0x00, 0x00, 0x00];
+        assert!(lift_one(branch).is_empty());
+
+        let stmts = lift_tail_one(branch);
+        assert_eq!(stmts.len(), 2, "call + return, nothing else: {stmts:?}");
+        let MicroStmt::Call { target, args, ret } = &stmts[0] else {
+            panic!("expected a Call stmt, got {stmts:?}")
+        };
+        assert_eq!(*target, CallTarget::Direct { va: Va(0x1005) });
+        assert_eq!(args.len(), 4, "the Win64 integer arg registers, in order");
+        assert_eq!(ret.as_deref(), Some("rax"));
+        assert_eq!(stmts[1], MicroStmt::Return(Some(MicroExpr::var("rax"))));
+    }
+
+    #[test]
+    fn an_import_thunk_tail_jmp_calls_through_the_iat_slot() {
+        // jmp qword ptr [rip+0] -> the IAT slot at 0x1006 is the callee
+        // *pointer*, so the call target is a load from it, not the slot value.
+        let stmts = lift_tail_one(&[0xFF, 0x25, 0x00, 0x00, 0x00, 0x00]);
+        let MicroStmt::Call { target, .. } = &stmts[0] else {
+            panic!("expected a Call stmt, got {stmts:?}")
+        };
+        assert_eq!(
+            *target,
+            CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x1006, 64), 64, false)))
+        );
+        assert_eq!(stmts[1], MicroStmt::Return(Some(MicroExpr::var("rax"))));
     }
 }

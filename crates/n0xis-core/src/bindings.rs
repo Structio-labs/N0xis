@@ -145,10 +145,10 @@ impl Pass for BindingsPass {
             }
             let off = (t.0 - data_lo) as usize;
             let Some(name) = read_identifier_at(&data, off, 2, 64) else { continue };
-            if let Some(set) = &restrict {
-                if !set.contains(name.as_str()) {
-                    continue;
-                }
+            if let Some(set) = &restrict
+                && !set.contains(name.as_str())
+            {
+                continue;
             }
             sites.push(NameSite { insn_idx: i, name_addr: t, name });
         }

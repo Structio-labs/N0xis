@@ -43,6 +43,37 @@ pub fn put(key: &str, json: &str) -> Result<()> {
     fs::write(&path, json).with_context(|| format!("write {}", path.display()))
 }
 
+/// Drop every entry whose key does **not** start with `prefix`, returning how
+/// many were removed. The caller stamps a generation into its keys (today:
+/// `n0xis-pipeline`'s analysis fingerprint, so a rebuilt analyzer never reads
+/// a previous build's artifacts) — without this sweep that stamp would turn
+/// the cache into an ever-growing pile of unreachable generations, since a
+/// content-addressed store has no natural expiry. Keeping exactly one
+/// generation on disk is the whole policy: cheap, bounded, no LRU bookkeeping.
+pub fn retain_prefix(prefix: &str) -> Result<usize> {
+    let dir = resolve()?.ir_cache_dir();
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let stale = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|name| !name.starts_with(prefix))
+            .unwrap_or(false);
+        if stale && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Remove every cached entry. Not yet wired to a CLI/MCP command (a
 /// documented follow-on — see ROADMAP Phase 6); available now so tests (and
 /// a future command) don't have to reach into `.n0x/ir-cache/` by hand.
@@ -92,6 +123,19 @@ mod tests {
             assert_eq!(get("abc123").unwrap(), Some("{\"n\":2}".to_string()));
             assert_eq!(clear().unwrap(), 1);
             assert_eq!(get("abc123").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn retain_prefix_keeps_the_current_generation_and_drops_the_rest() {
+        in_temp_project(|| {
+            put("cfg-aaaa-1", "{}").unwrap();
+            put("cfg-aaaa-2", "{}").unwrap();
+            put("cfg-bbbb-1", "{}").unwrap();
+            assert_eq!(retain_prefix("cfg-aaaa-").unwrap(), 1);
+            assert!(get("cfg-aaaa-1").unwrap().is_some());
+            assert!(get("cfg-aaaa-2").unwrap().is_some());
+            assert!(get("cfg-bbbb-1").unwrap().is_none());
         });
     }
 

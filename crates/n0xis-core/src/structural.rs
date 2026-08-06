@@ -105,10 +105,10 @@ impl Pass for StructuralScanPass {
                     }
                 }
             }
-            if readable {
-                if let Some(score) = (input.predicate)(&values) {
-                    matches.push(StructuralHit { base: input.start.offset(off as u64), score, values });
-                }
+            if readable
+                && let Some(score) = (input.predicate)(&values)
+            {
+                matches.push(StructuralHit { base: input.start.offset(off as u64), score, values });
             }
             off += align;
         }

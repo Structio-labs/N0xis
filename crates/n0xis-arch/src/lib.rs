@@ -115,6 +115,21 @@ pub trait Arch {
         vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }]
     }
 
+    /// Lower a **tail call** — a branch the CFG determined leaves the current
+    /// function (`jmp func`, or an import thunk's `jmp [iat_slot]`) — to
+    /// micro-IR. Semantically it is `return f(args)`, not a branch: the callee
+    /// runs on this frame and its result becomes this function's result.
+    /// [`Arch::lift`] cannot make that call — it sees one instruction, not the
+    /// function bounds — so the core routes the terminating instruction of a
+    /// `tail-call` block here instead.
+    ///
+    /// Default: whatever `lift` produces, i.e. no promotion. An ISA with no
+    /// override keeps the honest "structural edge only" behavior rather than
+    /// synthesizing a call it has no lowering for.
+    fn lift_tail_call(&self, insn: &DecodedInsn) -> Vec<MicroStmt> {
+        self.lift(insn)
+    }
+
     /// Turn a conditional-branch mnemonic (`"je"`, `"jg"`, …) plus the
     /// dataflow value reaching it for [`FLAGS_VAR`] into an exact condition
     /// expression. Only sound when `flags_value` is the precise

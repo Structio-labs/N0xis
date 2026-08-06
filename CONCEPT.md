@@ -154,7 +154,7 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
                  (depended on by every crate above)
 ```
 
-### Crates (Cargo workspace — 12 members, `crates/*`)
+### Crates (Cargo workspace — 13 members, `crates/*`)
 
 | Crate | Responsibility | Depends on | Never touches |
 |---|---|---|---|
@@ -164,8 +164,9 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
 | `n0xis-core` | Pure analysis passes over `Arch` + source traits: CFG, IR, **SSA, propagation, DCE**, type inference, control structuring, pseudo-C render, xref, slice, plus the dynamic passes (scan/aob/pointer/dissect/valueset/deobfuscate/diff/provenance/gamegrep/constident/bindings/sigvalidate/structural/ui_locate). **No I/O, no OS.** | contracts, arch (trait), sources (traits) | concrete adapters |
 | `n0xis-project` | `.n0x/` analysis database: functions, names, types, comments, selections, patches, dumps, `.n0xt` tables, session, ir-cache. Versioned truth. | contracts | analysis logic |
 | `n0xis-pipeline` | Wires a source + arch + project into the core; `PassManager` schedules/caches passes (content-addressed artifacts). | all core-side crates | frontend concerns |
-| `n0xis-cli` | Thin clap frontend → pipeline calls → JSON. The living command surface ([`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md)); the ported v0 commands live on inside that same current reference. | pipeline, contracts | analysis internals |
-| `n0xis-mcp` | MCP server exposing the same pipeline as agent tools (same `ok/data/meta` envelope). | pipeline, contracts | analysis internals |
+| `n0xis-frontend` | The shared frontend seam: source resolution (all five target forms + the `.n0x/` session default), ISA selection, argument parsing, and the **capability registry** — one `Plugin` trait through which built-in analysis and external process plugins both register, with `build_registry()` as the single composition point. Exists because the CLI and MCP each used to carry their own copy of the first three, and had already drifted. | core, contracts, arch, sources, project | analysis internals, frontend-specific I/O |
+| `n0xis-cli` | Thin clap frontend → pipeline calls → JSON. The living command surface ([`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md)); the ported v0 commands live on inside that same current reference. | frontend, pipeline, contracts | analysis internals |
+| `n0xis-mcp` | MCP server exposing the same pipeline as agent tools (same `ok/data/meta` envelope). | frontend, pipeline, contracts | analysis internals |
 | `n0xis-hud` | **N0xHUD** — a config-driven, always-on-top **companion window** (eframe/egui) over the same crates: process-watcher auto-apply, write & freeze, global hotkeys, Interception-driver actuation, sequence/stratagem input macros, and a process-based plugin protocol for game-specific automation (`[[adapters]]` bindings speak `on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio — see `docs/COMMUNITY_ROADMAP.md`'s "Plugin system"). `n0xis-hud` itself is deliberately game-agnostic; all game-specific logic lives in an external plugin process, not compiled in. A third frontend / runtime-instrumentation surface — **not** an in-game overlay or an injection layer. | sources, project, core, contracts (+ eframe/egui, windows) | the CLI/MCP dispatch; core analysis internals |
 | `n0xis-bitsquid` | Bitsquid/Stingray bundle format adapter (archives, resource types). Pluggable game-format adapter. | contracts | core (never depended on by it) |
 | `n0xis-lua` | Offline LuaJIT 2.0 bytecode dump decoder/patcher (header, prototypes, instructions, constants). Pluggable scripting-format adapter. | serde | core, OS |

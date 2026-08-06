@@ -23,6 +23,11 @@ use crate::typeinfer::TypeArtifact;
 /// `*(type*)(addr)` field access, `return rax;` always shown).
 pub struct RenderNames {
     callee_names: HashMap<u64, String>,
+    /// IAT-slot address → the import reached through it. Separate from
+    /// `callee_names` because the key is a *pointer to* the callee, not the
+    /// callee — conflating the two would name a function by the address of a
+    /// variable holding its address.
+    slot_names: HashMap<u64, String>,
     locals: HashMap<i64, String>,
     structs: HashMap<String, ()>,
     void_return: bool,
@@ -34,7 +39,17 @@ impl RenderNames {
             .iter()
             .filter_map(|c| Some((c.target?.get(), c.target_name.clone()?)))
             .collect();
-        RenderNames { callee_names, locals: HashMap::new(), structs: HashMap::new(), void_return: false }
+        let slot_names = callsites
+            .iter()
+            .filter_map(|c| Some((c.via_slot?.get(), c.target_name.clone()?)))
+            .collect();
+        RenderNames {
+            callee_names,
+            slot_names,
+            locals: HashMap::new(),
+            structs: HashMap::new(),
+            void_return: false,
+        }
     }
 
     /// Enrich with Phase 4's recovered locals/struct-fields/signature.
@@ -47,15 +62,7 @@ impl RenderNames {
 
     fn callee(&self, va: Va) -> String {
         match self.callee_names.get(&va.get()) {
-            Some(name) => {
-                // A demangled C++/Rust name (`Foo::bar<T>`) is shown as-is —
-                // real decompilers don't C-identifier-sanitize these, and
-                // doing so would throw away the readability win. Only a
-                // plain `module!function` import name gets the identifier-
-                // safe `!` -> `__` treatment.
-                let demangled = demangle(name);
-                if demangled != *name { demangled } else { mangle_call_name(name) }
-            }
+            Some(name) => render_callee_name(name),
             None => format!("sub_{:x}", va.get()),
         }
     }
@@ -70,8 +77,40 @@ impl RenderNames {
 }
 
 /// `kernel32!CreateFileW` -> `kernel32__CreateFileW` (a valid C identifier).
+/// The module half is a real file name, so it can carry characters C can't
+/// (`KERNEL32.dll`, and every API-set forwarder — `api-ms-win-core-*.dll`);
+/// anything outside `[A-Za-z0-9_]` becomes `_` so the rendered text stays
+/// pseudo-**C**, not pseudo-C-with-arithmetic-in-the-callee.
 fn mangle_call_name(name: &str) -> String {
     name.replace('!', "__")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// A resolved callee name as it should appear in pseudo-C. A demangled
+/// C++/Rust name (`Foo::bar<T>`) is shown as-is — real decompilers don't
+/// C-identifier-sanitize these, and doing so would throw away the readability
+/// win. Only a plain `module!function` import name gets the identifier-safe
+/// `!` -> `__` treatment.
+fn render_callee_name(name: &str) -> String {
+    let demangled = demangle(name);
+    if demangled != *name { demangled } else { mangle_call_name(name) }
+}
+
+/// The slot address of a call made *through memory* — the `CallTarget` shape
+/// the lifter produces for `call`/`jmp qword ptr [rip+disp]`: a load from a
+/// constant address. Mirrors `x64_lift::call_target`'s RIP-relative arm; any
+/// other indirect shape (a register, a computed address) has no static slot.
+fn as_slot_call(target: &CallTarget) -> Option<u64> {
+    let CallTarget::Indirect(expr) = target else { return None };
+    match expr.as_ref() {
+        MicroExpr::Load { addr, .. } => match addr.as_ref() {
+            MicroExpr::Const { value, .. } => u64::try_from(*value).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 pub(crate) fn c_type(bits: n0xis_arch::Bits, signed: bool) -> &'static str {
@@ -221,13 +260,22 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
 /// the plain 4-arg rendering when the callee isn't in the library — sound,
 /// just less pretty.
 fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> String {
-    let callee = match target {
-        CallTarget::Direct { va } => names.callee(*va),
-        CallTarget::Indirect(t) => format!("(*{})", render_expr(t, names)),
+    // An indirect call through a *known* slot (`call qword ptr [rip+disp]` to
+    // an import) is only syntactically indirect: the callee has a name, and
+    // printing `(*(uint64_t*)(0x14002a3e8))(...)` instead of
+    // `kernel32__CloseHandle(...)` throws away information the CFG already
+    // resolved — and blocks the known-API signature lookup that gives the
+    // call typed parameter names.
+    let slot = as_slot_call(target).and_then(|slot| names.slot_names.get(&slot));
+    let callee = match (slot, target) {
+        (Some(name), _) => render_callee_name(name),
+        (None, CallTarget::Direct { va }) => names.callee(*va),
+        (None, CallTarget::Indirect(t)) => format!("(*{})", render_expr(t, names)),
     };
-    let known = match target {
-        CallTarget::Direct { va } => names.known_sig_for(*va),
-        CallTarget::Indirect(_) => None,
+    let known = match (slot, target) {
+        (Some(name), _) => known_signature(name.rsplit('!').next().unwrap_or(name)),
+        (None, CallTarget::Direct { va }) => names.known_sig_for(*va),
+        (None, CallTarget::Indirect(_)) => None,
     };
     let args_text = match known {
         Some(sig) => {
@@ -368,6 +416,7 @@ mod tests {
             kind: "named".to_string(),
             target: Some(Va(0x3000)),
             target_name: Some("kernel32!CloseHandle".to_string()),
+            via_slot: None,
         }];
         let names = RenderNames::new(&callsites);
         // The lift always passes all 4 register slots positionally;
@@ -379,6 +428,51 @@ mod tests {
         };
         let text = render_expr(&call, &names);
         assert_eq!(text, "(BOOL)kernel32__CloseHandle(/*hObject*/ rcx.0)");
+    }
+
+    /// The same import called the way real code calls it — through its IAT
+    /// slot — must read identically. Before the slot was carried on the
+    /// callsite this rendered `(*(uint64_t*)(0x3000))(rcx.0, rdx.0, …)`:
+    /// syntactically honest, but it hid a name the CFG had already resolved
+    /// and skipped the known-signature arg trimming.
+    #[test]
+    fn an_import_called_through_its_iat_slot_is_named_like_a_direct_call() {
+        let callsites = vec![Callsite {
+            from: Va(0x2000),
+            kind: "named".to_string(),
+            target: None,
+            target_name: Some("kernel32!CloseHandle".to_string()),
+            via_slot: Some(Va(0x3000)),
+        }];
+        let names = RenderNames::new(&callsites);
+        let call = MicroExpr::Call {
+            target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x3000, 64), 64, false))),
+            args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
+        };
+        assert_eq!(render_expr(&call, &names), "(BOOL)kernel32__CloseHandle(/*hObject*/ rcx.0)");
+    }
+
+    #[test]
+    fn a_real_module_name_is_sanitized_into_a_valid_c_identifier() {
+        // Real symbol tables give `KERNEL32.dll!X` and API-set forwarders
+        // `api-ms-win-core-libraryloader-l1-2-0.dll!X` — neither is a C
+        // identifier until the dots and dashes go.
+        assert_eq!(mangle_call_name("KERNEL32.dll!CloseHandle"), "KERNEL32_dll__CloseHandle");
+        assert_eq!(
+            mangle_call_name("api-ms-win-core-version-l1-1-1.dll!GetFileVersionInfoSizeW"),
+            "api_ms_win_core_version_l1_1_1_dll__GetFileVersionInfoSizeW"
+        );
+    }
+
+    /// …but an indirect call through an *unknown* slot must stay honest.
+    #[test]
+    fn an_unknown_indirect_call_still_renders_as_a_dereference() {
+        let names = RenderNames::new(&[]);
+        let call = MicroExpr::Call {
+            target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x3000, 64), 64, false))),
+            args: vec![MicroExpr::var("rcx.0")],
+        };
+        assert!(render_expr(&call, &names).starts_with("(*"), "{}", render_expr(&call, &names));
     }
 
     #[test]

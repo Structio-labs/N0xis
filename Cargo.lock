@@ -2178,6 +2178,7 @@ dependencies = [
  "n0xis-bitsquid",
  "n0xis-contracts",
  "n0xis-core",
+ "n0xis-frontend",
  "n0xis-lua",
  "n0xis-luajit",
  "n0xis-pipeline",
@@ -2208,6 +2209,20 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "n0xis-frontend"
+version = "0.1.0"
+dependencies = [
+ "n0xis-arch",
+ "n0xis-contracts",
+ "n0xis-core",
+ "n0xis-pipeline",
+ "n0xis-project",
+ "n0xis-sources",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2255,6 +2270,7 @@ dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
  "n0xis-core",
+ "n0xis-frontend",
  "n0xis-pipeline",
  "n0xis-project",
  "n0xis-sources",

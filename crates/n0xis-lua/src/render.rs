@@ -92,10 +92,10 @@ pub fn render(def: &OpDef, idx: u32, a: u16, b: Option<u16>, d: u16, gc: &[GcCon
     if let Some(s) = render_operand(def.a, a, idx, gc, num) {
         parts.push(s);
     }
-    if let Some(bval) = b {
-        if let Some(s) = render_operand(def.b, bval, idx, gc, num) {
-            parts.push(s);
-        }
+    if let Some(bval) = b
+        && let Some(s) = render_operand(def.b, bval, idx, gc, num)
+    {
+        parts.push(s);
     }
     if let Some(s) = render_operand(def.d, d, idx, gc, num) {
         parts.push(s);

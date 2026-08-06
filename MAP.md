@@ -19,7 +19,7 @@ Three frontends drive **one** analysis engine. Everything goes in and comes back
 
 ### Frontends (3)
 - **`n0xis` (alias `n0x`)** — the CLI. Thin clap frontend. See [[CLI_COMMANDS]].
-- **`n0xis-mcp`** — MCP server over stdio; same `{ok,data,meta}` envelope, tool names mirror CLI verbs (18 tools exposed today).
+- **`n0xis-mcp`** — MCP server over stdio; same `{ok,data,meta}` envelope, tool names mirror CLI verbs; plus `capability_list` / `capability_run`, through which every registered capability is reachable without a per-command tool.
 - **`n0xis-hud` (N0xHUD)** — a config-driven, always-on-top companion window over the same crates. Runtime instrumentation / live-memory analysis with an on-screen face — **not** an in-game overlay, **not** a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]].
 
 ### The pass pipeline (source → arch → core → project)
@@ -34,7 +34,7 @@ source adapter  →  arch decode  →  core analysis passes  →  project (.n0x/
 Analysis commands take **exactly one** target source, or fall back to the `.n0x/` session default:
 `--pid` (live process) · `--file` (static PE) · `--snapshot <name>` (reloaded capture) · `--remote-cmd "<argv>"` (SSH/Tailscale remote agent) · `--bytes "<hex>"` (inline, some commands). Same passes run against any of them.
 
-### The 12 crates (Cargo workspace, members = `crates/*`)
+### The 13 crates (Cargo workspace, members = `crates/*`)
 | Crate | Role | Depended on by core? |
 |---|---|---|
 | `n0xis-contracts` | All wire schemas (`n0xis.*.vN`) + shared value types (`Va`, `Symbol`, `Reg`). Single source of truth. | — |
@@ -43,6 +43,7 @@ Analysis commands take **exactly one** target source, or fall back to the `.n0x/
 | `n0xis-core` | Pure analysis passes — CFG/SSA/opt/DCE/typeinfer/structure/render/xref/slice/scan/aob/pointer/dissect/valueset/deobfuscate/diff/provenance/gamegrep/constident/bindings/sigvalidate/structural/ui_locate. **No I/O, no OS.** | — |
 | `n0xis-project` | `.n0x/` analysis DB: names/types/comments (annotate), selections, patches, dumps, `.n0xt` tables, session, ir-cache. | — |
 | `n0xis-pipeline` | Wires source + arch + project into core; content-addressed artifact caching. | — |
+| `n0xis-frontend` | The shared frontend seam every frontend goes through: source resolution (`--pid`/`--file`/`--snapshot`/`--remote-cmd`/`--bytes` + the `.n0x/` session default), ISA selection, argument parsing, and the **capability registry** (built-in analysis and external plugins register through one `Plugin` trait; `build_registry()` is the single composition point). | — |
 | `n0xis-cli` | Clap frontend (binary `n0xis`, alias `n0x`). | — |
 | `n0xis-mcp` | MCP server frontend (binary `n0xis-mcp`). | — |
 | `n0xis-hud` | N0xHUD companion-window frontend (binary `n0xis-hud`). | — |
@@ -56,7 +57,9 @@ Analysis commands take **exactly one** target source, or fall back to the `.n0x/
 - **Phase 8 (spec-first method tooling):** 6/7 named commands landed + hex-everywhere audit closed (merged into `main`). ⬜ **Region caching as a built-in scan option is the single open item.**
 - **Phase 9 (UI-layer localization):** `ui locate`, the structural-predicate scan primitive, and `debug watch --when` are **implemented in the working tree, uncommitted, and pending live-target validation.** Unit-tested on synthetic buffers; the decisive live appearance-correlation test has **not** run. Say "implemented, pending live validation," never "verified." See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].
 
-The **installed** binary reports **77 leaf commands** via `n0x guide` (auto-generated from the clap tree, so it never drifts); the **working tree** adds `ui locate`, so a rebuild reports **78**.
+The **installed** binary reports **77 leaf commands** via `n0x guide` (auto-generated from the clap tree, so it never drifts); the **working tree** is at **87** — Phases 9/11 plus `capability list` / `capability run` (counted as `"path"` entries in `n0x guide --brief`).
+
+Of those 87, **41 are backed by the capability registry** (`n0xis-frontend::registry`), where the CLI and MCP handlers are argument mapping over one shared implementation; the rest still carry a per-frontend handler each. See the ROADMAP's "Engineering hardening" section for the migration state.
 
 ---
 

@@ -12,8 +12,7 @@ use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
     AabbLayout, CfgInput, CoordSpace, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass,
     DecompStyle, DiscoverInput, DiscoverPass, Pass, ProvenanceHit, ProvenanceInput, ProvenancePass,
-    Rect, TraceInput, TracePass, UiLocateInput, UiLocatePass, XrefDir, XrefInput, XrefPass,
-    StringXrefInput, StringXrefPass,
+    Rect, UiLocateInput, UiLocatePass,
 };
 use n0xis_sources::{plugin_call_once, split_command_line, MemorySource};
 #[cfg(windows)]
@@ -44,15 +43,29 @@ fn bad_addr(e: impl std::fmt::Display) -> String {
 }
 
 /// Build a `Ctx` for whichever source `resolve()` picked and hand it to `work`.
-fn with_ctx<R>(src: &Src, work: impl FnOnce(&Ctx) -> R) -> R {
-    let arch = X64::new();
+///
+/// `arch` is a parameter, not a constant: this frontend used to name
+/// `X64::new()` inline here, which quietly made every MCP tool x64-only while
+/// the CLI had an `--arch` flag — the ISA seam existing in the core but being
+/// bypassed at the edge (CONCEPT §3 rule 4).
+fn with_ctx<R>(src: &Src, arch: &dyn n0xis_arch::Arch, work: impl FnOnce(&Ctx) -> R) -> R {
     match src {
         #[cfg(windows)]
-        Src::Live(l) => work(&Ctx::new(l.as_ref(), &arch)),
-        Src::Static(p) => work(&Ctx::new(p.as_ref(), &arch).with_symbols(p.as_ref()).with_modules(p.as_ref())),
-        Src::Snap(s) => work(&Ctx::new(s, &arch)),
-        Src::Remote(r) => work(&Ctx::new(r.as_ref(), &arch)),
+        Src::Live(l) => work(&Ctx::new(l.as_ref(), arch)),
+        Src::Static(p) => work(&Ctx::new(p.as_ref(), arch).with_symbols(p.as_ref()).with_modules(p.as_ref())),
+        Src::Snap(s) => work(&Ctx::new(s, arch)),
+        Src::Remote(r) => work(&Ctx::new(r.as_ref(), arch)),
     }
+}
+
+/// Resolve a tool's `arch` argument or bail with the shared error envelope.
+macro_rules! arch_or_return {
+    ($a:expr) => {
+        match n0xis_frontend::resolve_arch($a.arch.as_deref()) {
+            Ok(a) => a,
+            Err(e) => return err("bad-arch", e),
+        }
+    };
 }
 
 macro_rules! resolve_or_return {
@@ -112,6 +125,9 @@ pub struct DisasmRequest {
     pub addr: String,
     #[serde(default = "default_count")]
     pub count: usize,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 fn default_count() -> usize {
     16
@@ -140,6 +156,9 @@ pub struct DiscoverRequest {
     /// together with `limit`.
     #[serde(default)]
     pub offset: Option<usize>,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 fn default_limit() -> usize {
     64
@@ -167,6 +186,9 @@ pub struct FunctionTraceRequest {
     pub max_nodes: usize,
     #[serde(default = "default_max_bytes")]
     pub max_bytes: usize,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 fn default_depth() -> usize {
     3
@@ -201,18 +223,30 @@ pub struct DecompRequest {
     /// payload). The `ir_opt_delta` tool is the dedicated way to ask for it.
     #[serde(default)]
     pub explain: Option<bool>,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 fn default_style() -> String {
     "ssa".to_string()
 }
 
-fn parse_style(s: &str) -> Result<DecompStyle, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "goto" => Ok(DecompStyle::Goto),
-        "structured" => Ok(DecompStyle::Structured),
-        "ssa" => Ok(DecompStyle::Ssa),
-        other => Err(format!("unknown style '{other}', expected goto|structured|ssa")),
-    }
+/// A `DecompRequest` as the capability registry's JSON. The tool argument
+/// names and the capability argument names are deliberately identical, so this
+/// is a straight projection — no translation table to drift.
+fn decomp_args_json(a: &DecompRequest) -> serde_json::Value {
+    json!({
+        "addr": a.addr,
+        "size": a.size,
+        "no_auto_end": a.no_auto_end,
+        "style": a.style,
+        "explain": a.explain.unwrap_or(false),
+        "arch": a.arch,
+        "pid": a.pid,
+        "file": a.file,
+        "snapshot": a.snapshot,
+        "remote_cmd": a.remote_cmd,
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,6 +270,9 @@ pub struct XrefRequest {
     pub start: Option<String>,
     #[serde(default)]
     pub size: Option<usize>,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 fn default_dir() -> String {
     "to".to_string()
@@ -265,6 +302,9 @@ pub struct XrefStringRequest {
     pub code_size: Option<usize>,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -340,6 +380,15 @@ pub struct PluginRunRequest {
     pub kind: String,
     /// The artifact JSON to send on the plugin's stdin.
     pub artifact: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CapabilityRunRequest {
+    /// Capability name, as reported by `capability_list` (e.g. `"decode"`).
+    pub name: String,
+    /// Arguments object, passed through to the capability unchanged.
+    #[serde(default)]
+    pub args: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -616,7 +665,8 @@ impl N0xisServer {
             Err(e) => return bad_addr(e),
         };
         let src = resolve_or_return!(a);
-        let out = with_ctx(&src, |ctx| DecodePass.run(ctx, DecodeInput::count(start, a.count)));
+        let arch = arch_or_return!(a);
+        let out = with_ctx(&src, arch.as_ref(), |ctx| DecodePass.run(ctx, DecodeInput::count(start, a.count)));
         match out {
             Ok(o) => emit(Response::success(schema::v1::DECODE, o).with_source(src.label())),
             Err(e) => err("decode-failed", e.to_string()),
@@ -633,7 +683,8 @@ impl N0xisServer {
         let Some((start, size)) = source::scan_range(src.text_range(), explicit_start, a.size) else {
             return err("no-range", "could not resolve a scan range; pass start and size");
         };
-        let out = with_ctx(&src, |ctx| DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: a.offset.unwrap_or(0) }));
+        let arch = arch_or_return!(a);
+        let out = with_ctx(&src, arch.as_ref(), |ctx| DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: a.offset.unwrap_or(0) }));
         match out {
             Ok(art) => {
                 let (returned, truncated) = (art.count, art.truncated);
@@ -646,25 +697,21 @@ impl N0xisServer {
 
     #[tool(description = "Call-graph walk (BFS) from a root function address.")]
     fn function_trace(&self, Parameters(a): Parameters<FunctionTraceRequest>) -> String {
-        let addr = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let src = resolve_or_return!(a);
-        let root = if a.addr_rva {
-            match src.module_base() {
-                Some(base) => base.offset(addr.0),
-                None => return err("no-module", "no module base resolved for addr_rva"),
-            }
-        } else {
-            addr
-        };
-        let input = TraceInput { root, depth: a.depth, max_nodes: a.max_nodes, max_bytes: a.max_bytes };
-        let out = with_ctx(&src, |ctx| TracePass.run(ctx, input));
-        match out {
-            Ok(art) => emit(Response::success(schema::v1::FUNCTION_TRACE, art).with_source(src.label())),
-            Err(e) => err("trace-failed", e.to_string()),
-        }
+        emit(n0xis_frontend::build_registry().dispatch(
+            "function.trace",
+            &json!({
+                "addr": a.addr,
+                "addr_rva": a.addr_rva,
+                "depth": a.depth,
+                "max_nodes": a.max_nodes,
+                "max_bytes": a.max_bytes,
+                "arch": a.arch,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(
@@ -673,24 +720,9 @@ impl N0xisServer {
                         per-pass optimization log (also available standalone via explain_opt_delta)."
     )]
     fn decomp_pseudo(&self, Parameters(a): Parameters<DecompRequest>) -> String {
-        let start = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let style = match parse_style(&a.style) {
-            Ok(s) => s,
-            Err(e) => return err("bad-style", e),
-        };
-        let src = resolve_or_return!(a);
-        let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
-        let out = with_ctx(&src, |ctx| -> Result<_, String> {
-            let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
-            DecompPass.run(ctx, DecompInput { cfg, style, explain: a.explain.unwrap_or(false) }).map_err(|e| e.to_string())
-        });
-        match out {
-            Ok(pf) => emit(Response::success(schema::v0::DECOMP_PSEUDO, pf).with_source(src.label())),
-            Err(e) => err("decomp-failed", e),
-        }
+        // Dispatched through the shared registry — the exact same code path
+        // `n0x decomp pseudo` takes. This method is argument mapping only.
+        emit(n0xis_frontend::build_registry().dispatch("decomp.pseudo", &decomp_args_json(&a)))
     }
 
     #[tool(
@@ -707,7 +739,8 @@ impl N0xisServer {
         };
         let src = resolve_or_return!(a);
         let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
-        let out = with_ctx(&src, |ctx| -> Result<_, String> {
+        let arch = arch_or_return!(a);
+        let out = with_ctx(&src, arch.as_ref(), |ctx| -> Result<_, String> {
             let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
             // This tool *is* the delta, so it always asks for it.
             DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true }).map_err(|e| e.to_string())
@@ -723,103 +756,63 @@ impl N0xisServer {
 
     #[tool(description = "Cross-references to (dir=to) or from (dir=from) an address, scanned over a code range.")]
     fn xref(&self, Parameters(a): Parameters<XrefRequest>) -> String {
-        let addr = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let dir = match a.dir.to_ascii_lowercase().as_str() {
-            "to" => XrefDir::To,
-            "from" => XrefDir::From,
-            other => return err("bad-dir", format!("unknown dir '{other}', expected to|from")),
-        };
-        let explicit_start = match a.start.as_deref().map(Va::parse).transpose() {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let src = resolve_or_return!(a);
-        let Some((scan_start, size)) = source::scan_range(src.text_range(), explicit_start, a.size) else {
-            return err("no-range", "could not resolve a scan range; pass start and size");
-        };
-        let out = with_ctx(&src, |ctx| XrefPass.run(ctx, XrefInput { scan_start, size, addr, dir }));
-        match out {
-            Ok(art) => emit(Response::success(schema::v1::XREF, art).with_source(src.label())),
-            Err(e) => err("xref-failed", e.to_string()),
-        }
+        emit(n0xis_frontend::build_registry().dispatch(
+            "xref",
+            &json!({
+                "addr": a.addr,
+                "dir": a.dir,
+                "start": a.start,
+                "size": a.size,
+                "arch": a.arch,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(description = "Search a data window for a string literal and find the code that references it (lea xref).")]
     fn xref_string(&self, Parameters(a): Parameters<XrefStringRequest>) -> String {
-        let explicit_code_start = match a.code_start.as_deref().map(Va::parse).transpose() {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let explicit_data_start = match a.data_start.as_deref().map(Va::parse).transpose() {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let src = resolve_or_return!(a);
-        let default_data = src.section_range(".rdata").or_else(|| src.text_range());
-        let Some((code_start, code_size)) = source::scan_range(src.text_range(), explicit_code_start, a.code_size) else {
-            return err("no-range", "could not resolve a code range; pass code_start/code_size");
-        };
-        let Some((data_start, data_size)) = source::scan_range(default_data, explicit_data_start, a.data_size) else {
-            return err("no-range", "could not resolve a data range; pass data_start/data_size");
-        };
-        let input = StringXrefInput { data_start, data_size, code_start, code_size, query: a.query.clone(), limit: a.limit };
-        let out = with_ctx(&src, |ctx| StringXrefPass.run(ctx, input));
-        match out {
-            Ok(art) => emit(Response::success(schema::v1::XREF_STRING, art).with_source(src.label())),
-            Err(e) => err("xref-string-failed", e.to_string()),
-        }
+        emit(n0xis_frontend::build_registry().dispatch(
+            "xref.string",
+            &json!({
+                "query": a.query,
+                "start": a.code_start,
+                "size": a.code_size,
+                "data_start": a.data_start,
+                "data_size": a.data_size,
+                "limit": a.limit,
+                "arch": a.arch,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(description = "Read raw bytes from a live process or static file at an address.")]
     fn mem_read(&self, Parameters(a): Parameters<MemReadRequest>) -> String {
-        let addr = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let src = resolve_or_return!(a);
-        match src.as_mem().read(addr, a.size) {
-            Ok(bytes) => {
-                let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-                let data = json!({ "address": addr, "requested": a.size, "read": bytes.len(), "hex": hex });
-                emit(Response::success(schema::v1::MEM_READ, data).with_source(src.label()))
-            }
-            Err(e) => err("read-failed", e.to_string()),
-        }
+        emit(n0xis_frontend::build_registry().dispatch(
+            "mem.read",
+            &json!({
+                "addr": a.addr,
+                "size": a.size,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(description = "Write raw bytes into a live process's memory at an address.")]
     fn mem_write(&self, Parameters(a): Parameters<MemWriteRequest>) -> String {
-        let addr = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let bytes = match parse_hex_bytes(&a.bytes) {
-            Ok(b) => b,
-            Err(e) => return err("bad-bytes", e),
-        };
-        #[cfg(not(windows))]
-        {
-            let _ = (addr, &bytes);
-            return err("live-unsupported", "mem_write requires a Windows build (needs LiveProcess/Win32 APIs)");
-        }
-        #[cfg(windows)]
-        {
-            let live = match LiveProcess::attach(a.pid) {
-                Ok(l) => l,
-                Err(e) => return err("attach-failed", e.to_string()),
-            };
-            match live.write(addr, &bytes) {
-                Ok(()) => {
-                    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-                    let data = json!({ "address": addr, "written": bytes.len(), "hex": hex });
-                    emit(Response::success(schema::v1::MEM_WRITE, data).with_source(live.label()))
-                }
-                Err(e) => err("write-failed", e.to_string()),
-            }
-        }
+        emit(n0xis_frontend::build_registry().dispatch(
+            "mem.write",
+            &json!({ "addr": a.addr, "bytes": a.bytes, "pid": a.pid }),
+        ))
     }
 
     #[tool(
@@ -957,6 +950,22 @@ impl N0xisServer {
             Ok(resp) => emit(Response::success(schema::v1::PLUGIN, json!({ "plugin": a.name, "findings": resp }))),
             Err(e) => err("plugin-run-failed", e),
         }
+    }
+
+    #[tool(
+        description = "List every capability this build can run — built-in analysis and user-registered plugins alike, each with its origin and the schema it emits. Read this instead of guessing what exists; a plugin the user registered shows up here exactly like a built-in does."
+    )]
+    fn capability_list(&self) -> String {
+        let reg = n0xis_frontend::build_registry();
+        emit(Response::success(schema::v1::CAPABILITY_LIST, reg.describe()))
+    }
+
+    #[tool(
+        description = "Run a capability by name (see `capability_list`) with JSON arguments. Target arguments are the usual pid/file/snapshot/remote_cmd/bytes. Dispatching a built-in and dispatching a plugin are the same call — that is the point of the registry."
+    )]
+    fn capability_run(&self, Parameters(a): Parameters<CapabilityRunRequest>) -> String {
+        let reg = n0xis_frontend::build_registry();
+        emit(reg.dispatch(&a.name, &a.args))
     }
 
     #[tool(
@@ -1139,13 +1148,3 @@ impl N0xisServer {
     }
 }
 
-fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.len() % 2 != 0 {
-        return Err("hex byte string must have an even number of digits".to_string());
-    }
-    (0..cleaned.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).map_err(|e| e.to_string()))
-        .collect()
-}

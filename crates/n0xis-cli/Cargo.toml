@@ -15,6 +15,10 @@ n0xis-contracts = { workspace = true }
 n0xis-arch = { workspace = true }
 n0xis-core = { workspace = true }
 n0xis-pipeline = { workspace = true }
+# The shared frontend seam — source/arch resolution and argument parsing,
+# identical to what n0xis-mcp uses. Cross-platform on its own (it carries the
+# same cfg(windows) split inside).
+n0xis-frontend = { workspace = true }
 n0xis-bitsquid = { workspace = true }
 n0xis-lua = { workspace = true }
 n0xis-luajit = { workspace = true }

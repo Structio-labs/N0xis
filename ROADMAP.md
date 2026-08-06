@@ -1122,8 +1122,9 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (narrower idiom set than other tools) |
 | Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
 | Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
-| Tail-call detection | 🚧 partial — edge class only, no semantic promotion |
-| noreturn analysis | 🚧 partial — known-import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) correctly end a block ✅ 2026-07-22; self-discovered-function propagation still not attempted |
+| Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
+| noreturn analysis | 🚧 partial — known-import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) correctly end a block **and the function** ✅ 2026-07-22, first actually firing on real binaries 2026-08-06 (the IAT-keying fix); self-discovered-function propagation still not attempted |
+| Import-name resolution | ✅ 2026-08-06 — direct, IAT-slot and thunk callees resolve to `module!name`; imports render by name and reach the known-API signature table |
 | Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
 | Memory SSA | ❌ missing |
 | Interprocedural propagation | ❌ missing (bar the known-API table) |
@@ -1137,8 +1138,8 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Analysis | What real parity needs | N0xis today |
 |---|---|---|
 | Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | ❌ `.pdata`/`.xdata` read for **unwinding only**; no EH edges in the graph |
-| Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | 🚧 `tail` exists as an **edge class**; no semantic promotion |
-| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. **Still open**: propagating noreturn-ness across N0xis's *own discovered* functions (a whole-program call-graph fixpoint) is not attempted; `truncate_to_function` (the whole-function-end heuristic) still doesn't know about calls, so a function's reported `end` may still over-extend past a noreturn call even though the per-block CFG is now correct — both documented follow-ons, not silent gaps. |
+| Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | ✅ *(2026-08-06)* both shapes — a direct `jmp` out of the function **and** an import thunk's `jmp qword ptr [__imp_X]` (previously mis-classified `ijmp`, "indirect jump (unrecovered)") — terminate as `tail-call` and lower to `call`+`return` via the new `Arch::lift_tail_call` seam, so every style renders `return f(...)`. Verified on real PEs (`version.dll` thunk → `return …GetFileVersionInfoSizeW(…)`; 15/400 notepad, 52/400 dxgi functions carry the `tail` flag) |
+| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). **Still open**: propagating noreturn-ness across N0xis's *own discovered* functions (a whole-program call-graph fixpoint) is not attempted — a documented follow-on, not a silent gap. |
 | Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
 | Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
 | Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
@@ -1184,6 +1185,52 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      a noreturn call even though the per-block CFG is now correct; tail-call
      promotion and exception-edge recovery (this bullet's other two sub-items)
      are untouched.
+   - ✅ *(2026-08-06)* **Tail-call promotion + the two bugs that made the
+     2026-07-22 fix dead on real binaries.** Three landings, in the order they
+     were found:
+     1. **Tail-call promotion.** `jmp` leaving the function used to lift to
+        *nothing* (the CFG edge was the whole story), so a `tail-call` block
+        rendered no terminator at all — the call and its returned value were
+        silently dropped from the pseudo-C. New `Arch::lift_tail_call` seam
+        (default = `lift`, i.e. no promotion, so ARM64 stays honest rather
+        than synthesizing a call it can't lower; x64 overrides) lowers it to
+        `Call` + `Return`, and `LiftPass` routes a `tail-call` block's
+        terminating instruction through it. Every style now renders
+        `return f(...)`; the optimizing styles collapse it to one expression.
+        Also recognized: an **import thunk** (`jmp qword ptr [__imp_X]`) is a
+        tail call, not an unrecoverable `ijmp` — the branch is indirect but
+        the callee is known by name. `truncate_to_function` now also ends a
+        function at a noreturn call (the follow-on the 2026-07-22 pass
+        explicitly left open).
+     2. **The IAT map was keyed by the wrong address — so *no* import name
+        ever resolved on a real PE.** `StaticPe` keyed its IAT map by goblin's
+        `Import::rva`, which is the *hint/name-table* entry, not the IAT slot
+        (that's `Import::offset`, an RVA despite the name). Every consumer of
+        callee names was therefore dead on real targets while passing its
+        synthetic unit tests: the noreturn CFG closure above, the ~30-entry
+        known-API signature table, thunk recognition. One-line fix; the effect
+        is corpus-wide (`vcruntime140.dll`: **0 → 33** functions flagged
+        `calls-noreturn`). The lesson is the Phase 7 ARM64 lesson again —
+        a synthetic `Snapshot` fixture proves the *code path*, never the
+        *data*.
+     3. **The IR cache served pre-upgrade artifacts.** `cfg_cache_key` hashed
+        the target (label + input + bytes) but nothing about the *analyzer*,
+        so an improved pass was masked by its own cache — the exact stale-data
+        failure CONCEPT §3 rule 6 forbids, and it cost real debugging time
+        here. The key now includes an analysis fingerprint (crate version +
+        the running executable's mtime): stable across runs of a released
+        binary, automatically different after every rebuild.
+     Plus: an import call now renders by **name** (`kernel32__CloseHandle(…)`)
+     instead of `(*(uint64_t*)(0x14002a3e8))(…)` — the new `Callsite.via_slot`
+     (optional, additive to `n0xis.ir.cfg.v1`) carries the slot the callee was
+     reached through, which also lets the known-API signature table fire on
+     IAT calls for the first time; and a module name is now sanitized into a
+     valid C identifier (`api-ms-win-…dll!X` was rendering dashes and dots
+     into "pseudo-C"). 9 new tests (3 `ir.rs`, 2 `x64_lift.rs`, 3 `render.rs`,
+     1 `decomp.rs`), `n0xis-core` lib 131→138, `n0xis-arch` 22→24, workspace
+     green, clippy clean. **Still open in this bullet**: whole-program
+     noreturn propagation across N0xis's own discovered functions, and
+     exception-edge recovery.
 1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.
@@ -1370,6 +1417,559 @@ renderer does not yet know to refuse to pick one. And MCP still exposes 23 of th
 
 ---
 
+## Phase 12 — IL2CPP: the managed layer (Unity's hard mode) 🎯 ⬜
+
+**The thesis: this is one missing layer, not five missing features.** Every IL2CPP symptom
+on record — `xref string` → `count: 0`, `bindings list` → `count: 0`, **0 of 69** calls
+named in `decomp pseudo`, no name→address path by any means — has a single cause: N0xis
+reads the *native* half of an IL2CPP target and never the *managed* half. Build that half
+once, behind seams that already exist (`SymbolProvider`, the pass `Ctx`), and the symptoms
+clear together — without touching the decompiler, the xref engine, or the renderer.
+
+### What IL2CPP is (the structural facts the phase is built on)
+
+Unity ships two scripting backends. **Mono** emits real .NET assemblies
+(`Assembly-CSharp.dll`) and JITs them — managed-assembly editors read them, edit them, write them back;
+that target is solved and uninteresting. **IL2CPP** is ahead-of-time: Roslyn compiles C# to
+IL, `il2cpp.exe` transpiles the IL to C++, and the platform C++ compiler emits native code.
+The shipped game contains **no IL and no managed assemblies** — only machine code, exactly
+like a C++ engine.
+
+C# semantics (reflection, GC, boxing, generics, interfaces, exceptions) cannot survive that
+trip inside the code alone, so IL2CPP splits the program into three parts that are only
+meaningful *together*:
+
+| Layer | Where | Holds |
+|---|---|---|
+| **Native code** | `GameAssembly.dll` `.text` | every transpiled C# method, plus `libil2cpp` — the C++ runtime, statically linked, exporting the `il2cpp_*` embedder API (measured: 386 exports on 279 distinct addresses, 49 thunks, 277 199 `.pdata` functions) |
+| **Managed metadata** | `<Game>_Data/il2cpp_data/Metadata/global-metadata.dat` | the symbol table of the managed world: type / method / field / parameter names, tokens, generic containers, vtable slot layout, **and every string literal** (measured: 23 023 literals, ~672 KB) |
+| **Registrations** | `.data` of the DLL — `Il2CppCodeRegistration`, `Il2CppMetadataRegistration` | the join key: per-module method-pointer arrays, generic instantiations, field-offset tables, metadata-usage slots |
+
+**Neither half alone is enough, and that is the entire difficulty.** Names without addresses
+(the `.dat`) plus addresses without names (the DLL); the join lives in a third structure a
+naive tool never looks at. Every IL2CPP tool that exists is, at bottom, that join.
+
+The corollary is the good news: an IL2CPP target is **native-speed code carrying a complete
+symbol table**. Once the join is done it is better documented than a stripped C++ game —
+every class, method, field, and offset, by name. IL2CPP is Unity's hard mode only until the
+managed layer is parsed; after that it is one of the most tractable corpora in the industry.
+
+### What is typical of the emitted code (conventions the decompiler cannot infer)
+
+- **Hidden trailing argument.** Every method takes `const MethodInfo*` **last**; instance
+  methods take `this` **first**. Recovered signatures are always one parameter "wrong".
+- **16-byte object header** on x64 (`Il2CppClass* klass`, `MonitorData* monitor`), so
+  `field_0x10` is the *first* managed field.
+- **Null-check and bounds-check noise dominates the branch count** — `if (p == 0)
+  <noreturn throw helper>()` before nearly every dereference; array accesses carry an
+  index check. It is codegen, not logic.
+- **Metadata-init prologue** — most methods open with a per-method `static bool inited`
+  guard around a class-init call. Skip to the first statement touching an argument.
+- **Generic sharing breaks 1:1 both ways.** Reference-type generics share one native body
+  (disambiguated at runtime by the `MethodInfo*`/rgctx); value-type generics are duplicated
+  per instantiation. One address ↔ many C# methods, one C# method ↔ many addresses. This is
+  the easiest place in the whole format to state something confidently false.
+- **String literals are `.data` slots**, populated at runtime from the metadata-usage table
+  (in the `.dat` up to v26; moved into the binary's codegen modules at v27). Nothing to scan
+  for in `.rdata` — but the *slot* is xref-able, which is the working route.
+- **Virtual dispatch** through a vtable slot on `Il2CppClass`; interface dispatch through
+  per-class interface-offset tables. Statically an indirect call with no resolvable edge —
+  unless you have the metadata, which states the slot layout outright.
+- **Internal calls (icalls)** — engine natives like `Transform::get_position_Injected` are
+  *not* transpiled C#; they are resolved by name string through `il2cpp_resolve_icall`
+  against registration tables of `{const char* name, void* fn}` **that do live in the
+  binary** (see the hypothesis below).
+- Metadata format versions 16–31 in the wild; measured target reported **31**. The 24.x
+  family carries sub-versions **not** recorded in the header — inferable only from structure
+  sizes, which is why every tool in this space is version-fragile.
+- Typical defenses, in rough order of frequency: name obfuscation before transpilation
+  (Beebyte-class — metadata intact, names garbage), and encrypted / relocated
+  `global-metadata.dat` with a patched loader (file useless, memory fine).
+
+### What fails today, and the one reason
+
+Measured 2026-07-30, n0xis 0.1.0, Unity 2022.3 x64, `GameAssembly.dll` 94 MB.
+
+| Command | Result | Real reason |
+|---|---|---|
+| `xref string` | `count: 0` | literals are in the `.dat`, materialized by index |
+| `bindings list` | `count: 0` | *for managed methods* — no name strings in the image to pair (**but see the icall hypothesis**) |
+| name → address | no path | needs the metadata × registration join, which nothing parses |
+| `decomp pseudo` call naming | 0 / 69 named | callee names live in the metadata; export thunks recover only the runtime API |
+| `xref to` / `function trace` on virtual calls | incomplete | vtable slot dispatch — the slot table is in the metadata |
+
+`profile` already detects the target and says so in `advisories` (Phase 11). This phase is
+what turns those advisories from *"this will not work here"* into *"run `il2cpp index`"*.
+
+### Managed provenance (the item that justifies the phase)
+
+N0xis already has the three pieces this needs: **hardware watchpoints × a real
+cross-process x64 unwinder × a decompiler** (Phases 4b/4c). On an IL2CPP target that
+currently answers *"`sub_18069d4d0` wrote your value, called from `sub_…`, `sub_…`"* — true
+and nearly useless.
+
+With the managed layer, the same machinery answers **"`PlayerHealth::ApplyDamage` wrote it,
+called from `CombatResolver::Resolve`, called from `EnemyAI::Update`"** — a *C# stack trace
+recovered from a hardware watchpoint on a memory address*, with no injection, no loader, and
+no managed debugger. Generic-shared frames disambiguate through the hidden `MethodInfo*`
+argument, which is *in a register at the moment the watchpoint fires* — a fact only a live
+tool can use, and the exact place a static dumper cannot follow.
+
+Nothing in the ecosystem does this. Il2CppDumper is static; a memory scanner cannot name IL2CPP
+frames; a MelonLoader/HarmonyX mod can hook a method it already knows but cannot start from
+an address and ask *who touched it*. **Sequence the phase so this lands as early as the
+dependencies allow** — it is the point of the phase, not step 4 of a list.
+
+A second, quieter win of the same kind: **static fields make pointer paths largely
+unnecessary here.** Most game singletons are a static `Instance`; the metadata gives the
+klass, the klass gives `static_fields`, and that is a stable, restart-survivable anchor
+derived by name instead of by AOB/pointer scanning. On this corpus that replaces the single
+most laborious classic workflow.
+
+### Prioritized plan (leverage × cost)
+
+0. ⬜ **Import an external dump first — one day, ~80 % of the pain gone.**
+   `il2cpp import --script-json <Il2CppDumper output>` → an RVA→name table in `.n0x/`,
+   chained in as a `SymbolProvider` over the PE exports. Named decompilation *before* a
+   single byte of metadata parser exists. Not scaffolding to throw away: it stays as the
+   fallback for versions and obfuscations the native parser refuses, and as the interop
+   path into an ecosystem that already exists (Il2CppDumper, Il2CppInspector, Cpp2IL).
+1. ⬜ **`crates/n0xis-il2cpp` — the native parser.** Header + string table + type / method /
+   field definitions + literals + generic containers from the `.dat`; `Il2CppCodeRegistration`
+   / `Il2CppMetadataRegistration` located in the image (registrar export → `lea` operand,
+   with a validated structural scan as fallback). **Hold per-version struct layouts as
+   data**, one table, never `if version == 29` scattered through the code — the same shape
+   `profile.rs` already uses for engine fingerprints and `signatures.rs` for API tables.
+   **Self-validate and refuse:** string offsets in range, method RVAs inside `.text`, field
+   offsets below `instance_size`. A garbage index that *looks* like symbols is the worst
+   possible failure for a `sound over complete` tool (CONCEPT §3 rule 6) — it manufactures
+   confident wrong names in every downstream command at once.
+   `il2cpp index` builds it once and caches into the project store (Phase 6).
+2. ⬜ **Wire the seams — where the payoff actually arrives.** `Il2CppSymbols:
+   SymbolProvider`, chained over the PE provider. `decomp pseudo`, `ir explain`,
+   `function discover`, `xref to`, `function trace` all start naming with **zero changes of
+   their own**. Extend the seam with a name→address direction (`symbol_by_name`) that
+   **returns a set, never one entry** — generic sharing and ICF both make the single-answer
+   API a lie (the same discipline Phase 11 established for folded exports).
+3. ⬜ **Managed provenance** (the item above) — `debug watch` / `provenance trace` /
+   the unwinder resolve frames through the index, and disambiguate shared generic bodies via
+   the live `MethodInfo*`. Depends on 1+2 and on nothing else; do not let it drift to the end.
+4. ⬜ **Types, objects, and the live klass route.** `il2cpp type` (fields, offsets, size,
+   parent, statics, vtable); `scan dissect --as-type`; **address → klass → field name**, the
+   reverse lookup that ends a scan session in one step instead of an afternoon;
+   `il2cpp obj <addr> --depth N` walking the managed graph with `Il2CppString` (UTF-16 +
+   length) and array decoding; `il2cpp static <Type>::<Field>` as the anchor primitive.
+   ⚠️ **Prefer runtime offsets when a process exists** — from v24.5 field offsets live in the
+   binary's registration, and generic-instance layouts are computed at runtime; the `.dat`
+   alone is not authoritative for either.
+5. ⬜ **Strings, properly.** Literal index → metadata-usage slot → `xref to` on the slot.
+   This is what makes "find the code behind the text on screen" work here, and it is the most
+   common entry point in practice. Composes directly with Phase 9's `ui locate`: on-screen
+   text → managed `TMP_Text` instance → backing field → writing method.
+6. ⬜ **Devirtualization from metadata.** Vtable slot + interface-offset resolution turns
+   Phase 10's hardest ❌ item (*indirect / virtual call resolution*) from "needs a real
+   points-to analysis" into a table lookup **on this corpus**. Cheap here, expensive there —
+   take the cheap one.
+7. ⬜ **Outputs for mod authors** (the data seam earning its keep):
+   `il2cpp emit-hook --loader melon|bepinex` (HarmonyX skeleton with the correct signature,
+   hidden `MethodInfo*` included) or a native trampoline through the existing journaled
+   `patch detour`; `il2cpp emit-offsets --format cpp|rust|json`; export back to
+   `dump.cs`/`script.json` shape for ecosystem interop.
+8. ⬜ **`il2cpp diff --old <index> --new <index>` — the maintenance killer.** What an update
+   broke: methods moved, field offsets shifted, signatures changed. Combined with `.n0xt`
+   tables and `diff functions`, this is **automatic offset migration for an existing mod** —
+   the one problem every mod author has forever and no RE tool addresses, because no RE tool
+   holds both indices and the user's own address table.
+
+### Two routes to the same facts — keep both
+
+| Route | Wins | Costs |
+|---|---|---|
+| **File** — parse `.dat` + registrations statically | deterministic, ASLR-free, reproducible, no running game | dead against on-disk encryption; version-fragile |
+| **Runtime** — read `Il2CppClass` / `MethodInfo` from a live process (`klass->name` is a `const char*` into the mapped metadata blob) | survives on-disk encryption and metadata relocation; authoritative offsets; the only route to `MethodInfo*` disambiguation | needs the game running; klass layout is itself version-fragile |
+
+And the bridge between them: **`il2cpp index --pid`** — recover the metadata blob from the
+running process (it is decrypted in memory by definition) via the existing `snapshot dump`,
+then index it like a file. Honest framing: memory-dumped metadata is not novel — Il2CppDumper
+accepts a dump, and external dumpers exist. What is ours is that it is *one tool, one
+command*, snapshot-backed and therefore replayable and checkable by someone else.
+
+### Hypotheses to measure before building on them
+
+- ⬜ **The icall table may make `bindings list` work after all.** IL2CPP registers engine
+  internal calls through tables of `{const char* name, Il2CppMethodPointer fn}` — which is
+  *exactly* the name-string × function-pointer pairing `bindings list` was built for, and
+  those strings should be in `.rdata`. If it holds, the current advisory ("IL2CPP has no
+  binding-name strings in `.rdata`") is **overstated** and must be narrowed to *managed*
+  methods, with icalls called out as the working case. Measure first:
+  `n0x xref string --file GameAssembly.dll --query "get_position_Injected"`, then
+  `bindings list` over the hit's data window. This is precisely the class of overstated claim
+  Phase 11 exists to hunt — check it before the phase, not after.
+- ⬜ **Cpp2IL as the obfuscation fallback** — worth evaluating as an *import* source (like
+  item 0) for targets whose metadata is renamed or unreadable. Evaluate; do not reimplement.
+
+### What this phase deliberately does **not** build
+
+Not a C# decompiler, not a mod loader, not a managed injector, not an IL reconstructor.
+BepInEx/MelonLoader/Il2CppInterop own *running* mods and do it well; N0xis's contribution is
+analysis, localization, provenance, and journaled patching. `emit-hook` generates a skeleton
+for someone else's loader — that is a data-seam output, not an ambition to become one.
+
+### Framing rules this phase encodes
+
+- **Fix the layer, not the symptoms.** Five commands are broken; there is one cause. A patch
+  per symptom would have produced five special cases and no name→address path at all.
+- **Version-fragility is the permanent cost of this format** — pay it once, as data, with
+  validation and an honest refusal. A tool that emits wrong names is worse than one that
+  emits none, and on this corpus wrong names are *easy* to emit.
+- **Say which layer a fact came from** — metadata, export table, live klass, or inference
+  from code shape — and never collapse a generic-shared or ICF-folded set to one name.
+
+---
+
+## Phase 13 — The wire: network & protocol layer (netcode QA and server-authority testing) 🎯 ⬜
+
+**The thesis: N0xis can say what is in memory and which code touched it, and has no idea what
+left the machine.** For any title with a server, half the truth lives on the wire — and the
+questions a studio actually cannot answer today are wire questions: *does the client send
+what the design says it sends?*, *what is in this 340-byte frame we ship 30 times a second?*,
+*if a client lies about this field, does the server catch it?* None of those are reachable
+from a memory scanner and a decompiler alone.
+
+### What this phase is for, stated once and plainly
+
+This is **netcode QA and server-authority testing on builds you own or are authorized to
+test** — a studio's own game, a client's game under a testing agreement, a server you
+operate. Three concrete jobs:
+
+1. **Protocol truth.** What the shipped client actually puts on the wire, versus the protocol
+   document, which is wrong roughly as often as documents are. Field layout, cadence,
+   bandwidth per subsystem, and what leaks into a packet that should never have been in one.
+2. **Desync and regression analysis.** Two captures of the same scripted scenario across two
+   builds, differenced. This is the netcode analogue of `diff functions`, and it is how you
+   find the change that broke replication without reading the diff.
+3. **Server-authority verification — the security job.** A server is authoritative only if a
+   *lying* client gets refused. Testing that claim requires producing the lying client's
+   traffic and recording the server's answer; there is no other way to test it. That is why
+   `net replay` exists, and it is why its output is shaped as a **test result** — accepted or
+   rejected, per mutated field — rather than as a working exploit.
+
+The standing project line holds without amendment here: every command in this phase describes
+what *your* client sends and whether *your* server checks it.
+
+### Why this belongs in N0xis rather than in Wireshark
+
+Wireshark sees bytes with no code context. A debugger sees code with no protocol view. The
+gap between them is where every real netcode investigation stalls, and N0xis already owns the
+one combination that closes it: **hardware watchpoints × a cross-process x64 unwinder × a
+decompiler** (Phases 4b/4c). Pointed at a send buffer, that stack answers:
+
+> the 4 bytes at frame offset `0x1C` were serialized from `+0x40` of the object at
+> `…`, which `Inventory::CommitSlot` wrote 12 ms earlier, called from `PickupItem`
+
+A wire field bound to a memory address bound to a named function, in one artifact. **Nothing
+else joins those three views**, and it is the answer QA actually wants — not a hexdump, but
+*which of your code put this on the wire*. On an IL2CPP target with Phase 12 landed, those
+frame names come out as C# methods, which is the point at which this stops being a hex tool.
+
+Everything else in this phase is table stakes that exists to make that one join possible.
+
+### Where frames can be captured (ordered by cost, and by how much they are worth)
+
+| Route | Mechanism | Yields | Costs |
+|---|---|---|---|
+| **Offline** | read a pcap / JSONL someone else recorded | schema, dissection, diffing, CI replay — with no target at all | no process context, so no provenance join |
+| **API detour** | inline hook on `ws2_32` `send`/`recv`/`WSASend`/`WSARecv` — **the machinery already exists** (`patch detour`, `trampoline.rs`, undo journal) | per-process, driver-free, exact buffers as the app hands them over | post-encryption if the title encrypts above the socket; hooking is a mutation |
+| **App detour** | hook the title's own serialize/deserialize routine, found with the existing static pipeline | plaintext structures *before* any encryption, and the natural provenance anchor | needs that function found first — i.e. the normal RE loop, which is the part N0xis is already good at |
+| **ETW** | `Microsoft-Windows-Winsock-AFD` / `-TCPIP` providers | per-PID socket events with **no injection whatsoever** | metadata-rich, payload-poor; needs a session and elevation |
+
+Note the ordering is not the obvious one: the highest-value route is the *app-level* detour,
+and it is the one that depends on work N0xis already does well. Encryption is not an obstacle
+to be defeated — in a build you own you hook above it, where the plaintext already is.
+
+### The seam (crate layout, and the boundary law)
+
+- `crates/n0xis-net` — a **new crate outside the pure trio**. `scripts/check_boundary.sh`
+  must gain the transport crates to its `FORBIDDEN` regex **in the same change**, or the
+  boundary law silently weakens on the day this lands. Treat that line of the script as part
+  of the phase's definition of done, not as cleanup.
+- The abstraction mirrors `MemorySource`: a **`FrameSource`** trait — implementations for a
+  live capture, a pcap file, and a `.n0x/` replay journal. Every analysis pass is written
+  against the trait, so all of them are testable offline against a recorded capture exactly
+  as the core is testable against `Snapshot` today. This is the item that decides whether the
+  phase is maintainable; get it right before writing a single capture backend.
+- **Capture runs as a separate process** — the existing `RemoteAgent` / `PluginSession` shape
+  (spawn an argv, newline-JSON over stdio). It is the part that needs privileges and the part
+  most likely to die on a driver; it must not share an address space with the analyzer. This
+  also keeps the ETW-vs-WinDivert-vs-pcap choice an implementation detail behind an argv
+  instead of a compile-time dependency of N0xis. **Depends on the per-plugin timeout debt**
+  recorded above — a capture plugin is long-running by definition, and the global 10 s
+  constant forecloses it.
+- Schemas follow the standing policy: `n0xis.net.*.v1`.
+
+### Prioritized plan (leverage × cost)
+
+0. ⬜ **Offline first — `net import <pcap|jsonl>` + `net frames`.** No capture, no hooks, no
+   driver, no target, nothing privileged: a `FrameSource` over a file and the envelope shape.
+   Same trick as Phase 12's item 0 — it fixes the schema before anything that can crash a
+   game exists, and from here on every later item is testable against a checked-in capture.
+1. ⬜ **`net dissect` / `net diff` — field inference by differential capture.** This is
+   `scan filter`'s narrowing algorithm applied to frames instead of an address space: record
+   two sessions differing by one deliberate action, keep the bytes that changed, repeat.
+   Field offsets, widths and candidate types fall out of it. Conceptually the same engine as
+   the value scanner — **do not write a second one.**
+2. ⬜ **`net capture --pid`, API detour then app detour.** Ship the `ws2_32` variant first: it
+   works with zero prior RE and proves the live path end to end. Then the "hook this
+   function" variant, which is where the plaintext and the provenance anchor both live. Both
+   land in the existing undo journal like every other mutation — a capture hook is a patch,
+   and it must be removable by `patch undo` on the same terms.
+3. ⬜ **`net provenance` — the point of the phase, and the reason to do the phase at all.** Frame
+   field → the memory address it was serialized from → the function that wrote that address,
+   through the watchpoint + unwinder + decompiler stack that already exists. Sequence this as
+   early as its dependencies allow, exactly as Phase 12's managed provenance is sequenced —
+   it is the item a third party cannot copy without also owning a watchpoint engine and an
+   unwinder, and without it this phase is a worse Wireshark.
+4. ⬜ **`net replay` — deterministic re-send of a recorded session against a server you
+   operate.** Replay with one field mutated; record whether the server accepted it. Output is
+   a pass/fail matrix over mutated fields — the server-authority test from the framing above.
+   This is the single most valuable thing a studio can run against its own build before ship,
+   and the artifact is a report, never a payload.
+
+### What this phase deliberately does **not** build
+
+- **No MITM proxy against third-party servers**, no TLS interception, no certificate
+  injection. In a build you own you hook above the crypto, which is both easier and the only
+  framing this project accepts.
+- **No anti-cheat evasion, no traffic obfuscation, and no injection into titles you do not
+  operate.** Out of scope permanently — not "later", not behind a flag.
+- **No protocol emulation or server reimplementation.** Replay goes against a real server you
+  run. Rewriting someone's server is a different project with a different license question.
+- **No general network-security tooling.** Not a port scanner, not a fuzzer-for-hire, not a
+  traffic generator. The scope is one process's own traffic and its join back to that
+  process's code; anything that does not need the join belongs in Wireshark, and should be
+  sent there.
+
+### Framing rules this phase encodes
+
+- **Capture is a source, not a feature.** Frames enter through a trait the same way bytes
+  enter through `MemorySource`, so the analysis half never learns whether it is looking at a
+  live socket, a pcap, or a journal — and stays testable without a network.
+- **The join is the product.** Bytes on the wire are a commodity that four free tools already
+  print. The map from a wire field back to a named function is not, and every design choice
+  here should be settled by asking which option preserves that map.
+- **A test result is not an exploit.** Anything this phase emits about a server answers
+  "did the check hold", and is shaped so that the answer is the deliverable.
+
+---
+
+## Engineering hardening (not a numbered phase) — CI, the frontend seam, the capability registry ✅
+
+Not capability work: this is the project's own engineering rules, applied to itself after
+an audit against the global design principles (modularity on four seams, anti-hardcode,
+no privileged core). Three of the five gaps that audit found are closed; the honest state
+of the rest is recorded below.
+
+### Trust seam — the layering law is now mechanical ✅
+
+- ✅ **CI exists** (`.github/workflows/ci.yml`, 3 jobs, each with `timeout-minutes`):
+  a Linux `boundary` job, a Windows `build + test` job with `RUSTFLAGS=-D warnings`, and a
+  Windows `clippy --all-targets -- -D warnings` job. Before this, "the core links zero OS
+  crates" was a claim in a document, checked by hand or not at all.
+- ✅ **`scripts/check_boundary.sh`** — the layering law as an executable gate. Asserts
+  `n0xis-contracts` / `n0xis-arch` / `n0xis-core` pull in no OS, format, frontend or
+  transport crate (and, since the frontend seam landed, no `n0xis-frontend` either — the
+  arrow points down only). Uses `cargo tree --target all`, without which a
+  `[target.'cfg(windows)']` dependency added to a pure crate would stay invisible on the
+  very runner meant to catch it. Verified in both directions: green on the pure trio,
+  red on `PURE_CRATES=n0xis-project` (which legitimately pulls `windows-sys` via `dirs`).
+- ✅ **The workspace is clippy-clean at `-D warnings`** — 21 diagnostics fixed to get
+  there, two of which were deny-by-default errors. `cargo fmt` is deliberately *not* a
+  gate (hand-tuned register tables and single-line struct literals; adding it would be a
+  repo-wide reformat, not a CI change).
+
+**Found by turning CI on**, which is the point of turning CI on:
+
+- 🐛 **SSA hung forever on any function with unreachable blocks** — `decomp pseudo`,
+  `ir value-set`, and everything downstream spun at 100% CPU and never returned, taking
+  `cargo test --workspace` with them (measured: 74 minutes before being killed;
+  `phase5_exit` was the visible casualty). Root cause in `dom.rs`: `dominators_fwd` left
+  unreachable blocks at their `all-blocks` initializer, `immediate_doms` then picked an
+  "idom" out of that garbage, and two mutually unreachable blocks picked *each other* —
+  a cycle in what must be a tree, which `dominance_frontier`'s runner walk followed
+  forever. Measured on a trivial Rust `main`: 56 blocks, 7 unreachable (alignment `nop`s
+  after calls), blocks 1 and 15 pointing at each other. Fixed by excluding unreachable
+  blocks from the dominator lattice, plus a `seen` guard in `dominance_frontier` so a
+  malformed idom degrades one function instead of wedging the process. Two regression
+  tests; `phase5_exit` went from "hangs forever" to 4.7 s. **Unreachable blocks are normal
+  in real binaries** (padding after `noreturn` calls, unresolved jump-table targets) — any
+  dominator-based pass must handle them explicitly.
+- 🐛 **`expr_prop_round`'s forward scan only ever inspects the next statement**
+  (`optimize.rs`) — the trailing `break` sits inside the loop instead of after it, so
+  propagation happens solely when the use is immediately adjacent. Surfaced by
+  `clippy::never_loop`, documented in place with an `#[allow]` rather than silently
+  changed: fixing it alters decompiler output and belongs in its own change with the
+  pseudo-C goldens re-checked. ⬜ **Open.**
+
+### Code + data seams — one frontend contract instead of a copy per frontend ✅
+
+- ✅ **`n0xis-frontend`** (new crate, 13th member): source resolution, ISA selection and
+  argument parsing, shared by every frontend. The CLI and MCP each carried their own copy
+  of the source seam, and **the copies had already drifted** — the CLI never consulted the
+  `.n0x/session.json` default that `attach` writes, so `attach` followed by a bare
+  `decomp pseudo` worked through an agent and failed at the terminal, with the docs
+  promising both. `n0xis-mcp/src/source.rs` went from 140 lines of duplicated logic to 25
+  lines of shape adaptation; `n0xis-cli` lost `Src`, `build_source`, `base_for_module`,
+  `scan_range`, `load_snapshot` and five parsers.
+- ✅ **The ISA seam is no longer bypassed at the edge** — hardcoded `X64::new()` in the CLI
+  went 18 → 9, and every one of the nine that remains is in a command that decodes no
+  instructions (value scans, pointer paths, `ui locate`, `doctor`), each annotated as such.
+  MCP's `with_ctx` took the ISA as a constant, which quietly made every agent-facing tool
+  x64-only while the CLI had `--arch`; six tools now take `arch`, and an unknown one is a
+  `bad-arch` error rather than a silent default.
+
+### Plugin architecture — one contract for built-in and external ⏳
+
+- ✅ **The capability registry** (`n0xis-frontend::registry`): a `Capability` is a name, a
+  summary, a schema and a handler from JSON arguments to the standard envelope; a `Plugin`
+  registers capabilities; `build_registry()` is the **single composition point**. Built-in
+  analysis (`AnalysisPasses`) and user-registered process plugins from `.n0x/plugins.json`
+  (`ProcessPlugins`) register through the *identical* trait and dispatch through the
+  *identical* call — verified end-to-end: a demo plugin appears in `capability list`
+  alongside `decode` with `origin: plugin`, and `capability run plugin.demo` returns the
+  same envelope shape as `capability run decode`.
+- ✅ **Both frontends reach it** — `capability list` / `capability run` (CLI),
+  `capability_list` / `capability_run` (MCP). A new capability appears in both without
+  either frontend changing.
+- ✅ **Batch 1 — function-scoped analysis** — `ir.cfg`, `ir.explain`, `ir.dot`,
+  `ir.value-set`, `ir.deobfuscate`, `decomp.pseudo`, plus `decode` and `function.discover`.
+  The CLI/MCP handlers for them are argument mapping only, and `finish_ir` /
+  `finish_decomp` were deleted outright as dead code — the compiler's own proof that the
+  duplication is gone. Shared helper: `with_cfg_ctx`, the JSON twin of the CLI's `run_ir`
+  (target + ISA + `addr_rva`/`addr_module` + the `cfg_cached` artifact cache).
+- ✅ **Batch 2 — range-scoped analysis** — `xref`, `xref.string`, `function.trace`, via
+  `with_src_ctx` (the source's own `.text`/`.rdata` windows rather than one function
+  address). Both frontends dispatch; `XrefPass`/`StringXrefPass`/`TracePass` imports
+  dropped from both. Behavior verified identical to the pre-migration release binary,
+  including a case where both return zero hits.
+- ✅ **Batch 3 — data-side scanning (a memory scanner class)** — `scan.value`, `scan.filter`,
+  `scan.aob`, `scan.dissect`, `pointer.path`, via `with_scan_ctx`. Deliberately narrower
+  than the other helpers: a value scan takes a `pid` (regions clipped to what is actually
+  committed — a live window routinely spans unmapped gaps, and one `ReadProcessMemory`
+  across a gap fails *wholesale*, silently yielding zero hits) or a `file` with an explicit
+  window; a snapshot or remote agent is rejected rather than quietly scanning nothing.
+  `live_scan_regions` moved into `n0xis-frontend::source`; `build_scan_criterion` /
+  `build_filter_criterion` deleted from the CLI. Verified live against a spawned target:
+  value scan → 1 hit, filter `unchanged` → same hit, AOB → 3 matches, dissect and a
+  1-deep pointer chain — each through both `n0x scan …` and `capability run`.
+  **This batch is where the parity gap starts closing in earnest**: the whole scan family
+  was CLI-only, and an agent can now reach all of it through `capability_run` without a
+  single new `#[tool]` method.
+- ✅ **Batch 4 — raw memory + the last function-scoped analysis** — `mem.read`, `mem.write`,
+  `mem.map`, `ir.slice`, `ir.manifest`, `diff.functions`. This is the batch where the CLI
+  stopped having a decompilation path of its own: `run_ir`, `decompile_one` and
+  `finish_slice` all became dead code and were deleted, so from flag parsing to pseudo-C
+  render there is exactly one implementation. `diff.functions` keeps its two independent
+  targets (`a_pid`/`a_file`/`a_bytes` vs `b_*`) — comparing two builds is the entire point.
+  **`provenance.trace` was deliberately left out** despite being on the plan: it arms a
+  watchpoint and blocks until a hit, which is the `debug watch` shape, not
+  "arguments in, envelope out".
+- ✅ **Batch 5 — the `.n0x/` database** — `annotate.set/show/list/rm`,
+  `selection.save/list/show/clear`, `dump.save/list/show/rm`, `table.add/list/show/rm`
+  (16 capabilities, in their own `project_caps.rs` under the `ProjectOps` plugin). These
+  resolve no source and no ISA — the project *is* the target — which is exactly why they
+  belong in the same registry: from a frontend's side `annotate.set` and `decomp.pseudo`
+  are the same kind of call. One deliberate asymmetry: `dump.save` has no stdin arm, since
+  a capability is called with arguments, not a pipe; the CLI still reads stdin and passes
+  the result in as `content`.
+- ✅ **Batch 6 — target inventory + evidence tooling** — `process.ps`, `module.list`,
+  `sig.validate` (`method_caps.rs`, `MethodTools` plugin). These are what an agent needs
+  *before* it knows what it is looking at; an agent that can decompile but cannot list
+  processes is stuck at step zero. Three neighbours were deliberately left as direct
+  commands rather than dragged in: `const.identify` (its Lua-chunk mode needs
+  `n0xis-lua`, and widening the shared layer's dependencies for one mode is the wrong
+  trade), `profile` (IL2CPP metadata detection, same reason), and `bindings.list`
+  (live module-scoped `.text`/`.rdata` windows that do not fit the existing helpers
+  cleanly).
+- ⏳ **The rest of the surface** — 87 leaf commands exist; 41 capabilities are registered.
+  Everything else still goes through the older shape (a `clap` variant plus an arm in
+  `n0xis-cli`'s `match`, plus a separate `#[tool]` in `n0xis-mcp`). Migrate in batches;
+  each batch also closes part of the CLI/MCP parity gap, since both frontends then ask the
+  same registry rather than needing a hand-written tool per command.
+  **Not everything should migrate**: roughly a third of the surface is not
+  "arguments in, envelope out" — `remote-serve` is a server, `debug watch` blocks on an
+  event, `table freeze` loops writes for a duration, `ui screenshot` returns a PNG,
+  `project init` / `plugin add` mutate `.n0x/` rather than analyzing anything. The
+  realistic ceiling is ~40-50 capabilities, not 87.
+
+### Still open from the same audit ⬜
+
+- ⬜ **CLI/MCP parity** — 87 CLI leaf commands vs ~20 MCP tools. Closes as a side effect of
+  the registry migration above; not worth hand-writing 65 more `#[tool]` methods.
+- ⬜ **Event sourcing is partial** — patch journal (`.n0x/patches/`) and per-address
+  annotation history, but no shared op-log. Fine for undo; insufficient if replication or
+  agent-visible history is ever wanted. Deliberate, not forgotten.
+
+### Architectural debts (recorded 2026-08-06, from a seam audit) ⬜
+
+Not bugs — places where a seam that exists for one axis was never built for a neighbouring
+one. Each is cheap to record and expensive to discover the day a second implementation is
+wanted, which is the whole argument for writing them down before that day.
+
+- ⬜ **There is no format seam.** The ISA got `trait Arch` in Phase 1 *with a single
+  implementation*, precisely so x64 could never leak into the passes — see the sequencing
+  note at the foot of this file. The container format never got the same treatment.
+  `goblin::pe` is imported in exactly one place in the workspace
+  (`n0xis-sources/src/static_pe.rs`), `StaticPe::load` is called directly from
+  `n0xis-frontend::source::resolve`, and **nothing dispatches on file magic** — the format
+  is decided by which flag the user typed. `Src` is a closed four-variant enum with a
+  five-branch `resolve()`, plus a per-variant arm in `text_range`, `section_range`,
+  `modules` and `module_base`. Consequence: a second container (an ELF for a Linux target,
+  a `.wasm` module, a raw firmware image, a console executable) is **surgery spread across
+  `n0xis-frontend`, not a registration call** — exactly the failure mode `trait Arch` was
+  built to prevent on the other axis. The enum itself is defensible and its doc comment
+  argues the case honestly (range resolution and symbol wiring genuinely do differ per
+  adapter); what is missing is a `BinaryFormat` trait that takes bytes and yields the
+  `MemorySource` + `SymbolProvider` + `ModuleProvider` triple, with a magic-byte dispatcher
+  in front of it and `StaticPe` as its first implementation. Build it when the *second*
+  format is real, not before — but build it as the second format's first commit, never
+  alongside it.
+- ⬜ **`trait Arch` degrades silently, and an implementation cannot declare what it
+  provides.** `lift` defaults to `MicroStmt::Unlifted`, `branch_condition` to a
+  placeholder, `reg_access` to empty, `prologues` and `detect_switch` to nothing. Every
+  default is individually *sound* — that was the design, and it is the right one. But
+  ARM64 overrides neither of the first two, so SSA optimization and flag-precise conditions
+  are an x64-only capability, and the only places that say so are a doc comment at the top
+  of `arm64.rs` and a ⚠️ in this file's Phase 7 heading. An agent that runs `ir value-set
+  --arch arm64` receives a structurally valid, quietly degraded answer **with no
+  machine-readable signal that it is degraded** — the one failure mode Phase 11 exists to
+  eliminate. Global principle: modules declare what they require and provide. Fix shape: an
+  `Arch::capabilities()` returning a declared set, surfaced in `doctor` and echoed in the
+  `meta` of every envelope whose quality depends on it, so degradation is *data* instead of
+  prose in a source file.
+- ⬜ **There is no VM seam — engine support is per-engine and hardcoded.** `n0xis-lua`
+  (LuaJIT 2.0 bytecode dumps), `n0xis-luajit` (live GC heap) and `n0xis-bitsquid` (bundle
+  archives) are three unrelated crates sharing no abstraction; `n0xis-core` depends on none
+  of them and has no notion of a bytecode VM at all — `trait Pass` is written over a native
+  `Arch` plus a `MemorySource`. A second scripting runtime (stock Lua 5.1, Mono/CIL, a
+  bespoke engine VM) starts from zero. **Deferred on purpose**: one engine family is
+  evidence, two is the minimum from which a sound abstraction can be extracted, and
+  inventing the trait now would be inventing it from a sample size of one. Recorded so that
+  the second engine triggers an extraction rather than a third parallel crate.
+- ⬜ **`n0xis-luajit`'s `GCstr` layout is a single-build measurement typed as a universal
+  law.** The module doc says so plainly — "a validated constant for this game/build, not a
+  general LuaJIT-version law", never cross-checked against upstream `lj_obj.h` — but
+  **nothing in the code or in any envelope carries that caveat**, so the honesty lives only
+  where a user will not look. Anti-hardcode fix: make the layout a named, overridable
+  profile with the measured build as its default, and name the profile used in the output's
+  `meta`. Same shape as the `lcg` constants, which were already done right (CLI flags, not
+  baked in) — this is the one that was not.
+- ⬜ **`PLUGIN_TIMEOUT` is one 10 s constant for every plugin** (`n0xis-frontend/src/registry.rs`).
+  Named rather than inline, so anti-hardcode is satisfied to the letter — but a single
+  global value cannot serve both a sub-second transform and a plugin that streams for a
+  minute. It belongs in the `PluginRecord` in `.n0x/plugins.json`, with 10 s as the
+  default. This is a hard blocker for any long-running plugin, and Phase 13's capture
+  process is exactly that shape.
+
 ## Sequencing notes
 - **Phases 1–2 are non-negotiable prerequisites** — the optimizing decompiler
   (Phase 3) has nowhere to live until the pass pipeline and adapters exist.
@@ -1389,3 +1989,26 @@ renderer does not yet know to refuse to pick one. And MCP still exposes 23 of th
   --by-transition` (W1) are worth more than the rest combined, because one
   attacks the root cause and the other formalizes the only technique that ever
   reliably worked.
+- **Phase 12 is independent of Phase 10 and partly substitutes for it on this corpus.**
+  It needs nothing from the decompiler-depth work, and its devirtualization item resolves
+  Phase 10's hardest ❌ (indirect/virtual calls) by table lookup for Unity targets — so on
+  a game corpus, 12 outranks 10 on payoff per unit of work. Within 12, ship item 0 (import
+  an external dump) immediately: it is a day's work, it is reversible, and it tells you
+  what the rest of the phase is actually worth before you write a metadata parser. Then
+  drive to item 3 (managed provenance) — that is the point of the phase, and it is the item a
+  third party cannot copy without also owning a watchpoint engine and an unwinder.
+- **Phase 13 is independent of 10 and 12, and compounds with both.** It needs nothing from
+  the decompiler-depth work and nothing from IL2CPP — item 0 is a file parser and a schema.
+  But its payoff *multiplies* with 12: `net provenance` on a Unity target reports native
+  `sub_…` frames without the managed layer and C# method names with it, which is the same
+  artifact at two wildly different levels of usefulness. If both are on the table, 12 first.
+  Within 13, ship item 0 before anything that can touch a running game, and drive to item 3
+  (`net provenance`) as early as its dependencies allow — items 0-2 are table stakes that
+  several free tools already cover, and item 3 is the only one that is N0xis-shaped.
+- **The architectural debts are not a work item — they are triggers.** Do not schedule a
+  "seams sprint". Each one names the change that should force it: the format seam lands as
+  the *first commit of the second container format*, the VM seam as the first commit of the
+  second scripting runtime, `Arch::capabilities()` when ARM64 verification starts (it is the
+  thing that makes the verification legible), and the per-plugin timeout as a prerequisite
+  of Phase 13's capture process. Recorded now so the trigger is recognized when it arrives,
+  rather than discovered as a two-week detour halfway through the work that tripped it.

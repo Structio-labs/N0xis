@@ -84,7 +84,7 @@ cargo build --workspace --release      # → n0x (n0xis), n0xis-mcp, n0xis-hud
 Rust toolchain pinned in `rust-toolchain.toml` (builds with `stable-x86_64-pc-windows-gnu` — no MSVC Build Tools needed). Tests: `cargo test --workspace --features n0xis-pipeline/live` (some spawn real disposable processes). The analysis core is OS-free by construction — `cargo test -p n0xis-core` links zero Windows crates.
 
 <details>
-<summary><b>Workspace layout — 12 crates</b></summary>
+<summary><b>Workspace layout — 13 crates</b></summary>
 
 ```
 n0xis-contracts/   all wire schemas (n0xis.*.vN) + shared value types — single source of truth
@@ -93,6 +93,7 @@ n0xis-sources/     input adapters: LiveProcess, StaticPe, Snapshot, RemoteAgent,
 n0xis-core/        pure analysis passes (CFG/SSA/types/scan/diff/structural/ui_locate/…) — no I/O, no OS
 n0xis-project/     .n0x/ analysis DB (names, types, notes, patches, selections, .n0xt tables)
 n0xis-pipeline/    wires source + arch into the core; content-addressed artifact caching
+n0xis-frontend/    shared frontend seam: source/ISA resolution, argument parsing, capability registry
 n0xis-cli/         thin clap frontend (binary: n0xis, alias n0x)
 n0xis-mcp/         MCP server frontend (binary: n0xis-mcp)
 n0xis-hud/         N0xHUD companion-window frontend (binary: n0xis-hud)

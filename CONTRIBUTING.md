@@ -24,10 +24,27 @@ See [README.md#building](README.md#building). Before opening a PR:
 ```
 cargo build --workspace          # must be warning-free
 cargo test --workspace --features n0xis-pipeline/live
+cargo clippy --workspace --all-targets -- -D warnings
+sh scripts/check_boundary.sh     # the layering law, mechanically
 ```
 
 Zero warnings is enforced, not a suggestion — every phase in this project's
 history shipped with a clean build, and that's not going to change now.
+
+**CI runs exactly these four** ([.github/workflows/ci.yml](.github/workflows/ci.yml)),
+so a green local run is a green PR:
+
+- **`boundary` (Linux)** — `scripts/check_boundary.sh` asserts `n0xis-contracts`,
+  `n0xis-arch` and `n0xis-core` pull in no OS, file-format or frontend crate,
+  then builds and tests them, and checks that `n0xis-cli` / `n0xis-mcp` still
+  compile where the `live` adapter does not exist. This is CONCEPT §4's layering
+  law; it used to be a claim in a doc, and now it fails the build instead.
+- **`windows`** — the full workspace (including `cfg(windows)` code: live
+  process, debugger, N0xHUD) built with `RUSTFLAGS=-D warnings` and tested.
+- **`clippy`** — the whole workspace, all targets, `-D warnings`.
+
+`cargo fmt` is deliberately *not* a gate: parts of this codebase use hand-tuned
+layout (register tables, single-line struct literals) that rustfmt would reflow.
 
 ## How work gets claimed
 
@@ -70,6 +87,30 @@ contribution at real scale (hundreds of contributors) on exactly this system:
 This project will adopt the same shape at launch (a lightweight `A-`/`D-`/`S-`
 label set, not Bevy's full taxonomy — no point pre-building infrastructure for
 a scale we're not at yet).
+
+## Adding a capability
+
+Two seams matter here, and both are in `n0xis-frontend`:
+
+- **Target arguments** (`--pid`, `--file`, `--snapshot`, `--remote-cmd`,
+  `--bytes`, `--arch`) resolve through `n0xis_frontend::source` /
+  `::resolve_arch`. Never re-implement that in a frontend and never write
+  `X64::new()` inline in one — the CLI and MCP each used to keep their own copy
+  of the source seam, and they had already drifted apart (the CLI silently
+  ignored the `.n0x/` session default that `attach` writes).
+- **New functionality** registers into the capability registry
+  (`n0xis_frontend::registry`). Implement `Plugin`, add your `Capability` in
+  its `register`, and add one line to `build_registry()` — the single
+  composition point. It then shows up in `capability list`, in the
+  `capability_list` MCP tool, and is runnable through `capability run`, without
+  either frontend changing. An external process plugin registered in
+  `.n0x/plugins.json` arrives through the *same* trait and dispatches through
+  the same call; there is no privileged built-in path.
+
+The older shape — a `clap` variant plus an arm in `n0xis-cli`'s `match`, plus a
+separate `#[tool]` method in `n0xis-mcp` — still carries most of the command
+surface and is fine to extend when a command needs bespoke flags. Prefer the
+registry for anything that is "arguments in, envelope out".
 
 ## What a good PR looks like here
 

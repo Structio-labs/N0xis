@@ -97,47 +97,45 @@ impl Pass for DeobfuscatePass {
             for (i, insn) in insns.iter().enumerate() {
                 match insn.mnemonic.as_str() {
                     "mov" | "xchg" => {
-                        if let Some((a, b)) = two_operands(&insn.text) {
-                            if a == b {
-                                junk.push(JunkInsn {
-                                    va: insn.va,
-                                    len: insn.len,
-                                    reason: format!("self-{} ({})", insn.mnemonic, insn.text),
-                                });
-                                continue;
-                            }
+                        if let Some((a, b)) = two_operands(&insn.text)
+                            && a == b
+                        {
+                            junk.push(JunkInsn {
+                                va: insn.va,
+                                len: insn.len,
+                                reason: format!("self-{} ({})", insn.mnemonic, insn.text),
+                            });
+                            continue;
                         }
                     }
                     "add" | "sub" | "or" => {
-                        if let Some((_, b)) = two_operands(&insn.text) {
-                            if is_zero_literal(b) {
-                                junk.push(JunkInsn {
-                                    va: insn.va,
-                                    len: insn.len,
-                                    reason: format!("identity arithmetic ({})", insn.text),
-                                });
-                                continue;
-                            }
+                        if let Some((_, b)) = two_operands(&insn.text)
+                            && is_zero_literal(b)
+                        {
+                            junk.push(JunkInsn {
+                                va: insn.va,
+                                len: insn.len,
+                                reason: format!("identity arithmetic ({})", insn.text),
+                            });
+                            continue;
                         }
                     }
                     "push" => {
-                        if let (Some(reg), Some(next)) = (one_operand(&insn.text), insns.get(i + 1)) {
-                            if next.mnemonic == "pop" {
-                                if let Some(popped) = one_operand(&next.text) {
-                                    if popped == reg {
-                                        junk.push(JunkInsn {
-                                            va: insn.va,
-                                            len: insn.len,
-                                            reason: format!("push/pop pair cancels out ({} / {})", insn.text, next.text),
-                                        });
-                                        junk.push(JunkInsn {
-                                            va: next.va,
-                                            len: next.len,
-                                            reason: format!("push/pop pair cancels out ({} / {})", insn.text, next.text),
-                                        });
-                                    }
-                                }
-                            }
+                        if let (Some(reg), Some(next)) = (one_operand(&insn.text), insns.get(i + 1))
+                            && next.mnemonic == "pop"
+                            && let Some(popped) = one_operand(&next.text)
+                            && popped == reg
+                        {
+                            junk.push(JunkInsn {
+                                va: insn.va,
+                                len: insn.len,
+                                reason: format!("push/pop pair cancels out ({} / {})", insn.text, next.text),
+                            });
+                            junk.push(JunkInsn {
+                                va: next.va,
+                                len: next.len,
+                                reason: format!("push/pop pair cancels out ({} / {})", insn.text, next.text),
+                            });
                         }
                     }
                     _ => {}

@@ -54,7 +54,16 @@ impl Pass for LiftPass {
         let mut blocks = Vec::with_capacity(cfg.blocks.len());
         for block in &cfg.blocks {
             let mut stmts = Vec::new();
-            for insn in &block.insns {
+            // A `tail-call` block ends in a branch that leaves the function;
+            // its last instruction is lowered as `call + return` rather than
+            // as the structural no-op an intra-function `jmp` lifts to
+            // (ROADMAP Phase 10, priority 0 — tail-call promotion). Only the
+            // *terminating* instruction gets this treatment: an earlier `jmp`
+            // in the same block is impossible by construction (a jump ends a
+            // block), but the index check keeps that assumption explicit.
+            let tail_index =
+                (block.terminator == "tail-call").then(|| block.insns.len().saturating_sub(1));
+            for (idx, insn) in block.insns.iter().enumerate() {
                 // A byte the linear decoder marked invalid (padding, an embedded
                 // jump table, data misread as code near a function's tail) must
                 // not sink the whole function: re-decoding it here would error.
@@ -66,7 +75,12 @@ impl Pass for LiftPass {
                 };
                 match decoded {
                     Some(decoded) => {
-                        for stmt in ctx.arch.lift(&decoded) {
+                        let lowered = if tail_index == Some(idx) {
+                            ctx.arch.lift_tail_call(&decoded)
+                        } else {
+                            ctx.arch.lift(&decoded)
+                        };
+                        for stmt in lowered {
                             stmts.push(LiftedStmt { va: insn.va, stmt });
                         }
                     }

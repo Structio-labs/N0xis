@@ -166,8 +166,10 @@ mod tests {
     use super::*;
     use crate::types::TYPE_HASH_LUA;
 
-    fn build_package(entries: &[(u64, u64, Vec<(u32, Vec<u8>, Vec<u8>)>)]) -> (Vec<u8>, Vec<u8>) {
-        // entries: (type_hash, path_hash, [(unknown, inline_bytes, stream_bytes)])
+    /// One test entry: `(type_hash, path_hash, [(unknown, inline_bytes, stream_bytes)])`.
+    type TestEntry = (u64, u64, Vec<(u32, Vec<u8>, Vec<u8>)>);
+
+    fn build_package(entries: &[TestEntry]) -> (Vec<u8>, Vec<u8>) {
         let mut body = Vec::new();
         body.extend_from_slice(&(entries.len() as u32).to_le_bytes());
         body.extend_from_slice(&[0u8; PACKAGE_MAGIC_LEN]);

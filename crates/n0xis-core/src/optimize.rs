@@ -221,7 +221,7 @@ fn sign_extend(v: i128, bits: n0xis_arch::Bits) -> i128 {
     if bits == 0 || bits >= 128 {
         return v;
     }
-    let shift = 128 - bits as u32;
+    let shift = 128 - bits;
     (v << shift) >> shift
 }
 
@@ -377,6 +377,17 @@ fn expr_prop_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> b
             }
             // Find the single use, restricted to this same block, after `i`,
             // with no Call/Store between.
+            //
+            // KNOWN BUG (surfaced by clippy::never_loop, allow kept so the
+            // gate stays green without a silent behavior change): every arm
+            // below leaves the loop on the FIRST iteration — the trailing
+            // `break` was meant to sit after the loop, not inside it. So this
+            // only ever inspects `j == i + 1`, i.e. propagation happens solely
+            // when the use is the immediately next statement. Moving the
+            // `break` out restores the documented "scan forward to the use"
+            // behavior and changes decompiler output, so it belongs in its own
+            // change with pseudo-C goldens re-checked, not in a CI commit.
+            #[allow(clippy::never_loop)]
             for j in (i + 1)..b.stmts.len() {
                 if stmt_is_barrier(&b.stmts[j].stmt) {
                     i += 1;

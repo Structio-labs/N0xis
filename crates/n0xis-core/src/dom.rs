@@ -38,28 +38,51 @@ pub fn block_graph(cfg: &CfgArtifact) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
 /// Forward dominator sets: `dom[i]` = every block that dominates block `i`
 /// (always includes `i` itself). Block `0` is assumed to be the function
 /// entry.
+///
+/// **Unreachable blocks are excluded from the lattice**, and that is not a
+/// detail. Dominance is only defined over paths from the entry, so a block
+/// no path reaches has no meaningful dominator set — but the naive iteration
+/// leaves it at its `all` initializer, and [`immediate_doms`] then happily
+/// picks an "idom" for it out of that garbage. Two mutually unreachable
+/// blocks pick each other, and the resulting `idom` graph contains a *cycle*
+/// instead of being a tree — which spins [`dominance_frontier`] forever.
+///
+/// That is not hypothetical: a plain `decomp pseudo` over a real function
+/// (56 blocks, 7 of them unreachable — blocks 1 and 15 pointed their idom at
+/// each other) hung with the CPU pinned, taking `cargo test --workspace` with
+/// it. Unreachable blocks get `dom[i] = {i}`, so their `idom` is `None` and
+/// every chain terminates.
 pub fn dominators_fwd(n: usize, pred: &[Vec<usize>]) -> Vec<BTreeSet<usize>> {
     if n == 0 {
         return Vec::new();
     }
+    let reachable = reachable_from_entry(n, pred);
+
     let all: BTreeSet<usize> = (0..n).collect();
     let mut dom = vec![all; n];
     dom[0] = BTreeSet::from([0]);
+    for (i, d) in dom.iter_mut().enumerate() {
+        if !reachable[i] {
+            *d = BTreeSet::from([i]);
+        }
+    }
     let mut changed = true;
     while changed {
         changed = false;
         for i in 1..n {
-            if pred[i].is_empty() {
+            if !reachable[i] {
                 continue;
             }
+            // Intersect over reachable predecessors only: an unreachable one
+            // now carries `{itself}`, which would wrongly empty the meet.
             let mut acc: Option<BTreeSet<usize>> = None;
-            for &p in &pred[i] {
+            for &p in pred[i].iter().filter(|&&p| reachable[p]) {
                 acc = Some(match acc {
                     None => dom[p].clone(),
                     Some(s) => s.intersection(&dom[p]).copied().collect(),
                 });
             }
-            let mut new = acc.unwrap_or_default();
+            let Some(mut new) = acc else { continue };
             new.insert(i);
             if new != dom[i] {
                 dom[i] = new;
@@ -68,6 +91,32 @@ pub fn dominators_fwd(n: usize, pred: &[Vec<usize>]) -> Vec<BTreeSet<usize>> {
         }
     }
     dom
+}
+
+/// Which blocks are reachable from block `0`, derived from `pred` (the
+/// successor direction is just `pred` inverted — callers already have `pred`,
+/// so this keeps the signature unchanged).
+fn reachable_from_entry(n: usize, pred: &[Vec<usize>]) -> Vec<bool> {
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, ps) in pred.iter().enumerate().take(n) {
+        for &p in ps {
+            if p < n {
+                succ[p].push(i);
+            }
+        }
+    }
+    let mut reachable = vec![false; n];
+    reachable[0] = true;
+    let mut stack = vec![0usize];
+    while let Some(b) = stack.pop() {
+        for &s in &succ[b] {
+            if !reachable[s] {
+                reachable[s] = true;
+                stack.push(s);
+            }
+        }
+    }
+    reachable
 }
 
 /// Reverse dominator (post-dominator) sets over a synthetic exit node that
@@ -151,10 +200,18 @@ pub fn dominance_frontier(n: usize, pred: &[Vec<usize>], idom: &[Option<usize>])
         }
         for &p in &pred[b] {
             let mut runner = p;
+            // `seen` is a belt-and-braces guard, not the fix: `dominators_fwd`
+            // now guarantees `idom` is a forest, so this walk terminates on
+            // its own. It stays because the failure mode of a malformed idom
+            // is an unkillable spin at 100% CPU — the worst way for an
+            // analysis pass to be wrong. Bailing early degrades one function's
+            // phi placement; spinning takes down the whole run.
+            let mut seen = vec![false; idom.len()];
             loop {
-                if Some(runner) == idom[b] {
+                if Some(runner) == idom[b] || seen[runner] {
                     break;
                 }
+                seen[runner] = true;
                 df[runner].insert(b);
                 match idom[runner] {
                     Some(next) => runner = next,
@@ -207,5 +264,56 @@ mod tests {
         let children = dom_children(&idom);
         assert_eq!(children[0], vec![1, 2, 3]);
         assert!(children[1].is_empty());
+    }
+
+    /// Regression: a CFG with an unreachable region (real code has plenty —
+    /// padding after a `noreturn` call, unresolved jump-table targets) used to
+    /// produce a *cyclic* `idom` and spin `dominance_frontier` forever, which
+    /// hung every `decomp`/`ir value-set` call on the affected function.
+    ///
+    /// Shape: 0 -> {2,3} -> 4 is the reachable part; 1 and 5 are mutually
+    /// reachable but unreachable from the entry — exactly the pair that used
+    /// to pick each other as immediate dominator.
+    #[test]
+    fn unreachable_blocks_get_no_idom_and_do_not_hang() {
+        //          0        1 <-> 5  (island, no edge from the entry)
+        //         / \
+        //        2   3
+        //         \ /
+        //          4
+        let pred = vec![
+            vec![],        // 0: entry
+            vec![5],       // 1: only from 5
+            vec![0],       // 2
+            vec![0],       // 3
+            vec![2, 3],    // 4
+            vec![1],       // 5: only from 1
+        ];
+        let dom = dominators_fwd(6, &pred);
+        let idom = immediate_doms(&dom);
+
+        // The reachable part is unchanged...
+        assert_eq!(idom[0], None);
+        assert_eq!(idom[2], Some(0));
+        assert_eq!(idom[3], Some(0));
+        assert_eq!(idom[4], Some(0));
+        // ...and the unreachable island has no dominator at all, so no cycle.
+        assert_eq!(idom[1], None, "unreachable block must not get an idom");
+        assert_eq!(idom[5], None, "unreachable block must not get an idom");
+
+        // The call that used to never return.
+        let df = dominance_frontier(6, &pred, &idom);
+        assert_eq!(df[2], BTreeSet::from([4]));
+        assert_eq!(df[3], BTreeSet::from([4]));
+    }
+
+    /// Even if some future change hands `dominance_frontier` a malformed
+    /// (cyclic) idom directly, it must terminate rather than spin.
+    #[test]
+    fn cyclic_idom_input_still_terminates() {
+        let pred = vec![vec![], vec![2], vec![1], vec![1, 2]];
+        let idom = vec![None, Some(2), Some(1), Some(0)]; // 1 <-> 2 cycle
+        let df = dominance_frontier(4, &pred, &idom);
+        assert!(df.len() == 4);
     }
 }

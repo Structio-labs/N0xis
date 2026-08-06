@@ -134,8 +134,8 @@ const PTR47_MASK: u64 = 0x0000_7FFF_FFFF_FFFF;
 /// `GCRef` — as confirmed live by observed strings landing at `0x30xxxxxx`
 /// addresses.)
 pub fn string_ref_candidates(raw: u64) -> [Option<Va>; 2] {
-    let gc64 = (((raw >> ITYPE_SHIFT) as u32) == LJ_TSTR).then(|| Va(raw & PTR47_MASK));
-    let r32 = (((raw >> 32) as u32) == LJ_TSTR_32).then(|| Va(raw & 0xFFFF_FFFF));
+    let gc64 = (((raw >> ITYPE_SHIFT) as u32) == LJ_TSTR).then_some(Va(raw & PTR47_MASK));
+    let r32 = (((raw >> 32) as u32) == LJ_TSTR_32).then_some(Va(raw & 0xFFFF_FFFF));
     [gc64, r32]
 }
 

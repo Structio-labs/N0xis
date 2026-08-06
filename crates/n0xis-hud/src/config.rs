@@ -51,7 +51,7 @@ impl Default for StratagemSpeedConfig {
 
 /// Where to load the Interception driver from and which device to use —
 /// generic (no per-feature copy), see [`HudConfig::interception`].
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct InterceptionConfig {
     /// Path to `interception.dll` (x64), loaded dynamically at runtime — see
@@ -61,12 +61,6 @@ pub struct InterceptionConfig {
     /// 1-based); omit to auto-pick the first keyboard device found.
     #[serde(default)]
     pub device: Option<i32>,
-}
-
-impl Default for InterceptionConfig {
-    fn default() -> Self {
-        Self { dll: String::new(), device: None }
-    }
 }
 
 /// One stratagem input macro: a name, the direction sequence, an optional
@@ -80,6 +74,11 @@ pub struct StratagemMacro {
     #[serde(default)]
     pub hotkey: Option<String>,
     /// Held modifier key name; only `"ctrl"` supported today (default).
+    /// Parsed but not yet consumed — the sender hardcodes Left-Ctrl
+    /// (`interception::run_stratagem`). Kept in the struct because it is part
+    /// of the published `hud.toml` contract: dropping it would make existing
+    /// configs that set it fail to parse.
+    #[allow(dead_code)]
     #[serde(default)]
     pub modifier: Option<String>,
 }

@@ -140,6 +140,9 @@ pub mod v1 {
     /// Registered analysis plugin (`plugin list/add/rm`, `docs/COMMUNITY_ROADMAP.md`
     /// "Plugin system").
     pub const PLUGIN: &str = "n0xis.plugin.v1";
+    /// The capability catalog (`capability list`): every registered
+    /// capability, built-in and plugin-provided alike, with its origin.
+    pub const CAPABILITY_LIST: &str = "n0xis.capability.list.v1";
 
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }

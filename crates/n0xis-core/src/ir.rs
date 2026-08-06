@@ -136,6 +136,15 @@ pub struct Callsite {
     pub target: Option<Va>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_name: Option<String>,
+    /// For a call/tail-jump made *through* a memory slot (`call qword ptr
+    /// [rip+disp]` — an import), the slot's address. The callee VA itself is
+    /// unknowable statically (the loader fills the slot at run time), so
+    /// `target` stays `None` while this pins down *which* pointer is called —
+    /// which is what lets the renderer print the import's name instead of a
+    /// raw dereference, and what an agent needs to correlate a callsite with
+    /// a live IAT read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_slot: Option<Va>,
 }
 
 /// CFG construction pass.
@@ -157,7 +166,7 @@ impl Pass for CfgPass {
             .arch
             .decode_stream(&bytes, input.start, DEFAULT_MAX_INSNS);
         let instrs = if input.auto_end {
-            truncate_to_function(&all, input.start.0, end_cap)
+            truncate_to_function(&all, input.start.0, end_cap, |ins| is_noreturn_call(ctx, ins))
         } else {
             all
         };
@@ -166,10 +175,54 @@ impl Pass for CfgPass {
     }
 }
 
+/// Resolve the symbolic name of a branch/call target: a direct near-branch
+/// operand first, falling back to the RIP-relative memory operand (an IAT
+/// slot — the shape of `call qword ptr [rip+disp]` to an import, and of an
+/// import thunk's `jmp`). Without the fallback the overwhelming majority of
+/// real import calls resolve no name at all, silently defeating both noreturn
+/// detection and thunk tail-call recognition. Single source of truth: used by
+/// both the function-end heuristic and CFG construction.
+fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
+    ins.target
+        .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
+        .or_else(|| ins.rip_target.and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
+        .map(|sym| format!("{}!{}", sym.module, sym.name))
+}
+
+/// The memory slot a call/branch goes *through*, for the indirect-through-
+/// memory shape (`call`/`jmp qword ptr [rip+disp]`). `None` for a direct
+/// branch — there the callee address is the operand itself, in `target`.
+fn memory_slot(ins: &DecodedInsn) -> Option<Va> {
+    ins.target.is_none().then_some(ins.rip_target).flatten()
+}
+
+/// Is this instruction a call to a well-known noreturn import (`ExitProcess`,
+/// `abort`, …)? Control never comes back, so it ends a block — and, for
+/// [`truncate_to_function`], the function itself.
+fn is_noreturn_call(ctx: &Ctx, ins: &DecodedInsn) -> bool {
+    ins.kind == InsnKind::Call
+        && resolved_target_name(ctx, ins)
+            .as_deref()
+            .and_then(|n| n.rsplit('!').next())
+            .map(crate::noreturn::is_known_noreturn)
+            .unwrap_or(false)
+}
+
 /// Cut the linear stream at the detected function end. Ported from v0
 /// `decode_linear`'s auto-end heuristic: track the furthest forward in-range
 /// edge; a terminator whose fallthrough passes it ends the function.
-fn truncate_to_function(all: &[DecodedInsn], start: u64, end_cap: u64) -> Vec<DecodedInsn> {
+///
+/// `is_noreturn_call` reports a call that never comes back (`ExitProcess`,
+/// `abort`, …). Such a call ends the function exactly like a `ret` when no
+/// forward edge reaches past it — without it the heuristic walks straight
+/// into the padding/next function after a `call ExitProcess` (ROADMAP Phase
+/// 10, priority 0: the follow-on the per-block CFG fix deliberately left).
+fn truncate_to_function(
+    all: &[DecodedInsn],
+    start: u64,
+    end_cap: u64,
+    is_noreturn_call: impl Fn(&DecodedInsn) -> bool,
+) -> Vec<DecodedInsn> {
     let mut max_forward_leader = start;
     let mut cut = all.len();
     for (idx, ins) in all.iter().enumerate() {
@@ -195,6 +248,10 @@ fn truncate_to_function(all: &[DecodedInsn], start: u64, end_cap: u64) -> Vec<De
                 }
             }
             InsnKind::Ret | InsnKind::Int if next > max_forward_leader => {
+                cut = idx + 1;
+                break;
+            }
+            InsnKind::Call if next > max_forward_leader && is_noreturn_call(ins) => {
                 cut = idx + 1;
                 break;
             }
@@ -279,27 +336,27 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                 }
             }
 
-            // Resolve a direct target's name via the symbol seam, if any —
-            // falling back to the RIP-relative memory operand (an IAT slot,
-            // the common shape of `call qword ptr [rip+disp]` to an import)
-            // when there's no direct near-branch target. Without this
-            // fallback, the overwhelming majority of real import calls
-            // (ExitProcess/abort/etc. via the IAT) would never resolve a
-            // name at all, silently defeating noreturn detection below.
-            let target_name = ins
-                .target
-                .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
-                .or_else(|| {
-                    ins.rip_target
-                        .and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t)))
-                })
-                .map(|sym| format!("{}!{}", sym.module, sym.name));
+            // Resolve the target's name via the symbol seam (direct operand
+            // first, IAT slot second) — see `resolved_target_name`.
+            let target_name = resolved_target_name(ctx, ins);
 
-            let is_tail = ins.kind == InsnKind::Jump
+            // A direct `jmp` outside this function's own range is a tail call.
+            let is_direct_tail = ins.kind == InsnKind::Jump
                 && ins
                     .target
                     .map(|t| t.0 < start.0 || t.0 >= end_ip)
                     .unwrap_or(false);
+            // So is an **import thunk** — `jmp qword ptr [rip+disp]` through an
+            // IAT slot, the single most common tail-call shape in a real PE
+            // (every `__imp_` forwarder is one). The branch is indirect, but
+            // the callee is known *by name*, so classifying it as an
+            // unrecoverable `ijmp` throws away information we hold: a resolved
+            // IAT name here is treated as a tail call, not a dead end
+            // (ROADMAP Phase 10, priority 0). `target_name` can only have come
+            // from the `iat_slot` arm when there is no direct target.
+            let is_thunk_tail =
+                ins.kind == InsnKind::Jump && ins.target.is_none() && target_name.is_some();
+            let is_tail = is_direct_tail || is_thunk_tail;
 
             let cur_index = ir_insns.len();
             ir_insns.push(IrInsn {
@@ -339,6 +396,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                             kind: "tail".into(),
                             target: ins.target,
                             target_name,
+                            via_slot: memory_slot(ins),
                         });
                     } else if let Some(t) = ins.target {
                         terminator = "jmp".into();
@@ -391,16 +449,13 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                     // abort, …) ends the block like a `ret`: nothing after it
                     // is reachable, so — unlike an ordinary call — it must
                     // not be treated as falling through (ROADMAP Phase 10).
-                    let is_noreturn = target_name
-                        .as_deref()
-                        .and_then(|n| n.rsplit('!').next())
-                        .map(crate::noreturn::is_known_noreturn)
-                        .unwrap_or(false);
+                    let is_noreturn = is_noreturn_call(ctx, ins);
                     callsites.push(Callsite {
                         from: ins.va,
                         kind: if target_name.is_some() { "named" } else { "direct" }.into(),
                         target: ins.target,
                         target_name,
+                        via_slot: memory_slot(ins),
                     });
                     if is_noreturn {
                         stats.noreturn_calls += 1;
@@ -718,6 +773,97 @@ mod tests {
             "the rip_target/iat_slot fallback must resolve the IAT call's name"
         );
         assert_eq!(art.stats.noreturn_calls, 1);
+    }
+
+    #[test]
+    fn import_thunk_jmp_is_a_tail_call_not_an_unrecovered_indirect_branch() {
+        // jmp qword ptr [rip+disp] -> an IAT slot at 0x3000 holding CloseHandle:
+        // the classic `__imp_` forwarder thunk. The branch is indirect, but the
+        // callee is known by name, so it must not degrade to `ijmp`.
+        let insn_va = 0x1000i64;
+        let insn_len = 6i64; // ff 25 + disp32
+        let slot_va = 0x3000i64;
+        let disp = (slot_va - (insn_va + insn_len)) as i32;
+        let mut code = vec![0xff, 0x25];
+        code.extend_from_slice(&disp.to_le_bytes());
+
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .iat_symbol(
+                Va(0x3000),
+                n0xis_contracts::Symbol {
+                    va: Va(0x3000),
+                    module: "kernel32".into(),
+                    name: "CloseHandle".into(),
+                    kind: n0xis_contracts::SymKind::Import,
+                },
+            )
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(art.blocks[0].terminator, "tail-call");
+        assert_eq!(art.stats.tail_calls, 1);
+        assert_eq!(
+            art.stats.indirect_branches, 0,
+            "a resolved thunk is a call, not an unrecovered indirect branch"
+        );
+        let site = art
+            .callsites
+            .iter()
+            .find(|c| c.kind == "tail")
+            .expect("the thunk should be recorded as a tail callsite");
+        assert_eq!(site.target_name.as_deref(), Some("kernel32!CloseHandle"));
+    }
+
+    #[test]
+    fn an_unresolvable_indirect_jmp_stays_an_indirect_branch() {
+        // jmp rax — no symbol, no table: the honest answer is still `ijmp`.
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0xff, 0xe0]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(art.blocks[0].terminator, "ijmp");
+        assert_eq!(art.stats.tail_calls, 0);
+        assert_eq!(art.stats.indirect_branches, 1);
+    }
+
+    #[test]
+    fn function_end_stops_after_a_noreturn_call() {
+        // call ExitProcess, then bytes that belong to whatever follows. With
+        // the callee known not to return, the function ends at the call — the
+        // trailing bytes must not be decoded as part of it.
+        let mut code = vec![0xe8, 0xfb, 0x0f, 0x00, 0x00]; // call 0x2000
+        code.extend_from_slice(&[0x48, 0xff, 0xc1, 0x48, 0xff, 0xc1, 0xc3]); // inc rcx; inc rcx; ret
+
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .symbol(n0xis_contracts::Symbol {
+                va: Va(0x2000),
+                module: "kernel32".into(),
+                name: "ExitProcess".into(),
+                kind: n0xis_contracts::SymKind::Export,
+            })
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        assert_eq!(art.insn_count, 1, "only the call itself belongs to the function");
+        assert_eq!(art.end, Va(0x1005));
+        assert_eq!(art.blocks.len(), 1);
+        assert_eq!(art.blocks[0].terminator, "call-noreturn");
     }
 
     #[test]

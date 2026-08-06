@@ -171,10 +171,10 @@ pub fn rank(concept: &[String], docs: &[Document], opts: &RankOptions) -> GameGr
             if snippets.len() >= opts.max_snippets {
                 break;
             }
-            if let Some(s) = snippet_around(&doc.text, &lower, &t.term) {
-                if !snippets.contains(&s) {
-                    snippets.push(s);
-                }
+            if let Some(s) = snippet_around(&doc.text, &lower, &t.term)
+                && !snippets.contains(&s)
+            {
+                snippets.push(s);
             }
         }
 

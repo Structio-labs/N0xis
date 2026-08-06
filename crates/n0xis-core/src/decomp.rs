@@ -276,6 +276,30 @@ mod tests {
         assert!(body.contains("sub_1005("), "expected the call inlined as an expression: {body}");
     }
 
+    /// ROADMAP Phase 10, priority 0 — tail-call promotion. `jmp func` at the
+    /// end of a function is `return func(...)`, not a dangling branch: before
+    /// promotion this block rendered no terminator statement at all (the `jmp`
+    /// lifts to nothing and the CFG edge left the function), silently dropping
+    /// both the call and the returned value.
+    #[test]
+    fn a_tail_jmp_renders_as_a_returned_call_in_every_style() {
+        // 0x1000 mov rcx, rdx   48 89 D1
+        // 0x1003 jmp 0x1500     E9 F8 04 00 00   (outside the function)
+        let code = vec![0x48, 0x89, 0xD1, 0xE9, 0xF8, 0x04, 0x00, 0x00];
+        for style in [DecompStyle::Goto, DecompStyle::Structured, DecompStyle::Ssa] {
+            let out = decomp(code.clone(), style);
+            let body = out.pseudo.join("\n");
+            assert!(
+                body.contains("sub_1500(") && body.contains("return"),
+                "{style:?} should render the tail call as a call whose value is returned: {body}"
+            );
+        }
+        // The optimizing styles additionally collapse the two into one
+        // expression — the shape a human would write.
+        let body = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
+        assert!(body.contains("return sub_1500("), "{body}");
+    }
+
     #[test]
     fn goto_and_structured_styles_still_produce_sound_output() {
         let code = vec![0x48, 0x89, 0xC8, 0xC3]; // mov rax, rcx ; ret

@@ -205,6 +205,11 @@ mod tests {
         assert!(m.iter().any(|c| c.decimal == "1/2^32"), "got {m:?}");
     }
 
+    // `3.14` is deliberately a *rough* approximation of PI: the point of the
+    // assertion is that a sloppy literal must NOT be identified as the real
+    // constant, so clippy's "use std::f64::consts::PI instead" is exactly
+    // backwards here.
+    #[allow(clippy::approx_constant)]
     #[test]
     fn an_ordinary_number_matches_nothing() {
         assert!(identify_u64(42).is_empty());

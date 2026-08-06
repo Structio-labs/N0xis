@@ -128,12 +128,9 @@ mod tests {
     // child process is the thing under test.
 
     fn python_or_skip() -> Option<&'static str> {
-        for candidate in ["python3", "python"] {
-            if std::process::Command::new(candidate).arg("--version").output().is_ok() {
-                return Some(candidate);
-            }
-        }
-        None
+        ["python3", "python"]
+            .into_iter()
+            .find(|candidate| std::process::Command::new(candidate).arg("--version").output().is_ok())
     }
 
     #[test]

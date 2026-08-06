@@ -47,10 +47,8 @@ fn every_occurrence_is_versioned(text: &str, reg: &str) -> bool {
         // (e.g. "rax" inside "traxxx") by requiring a non-alnum boundary
         // before it.
         let boundary_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
-        if boundary_ok {
-            if end >= bytes.len() || bytes[end] != b'.' {
-                return false;
-            }
+        if boundary_ok && (end >= bytes.len() || bytes[end] != b'.') {
+            return false;
         }
         i = end;
     }

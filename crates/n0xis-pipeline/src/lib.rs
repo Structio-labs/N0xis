@@ -75,7 +75,52 @@ fn cfg_cache_key(source_label: &str, input: CfgInput, probe: &[u8]) -> String {
     input.max_bytes.hash(&mut h);
     input.auto_end.hash(&mut h);
     probe.hash(&mut h);
-    format!("cfg-{:016x}", h.finish())
+    format!("{}{:016x}", cfg_cache_generation(), h.finish())
+}
+
+/// Key prefix shared by every entry this build may read: `cfg-<fingerprint>-`.
+/// Carried *in the key* rather than mixed into the hash so the store can sweep
+/// other generations by name (see [`n0xis_project::ir_cache::retain_prefix`]) —
+/// a content-addressed cache has no expiry of its own, and a per-build
+/// fingerprint without a sweep would just pile up unreachable generations.
+fn cfg_cache_generation() -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    analysis_fingerprint().hash(&mut h);
+    format!("cfg-{:08x}-", h.finish() as u32)
+}
+
+/// Identity of the **analyzer**, not the target — the other half of a sound
+/// cache key. Identical bytes analyzed by a *different build* can legitimately
+/// produce a different `CfgArtifact` (a new terminator class, a tail call the
+/// old build called an indirect branch, a noreturn callee it didn't know), so
+/// a key made only of target facts hands back pre-upgrade artifacts forever.
+/// That is exactly the stale-data failure CONCEPT §3 rule 6 forbids, and it
+/// bites hardest during development, where the analysis changes hourly.
+///
+/// The fingerprint is the crate version plus the running executable's own
+/// mtime: stable for a released binary (so the cache still works across runs),
+/// and automatically different after every rebuild (so a changed pass can
+/// never be masked by its own cache). Best-effort — if the exe can't be
+/// stat'ed, the version alone still separates releases.
+fn analysis_fingerprint() -> String {
+    let build = std::env::current_exe()
+        .and_then(|p| p.metadata())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}+{build}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Drop cache entries left by *other* builds — once per process, on the first
+/// cached run. Best-effort: a failed sweep (no project, read-only dir, a file
+/// held open) is not a reason to fail an analysis.
+fn sweep_stale_generations_once() {
+    static SWEPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    SWEPT.get_or_init(|| {
+        let _ = n0xis_project::ir_cache::retain_prefix(&cfg_cache_generation());
+    });
 }
 
 /// Run [`CfgPass`] through the disk-backed `.n0x/ir-cache/` cache (ROADMAP
@@ -88,11 +133,12 @@ fn cfg_cache_key(source_label: &str, input: CfgInput, probe: &[u8]) -> String {
 pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), CoreError> {
     let probe = ctx.source.read(input.start, input.max_bytes).unwrap_or_default();
     let key = cfg_cache_key(&ctx.source.label(), input, &probe);
+    sweep_stale_generations_once();
 
-    if let Ok(Some(json)) = n0xis_project::ir_cache::get(&key) {
-        if let Ok(art) = serde_json::from_str::<CfgArtifact>(&json) {
-            return Ok((art, true));
-        }
+    if let Ok(Some(json)) = n0xis_project::ir_cache::get(&key)
+        && let Ok(art) = serde_json::from_str::<CfgArtifact>(&json)
+    {
+        return Ok((art, true));
     }
     let art = CfgPass.run(ctx, input)?;
     if let Ok(json) = serde_json::to_string(&art) {
