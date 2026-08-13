@@ -25,6 +25,10 @@ iced-x86 = "1"
 dirs = "6"
 goblin = "0.10"
 libloading = "0.8"
+# The Unix side of the live adapter: process_vm_readv/writev, kill(pid, 0).
+# Target-gated at the crate that uses it, exactly as windows-sys is — this is
+# the OS seam's second implementation, not a new global dependency.
+libc = "0.2"
 rustc-demangle = "0.1.28"
 msvc-demangler = "0.11.0"
 cpp_demangle = "0.5.1"

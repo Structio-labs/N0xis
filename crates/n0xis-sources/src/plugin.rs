@@ -161,13 +161,22 @@ mod tests {
             eprintln!("skipping: no python on PATH");
             return;
         };
-        let script = "import sys,json\n\
-                       for line in sys.stdin:\n\
-                           req = json.loads(line)\n\
-                           if req.get('op') == 'quit':\n\
-                               break\n\
-                           print(json.dumps({'ok': True, 'saw': req.get('op')}))\n\
-                           sys.stdout.flush()\n";
+        // `concat!` of one-line-per-line literals, NOT a `\`-continued string:
+        // a backslash-newline in a Rust literal eats the newline *and all
+        // leading whitespace* on the next line, so the previous form handed
+        // python a `for` loop whose body had no indentation and died with
+        // `IndentationError`. It went unnoticed because the test skips when no
+        // python is on PATH, which is the norm on Windows and never true on a
+        // Linux dev box. Indentation is load-bearing here — keep it literal.
+        let script = concat!(
+            "import sys,json\n",
+            "for line in sys.stdin:\n",
+            "    req = json.loads(line)\n",
+            "    if req.get('op') == 'quit':\n",
+            "        break\n",
+            "    print(json.dumps({'ok': True, 'saw': req.get('op')}))\n",
+            "    sys.stdout.flush()\n",
+        );
         let argv = vec![py.to_string(), "-c".to_string(), script.to_string()];
         let session = PluginSession::spawn(&argv).unwrap();
         let r1 = session.call(&json!({"op":"on_launch"})).unwrap();

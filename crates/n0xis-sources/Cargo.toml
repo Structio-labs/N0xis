@@ -12,16 +12,32 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 goblin = { workspace = true, optional = true }
+
+# The two live adapters' OS crates, each confined to the target that has them.
+# Declaring them here rather than in `[dependencies]` is what lets `live` be a
+# *capability* feature ("this build can attach to a running process") instead of
+# a synonym for "Windows": cargo simply drops the inapplicable one per target.
+[target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, optional = true }
+# Only the Win32 `window` capture module encodes PNGs, so png rides the same
+# target gate and the Linux build stays png-free.
 png = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
 
 [features]
 default = []
 # StaticPe (goblin) — file-backed PE source. goblin is cross-platform (not an OS
 # dep), but gated anyway so the default build stays minimal.
 static-pe = ["dep:goblin"]
-# LiveProcess (Win32) — the only OS-linked adapter. Kept off by default so that
-# `cargo test -p n0xis-core` links zero Windows APIs (the boundary exit test).
-# `png` rides on the same gate: it's only used by the `window` capture module,
-# which is Win32-only anyway, so the OS-free build stays png-free too.
-live = ["dep:windows-sys", "dep:png"]
+# Live process attach. Kept off by default so that `cargo test -p n0xis-core`
+# links zero OS APIs (the boundary exit test).
+#
+# This used to read `live = ["dep:windows-sys", "dep:png"]` and *meant* Windows.
+# It now means the capability, and each target contributes its own backing:
+# Win32 on Windows, `/proc` + process_vm_readv on Linux. goblin comes along
+# because the Linux adapter reads ELF section headers and symbols out of the
+# module files backing the mappings, the way the Win32 one reads PE headers
+# straight from mapped memory.
+live = ["dep:windows-sys", "dep:png", "dep:libc", "dep:goblin"]

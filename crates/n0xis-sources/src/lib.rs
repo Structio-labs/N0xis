@@ -31,32 +31,59 @@ mod static_pe;
 #[cfg(feature = "static-pe")]
 pub use static_pe::StaticPe;
 
-#[cfg(feature = "live")]
-mod live;
-#[cfg(feature = "live")]
-pub use live::{LiveProcess, MemRegion, ProcInfo, list_processes};
+// The live-target seam itself is OS-free and always compiled: `trait
+// LiveTarget` plus the vocabulary its answers are phrased in. Frontends can
+// therefore *name* the seam on any platform, and only the implementations come
+// and go with the target.
+mod target;
+pub use target::{LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
 
-#[cfg(feature = "live")]
+/// Does this build have a live-process adapter behind [`LiveTarget`]?
+///
+/// The `live` feature says "the capability was asked for"; this says "a backing
+/// implementation exists for this target". They differ on, e.g., macOS, where
+/// the feature can be on and nothing implements it (mach_vm_read has no adapter
+/// yet) — a frontend must degrade there, not fail to compile.
+pub const HAS_LIVE_ADAPTER: bool = cfg!(all(feature = "live", any(windows, target_os = "linux", target_os = "android")));
+
+#[cfg(all(feature = "live", windows))]
+mod live;
+#[cfg(all(feature = "live", windows))]
+pub use live::{LiveProcess, list_processes};
+
+// Linux and Android share the adapter: Android is a Linux kernel, so
+// /proc/<pid>/maps and process_vm_readv are the same primitives there.
+#[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
+mod live_linux;
+#[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
+pub use live_linux::{LinuxProcess, list_processes};
+
+// The remaining live modules are still Win32-only. They were gated on the
+// `live` feature alone, which was equivalent while `live` *meant* Windows;
+// now that the feature means the capability, each needs to say `windows` for
+// itself. A Linux debugger (ptrace), window system (X11/Wayland) and input
+// injector (uinput) are separate adapters, not variations of these.
+#[cfg(all(feature = "live", windows))]
 mod debug;
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 pub use debug::{
     AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, attach_and_wait, await_breakpoint_hit, await_watchpoint_hit,
     await_watchpoint_hit_where,
 };
 
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 mod unwind;
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 pub use unwind::{Frame, MemReader, ModuleRange, UnwindRegs, unwind};
 
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 mod input;
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 pub use input::{probe_actuation, MethodResult, ProbeReport, DEFAULT_PROBE_VK};
 
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 mod window;
-#[cfg(feature = "live")]
+#[cfg(all(feature = "live", windows))]
 pub use window::{
     b64_encode, best_window, classify_frame, encode_png, focus, list_windows, screenshot,
     window_pid, CaptureAttempt, CaptureError, CaptureMethod, FocusResult, FrameStats, FrameVerdict,

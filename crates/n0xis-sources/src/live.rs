@@ -32,30 +32,11 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
 
-/// One process in a listing.
-#[derive(Debug, Clone)]
-pub struct ProcInfo {
-    pub pid: u32,
-    pub name: String,
-}
-
-/// One region from the process address-space map (`mem map`).
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct MemRegion {
-    pub base: Va,
-    pub end: Va,
-    pub size: u64,
-    pub state: String,
-    pub protect: String,
-    pub kind: String,
-}
-
-/// Readable+writable data, not the (usually huge, rarely value-bearing)
-/// read-only/executable code — what [`LiveProcess::default_writable_regions`]
-/// filters to.
-pub fn is_default_scan_region(protect: &str) -> bool {
-    matches!(protect, "rw-" | "rwx" | "rc-" | "rcx")
-}
+// `ProcInfo`, `MemRegion` and `is_default_scan_region` used to be defined here.
+// They are the *shape* of a live target's answers, not Win32 facts, so they now
+// live in `crate::target` alongside `trait LiveTarget` and are shared with the
+// Linux adapter — one wire vocabulary, not one per OS.
+use crate::target::{LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
 
 fn state_str(s: u32) -> &'static str {
     match s {
@@ -359,6 +340,43 @@ fn wpm(handle: HANDLE, va: Va, bytes: &[u8]) -> bool {
         )
     };
     ok != 0 && written == bytes.len()
+}
+
+/// The Win32 adapter's side of the live-target seam.
+///
+/// Deliberately thin forwards to the inherent methods above rather than a move
+/// of the bodies: every existing caller holds a concrete `LiveProcess` and
+/// resolves these names inherently (inherent methods take precedence over
+/// trait ones), so this adds the polymorphic entry point without touching a
+/// single call site or changing what any of them do.
+impl LiveTarget for LiveProcess {
+    fn pid(&self) -> u32 {
+        LiveProcess::pid(self)
+    }
+    fn main_module(&self) -> Option<&Module> {
+        LiveProcess::main_module(self)
+    }
+    fn text_range(&self) -> Option<(Va, u64)> {
+        LiveProcess::text_range(self)
+    }
+    fn section_range(&self, name: &str) -> Option<(Va, u64)> {
+        LiveProcess::section_range(self, name)
+    }
+    fn section_range_of(&self, module_base: Va, name: &str) -> Option<(Va, u64)> {
+        LiveProcess::section_range_of(self, module_base, name)
+    }
+    fn regions(&self, limit: usize) -> Vec<MemRegion> {
+        LiveProcess::regions(self, limit)
+    }
+    fn default_writable_regions(&self) -> Vec<(Va, usize)> {
+        LiveProcess::default_writable_regions(self)
+    }
+    fn alloc_code_cave(&self, size: usize) -> Result<Va, SourceError> {
+        LiveProcess::alloc_code_cave(self, size)
+    }
+    fn free_code_cave(&self, addr: Va) -> Result<(), SourceError> {
+        LiveProcess::free_code_cave(self, addr)
+    }
 }
 
 impl Drop for LiveProcess {
