@@ -9,31 +9,56 @@
 //!
 //! See `docs/n0xhud/CONCEPT.md` / `docs/n0xhud/ROADMAP.md`.
 
+//! Platform note: every module below is Windows-only — the global low-level
+//! keyboard hook, the live-process engine, the show/hide of this crate's own
+//! HWND. They are `cfg(windows)`-gated rather than simply absent so that
+//! `cargo build --workspace` succeeds on Linux (where the rest of the toolkit
+//! — static PE analysis, the decompiler, the LuaJIT reader — is fully usable)
+//! and this binary degrades to the stub `main` at the bottom of the file.
+
+#[cfg(windows)]
 mod adapters;
+#[cfg(windows)]
 mod plugin_poll;
+#[cfg(windows)]
 mod config;
+#[cfg(windows)]
 mod engine;
+#[cfg(windows)]
 mod freeze;
+#[cfg(windows)]
 mod input;
+#[cfg(windows)]
 mod interception;
+#[cfg(windows)]
 mod menu;
+#[cfg(windows)]
 mod sequence;
+#[cfg(windows)]
 mod sound;
+#[cfg(windows)]
 mod watcher;
 
+#[cfg(windows)]
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
 use eframe::egui;
 
+#[cfg(windows)]
 use config::HudConfig;
+#[cfg(windows)]
 use engine::Engine;
 
+#[cfg(windows)]
 struct HudApp {
     engine: Arc<Mutex<Engine>>,
     toggle_key_label: String,
 }
 
+#[cfg(windows)]
 impl eframe::App for HudApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut e = self.engine.lock().unwrap();
@@ -105,6 +130,7 @@ impl eframe::App for HudApp {
     }
 }
 
+#[cfg(windows)]
 fn main() -> eframe::Result<()> {
     let root = n0xis_project::resolve()
         .expect("resolve .n0x/ project (run n0xis-hud from inside a game's .n0x/ project directory)");
@@ -140,4 +166,19 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(HudApp { engine, toggle_key_label }))
         }),
     )
+}
+
+/// Off Windows the crate builds but the binary cannot do its job: it exists to
+/// drive a *live* process through Win32 and to own a global keyboard hook, and
+/// there is no Linux `LiveProcess`/`Debugger` implementation behind the source
+/// seam yet. Fail loudly rather than opening an empty window — and point at the
+/// route that does work from here, since `remote-serve` lets a Linux host drive
+/// a Windows target over stdio/SSH.
+#[cfg(not(windows))]
+fn main() -> std::process::ExitCode {
+    eprintln!("n0xis-hud: Windows-only — it needs the LiveProcess adapter and a global keyboard hook.");
+    eprintln!("The static half of the toolkit works here: use `n0xis` (CLI) or `n0xis-mcp`.");
+    eprintln!("To drive a Windows target from this machine, run `n0xis remote-serve` there and");
+    eprintln!("point the CLI at it with `--remote-cmd`.");
+    std::process::ExitCode::FAILURE
 }

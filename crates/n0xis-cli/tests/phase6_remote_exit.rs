@@ -6,6 +6,13 @@
 //! mock. `--remote-cmd` is transport-agnostic (any argv works — `ssh host ...`
 //! reaches a real remote machine; this test's argv is just the same binary
 //! invoked directly, which is the exact same code path minus the `ssh` hop).
+//!
+//! Windows-only, and gated rather than left to fail: the assertion compares
+//! `--remote-cmd` against `mem read --pid`, and `--pid` resolves to the
+//! `live-unsupported` stub off Windows (no non-Win32 `LiveProcess` yet). The
+//! *remote* half is portable — a Linux host driving a Windows `remote-serve`
+//! is the supported route — but this test needs both halves local.
+#![cfg(windows)]
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};

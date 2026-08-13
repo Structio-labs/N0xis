@@ -10,16 +10,29 @@ repository.workspace = true
 name = "n0xis-hud"
 path = "src/main.rs"
 
+# N0xHUD is a Windows-only frontend: it hooks the keyboard globally, drives a
+# live process, and shows/hides its own HWND. Everything that implies is under
+# the `cfg(windows)` table below, exactly as `n0xis-cli`/`n0xis-mcp` already do
+# it. That split is not cosmetic — this crate used to request
+# `n0xis-sources/live` *unconditionally*, and because the workspace resolves
+# features across all members, that turned `live` (hence `windows-sys`) on for
+# every consumer of `n0xis-sources` in a plain `cargo build --workspace`. On
+# Linux the rlib still compiles (windows-link emits bare externs off Windows)
+# and the failure only surfaces as undefined references to ReadProcessMemory /
+# EnumWindows / Beep at *link* time. CI never caught it because the Linux job
+# builds only `-p n0xis-cli -p n0xis-mcp`, never the workspace.
 [dependencies]
 n0xis-contracts = { workspace = true }
 n0xis-arch = { workspace = true }
 n0xis-core = { workspace = true }
-n0xis-sources = { workspace = true, features = ["live"] }
-n0xis-project = { workspace = true, features = ["live"] }
 n0xis-luajit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+n0xis-sources = { workspace = true, features = ["live"] }
+n0xis-project = { workspace = true, features = ["live"] }
 
 # Dynamic loader for interception.dll (the stratagem-macro key sender — some
 # games reject synthetic SendInput; see src/interception.rs). Loaded at

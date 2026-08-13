@@ -1,5 +1,19 @@
-# The gnu toolchain bundles its own linker (mingw ld) — no MSVC Build Tools
-# needed on this machine. This is the host default and how v0 was built.
+# Toolchain pin — channel only, deliberately NOT a host triple.
+#
+# This file used to read `stable-x86_64-pc-windows-gnu`, which pins the *host*
+# and not just the channel: rustup then tries to use a Windows toolchain on
+# every machine, so a Linux checkout cannot build at all (and CI had to paper
+# over it with `RUSTUP_TOOLCHAIN: stable` on the Linux job). The workspace is
+# developed from Linux and Windows against the same tree, so the repo pins the
+# channel and each host supplies its own triple.
+#
+# The gnu-vs-msvc choice on Windows is a *machine* preference, not a repo one:
+# the gnu toolchain bundles its own linker (mingw ld) so no MSVC Build Tools
+# are needed, and that is how v0 was built. Keep it by making it that
+# installation's default host, which `channel = "stable"` then resolves to:
+#
+#   rustup set default-host x86_64-pc-windows-gnu
+#
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "stable"
 components = ["rustfmt", "clippy"]

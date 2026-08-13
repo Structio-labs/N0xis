@@ -9,6 +9,13 @@
 //! attach target (same `rustc`-at-test-time trick as `phase4c_exit.rs`), so
 //! `attach`/`discover`/`decompile`/`explain` all run against real bytes, not
 //! a mock.
+//!
+//! Windows-only, and gated rather than left to fail: the test drives `attach`
+//! and `discover` **by pid**, and off Windows those tools return the
+//! `live-unsupported` stub because there is no non-Win32 `LiveProcess` behind
+//! the source seam. Without this gate `cargo test --workspace` on Linux fails
+//! on an unimplemented capability rather than on a regression.
+#![cfg(windows)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};

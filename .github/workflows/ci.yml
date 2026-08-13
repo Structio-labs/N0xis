@@ -25,10 +25,9 @@ jobs:
     name: boundary law (linux)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      # rust-toolchain.toml pins the Windows-gnu host toolchain (it documents
-      # why); that triple cannot execute here, so this job uses plain stable.
-      RUSTUP_TOOLCHAIN: stable
+    # No RUSTUP_TOOLCHAIN override needed: rust-toolchain.toml pins the channel
+    # only, so it resolves to each host's own triple. (It used to pin
+    # `stable-x86_64-pc-windows-gnu`, a triple this runner cannot execute.)
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +44,24 @@ jobs:
       - name: CLI and MCP still compile off Windows
         run: cargo build -p n0xis-cli -p n0xis-mcp
 
+      # The whole workspace, not just the two frontends. This step is the one
+      # that would have caught `n0xis-hud` requesting `n0xis-sources/live`
+      # unconditionally: workspace-wide feature unification then turned `live`
+      # (and windows-sys) on for every member, and the build died at link time
+      # on undefined ReadProcessMemory/EnumWindows/Beep. Building only
+      # `-p n0xis-cli -p n0xis-mcp` never resolved hud's features, so Linux CI
+      # stayed green while a plain `cargo build --workspace` was broken.
+      - name: Whole workspace builds off Windows
+        run: cargo build --workspace
+
+      # Tests too: the Windows-only integration tests carry `#![cfg(windows)]`,
+      # so what runs here is the portable half (static PE, decompiler, LuaJIT).
+      - name: Workspace tests that are not Windows-only
+        run: cargo test --workspace
+
+      - name: Clippy (linux, all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   # The full workspace, including everything gated on cfg(windows): the live
   # process adapter, the debugger, N0xHUD.
   windows:
@@ -58,10 +75,11 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      # No toolchain action here on purpose: rust-toolchain.toml pins
-      # stable-x86_64-pc-windows-gnu and rustup honors it, so CI compiles with
-      # the same toolchain the release binary is built with. If the gnu
-      # toolchain ever becomes the blocker, set RUSTUP_TOOLCHAIN on this job.
+      # No toolchain action here on purpose: rust-toolchain.toml pins the
+      # channel and rustup resolves it against this runner's default host
+      # (msvc). The gnu-vs-msvc split is a per-machine choice now, not a repo
+      # one — see rust-toolchain.toml — so the runner's default is fine here
+      # and the local Windows box keeps gnu via `rustup set default-host`.
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the whole workspace (warning-free)

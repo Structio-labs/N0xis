@@ -40,8 +40,20 @@ for crate in $PURE_CRATES; do
   # `--target all` is what makes running this on Linux meaningful — without it
   # cargo resolves for the host only, and a `[target.'cfg(windows)']` dep added
   # to a pure crate would stay invisible on the very runner meant to catch it.
-  hits=$(cargo tree -p "$crate" --edges normal --target all --prefix none \
-         | awk '{print $1}' | sort -u | grep -E "$FORBIDDEN" || true)
+  #
+  # `cargo tree` is run on its own line, not inside the grep pipeline. The
+  # `|| true` below exists to absorb grep's exit-1-on-no-match, but attached to
+  # a pipeline it absorbs a *cargo* failure just as happily — and an empty
+  # `hits` then reads as "no forbidden deps". Measured: with cargo not on PATH
+  # the previous one-pipeline form printed "ok" for all three pure crates and
+  # exited 0, i.e. the one law the layering rests on silently verified nothing.
+  if ! tree=$(cargo tree -p "$crate" --edges normal --target all --prefix none 2>&1); then
+    echo "ERROR: cargo tree failed for $crate — boundary NOT verified:"
+    echo "$tree" | sed 's/^/  /'
+    status=1
+    continue
+  fi
+  hits=$(printf '%s\n' "$tree" | awk '{print $1}' | sort -u | grep -E "$FORBIDDEN" || true)
   if [ -n "$hits" ]; then
     echo "BOUNDARY VIOLATION: $crate depends on:"
     echo "$hits" | sed 's/^/  - /'
