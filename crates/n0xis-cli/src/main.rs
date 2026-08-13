@@ -2466,7 +2466,6 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
     // profiled.
     let image_path = match (&a.file, &src) {
         (Some(f), _) => Some(f.clone()),
-        #[cfg(windows)]
         (None, Src::Live(l)) => l.main_module().and_then(|m| m.path.clone()),
         _ => None,
     };
@@ -2492,7 +2491,6 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref())),
-        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
@@ -2555,7 +2553,6 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         };
         return match &src {
             Src::Static(pe) => run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
-            #[cfg(windows)]
             Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref())),
             Src::Snap(s) => run_pdata(&Ctx::new(s, arch.as_ref())),
             Src::Remote(r) => run_pdata(&Ctx::new(r.as_ref(), arch.as_ref())),
@@ -2564,7 +2561,6 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
 
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
-        #[cfg(windows)]
         Src::Live(l) => l.text_range(),
         Src::Snap(_) | Src::Remote(_) => None,
     };
@@ -2588,7 +2584,6 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
@@ -3014,37 +3009,21 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
 
     // Source selection: --pid (live) XOR --file (static PE) XOR --bytes (inline).
     if let Some(pid) = a.pid {
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
+        let live = match n0xis_frontend::source::attach_live(pid) {
+            Ok(l) => l,
+            Err((c, m)) => return emit(&Response::<serde_json::Value>::error(&c, m), pretty),
+        };
+        if !live.contains(start) {
             return emit(
-                &Response::<serde_json::Value>::error("live-unsupported", "--pid requires a Windows build (needs LiveProcess/Win32 APIs)"),
+                &Response::<serde_json::Value>::error(
+                    "addr-not-committed",
+                    format!("{start} is not a committed/readable region in pid {pid}"),
+                )
+                .with_hint("use a runtime VA (respecting ASLR); `n0xis process ps` finds the pid"),
                 pretty,
             );
         }
-        #[cfg(windows)]
-        {
-            let live = match LiveProcess::attach(pid) {
-                Ok(l) => l,
-                Err(e) => {
-                    return emit(
-                        &Response::<serde_json::Value>::error("attach-failed", e.to_string()),
-                        pretty,
-                    );
-                }
-            };
-            if !live.contains(start) {
-                return emit(
-                    &Response::<serde_json::Value>::error(
-                        "addr-not-committed",
-                        format!("{start} is not a committed/readable region in pid {pid}"),
-                    )
-                    .with_hint("use a runtime VA (respecting ASLR); `n0xis process ps` finds the pid"),
-                    pretty,
-                );
-            }
-            return run_disasm(&live, start, a.count, arch.as_ref(), pretty);
-        }
+        return run_disasm(live.as_ref(), start, a.count, arch.as_ref(), pretty);
     }
 
     if let Some(file) = a.file.as_deref() {
@@ -3123,40 +3102,19 @@ fn to_scan_value(v: f64) -> ScanValue {
 }
 
 
-#[cfg(windows)]
-fn resolve_scan_regions_live(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
-    if let Some(s) = start {
-        let va = Va::parse(s).map_err(|e| e.to_string())?;
-        let sz = size.ok_or("provide --size with --start")?;
-        // Clip the requested window to the process's committed regions: a live
-        // range often spans unmapped gaps (e.g. LuaJIT's arena is many small
-        // committed blocks), and a single `ReadProcessMemory` across a gap
-        // fails *wholesale* — silently yielding zero hits. Intersecting with
-        // the region map turns one doomed read into per-block reads that
-        // actually land, and keeps a narrowed scan fast.
-        let lo = va.0;
-        let hi = va.0.saturating_add(sz as u64);
-        let mut clipped: Vec<(Va, usize)> = Vec::new();
-        for (rb, rs) in live.default_writable_regions() {
-            let a = rb.0.max(lo);
-            let b = (rb.0 + rs as u64).min(hi);
-            if a < b {
-                clipped.push((Va(a), (b - a) as usize));
-            }
-        }
-        if clipped.is_empty() {
-            // No committed writable page in the window — fall back to the raw
-            // range so a deliberate single-region read (e.g. an RX/RO area not
-            // in the writable set) still works as before.
-            return Ok(vec![(va, sz)]);
-        }
-        return Ok(clipped);
-    }
-    let regions = live.default_writable_regions();
-    if regions.is_empty() {
-        return Err("no committed writable regions found (and no --start/--size given)".to_string());
-    }
-    Ok(regions)
+/// The region set a live scan covers, for whichever adapter the OS supplied.
+///
+/// This was a byte-for-byte copy of `n0xis_frontend::source::
+/// live_scan_regions` — exactly the duplication the frontend seam exists to
+/// prevent, and the kind that had already let the CLI and MCP answers drift
+/// apart once. It now delegates, and takes `&dyn LiveTarget` rather than a
+/// concrete Win32 `LiveProcess`.
+fn resolve_scan_regions_live(
+    live: &dyn n0xis_sources::LiveTarget,
+    start: Option<&str>,
+    size: Option<usize>,
+) -> Result<Vec<(Va, usize)>, String> {
+    n0xis_frontend::source::live_scan_regions(live, start, size)
 }
 
 
@@ -3847,23 +3805,20 @@ fn cmd_lua_patch(a: LuaPatchArgs, pretty: bool) -> bool {
 }
 
 fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
-    #[cfg(not(windows))]
+    // No cfg pair any more: `n0xis-luajit` reads through `MemorySource`, so it
+    // never knew which OS it was on — only the attach did, and that is now the
+    // seam's job.
     {
-        let _ = &a;
-        return ir_err("live-unsupported", "lua strings requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        let regions = match resolve_scan_regions_live(live.as_ref(), a.start.as_deref(), a.size) {
             Ok(r) => r,
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
         let label = live.label();
-        let mut hits = n0xis_luajit::scan_strings(&live, &regions, n0xis_luajit::GcstrLayout::STINGRAY_GC64, a.min_len, a.max_len);
+        let mut hits = n0xis_luajit::scan_strings(live.as_ref(), &regions, n0xis_luajit::GcstrLayout::STINGRAY_GC64, a.min_len, a.max_len);
         if let Some(needle) = &a.contains {
             hits.retain(|h| h.text.contains(needle.as_str()));
         }
@@ -3875,8 +3830,7 @@ fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
 /// Render one decoded `TValue` as JSON, resolving a string's text from the
 /// live process so the dump is readable (`{"kind":"str","text":"up"}`) rather
 /// than just an address to chase by hand.
-#[cfg(windows)]
-fn tvalue_json(v: &n0xis_luajit::TValue, live: &LiveProcess, layout: n0xis_luajit::LuaLayout) -> serde_json::Value {
+fn tvalue_json(v: &n0xis_luajit::TValue, live: &dyn n0xis_sources::MemorySource, layout: n0xis_luajit::LuaLayout) -> serde_json::Value {
     use n0xis_luajit::TValue;
     match v {
         TValue::Nil => json!({ "kind": "nil" }),
@@ -3897,26 +3851,20 @@ fn cmd_lua_table(a: LuaTableArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    #[cfg(not(windows))]
     {
-        let _ = addr;
-        return ir_err("live-unsupported", "lua table requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let layout = n0xis_luajit::LuaLayout::STINGRAY_LUAJIT;
-        let Some(dump) = n0xis_luajit::read_table(&live, addr, layout) else {
+        let Some(dump) = n0xis_luajit::read_table(live.as_ref(), addr, layout) else {
             return ir_err("not-a-table", "could not decode a GCtab at this address (wrong address or layout needs calibration)", pretty);
         };
-        let array: Vec<serde_json::Value> = dump.array.iter().map(|v| tvalue_json(v, &live, layout)).collect();
+        let array: Vec<serde_json::Value> = dump.array.iter().map(|v| tvalue_json(v, live.as_ref(), layout)).collect();
         let hash: Vec<serde_json::Value> = dump
             .hash
             .iter()
-            .map(|(k, v)| json!({ "key": tvalue_json(k, &live, layout), "value": tvalue_json(v, &live, layout) }))
+            .map(|(k, v)| json!({ "key": tvalue_json(k, live.as_ref(), layout), "value": tvalue_json(v, live.as_ref(), layout) }))
             .collect();
         let label = live.label();
         let data = json!({
@@ -3931,18 +3879,12 @@ fn cmd_lua_table(a: LuaTableArgs, pretty: bool) -> bool {
 }
 
 fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
-    #[cfg(not(windows))]
     {
-        let _ = &a;
-        return ir_err("live-unsupported", "lua combo requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        let regions = match resolve_scan_regions_live(live.as_ref(), a.start.as_deref(), a.size) {
             Ok(r) => r,
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
@@ -3955,7 +3897,7 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
         // Every candidate GCstr whose text is one of the wanted tokens becomes a
         // target address — the run cross-check discards any that aren't referenced.
-        let strs = n0xis_luajit::scan_strings(&live, &regions, layout, 1, max_len.max(1));
+        let strs = n0xis_luajit::scan_strings(live.as_ref(), &regions, layout, 1, max_len.max(1));
         let mut targets: std::collections::HashMap<Va, String> = std::collections::HashMap::new();
         for s in &strs {
             if wanted.iter().any(|w| w == &s.text) {
@@ -3969,11 +3911,11 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         // A combo array may be laid out as 8-byte Lua `TValue`s or as a packed
         // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
         let mut runs_json: Vec<serde_json::Value> = Vec::new();
-        let tv = n0xis_luajit::find_string_runs(&live, &regions, &targets, a.min_run);
+        let tv = n0xis_luajit::find_string_runs(live.as_ref(), &regions, &targets, a.min_run);
         for r in &tv {
             runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "tvalue8", "len": r.values.len(), "values": r.values }));
         }
-        let gr = n0xis_luajit::find_gcref32_runs(&live, &regions, &targets, a.min_run);
+        let gr = n0xis_luajit::find_gcref32_runs(live.as_ref(), &regions, &targets, a.min_run);
         for r in &gr {
             runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "gcref4", "len": r.values.len(), "values": r.values }));
         }
@@ -4011,24 +3953,18 @@ fn cmd_lua_seedscan(a: LuaSeedscanArgs, pretty: bool) -> bool {
         Ok(_) => return ir_err("empty-combo", "--combo must list at least one direction", pretty),
         Err(e) => return ir_err("bad-combo", &e, pretty),
     };
-    #[cfg(not(windows))]
     {
-        let _ = &target;
-        return ir_err("live-unsupported", "lua seedscan requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let regions = match resolve_scan_regions_live(&live, a.start.as_deref(), a.size) {
+        let regions = match resolve_scan_regions_live(live.as_ref(), a.start.as_deref(), a.size) {
             Ok(r) => r,
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
         let lcg = n0xis_luajit::Lcg { a: a.lcg_a, c: a.lcg_c };
         let bounds = if a.seed_bound { Some((1u32, 0x7FFF_FFFEu32)) } else { None };
-        let hits = n0xis_luajit::find_seeds(&live, &regions, &lcg, a.range, &target, bounds);
+        let hits = n0xis_luajit::find_seeds(live.as_ref(), &regions, &lcg, a.range, &target, bounds);
         let label = live.label();
         let data = json!({
             "combo": a.combo,
@@ -4519,7 +4455,6 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
     };
     let pseudo = match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
         Src::Snap(s) => run(&Ctx::new(s, &arch)),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
@@ -4555,10 +4490,10 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
 
     let (default_text, default_data) = match &src {
         Src::Static(pe) => (pe.text_range(), pe.section_range(".rdata").or_else(|| pe.text_range())),
-        #[cfg(windows)]
         Src::Live(l) => {
             if let Some(modname) = &a.module {
-                use n0xis_sources::ModuleProvider;
+                // No `use ModuleProvider` needed: it is a supertrait of
+                // LiveTarget, so `modules()` is in scope through the seam.
                 let needle = modname.to_lowercase();
                 match l.modules().iter().find(|m| m.name.to_lowercase().contains(&needle)).map(|m| m.base) {
                     Some(base) => (
@@ -4605,7 +4540,6 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
     };
     match &src {
         Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
         Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),

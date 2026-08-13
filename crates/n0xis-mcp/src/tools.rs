@@ -50,7 +50,6 @@ fn bad_addr(e: impl std::fmt::Display) -> String {
 /// bypassed at the edge (CONCEPT §3 rule 4).
 fn with_ctx<R>(src: &Src, arch: &dyn n0xis_arch::Arch, work: impl FnOnce(&Ctx) -> R) -> R {
     match src {
-        #[cfg(windows)]
         Src::Live(l) => work(&Ctx::new(l.as_ref(), arch)),
         Src::Static(p) => work(&Ctx::new(p.as_ref(), arch).with_symbols(p.as_ref()).with_modules(p.as_ref())),
         Src::Snap(s) => work(&Ctx::new(s, arch)),

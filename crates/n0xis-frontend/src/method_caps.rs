@@ -34,13 +34,7 @@ impl Plugin for MethodTools {
             Origin::Builtin,
             Box::new(|args| {
                 let filter = args.get("filter").and_then(|v| v.as_str()).map(str::to_lowercase);
-                #[cfg(not(windows))]
-                {
-                    let _ = filter;
-                    Response::error("live-unsupported", "process listing requires a Windows build (needs Win32 process enumeration)")
-                }
-                #[cfg(windows)]
-                match n0xis_sources::list_processes() {
+                match crate::source::list_processes() {
                     Ok(mut procs) => {
                         if let Some(needle) = filter {
                             procs.retain(|p| p.name.to_lowercase().contains(&needle));
@@ -49,7 +43,7 @@ impl Plugin for MethodTools {
                         let list: Vec<Value> = procs.iter().map(|p| json!({ "pid": p.pid, "name": p.name })).collect();
                         ok(schema::v1::PROCESS_PS, json!({ "count": list.len(), "processes": list }))
                     }
-                    Err(e) => Response::error("ps-failed", e.to_string()),
+                    Err((c, m)) => Response::error(&c, m),
                 }
             }),
         ));

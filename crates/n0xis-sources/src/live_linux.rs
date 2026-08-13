@@ -29,7 +29,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write as _};
+use std::io::{Seek, SeekFrom, Write as _};
 use std::path::Path;
 
 use n0xis_contracts::{Module, SymKind, Symbol, Va};

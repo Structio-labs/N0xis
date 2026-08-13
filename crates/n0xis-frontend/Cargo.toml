@@ -19,14 +19,22 @@ n0xis-pipeline = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Same target split as n0xis-cli / n0xis-mcp: live-process analysis has no
-# meaningful "on" state off Windows, so it is keyed on the compile target
-# rather than a synthetic feature. A frontend built here therefore sees exactly
-# the source set it would have seen with its own hand-rolled copy.
-[target.'cfg(windows)'.dependencies]
+# Same target split as n0xis-cli / n0xis-mcp. `live` is keyed on the compile
+# target rather than a feature because it is a statement about what the OS can
+# do, not a user choice — and it is no longer a synonym for Windows: Linux and
+# Android have an adapter behind `trait LiveTarget` too. Anything else (macOS,
+# BSD) still builds, with `Src::Live` simply never constructed.
+[target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
 n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+
+[target.'cfg(not(any(windows, target_os = "linux", target_os = "android")))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe"] }
+
+# n0xis-project's `live` feature gates its `locator` module, which still takes a
+# concrete Win32 `LiveProcess`; until that is relaxed to the seam it stays
+# Windows-only.
+[target.'cfg(windows)'.dependencies]
 n0xis-project = { workspace = true, features = ["live"] }
 
 [target.'cfg(not(windows))'.dependencies]
-n0xis-sources = { workspace = true, features = ["static-pe"] }
 n0xis-project = { workspace = true }

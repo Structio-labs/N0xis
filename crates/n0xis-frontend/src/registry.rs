@@ -230,7 +230,6 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
             input,
             &label,
         ),
-        #[cfg(windows)]
         Src::Live(l) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), input, &label),
         Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()), input, &label),
         Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()), input, &label),
@@ -266,7 +265,6 @@ fn with_src_ctx(
             let ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref());
             work(&ctx, &src, region_len, &label)
         }
-        #[cfg(windows)]
         Src::Live(l) => {
             let ctx = n0xis_core::Ctx::new(l.as_ref(), arch.as_ref());
             work(&ctx, &src, region_len, &label)
@@ -302,25 +300,17 @@ fn with_scan_ctx(
         Err(e) => return Response::error("bad-arch", e),
     };
     if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) {
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
-            return Response::error("live-unsupported", "pid requires a Windows build (needs LiveProcess/Win32 APIs)");
-        }
-        #[cfg(windows)]
-        {
-            let live = match n0xis_sources::LiveProcess::attach(pid) {
-                Ok(l) => l,
-                Err(e) => return Response::error("attach-failed", e.to_string()),
-            };
-            let regions = match crate::source::live_scan_regions(&live, start, size) {
-                Ok(r) => r,
-                Err(e) => return Response::error("bad-region", e),
-            };
-            let label = n0xis_sources::MemorySource::label(&live);
-            let ctx = n0xis_core::Ctx::new(&live, arch.as_ref());
-            return work(&ctx, regions, &label);
-        }
+        let live = match crate::source::attach_live(pid) {
+            Ok(l) => l,
+            Err((c, m)) => return Response::error(&c, m),
+        };
+        let regions = match crate::source::live_scan_regions(live.as_ref(), start, size) {
+            Ok(r) => r,
+            Err(e) => return Response::error("bad-region", e),
+        };
+        let label = n0xis_sources::MemorySource::label(live.as_ref());
+        let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
+        return work(&ctx, regions, &label);
     }
     if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
         let (Some(start_s), Some(size)) = (start, size) else {
@@ -362,7 +352,6 @@ fn decompile_side(
     };
     let pseudo = match &resolved.src {
         Src::Static(pe) => run(&n0xis_core::Ctx::new(pe.as_ref(), arch).with_symbols(pe.as_ref())),
-        #[cfg(windows)]
         Src::Live(l) => run(&n0xis_core::Ctx::new(l.as_ref(), arch)),
         Src::Snap(s) => run(&n0xis_core::Ctx::new(s, arch)),
         Src::Remote(r) => run(&n0xis_core::Ctx::new(r.as_ref(), arch)),
@@ -657,25 +646,17 @@ impl Plugin for AnalysisPasses {
                 let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
                     return Response::error("missing-source", "'pid' is required — writes only apply to a live process");
                 };
-                #[cfg(not(windows))]
-                {
-                    let _ = (pid, addr, bytes);
-                    Response::error("live-unsupported", "mem write requires a Windows build (needs LiveProcess/Win32 APIs)")
-                }
-                #[cfg(windows)]
-                {
-                    let live = match n0xis_sources::LiveProcess::attach(pid) {
-                        Ok(l) => l,
-                        Err(e) => return Response::error("attach-failed", e.to_string()),
-                    };
-                    match n0xis_sources::MemorySource::write(&live, addr, &bytes) {
-                        Ok(()) => ok_json(
-                            n0xis_contracts::schema::v1::MEM_WRITE,
-                            json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) }),
-                            &n0xis_sources::MemorySource::label(&live),
-                        ),
-                        Err(e) => Response::error("write-failed", e.to_string()),
-                    }
+                let live = match crate::source::attach_live(pid) {
+                    Ok(l) => l,
+                    Err((c, m)) => return Response::error(&c, m),
+                };
+                match n0xis_sources::MemorySource::write(live.as_ref(), addr, &bytes) {
+                    Ok(()) => ok_json(
+                        n0xis_contracts::schema::v1::MEM_WRITE,
+                        json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) }),
+                        &n0xis_sources::MemorySource::label(live.as_ref()),
+                    ),
+                    Err(e) => Response::error("write-failed", e.to_string()),
                 }
             }),
         ));
@@ -690,25 +671,17 @@ impl Plugin for AnalysisPasses {
                 let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
                     return Response::error("missing-source", "'pid' is required — only a live process has a region map");
                 };
-                #[cfg(not(windows))]
-                {
-                    let _ = (pid, limit);
-                    Response::error("live-unsupported", "mem map requires a Windows build (needs LiveProcess/Win32 APIs)")
-                }
-                #[cfg(windows)]
-                {
-                    let live = match n0xis_sources::LiveProcess::attach(pid) {
-                        Ok(l) => l,
-                        Err(e) => return Response::error("attach-failed", e.to_string()),
-                    };
-                    let regions = live.regions(limit);
-                    let regions_v = serde_json::to_value(&regions).unwrap_or(Value::Null);
-                    ok_json(
-                        n0xis_contracts::schema::v1::MEM_MAP,
-                        json!({ "count": regions.len(), "regions": regions_v }),
-                        &n0xis_sources::MemorySource::label(&live),
-                    )
-                }
+                let live = match crate::source::attach_live(pid) {
+                    Ok(l) => l,
+                    Err((c, m)) => return Response::error(&c, m),
+                };
+                let regions = live.regions(limit);
+                let regions_v = serde_json::to_value(&regions).unwrap_or(Value::Null);
+                ok_json(
+                    n0xis_contracts::schema::v1::MEM_MAP,
+                    json!({ "count": regions.len(), "regions": regions_v }),
+                    &n0xis_sources::MemorySource::label(live.as_ref()),
+                )
             }),
         ));
 
@@ -899,22 +872,16 @@ impl Plugin for AnalysisPasses {
                 let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
                     return Response::error("missing-source", "'pid' is required — pointer chains only exist in a live process");
                 };
-                #[cfg(not(windows))]
-                {
-                    let _ = (pid, target, modules, max_depth, max_offset);
-                    Response::error("live-unsupported", "pointer path requires a Windows build (needs LiveProcess/Win32 APIs)")
-                }
-                #[cfg(windows)]
                 {
                     let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
                         Ok(a) => a,
                         Err(e) => return Response::error("bad-arch", e),
                     };
-                    let live = match n0xis_sources::LiveProcess::attach(pid) {
+                    let live = match crate::source::attach_live(pid) {
                         Ok(l) => l,
-                        Err(e) => return Response::error("attach-failed", e.to_string()),
+                        Err((c, m)) => return Response::error(&c, m),
                     };
-                    let mods = n0xis_sources::ModuleProvider::modules(&live).to_vec();
+                    let mods = n0xis_sources::ModuleProvider::modules(live.as_ref()).to_vec();
                     let mut roots = Vec::new();
                     for name in &modules {
                         let Some(m) = mods.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else {
@@ -928,8 +895,8 @@ impl Plugin for AnalysisPasses {
                         .filter(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx" | "rc-" | "rcx" | "r--" | "r-x"))
                         .map(|r| (r.base, r.size as usize))
                         .collect();
-                    let label = n0xis_sources::MemorySource::label(&live);
-                    let ctx = n0xis_core::Ctx::new(&live, arch.as_ref());
+                    let label = n0xis_sources::MemorySource::label(live.as_ref());
+                    let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
                     let input = n0xis_core::PointerPathInput { target, search_regions, roots, max_depth, max_offset, pointer_size: 8 };
                     match n0xis_core::Pass::run(&n0xis_core::PointerPathPass, &ctx, input) {
                         Ok(art) => ok_json(n0xis_contracts::schema::v1::POINTER_PATH, art, &label),
