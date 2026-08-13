@@ -1123,7 +1123,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
 | Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
-| noreturn analysis | 🚧 partial — known-import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) correctly end a block **and the function** ✅ 2026-07-22, first actually firing on real binaries 2026-08-06 (the IAT-keying fix); self-discovered-function propagation still not attempted |
+| noreturn analysis | ✅ 2026-08-06 — known imports **plus** a whole-program fixpoint over discovered functions (`ir noreturn`): a wrapper around `ExitProcess`, and *its* callers, are proven transitively (real chain depth 3 on `notepad.exe`). Sound-gated: any unfollowable edge yields `Unknown`, never a claim. Feeding the result back into a *single* `ir build` across CLI invocations needs persistence — the one tracked follow-on |
 | Import-name resolution | ✅ 2026-08-06 — direct, IAT-slot and thunk callees resolve to `module!name`; imports render by name and reach the known-API signature table |
 | Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
 | Memory SSA | ❌ missing |
@@ -1139,7 +1139,8 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 |---|---|---|
 | Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | ❌ `.pdata`/`.xdata` read for **unwinding only**; no EH edges in the graph |
 | Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | ✅ *(2026-08-06)* both shapes — a direct `jmp` out of the function **and** an import thunk's `jmp qword ptr [__imp_X]` (previously mis-classified `ijmp`, "indirect jump (unrecovered)") — terminate as `tail-call` and lower to `call`+`return` via the new `Arch::lift_tail_call` seam, so every style renders `return f(...)`. Verified on real PEs (`version.dll` thunk → `return …GetFileVersionInfoSizeW(…)`; 15/400 notepad, 52/400 dxgi functions carry the `tail` flag) |
-| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). **Still open**: propagating noreturn-ness across N0xis's *own discovered* functions (a whole-program call-graph fixpoint) is not attempted — a documented follow-on, not a silent gap. |
+| noreturn analysis (interprocedural) | detect + **interprocedurally** prune fall-through in callers | ✅ *(2026-08-06)* `NoreturnPass` / `ir noreturn` — a monotone whole-program fixpoint over `.pdata`-discovered functions (prologue scan as fallback, and which one ran is reported). Each round is evaluated against the previous round's frozen result, so the reported `round` is a true call-chain depth, not an artifact of candidate order. Measured: `notepad.exe` 386 functions → 15 proven across 3 rounds; `dxgi.dll` 32 across 2; `msvcp_win.dll` 20 across 2. Per-function `reason` (`all-paths-call-noreturn` / `all-paths-trap` / `no-exit`) and `via`/`via_name` evidence. `Ctx::with_noreturn_fns` feeds the set back so a caller's CFG closes at the call (tested end to end) |
+| noreturn analysis (single function) | detect a call that ends the block | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). **Still open**: propagating noreturn-ness across N0xis's *own discovered* functions (a whole-program call-graph fixpoint) is not attempted — a documented follow-on, not a silent gap. |
 | Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
 | Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
 | Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
@@ -1231,6 +1232,51 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      green, clippy clean. **Still open in this bullet**: whole-program
      noreturn propagation across N0xis's own discovered functions, and
      exception-edge recovery.
+   - ✅ *(2026-08-06)* **Whole-program `noreturn` propagation — `NoreturnPass`
+     / `ir noreturn`.** The deeper half of the noreturn item: the import table
+     only knows *imports*, so a function that wraps `ExitProcess` (MSVC's
+     `__report_gsfailure`, a game's `Crash()`) still looked like an ordinary
+     call and every caller kept decoding the dead bytes after it. Now a
+     monotone fixpoint over the module's functions proves those wrappers, then
+     *their* callers, transitively.
+     - **Sound over complete, deliberately.** A function is claimed noreturn
+       only when every path out of it is accounted for and none returns. Any
+       hole — an unresolved indirect branch, a successor outside the decoded
+       body, a truncated tail, a tail call to something unproven — yields
+       `Unknown`, never a claim. A false positive here is the worst outcome
+       the project recognizes: real code deleted from every caller's CFG.
+       Three of the seven new tests exist only to pin that gate down.
+     - **Rounds are real chain depth.** Each round is evaluated against the
+       previous round's *frozen* result; without the freeze a function proved
+       earlier in the same sweep would already be cutting paths for the ones
+       after it, so `round` would track candidate order rather than
+       interprocedural depth (this was caught and fixed after the first
+       real-corpus run reported a misleadingly flat `rounds: 1`).
+     - **Candidates come from `.pdata` when the image has it** — an exact
+       table beats a prologue heuristic, and a fixpoint is only as complete as
+       its function list; the prologue scan remains the fallback and the
+       artifact reports which one ran. Switching to `.pdata` alone took
+       `vcruntime140.dll` from 3 proven functions to 9.
+     - **Measured on real binaries**: `notepad.exe` 386 functions → 15 proven
+       across **3 rounds**; `dxgi.dll` 32 across 2; `msvcp_win.dll` 20 across
+       2; `vcruntime140.dll` 9. One chain was verified by hand end to end
+       (`sub_140001dc8` → `sub_140001de4` → `TerminateProcess`, where the
+       middle function's trailing `ret` is compiler-emitted dead code).
+     - Per-function `reason` (`all-paths-call-noreturn` / `all-paths-trap` /
+       `no-exit`) and `via`/`via_name` evidence, so a verdict is auditable
+       rather than asserted. `Ctx::with_noreturn_fns` feeds the proven set
+       back into CFG construction — tested end to end (a caller's block goes
+       from `ret` to `call-noreturn` with the dead byte dropped).
+     - **The one follow-on, scoped not smuggled**: the frontends don't yet set
+       `noreturn_fns` on an ordinary `ir build`, because doing that across
+       separate CLI invocations means persisting the set under `.n0x/` — which
+       needs its own staleness discipline (exactly the trap the IR cache's
+       analysis fingerprint just fixed) and an ASLR-correct module/RVA key.
+       Until then the set is available in-process and via `ir noreturn`'s JSON.
+     New: `n0xis.ir.noreturn.v1` schema, `ir noreturn` CLI + MCP capability,
+     `discover_over` extracted so `ir manifest` and `ir noreturn` can't
+     disagree about "the functions in this module". 7 new tests; `n0xis-core`
+     lib 138→143, workspace green, clippy clean.
 1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.

@@ -16,6 +16,10 @@ src-tauri/target/
 # Per-project N0x state (analysis artifacts, patches, dumps)
 .n0x/
 
+# Field tests — capture journals, screenshots and findings from live sessions
+# against specific game targets. Session evidence, not source.
+/field-tests/
+
 # Bundled archive — not source
 n0x.zip
 

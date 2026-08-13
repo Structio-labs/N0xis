@@ -196,16 +196,27 @@ fn memory_slot(ins: &DecodedInsn) -> Option<Va> {
     ins.target.is_none().then_some(ins.rip_target).flatten()
 }
 
-/// Is this instruction a call to a well-known noreturn import (`ExitProcess`,
-/// `abort`, …)? Control never comes back, so it ends a block — and, for
+/// Is this instruction a call that never comes back? Two sources, in
+/// increasing order of knowledge: a well-known noreturn *import*
+/// (`ExitProcess`, `abort`, …), always available; and a *discovered* function
+/// proven noreturn by [`crate::NoreturnPass`]'s whole-program fixpoint, which
+/// only a caller that ran that pass can supply (`Ctx::with_noreturn_fns`).
+/// Either way control never returns, so the call ends its block — and, for
 /// [`truncate_to_function`], the function itself.
 fn is_noreturn_call(ctx: &Ctx, ins: &DecodedInsn) -> bool {
-    ins.kind == InsnKind::Call
-        && resolved_target_name(ctx, ins)
-            .as_deref()
-            .and_then(|n| n.rsplit('!').next())
-            .map(crate::noreturn::is_known_noreturn)
-            .unwrap_or(false)
+    if ins.kind != InsnKind::Call {
+        return false;
+    }
+    let known_import = resolved_target_name(ctx, ins)
+        .as_deref()
+        .and_then(|n| n.rsplit('!').next())
+        .map(crate::noreturn::is_known_noreturn)
+        .unwrap_or(false);
+    let proven_local = match (ctx.noreturn_fns, ins.target) {
+        (Some(set), Some(target)) => set.contains(&target.get()),
+        _ => false,
+    };
+    known_import || proven_local
 }
 
 /// Cut the linear stream at the detected function end. Ported from v0

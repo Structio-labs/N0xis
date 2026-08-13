@@ -1446,6 +1446,11 @@ enum IrCmd {
     Slice(IrSliceArgs),
     /// Per-function index with quality scoring, over discovered candidates.
     Manifest(ManifestArgs),
+    /// Which functions never return, whole-program — and why. Propagates
+    /// noreturn-ness across the call graph (a wrapper around `ExitProcess`,
+    /// and *its* callers), so a caller's CFG stops at the call instead of
+    /// decoding the dead bytes after it.
+    Noreturn(NoreturnArgs),
     /// Light value-set / alias analysis over SSA (Phase 7): the bounded set
     /// of possible values each SSA variable can hold.
     ValueSet(IrArgs),
@@ -1479,6 +1484,45 @@ struct ManifestArgs {
     #[arg(long, default_value_t = 200)]
     limit: usize,
     /// Byte window handed to `ir build` per candidate.
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
+    max_bytes: usize,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+}
+
+#[derive(Args)]
+struct NoreturnArgs {
+    /// Restrict the analysis to this module, by case-insensitive name
+    /// substring (e.g. `GameAssembly.dll`).
+    #[arg(long)]
+    module: Option<String>,
+
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Inline bytes source; requires `--start` for the base address.
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Discovery scan range start (defaults to the module's `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    /// Discovery scan range size in bytes (defaults to the `.text` size).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    size: Option<usize>,
+    /// Cap on functions to analyze. A fixpoint is only as complete as its
+    /// function list, so this is deliberately higher than `ir manifest`'s
+    /// triage cap; the analyzed count is always reported.
+    #[arg(long, default_value_t = 2000)]
+    limit: usize,
+    /// Byte window handed to `ir build` per function.
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
     /// Instruction set to decode: `x64` (default) or `arm64`.
@@ -1910,6 +1954,7 @@ fn main() {
         Command::Ir(IrCmd::Dot(a)) => cmd_ir(a, IrView::Dot, pretty),
         Command::Ir(IrCmd::Slice(a)) => cmd_ir_slice(a, pretty),
         Command::Ir(IrCmd::Manifest(a)) => cmd_ir_manifest(a, pretty),
+        Command::Ir(IrCmd::Noreturn(a)) => cmd_ir_noreturn(a, pretty),
         Command::Ir(IrCmd::ValueSet(a)) => cmd_ir_value_set(a, pretty),
         Command::Ir(IrCmd::Deobfuscate(a)) => cmd_ir_deobfuscate(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
@@ -2606,6 +2651,29 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
             "limit": a.limit,
             "max_bytes": a.max_bytes,
             "arch": a.arch,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
+}
+
+/// Discover the module's functions, then run the whole-program `noreturn`
+/// fixpoint over them — the interprocedural half of ROADMAP Phase 10's CFG
+/// fidelity work.
+fn cmd_ir_noreturn(a: NoreturnArgs, pretty: bool) -> bool {
+    run_capability(
+        "ir.noreturn",
+        json!({
+            "start": a.start,
+            "size": a.size,
+            "limit": a.limit,
+            "max_bytes": a.max_bytes,
+            "arch": a.arch,
+            "module": a.module,
             "pid": a.pid,
             "file": a.file,
             "bytes": a.bytes,

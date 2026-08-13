@@ -78,7 +78,9 @@ pub use ir::{
 };
 pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
-pub use noreturn::is_known_noreturn;
+pub use noreturn::{
+    is_known_noreturn, proven_set, NoreturnArtifact, NoreturnFn, NoreturnInput, NoreturnPass,
+};
 pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};
 pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, PointerPathInput, PointerPathPass, PointerRoot};
 pub use provenance::{ProvenanceEntry, ProvenanceGraph, ProvenanceHit, ProvenanceInput, ProvenancePass};
@@ -125,6 +127,20 @@ pub struct Ctx<'a> {
     pub arch: &'a dyn Arch,
     pub symbols: Option<&'a dyn SymbolProvider>,
     pub modules: Option<&'a dyn ModuleProvider>,
+    /// Entry addresses of functions proven never to return — the result of
+    /// [`NoreturnPass`]'s whole-program fixpoint, fed back in so a *single*
+    /// function's CFG closes at a call to one of them, exactly as it already
+    /// does at a known noreturn import. Absent by default: without this, only
+    /// the import table is known, which is what every `ir build` saw before
+    /// (correct, just less complete — never wrong).
+    ///
+    /// Set by an embedder that ran the fixpoint in the same process
+    /// (`Ctx::with_noreturn_fns`). The frontends do **not** set it yet: doing
+    /// so across separate CLI invocations means persisting the set under
+    /// `.n0x/`, which needs its own staleness discipline (the same trap the
+    /// IR cache's analysis fingerprint fixed) — a tracked follow-on, scoped
+    /// deliberately rather than smuggled in with the analysis itself.
+    pub noreturn_fns: Option<&'a std::collections::BTreeSet<u64>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -134,6 +150,7 @@ impl<'a> Ctx<'a> {
             arch,
             symbols: None,
             modules: None,
+            noreturn_fns: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -142,6 +159,11 @@ impl<'a> Ctx<'a> {
     }
     pub fn with_modules(mut self, modules: &'a dyn ModuleProvider) -> Self {
         self.modules = Some(modules);
+        self
+    }
+    /// Feed back a proven-noreturn function set (see [`Ctx::noreturn_fns`]).
+    pub fn with_noreturn_fns(mut self, fns: &'a std::collections::BTreeSet<u64>) -> Self {
+        self.noreturn_fns = Some(fns);
         self
     }
 }

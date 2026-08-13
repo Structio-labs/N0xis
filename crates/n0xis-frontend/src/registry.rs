@@ -224,17 +224,33 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
 
     // A StaticPe is also a SymbolProvider + ModuleProvider — feed those seams
     // so call targets resolve to names.
-    match &resolved.src {
-        Src::Static(pe) => work(
-            &n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()),
-            input,
-            &label,
-        ),
+    //
+    // Phase 12 item 2: when the project holds an IL2CPP index that fits this
+    // target, chain it *over* whatever the binary itself provides. On a static
+    // PE that means managed names beside the runtime exports; on a live process
+    // it means names at all, since `LiveProcess` provides none — which is the
+    // long-standing "no symbols on --pid" blind spot, closed here for Unity
+    // targets. Every downstream pass gains this without a line of its own.
+    let attach = crate::il2cpp_caps::attach_for(args, &resolved.src);
+    let managed = attach.symbols();
+
+    let resp = match &resolved.src {
+        Src::Static(pe) => match managed {
+            Some(m) => {
+                let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()), input, &label)
+            }
+            None => work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, &label),
+        },
         #[cfg(windows)]
-        Src::Live(l) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), input, &label),
+        Src::Live(l) => match managed {
+            Some(m) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(m), input, &label),
+            None => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), input, &label),
+        },
         Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()), input, &label),
         Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()), input, &label),
-    }
+    };
+    attach.annotate(resp)
 }
 
 /// Resolve the target and ISA, then hand the caller a `Ctx` plus the resolved
@@ -245,6 +261,22 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
 /// `bytes_base` is where an inline `bytes` source gets mapped; each capability
 /// picks it from whichever explicit start it honors, so `--bytes` behaves the
 /// same here as it did in the CLI's hand-written handlers.
+/// Fold one code window's string-xref result into the accumulated one.
+///
+/// The data side does not move between windows, so every window rediscovers the
+/// same literals and differs only in which instructions referenced them.
+/// Concatenating would report one literal N times with its references split
+/// across the copies; merging by address keeps one hit carrying all of them.
+fn merge_string_hits(acc: &mut n0xis_core::StringXrefArtifact, next: n0xis_core::StringXrefArtifact) {
+    for hit in next.hits {
+        match acc.hits.iter_mut().find(|h| h.address == hit.address) {
+            Some(existing) => existing.xrefs.extend(hit.xrefs),
+            None => acc.hits.push(hit),
+        }
+    }
+    acc.count = acc.hits.len();
+}
+
 fn with_src_ctx(
     args: &Value,
     bytes_base: Va,
@@ -261,16 +293,29 @@ fn with_src_ctx(
         Err((c, m)) => return Response::error(&c, m),
     };
     let (src, label, region_len) = (resolved.src, resolved.label, resolved.region_len);
-    match &src {
-        Src::Static(pe) => {
-            let ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref());
-            work(&ctx, &src, region_len, &label)
-        }
+
+    // Phase 12 item 2, second half. The function-scoped helper above chained
+    // the managed index; this range-scoped one did not — so `xref to`,
+    // `xref from` and `function trace` kept rendering `sub_…` on a target whose
+    // names were sitting in the project all along. A call graph is exactly
+    // where managed names pay off most, since it is read as a whole rather than
+    // one address at a time.
+    let attach = crate::il2cpp_caps::attach_for(args, &src);
+    let managed = attach.symbols();
+
+    let resp = match &src {
+        Src::Static(pe) => match managed {
+            Some(m) => {
+                let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain), &src, region_len, &label)
+            }
+            None => work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()), &src, region_len, &label),
+        },
         #[cfg(windows)]
-        Src::Live(l) => {
-            let ctx = n0xis_core::Ctx::new(l.as_ref(), arch.as_ref());
-            work(&ctx, &src, region_len, &label)
-        }
+        Src::Live(l) => match managed {
+            Some(m) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(m), &src, region_len, &label),
+            None => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), &src, region_len, &label),
+        },
         Src::Snap(s) => {
             let ctx = n0xis_core::Ctx::new(s, arch.as_ref());
             work(&ctx, &src, region_len, &label)
@@ -279,7 +324,8 @@ fn with_src_ctx(
             let ctx = n0xis_core::Ctx::new(r.as_ref(), arch.as_ref());
             work(&ctx, &src, region_len, &label)
         }
-    }
+    };
+    attach.annotate(resp)
 }
 
 /// The data-side twin of [`with_src_ctx`]: resolve a `pid` (live, regions
@@ -339,6 +385,36 @@ fn with_scan_ctx(
         return work(&ctx, vec![(start_va, size)], &label);
     }
     Response::error("missing-source", "provide pid or file")
+}
+
+/// Run prologue discovery over every scan window and collect the candidates,
+/// sharing one `limit` across all of them — asking for 20 functions must not
+/// return 20 *per section*. Shared by every whole-range capability
+/// (`ir manifest`, `ir noreturn`) so they can never disagree about what "the
+/// functions in this module" means.
+fn discover_over(
+    ctx: &n0xis_core::Ctx,
+    windows: Vec<(Va, usize)>,
+    limit: usize,
+    // Boxed: `Response` is a large value, and an error here is the rare path.
+) -> Result<Vec<n0xis_core::FunctionCandidate>, Box<Response<Value>>> {
+    let mut candidates: Vec<n0xis_core::FunctionCandidate> = Vec::new();
+    for (start, size) in windows.into_iter().filter(|(_, s)| *s > 0) {
+        let remaining = limit.saturating_sub(candidates.len());
+        if limit != 0 && remaining == 0 {
+            break;
+        }
+        let discovered = match n0xis_core::Pass::run(
+            &n0xis_core::DiscoverPass,
+            ctx,
+            n0xis_core::DiscoverInput { start, size, limit: remaining, offset: 0 },
+        ) {
+            Ok(d) => d,
+            Err(e) => return Err(Box::new(Response::error("discover-failed", e.to_string()))),
+        };
+        candidates.extend(discovered.functions);
+    }
+    Ok(candidates)
 }
 
 /// Decompile one side of a diff: resolve its own target, build the CFG, render
@@ -961,15 +1037,48 @@ impl Plugin for AnalysisPasses {
                     Err((c, m)) => return Response::error(c, m),
                 };
                 let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
+                // Which module's code to scan. Live Unity targets need this: the
+                // main module is a thin player and the code is in a DLL.
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_start.unwrap_or(Va(0));
                 with_src_ctx(args, base, |ctx, src, region_len, label| {
-                    let (scan_start, size) = crate::source::scan_range_or(src.text_range(), region_len, explicit_start, explicit_size, base);
-                    if size == 0 {
+                    // Every executable section, not just `.text` — see
+                    // `scan_ranges_or`. A cross-reference search that silently
+                    // skips 89% of the code answers "no references" to a
+                    // question it never asked.
+                    let code_ranges = src.code_ranges_of(module.as_deref());
+                    // An unmatched module must refuse, not quietly scan the main
+                    // one: being handed a different module's code is how a wrong
+                    // answer comes to look right.
+                    if let Some(name) = module.as_deref()
+                        && code_ranges.is_empty()
+                    {
+                        return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
+                    }
+                    let windows =
+                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_start, explicit_size, base);
+                    if windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     }
-                    match n0xis_core::Pass::run(&n0xis_core::XrefPass, ctx, n0xis_core::XrefInput { scan_start, size, addr, dir }) {
-                        Ok(art) => ok_json(n0xis_contracts::schema::v1::XREF, art, label),
-                        Err(e) => Response::error("xref-failed", e.to_string()),
+                    let mut merged: Option<n0xis_core::XrefArtifact> = None;
+                    for (scan_start, size) in windows.into_iter().filter(|(_, s)| *s > 0) {
+                        match n0xis_core::Pass::run(&n0xis_core::XrefPass, ctx, n0xis_core::XrefInput { scan_start, size, addr, dir }) {
+                            Ok(art) => match &mut merged {
+                                // Keep the first window's framing (start/size
+                                // describe where the search began) and grow the
+                                // hit list across the rest.
+                                Some(acc) => acc.refs.extend(art.refs),
+                                None => merged = Some(art),
+                            },
+                            Err(e) => return Response::error("xref-failed", e.to_string()),
+                        }
+                    }
+                    match merged {
+                        Some(mut art) => {
+                            art.count = art.refs.len();
+                            ok_json(n0xis_contracts::schema::v1::XREF, art, label)
+                        }
+                        None => Response::error("no-range", "could not resolve a scan range; pass start and size"),
                     }
                 })
             }),
@@ -997,23 +1106,57 @@ impl Plugin for AnalysisPasses {
                 let limit = usize_arg(args, "limit", 50);
                 // Data window wins as the inline-bytes base: a `--bytes` run of
                 // this capability is looking for the string, not the code.
+                // Which module's code to scan. Live Unity targets need this: the
+                // main module is a thin player and the code is in a DLL.
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
                 with_src_ctx(args, base, move |ctx, src, region_len, label| {
                     // String literals and the code pointing at them usually sit
                     // in different sections, so the two windows default
                     // independently: data to `.rdata` (falling back to `.text`).
-                    let default_data = src.section_range(".rdata").or_else(|| src.text_range());
-                    let (code_start, code_size) =
-                        crate::source::scan_range_or(src.text_range(), region_len, explicit_code_start, code_size_arg, base);
+                    let default_data =
+                        src.section_range_in(module.as_deref(), ".rdata").or_else(|| src.section_range_in(module.as_deref(), ".text"));
+                    // The *code* side spans every executable section. This is
+                    // the command the whole finding came out of: the engine
+                    // internal-call names are in `.rdata` and the `lea`s that
+                    // reference them are in the `il2cpp` section, so scanning
+                    // `.text` returned `count: 0` for a string that is plainly
+                    // there, four times over.
+                    let code_ranges = src.code_ranges_of(module.as_deref());
+                    // An unmatched module must refuse, not quietly scan the main
+                    // one: being handed a different module's code is how a wrong
+                    // answer comes to look right.
+                    if let Some(name) = module.as_deref()
+                        && code_ranges.is_empty()
+                    {
+                        return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
+                    }
+                    let code_windows =
+                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_code_start, code_size_arg, base);
                     let (data_start, data_size) =
                         crate::source::scan_range_or(default_data, region_len, explicit_data_start, data_size_arg, base);
-                    if code_size == 0 || data_size == 0 {
+                    if data_size == 0 || code_windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a data/code range; pass data_start/data_size and start/size");
                     }
-                    let input = n0xis_core::StringXrefInput { data_start, data_size, code_start, code_size, query, limit };
-                    match n0xis_core::Pass::run(&n0xis_core::StringXrefPass, ctx, input) {
-                        Ok(art) => ok_json(n0xis_contracts::schema::v1::XREF_STRING, art, label),
-                        Err(e) => Response::error("xref-string-failed", e.to_string()),
+                    let mut merged: Option<n0xis_core::StringXrefArtifact> = None;
+                    for (code_start, code_size) in code_windows.into_iter().filter(|(_, s)| *s > 0) {
+                        let input =
+                            n0xis_core::StringXrefInput { data_start, data_size, code_start, code_size, query: query.clone(), limit };
+                        match n0xis_core::Pass::run(&n0xis_core::StringXrefPass, ctx, input) {
+                            // Each window rediscovers the same literals (the
+                            // data side does not move) and contributes its own
+                            // referencing instructions, so hits merge by
+                            // address rather than concatenating.
+                            Ok(art) => match &mut merged {
+                                Some(acc) => merge_string_hits(acc, art),
+                                None => merged = Some(art),
+                            },
+                            Err(e) => return Response::error("xref-string-failed", e.to_string()),
+                        }
+                    }
+                    match merged {
+                        Some(art) => ok_json(n0xis_contracts::schema::v1::XREF_STRING, art, label),
+                        None => Response::error("no-range", "could not resolve a data/code range; pass data_start/data_size and start/size"),
                     }
                 })
             }),
@@ -1032,28 +1175,97 @@ impl Plugin for AnalysisPasses {
                 let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
                 let limit = usize_arg(args, "limit", 200);
                 let max_bytes = usize_arg(args, "max_bytes", 4096);
+                // Which module's code to scan. Live Unity targets need this: the
+                // main module is a thin player and the code is in a DLL.
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_start.unwrap_or(Va(0));
                 with_src_ctx(args, base, move |ctx, src, region_len, label| {
-                    let (start, size) = crate::source::scan_range_or(src.text_range(), region_len, explicit_start, explicit_size, base);
-                    if size == 0 {
+                    // Triage must see the whole image, or it ranks the tenth of
+                    // it that happens to be `.text` and calls that the program.
+                    let code_ranges = src.code_ranges_of(module.as_deref());
+                    // An unmatched module must refuse, not quietly scan the main
+                    // one: being handed a different module's code is how a wrong
+                    // answer comes to look right.
+                    if let Some(name) = module.as_deref()
+                        && code_ranges.is_empty()
+                    {
+                        return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
+                    }
+                    let windows =
+                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_start, explicit_size, base);
+                    if windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     }
-                    let discovered = match n0xis_core::Pass::run(
-                        &n0xis_core::DiscoverPass,
-                        ctx,
-                        n0xis_core::DiscoverInput { start, size, limit, offset: 0 },
-                    ) {
-                        Ok(d) => d,
-                        Err(e) => return Response::error("discover-failed", e.to_string()),
+                    let candidates = match discover_over(ctx, windows, limit) {
+                        Ok(c) => c.into_iter().map(|f| n0xis_core::ManifestCandidate { name: f.name, va: f.va }).collect(),
+                        Err(r) => return *r,
                     };
-                    let candidates = discovered
-                        .functions
-                        .into_iter()
-                        .map(|f| n0xis_core::ManifestCandidate { name: f.name, va: f.va })
-                        .collect();
                     match n0xis_core::Pass::run(&n0xis_core::ManifestPass, ctx, n0xis_core::ManifestInput { candidates, max_bytes }) {
                         Ok(art) => ok_json(n0xis_contracts::schema::v1::IR_MANIFEST, art, label),
                         Err(e) => Response::error("manifest-failed", e.to_string()),
+                    }
+                })
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "ir.noreturn",
+            "Whole-program `noreturn` fixpoint: which discovered functions never return, and why — so a caller's CFG stops at the call instead of decoding dead bytes.",
+            Some(n0xis_contracts::schema::v1::IR_NORETURN),
+            Origin::Builtin,
+            Box::new(|args| {
+                let explicit_start = match opt_addr_arg(args, "start") {
+                    Ok(v) => v,
+                    Err((c, m)) => return Response::error(c, m),
+                };
+                let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
+                // A whole-program fixpoint is only as complete as its function
+                // list, so the default cap is higher than triage's — but it is
+                // still a cap, and a truncated list is reported (`analyzed`),
+                // never silently treated as the whole program.
+                let limit = usize_arg(args, "limit", 2000);
+                let max_bytes = usize_arg(args, "max_bytes", 4096);
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
+                let base = explicit_start.unwrap_or(Va(0));
+                with_src_ctx(args, base, move |ctx, src, region_len, label| {
+                    let code_ranges = src.code_ranges_of(module.as_deref());
+                    if let Some(name) = module.as_deref()
+                        && code_ranges.is_empty()
+                    {
+                        return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
+                    }
+                    let windows =
+                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_start, explicit_size, base);
+                    if windows.iter().all(|(_, size)| *size == 0) {
+                        return Response::error("no-range", "could not resolve a scan range; pass start and size");
+                    }
+                    // A fixpoint's completeness is bounded by its function
+                    // list, so prefer the exact one: on an x64 PE, `.pdata`
+                    // names every function with unwind info — start *and*
+                    // end, no heuristic. The prologue scan is the fallback
+                    // (no exception directory, or a non-PE source), and which
+                    // one ran is reported rather than left to be inferred.
+                    let from_pdata = src
+                        .module_base()
+                        .and_then(|base| n0xis_core::discover_pdata(ctx.source, base).ok())
+                        .filter(|f| !f.is_empty());
+                    let (discovery, candidates): (&str, Vec<Va>) = match from_pdata {
+                        Some(functions) => (
+                            "pdata",
+                            functions
+                                .into_iter()
+                                .map(|f| f.va)
+                                .take(if limit == 0 { usize::MAX } else { limit })
+                                .collect(),
+                        ),
+                        None => match discover_over(ctx, windows, limit) {
+                            Ok(c) => ("prologue-scan", c.into_iter().map(|f| f.va).collect()),
+                            Err(r) => return *r,
+                        },
+                    };
+                    match n0xis_core::Pass::run(&n0xis_core::NoreturnPass, ctx, n0xis_core::NoreturnInput { candidates, max_bytes, discovery: discovery.to_string() }) {
+                        Ok(art) => ok_json(n0xis_contracts::schema::v1::IR_NORETURN, art, label),
+                        Err(e) => Response::error("noreturn-failed", e.to_string()),
                     }
                 })
             }),
@@ -1232,6 +1444,8 @@ pub fn build_registry() -> Registry {
     reg.add_plugin(&AnalysisPasses);
     reg.add_plugin(&crate::project_caps::ProjectOps);
     reg.add_plugin(&crate::method_caps::MethodTools);
+    reg.add_plugin(&crate::net_caps::NetTools);
+    reg.add_plugin(&crate::il2cpp_caps::Il2CppTools);
     reg.add_plugin(&ProcessPlugins);
     reg
 }

@@ -23,6 +23,9 @@ pub mod v1 {
     pub const IR_SLICE: &str = "n0xis.ir.slice.v1";
     /// Per-function index with quality scoring (`ir manifest`).
     pub const IR_MANIFEST: &str = "n0xis.ir.manifest.v1";
+    /// Whole-program `noreturn` fixpoint over discovered functions
+    /// (`ir noreturn`).
+    pub const IR_NORETURN: &str = "n0xis.ir.noreturn.v1";
     /// Heuristic function discovery (`function discover`).
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
     /// Call-graph walk from a root (`function trace`).
