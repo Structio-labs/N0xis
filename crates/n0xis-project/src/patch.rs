@@ -14,10 +14,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::resolve;
 
-#[cfg(feature = "live")]
+// Not gated on the `live` feature: `MemorySource` is the OS-free seam, so the
+// read/verify/write/journal sequence below works against a live process on any
+// OS, a remote agent, or anything else implementing it. Only `locator` needs a
+// concrete Win32 target, and that is what `live` still gates.
 use n0xis_contracts::Va;
-#[cfg(feature = "live")]
-use n0xis_sources::{LiveProcess, MemorySource};
+use n0xis_sources::MemorySource;
 
 /// One journaled patch. `before_hex`/`after_hex` are space-separated hex.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +105,6 @@ pub fn list(limit: usize) -> Result<Vec<PatchRecord>> {
     Ok(records)
 }
 
-#[cfg(feature = "live")]
 fn to_hex_spaced(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
 }
@@ -112,7 +113,6 @@ fn to_hex_spaced(bytes: &[u8]) -> String {
 /// `%02x`) — not the flexible free-form parser the CLI uses for user-typed
 /// `--bytes` flags (which also accepts `0x`/comma separators); a `PatchRecord`
 /// is always our own serialization, so this only needs to invert `to_hex_spaced`.
-#[cfg(feature = "live")]
 fn parse_hex_spaced(s: &str) -> Result<Vec<u8>> {
     s.split_whitespace()
         .map(|tok| u8::from_str_radix(tok, 16).map_err(|e| anyhow!("bad hex byte '{tok}': {e}")))
@@ -123,8 +123,7 @@ fn parse_hex_spaced(s: &str) -> Result<Vec<u8>> {
 /// Shared by the CLI's `patch apply` and any other frontend driving a
 /// live-process patch (e.g. n0xis-hud adapters) — same read/verify/journal
 /// sequence either way, not a copy per caller.
-#[cfg(feature = "live")]
-pub fn apply(live: &LiveProcess, pid: u32, addr: Va, desired: &[u8]) -> Result<PatchRecord> {
+pub fn apply(live: &dyn MemorySource, pid: u32, addr: Va, desired: &[u8]) -> Result<PatchRecord> {
     let before = live.read(addr, desired.len()).map_err(|e| anyhow!("{e}"))?;
     live.write(addr, desired).map_err(|e| anyhow!("{e}"))?;
     let after = live.read(addr, desired.len()).map_err(|e| anyhow!("{e}"))?;
@@ -149,8 +148,7 @@ pub fn apply(live: &LiveProcess, pid: u32, addr: Va, desired: &[u8]) -> Result<P
 /// Restore a patch's `before` bytes and mark the record undone in place.
 /// Refuses (unless `force`) if the live bytes no longer match what was
 /// applied, mirroring the CLI's `patch undo` safety check exactly.
-#[cfg(feature = "live")]
-pub fn undo(rec: &mut PatchRecord, live: &LiveProcess, force: bool) -> Result<()> {
+pub fn undo(rec: &mut PatchRecord, live: &dyn MemorySource, force: bool) -> Result<()> {
     if rec.status != "applied" {
         return Err(anyhow!("patch {} status is '{}', nothing to undo", rec.id, rec.status));
     }

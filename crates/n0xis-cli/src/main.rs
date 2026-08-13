@@ -20,17 +20,27 @@ use n0xis_arch::{Arch, Arm64, X64};
 use n0xis_frontend::source::{Src, SourceSpec, base_for_module, load_snapshot, module_base_of, scan_range_or as scan_range};
 use n0xis_frontend::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, resolve_arch};
 use n0xis_contracts::{Response, Va, schema};
-use n0xis_contracts::{TableEntry, TableLocator, TableValueType};
+use n0xis_contracts::TableValueType;
 use n0xis_core::{
-    build_trampoline, game_grep_rank, identify_f64, identify_u64, BindingsInput, BindingsPass,
+    game_grep_rank, identify_f64, identify_u64, BindingsInput, BindingsPass,
     CfgInput, ConstMatch, Ctx, DecompInput, DecompPass, DecompStyle,
     DiscoverInput, DiscoverPass, Document,
-    FilterCriterion, FilterInput, FilterPass,
-    Pass, ProvenanceHit, ProvenanceInput,
-    ProvenancePass, RankOptions, ScanCriterion, ScanInput, ScanPass, ScanValue,
+    FilterCriterion,
+    Pass, RankOptions,
     ValueType, XrefDir,
 };
-use n0xis_core::{AabbLayout, CoordSpace, Rect, UiLocateInput, UiLocatePass};
+use n0xis_core::{CoordSpace, Rect};
+// Used only by the commands that still need Win32 (table freeze/locator, the
+// watchpoint-driven provenance trace, detour trampolines, UI localization).
+// Kept beside those rather than in the cross-platform block above, so the list
+// doubles as an inventory of what a Linux adapter has yet to reach.
+#[cfg(windows)]
+use n0xis_contracts::{TableEntry, TableLocator};
+#[cfg(windows)]
+use n0xis_core::{
+    build_trampoline, AabbLayout, FilterInput, FilterPass, ProvenanceHit, ProvenanceInput,
+    ProvenancePass, ScanCriterion, ScanInput, ScanPass, ScanValue, UiLocateInput, UiLocatePass,
+};
 use n0xis_pipeline::{Pipeline, cfg_cached};
 // Cross-platform sources: `MemorySource` (the trait), `Snapshot`/`StaticPe`
 // (offline sources), `RemoteAgent`/`remote_serve_stdio` (the SSH/remote-serve
@@ -2721,15 +2731,10 @@ fn patch_dry_run(a: PatchWriteArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("bad-bytes", &e, pretty),
     };
-    #[cfg(not(windows))]
     {
-        return ir_err("live-unsupported", "patch dry-run requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let current = match live.read(addr, desired.len()) {
             Ok(b) => b,
@@ -2759,21 +2764,16 @@ fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
         Ok(b) => b,
         Err(e) => return ir_err("bad-bytes", &e, pretty),
     };
-    #[cfg(not(windows))]
     {
-        return ir_err("live-unsupported", "patch apply requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let before = match live.read(addr, desired.len()) {
             Ok(b) => b,
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
         };
-        let rec = match pj::apply(&live, a.pid, addr, &desired) {
+        let rec = match pj::apply(live.as_ref(), a.pid, addr, &desired) {
             Ok(r) => r,
             Err(e) => return ir_err("patch-failed", &e.to_string(), pretty),
         };
@@ -2807,21 +2807,16 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
         },
     };
     let pid = a.pid.unwrap_or(rec.pid);
-    #[cfg(not(windows))]
     {
-        return ir_err("live-unsupported", "patch undo requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(pid) {
+        let live = match n0xis_frontend::source::attach_live(pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let restored_len = match parse_hex_bytes(&rec.before_hex) {
             Ok(b) => b.len(),
             Err(e) => return ir_err("bad-record", &e, pretty),
         };
-        if let Err(e) = pj::undo(&mut rec, &live, a.force) {
+        if let Err(e) = pj::undo(&mut rec, live.as_ref(), a.force) {
             return ir_err("undo-failed", &e.to_string(), pretty);
         }
         let addr = match Va::parse(&rec.address) {
@@ -2947,7 +2942,7 @@ fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = addr;
-        return ir_err("live-unsupported", "debug await-hit requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+        ir_err("live-unsupported", "debug await-hit requires a Windows build (needs LiveProcess/debug APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -3097,6 +3092,8 @@ fn run_disasm(source: &dyn MemorySource, start: Va, count: usize, arch: &dyn Arc
 // scan / pointer-path / aob / dissect (ROADMAP Phase 4b)
 // ============================================================================
 
+/// Only `table freeze` calls this, and that command still needs Win32.
+#[cfg(windows)]
 fn to_scan_value(v: f64) -> ScanValue {
     if v.fract() == 0.0 && v.abs() < 9.2e18 { ScanValue::Int(v as i64) } else { ScanValue::Float(v) }
 }
@@ -3217,7 +3214,7 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = addr;
-        return ir_err("live-unsupported", "debug watch requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+        ir_err("live-unsupported", "debug watch requires a Windows build (needs LiveProcess/debug APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -3254,7 +3251,7 @@ fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &a;
-        return ir_err("live-unsupported", "debug attach requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+        ir_err("live-unsupported", "debug attach requires a Windows build (needs LiveProcess/debug APIs)", pretty)
     }
     #[cfg(windows)]
     match attach_and_wait(a.pid, a.timeout_ms) {
@@ -3279,7 +3276,7 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = addr;
-        return ir_err("live-unsupported", "provenance trace requires a Windows build (needs LiveProcess/debug APIs)", pretty);
+        ir_err("live-unsupported", "provenance trace requires a Windows build (needs LiveProcess/debug APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -3485,26 +3482,23 @@ fn cmd_snapshot_list(pretty: bool) -> bool {
 /// (typically an `ssh`-tunneled `RemoteAgent`) sends `quit` or hangs up. No
 /// `ok/data/meta` envelope here — this is a persistent transport, not a
 /// single response.
+/// Serve this machine's live process to a driver on the other end of stdio.
+///
+/// Now that a Linux/Android adapter exists, this direction matters as much as
+/// the one it was written for: a Linux box can be the *target* an operator
+/// drives from elsewhere (`--remote-cmd "ssh box n0xis remote-serve --pid N"`),
+/// and the same path is how an Android device is reached over `adb`.
 fn cmd_remote_serve(a: &RemoteServeArgs) {
-    #[cfg(not(windows))]
-    {
-        let _ = a;
-        eprintln!("[n0xis] remote-serve: live-process analysis requires a Windows build (needs LiveProcess/Win32 APIs)");
-        std::process::exit(2);
-    }
-    #[cfg(windows)]
-    {
-        let live = match LiveProcess::attach(a.pid) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("[n0xis] remote-serve: attach failed: {e}");
-                std::process::exit(2);
-            }
-        };
-        if let Err(e) = remote_serve_stdio(&live, std::io::stdin(), std::io::stdout()) {
-            eprintln!("[n0xis] remote-serve: {e}");
+    let live = match n0xis_frontend::source::attach_live(a.pid) {
+        Ok(l) => l,
+        Err((c, m)) => {
+            eprintln!("[n0xis] remote-serve: {c}: {m}");
             std::process::exit(2);
         }
+    };
+    if let Err(e) = remote_serve_stdio(live.as_ref(), std::io::stdin(), std::io::stdout()) {
+        eprintln!("[n0xis] remote-serve: {e}");
+        std::process::exit(2);
     }
 }
 
@@ -3516,7 +3510,7 @@ fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = hook_at;
-        return ir_err("live-unsupported", "patch detour requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        ir_err("live-unsupported", "patch detour requires a Windows build (needs LiveProcess/Win32 APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -3656,7 +3650,7 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &bytes;
-        return ir_err("live-unsupported", "table freeze requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        ir_err("live-unsupported", "table freeze requires a Windows build (needs LiveProcess/Win32 APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -4174,7 +4168,7 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = (&a, value_type, align, &transition);
-        return ir_err("live-unsupported", "locate by-transition requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        ir_err("live-unsupported", "locate by-transition requires a Windows build (needs LiveProcess/Win32 APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -4269,7 +4263,7 @@ fn cmd_input_probe(a: InputProbeArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &a;
-        return ir_err("live-unsupported", "input probe requires a Windows build (needs Win32 input APIs)", pretty);
+        ir_err("live-unsupported", "input probe requires a Windows build (needs Win32 input APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -4610,7 +4604,7 @@ fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = (&a, rect, &excluded);
-        return ir_err("live-unsupported", "ui locate requires a Windows build (needs LiveProcess/Win32 APIs)", pretty);
+        ir_err("live-unsupported", "ui locate requires a Windows build (needs LiveProcess/Win32 APIs)", pretty)
     }
     #[cfg(windows)]
     {
@@ -4673,7 +4667,7 @@ fn cmd_ui_windows(a: UiWindowsArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &a;
-        return ir_err("live-unsupported", "ui windows requires a Windows build (needs Win32 window enumeration)", pretty);
+        ir_err("live-unsupported", "ui windows requires a Windows build (needs Win32 window enumeration)", pretty)
     }
     #[cfg(windows)]
     {
@@ -4723,7 +4717,7 @@ fn cmd_ui_screenshot(a: UiScreenshotArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &a;
-        return ir_err("live-unsupported", "ui screenshot requires a Windows build (needs Win32 GDI/window capture)", pretty);
+        ir_err("live-unsupported", "ui screenshot requires a Windows build (needs Win32 GDI/window capture)", pretty)
     }
     #[cfg(windows)]
     {
@@ -4813,7 +4807,7 @@ fn cmd_ui_focus(a: UiFocusArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &a;
-        return ir_err("live-unsupported", "ui focus requires a Windows build (needs Win32 window APIs)", pretty);
+        ir_err("live-unsupported", "ui focus requires a Windows build (needs Win32 window APIs)", pretty)
     }
     #[cfg(windows)]
     {

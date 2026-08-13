@@ -44,9 +44,6 @@ struct MapEntry {
     end: u64,
     /// Raw 4-char `rwxp`/`r-xs` field, kept verbatim for `perms_to_protect`.
     perms: String,
-    /// Offset into `path` this mapping starts at — needed to find a module's
-    /// *first* segment (offset 0), which is where the ELF header sits.
-    offset: u64,
     path: Option<String>,
 }
 
@@ -100,7 +97,7 @@ fn parse_maps_line(line: &str) -> Option<MapEntry> {
     let mut it = line.splitn(6, char::is_whitespace).filter(|s| !s.is_empty());
     let range = it.next()?;
     let perms = it.next()?.to_string();
-    let offset = u64::from_str_radix(it.next()?, 16).ok()?;
+    let _offset = it.next()?;
     let _dev = it.next()?;
     let _inode = it.next()?;
     let path = it.next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
@@ -110,7 +107,6 @@ fn parse_maps_line(line: &str) -> Option<MapEntry> {
         start: u64::from_str_radix(s, 16).ok()?,
         end: u64::from_str_radix(e, 16).ok()?,
         perms,
-        offset,
         path,
     })
 }
@@ -493,7 +489,6 @@ mod tests {
         assert_eq!(e.start, 0x7f8e0c000000);
         assert_eq!(e.end, 0x7f8e0c021000);
         assert_eq!(e.perms, "r-xp");
-        assert_eq!(e.offset, 0x1000);
         assert_eq!(e.path.as_deref(), Some("/usr/lib/libc.so.6"));
         assert!(e.is_module_backed() && e.executable() && e.readable());
     }

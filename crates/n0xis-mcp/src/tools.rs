@@ -10,15 +10,20 @@
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{
-    AabbLayout, CfgInput, CoordSpace, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass,
-    DecompStyle, DiscoverInput, DiscoverPass, Pass, ProvenanceHit, ProvenanceInput, ProvenancePass,
-    Rect, UiLocateInput, UiLocatePass,
+    CfgInput, CoordSpace, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass,
+    DecompStyle, DiscoverInput, DiscoverPass, Pass,
+    Rect,
 };
-use n0xis_sources::{plugin_call_once, split_command_line, MemorySource};
+// Needed only by the tools that still require Win32 — the watchpoint-driven
+// provenance trace and the UI-localization family. The list is an inventory of
+// what a Linux adapter has yet to reach.
+#[cfg(windows)]
+use n0xis_core::{AabbLayout, ProvenanceHit, ProvenanceInput, ProvenancePass, UiLocateInput, UiLocatePass};
+use n0xis_sources::{plugin_call_once, split_command_line};
 #[cfg(windows)]
 use n0xis_sources::{
-    LiveProcess, ModuleProvider, WatchKind, await_watchpoint_hit, best_window,
-    encode_png, focus, list_processes, list_windows, screenshot, CaptureMethod,
+    LiveProcess, MemorySource, ModuleProvider, WatchKind, await_watchpoint_hit, best_window,
+    encode_png, focus, list_windows, screenshot, CaptureMethod,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
@@ -332,6 +337,7 @@ pub struct MemWriteRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[cfg_attr(not(windows), allow(dead_code))] // fields are read only by the cfg(windows) handler
 pub struct ProvenanceTraceRequest {
     pub pid: u32,
     /// Address of the value to watch.
@@ -391,6 +397,7 @@ pub struct CapabilityRunRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[cfg_attr(not(windows), allow(dead_code))] // fields are read only by the cfg(windows) handler
 pub struct UiLocateRequest {
     /// Live process to hit-test. `ui locate` is live-only: it reads the
     /// target's current retained scene graph.
@@ -436,11 +443,13 @@ fn default_ui_limit() -> usize {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[cfg_attr(not(windows), allow(dead_code))] // fields are read only by the cfg(windows) handler
 pub struct UiWindowsRequest {
     pub pid: u32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[cfg_attr(not(windows), allow(dead_code))] // fields are read only by the cfg(windows) handler
 pub struct UiScreenshotRequest {
     pub pid: u32,
     /// Specific window HWND (from `ui_windows`); defaults to the best-guess
@@ -463,6 +472,7 @@ fn default_capture_method() -> String {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[cfg_attr(not(windows), allow(dead_code))] // fields are read only by the cfg(windows) handler
 pub struct UiFocusRequest {
     pub pid: u32,
     #[serde(default)]
@@ -600,13 +610,7 @@ impl N0xisServer {
 
     #[tool(description = "List running processes, optionally filtered by name substring.")]
     fn process_ps(&self, Parameters(a): Parameters<ProcessPsRequest>) -> String {
-        #[cfg(not(windows))]
-        {
-            let _ = &a;
-            return err("live-unsupported", "process_ps requires a Windows build (needs Win32 process enumeration)");
-        }
-        #[cfg(windows)]
-        match list_processes() {
+        match n0xis_frontend::source::list_processes() {
             Ok(mut procs) => {
                 if let Some(f) = a.filter.as_deref() {
                     let needle = f.to_lowercase();
@@ -616,7 +620,7 @@ impl N0xisServer {
                 let list: Vec<_> = procs.iter().map(|p| json!({ "pid": p.pid, "name": p.name })).collect();
                 emit(Response::success(schema::v1::PROCESS_PS, json!({ "count": list.len(), "processes": list })))
             }
-            Err(e) => err("ps-failed", e.to_string()),
+            Err((c, m)) => err(&c, m),
         }
     }
 
@@ -828,7 +832,7 @@ impl N0xisServer {
         #[cfg(not(windows))]
         {
             let _ = addr;
-            return err("live-unsupported", "provenance_trace requires a Windows build (needs LiveProcess/debug APIs)");
+            err("live-unsupported", "provenance_trace requires a Windows build (needs LiveProcess/debug APIs)")
         }
         #[cfg(windows)]
         {
@@ -986,7 +990,7 @@ impl N0xisServer {
         #[cfg(not(windows))]
         {
             let _ = (&a, rect, space, &excluded);
-            return err("live-unsupported", "ui_locate requires a Windows build (needs LiveProcess/Win32 APIs)");
+            err("live-unsupported", "ui_locate requires a Windows build (needs LiveProcess/Win32 APIs)")
         }
         #[cfg(windows)]
         {
@@ -1038,7 +1042,7 @@ impl N0xisServer {
         #[cfg(not(windows))]
         {
             let _ = &a;
-            return err("live-unsupported", "ui_windows requires a Windows build (needs Win32 window enumeration)");
+            err("live-unsupported", "ui_windows requires a Windows build (needs Win32 window enumeration)")
         }
         #[cfg(windows)]
         {
@@ -1058,7 +1062,7 @@ impl N0xisServer {
         #[cfg(not(windows))]
         {
             let _ = &a;
-            return err("live-unsupported", "ui_screenshot requires a Windows build (needs Win32 GDI/window capture)");
+            err("live-unsupported", "ui_screenshot requires a Windows build (needs Win32 GDI/window capture)")
         }
         #[cfg(windows)]
         {
@@ -1129,7 +1133,7 @@ impl N0xisServer {
         #[cfg(not(windows))]
         {
             let _ = &a;
-            return err("live-unsupported", "ui_focus requires a Windows build (needs Win32 window APIs)");
+            err("live-unsupported", "ui_focus requires a Windows build (needs Win32 window APIs)")
         }
         #[cfg(windows)]
         {

@@ -62,6 +62,18 @@ jobs:
       - name: Clippy (linux, all targets)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Type-check the *Windows* half from the Linux runner. `cargo check` does
+      # not link, so no mingw is needed, and it covers everything cfg(windows)
+      # hides from the steps above: the Win32 live adapter, the debugger, the
+      # window/input modules, n0xis-hud. It costs ~40s and it is the only thing
+      # standing between "Linux is green" and silently breaking Windows — it
+      # caught exactly that during the LiveTarget refactor (a trait import
+      # dropped from n0xis-mcp that only Windows needed).
+      - name: Windows path still type-checks (cross, no link)
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          cargo check --workspace --target x86_64-pc-windows-gnu
+
   # The full workspace, including everything gated on cfg(windows): the live
   # process adapter, the debugger, N0xHUD.
   windows:
