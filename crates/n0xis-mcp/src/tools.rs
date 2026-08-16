@@ -17,14 +17,17 @@ use n0xis_core::{
 // Needed only by the tools that still require Win32 — the watchpoint-driven
 // provenance trace and the UI-localization family. The list is an inventory of
 // what a Linux adapter has yet to reach.
+// Provenance is portable now that a Linux debug adapter exists; the UI-locate
+// family is still Win32-only.
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
 #[cfg(windows)]
-use n0xis_core::{AabbLayout, ProvenanceHit, ProvenanceInput, ProvenancePass, UiLocateInput, UiLocatePass};
+use n0xis_core::{AabbLayout, UiLocateInput, UiLocatePass};
 use n0xis_sources::{plugin_call_once, split_command_line};
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+use n0xis_sources::{await_watchpoint_hit, MemorySource, WatchKind};
 #[cfg(windows)]
-use n0xis_sources::{
-    LiveProcess, MemorySource, ModuleProvider, WatchKind, await_watchpoint_hit, best_window,
-    encode_png, focus, list_windows, screenshot, CaptureMethod,
-};
+use n0xis_sources::{best_window, encode_png, focus, list_windows, screenshot, CaptureMethod, LiveProcess, ModuleProvider};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
@@ -577,7 +580,7 @@ fn ui_excluded_addresses(names: &[String]) -> Result<std::collections::HashSet<V
     Ok(excluded)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
 fn parse_watch_kind(s: &str) -> Result<WatchKind, String> {
     match s.to_ascii_lowercase().as_str() {
         "execute" => Ok(WatchKind::Execute),
@@ -829,20 +832,20 @@ impl N0xisServer {
             Ok(v) => v,
             Err(e) => return bad_addr(e),
         };
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
         {
             let _ = addr;
-            err("live-unsupported", "provenance_trace requires a Windows build (needs LiveProcess/debug APIs)")
+            err("live-unsupported", "provenance_trace has no live adapter for this OS (Windows and Linux/Android are implemented)")
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux", target_os = "android"))]
         {
             let kind = match parse_watch_kind(&a.kind) {
                 Ok(k) => k,
                 Err(e) => return err("bad-kind", e),
             };
-            let live = match LiveProcess::attach(a.pid) {
+            let live = match n0xis_frontend::source::attach_live(a.pid) {
                 Ok(l) => l,
-                Err(e) => return err("attach-failed", e.to_string()),
+                Err((c, m)) => return err(&c, m),
             };
             let main_module = live.main_module().cloned();
             let label = live.label();
@@ -856,13 +859,14 @@ impl N0xisServer {
                 return emit(Response::success(schema::v1::PROVENANCE, json!({ "value_addr": addr, "entries": [], "timedOut": true })).with_source(label));
             };
 
-            let live = match LiveProcess::attach(a.pid) {
+            let live = match n0xis_frontend::source::attach_live(a.pid) {
                 Ok(l) => l,
-                Err(e) => return err("attach-failed", e.to_string()),
+                Err((c, m)) => return err(&c, m),
             };
             let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
             let arch = X64::new();
-            let ctx = Ctx::new(&live, &arch);
+            let source: &dyn MemorySource = &*live;
+            let ctx = Ctx::new(source, &arch);
             let (code_scan_start, code_scan_size) = match insn_module.as_ref().and_then(|m| live.section_range_of(m.base, ".text")) {
                 Some((start, size)) => (Some(start), size as usize),
                 None => (None, 0),

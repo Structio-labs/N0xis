@@ -1,27 +1,49 @@
 //! **The Phase 4b exit test** (ROADMAP P4b / CONCEPT §9-10): "headless
 //! scan→filter→freeze loop on a live target, results saved to `.n0xt`."
 //!
-//! Gated behind `--features live` (opt-in, same reasoning as
-//! `n0xis-sources` itself: default builds/tests stay OS-free — the Phase 1
-//! boundary). Spawns a real, disposable process (a long-lived benign
-//! `powershell` sleep) and drives the actual `ScanPass`/`FilterPass`/
-//! `TypeInferPass`-adjacent `n0xis-project::table` persistence against it —
-//! not a mock. We write the "world" ourselves via the already-proven
-//! `LiveProcess::write` (Phase 2) rather than racing an independently
-//! ticking counter, so the test is deterministic instead of timing-sensitive.
+//! Gated behind `--features live` (opt-in, same reasoning as `n0xis-sources`
+//! itself: default builds/tests stay OS-free — the Phase 1 boundary). Spawns a
+//! real, disposable process and drives the actual `ScanPass`/`FilterPass` +
+//! `n0xis-project::table` persistence against it — not a mock.
+//!
+//! Cross-platform: instead of a `powershell` sleep (Windows-only), it compiles a
+//! tiny Rust target at test time (`rustc` is guaranteed present — it built this
+//! crate) that leaks a known, zeroed buffer and prints its address + pid. We
+//! then write the "world" into *that buffer* ourselves via the proven
+//! `MemorySource::write` path, so the test is deterministic (it never races the
+//! target) and safe (it never scribbles on an arbitrary region of a real
+//! process) on every OS. The concrete live adapter is the only per-OS piece.
 
 #![cfg(feature = "live")]
 
-use std::process::{Child, Command};
+use std::io::{BufRead, BufReader};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use n0xis_arch::X64;
 use n0xis_contracts::{Table, TableEntry, TableLocator, TableValueType, Va};
-use n0xis_core::{
-    Ctx, FilterCriterion, FilterInput, FilterPass, Pass, ScanCriterion, ScanInput, ScanPass,
-    ScanValue, ValueType, PREVIEW_LIMIT,
-};
-use n0xis_sources::{LiveProcess, MemorySource};
+use n0xis_core::{Ctx, FilterCriterion, FilterInput, FilterPass, Pass, ScanCriterion, ScanInput, ScanPass, ScanValue, ValueType, PREVIEW_LIMIT};
+#[cfg(windows)]
+use n0xis_sources::LiveProcess as LiveAdapter;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use n0xis_sources::LinuxProcess as LiveAdapter;
+use n0xis_sources::MemorySource;
+
+/// The disposable target: leak a zeroed 0x4000-byte buffer, print its data
+/// address and pid, then sleep. The buffer stays put (leaked) and untouched, so
+/// the only writes into it are the ones this test makes — deterministic.
+const TARGET_SRC: &str = r#"
+fn main() {
+    let buf = vec![0u8; 0x4000];
+    let p = buf.as_ptr() as usize;
+    std::mem::forget(buf);
+    println!("addr=0x{:x}", p);
+    println!("pid={}", std::process::id());
+    use std::io::Write;
+    std::io::stdout().flush().unwrap();
+    loop { std::thread::sleep(std::time::Duration::from_secs(1)); }
+}
+"#;
 
 struct DisposableProcess(Child);
 impl Drop for DisposableProcess {
@@ -31,35 +53,58 @@ impl Drop for DisposableProcess {
     }
 }
 
-fn spawn_target() -> DisposableProcess {
-    let child = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"])
-        .spawn()
-        .expect("spawn a disposable powershell target");
-    DisposableProcess(child)
+struct CompiledTarget {
+    exe_path: std::path::PathBuf,
+}
+impl Drop for CompiledTarget {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.exe_path);
+        let _ = std::fs::remove_file(self.exe_path.with_extension("pdb"));
+    }
 }
 
-fn find_writable_region(live: &LiveProcess) -> (Va, usize) {
-    live.regions(100_000)
-        .into_iter()
-        .find(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx"))
-        .map(|r| (r.base, r.size as usize))
-        .expect("the target process has at least one committed writable region")
+fn compile_target() -> CompiledTarget {
+    let dir = std::env::temp_dir().join(format!("n0xis-phase4b-exit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    let src_path = dir.join("p4b_target.rs");
+    let exe_path = dir.join(format!("p4b_target{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&src_path, TARGET_SRC).expect("write target source");
+    let status = Command::new("rustc")
+        .args(["-O", "-C", "debuginfo=0", "-o"])
+        .arg(&exe_path)
+        .arg(&src_path)
+        .status()
+        .expect("invoke rustc (must be on PATH — it built this crate)");
+    assert!(status.success(), "rustc failed to compile the disposable phase4b target");
+    CompiledTarget { exe_path }
+}
+
+fn spawn_target(exe: &CompiledTarget) -> (DisposableProcess, Va, u32) {
+    let mut child = Command::new(&exe.exe_path).stdout(Stdio::piped()).spawn().expect("spawn the compiled target");
+    let stdout = child.stdout.take().expect("captured stdout");
+    let mut lines = BufReader::new(stdout).lines();
+    let addr_line = lines.next().expect("target prints addr=").expect("read addr line");
+    let pid_line = lines.next().expect("target prints pid=").expect("read pid line");
+    let addr = Va::parse(addr_line.strip_prefix("addr=").expect("addr= prefix")).expect("parse addr");
+    let pid: u32 = pid_line.strip_prefix("pid=").expect("pid= prefix").trim().parse().expect("parse pid");
+    (DisposableProcess(child), addr, pid)
 }
 
 #[test]
 fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
-    let target = spawn_target();
+    let target = compile_target();
+    let (_child, buf_addr, pid) = spawn_target(&target);
     // Give the process a moment to finish initializing its address space.
     std::thread::sleep(Duration::from_millis(300));
-    let pid = target.0.id();
 
-    let live = LiveProcess::attach(pid).expect("attach to the disposable target");
-    let (region_start, region_size) = find_writable_region(&live);
+    let live = LiveAdapter::attach(pid).expect("attach to the disposable target");
+    // Our known, safe scratch region: the leaked buffer the target printed.
+    let region_start = buf_addr;
+    let region_size: usize = 0x4000;
 
-    // We control the "world": write a known value ourselves (the proven
-    // Phase 2 write path), scan for it, then write an increased value and
-    // confirm the filter narrows to exactly that address.
+    // We control the "world": write a known value ourselves (the proven write
+    // path), scan for it, then write an increased value and confirm the filter
+    // narrows to exactly that address.
     let probe_offset: u64 = 0x40;
     let probe_addr = region_start.offset(probe_offset);
     live.write(probe_addr, &4242i32.to_le_bytes()).expect("write the known first value");
@@ -133,10 +178,9 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
     // Restore the probe for the freeze-loop portion below.
     live.write(probe_addr, &4300i32.to_le_bytes()).expect("restore the probe value");
 
-    // Persist the narrowed result as a `.n0xt` table entry (CONCEPT §10) —
-    // in a throwaway `.n0x/` project directory so this test never touches
-    // the real one.
-    let project_dir = std::env::temp_dir().join(format!("n0xis-phase4b-exit-{}-{pid}", std::process::id()));
+    // Persist the narrowed result as a `.n0xt` table entry (CONCEPT §10) — in a
+    // throwaway `.n0x/` project directory so this test never touches the real one.
+    let project_dir = std::env::temp_dir().join(format!("n0xis-phase4b-project-{}-{pid}", std::process::id()));
     std::fs::create_dir_all(project_dir.join(".n0x")).expect("create a scratch .n0x project");
     let prev_cwd = std::env::current_dir().expect("read cwd");
     std::env::set_current_dir(&project_dir).expect("cd into the scratch project");

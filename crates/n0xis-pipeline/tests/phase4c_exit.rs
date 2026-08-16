@@ -29,7 +29,17 @@ use std::time::Duration;
 use n0xis_arch::X64;
 use n0xis_contracts::{Provenance, Table, TableEntry, TableLocator, TableValueType, Va, VerificationState};
 use n0xis_core::{Ctx, Pass, ProvenanceHit, ProvenanceInput, ProvenancePass};
-use n0xis_sources::{await_watchpoint_hit, LiveProcess, MemorySource, ModuleProvider, WatchKind};
+// The concrete live adapter is per-OS (both implement `LiveTarget`); the rest of
+// the flow is portable, so only this alias changes across platforms.
+#[cfg(windows)]
+use n0xis_sources::LiveProcess as LiveAdapter;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use n0xis_sources::LinuxProcess as LiveAdapter;
+// `main_module`/`section_range_of` are inherent on `LiveProcess` but come from
+// the `LiveTarget` trait on `LinuxProcess`, so the trait is only needed here.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use n0xis_sources::LiveTarget;
+use n0xis_sources::{await_watchpoint_hit, MemorySource, ModuleProvider, WatchKind};
 
 /// A known, tiny target: a heap counter incremented in a loop, with its
 /// address and PID printed so the test doesn't have to guess either.
@@ -68,7 +78,7 @@ fn compile_target() -> CompiledTarget {
     let dir = std::env::temp_dir().join(format!("n0xis-phase4c-exit-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     let src_path = dir.join("target.rs");
-    let exe_path = dir.join("target.exe");
+    let exe_path = dir.join(format!("target{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&src_path, TARGET_SRC).expect("write target source");
 
     let status = Command::new("rustc")
@@ -107,9 +117,9 @@ fn agent_finds_and_freezes_hp_with_explained_provenance() {
     // it), matching what a prior `scan value`/`scan filter` pass would have
     // narrowed down to in the interactive workflow (already exit-tested in
     // phase4b_exit.rs); this test focuses on what Phase 4c adds on top.
-    let live = LiveProcess::attach(pid).expect("attach to the compiled target");
+    let live = LiveAdapter::attach(pid).expect("attach to the compiled target");
     let bytes = live.read(counter_addr, 4).expect("read the counter");
-    assert_eq!(i32::from_le_bytes(bytes.try_into().unwrap()) >= 1000, true, "sanity: counter is in its expected range");
+    assert!(i32::from_le_bytes(bytes.try_into().unwrap()) >= 1000, "sanity: counter is in its expected range");
     let main_module = live.main_module().cloned();
     drop(live);
 
@@ -119,7 +129,7 @@ fn agent_finds_and_freezes_hp_with_explained_provenance() {
     let hit = outcome.hit.expect("the target's own loop writes within the timeout");
 
     // Step 3 — fuse the hit with the SSA decompiler: the principal fusion.
-    let live = LiveProcess::attach(pid).expect("re-attach");
+    let live = LiveAdapter::attach(pid).expect("re-attach");
     let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
     let (code_start, code_size) = insn_module
         .as_ref()

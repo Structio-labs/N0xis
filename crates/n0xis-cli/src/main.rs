@@ -34,12 +34,17 @@ use n0xis_core::{CoordSpace, Rect};
 // watchpoint-driven provenance trace, detour trampolines, UI localization).
 // Kept beside those rather than in the cross-platform block above, so the list
 // doubles as an inventory of what a Linux adapter has yet to reach.
-#[cfg(windows)]
+// Provenance (watchpoint hit → decompiled writing statement) is portable now
+// that a Linux debug adapter exists, so its inputs ride the cross-platform gate.
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
 use n0xis_contracts::{TableEntry, TableLocator};
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
+// Still Win32-only — the scan/filter/UI-locate/trampoline commands have not been
+// routed through the seam yet; the list doubles as an inventory of what remains.
 #[cfg(windows)]
 use n0xis_core::{
-    build_trampoline, AabbLayout, FilterInput, FilterPass, ProvenanceHit, ProvenanceInput,
-    ProvenancePass, ScanCriterion, ScanInput, ScanPass, ScanValue, UiLocateInput, UiLocatePass,
+    build_trampoline, AabbLayout, FilterInput, FilterPass, ScanCriterion, ScanInput, ScanPass, ScanValue, UiLocateInput, UiLocatePass,
 };
 use n0xis_pipeline::{Pipeline, cfg_cached};
 // Cross-platform sources: `MemorySource` (the trait), `Snapshot`/`StaticPe`
@@ -51,10 +56,12 @@ use n0xis_sources::{MemorySource, Snapshot, StaticPe, remote_serve_stdio};
 // n0xis-sources' own `#[cfg(feature = "live")]` gates (see its lib.rs) and
 // this crate's Cargo.toml `[target.'cfg(windows)'.dependencies]` split.
 #[cfg(windows)]
-use n0xis_sources::{
-    LiveProcess, WatchKind, attach_and_wait, await_breakpoint_hit,
-    await_watchpoint_hit, await_watchpoint_hit_where, probe_actuation, RegCond, DEFAULT_PROBE_VK,
-};
+use n0xis_sources::{LiveProcess, probe_actuation, DEFAULT_PROBE_VK};
+// The debug adapter's free functions + types exist on every OS that has a live
+// adapter (Win32 or Linux ptrace), so the debug/provenance commands compile and
+// run on both — only the register capture underneath differs.
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+use n0xis_sources::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where, RegCond, WatchKind};
 #[cfg(windows)]
 use n0xis_sources::{best_window, encode_png, focus as window_focus, list_windows, screenshot as window_screenshot, CaptureMethod};
 use serde_json::json;
@@ -160,6 +167,11 @@ enum Command {
     /// Live execution control (software + hardware breakpoints).
     #[command(subcommand)]
     Debug(DebugCmd),
+    /// Call-stack recovery from a captured register set — cross-process,
+    /// format-neutral (PE `.pdata` or ELF `.eh_frame` DWARF CFI, chosen per
+    /// module, so native and Wine targets alike).
+    #[command(subcommand)]
+    Stack(StackCmd),
     /// Typed value/AOB/pointer-path scanning + struct dissection (a memory scanner class).
     #[command(subcommand)]
     Scan(ScanCmd),
@@ -827,6 +839,31 @@ enum DebugCmd {
     Attach(DebugAttachArgs),
 }
 
+#[derive(Subcommand)]
+enum StackCmd {
+    /// Snapshot a thread's registers and walk its call stack. Frame 0 is the
+    /// current instruction; each caller is recovered through that module's
+    /// unwind data (never a raw `[rsp]` guess). Reads registers via `ptrace`
+    /// and stack/unwind bytes via `/proc` — the thread is held stopped only for
+    /// the duration of the walk.
+    Backtrace(StackBacktraceArgs),
+}
+
+#[derive(Args)]
+struct StackBacktraceArgs {
+    #[arg(long)]
+    pid: u32,
+    /// A single thread id to walk. Defaults to the main thread (tid == pid).
+    #[arg(long)]
+    tid: Option<u32>,
+    /// Walk every thread in the process instead of just one.
+    #[arg(long)]
+    all_threads: bool,
+    /// Maximum frames per thread.
+    #[arg(long, default_value_t = 64)]
+    max: usize,
+}
+
 #[derive(Args)]
 struct DebugAttachArgs {
     #[arg(long)]
@@ -907,7 +944,7 @@ struct ProvenanceTraceArgs {
     arch: Option<String>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
 impl From<WatchKindArg> for WatchKind {
     fn from(k: WatchKindArg) -> Self {
         match k {
@@ -1939,6 +1976,7 @@ fn main() {
         Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
         Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
         Command::Debug(DebugCmd::Attach(a)) => cmd_debug_attach(a, pretty),
+        Command::Stack(StackCmd::Backtrace(a)) => cmd_stack_backtrace(a, pretty),
         Command::Scan(ScanCmd::Value(a)) => cmd_scan_value(a, pretty),
         Command::Scan(ScanCmd::Filter(a)) => cmd_scan_filter(a, pretty),
         Command::Scan(ScanCmd::Aob(a)) => cmd_scan_aob(a, pretty),
@@ -2939,19 +2977,19 @@ fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     {
-        let _ = addr;
-        ir_err("live-unsupported", "debug await-hit requires a Windows build (needs LiveProcess/debug APIs)", pretty)
+        let _ = (addr, &a);
+        ir_err("live-unsupported", "debug await-hit has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "android"))]
     {
-        // Attach only long enough to resolve the main module (for --addr-rva and
-        // the relative_rip label on a hit) — the debug session itself opens its
-        // own handle and becomes the process's debugger independently.
-        let live = match LiveProcess::attach(a.pid) {
+        // Attach through the seam only long enough to resolve the main module
+        // (for --addr-rva and the relative_rip label on a hit) — the debug
+        // session itself attaches independently (its own handle / ptrace seize).
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let module = live.main_module().cloned();
         let label = live.label();
@@ -3211,16 +3249,16 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     {
         let _ = addr;
-        ir_err("live-unsupported", "debug watch requires a Windows build (needs LiveProcess/debug APIs)", pretty)
+        ir_err("live-unsupported", "debug watch has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "android"))]
     {
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let module = live.main_module().cloned();
         let label = live.label();
@@ -3248,12 +3286,12 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
 }
 
 fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     {
         let _ = &a;
-        ir_err("live-unsupported", "debug attach requires a Windows build (needs LiveProcess/debug APIs)", pretty)
+        ir_err("live-unsupported", "debug attach has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "android"))]
     match attach_and_wait(a.pid, a.timeout_ms) {
         Ok(()) => emit(
             &Response::success(schema::v1::DEBUG_ATTACH, json!({ "pid": a.pid, "timeout_ms": a.timeout_ms, "detached": true })),
@@ -3261,6 +3299,90 @@ fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
         ),
         Err(e) => ir_err("attach-failed", &e.to_string(), pretty),
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
+    // `stack_unwind` resolves through the `Box<dyn LiveTarget>` directly, so the
+    // trait need not be imported here.
+    use n0xis_sources::{list_thread_ids, StoppedThread};
+
+    #[derive(serde::Serialize)]
+    struct BtFrame {
+        rip: Va,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        module: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rva: Option<Va>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        symbol: Option<String>,
+    }
+    #[derive(serde::Serialize)]
+    struct BtThread {
+        tid: u32,
+        rip: Va,
+        frame_count: usize,
+        frames: Vec<BtFrame>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+    #[derive(serde::Serialize)]
+    struct BtOut {
+        pid: u32,
+        thread_count: usize,
+        threads: Vec<BtThread>,
+    }
+
+    let tids = match (a.tid, a.all_threads) {
+        (Some(t), _) => vec![t],
+        (None, true) => list_thread_ids(a.pid),
+        (None, false) => vec![a.pid],
+    };
+    if tids.is_empty() {
+        return ir_err("no-threads", &format!("no threads found for pid {} (process gone or /proc unreadable)", a.pid), pretty);
+    }
+
+    let live = match n0xis_frontend::source::attach_live(a.pid) {
+        Ok(l) => l,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let label = live.label();
+
+    let mut threads = Vec::new();
+    for tid in tids {
+        // Hold the thread stopped across BOTH the register read and the stack
+        // walk, so the frames are coherent; the guard resumes it on drop.
+        let result = StoppedThread::attach(tid).and_then(|stop| {
+            let regs = stop.registers()?;
+            let frames = live.stack_unwind(regs, a.max);
+            Ok((regs.rip, frames))
+        });
+        match result {
+            Ok((rip, frames)) => {
+                let frames = frames
+                    .into_iter()
+                    .map(|f| BtFrame { rip: Va(f.rip), module: f.module, rva: f.rva.map(|v| Va(v as u64)), symbol: f.symbol })
+                    .collect::<Vec<_>>();
+                threads.push(BtThread { tid, rip: Va(rip), frame_count: frames.len(), frames, error: None });
+            }
+            Err(e) => {
+                threads.push(BtThread { tid, rip: Va(0), frame_count: 0, frames: Vec::new(), error: Some(e.to_string()) });
+            }
+        }
+    }
+
+    let out = BtOut { pid: a.pid, thread_count: threads.len(), threads };
+    emit(&Response::success(schema::v1::STACK_BACKTRACE, out).with_source(label), pretty)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
+    let _ = &a;
+    ir_err(
+        "live-unsupported",
+        "stack backtrace currently needs the Linux ptrace register-capture path; on Windows use `debug watch` / `debug await-hit`, which already return frames",
+        pretty,
+    )
 }
 
 /// The principal ROADMAP Phase 4c loop, in one command: arm a hardware
@@ -3273,18 +3395,16 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     {
         let _ = addr;
-        ir_err("live-unsupported", "provenance trace requires a Windows build (needs LiveProcess/debug APIs)", pretty)
+        ir_err("live-unsupported", "provenance trace has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "android"))]
     {
-        use n0xis_sources::ModuleProvider;
-
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let main_module = live.main_module().cloned();
         let label = live.label();
@@ -3311,16 +3431,19 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
         // Re-attach fresh: the accessing instruction (rip) may belong to a
         // different module than the one owning the watched data address, and we
         // need a live `Ctx` to decompile it.
-        let live = match LiveProcess::attach(a.pid) {
+        let live = match n0xis_frontend::source::attach_live(a.pid) {
             Ok(l) => l,
-            Err(e) => return ir_err("attach-failed", &e.to_string(), pretty),
+            Err((c, m)) => return ir_err(&c, &m, pretty),
         };
         let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
         let arch = match resolve_arch(a.arch.as_deref()) {
             Ok(x) => x,
             Err(e) => return ir_err("bad-arch", &e, pretty),
         };
-        let ctx = Ctx::new(&live, arch.as_ref());
+        // Upcast the live target to the byte-source `Ctx` wants; the decompiler
+        // never learns it is a Linux `/proc` process vs a Win32 handle.
+        let source: &dyn MemorySource = &*live;
+        let ctx = Ctx::new(source, arch.as_ref());
 
         let access_kind = match a.kind {
             WatchKindArg::Execute => "execute",

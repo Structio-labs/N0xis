@@ -1,13 +1,15 @@
 //! **Stack-unwind exit test**: a hardware watchpoint hit must come back with a
 //! real *unwound* call stack (frame 0 = the hit site, then genuine callers
-//! recovered from the target's `.pdata`/`.xdata`), not just a raw `[rsp]` guess.
+//! recovered from the target's unwind data — PE `.pdata`/`.xdata` on Windows,
+//! ELF `.eh_frame` DWARF CFI on Linux), not just a raw `[rsp]` guess.
 //!
 //! This is the live, real-process proof for `n0xis-sources::unwind` — the pure
-//! unwinder is unit-tested against a synthetic PE, but a watchpoint lands
-//! mid-function in *real* compiler output, which is exactly where a naive stack
-//! read fails and where this feature earns its keep (recovering the caller of
-//! a writing instruction from a mid-function hit, which a raw `[rsp]` guess
-//! can't reach).
+//! unwinder is unit-tested against synthetic PE and ELF images, but a watchpoint
+//! lands mid-function in *real* compiler output, which is exactly where a naive
+//! stack read fails and where this feature earns its keep (recovering the caller
+//! of a writing instruction from a mid-function hit, which a raw `[rsp]` guess
+//! can't reach). The whole path is now cross-platform: the target is compiled and
+//! run on the host OS, and the unwinder picks the format from its header.
 //!
 //! Gated behind `--features live`, same as the other dynamic-memory exit tests.
 
@@ -69,10 +71,11 @@ fn compile_target() -> CompiledTarget {
     let dir = std::env::temp_dir().join(format!("n0xis-unwind-exit-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     let src_path = dir.join("uw_target.rs");
-    let exe_path = dir.join("uw_target.exe");
+    let exe_path = dir.join(format!("uw_target{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&src_path, TARGET_SRC).expect("write target source");
-    // `-O` so the compiler actually emits real .pdata/.xdata unwind info (and a
-    // realistic mid-function hit), `-C debuginfo=0` to keep it lean.
+    // `-O` so the compiler actually emits real unwind info (PE `.pdata`/`.xdata`
+    // or ELF `.eh_frame`) and a realistic mid-function hit; `-C debuginfo=0` to
+    // keep it lean.
     let status = Command::new("rustc")
         .args(["-O", "-C", "debuginfo=0", "-o"])
         .arg(&exe_path)

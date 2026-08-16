@@ -1762,6 +1762,141 @@ to be defeated — in a build you own you hook above it, where the plaintext alr
 
 ---
 
+## Phase 14 — Cross-platform: the Linux-native live track 🎯 ⏳
+
+Goal stated once: make the *live* half of the toolkit as portable as the analysis half
+already is, and — because the machine is now Linux — **exploit what Linux exposes that
+Windows gated behind a signed kernel driver or blocked outright**. This is not a 1:1 port
+of the Win32 adapters. It is: keep the core untouched, write a Linux adapter behind each
+existing seam, and where Linux offers a strictly stronger primitive, prefer it.
+
+### The strategic thesis (why Linux, not just "also Linux")
+
+On Windows, several of the capabilities this tool wants are either driver-only or actively
+fought by the kernel: hardware watchpoints and stealthy cross-process reads want a driver;
+**PatchGuard/KPP**, **Driver Signature Enforcement**, **HVCI/VBS**, and vendor **kernel-mode
+anti-cheat** exist specifically to stop the rest. On Linux the equivalent power is in the
+kernel already, reachable from an unprivileged (or `CAP_SYS_PTRACE`) userspace process
+through plain syscalls — no signed driver, no code-integrity fight:
+
+- `process_vm_readv`/`writev` + `/proc/<pid>/mem` — cross-process RW that on Windows people
+  ship a driver for. **Already used** by the Linux adapter (write falls back through
+  `/proc/<pid>/mem` to bypass page protection for patching).
+- `ptrace` — full debug control (attach, register file, `POKEUSER` on the debug registers
+  DR0–DR7 for **hardware watchpoints**, `int3` software breakpoints, single-step) in
+  userspace. On Windows the DR0–DR7 path is what the Win32 debug adapter fought anti-debug
+  over; here it is a syscall.
+- `perf_event_open(PERF_TYPE_BREAKPOINT)` — per-thread hardware watchpoints delivered via a
+  ring buffer **without stopping the thread**, and a sampling profiler that can grab a stack
+  at frequency (which our unwinder then walks).
+- **uprobes + eBPF** — attach a probe to *any* userspace instruction address and run a small
+  kernel program: trace calls, arguments, and writes to an address **without patching a byte
+  in the target**. This is the biggest "not possible on stock Windows without a driver" win,
+  and it is a near-perfect fit for provenance.
+- `uinput` / `evdev` — inject input as a *real kernel input device*, below any user-space
+  hook an anti-cheat installs. This is the built-in-kernel replacement for the third-party
+  Interception driver the Windows HUD used.
+- Further out: `seccomp`-unotify (syscall interception), `LD_PRELOAD` interposition, and
+  **KVM-based VM introspection** (run the target in a VM, inspect from outside, undetectable
+  from within) — each a Linux-native answer to a Windows driver-or-nothing problem.
+
+### Where we stand (this branch, `feat/linux-live-adapter`)
+
+- ✅ Core stays OS-free — the boundary law (`cargo tree -p n0xis-core` = zero OS crates)
+  still holds; nothing below was a core change.
+- ✅ `StaticPe` (goblin) already analyses Windows PEs on Linux — static RE is cross-platform
+  for free.
+- ✅ `trait LiveTarget` seam (`sources/target.rs`) — "a running process" with no OS in the
+  signature; `Src::Live` holds a `Box<dyn LiveTarget>`, frontends hold one type.
+- ✅ `LinuxProcess` adapter — `/proc/<pid>/maps` for the address-space model,
+  `process_vm_readv`/`writev` for bytes, ELF section re-read + load-bias rebasing; Android
+  rides the same code.
+- ✅ Live surface routed through the seam, not `cfg(windows)` — one dispatch point
+  (`attach_live`), ~20 command sites went cfg-free.
+- ✅ **Portable stack unwinder (this milestone).** `unwind.rs` is un-gated from `windows`
+  and now carries **both** backends behind the same `MemReader` seam and `UnwindRegs`/`Frame`
+  model: PE `.pdata`/`.xdata` (existing) and **ELF `.eh_frame` DWARF CFI** (new — CIE/FDE +
+  `.eh_frame_hdr` binary search + a `DW_CFA_*` interpreter, all pure logic read straight from
+  the mapped image via `PT_GNU_EH_FRAME`). Dispatch is **by module header (`MZ`→PE,
+  `\x7fELF`→ELF), not host OS**, so a Wine PE target read through `/proc` unwinds correctly.
+  Validated against a synthetic ELF, the real host binary's `.eh_frame` (cross-checked with
+  `readelf`), and a live process.
+- ✅ **Register capture seed** — `dbg_linux::StoppedThread` (ptrace `ATTACH`+`GETREGS`),
+  the one genuinely OS-specific piece the unwinder needs, as an RAII stop guard.
+- ✅ `LiveTarget::stack_unwind` default method — reads unwind tables *and* stack through the
+  target's own `MemorySource`, so every adapter (Win32 and Linux) gets it unchanged.
+- ✅ `stack backtrace --pid [--tid|--all-threads] [--max]` CLI → `n0xis.stack.backtrace.v1`.
+  Emits a real cross-module stack (verified on `sleep`: nanosleep → main → `__libc_start_main`
+  → `_start`, crossing `libc.so` ↔ the binary).
+- ✅ **Linux debug adapter (this milestone).** `dbg_linux` now carries the full ptrace twin of
+  the Win32 `debug` module: `PTRACE_SEIZE` of the whole thread-group (`O_TRACECLONE` catches
+  later threads), **hardware watchpoints** via the debug registers DR0/DR7 (`PTRACE_POKEUSER`
+  at `offset_of!(user, u_debugreg)`, DR6 hit detection, `EFLAGS.RF` to break the Execute-miss
+  livelock), **software breakpoints** (`int3` via `/proc/<pid>/mem`), a
+  `waitpid(-1,__WALL|WNOHANG)` drain loop, register capture, the conditional-hit miss budget,
+  and one RAII `Session::drop` that stops-all → restores the byte → clears DR → detaches (the
+  teardown order that stops a stale watchpoint from crashing the target after detach). The
+  shared wire types (`BreakpointHit`/`AwaitHitOutcome`/`Registers`/`RegCond`/`WatchKind`) were
+  hoisted into an OS-free `hit.rs`; both adapters emit the identical schema.
+- ✅ **Provenance closed on Linux.** `debug await-hit` / `debug watch` / `debug attach` and,
+  crucially, `provenance trace` (CLI *and* MCP) now route through the seam and run on Linux —
+  a watchpoint hit's rip is fused with the SSA decompiler exactly as on Windows. The full
+  KF-1 loop (value address → what code wrote it → recovered function → decompiled statement)
+  works on a native Linux target. Verified end-to-end by 5 ptrace integration tests (hardware
+  write-watchpoint, one-shot software breakpoint, timeout, miss-budget, attach) each asserting
+  the target survives *and* is left untraced.
+- ⚠️ Reaching a non-descendant needs `kernel.yama.ptrace_scope=0`, `CAP_SYS_PTRACE`, or root
+  — the same gate `process_vm_readv` hits; the error says so.
+
+### Prioritized plan (leverage × cost)
+
+1. ✅ **Linux debug adapter** — *done this milestone* (see above): DR0/DR7 hardware watchpoints,
+   `int3` software breakpoints, the `waitpid` event loop, and the safe multi-thread teardown,
+   producing the same `BreakpointHit`/`AwaitHitOutcome` schema and seeding the same
+   `UnwindRegs` into the portable unwinder — which is what closed provenance on Linux. Went
+   through an adversarial review that caught (and fixed) two real multi-thread bugs the
+   single-threaded tests missed — sibling threads stranded at a breakpoint's `addr+1`, and a
+   clone child spawned in the teardown window left traced+stopped — plus two robustness fixes
+   (an unbounded setup `waitpid` that could hang the tracer; leader-exit mistaken for
+   whole-process exit). Multi-thread ptrace tests were added.
+   *Follow-ons:* a `perf_event_open(PERF_TYPE_BREAKPOINT)` non-stopping watchpoint variant;
+   `PTRACE_LISTEN` for job-control group-stops; and signal-forwarding on the teardown detach —
+   the low-severity residuals recorded in `dbg_linux.rs`'s header.
+2. ✅ **Test hygiene** — *done*: the `pipeline` live exit tests are cross-platform and pass on
+   Linux. `unwind_exit` and `phase4c_exit` (the full provenance loop) drop the hard-coded
+   `.exe`/`LiveProcess` and select the adapter + `EXE_SUFFIX` per OS; `phase4b` (scan → filter
+   → freeze → persist) was ported off `powershell` onto a compiled Rust target with a known
+   leaked buffer, so it now gives real Linux scan/filter coverage too. `cargo test -p
+   n0xis-pipeline --features live` is green on Linux (4 exit tests + lib).
+3. ⬜ **Beyond the v0 port — uprobes + eBPF provenance** — trace writes to an address with no byte
+   patched in the target; the natural Linux-native upgrade to the watchpoint path.
+4. ⬜ **UI/automation track** (not needed for analysis): `uinput`/`evdev` input adapter
+   (replaces the Windows Interception driver), then `window` capture (X11 first; Wayland only
+   via portals). Abstract the HUD hotkey/window backend behind a trait.
+5. ⬜ **macOS** — a `LiveTarget` that stays unimplemented (`HAS_LIVE_ADAPTER=false`) until a
+   `mach_vm_read`/`thread_get_state` adapter lands; frontends already degrade, not fail.
+
+### Framing rules this phase encodes
+
+- **A second OS is an adapter, not a rewrite.** Every item above is a new impl behind an
+  existing seam; the count of core changes is zero, by design (CONCEPT §4 made structural).
+- **Dispatch by format, not host OS.** The unwinder proves the pattern: a Wine PE under Linux
+  takes the PE path because it *is* a PE, decided from its header — not from `cfg!`.
+- **The register file is the only per-OS seam in unwinding.** `GetThreadContext` vs
+  `ptrace(GETREGS)` differ; everything above `UnwindRegs` is shared, tested, and identical.
+- **Prefer the kernel-native primitive when Linux has a stronger one.** Where Windows needed
+  a driver (input, stealth RW, hardware watchpoints) or forbade the move outright, use the
+  built-in syscall — and record it here as a deliberate "surpass", not merely "match".
+
+### What this phase deliberately does **not** build
+
+- **No in-process code loading.** Extension stays across the process seam (API/MCP), never a
+  foreign `.so` in the analysis process — the Trust-seam law is unchanged by going portable.
+- **No anti-anti-cheat / kernel-driver arms race.** The point is that Linux *doesn't need*
+  the driver, not that we ship one to defeat someone else's.
+
+---
+
 ## Engineering hardening (not a numbered phase) — CI, the frontend seam, the capability registry ✅
 
 Not capability work: this is the project's own engineering rules, applied to itself after
