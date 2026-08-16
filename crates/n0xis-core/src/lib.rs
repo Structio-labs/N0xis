@@ -12,6 +12,7 @@
 //! added in Phase 3 as more `impl Pass` — same shape, same context.
 
 mod aob;
+mod aot;
 mod aslr;
 mod bindings;
 mod constident;
@@ -51,6 +52,7 @@ mod xref;
 mod xref_string;
 
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
+pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};
 pub use aslr::{rebase, rva_of, va_at};
 pub use bindings::{Binding, BindingsArtifact, BindingsInput, BindingsPass};
 pub use constident::{identify_f64, identify_u64, ConstMatch};

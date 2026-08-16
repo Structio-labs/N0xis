@@ -72,6 +72,9 @@ pub mod v1 {
     /// Group scan: struct bases where several interrelated values co-occur within
     /// a byte window (`scan group`) — find a struct by its related fields at once.
     pub const SCAN_GROUP: &str = "n0xis.scan.group.v1";
+    /// NativeAOT stack-trace metadata: recovered `RVA → managed method name`
+    /// map for .NET NativeAOT images (`aot symbols`).
+    pub const AOT_SYMBOLS: &str = "n0xis.aot.symbols.v1";
     /// A `.n0xt` table or entry (`table *`, CONCEPT §10, Phase 4b).
     pub const TABLE: &str = "n0xis.table.v1";
     /// Freeze-loop report (`table freeze`, Phase 4b).

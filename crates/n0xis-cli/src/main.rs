@@ -175,6 +175,10 @@ enum Command {
     /// Typed value/AOB/pointer-path scanning + struct dissection (a memory scanner class).
     #[command(subcommand)]
     Scan(ScanCmd),
+    /// .NET NativeAOT metadata: recover managed method names (RVA ↔ name) that
+    /// NativeAOT strips from ordinary symbols. Works on `--file` and `--pid`.
+    #[command(subcommand)]
+    Aot(AotCmd),
     /// `.n0xt` cheat/analysis tables.
     #[command(subcommand)]
     Table(TableCmd),
@@ -1624,6 +1628,35 @@ struct ScanGroupArgs {
     limit: usize,
 }
 
+#[derive(Subcommand)]
+enum AotCmd {
+    /// List/resolve managed method names from NativeAOT stack-trace metadata.
+    Symbols(AotSymbolsArgs),
+}
+
+#[derive(Args)]
+struct AotSymbolsArgs {
+    /// Static PE image to parse.
+    #[arg(long)]
+    file: Option<String>,
+    /// Live process to parse (the first module with a ReadyToRunHeader, or the
+    /// one named by `--module`).
+    #[arg(long)]
+    pid: Option<u32>,
+    /// On `--pid`, restrict to a module whose name contains this substring.
+    #[arg(long)]
+    module: Option<String>,
+    /// Case-insensitive substring filter over the fully-qualified name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Resolve one exact method-start RVA (hex, e.g. `0x169c4c0`).
+    #[arg(long)]
+    rva: Option<String>,
+    /// Cap on names listed; `method_count` still reports the full total.
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum ValueTypeArg {
     I8,
@@ -2007,6 +2040,7 @@ fn main() {
         Command::Scan(ScanCmd::PointerPath(a)) => cmd_pointer_path(a, pretty),
         Command::Scan(ScanCmd::Dissect(a)) => cmd_scan_dissect(a, pretty),
         Command::Scan(ScanCmd::Group(a)) => cmd_scan_group(a, pretty),
+        Command::Aot(AotCmd::Symbols(a)) => cmd_aot_symbols(a, pretty),
         Command::Table(TableCmd::Add(a)) => cmd_table_add(a, pretty),
         Command::Table(TableCmd::List(a)) => cmd_table_list(a, pretty),
         Command::Table(TableCmd::Show(a)) => cmd_table_show(a, pretty),
@@ -3259,6 +3293,21 @@ fn cmd_scan_group(a: ScanGroupArgs, pretty: bool) -> bool {
             "size": a.region.size,
             "pid": a.region.pid,
             "file": a.region.file,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_aot_symbols(a: AotSymbolsArgs, pretty: bool) -> bool {
+    run_capability(
+        "aot.symbols",
+        json!({
+            "file": a.file,
+            "pid": a.pid,
+            "module": a.module,
+            "name": a.name,
+            "rva": a.rva,
+            "limit": a.limit,
         }),
         pretty,
     )

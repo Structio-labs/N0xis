@@ -954,6 +954,83 @@ impl Plugin for AnalysisPasses {
             }),
         ));
 
+        reg.add(Capability::new(
+            "aot.symbols",
+            "Recover managed method names for a .NET NativeAOT image from its stack-trace metadata (`RVA ↔ Namespace.Type.Method`). Works on `--file` and `--pid`. Filter with `name` (case-insensitive substring) or `rva` (hex), and bound the listing with `limit` (default 200); `method_count` always reports the full total.",
+            Some(n0xis_contracts::schema::v1::AOT_SYMBOLS),
+            Origin::Builtin,
+            Box::new(|args| {
+                let name_filter = args.get("name").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+                let rva_filter = args
+                    .get("rva")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+                let limit = usize_arg(args, "limit", 200);
+                let module_filter = args.get("module").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+
+                // Resolve the image and parse its NativeAOT metadata. The parser
+                // discovers sections from the PE header itself, so one call
+                // serves both a `--file` image and a live `--pid` module.
+                let parsed: Result<(n0xis_core::AotArtifact, String), Response<Value>> = if let Some(pid) =
+                    args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)
+                {
+                    match crate::source::attach_live(pid) {
+                        Ok(live) => {
+                            let label = n0xis_sources::MemorySource::label(live.as_ref());
+                            let mods = n0xis_sources::ModuleProvider::modules(live.as_ref()).to_vec();
+                            let mut art = None;
+                            for m in &mods {
+                                if let Some(f) = &module_filter {
+                                    if !m.name.to_lowercase().contains(f) {
+                                        continue;
+                                    }
+                                }
+                                if let Ok(a) = n0xis_core::parse_aot(live.as_ref(), m.base) {
+                                    art = Some(a);
+                                    break;
+                                }
+                            }
+                            match art {
+                                Some(a) => Ok((a, label)),
+                                None => Err(Response::error(
+                                    "no-aot",
+                                    "no NativeAOT stack-trace metadata found in any module (name the module with `module` if the target is not the first with a ReadyToRunHeader)",
+                                )),
+                            }
+                        }
+                        Err((c, m)) => Err(Response::error(&c, m)),
+                    }
+                } else if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
+                    match n0xis_sources::StaticPe::load(std::path::Path::new(file)) {
+                        Ok(pe) => {
+                            let label = n0xis_sources::MemorySource::label(&pe);
+                            match n0xis_core::parse_aot(&pe, pe.image_base()) {
+                                Ok(a) => Ok((a, label)),
+                                Err(e) => Err(Response::error("aot-failed", e.to_string())),
+                            }
+                        }
+                        Err(e) => Err(Response::error("load-failed", e.to_string())),
+                    }
+                } else {
+                    Err(Response::error("missing-source", "provide pid or file"))
+                };
+
+                let (mut art, label) = match parsed {
+                    Ok(x) => x,
+                    Err(e) => return e,
+                };
+
+                // Filter + truncate the listing; `method_count` keeps the total.
+                if let Some(rva) = rva_filter {
+                    art.symbols.retain(|s| s.rva == rva);
+                } else if let Some(nf) = &name_filter {
+                    art.symbols.retain(|s| s.name.to_lowercase().contains(nf));
+                }
+                art.symbols.truncate(limit);
+                ok_json(n0xis_contracts::schema::v1::AOT_SYMBOLS, art, &label)
+            }),
+        ));
+
         // --- range-scoped analysis, all sharing `with_src_ctx` ---
 
         reg.add(Capability::new(

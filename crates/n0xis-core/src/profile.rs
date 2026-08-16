@@ -356,6 +356,17 @@ fn detect_engines(exports: &[ExportInfo]) -> Vec<EngineHint> {
             });
         }
     }
+    // NativeAOT (.NET ILC / `PublishAot`) strips ordinary symbols but exports a
+    // debug-header anchor; that exact name is a strong, prefix-free tell. Its
+    // managed method names live in stack-trace metadata — see the `aot symbols`
+    // advisory below.
+    if exports.iter().any(|e| e.name == "DotNetRuntimeDebugHeader") {
+        hints.push(EngineHint {
+            engine: "nativeaot".to_string(),
+            evidence: "exports `DotNetRuntimeDebugHeader` (.NET NativeAOT)".to_string(),
+        });
+    }
+
     // `mono_*` compatibility shims are exported by IL2CPP builds too, so a
     // Mono claim standing next to an IL2CPP one is misleading — drop it.
     if hints.iter().any(|h| h.engine == "il2cpp") {
@@ -372,6 +383,14 @@ fn detect_engines(exports: &[ExportInfo]) -> Vec<EngineHint> {
 pub fn advisories(profile: &ImageProfile, il2cpp_metadata: Option<&str>, live: bool) -> Vec<Advisory> {
     let mut out = Vec::new();
     let il2cpp = il2cpp_metadata.is_some() || profile.engine_hints.iter().any(|h| h.engine == "il2cpp");
+
+    if profile.engine_hints.iter().any(|h| h.engine == "nativeaot") {
+        out.push(Advisory {
+            command: "disasm / decomp pseudo".into(),
+            verdict: "degraded".into(),
+            reason: "NativeAOT strips ordinary symbols, so calls render as `sub_<addr>`; run `aot symbols` to recover managed `Namespace.Type.Method` names (RVA↔name) from the image's stack-trace metadata".into(),
+        });
+    }
 
     if il2cpp {
         let where_ = match il2cpp_metadata {
