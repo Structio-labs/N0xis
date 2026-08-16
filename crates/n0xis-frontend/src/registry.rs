@@ -854,6 +854,54 @@ impl Plugin for AnalysisPasses {
         ));
 
         reg.add(Capability::new(
+            "scan.group",
+            "Group scan: find struct bases where several interrelated values co-occur within `window` bytes — `fields` is a list of `TYPE=VALUE` (e.g. i32=3), no layout needed. Anchors on the rarest value, so one distinctive field carries the search.",
+            Some(n0xis_contracts::schema::v1::SCAN_GROUP),
+            Origin::Builtin,
+            Box::new(|args| {
+                let Some(field_specs) = args.get("fields").and_then(|v| v.as_array()) else {
+                    return Response::error("missing-arg", "'fields' is required — a list of \"TYPE=VALUE\" (e.g. [\"i32=3\",\"i32=1\",\"i32=0\"])");
+                };
+                if field_specs.is_empty() {
+                    return Response::error("bad-fields", "'fields' must not be empty");
+                }
+                let mut fields = Vec::with_capacity(field_specs.len());
+                for spec in field_specs {
+                    let Some(s) = spec.as_str() else {
+                        return Response::error("bad-fields", "each field must be a string \"TYPE=VALUE\"");
+                    };
+                    let Some((ty_s, val_s)) = s.split_once('=').or_else(|| s.split_once(':')) else {
+                        return Response::error("bad-fields", format!("field '{s}' must be TYPE=VALUE (e.g. i32=3)"));
+                    };
+                    let value_type = match parse_value_type(ty_s.trim()) {
+                        Ok(t) => t,
+                        Err(e) => return Response::error("bad-type", e),
+                    };
+                    let value = match val_s.trim().parse::<f64>() {
+                        Ok(v) => to_scan_value(v),
+                        Err(_) => return Response::error("bad-value", format!("field '{s}': '{}' is not a number", val_s.trim())),
+                    };
+                    fields.push(n0xis_core::GroupField { value_type, value });
+                }
+                let window = args.get("window").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(256);
+                // Default stride = the smallest field's natural size (fine for the
+                // usual dword struct fields); `align=1` to catch unaligned ones.
+                let min_size = fields.iter().map(|f| f.value_type.size()).min().unwrap_or(1);
+                let align = args.get("align").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(min_size);
+                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(100);
+                let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
+                let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
+                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label| {
+                    let input = n0xis_core::GroupScanInput { regions, fields, window, align, limit };
+                    match n0xis_core::Pass::run(&n0xis_core::GroupScanPass, ctx, input) {
+                        Ok(art) => ok_json(n0xis_contracts::schema::v1::SCAN_GROUP, art, label),
+                        Err(e) => Response::error("group-failed", e.to_string()),
+                    }
+                })
+            }),
+        ));
+
+        reg.add(Capability::new(
             "pointer.path",
             "Find stable pointer chains from a module's address range to `target` (live process only).",
             Some(n0xis_contracts::schema::v1::POINTER_PATH),

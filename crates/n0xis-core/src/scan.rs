@@ -594,6 +594,181 @@ pub struct ScanReport {
     pub matches: Vec<ScanMatch>,
 }
 
+// --- Group scan: locate a struct by several interrelated values at once ------
+//
+// `scan value` finds ONE value; three small, common numbers (e.g. occupied/free/
+// bots of a lobby) each return thousands of candidates and must be narrowed one
+// at a time. But related fields live *together* in a struct, so scanning for
+// their co-occurrence within a byte window pins the struct in a single pass —
+// the "group scan" / known-adjacent-values technique. Each field is an exact
+// typed value; a hit is a location where every field is present within `window`
+// bytes of the others (any order, any offset — not a fixed AOB layout).
+
+/// One required field of a group scan: an exact value of a given type.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupField {
+    pub value_type: ValueType,
+    pub value: ScanValue,
+}
+
+#[derive(Clone, Debug)]
+pub struct GroupScanInput {
+    pub regions: Vec<(Va, usize)>,
+    pub fields: Vec<GroupField>,
+    /// Max byte span between the earliest and latest field of a single hit.
+    pub window: usize,
+    /// Candidate stride; `1` checks every byte, a larger value (e.g. 4) skips to
+    /// aligned positions — faster, at the cost of missing an unaligned field.
+    pub align: usize,
+    /// Cap on hits returned in the artifact (the true count is still reported).
+    pub limit: usize,
+}
+
+/// One field located inside a [`GroupHit`].
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct GroupFieldHit {
+    /// Index into the request's `fields`.
+    pub index: usize,
+    pub va: Va,
+    /// Signed byte offset from the hit's `base`.
+    pub offset: i64,
+    #[serde(rename = "type")]
+    pub value_type: ValueType,
+    pub value: ScanValue,
+}
+
+/// One location where every requested field was found within `window` bytes —
+/// a candidate struct base (the lowest field address of the cluster).
+#[derive(Clone, Debug, Serialize)]
+pub struct GroupHit {
+    pub base: Va,
+    pub fields: Vec<GroupFieldHit>,
+}
+
+/// The serializable result of a [`GroupScanPass`].
+#[derive(Clone, Debug, Serialize)]
+pub struct GroupArtifact {
+    pub hits: Vec<GroupHit>,
+    /// True number of distinct clusters found (may exceed `hits.len()`).
+    pub total_hits: usize,
+    pub bytes_scanned: usize,
+    pub window: usize,
+    pub field_count: usize,
+}
+
+/// Find every location where all requested fields co-occur within `window` bytes.
+/// Anchors on the *rarest* field per region (fewest candidates → fewest
+/// false clusters and least work), then binds each other field to its nearest
+/// match within `±window` of that anchor.
+pub struct GroupScanPass;
+
+impl Pass for GroupScanPass {
+    type In = GroupScanInput;
+    type Out = GroupArtifact;
+
+    fn name(&self) -> &'static str {
+        "scan.group"
+    }
+
+    fn run(&self, ctx: &Ctx, input: GroupScanInput) -> Result<GroupArtifact, CoreError> {
+        let align = input.align.max(1);
+        let nfields = input.fields.len();
+        let win = input.window as i64;
+        let mut hits: Vec<GroupHit> = Vec::new();
+        let mut total_hits = 0usize;
+        let mut bytes_scanned = 0usize;
+
+        if nfields == 0 {
+            return Ok(GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: 0 });
+        }
+
+        for (start, len) in &input.regions {
+            let Ok(bytes) = ctx.source.read(*start, *len) else { continue };
+            bytes_scanned += bytes.len();
+
+            // One pass over the region: collect each field's match offsets (kept
+            // ascending, since `off` increases).
+            let mut matches: Vec<Vec<usize>> = vec![Vec::new(); nfields];
+            let mut off = 0usize;
+            while off < bytes.len() {
+                for (fi, f) in input.fields.iter().enumerate() {
+                    let sz = f.value_type.size();
+                    if off + sz <= bytes.len()
+                        && let Some(v) = ScanValue::read(&bytes[off..off + sz], f.value_type)
+                        && values_eq(v, f.value)
+                    {
+                        matches[fi].push(off);
+                    }
+                }
+                off += align;
+            }
+
+            // A field with no match here makes a full cluster impossible.
+            if matches.iter().any(|m| m.is_empty()) {
+                continue;
+            }
+            let anchor = (0..nfields).min_by_key(|&i| matches[i].len()).unwrap();
+
+            let mut seen_bases: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            for &a in &matches[anchor] {
+                let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(nfields);
+                let mut ok = true;
+                for fi in 0..nfields {
+                    if fi == anchor {
+                        chosen.push((fi, a));
+                        continue;
+                    }
+                    // Nearest match of field `fi` to the anchor within ±window.
+                    let offs = &matches[fi];
+                    let ip = offs.partition_point(|&x| x < a);
+                    let mut best: Option<usize> = None;
+                    for cand in [ip.checked_sub(1).map(|i| offs[i]), offs.get(ip).copied()].into_iter().flatten() {
+                        if (cand as i64 - a as i64).abs() <= win {
+                            match best {
+                                None => best = Some(cand),
+                                Some(b) if (cand as i64 - a as i64).abs() < (b as i64 - a as i64).abs() => best = Some(cand),
+                                _ => {}
+                            }
+                        }
+                    }
+                    match best {
+                        Some(o) => chosen.push((fi, o)),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+                let base_off = chosen.iter().map(|&(_, o)| o).min().unwrap();
+                let base_va = start.offset(base_off as u64);
+                if !seen_bases.insert(base_va.get()) {
+                    continue; // same cluster reached from another anchor match
+                }
+                total_hits += 1;
+                if hits.len() < input.limit {
+                    let mut fields: Vec<GroupFieldHit> = chosen
+                        .iter()
+                        .map(|&(fi, o)| GroupFieldHit {
+                            index: fi,
+                            va: start.offset(o as u64),
+                            offset: o as i64 - base_off as i64,
+                            value_type: input.fields[fi].value_type,
+                            value: input.fields[fi].value,
+                        })
+                        .collect();
+                    fields.sort_by_key(|f| f.offset);
+                    hits.push(GroupHit { base: base_va, fields });
+                }
+            }
+        }
+
+        Ok(GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: nfields })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +781,46 @@ mod tests {
             bytes.extend_from_slice(&w.to_le_bytes());
         }
         (base, bytes)
+    }
+
+    #[test]
+    fn group_scan_pins_a_struct_by_related_values() {
+        // A lobby struct [total=4, occupied=3, free=1] at offset 0x10, plus lone
+        // decoys (a stray 4 and a stray 3 far apart) that must NOT form a cluster.
+        let mut bytes = vec![0u8; 0x100];
+        let put = |b: &mut [u8], off: usize, v: i32| b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut bytes, 0x10, 4);
+        put(&mut bytes, 0x14, 3);
+        put(&mut bytes, 0x18, 1);
+        put(&mut bytes, 0x80, 4); // lone decoy
+        put(&mut bytes, 0xC0, 3); // lone decoy, >window from the 1
+        let base = Va(0x4000);
+        let snap = Snapshot::builder().region(base, bytes).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let art = GroupScanPass
+            .run(
+                &ctx,
+                GroupScanInput {
+                    regions: vec![(base, 0x100)],
+                    fields: vec![
+                        GroupField { value_type: ValueType::I32, value: ScanValue::Int(4) },
+                        GroupField { value_type: ValueType::I32, value: ScanValue::Int(3) },
+                        GroupField { value_type: ValueType::I32, value: ScanValue::Int(1) },
+                    ],
+                    window: 16,
+                    align: 4,
+                    limit: 100,
+                },
+            )
+            .unwrap();
+        assert_eq!(art.total_hits, 1, "exactly the real cluster: {:#x?}", art.hits);
+        let h = &art.hits[0];
+        assert_eq!(h.base, Va(0x4010));
+        assert_eq!(h.fields.len(), 3);
+        // fields come back sorted by offset: total@0, occupied@4, free@8.
+        assert_eq!(h.fields[0].offset, 0);
+        assert_eq!(h.fields[2].offset, 8);
     }
 
     #[test]

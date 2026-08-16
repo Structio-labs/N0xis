@@ -1598,6 +1598,30 @@ enum ScanCmd {
     PointerPath(PointerPathArgs),
     /// Heuristically type each field of a live region (pointer/float/int).
     Dissect(ScanDissectArgs),
+    /// Group scan: find a struct by several interrelated values at once — where
+    /// they co-occur within a byte window (no known layout needed). One `--field
+    /// TYPE=VALUE` per value; the search anchors on the rarest.
+    Group(ScanGroupArgs),
+}
+
+#[derive(Args)]
+struct ScanGroupArgs {
+    #[command(flatten)]
+    region: ScanRegionArgs,
+    /// A required field, `TYPE=VALUE` (e.g. `i32=3`). Repeat for each value —
+    /// the search finds where they all co-occur; order and offsets are unknown.
+    #[arg(long = "field", value_name = "TYPE=VALUE", required = true)]
+    field: Vec<String>,
+    /// Max byte span between the fields of one hit (the struct window).
+    #[arg(long, default_value_t = 256)]
+    window: usize,
+    /// Candidate stride; defaults to the smallest field's size. `1` catches
+    /// unaligned fields at the cost of speed.
+    #[arg(long)]
+    align: Option<usize>,
+    /// Cap on hits returned (the true total is still reported).
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -1982,6 +2006,7 @@ fn main() {
         Command::Scan(ScanCmd::Aob(a)) => cmd_scan_aob(a, pretty),
         Command::Scan(ScanCmd::PointerPath(a)) => cmd_pointer_path(a, pretty),
         Command::Scan(ScanCmd::Dissect(a)) => cmd_scan_dissect(a, pretty),
+        Command::Scan(ScanCmd::Group(a)) => cmd_scan_group(a, pretty),
         Command::Table(TableCmd::Add(a)) => cmd_table_add(a, pretty),
         Command::Table(TableCmd::List(a)) => cmd_table_list(a, pretty),
         Command::Table(TableCmd::Show(a)) => cmd_table_show(a, pretty),
@@ -3217,6 +3242,23 @@ fn cmd_scan_aob(a: ScanAobArgs, pretty: bool) -> bool {
             "size": a.size,
             "pid": a.pid,
             "file": a.file,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_scan_group(a: ScanGroupArgs, pretty: bool) -> bool {
+    run_capability(
+        "scan.group",
+        json!({
+            "fields": a.field,
+            "window": a.window,
+            "align": a.align,
+            "limit": a.limit,
+            "start": a.region.start,
+            "size": a.region.size,
+            "pid": a.region.pid,
+            "file": a.region.file,
         }),
         pretty,
     )
