@@ -58,23 +58,44 @@ mod live_linux;
 #[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
 pub use live_linux::{LinuxProcess, list_processes};
 
+// Linux register capture (ptrace) — the seed of the Linux debug adapter, and
+// the register source that seeds the portable unwinder on Linux.
+#[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
+mod dbg_linux;
+#[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
+pub use dbg_linux::{list_thread_ids, StoppedThread};
+// The Linux debug adapter's free functions — byte-identical signatures to the
+// Win32 ones, so the CLI/MCP call one name on either OS (see the `debug` export).
+#[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
+pub use dbg_linux::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where};
+
 // The remaining live modules are still Win32-only. They were gated on the
 // `live` feature alone, which was equivalent while `live` *meant* Windows;
 // now that the feature means the capability, each needs to say `windows` for
 // itself. A Linux debugger (ptrace), window system (X11/Wayland) and input
 // injector (uinput) are separate adapters, not variations of these.
+// The OS-free hit vocabulary (report + register + condition types, and the x86
+// debug-register bit encodings) — shared by the Win32 and Linux debug adapters
+// so both emit the identical wire shape. Only the arming/event-loop is per-OS.
+#[cfg(feature = "live")]
+mod hit;
+#[cfg(feature = "live")]
+pub use hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind};
+
 #[cfg(all(feature = "live", windows))]
 mod debug;
 #[cfg(all(feature = "live", windows))]
-pub use debug::{
-    AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, attach_and_wait, await_breakpoint_hit, await_watchpoint_hit,
-    await_watchpoint_hit_where,
-};
+pub use debug::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where};
 
-#[cfg(all(feature = "live", windows))]
+// The stack unwinder is pure logic over the `MemReader` seam — it names no OS
+// API — so it compiles on every platform under `live`. It carries both format
+// backends (PE `.pdata`/`.xdata` and ELF `.eh_frame` DWARF CFI) and dispatches
+// per module by header, which also lets it unwind a Wine PE target read through
+// `/proc`. Only the *register capture* that seeds it stays per-OS.
+#[cfg(feature = "live")]
 mod unwind;
-#[cfg(all(feature = "live", windows))]
-pub use unwind::{Frame, MemReader, ModuleRange, UnwindRegs, unwind};
+#[cfg(feature = "live")]
+pub use unwind::{unwind, Frame, MemReader, ModuleRange, UnwindRegs};
 
 #[cfg(all(feature = "live", windows))]
 mod input;

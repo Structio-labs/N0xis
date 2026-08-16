@@ -78,6 +78,10 @@ pub mod v1 {
     /// Plain attach-and-hold report (`debug attach`) — the anti-debug-vs-bug
     /// isolation diagnostic.
     pub const DEBUG_ATTACH: &str = "n0xis.debug.attach.v1";
+    /// Recovered call stack(s) from a captured register set (`stack backtrace`).
+    /// Format-neutral: PE `.pdata`/`.xdata` or ELF `.eh_frame` DWARF CFI, chosen
+    /// per module — the same schema whether the target is native or under Wine.
+    pub const STACK_BACKTRACE: &str = "n0xis.stack.backtrace.v1";
 
     /// Provenance graph — the principal (Phase 4c, KF-1).
     pub const PROVENANCE: &str = "n0xis.provenance.v1";

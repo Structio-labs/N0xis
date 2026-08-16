@@ -120,4 +120,29 @@ pub trait LiveTarget: MemorySource + ModuleProvider + SymbolProvider {
     fn free_code_cave(&self, _addr: Va) -> Result<(), SourceError> {
         Err(SourceError::Os("code-cave allocation is not supported by this live adapter".into()))
     }
+
+    /// Recover the call stack from a captured register set, up to `max_frames`
+    /// deep. Frame 0 is `regs.rip` (the capture site); each caller is recovered
+    /// through that module's unwind data — PE `.pdata`/`.xdata` or ELF
+    /// `.eh_frame` DWARF CFI, chosen per module. Everything (unwind tables *and*
+    /// stack slots) is read through this target's own
+    /// [`MemorySource`](crate::MemorySource), so the default body serves every
+    /// adapter unchanged — Win32 and Linux `/proc` alike, including a Wine PE
+    /// target read through `/proc`. An adapter never needs to override it.
+    ///
+    /// The one genuinely OS-specific piece is *capturing* the initial
+    /// [`UnwindRegs`](crate::UnwindRegs) — a thread's live register file
+    /// (`GetThreadContext` on Win32, `ptrace(GETREGS)` on Linux). That belongs
+    /// to a debug adapter, not here; this method starts from registers already
+    /// in hand.
+    #[cfg(feature = "live")]
+    fn stack_unwind(&self, regs: crate::UnwindRegs, max_frames: usize) -> Vec<crate::Frame> {
+        let reader = crate::unwind::SourceReader(self);
+        let modules: Vec<crate::ModuleRange> = self
+            .modules()
+            .iter()
+            .map(|m| crate::ModuleRange { base: m.base.0, size: m.size, name: m.name.clone() })
+            .collect();
+        crate::unwind(&reader, &modules, regs, max_frames)
+    }
 }

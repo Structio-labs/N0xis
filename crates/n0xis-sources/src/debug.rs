@@ -23,7 +23,10 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use n0xis_contracts::{Module, Va};
-use serde::Serialize;
+
+// The OS-free hit vocabulary now lives in `crate::hit`, shared with the Linux
+// adapter; this module keeps only the Win32 arming + event loop.
+use crate::hit::{dr7_slot0, AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, MAX_UNWIND_FRAMES};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT,
@@ -85,114 +88,6 @@ const POLL_MS: u32 = 250;
 /// Some kernels report `ERROR_SEM_TIMEOUT` instead of `WAIT_TIMEOUT` from a
 /// timed-out `WaitForDebugEvent`.
 const ERROR_SEM_TIMEOUT: u32 = 121;
-
-/// Full integer GPR snapshot at the moment of the hit.
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-pub struct Registers {
-    pub rax: u64,
-    pub rbx: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub r8: u64,
-    pub r9: u64,
-    pub r10: u64,
-    pub r11: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-}
-
-impl Registers {
-    /// Read a register by lowercase name, for condition matching.
-    pub fn by_name(&self, name: &str) -> Option<u64> {
-        Some(match name {
-            "rax" => self.rax,
-            "rbx" => self.rbx,
-            "rcx" => self.rcx,
-            "rdx" => self.rdx,
-            "rsi" => self.rsi,
-            "rdi" => self.rdi,
-            "rbp" => self.rbp,
-            "r8" => self.r8,
-            "r9" => self.r9,
-            "r10" => self.r10,
-            "r11" => self.r11,
-            "r12" => self.r12,
-            "r13" => self.r13,
-            "r14" => self.r14,
-            "r15" => self.r15,
-            _ => return None,
-        })
-    }
-}
-
-/// A condition a hit must satisfy to be reported, e.g. `r9=4`.
-///
-/// Without this a breakpoint on a hot function is close to useless: the first
-/// hit is whatever ran first, and re-arming just returns the same caller every
-/// time (live: a UI draw routine kept reporting `r9=6` across six consecutive
-/// arms, never the 4-arrow call we were after). Filtering in the debug loop lets
-/// the interesting call be singled out instead of hoping to land on it.
-#[derive(Clone, Debug)]
-pub struct RegCond {
-    pub reg: String,
-    pub value: u64,
-}
-
-impl RegCond {
-    /// Parse `"<reg>=<value>"`; value may be decimal or `0x`-prefixed.
-    pub fn parse(s: &str) -> Result<Self, String> {
-        let (reg, val) = s.split_once('=').ok_or_else(|| format!("expected <reg>=<value>, got `{s}`"))?;
-        let reg = reg.trim().to_ascii_lowercase();
-        let val = val.trim();
-        let value = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
-            u64::from_str_radix(hex, 16).map_err(|e| format!("bad hex value `{val}`: {e}"))?
-        } else {
-            val.parse::<u64>().map_err(|e| format!("bad value `{val}`: {e}"))?
-        };
-        if Registers::default().by_name(&reg).is_none() {
-            return Err(format!("unknown register `{reg}`"));
-        }
-        Ok(RegCond { reg, value })
-    }
-
-    fn matches(&self, r: &Registers) -> bool {
-        r.by_name(&self.reg) == Some(self.value)
-    }
-}
-
-/// One breakpoint hit.
-#[derive(Clone, Debug, Serialize)]
-pub struct BreakpointHit {
-    pub thread_id: u32,
-    pub rip: Va,
-    pub rsp: Va,
-    /// `"<module>+0x<rva>"`, when `rip` falls inside the module passed to
-    /// [`await_breakpoint_hit`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relative_rip: Option<String>,
-    pub registers: Registers,
-    /// Qwords read from the stack starting at `rsp`, in order.
-    pub stack: Vec<u64>,
-    /// The recovered call-stack: frame 0 is `rip` (the hit site), each further
-    /// entry a real caller resolved through x64 unwind data (`.pdata`/`.xdata`),
-    /// not a raw `[rsp]` guess. Empty if unwinding couldn't start (e.g. no
-    /// module map). See [`crate::unwind`].
-    pub frames: Vec<unwind::Frame>,
-}
-
-/// Result of one [`await_breakpoint_hit`] call.
-#[derive(Clone, Debug, Serialize)]
-pub struct AwaitHitOutcome {
-    pub breakpoint_va: Va,
-    pub timed_out: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hit: Option<BreakpointHit>,
-}
 
 /// Become `pid`'s debugger and hold the attach for `timeout_ms` without
 /// arming anything (no `int3` patch, no debug-register write) — a diagnostic
@@ -508,10 +403,6 @@ fn capture_hit(
     })
 }
 
-/// Depth cap for stack unwinding — a bound against a corrupt frame chain
-/// looping forever, generous enough for any real call stack.
-const MAX_UNWIND_FRAMES: usize = 128;
-
 /// A [`crate::unwind::MemReader`] backed by `ReadProcessMemory` on the target.
 struct ProcMemReader(HANDLE);
 
@@ -605,55 +496,6 @@ fn drain_pending_events() {
 // unlike `int3`, this can watch a *data* address for read/write, not just an
 // instruction for execution, and never touches the target's code bytes.
 // ============================================================================
-
-/// What a hardware watchpoint traps on. There is no hardware "read-only"
-/// mode on x86 — only `Write` or `ReadOrWrite` — so this doesn't invent one
-/// (CONCEPT §3 rule 6: the API reflects what the CPU can actually do).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WatchKind {
-    Execute,
-    Write,
-    ReadOrWrite,
-}
-
-impl WatchKind {
-    fn rw_bits(self) -> u64 {
-        match self {
-            WatchKind::Execute => 0b00,
-            WatchKind::Write => 0b01,
-            WatchKind::ReadOrWrite => 0b11,
-        }
-    }
-}
-
-/// Intel SDM Vol 3B §17.2.5: LEN field encodes 1/2/8/4 bytes for `00/01/10/11`
-/// — note the non-monotonic order. The address must be naturally aligned to
-/// `len` or the CPU silently ignores the high bits; we reject that instead
-/// of installing a watchpoint that won't fire as described.
-fn len_bits(addr: Va, len: u8) -> Result<u64, SourceError> {
-    if len > 1 && !addr.0.is_multiple_of(len as u64) {
-        return Err(SourceError::Os(format!("watchpoint address {addr} is not {len}-byte aligned")));
-    }
-    match len {
-        1 => Ok(0b00),
-        2 => Ok(0b01),
-        8 => Ok(0b10),
-        4 => Ok(0b11),
-        _ => Err(SourceError::Os(format!("unsupported watchpoint length {len} (must be 1, 2, 4, or 8)"))),
-    }
-}
-
-/// DR7 bits for slot 0 only: `L0` (local enable, bit 0), bit 10 (reserved,
-/// conventionally set), `RW0` (bits 16-17), `LEN0` (bits 18-19).
-fn dr7_slot0(kind: WatchKind, addr: Va, len: u8) -> Result<u64, SourceError> {
-    if kind == WatchKind::Execute && len != 1 {
-        return Err(SourceError::Os("an execute watchpoint must have length 1 (Intel SDM Vol 3B §17.2.5)".into()));
-    }
-    let rw = kind.rw_bits();
-    let lb = len_bits(addr, len)?;
-    Ok(1u64 | (1u64 << 10) | (rw << 16) | (lb << 18))
-}
 
 /// Owns the DR0/DR7 write on every thread it succeeded on; restores each
 /// thread's original values on drop unless already disarmed. Best-effort per

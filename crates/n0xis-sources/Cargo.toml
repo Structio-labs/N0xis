@@ -41,3 +41,8 @@ static-pe = ["dep:goblin"]
 # module files backing the mappings, the way the Win32 one reads PE headers
 # straight from mapped memory.
 live = ["dep:windows-sys", "dep:png", "dep:libc", "dep:goblin"]
+
+# The Linux debug integration test forks a child and drives it via kill/waitpid,
+# so it needs `libc` directly (the crate's own libc is an optional/private dep).
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
