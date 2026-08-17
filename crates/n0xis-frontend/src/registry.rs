@@ -956,7 +956,7 @@ impl Plugin for AnalysisPasses {
 
         reg.add(Capability::new(
             "aot.symbols",
-            "Recover managed method names for a .NET NativeAOT image from its stack-trace metadata (`RVA ↔ Namespace.Type.Method`). Works on `--file` and `--pid`. Filter with `name` (case-insensitive substring) or `rva` (hex), and bound the listing with `limit` (default 200); `method_count` always reports the full total.",
+            "Recover managed method names for a .NET NativeAOT image (`RVA ↔ Namespace.Type.Method`) from both its stack-trace metadata (framework/generic-heavy) and its reflection InvokeMap (the reflection-registered surface, where a game's own methods live) — each symbol is tagged with its `source`. Works on `--file` and `--pid`. Filter with `name` (case-insensitive substring) or `rva` (hex), and bound the listing with `limit` (default 200); `method_count` reports the full total, with `stacktrace_count`/`invoke_count` breakdown.",
             Some(n0xis_contracts::schema::v1::AOT_SYMBOLS),
             Origin::Builtin,
             Box::new(|args| {

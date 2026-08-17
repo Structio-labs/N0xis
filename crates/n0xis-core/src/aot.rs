@@ -20,6 +20,8 @@
 //! runs against a `--file` PE and a live `--pid` (native or under Wine), just
 //! like every other pass.
 
+use std::collections::HashMap;
+
 use n0xis_sources::MemorySource;
 use n0xis_contracts::Va;
 
@@ -36,6 +38,15 @@ const READONLY_BLOB_REGION_START: i32 = 300;
 const BLOB_EMBEDDED_METADATA: i32 = 13;
 /// `ReflectionMapBlob.BlobIdStackTraceMethodRvaToTokenMapping`.
 const BLOB_STACKTRACE_RVA_TO_TOKEN: i32 = 27;
+/// `ReflectionMapBlob.InvokeMap` — reflection method → entrypoint hashtable.
+const BLOB_INVOKE_MAP: i32 = 6;
+/// `ReflectionMapBlob.CommonFixupsTable` — external-references table the
+/// InvokeMap indexes into for entrypoint RVAs.
+const BLOB_COMMON_FIXUPS: i32 = 8;
+
+/// `InvokeTableFlags` bits we branch on (`MappingTableFlags.cs`).
+const INVOKE_HAS_METADATA_HANDLE: u32 = 0x04;
+const INVOKE_HAS_ENTRYPOINT: u32 = 0x20;
 
 // `StackTraceDataCommand` bits.
 const CMD_UPDATE_OWNING_TYPE: u8 = 0x01;
@@ -79,6 +90,10 @@ pub struct AotSymbol {
     pub return_type: String,
     /// Human display used in listings — `Void Namespace.Type.Method(Int32, Boolean)`.
     pub display: String,
+    /// Which metadata table this name came from: `"stacktrace"` (the
+    /// RVA→token map — framework/generic-heavy) or `"invoke"` (the reflection
+    /// InvokeMap — the reflection-registered surface, incl. game methods).
+    pub source: &'static str,
 }
 
 /// A `(rva, size)` window into the image.
@@ -99,8 +114,12 @@ pub struct AotArtifact {
     pub embedded_metadata: RvaSize,
     /// The `StackTraceMethodRvaToTokenMapping` blob location.
     pub rva_to_token: RvaSize,
-    /// Total methods declared in the map header.
+    /// Total distinct methods recovered across both sources.
     pub method_count: usize,
+    /// How many names came from the stack-trace map.
+    pub stacktrace_count: usize,
+    /// How many names came from the reflection InvokeMap.
+    pub invoke_count: usize,
     /// Recovered symbols (already sorted by RVA).
     pub symbols: Vec<AotSymbol>,
 }
@@ -375,9 +394,30 @@ pub fn parse_aot(src: &dyn MemorySource, image_base: Va) -> Result<AotArtifact, 
             signature,
             return_type,
             display,
+            source: "stacktrace",
         });
     }
-    symbols.sort_by_key(|s| s.rva);
+    let stacktrace_count = symbols.len();
+
+    // The stack-trace map is framework/generic-heavy; the reflection InvokeMap
+    // holds the reflection-registered surface (where a game's own methods live).
+    // Parse it too when present and merge — it is the second, complementary
+    // RVA→name source, and the one that resolves gameplay methods.
+    let invoke = find_blob(BLOB_INVOKE_MAP).zip(find_blob(BLOB_COMMON_FIXUPS));
+    let invoke_count = if let Some((imap, fixups)) = invoke {
+        match parse_invoke_map(src, base, &meta, imap, fixups) {
+            Ok(mut inv) => {
+                let n = inv.len();
+                symbols.append(&mut inv);
+                n
+            }
+            Err(_) => 0,
+        }
+    } else {
+        0
+    };
+
+    symbols.sort_by(|a, b| a.rva.cmp(&b.rva).then(a.source.cmp(b.source)));
     symbols.dedup_by_key(|s| s.rva);
 
     Ok(AotArtifact {
@@ -385,7 +425,9 @@ pub fn parse_aot(src: &dyn MemorySource, image_base: Va) -> Result<AotArtifact, 
         version,
         embedded_metadata: embedded,
         rva_to_token: map,
-        method_count,
+        method_count: method_count.max(symbols.len()),
+        stacktrace_count,
+        invoke_count,
         symbols,
     })
 }
@@ -446,6 +488,216 @@ fn parse_rva_to_token(buf: &[u8], blob_rva: u32) -> Result<Vec<MapEntry>, CoreEr
 
 fn trunc() -> CoreError {
     CoreError::Other("truncated RVA→token blob".into())
+}
+
+fn u16le(b: &[u8], p: usize) -> usize {
+    b.get(p..p + 2).map(|s| u16::from_le_bytes([s[0], s[1]]) as usize).unwrap_or(0)
+}
+fn u32le(b: &[u8], p: usize) -> usize {
+    b.get(p..p + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize).unwrap_or(0)
+}
+
+/// Resolve a `CommonFixupsTable` index to an RVA. Each slot is a position-
+/// relative `i32` (`ExternalReferencesTable.GetAddressFromIndex`).
+fn fixup_rva(fixups: &[u8], fixups_rva: u32, idx: u32) -> Option<u32> {
+    let pos = (idx as usize).checked_mul(4)?;
+    let s = fixups.get(pos..pos + 4)?;
+    let rel = i32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+    Some((fixups_rva as i64 + pos as i64 + rel as i64) as u32)
+}
+
+/// Enumerate every entry-data offset in a `NativeHashtable` blob
+/// (`NativeHashtable.AllEntriesEnumerator`). Each entry is `[low-hash u8]
+/// [relative-offset signed-varint]`; the data sits at that relative offset.
+fn native_hashtable_entries(b: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let Some(&header) = b.first() else { return out };
+    let shift = (header >> 2) as u32;
+    if shift > 28 {
+        return out; // implausible bucket count — not a real hashtable
+    }
+    let bucket_mask = (1u32 << shift) - 1;
+    let entry_index_size = header & 3;
+    let base = 1usize;
+    for bkt in 0..=bucket_mask {
+        let (start, end) = match entry_index_size {
+            0 => {
+                let bo = base + bkt as usize;
+                (*b.get(bo).unwrap_or(&0) as usize, *b.get(bo + 1).unwrap_or(&0) as usize)
+            }
+            1 => {
+                let bo = base + 2 * bkt as usize;
+                (u16le(b, bo), u16le(b, bo + 2))
+            }
+            _ => {
+                let bo = base + 4 * bkt as usize;
+                (u32le(b, bo), u32le(b, bo + 4))
+            }
+        };
+        let mut p = base + start;
+        let endp = base + end;
+        while p < endp && p < b.len() {
+            p += 1; // low hashcode byte
+            let pos = p;
+            let Some((delta, n)) = decode_signed(b, p) else { break };
+            p += n;
+            let entry = pos as i64 + delta as i64;
+            if entry >= 0 && (entry as usize) < b.len() {
+                out.push(entry as usize);
+            }
+        }
+        if out.len() > 5_000_000 {
+            break; // runaway guard on malformed input
+        }
+    }
+    out
+}
+
+/// Walk the metadata type tree, mapping every `Method` handle offset to its
+/// declaring type's fully-qualified name (reusing the formatter for the type
+/// name). This is what lets an InvokeMap entry — which only carries a method
+/// handle + an entrypoint index — render `Namespace.Type.Method`.
+fn build_method_type_index(meta: &Meta) -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // The metadata header's ScopeDefinitions collection sits at offset 4.
+    let Some((scopes, _)) = meta.typed_collection(4) else { return map };
+    for scope_off in scopes {
+        if let Some(root) = meta.scope_root_ns(scope_off) {
+            walk_namespace(meta, root, &mut map, &mut seen, 0);
+        }
+    }
+    map
+}
+
+fn walk_namespace(
+    meta: &Meta,
+    ns_off: u32,
+    map: &mut HashMap<u32, String>,
+    seen: &mut std::collections::HashSet<u32>,
+    depth: u32,
+) {
+    if ns_off == 0 || depth > 300 {
+        return;
+    }
+    let Some((types, children)) = meta.namespace_def_children(ns_off) else { return };
+    for t in types {
+        walk_type(meta, t, map, seen, 0);
+    }
+    for c in children {
+        walk_namespace(meta, c, map, seen, depth + 1);
+    }
+}
+
+fn walk_type(
+    meta: &Meta,
+    type_off: u32,
+    map: &mut HashMap<u32, String>,
+    seen: &mut std::collections::HashSet<u32>,
+    depth: u32,
+) {
+    if type_off == 0 || depth > 64 || !seen.insert(type_off) {
+        return;
+    }
+    let Some((_ns, _name, _enc, nested, methods)) = meta.type_def_ext(type_off) else { return };
+    let mut f = Formatter::new(meta);
+    f.emit_type_name(Handle::typed(ht::TYPE_DEFINITION, type_off), true);
+    let fqn = f.out;
+    for m in methods {
+        map.entry(m).or_insert_with(|| fqn.clone());
+    }
+    for n in nested {
+        walk_type(meta, n, map, seen, depth + 1);
+    }
+}
+
+/// Parse the reflection `InvokeMap` and resolve `RVA ↔ name` for every entry
+/// that carries a metadata method handle and an entrypoint.
+fn parse_invoke_map(
+    src: &dyn MemorySource,
+    base: u64,
+    meta: &Meta,
+    imap: RvaSize,
+    fixups: RvaSize,
+) -> Result<Vec<AotSymbol>, CoreError> {
+    const MAX_BLOB: u32 = 256 << 20;
+    if imap.size > MAX_BLOB || fixups.size > MAX_BLOB {
+        return Err(CoreError::Other("InvokeMap/CommonFixups blob size implausible".into()));
+    }
+    let invoke = read_rva(src, base, imap.rva, imap.size as usize)
+        .ok_or_else(|| CoreError::Other("cannot read InvokeMap blob".into()))?;
+    let fixups_bytes = read_rva(src, base, fixups.rva, fixups.size as usize)
+        .ok_or_else(|| CoreError::Other("cannot read CommonFixups blob".into()))?;
+
+    let type_index = build_method_type_index(meta);
+    let mut out = Vec::new();
+
+    for entry_off in native_hashtable_entries(&invoke) {
+        let mut o = entry_off;
+        let Some((flags, n)) = decode_unsigned(&invoke, o) else { continue };
+        o += n;
+        if flags & INVOKE_HAS_ENTRYPOINT == 0 {
+            continue;
+        }
+        // Method handle (metadata) or a NameAndSig vertex — only the former is
+        // resolvable to a metadata name.
+        let method_off = if flags & INVOKE_HAS_METADATA_HANDLE != 0 {
+            let Some((v, n)) = decode_unsigned(&invoke, o) else { continue };
+            o += n;
+            Some(v & 0x00FF_FFFF)
+        } else {
+            let Some((_v, n)) = decode_unsigned(&invoke, o) else { continue };
+            o += n;
+            None
+        };
+        // owningType index (unused — we take the name from the tree).
+        let Some((_owning, n)) = decode_unsigned(&invoke, o) else { continue };
+        o += n;
+        // entrypoint index into CommonFixups.
+        let Some((eidx, _n)) = decode_unsigned(&invoke, o) else { continue };
+
+        let Some(method_off) = method_off else { continue };
+        let Some(type_name) = type_index.get(&method_off) else { continue };
+        let Some(rva) = fixup_rva(&fixups_bytes, fixups.rva, eidx) else { continue };
+        let Some((name_off, sig_off)) = meta.method_name_and_sig(method_off) else { continue };
+        let mname = meta.string(name_off).unwrap_or_default();
+        if mname.is_empty() {
+            continue;
+        }
+        let full = if type_name.is_empty() { mname } else { format!("{type_name}.{mname}") };
+
+        let (ret, params) = meta.method_signature_types(sig_off);
+        let return_type = ret
+            .map(|h| {
+                let mut rf = Formatter::new(meta);
+                rf.emit_type_name(h, false);
+                rf.out
+            })
+            .unwrap_or_default();
+        let mut parts = Vec::with_capacity(params.len());
+        for p in params {
+            let mut pf = Formatter::new(meta);
+            pf.emit_type_name(p, true);
+            parts.push(pf.out);
+        }
+        let signature = format!("({})", parts.join(", "));
+        let display = if return_type.is_empty() {
+            format!("{full}{signature}")
+        } else {
+            format!("{return_type} {full}{signature}")
+        };
+
+        out.push(AotSymbol {
+            rva,
+            va: Va(base + rva as u64),
+            name: full,
+            signature,
+            return_type,
+            display,
+            source: "invoke",
+        });
+    }
+    Ok(out)
 }
 
 /// A byte cursor over a blob using NativeFormat integer encodings.
@@ -606,6 +858,75 @@ impl<'a> Meta<'a> {
             p += n;
         }
         Some((out, p as u32))
+    }
+
+    /// Read a **typed** handle collection at `off` → `(offsets, next)`.
+    fn typed_collection(&self, off: u32) -> Option<(Vec<u32>, u32)> {
+        let (count, consumed) = decode_unsigned(self.b, off as usize)?;
+        let mut p = off as usize + consumed;
+        let count = (count as usize).min(self.b.len());
+        let mut out = Vec::with_capacity(count.min(4096));
+        for _ in 0..count {
+            let (raw, n) = decode_unsigned(self.b, p)?;
+            out.push(raw & 0x00FF_FFFF);
+            p += n;
+        }
+        Some((out, p as u32))
+    }
+
+    /// Skip a `ByteCollection` member (count varint + `count` raw bytes).
+    fn skip_byte_collection(&self, off: u32) -> Option<u32> {
+        let (count, consumed) = decode_unsigned(self.b, off as usize)?;
+        Some(off + consumed as u32 + count)
+    }
+
+    /// `Method` → `(nameOffset, signatureOffset)`. Name and signature are typed
+    /// handles; the collections that follow are not needed here.
+    fn method_name_and_sig(&self, off: u32) -> Option<(u32, u32)> {
+        let (_flags, o) = self.unsigned(off)?;
+        let (_impl, o) = self.unsigned(o)?;
+        let (name_off, o) = self.typed_off(o)?;
+        let (sig_off, _o) = self.typed_off(o)?;
+        Some((name_off, sig_off))
+    }
+
+    /// `TypeDefinition` → `(nsOff, nameOff, encOff, nestedTypeOffs, methodOffs)`.
+    fn type_def_ext(&self, off: u32) -> Option<(u32, u32, u32, Vec<u32>, Vec<u32>)> {
+        let (_flags, o) = self.unsigned(off)?;
+        let (_base, o) = self.handle(o)?;
+        let (ns_off, o) = self.typed_off(o)?;
+        let (name_off, o) = self.typed_off(o)?;
+        let (_size, o) = self.unsigned(o)?;
+        let (_pack, o) = self.unsigned(o)?;
+        let (enc_off, o) = self.typed_off(o)?;
+        let (nested, o) = self.typed_collection(o)?;
+        let (methods, _o) = self.typed_collection(o)?;
+        Some((ns_off, name_off, enc_off, nested, methods))
+    }
+
+    /// `NamespaceDefinition` → `(typeDefinitionOffs, childNamespaceOffs)`.
+    fn namespace_def_children(&self, off: u32) -> Option<(Vec<u32>, Vec<u32>)> {
+        let (_parent, o) = self.handle(off)?;
+        let (_name, o) = self.typed_off(o)?;
+        let (types, o) = self.typed_collection(o)?;
+        let (_forwarders, o) = self.typed_collection(o)?;
+        let (child_ns, _o) = self.typed_collection(o)?;
+        Some((types, child_ns))
+    }
+
+    /// `ScopeDefinition.RootNamespaceDefinition` offset.
+    fn scope_root_ns(&self, off: u32) -> Option<u32> {
+        let (_flags, o) = self.unsigned(off)?;
+        let (_name, o) = self.typed_off(o)?;
+        let (_halg, o) = self.unsigned(o)?;
+        let (_maj, o) = self.unsigned(o)?;
+        let (_min, o) = self.unsigned(o)?;
+        let (_bld, o) = self.unsigned(o)?;
+        let (_rev, o) = self.unsigned(o)?;
+        let o = self.skip_byte_collection(o)?; // publicKey
+        let (_culture, o) = self.typed_off(o)?;
+        let (root_ns, _o) = self.typed_off(o)?;
+        Some(root_ns)
     }
 
     /// `ConstantStringValue.Value` at handle offset `off`. Offset 0 is the null
