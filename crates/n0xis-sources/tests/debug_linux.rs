@@ -168,7 +168,7 @@ fn condition_filter_selects_the_matching_hit() {
 
     // rax can never be this sentinel at the watchpoint on a plain increment.
     let cond = RegCond::parse("rax=0xDEADBEEFCAFEBABE").unwrap();
-    let outcome = await_watchpoint_hit_where(pid, Va(g), WatchKind::Write, 8, 4000, 8, None, Some(&cond));
+    let outcome = await_watchpoint_hit_where(pid, Va(g), WatchKind::Write, 8, 4000, 8, None, &[], Some(&cond));
 
     if is_alive(pid) {
         assert_alive_and_untraced(pid);

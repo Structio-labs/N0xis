@@ -246,6 +246,17 @@ Decompile two functions (from two sources/addresses) and diff their pseudo-C lin
   stable/deterministic, best for diffing); `--arch`.
 - Schema: `n0xis.diff.v1`
 
+### `aot symbols --file <pe> | --pid <u32>`
+Recover managed method names for a **.NET NativeAOT** image (ILC / `PublishAot`), which strips
+ordinary symbols. Reconstructs `RVA ↔ Namespace.Type.Method(params)` from both the stack-trace
+`RvaToTokenMapping` (framework/generic-heavy) and the reflection `InvokeMap` (the reflection-
+registered surface, where a game's own gameplay methods live); each symbol is tagged with its
+`source`. `profile` flags such an image as `engine: nativeaot`.
+- Sources: `--file` | `--pid` (`--module <substr>` restricts a live process to one module).
+- `--name <substr>` (case-insensitive) / `--rva <hex>` to filter; `--limit` (default 200) bounds
+  the listing. `method_count` reports the full total, with `stacktrace_count`/`invoke_count`.
+- Schema: `n0xis.aot.symbols.v1`
+
 ---
 
 ## Live memory (a memory scanner class)
@@ -347,6 +358,11 @@ from `.pdata`/`.xdata`).
   decimal or `0x`). Non-matching hits are resumed with the watchpoint still armed (essential on a
   hot function; guarded by `MAX_CONDITION_MISSES=300`). Landed 2026-07-20; **implemented, not yet
   re-validated live** since the guard was added.
+- `--exclude-rip <LO-HI>` (repeatable) — ignore writes whose `rip` is in the half-open hex range
+  `[LO, HI)`; such hits are resumed with the watchpoint still armed and do **not** spend the
+  condition budget. For a field a `memcpy`/serialization helper constantly rewrites, exclude the
+  copy site's range and the next distinct writer (the semantic setter) is what surfaces. RVA when
+  `--addr-rva`, else absolute VA.
 - Schema: `n0xis.debug.watchpoint.v1`
 
 ### `debug attach --pid <u32> [--timeout-ms <n>]`
@@ -693,6 +709,8 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 | `n0xis.scan.aob.v1` | scan aob |
 | `n0xis.scan.pointer_path.v1` | scan pointer-path |
 | `n0xis.scan.dissect.v1` | scan dissect |
+| `n0xis.scan.group.v1` | scan group |
+| `n0xis.aot.symbols.v1` | aot symbols |
 | `n0xis.table.v1` | table add/list/show/rm |
 | `n0xis.freeze.v1` | table freeze |
 | `n0xis.provenance.v1` | provenance trace |

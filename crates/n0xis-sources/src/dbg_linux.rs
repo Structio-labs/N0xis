@@ -689,13 +689,19 @@ pub fn await_watchpoint_hit(
     stack_qwords: usize,
     module: Option<&Module>,
 ) -> Result<AwaitHitOutcome, SourceError> {
-    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, None)
+    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, &[], None)
 }
 
-/// [`await_watchpoint_hit`], but only reports a hit whose registers satisfy
-/// `cond` — non-matching hits are resumed with the watchpoint still armed, up to
-/// a miss budget past which it bails with a "trap site too hot" diagnostic
-/// (every miss single-steps the target).
+/// [`await_watchpoint_hit`], but with two filters on which hit "counts":
+///
+/// - `exclude_rip`: `[lo, hi)` instruction-pointer ranges to ignore. A hit whose
+///   `rip` falls in one is resumed with the watchpoint still armed and does **not**
+///   count against the condition budget — the intended tool for a data field that
+///   a `memcpy`/serialization helper constantly rewrites: exclude the copy site's
+///   range and the next distinct writer (the semantic setter) is what surfaces.
+/// - `cond`: only report a hit whose registers satisfy it; non-matching hits are
+///   resumed, up to a miss budget past which it bails with a "trap site too hot"
+///   diagnostic (every miss single-steps the target).
 #[allow(clippy::too_many_arguments)]
 pub fn await_watchpoint_hit_where(
     pid: u32,
@@ -705,6 +711,7 @@ pub fn await_watchpoint_hit_where(
     timeout_ms: u64,
     stack_qwords: usize,
     module: Option<&Module>,
+    exclude_rip: &[(u64, u64)],
     cond: Option<&RegCond>,
 ) -> Result<AwaitHitOutcome, SourceError> {
     let dr7_bits = dr7_slot0(kind, addr, len)?; // validates align/len/Execute-len before any ptrace
@@ -763,6 +770,20 @@ pub fn await_watchpoint_hit_where(
                     }
                     // Our hit. Capture BEFORE any resume; never `?` here.
                     let captured = capture_hit(&s.live, tid, module, stack_qwords);
+                    // Exclude-rip filter: a write from a known copy/serialization
+                    // site is not the setter we want. Resume with the watchpoint
+                    // still armed, and — unlike a condition miss — don't spend the
+                    // hot-site budget on it (a resumed write does not re-fault).
+                    if let Ok(h) = &captured {
+                        if exclude_rip.iter().any(|&(lo, hi)| h.rip.0 >= lo && h.rip.0 < hi) {
+                            pokeuser(tid, dr_off(6), 0);
+                            if kind == WatchKind::Execute {
+                                set_eflags_rf(tid);
+                            }
+                            s.cont(tid, 0);
+                            continue;
+                        }
+                    }
                     let matched = match (cond, &captured) {
                         (Some(c), Ok(h)) => c.matches(&h.registers),
                         (Some(_), Err(_)) => false,

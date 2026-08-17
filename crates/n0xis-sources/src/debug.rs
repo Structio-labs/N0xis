@@ -645,7 +645,7 @@ pub fn await_watchpoint_hit(
     stack_qwords: usize,
     module: Option<&Module>,
 ) -> Result<AwaitHitOutcome, SourceError> {
-    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, None)
+    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, &[], None)
 }
 
 /// [`await_watchpoint_hit`], but only reports a hit whose registers satisfy
@@ -661,6 +661,7 @@ pub fn await_watchpoint_hit_where(
     timeout_ms: u64,
     stack_qwords: usize,
     module: Option<&Module>,
+    exclude_rip: &[(u64, u64)],
     cond: Option<&RegCond>,
 ) -> Result<AwaitHitOutcome, SourceError> {
     let h_process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
@@ -717,6 +718,16 @@ pub fn await_watchpoint_hit_where(
                 // leave the hitting thread stopped at an un-continued debug
                 // event, so detaching (guard drop) would hang or crash it.
                 let captured = capture_hit(h_process, ev.dwThreadId, module, stack_qwords);
+                // An excluded rip (a known copy/serialize site) is resumed with
+                // the watchpoint still armed and does not spend the condition
+                // budget — a write already happened, so resuming is cheap.
+                if let Ok(h) = captured.as_ref()
+                    && exclude_rip.iter().any(|&(lo, hi)| h.rip.0 >= lo && h.rip.0 < hi)
+                {
+                    clear_dr6(ev.dwThreadId);
+                    unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
+                    continue;
+                }
                 // Not the call we asked for: resume it with the watchpoint still
                 // armed and keep waiting. Disarming here (as the unconditional
                 // path does) would end the wait on the wrong hit.

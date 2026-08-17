@@ -902,6 +902,13 @@ struct DebugWatchArgs {
     /// is simply whichever call ran first and re-arming keeps returning it.
     #[arg(long)]
     when: Option<String>,
+    /// Ignore writes from an instruction-pointer range `LO-HI` (hex, half-open
+    /// `[LO, HI)`), repeatable. A field that a `memcpy`/serialization helper
+    /// constantly rewrites keeps surfacing the copy site instead of the setter;
+    /// exclude that range and the next distinct writer — the semantic setter —
+    /// is what the watchpoint returns. RVA when `--addr-rva`, else absolute VA.
+    #[arg(long = "exclude-rip", value_name = "LO-HI")]
+    exclude_rip: Vec<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -3368,7 +3375,31 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
             Ok(c) => c,
             Err(e) => return ir_err("bad-when", &e, pretty),
         };
-        match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), cond.as_ref())
+        // Parse `LO-HI` exclusion ranges, rebasing each end like the watch
+        // address so `--addr-rva` makes both the address and the ranges RVAs.
+        let mut exclude_rip: Vec<(u64, u64)> = Vec::with_capacity(a.exclude_rip.len());
+        for spec in &a.exclude_rip {
+            let Some((lo_s, hi_s)) = spec.split_once('-') else {
+                return ir_err("bad-exclude-rip", &format!("expected LO-HI, got '{spec}'"), pretty);
+            };
+            let (lo, hi) = match (Va::parse(lo_s.trim()), Va::parse(hi_s.trim())) {
+                (Ok(lo), Ok(hi)) => (lo.0, hi.0),
+                _ => return ir_err("bad-exclude-rip", &format!("bad hex range '{spec}'"), pretty),
+            };
+            let (lo, hi) = if a.addr_rva {
+                match &module {
+                    Some(m) => (m.base.offset(lo).0, m.base.offset(hi).0),
+                    None => return ir_err("no-module", "process has no enumerated main module for --addr-rva", pretty),
+                }
+            } else {
+                (lo, hi)
+            };
+            if hi <= lo {
+                return ir_err("bad-exclude-rip", &format!("range '{spec}' is empty (HI must exceed LO)"), pretty);
+            }
+            exclude_rip.push((lo, hi));
+        }
+        match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), &exclude_rip, cond.as_ref())
         {
             Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
             Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
