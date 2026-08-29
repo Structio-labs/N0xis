@@ -2265,15 +2265,32 @@ through plain syscalls — no signed driver, no code-integrity fight:
    indirection — and it must be *robust to distro variance* (glibc vs musl, stripped
    `.symtab`, prelink/relro layouts). Without it a Linux-native `--pid` renders `sub_…` where
    the Windows path renders `module!name`. *(Flagged by an outside RE specialist, 2026-08-29.)*
-7. ⬜ **Verify the ARM64 track on real hardware — resolve the standing caveat.** ARM64 is
-   still "implemented and self-tested, **not** verified" everywhere it appears, because it has
-   only ever run against synthetic samples and disassembler self-checks — exactly the gap the
-   project's verify-before-✅ rule forbids leaving unstated. There is now a real ARM target on
-   the bench: the **x96 mini** Android/AArch64 box (Hi3798MV200), reachable over SSH/ADB. Run
-   the real static→(live) pipeline against genuine AArch64 binaries on it — the same
-   sp-vs-`xzr`-class bug that only surfaced against real LLVM output is exactly what a synthetic
-   test cannot catch. Until this runs, every ARM64 ✅ stays qualified. *(Opportunity noted
-   2026-08-29; ties Phase 7's ARM64 caveat to the verification discipline.)*
+7. 🚧 **Verify the ARM64 track against real compiler output — resolving the standing caveat.**
+   ARM64 had only ever run against synthetic samples and disassembler self-checks — the exact
+   gap the verify-before-✅ rule forbids. *(2026-08-29)* **Decode and CFG are now verified on
+   real Clang -O1 AArch64 output.** Method: `clang --target=aarch64-linux-gnu` on this x86-64
+   box compiles a diverse C fixture (loops, recursion, a `switch` jump table, struct field
+   loads, FP math), its `.text` is fed to `n0x disasm/ir build --bytes --arch arm64`, and the
+   disassembly is diffed instruction-for-instruction against `llvm-objdump` from the same
+   toolchain — **57/64 byte-exact, the other 7 all cosmetic** (n0xis emits the canonical form
+   where LLVM prints an alias: `umull`=`umaddl …,xzr`, `mov`=`orr …,wzr`, `cmp`=`subs wzr,…`,
+   `ret`=`ret x30`, `mov #-1`=`movn #0`; and stp/ldp immediates render decimal vs LLVM's hex).
+   No decode errors, no width bugs (the `movn x0` at 0x84 is correctly 64-bit, `sf=1`). CFG
+   forms correctly (branch targets resolve, if/else structures). **What is *not* yet done, now
+   demonstrated rather than merely asserted:** the AArch64 **lift/SSA/decompile** degrades —
+   `decomp pseudo` emits `// asm:` nodes and a `/*cond(b.c)*/` placeholder instead of recovered
+   expressions and conditions (`flags: ["ssa","low-coverage"]`). So the optimized decompiler
+   stays x64-only until an AArch64 lift lands; that is the remaining ARM64 work, not the
+   decoder. *(The **x96 mini** was tried and rejected as a target: it is a 32-bit `armv7l`
+   device — no AArch64 userland — so it cannot exercise the AArch64 track at all; 32-bit ARM is
+   out of scope, see below.)* **Minor finding:** AArch64 `stp`/`ldp` immediates print in
+   decimal while the rest of the operands (and the x64 path) use hex — a rendering-consistency
+   nit worth unifying.
+   - **Do we need 32-bit ARM (AArch32)?** No. It is a declining legacy niche — pre-2019 Android
+     (Play now mandates 64-bit), cheap IoT/TV boxes, and Cortex-M firmware (a different product
+     than desktop/game binary RE). The relevant ARM target is AArch64 (modern phones, Apple
+     Silicon, ARM servers, current Android games). Adding AArch32 would be a whole separate ISA
+     (A32/T32/Thumb) for a shrinking audience — explicitly out of scope.
 
 ### Framing rules this phase encodes
 

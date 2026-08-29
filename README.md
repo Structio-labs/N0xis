@@ -131,7 +131,7 @@ Stateful cross-call workflows that want in-memory session state (`scan`/`filter`
 
 **Alpha.** The static + live pipeline, the SSA decompiler, and provenance are built and exercised against real spawned targets on Windows and Linux. Honest caveats, because *"implemented"* and *"verified"* are not the same claim:
 
-- **ARM64 is early** — implemented and self-tested, not yet verified to x64's standard (a real `sp`-vs-`xzr` bug surfaced only against genuine LLVM output); the optimized SSA pass and flag-precise conditions are **x64-only** for now.
+- **ARM64 — decoder & CFG verified, decompiler not.** The AArch64 *decoder* and *CFG* are verified against real Clang `-O1` output (57/64 instructions byte-exact vs `llvm-objdump`, the rest canonical-vs-alias equivalences — no decode or register-width errors); branch resolution and if/else structuring hold. But the AArch64 **lift/SSA/decompile is not built** — `decomp pseudo` degrades to `asm` nodes and unrecovered conditions — so the optimizing decompiler and flag-precise conditions are **x64-only** for now. That lift is the remaining ARM64 work, not the decoder.
 - **The Linux-native live track is new** — `ptrace` hardware watchpoints (DR0–DR7), the portable ELF/DWARF unwinder, and `stack backtrace` are implemented and tested against spawned targets; still hardening against the more mature Windows path.
 - The versioned JSON contract (`n0xis.*.vN`) hasn't been road-tested by outside users yet — expect some shapes to move.
 
