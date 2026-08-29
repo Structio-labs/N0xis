@@ -2404,6 +2404,19 @@ through plain syscalls — no signed driver, no code-integrity fight:
      than desktop/game binary RE). The relevant ARM target is AArch64 (modern phones, Apple
      Silicon, ARM servers, current Android games). Adding AArch32 would be a whole separate ISA
      (A32/T32/Thumb) for a shrinking audience — explicitly out of scope.
+8. ⬜ **Static ELF loading — a Linux-native gap surfaced by the QA sweep.** The static
+   loader is PE-only (`StaticPe`/goblin's PE path): a real ELF (e.g. Factorio's 244 MB Linux
+   x86-64 build, or any Linux `.so`) is rejected with `load-failed: DOS header is malformed`.
+   It fails *cleanly* (no panic/OOM — confirmed by the fuzzing pass), but a tool that runs on
+   Linux and cannot statically analyze a Linux binary is an obvious hole. goblin already
+   parses ELF; this is a new `StaticElf` source behind the existing seam (section map, symbol
+   table — ELF binaries are often *not stripped*, a symbol windfall), decode/CFG/decomp then
+   work unchanged (verified: feeding a Factorio function's raw `.text` via `--bytes --arch x64`
+   decompiles at quality 1.0). System V vs Win64 calling-convention recovery (Rung 4) is the
+   related follow-on so the *signature* is right, not just the body.
+9. ⬜ **LuaJIT 2.1 (bytecode dump v2).** `lua disasm`/`patch` read only the LuaJIT **2.0**
+   dump (version 1); modern games ship LuaJIT 2.1 (dump v2), which is rejected
+   (`unsupported LuaJIT dump version 2`). Add the v2 reader.
 
 ### Framing rules this phase encodes
 
