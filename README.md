@@ -23,10 +23,11 @@ No other does this: a memory scanner's "find what accesses this" stops at a raw 
 
 <!-- ▶ HERO GIF GOES HERE — record `provenance trace` running live and drop it at docs/assets/provenance.gif, then:  ![demo](docs/assets/provenance.gif) -->
 
-- ✔ **x64 Windows** — full pipeline (early ARM64)
+- ✔ **Windows + Linux** — the full static pipeline on both; live memory & hardware-watchpoint debugging on each through a native adapter (x64; early ARM64)
 - ✔ **Optimizing SSA decompiler** — and every pass emits an *inspectable* artifact, not a black-box answer
 - ✔ **Live memory analysis** — value/pointer/AOB scanning, freeze, hooks (a memory scanner class)
 - ✔ **Provenance** — hardware watchpoint → decompiled statement
+- ✔ **Managed-runtime name recovery** — .NET NativeAOT `RVA ↔ Namespace.Type.Method`, LuaJIT, Bitsquid; turns stripped `sub_XXXX` back into real names
 - ✔ **Stable CLI + MCP** — the same versioned JSON from a terminal or an agent
 
 ---
@@ -38,9 +39,10 @@ No other does this: a memory scanner's "find what accesses this" stops at a raw 
 | **Watchpoint → decompiled statement** | ✅ | ❌ | ❌ |
 | Live value / pointer / AOB scanning | ✅ | ✅ | ❌ |
 | Static *and* live in one pipeline | ✅ | ❌ | ~ |
-| Agent-native automation (CLI + MCP, JSON) | ✅ | ❌ | ~ |
+| Windows **and** Linux, one pipeline | ✅ | ~ | ~ |
+| Structured-JSON automation (CLI + MCP) | ✅ | ❌ | ~ |
 
-N0xis does **not** try to out-decompile other tools — theirs are mature and multi-arch, and the honest gap is written down ([ROADMAP Phase 10](ROADMAP.md)). It wins where they're structurally weak: **the live⇄static seam, and being drivable by an agent.**
+N0xis does **not** try to out-decompile other tools — theirs are mature and multi-arch, and the honest gap is written down ([ROADMAP Phase 10](ROADMAP.md)). It wins where they're structurally weak: **the live⇄static seam, cross-platform reach, and a fully scriptable JSON surface** that a human pipes through `jq` or an agent drives over MCP — equally.
 
 ---
 
@@ -50,7 +52,7 @@ N0xis does **not** try to out-decompile other tools — theirs are mature and mu
 - **Scan live memory** — value scan with snapshot-backed narrowing (no result cap), AOB wildcards, pointer paths, struct dissection, freeze, code-cave hooks — a memory scanner class.
 - **Watch & explain** — software / hardware / *conditional* breakpoints and a real cross-process **unwound call stack** from `.pdata`/`.xdata` — the raw material provenance is built on.
 - **Method tooling** — `game grep`, `locate by-transition`, `const identify`, `sig validate`, …: the *"how do I actually find X"* methods, as commands instead of folklore.
-- **Game engines** — Bitsquid/Stingray bundles + a LuaJIT stack (offline bytecode **and** live in-VM introspection).
+- **Game engines & managed runtimes** — Bitsquid/Stingray bundles, a LuaJIT stack (offline bytecode **and** live in-VM introspection), and **.NET NativeAOT** managed-name recovery: `aot symbols` reconstructs `RVA ↔ Namespace.Type.Method` from stack-trace metadata *and* the reflection InvokeMap, so a stripped AOT image reads as source, not `sub_XXXX` (native or under Wine).
 - **Persist & diff** — `.n0xt` tables, versioned `annotate` truth, content-addressed caching, function/version diffing.
 
 → **Full command reference: [docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md)** — or `n0x guide`, auto-generated from the binary so it never drifts.
@@ -81,7 +83,7 @@ The same commands run on a live `--pid`, a static `--file`, a captured `--snapsh
 cargo build --workspace --release      # → n0x (n0xis), n0xis-mcp, n0xis-hud
 ```
 
-Rust toolchain pinned in `rust-toolchain.toml` (builds with `stable-x86_64-pc-windows-gnu` — no MSVC Build Tools needed). Tests: `cargo test --workspace --features n0xis-pipeline/live` (some spawn real disposable processes). The analysis core is OS-free by construction — `cargo test -p n0xis-core` links zero Windows crates.
+Builds on **Windows and Linux**. `rust-toolchain.toml` pins the Windows gnu host (`stable-x86_64-pc-windows-gnu` — no MSVC Build Tools needed); on Linux, build with your host `stable` toolchain (override the pin with `RUSTUP_TOOLCHAIN`/`+stable` if needed). Tests: `cargo test --workspace --features n0xis-pipeline/live` (some spawn real disposable processes; live debugging on Linux uses `ptrace`, so run them able to trace descendants). The analysis core is OS-free by construction — `cargo test -p n0xis-core` links zero OS crates.
 
 <details>
 <summary><b>Workspace layout — 13 crates</b></summary>
@@ -127,13 +129,13 @@ Stateful cross-call workflows that want in-memory session state (`scan`/`filter`
 
 ## Status
 
-**Alpha.** The static + live pipeline, the SSA decompiler, and provenance are built and exercised against real spawned targets. Honest caveats, because *"implemented"* and *"verified"* are not the same claim:
+**Alpha.** The static + live pipeline, the SSA decompiler, and provenance are built and exercised against real spawned targets on Windows and Linux. Honest caveats, because *"implemented"* and *"verified"* are not the same claim:
 
 - **ARM64 is early** — implemented and self-tested, not yet verified to x64's standard (a real `sp`-vs-`xzr` bug surfaced only against genuine LLVM output); the optimized SSA pass and flag-precise conditions are **x64-only** for now.
-- **Phase 9** (`ui locate`, conditional watchpoints) is implemented and unit-tested but **pending live validation**, and lives uncommitted in the working tree.
+- **The Linux-native live track is new** — `ptrace` hardware watchpoints (DR0–DR7), the portable ELF/DWARF unwinder, and `stack backtrace` are implemented and tested against spawned targets; still hardening against the more mature Windows path.
 - The versioned JSON contract (`n0xis.*.vN`) hasn't been road-tested by outside users yet — expect some shapes to move.
 
-Full phase-by-phase history (Phase 1 → 9) and the decompiler-depth plan (Phase 10): **[ROADMAP.md](ROADMAP.md)**.
+Full phase-by-phase history and the decompiler-depth plan (Phase 10): **[ROADMAP.md](ROADMAP.md)**.
 
 ---
 

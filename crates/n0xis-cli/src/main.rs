@@ -2294,7 +2294,7 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
     let data = json!({
         "tool": "n0xis",
         "version": env!("CARGO_PKG_VERSION"),
-        "tagline": "Agent-native reverse-engineering + live-memory toolkit — contract-first CLI and MCP over the same pipeline, static PE and live process alike.",
+        "tagline": "Reverse-engineering toolkit: static PE/ELF + live memory in one contract-first pipeline — an optimizing SSA decompiler, watchpoint→decompiled-statement provenance, and journaled patching. Structured JSON from a terminal or, via MCP, an agent. Windows + Linux.",
         "usage_model": "Pick a command from `commands` (or a recipe from `workflows`). Every command emits the same { ok, data, meta } envelope on stdout; add --pretty for indented JSON; meta.schema names the payload shape. Progress goes to stderr with a [n0x] prefix (safe to ignore, or silence with --quiet). Non-zero exit on ok:false.",
         "global_flags": [
             { "name": "--pretty", "help": "indent the JSON envelope" },

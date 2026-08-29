@@ -1627,6 +1627,46 @@ for someone else's loader — that is a data-seam output, not an ambition to bec
 
 ---
 
+## Phase 12b — .NET NativeAOT: the managed layer, other half 🎯 ✅
+
+The sibling of Phase 12. Where IL2CPP is Unity's managed-name problem, **NativeAOT** (`ILC` /
+`PublishAot`, the shape a modern Godot-C# or .NET game ships) is the CoreCLR one: the compiler
+strips ordinary symbols, so `disasm`/`decomp` see only `sub_XXXX` and a config read by enum
+index leaves no string to `xref`. But the managed names are still *in the image*, in the
+NativeAOT reflection/stack-trace metadata — and this phase parses them, universally, with no
+per-target hardcode.
+
+- ✅ **`aot symbols --file | --pid`** (`n0xis.aot.symbols.v1`) — reconstructs a full
+  `RVA ↔ Namespace.Type.Method(params)` map for any .NET 8 NativeAOT image. Same parser on a
+  static PE and a live module (native or under Wine), through the `MemorySource` seam.
+- ✅ **Two metadata sources, merged and tagged.** It locates the `ReadyToRunHeader`, reads the
+  `EmbeddedMetadata` (NativeFormat) and both:
+  - the **stack-trace `RvaToTokenMapping`** — a linear map, framework/generic-heavy; and
+  - the **reflection `InvokeMap`** — a `NativeHashtable` whose entrypoint indices resolve
+    through the `CommonFixupsTable` external-references table, joined to the method's declaring
+    type by walking the metadata type tree. **This is the one that resolves a game's own
+    gameplay methods** (the stack-trace map largely does not).
+  Each symbol carries its `source` (`stacktrace` / `invoke`); the artifact reports
+  `stacktrace_count` / `invoke_count`.
+- ✅ **A full NativeFormat reader, ported to Rust** — the low-bit-count varints, the
+  generic-vs-typed handle encodings (`type<<24|offset` vs `offset<<8|type` — the trap that ate a
+  session), `ConstantStringValue`/`Method`/`TypeDefinition`/`TypeReference`/`NamespaceDefinition`
+  records, and the `MethodNameFormatter` name assembly. **OOM-proof by construction:** never
+  allocates on a length read from parsed bytes.
+- ✅ **`profile` detects it** — `engine: nativeaot` via the `DotNetRuntimeDebugHeader` export,
+  with an advisory pointing at `aot symbols`.
+- ✅ **Enables the live-patch workflow** — the recovered RVAs feed `decomp pseudo --addr`
+  (now with named calls) and the [Phase 14 `debug watch --exclude-rip`](#phase-14--cross-platform-the-linux-native-live-track-) setter hunt.
+- **Measured:** on `UnrailedGodot.dll` (Unrailed! 2, Godot-C# NativeAOT, .NET 8, ReadyToRun 9.1)
+  → **208 056** methods (91 136 stack-trace + 116 920 invoke); `common.*` fully covered, and
+  gameplay targets resolve, e.g. `common.Unrailed2.UI.Drawer.GameSetupMenu.GetMaxPlayersOptions
+  @ 0x122f520`.
+- ⬜ *Follow-ons:* `VirtualInvokeMap` (virtual/interface method entrypoints), and feeding the
+  map into `decomp`/`function discover` as a `SymbolProvider` overlay so **every** call renders
+  named, the way an imported IL2CPP index does in Phase 12.
+
+---
+
 ## Phase 13 — The wire: network & protocol layer (netcode QA and server-authority testing) 🎯 ⬜
 
 **The thesis: N0xis can say what is in memory and which code touched it, and has no idea what
@@ -1845,6 +1885,11 @@ through plain syscalls — no signed driver, no code-integrity fight:
   works on a native Linux target. Verified end-to-end by 5 ptrace integration tests (hardware
   write-watchpoint, one-shot software breakpoint, timeout, miss-budget, attach) each asserting
   the target survives *and* is left untraced.
+- ✅ **`debug watch --exclude-rip`** (both the ptrace and Win32 adapters) — instruction-pointer
+  ranges to ignore, so a write-watchpoint on a managed field that a `memcpy`/serialization
+  helper constantly rewrites can skip the copy site (resumed with the watchpoint still armed,
+  *without* spending the condition budget) and surface the semantic setter instead. Emerged
+  from a real .NET NativeAOT modding session where every hit landed in serialization copies.
 - ⚠️ Reaching a non-descendant needs `kernel.yama.ptrace_scope=0`, `CAP_SYS_PTRACE`, or root
   — the same gate `process_vm_readv` hits; the error says so.
 
