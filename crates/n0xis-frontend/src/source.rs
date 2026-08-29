@@ -69,6 +69,62 @@ impl Src {
         }
     }
 
+    /// **Every** executable range of the source, in address order — the honest
+    /// answer to "where is the code", which `.text` alone is not on a Unity
+    /// IL2CPP image (measured: `.text` 7 247 840 bytes, `il2cpp` 61 303 411,
+    /// identical characteristics). Empty when the source cannot say.
+    pub fn code_ranges(&self) -> Vec<(Va, u64)> {
+        self.as_mem().code_ranges()
+    }
+
+    /// [`code_ranges`](Self::code_ranges) for a named module, by case-insensitive
+    /// substring.
+    ///
+    /// Without this a live Unity target cannot be scanned at all: the main
+    /// module is a thin player executable (measured: 2 exports, 319 functions)
+    /// and every fact worth having is in `GameAssembly.dll` (386 exports,
+    /// 277 199). Defaulting to the main module is right for ordinary targets and
+    /// exactly wrong for this one, so the caller gets to say which.
+    ///
+    /// An unmatched name yields an empty list rather than silently falling back
+    /// to the main module — asking for a module that is not loaded and being
+    /// handed a different one's code is the kind of quiet substitution that
+    /// makes a wrong answer look right.
+    pub fn code_ranges_of(&self, module: Option<&str>) -> Vec<(Va, u64)> {
+        let Some(needle) = module.map(str::to_lowercase) else {
+            return self.code_ranges();
+        };
+        let Some(m) = self.modules().into_iter().find(|m| m.name.to_lowercase().contains(&needle)) else {
+            return Vec::new();
+        };
+        match self {
+            Src::Live(l) => l.code_ranges_of(m.base),
+            // A static image is one module; if the name matched it, its own
+            // ranges are the answer.
+            Src::Static(_) => self.code_ranges(),
+            Src::Snap(_) | Src::Remote(_) => Vec::new(),
+        }
+    }
+
+    /// A named section's range in a named module.
+    ///
+    /// The data-side twin of [`code_ranges_of`](Self::code_ranges_of), and it
+    /// exists because fixing only the code side is worse than fixing neither:
+    /// pointing `xref string` at `GameAssembly.dll`'s code while it searched
+    /// the *player executable's* `.rdata` scanned 61 MB to find nothing, slowly
+    /// and convincingly.
+    pub fn section_range_in(&self, module: Option<&str>, name: &str) -> Option<(Va, u64)> {
+        let Some(needle) = module.map(str::to_lowercase) else {
+            return self.section_range(name);
+        };
+        let m = self.modules().into_iter().find(|m| m.name.to_lowercase().contains(&needle))?;
+        match self {
+            Src::Live(l) => l.section_range_of(m.base, name),
+            Src::Static(_) => self.section_range(name),
+            Src::Snap(_) | Src::Remote(_) => None,
+        }
+    }
+
     /// A named section's range (`.rdata`, `.data`, …), when the source is a
     /// mapped image.
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
@@ -336,9 +392,47 @@ pub fn scan_range_or(
     }
 }
 
+/// Every code window a range-scoped command should cover.
+///
+/// The plural of [`scan_range_or`], and the reason it exists: `.text` is not
+/// "the code" on every image. A Unity IL2CPP build keeps its transpiled C# in a
+/// second executable section, so a command that scans one default window covers
+/// a tenth of the binary and reports the rest as containing nothing.
+///
+/// An explicit `--start`/`--size` still wins and still yields exactly **one**
+/// window: a caller who named a range asked for that range, and quietly
+/// scanning more would be its own kind of wrong.
+pub fn scan_ranges_or(
+    src_ranges: &[(Va, u64)],
+    default: Option<(Va, u64)>,
+    region_len: Option<usize>,
+    explicit_start: Option<Va>,
+    explicit_size: Option<usize>,
+    fallback_start: Va,
+) -> Vec<(Va, usize)> {
+    if explicit_start.is_some() || explicit_size.is_some() || src_ranges.len() < 2 {
+        let one = scan_range_or(default, region_len, explicit_start, explicit_size, fallback_start);
+        return vec![one];
+    }
+    src_ranges.iter().filter(|(_, size)| *size > 0).map(|(va, size)| (*va, *size as usize)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn several_code_sections_all_get_scanned_unless_one_was_named() {
+        let ranges = [(Va(0x1000), 0x200u64), (Va(0x8000), 0x4000)];
+        // Nothing named → cover every executable section, not just the first.
+        assert_eq!(scan_ranges_or(&ranges, Some((Va(0x1000), 0x200)), None, None, None, Va(0)), vec![(Va(0x1000), 0x200), (Va(0x8000), 0x4000)]);
+        // An explicit window is honored exactly, and alone.
+        assert_eq!(scan_ranges_or(&ranges, Some((Va(0x1000), 0x200)), None, Some(Va(0x9000)), Some(16), Va(0)), vec![(Va(0x9000), 16)]);
+        // A single-code-section image behaves precisely as it did before.
+        assert_eq!(scan_ranges_or(&ranges[..1], Some((Va(0x1000), 0x200)), None, None, None, Va(0)), vec![(Va(0x1000), 0x200)]);
+        // And a source that cannot report ranges falls back to the default.
+        assert_eq!(scan_ranges_or(&[], Some((Va(0x1000), 0x200)), None, None, None, Va(0)), vec![(Va(0x1000), 0x200)]);
+    }
 
     #[test]
     fn explicit_values_beat_the_default_range() {

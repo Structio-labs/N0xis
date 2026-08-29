@@ -99,7 +99,17 @@ impl Pass for DecompPass {
         let opt = OptimizePass.run(ctx, ssa.clone())?;
         let types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone() })?;
         let names = RenderNames::new(&cfg.callsites).with_types(&types);
-        let signature = format_signature(cfg.start, &types.signature);
+        // The function's own name, when a symbol source has one. **Only an
+        // exact hit counts**: a provider that attributes a whole function span
+        // answers for any address inside it, so accepting a near miss would
+        // name this function after whichever one precedes it — the same
+        // sound-over-complete rule the callee naming already follows.
+        let own_name = ctx
+            .symbols
+            .and_then(|s| s.symbol_at(cfg.start))
+            .filter(|sym| sym.va == cfg.start)
+            .map(|sym| crate::render::render_callee_name(&sym.name));
+        let signature = format_signature(cfg.start, &types.signature, own_name.as_deref());
 
         let (pseudo, has_loop, fallback_count, delta) = match input.style {
             DecompStyle::Goto => (render_goto(&cfg, &ssa.blocks, &names), false, 0, Vec::new()),
@@ -159,7 +169,10 @@ impl Pass for DecompPass {
 /// placeholder — real arity (only the register args actually read) and a
 /// real return type (`void` unless something other than the untouched entry
 /// `rax` gets returned).
-fn format_signature(va: Va, sig: &RecoveredSignature) -> String {
+/// `name` is the function's own recovered name when a symbol source knows it —
+/// an export table, or an imported IL2CPP index (Phase 12). Absent, the address
+/// stands in as it always did, so a target with no symbols renders unchanged.
+fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> String {
     let ret = match &sig.ret {
         Some(ty) => ty.name.clone().unwrap_or_else(|| c_type(ty.bits, ty.signed).to_string()),
         None => "void".to_string(),
@@ -169,7 +182,10 @@ fn format_signature(va: Va, sig: &RecoveredSignature) -> String {
     } else {
         sig.params.iter().map(|p| format!("uint64_t {}", p.name)).collect::<Vec<_>>().join(", ")
     };
-    format!("{ret} sub_{:x}({params})", va.get())
+    match name {
+        Some(n) => format!("{ret} {n}({params})"),
+        None => format!("{ret} sub_{:x}({params})", va.get()),
+    }
 }
 
 fn count_unlifted(blocks: &[SsaBlock]) -> usize {

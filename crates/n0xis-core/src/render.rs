@@ -93,7 +93,7 @@ fn mangle_call_name(name: &str) -> String {
 /// C-identifier-sanitize these, and doing so would throw away the readability
 /// win. Only a plain `module!function` import name gets the identifier-safe
 /// `!` -> `__` treatment.
-fn render_callee_name(name: &str) -> String {
+pub(crate) fn render_callee_name(name: &str) -> String {
     let demangled = demangle(name);
     if demangled != *name { demangled } else { mangle_call_name(name) }
 }

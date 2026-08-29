@@ -78,15 +78,20 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
         return out;
     };
     let step = entry_size as usize;
-    // Prefer the executable range as the "is this code?" gate; fall back to
+    // Prefer the executable ranges as the "is this code?" gate; fall back to
     // mere mapped-ness when the source can't report a code extent.
-    let code = ctx.source.code_range();
+    //
+    // **All** of them, not just `.text`: a Unity IL2CPP image keeps its
+    // transpiled C# in a second executable section, so gating on `.text` alone
+    // rejected every jump table in 89% of the binary — switch recovery quietly
+    // giving up on the bulk of the code, reported as "unresolved".
+    let code = ctx.source.code_ranges();
 
     for chunk in raw.chunks_exact(step) {
         let Some(target) = decode_entry(disp.kind, table, chunk) else {
             break;
         };
-        if !is_code(ctx, code, target) {
+        if !is_code(ctx, &code, target) {
             break;
         }
         out.cases.push(target);
@@ -99,11 +104,11 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
 /// Does `target` land in executable code? Uses the source's code extent when
 /// known (rejects data addresses like the table itself), else falls back to
 /// plain mapped-ness.
-fn is_code(ctx: &Ctx, code: Option<(Va, u64)>, target: Va) -> bool {
-    match code {
-        Some((base, size)) => target.0 >= base.0 && target.0 < base.0.saturating_add(size),
-        None => ctx.source.contains(target),
+fn is_code(ctx: &Ctx, code: &[(Va, u64)], target: Va) -> bool {
+    if code.is_empty() {
+        return ctx.source.contains(target);
     }
+    code.iter().any(|(base, size)| target.0 >= base.0 && target.0 < base.0.saturating_add(*size))
 }
 
 /// Turn one table entry into a case target VA.
@@ -123,5 +128,40 @@ fn decode_entry(kind: SwitchKind, table: Va, bytes: &[u8]) -> Option<Va> {
             let rel = i32::from_le_bytes(arr) as i64;
             Some(Va(table.0.wrapping_add(rel as u64)))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use n0xis_arch::X64;
+    use n0xis_sources::Snapshot;
+
+    /// The gate must accept a target in **any** executable range, not only the
+    /// first. On a Unity IL2CPP image the second one holds 89% of the code, so
+    /// a first-range-only check rejected every jump table there and reported
+    /// the switch as unresolved.
+    #[test]
+    fn a_target_in_a_second_code_range_is_still_code() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0u8; 16]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let ranges = [(Va(0x1000), 0x200u64), (Va(0x8000), 0x4000)];
+
+        assert!(is_code(&ctx, &ranges, Va(0x1100)), "first range");
+        assert!(is_code(&ctx, &ranges, Va(0x9000)), "second range — the case that used to fail");
+        assert!(!is_code(&ctx, &ranges, Va(0x5000)), "between the ranges is not code");
+        assert!(!is_code(&ctx, &ranges, Va(0xC000)), "past the last range is not code");
+    }
+
+    /// With no ranges at all the gate falls back to plain mapped-ness, exactly
+    /// as it did when the source could not report a code extent.
+    #[test]
+    fn no_known_ranges_falls_back_to_mapped_ness() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0u8; 16]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        assert!(is_code(&ctx, &[], Va(0x1000)));
+        assert!(!is_code(&ctx, &[], Va(0x9999)));
     }
 }

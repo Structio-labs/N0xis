@@ -132,7 +132,15 @@ fn sweep_stale_generations_once() {
 /// run when none exists (e.g. an inline `--bytes` one-off with no project).
 pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), CoreError> {
     let probe = ctx.source.read(input.start, input.max_bytes).unwrap_or_default();
-    let key = cfg_cache_key(&ctx.source.label(), input, &probe);
+    // The symbol provider is part of the key, not just the bytes: a CFG
+    // artifact embeds *resolved* call names, so keying on bytes alone made an
+    // imported IL2CPP index invisible on every function already analyzed
+    // (measured — the fix needed deleting `.n0x/ir-cache/` by hand). Providers
+    // whose names derive from the same bytes return an empty fingerprint, so
+    // this leaves existing keys untouched.
+    let fingerprint = ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default();
+    let scope = if fingerprint.is_empty() { ctx.source.label() } else { format!("{}|{fingerprint}", ctx.source.label()) };
+    let key = cfg_cache_key(&scope, input, &probe);
     sweep_stale_generations_once();
 
     if let Ok(Some(json)) = n0xis_project::ir_cache::get(&key)

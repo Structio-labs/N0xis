@@ -154,6 +154,26 @@ pub mod v1 {
     /// capability, built-in and plugin-provided alike, with its origin.
     pub const CAPABILITY_LIST: &str = "n0xis.capability.list.v1";
 
+    // --- Phase 12: the IL2CPP managed layer ---
+    /// Importing an external managed symbol dump, and the measured evidence
+    /// behind how its addresses were bound to the target (`il2cpp import`).
+    pub const IL2CPP_IMPORT: &str = "n0xis.il2cpp.import.v1";
+    /// Querying an imported index by name or address (`il2cpp symbols`).
+    pub const IL2CPP_SYMBOLS: &str = "n0xis.il2cpp.symbols.v1";
+    /// `global-metadata.dat` read natively: format version, the tables the
+    /// header declares, and the string literals — the half of the managed layer
+    /// that needs no external dumper (`il2cpp metadata`).
+    /// Unity engine internal calls recovered from their resolution sites, with
+    /// the .data slot each resolved pointer is cached into (`il2cpp icalls`).
+    /// A live address identified through the runtime type system: its class, its
+    /// fields with runtime offsets, and the discovered layout evidence (`il2cpp obj`).
+    /// Live C# classes discovered by sampling the heap for object headers
+    /// (`il2cpp classes`).
+    pub const IL2CPP_CLASSES: &str = "n0xis.il2cpp.classes.v1";
+    pub const IL2CPP_OBJ: &str = "n0xis.il2cpp.obj.v1";
+    pub const IL2CPP_ICALLS: &str = "n0xis.il2cpp.icalls.v1";
+    pub const IL2CPP_METADATA: &str = "n0xis.il2cpp.metadata.v1";
+
     // --- reserved for the phases ahead (declared so the id is owned) ---
 }
 

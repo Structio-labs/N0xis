@@ -113,7 +113,7 @@ impl Pass for BindingsPass {
     fn run(&self, ctx: &Ctx, input: BindingsInput) -> Result<BindingsArtifact, CoreError> {
         let data = ctx.source.read(input.data_start, input.data_size)?;
         let code = ctx.source.read(input.code_start, input.code_size)?;
-        let insns = ctx.arch.decode_stream(&code, input.code_start, code.len());
+        let insns = ctx.arch.decode_range(&code, input.code_start, code.len());
 
         let code_lo = input.code_start.0;
         let code_hi = input.code_start.0.saturating_add(input.code_size as u64);

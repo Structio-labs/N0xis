@@ -1340,7 +1340,7 @@ workspace from Phase 1's 8 crates to **12** today.)
 
 ---
 
-## Phase 11 — Agent consumability 🎯 ✅ (working tree)
+## Phase 11 — Agent consumability 🎯 ✅
 
 Derived, like Phase 8, from a post-mortem rather than a wish list — this time from an
 agent's session log against a Unity/IL2CPP target, with every claim re-measured against
@@ -1417,7 +1417,45 @@ renderer does not yet know to refuse to pick one. And MCP still exposes 23 of th
 
 ---
 
-## Phase 12 — IL2CPP: the managed layer (Unity's hard mode) 🎯 ⬜
+## Phase 12 — IL2CPP: the managed layer (Unity's hard mode) 🎯 ⏳
+
+### Unity WebGL is the same phase, not a second one
+
+Unity WebGL builds go through the **identical IL2CPP pipeline**: Roslyn → IL → C++ → native
+code, shipped with the same `global-metadata.dat`. The managed half is therefore genuinely
+portable, and the metadata parser of item 1 will serve Windows and WebGL builds alike — that
+is the compatibility payoff, and it is a design decision taken at item 0 rather than a port
+attempted later.
+
+The **native** half is not portable at all, and the WebGL case is stranger than "a different
+address space" — a point worth stating precisely, because the first draft of this section got
+it wrong. A Windows dump's `Address` is an address: an RVA into a PE. **A WebGL dump's
+`Address` is not an address at all.** It is an offset within a *signature-specific sub-table*.
+Resolving it means finding the `dynCall_<signature>` function for the method's return and
+parameter types, reading that function's base table index out of the module's own code, adding
+the dump's offset, and using the result to index `WebAssembly.Table` — which finally yields the
+wasm function index. Unity WebGL dispatches virtuals through the same machinery:
+`VirtFuncInvoker` takes a slot from `klass->vtable`, adds a signature-related base, and issues
+`call_indirect`.
+
+Two consequences:
+
+- The two are indistinguishable as integers and unrelated as meanings, and resolving the WebGL
+  one requires a WASM front end this build does not have. So `AddressSpace` is carried on every
+  imported index and checked before binding. A `wasm` index imports, persists and is searchable
+  as a name table; it **cannot** be attached to a native target, and the refusal says why and
+  what to do instead. It is deliberately not given a confidence score either — scoring a
+  categorically wrong mapping would imply a better dump could fix it.
+- **Item 6 (devirtualization from metadata) is not free on WebGL.** On a native target a vtable
+  slot yields a function pointer; here it yields a table index that still needs the
+  signature-base step. The metadata half transfers, the resolution step does not.
+
+The practical shape of a WebGL target, for when item 1 arrives: `Build/<name>.wasm` holds the
+transpiled code, and `global-metadata.dat` ships **inside `Build/<name>.data`** — the Emscripten
+file-packager blob, which also carries `data.unity3d` — rather than loose on disk. Extracting it
+is a packaging problem, not a metadata one, and once extracted it is the same file the Windows
+parser reads. That is the compatibility payoff restated concretely: item 1 buys both platforms,
+item 6 buys one and a half.
 
 **The thesis: this is one missing layer, not five missing features.** Every IL2CPP symptom
 on record — `xref string` → `count: 0`, `bindings list` → `count: 0`, **0 of 69** calls
@@ -1528,13 +1566,33 @@ most laborious classic workflow.
 
 ### Prioritized plan (leverage × cost)
 
-0. ⬜ **Import an external dump first — one day, ~80 % of the pain gone.**
-   `il2cpp import --script-json <Il2CppDumper output>` → an RVA→name table in `.n0x/`,
-   chained in as a `SymbolProvider` over the PE exports. Named decompilation *before* a
-   single byte of metadata parser exists. Not scaffolding to throw away: it stays as the
-   fallback for versions and obfuscations the native parser refuses, and as the interop
-   path into an ecosystem that already exists (Il2CppDumper, Il2CppInspector, Cpp2IL).
-1. ⬜ **`crates/n0xis-il2cpp` — the native parser.** Header + string table + type / method /
+0. ✅ **Import an external dump first — ~80 % of the pain gone.**
+   `il2cpp import --script-json <Il2CppDumper output>` → a name index in `.n0x/il2cpp/`,
+   served through the existing `SymbolProvider` seam. Named lookups *before* a single byte
+   of metadata parser exists. Not scaffolding to throw away: it stays as the fallback for
+   versions and obfuscations the native parser refuses, and as the interop path into an
+   ecosystem that already exists (Il2CppDumper, Il2CppInspector, Cpp2IL).
+   **Landed on `feat/phase13-net`** (one branch for 12 and 13 — see the sequencing note):
+   `crates/n0xis-il2cpp`, 18 unit tests + an 8-test CLI exit test, clippy clean, boundary
+   gate green. Three decisions carry the weight:
+   - **The address convention is measured, not assumed.** Dumper versions disagree about
+     whether `Address` is an RVA or an already-based VA, and the two are numerically
+     indistinguishable — so both are tried against the target's own `.text` and the winner
+     must clear `MIN_BIND_CONFIDENCE` (90 %). Only *method* symbols are sampled; metadata
+     slots live in `.data` and would drag both counts down equally, hiding the signal.
+     Verified on a real PE: an RVA dump scores 4/0, the same functions as absolute VAs score
+     0/4, and each is detected correctly. **A dump from another build is refused** — with the
+     measurement in the message — rather than applied, because on this corpus a confident
+     wrong name poisons every downstream command at once. `--force` exists and stores the
+     index without pretending the binding is sound.
+   - **Address spaces are explicit, and that is the whole Unity-WebGL story** (see below).
+   - **Name lookup returns a set, never one entry**, per item 2's rule — generic sharing and
+     ICF both make the single-answer API a lie, and the test asserts two C# methods on one
+     address.
+   - ⬜ Still open here: `Il2CppSymbols` is not yet *chained* into the source seam, so
+     `decomp pseudo` and `xref` do not consume it automatically. That is item 2, and it is
+     now a wiring change rather than a design one.
+1. ⏳ **`crates/n0xis-il2cpp` — the native parser.** Header + string table + type / method /
    field definitions + literals + generic containers from the `.dat`; `Il2CppCodeRegistration`
    / `Il2CppMetadataRegistration` located in the image (registrar export → `lea` operand,
    with a validated structural scan as fallback). **Hold per-version struct layouts as
@@ -1545,23 +1603,159 @@ most laborious classic workflow.
    possible failure for a `sound over complete` tool (CONCEPT §3 rule 6) — it manufactures
    confident wrong names in every downstream command at once.
    `il2cpp index` builds it once and caches into the project store (Phase 6).
-2. ⬜ **Wire the seams — where the payoff actually arrives.** `Il2CppSymbols:
-   SymbolProvider`, chained over the PE provider. `decomp pseudo`, `ir explain`,
-   `function discover`, `xref to`, `function trace` all start naming with **zero changes of
-   their own**. Extend the seam with a name→address direction (`symbol_by_name`) that
-   **returns a set, never one entry** — generic sharing and ICF both make the single-answer
-   API a lie (the same discipline Phase 11 established for folded exports).
+   - ✅ **The version-independent half reads, and is now reachable.** `metadata.rs` takes
+     only what sits at byte offsets that do not move between versions — the sanity word, the
+     format version, the twenty offset/size pairs through `typeDefinitions`, and the string
+     literals — and refuses everything else rather than guessing a stride. `il2cpp metadata`
+     is the command that reaches it (the parser landed first and sat unreachable, which is
+     dead code however good it is): version, the table inventory, and a case-insensitive
+     literal search with real paging.
+     **Measured on a real target** (`Pit of Goblin`, Unity IL2CPP, `global-metadata.dat`
+     22 984 696 bytes): version 31, **23 023 literals**, `string_literal_data` 672 564 bytes,
+     and **zero** non-UTF-8 entries — the module's own tripwire for a wrong stride, clean.
+     Searching returns real game text (`EnemyHealth`, `Drink_HealthPotion`,
+     `ActivateDamageZoneRpc`, `Dealing Damage to: `). That is the first thing on this corpus
+     that answers *"is this on-screen text in the game"* **with no external dumper at all** —
+     the question `xref string` structurally cannot answer here, since the literals are not
+     in the image.
+   - ✅ **The Unity directory layout is knowledge held once.** `--file <image>` finds the blob
+     in a sibling `*_Data/il2cpp_data/Metadata/`; `profile` and `il2cpp metadata` now share
+     that rule (`n0xis-frontend::il2cpp_caps::find_metadata_near`) instead of carrying a copy
+     each. It lives in the frontend rather than `n0xis-il2cpp` on purpose: that crate is
+     byte-pure — bytes in, structures out, no filesystem.
+   - ✅ **The answer states its own ceiling.** A literal carries a metadata *index*, not an
+     address, so `meta.note` says the obvious next move does not work yet: mapping a literal
+     to the `.data` slot the code loads it from is item 5, and without it these are not
+     xref-able. A high non-UTF-8 ratio replaces that note with a stride warning naming the
+     version.
+   - ⬜ **Still the version-dependent half**: methods, types, fields, generics — and with
+     them the registration join that turns a name into an address. That is the remaining bulk
+     of this item, and the part that needs per-version layouts tabulated as data.
+2. ⏳ **Wire the seams — where the payoff actually arrives.** The chaining is in and the
+   naming is real: with an index in the project, `decomp pseudo` renders a call as
+   `GameAssembly_dll__PlayerHealth__ApplyDamage` where it previously rendered
+   `sub_14004d650`, and every pass going through the shared function-scoped helper gains it
+   with **zero changes of its own**. Three things this actually took, and two it did not
+   deliver:
+   - ✅ **`ChainedSymbols` lives in the seam, not in this phase.** Two providers consulted as
+     one, and **the tighter fit wins rather than the first answer**: both report the address
+     they matched, so the symbol starting closest at-or-below the query is preferred. A plain
+     `or_else` would let the index's function-span attribution swallow an exact export hit
+     underneath it.
+   - ✅ **Live targets get names too.** `LiveProcess` provides no symbols at all — the
+     standing "no symbols on `--pid`" blind spot — and an imported index attaches to it
+     directly. For a Unity target that blind spot is now partly closed.
+   - ✅ **Attachment is never fatal and never silent.** A missing index is the ordinary case;
+     a present-but-unusable one (wrong build, wasm, no `.text`) is reported in `meta.note`
+     with the reason, because a user who just ran `il2cpp import` and sees unnamed output
+     must be told why rather than left guessing.
+   - ✅ **A function now names itself, not only its callees.** `decomp.rs` formatted the
+     signature line with a hardcoded `sub_{:x}`; it consults `ctx.symbols` and falls back to
+     the address, so a target with no symbols renders exactly as before (138 core tests
+     unchanged — no goldens moved). **Only an exact hit on the function start counts**: the
+     index attributes a whole span to its symbol, so accepting a near miss would label a
+     function after whichever one precedes it. There is a test that asserts a symbol
+     `0x10` below the entry does *not* name it.
+   - ✅ **The range-scoped helper chains too — the claim above was half true when written.**
+     "Every pass gains it with zero changes of its own" held for the *function*-scoped helper
+     only; `with_src_ctx` — `xref to`/`from`, `xref string`, `ir manifest`, `function trace` —
+     never attached the index at all. Now it does, on the same non-fatal terms.
+   - ✅ **And discovery names what it finds.** Chaining alone changed nothing observable
+     there, because `DiscoverPass` formatted `sub_{:X}` unconditionally and never consulted
+     `ctx.symbols` — the same defect `decomp.rs`'s signature line had. Fixed with the same
+     exact-hit rule, so `ir manifest` on an indexed target ranks *named C# methods* instead of
+     a wall of `sub_`: triage is read as a list, which is where names pay off most. Two tests
+     assert both halves of the rule, and the near-miss one lives at the integration level
+     because `Snapshot` resolves symbols by exact address and therefore cannot express a
+     covering symbol at all — a unit test there would have passed without the fix.
+   - ⚠️ **Known gap, stated rather than left to be discovered:** `function discover --pdata`
+     is a hand-written CLI handler, not a registry capability, and it builds a `Ctx` carrying
+     no symbol provider whatsoever — so the *authoritative* discovery path on x64 PE still
+     reports `sub_` even with an index loaded. `discover_pdata`'s doc comment says so at the
+     source. Closing it means routing that handler through the capability seam.
+   - ⬜ **The name→address direction is deliberately not on the seam yet.**
+     `Index::find_by_name` exists and already returns a set (never one entry — generic
+     sharing and ICF both make the single-answer API a lie), reachable through
+     `il2cpp symbols`. Promoting it to `SymbolProvider` is held back until there is a second
+     implementor or a real consumer: a trait method every provider must stub out is the
+     speculative generality the debts section already argues against for the VM seam.
+   - 🐛 **Found while wiring this: the artifact cache key ignored the symbol provider.**
+     `cfg_cached` keyed on `source.label() + input + bytes`, but a CFG artifact embeds
+     *resolved* call names — so a function analyzed before an index existed kept its unnamed
+     artifact forever, and importing an index appeared to do nothing until `.n0x/ir-cache/`
+     was deleted by hand. Measured, then fixed by adding `SymbolProvider::symbol_fingerprint`
+     (default empty, so providers deriving names from the same bytes leave existing keys
+     untouched) and folding it into the cache scope. Regression test asserts the whole
+     sequence: analyze → import → re-analyze, with no cache clearing in between.
 3. ⬜ **Managed provenance** (the item above) — `debug watch` / `provenance trace` /
    the unwinder resolve frames through the index, and disambiguate shared generic bodies via
    the live `MethodInfo*`. Depends on 1+2 and on nothing else; do not let it drift to the end.
-4. ⬜ **Types, objects, and the live klass route.** `il2cpp type` (fields, offsets, size,
-   parent, statics, vtable); `scan dissect --as-type`; **address → klass → field name**, the
-   reverse lookup that ends a scan session in one step instead of an afternoon;
-   `il2cpp obj <addr> --depth N` walking the managed graph with `Il2CppString` (UTF-16 +
-   length) and array decoding; `il2cpp static <Type>::<Field>` as the anchor primitive.
-   ⚠️ **Prefer runtime offsets when a process exists** — from v24.5 field offsets live in the
-   binary's registration, and generic-instance layouts are computed at runtime; the `.dat`
-   alone is not authoritative for either.
+4. ⏳ **Types, objects, and the live klass route.**
+   - ✅ **`il2cpp icalls` — the engine half, and the first thing here that names anything on
+     a live process.** The measurement that killed the `bindings list` hypothesis handed this
+     over: there is no static `{name, fn}` table, but the *cache slot* is static, so
+     name → slot recovered from the code becomes name → real address the moment a process
+     runs. `IcallPass` matches the measured shape (`lea reg,<name with ::>; call <resolver>;
+     mov [rip+slot],rax`) and reports the resolver targets with site counts — thousands of
+     sites on one address is the evidence the shape matched, several means it matched
+     something else too. Measured live: 1074 sites → 424 distinct entries, 212 with slots,
+     two resolvers at 537 sites each; `Transform::get_position_Injected` → `0x7ff9d0d41a00`.
+     **Those addresses land outside `GameAssembly.dll` — in `UnityPlayer.dll`** — which is
+     the correctness signal: the pass never looks there, the process points there itself.
+     A null slot means the game has not called that icall yet, and is reported as such
+     rather than as address 0.
+   - ✅ **`il2cpp obj` — the live klass route, and it needs neither a metadata parser
+     nor a dumper.** `*(void**)addr` is an object's `Il2CppClass*`, and from there the type
+     name and every field name and runtime offset follow. The layout problem is solved by
+     **discovering and validating rather than hardcoding**: `Il2CppClass` carries `name` and
+     `namespaze` in adjacent pointer slots, and `FieldInfo.parent` **points back at the class
+     being examined** — an invariant a wrong guess cannot satisfy. Every result reports the
+     offsets it discovered, so the inference is auditable instead of asserted.
+     **The live run changed the design.** A name pair alone turned out to be too weak:
+     `Il2CppImage` opens with `{ const char* name; const char* nameNoExt; }` and came back as
+     a class called `mscorlib.mscorlib.dll`; stray pairs in unrelated structures did the same.
+     Every *true* class hit — and no false one — also produced a back-referencing field array,
+     so results now carry `confidence: validated | weak-name-pair-only`. Measured on the
+     running game: `Unity.Collections.Allocator` (validated, 8 fields, `value__@0x10` after
+     the 16-byte header, enum constants at 0), and a real game class
+     `Entities.States.DeflectState` (validated, `BodyObjectToHide@0xb8`,
+     `BodyObjectToShow@0xbc`, `UseAnimationLength@0xc0`) — beside the two coincidences,
+     correctly marked weak.
+     ⚠️ **Found while verifying this: `mem map` defaults to `limit` 200.** The full map of
+     the target is 5292 regions / 3.5 GB; the default made it look like 256 regions and
+     3.8 MB, which is what stalled the search for a managed object for several rounds. Not a
+     silent cap — `limit` is a documented flag — but a default that reads as a complete answer.
+   - ✅ **`il2cpp classes` — and now the pair is self-sufficient.** `il2cpp obj` needed an
+     address from somewhere; this finds them, using the one property every managed object
+     has: its first word is its `Il2CppClass*`. So the most-repeated pointer-like values in a
+     heap sample **are** class pointers. Samples the largest writable private regions, ranks
+     by repeat count, and keeps only candidates whose field array points back at them.
+     Measured live: 1 MB across 8 regions → 12 474 distinct pointers, 2000 probed, 16 dropped
+     as weak, **15 classes** — `System.Int32`, `System.String`, `UnityEngine.Object`, and the
+     game's own `PassiveItem_Key`. Every answer states it is a *sample*, with the probe
+     denominator, because a capped search must not read as an inventory.
+   - 🐛 **Closing the loop found a real bug.** Feeding an enumerated class address back into
+     `il2cpp obj` returned `mscorlib.mscorlib.dll`: the pass tried the object reading first
+     and stopped there, and `Il2CppClass` opens with `Il2CppImage* image` whose own first two
+     fields are a name pair. So the *interpretation* was being chosen without meeting the
+     evidence bar the rest of the module insists on. Fixed by preferring whichever reading —
+     object or class — yields a back-referencing field array, falling back to a bare name pair
+     only when neither does. After the fix the same address answers
+     `PassiveItem_Key` (validated, class not object) with `m_identifierToActivate@0x20`,
+     `m_inventoryItem@0x28`, `m_uses@0x30`, `m_keyUnlockSound@0x38`. Regression test included.
+   - ⬜ Still to come: `il2cpp type` by *name* (needs the metadata join), `scan dissect
+     --as-type`, `il2cpp static <Type>::<Field>` as the anchor primitive, and object-graph
+     walking with `Il2CppString`/array decoding. Also the enumerator that makes `il2cpp obj`
+     self-sufficient: today you need a klass address from somewhere (a scan hit, or
+     frequency analysis over a heap region — the technique the live verification used).
+     Superseded framing of the original bullet: `il2cpp type` (fields, offsets, size,
+     parent, statics, vtable); `scan dissect --as-type`; **address → klass → field name**, the
+     reverse lookup that ends a scan session in one step instead of an afternoon;
+     `il2cpp obj <addr> --depth N` walking the managed graph with `Il2CppString` (UTF-16 +
+     length) and array decoding; `il2cpp static <Type>::<Field>` as the anchor primitive.
+     ⚠️ **Prefer runtime offsets when a process exists** — from v24.5 field offsets live in the
+     binary's registration, and generic-instance layouts are computed at runtime; the `.dat`
+     alone is not authoritative for either.
 5. ⬜ **Strings, properly.** Literal index → metadata-usage slot → `xref to` on the slot.
    This is what makes "find the code behind the text on screen" work here, and it is the most
    common entry point in practice. Composes directly with Phase 9's `ui locate`: on-screen
@@ -1581,6 +1775,101 @@ most laborious classic workflow.
    the one problem every mod author has forever and no RE tool addresses, because no RE tool
    holds both indices and the user's own address table.
 
+### Cross-target verification — the answer to "does this work on IL2CPP, or on *that game*"
+
+Everything above was measured on one target, which supports "works on this game" and not the
+claim the phase actually needs. So the Steam library was inventoried and every IL2CPP build
+in it run through the same battery. Three real targets, three **different metadata versions**;
+the three other Unity games installed are Mono (`Managed/Assembly-CSharp.dll`, no
+`il2cpp_data`) and are correctly not treated as IL2CPP.
+
+| | Creeper World 4 | I See Red | Pit of Goblin |
+|---|---|---|---|
+| metadata version | **24** | **29** | **31** |
+| `GameAssembly.dll` | 42.5 MB | 45.1 MB | 94.0 MB |
+| exports / distinct | 240 / 216 | 388 / 285 | 386 / 279 |
+| `.pdata` functions | 134 265 | 144 975 | 277 199 |
+| executable sections | `.text` + `il2cpp` | `.text` + `il2cpp` | `.text` + `il2cpp` |
+| `.text` share of code | 8.8 % | 10.4 % | 10.6 % |
+| literals decoded / non-UTF-8 | 18 244 / **0** | 16 190 / **0** | 23 023 / **0** |
+| icall names in `.rdata` | 1740 | 1911 | 2473 |
+| icall resolution sites | ~~72~~ **3454** | ~~0~~ **4053** | ~~1074~~ **50 875** | ⚠️ see the correction below |
+| live klass `name_offset` | **0x10** | not launched | **0x10** |
+| live klass `fields_offset` | **0x80** | not launched | **0x80** |
+
+**What this establishes.** The two-executable-section layout is a property of IL2CPP, not of
+one build (3/3, with `.text` holding under 11 % of the code every time). The metadata reader's
+version-independent header prefix holds across v24, v29 and v31 — 57 000 literals decoded with
+**zero** non-UTF-8 entries, which is the module's own tripwire for a wrong stride, clean on all
+three. The runtime klass route discovered the *same* offsets on v24 and v31 (`name` at `0x10`,
+`fields` at `0x80`), and on Creeper World 4 recovered 98 classes including `TMPro.TMP_Text`
+(229 fields) and `TMPro.TMP_FontAsset` (55 fields, `m_SourceFontFileGUID`,
+`m_AtlasPopulationMode`, `m_GlyphLookupDictionary` — unmistakably real).
+
+**What it disproved, and the fix.** The icall shape is **not** universal. I See Red has 1911
+icall names in `.rdata` and **nothing in the image references them** — verified three ways: no
+referencing `lea` (`xref string` finds the string but no xref), no absolute 8-byte pointer, no
+4-byte RVA. So `il2cpp icalls` correctly returned zero, and returned it *silently*, which is
+the exact failure this project exists to prevent. `names_in_data` now distinguishes the three
+possible zeros:
+
+- names present, no sites → *this build does not use the load-name/call-resolver/cache-slot
+  shape; the names are real, the live-address route is not available here*
+- no names, no sites → *not an IL2CPP image, or the wrong module/section was scanned*
+- sites found → the ordinary case
+
+Creeper World 4 is the intermediate case that makes the point: 1740 names, only 72 sites. The
+shape is a **codegen option, not a format guarantee**, and the tool now says so per target.
+
+#### ⚠️ Correction (2026-08-09): the icall finding above was wrong, and the cause was ours
+
+The row reading "icall resolution sites: 72 / **0** / 1074" and the conclusion drawn from it —
+*"the icall shape is a codegen option, not a format guarantee"* — are **withdrawn**. The shape
+held on 3/3. What varied was how much of each binary the tool actually looked at.
+
+`Arch::decode_stream` stops at the first instruction that does not decode. That is right for a
+*function* — an undecodable byte means the function ended — and catastrophic for a *section*,
+because a compiled section carries jump tables, alignment padding and data islands between
+functions. Four passes swept whole sections through it: `xref`, `xref string`,
+`bindings list`, `il2cpp icalls`.
+
+Measured coverage before the fix:
+
+| | `.text` swept | `il2cpp` swept |
+|---|---|---|
+| Pit of Goblin | 85.9 % | **0.45 %** |
+| Creeper World 4 | 23.2 % | 0.31 % |
+| I See Red | **5.1 %** | 1.47 % |
+
+Counting only the sites inside those swept prefixes reproduces the old output exactly —
+1074, 72 and 0 — which is what makes this a diagnosis rather than a theory.
+
+`Arch::decode_range` now resynchronizes past undecodable bytes instead of stopping, and the
+four section-wide passes use it. Re-measured:
+
+| | sites before | sites after | distinct icalls | with cache slot |
+|---|---|---|---|---|
+| Creeper World 4 (v24) | 72 | **3454** | 1745 | 1397 |
+| I See Red (v29) | **0** | **4053** | 1916 | 1893 |
+| Pit of Goblin (v31) | 1074 | **50 875** | 4921 | 2448 |
+
+Independently confirmed by a brute-force byte scan for `lea reg,[rip+disp32]` landing on a
+known name address — disassembler-free, and it puts the true totals at 3447 / 4041 / 50 875.
+
+**Three lessons worth more than the fix.**
+
+1. **The defect was not IL2CPP-specific.** Any large binary with data between functions was
+   being scanned in part and reported as if in whole. IL2CPP merely made it visible, because
+   its code sits in a 61 MB section where the first jump table arrives early.
+2. **"Verified three ways" was one way.** Two of the three checks — "no referencing `lea`" via
+   `xref string`, and the site scan — ran through the *same* truncating sweep. The third, "no
+   absolute pointer to the name", returns zero on a healthy IL2CPP build too, because the
+   format never stores such pointers. Independent-looking checks that share a mechanism are
+   not independent, and that is what let a wrong conclusion feel measured.
+3. **The zero could not argue back.** `xref string` returned `count: 0` for both "not in this
+   binary" and "here, but nothing scanned references it". It now reports
+   `found_unreferenced` beside the count, so those two opposite facts stop sharing one number.
+
 ### Two routes to the same facts — keep both
 
 | Route | Wins | Costs |
@@ -1596,17 +1885,80 @@ command*, snapshot-backed and therefore replayable and checkable by someone else
 
 ### Hypotheses to measure before building on them
 
-- ⬜ **The icall table may make `bindings list` work after all.** IL2CPP registers engine
-  internal calls through tables of `{const char* name, Il2CppMethodPointer fn}` — which is
-  *exactly* the name-string × function-pointer pairing `bindings list` was built for, and
-  those strings should be in `.rdata`. If it holds, the current advisory ("IL2CPP has no
-  binding-name strings in `.rdata`") is **overstated** and must be narrowed to *managed*
-  methods, with icalls called out as the working case. Measure first:
-  `n0x xref string --file GameAssembly.dll --query "get_position_Injected"`, then
-  `bindings list` over the hit's data window. This is precisely the class of overstated claim
-  Phase 11 exists to hunt — check it before the phase, not after.
+- ✅ **Measured 2026-08-08 — the advisory was overstated, and the mechanism was not what the
+  hypothesis said.** Half right is the honest verdict, and both halves matter:
+  - **The name strings are in the image.** 2189 distinct `UnityEngine.X::Y` internal-call
+    names in `.rdata` of the measured `GameAssembly.dll`, e.g.
+    `UnityEngine.Transform::get_position_Injected` at `0x1842c0630`. So *"IL2CPP has no
+    binding-name strings in `.rdata`"* was simply false, and it was steering callers away
+    from a command that works.
+  - **`xref string` finds them** — 4 referencing `lea rcx,[1842C0630h]`, in 0.37 s. It
+    returned `count: 0` only because its code window defaulted to `.text`, which on this
+    target is not where the code is (see the finding below).
+  - **But `bindings list` still cannot work, for a different reason than stated.** There is
+    no static `{name, fn}` table at all: a byte search found **zero** pointers to that string
+    anywhere in the file. The emitted shape is
+    `lea rcx,<name>; call <resolver>; test rax,rax; mov [<.data slot>],rax` — the name is in
+    the image, the function pointer is produced at runtime and cached. A static name/pointer
+    pairing does not exist to be found.
+  - **And that leaves something better than the hypothesis asked for.** Each icall name is
+    statically bound to *its own runtime cache slot*. Read those slots in a live process and
+    you get 2189 engine functions with real addresses and real names — on a target whose
+    standing description is "no symbols on `--pid`". Worth a command of its own; folded into
+    item 4's live-klass work rather than left as a note.
+  - Advisories corrected accordingly (`xref string` → `degraded` with both halves stated;
+    `bindings list` → `ineffective` for the *right* reason), with tests pinning the wording.
 - ⬜ **Cpp2IL as the obfuscation fallback** — worth evaluating as an *import* source (like
   item 0) for targets whose metadata is renamed or unreadable. Evaluate; do not reimplement.
+
+### The finding that came out sideways: `.text` is not where the code is
+
+Chasing the icall hypothesis turned up something larger and **not IL2CPP-specific**. On the
+measured `GameAssembly.dll` the section table reads:
+
+| Section | Characteristics | Virtual size |
+|---|---|---|
+| `.text` | `0x60000020` — CODE, EXECUTE, READ | 7 247 840 |
+| **`il2cpp`** | `0x60000020` — **identical** | **61 303 411** |
+
+Unity puts the transpiled C# in a section of its own and leaves `.text` holding the runtime.
+Every range-scoped command defaults its code window to `.text`, so **`xref`, `xref string`,
+`function discover`, `ir manifest` and `function trace` were scanning 10.6 % of the binary
+and reporting the other 89.4 % as containing nothing** — not as out of range, not as
+truncated. A silent zero, which Phase 11 exists to make impossible.
+
+- ✅ **`profile` now sees it and says so.** `SectionInfo` carries `executable`
+  (`IMAGE_SCN_MEM_EXECUTE`), and any executable section besides `.text` raises an advisory
+  naming the affected commands **and handing over the exact window to pass**
+  (`--start 0x1806eb000 --size 0x3a76a73`). Fires on any PE, not just Unity ones; two tests,
+  one asserting the ordinary single-code-section image grows no warning it does not need.
+- ✅ **`code_ranges()` on the seam — the real fix, landed.** A single `(start, size)` cannot
+  express this target, and widening it does not help on its own: `MemorySource::read` is
+  specified to truncate at the end of the region it started in, so a window spanning both
+  sections would still stop at the end of `.text`. So the seam grew
+  `code_ranges() -> Vec<(Va, u64)>`, defaulting to `code_range()` as a one-element list —
+  a source that knows one extent behaves exactly as it did. `StaticPe` reads
+  `IMAGE_SCN_MEM_EXECUTE` from the section table; `LiveProcess` parses the same bits out of
+  the mapped headers.
+  - `xref` and `ir manifest` scan every window and merge; the manifest's `limit` is shared
+    across windows rather than applied afresh to each. `xref string` scans every code window
+    against one data window and merges hits **by address** — the data side does not move, so
+    concatenating would report one literal several times with its references split up.
+  - 🐛 **A third consumer nobody had listed: `switch.rs`.** Its is-this-code gate took a
+    single range, so every jump table in the second section was rejected and switch recovery
+    quietly gave up on the bulk of the code, reporting it as unresolved. Fixing the seam
+    fixed it; fixing the symptom never would have found it.
+  - ✅ **`--module` on the range-scoped commands**, because a *live* Unity target needs it:
+    the main module is a thin player executable and the code is in `GameAssembly.dll`, so
+    `code_ranges()` alone answered about the wrong module. Both windows are module-scoped —
+    fixing only the code side was measurably worse than fixing neither (61 MB scanned against
+    the *player's* `.rdata`, finding nothing, slowly). An unmatched name **refuses** rather
+    than falling back to the main module.
+  - **Verified against the running game, and cross-checked against the file.** Live
+    `xref string --pid --module GameAssembly.dll` finds the icall literal at
+    `0x7ff9b6dd0630` with four referencing `lea`s; converting by the live module base gives
+    rva `0x42c0630` and xref rva `0x725e83` — **identical to the static run's**
+    `0x1842c0630` / `0x180725e83`. Two independent paths, same answer.
 
 ### What this phase deliberately does **not** build
 
@@ -1664,141 +2016,6 @@ per-target hardcode.
 - ⬜ *Follow-ons:* `VirtualInvokeMap` (virtual/interface method entrypoints), and feeding the
   map into `decomp`/`function discover` as a `SymbolProvider` overlay so **every** call renders
   named, the way an imported IL2CPP index does in Phase 12.
-
----
-
-## Phase 13 — The wire: network & protocol layer (netcode QA and server-authority testing) 🎯 ⬜
-
-**The thesis: N0xis can say what is in memory and which code touched it, and has no idea what
-left the machine.** For any title with a server, half the truth lives on the wire — and the
-questions a studio actually cannot answer today are wire questions: *does the client send
-what the design says it sends?*, *what is in this 340-byte frame we ship 30 times a second?*,
-*if a client lies about this field, does the server catch it?* None of those are reachable
-from a memory scanner and a decompiler alone.
-
-### What this phase is for, stated once and plainly
-
-This is **netcode QA and server-authority testing on builds you own or are authorized to
-test** — a studio's own game, a client's game under a testing agreement, a server you
-operate. Three concrete jobs:
-
-1. **Protocol truth.** What the shipped client actually puts on the wire, versus the protocol
-   document, which is wrong roughly as often as documents are. Field layout, cadence,
-   bandwidth per subsystem, and what leaks into a packet that should never have been in one.
-2. **Desync and regression analysis.** Two captures of the same scripted scenario across two
-   builds, differenced. This is the netcode analogue of `diff functions`, and it is how you
-   find the change that broke replication without reading the diff.
-3. **Server-authority verification — the security job.** A server is authoritative only if a
-   *lying* client gets refused. Testing that claim requires producing the lying client's
-   traffic and recording the server's answer; there is no other way to test it. That is why
-   `net replay` exists, and it is why its output is shaped as a **test result** — accepted or
-   rejected, per mutated field — rather than as a working exploit.
-
-The standing project line holds without amendment here: every command in this phase describes
-what *your* client sends and whether *your* server checks it.
-
-### Why this belongs in N0xis rather than in Wireshark
-
-Wireshark sees bytes with no code context. A debugger sees code with no protocol view. The
-gap between them is where every real netcode investigation stalls, and N0xis already owns the
-one combination that closes it: **hardware watchpoints × a cross-process x64 unwinder × a
-decompiler** (Phases 4b/4c). Pointed at a send buffer, that stack answers:
-
-> the 4 bytes at frame offset `0x1C` were serialized from `+0x40` of the object at
-> `…`, which `Inventory::CommitSlot` wrote 12 ms earlier, called from `PickupItem`
-
-A wire field bound to a memory address bound to a named function, in one artifact. **Nothing
-else joins those three views**, and it is the answer QA actually wants — not a hexdump, but
-*which of your code put this on the wire*. On an IL2CPP target with Phase 12 landed, those
-frame names come out as C# methods, which is the point at which this stops being a hex tool.
-
-Everything else in this phase is table stakes that exists to make that one join possible.
-
-### Where frames can be captured (ordered by cost, and by how much they are worth)
-
-| Route | Mechanism | Yields | Costs |
-|---|---|---|---|
-| **Offline** | read a pcap / JSONL someone else recorded | schema, dissection, diffing, CI replay — with no target at all | no process context, so no provenance join |
-| **API detour** | inline hook on `ws2_32` `send`/`recv`/`WSASend`/`WSARecv` — **the machinery already exists** (`patch detour`, `trampoline.rs`, undo journal) | per-process, driver-free, exact buffers as the app hands them over | post-encryption if the title encrypts above the socket; hooking is a mutation |
-| **App detour** | hook the title's own serialize/deserialize routine, found with the existing static pipeline | plaintext structures *before* any encryption, and the natural provenance anchor | needs that function found first — i.e. the normal RE loop, which is the part N0xis is already good at |
-| **ETW** | `Microsoft-Windows-Winsock-AFD` / `-TCPIP` providers | per-PID socket events with **no injection whatsoever** | metadata-rich, payload-poor; needs a session and elevation |
-
-Note the ordering is not the obvious one: the highest-value route is the *app-level* detour,
-and it is the one that depends on work N0xis already does well. Encryption is not an obstacle
-to be defeated — in a build you own you hook above it, where the plaintext already is.
-
-### The seam (crate layout, and the boundary law)
-
-- `crates/n0xis-net` — a **new crate outside the pure trio**. `scripts/check_boundary.sh`
-  must gain the transport crates to its `FORBIDDEN` regex **in the same change**, or the
-  boundary law silently weakens on the day this lands. Treat that line of the script as part
-  of the phase's definition of done, not as cleanup.
-- The abstraction mirrors `MemorySource`: a **`FrameSource`** trait — implementations for a
-  live capture, a pcap file, and a `.n0x/` replay journal. Every analysis pass is written
-  against the trait, so all of them are testable offline against a recorded capture exactly
-  as the core is testable against `Snapshot` today. This is the item that decides whether the
-  phase is maintainable; get it right before writing a single capture backend.
-- **Capture runs as a separate process** — the existing `RemoteAgent` / `PluginSession` shape
-  (spawn an argv, newline-JSON over stdio). It is the part that needs privileges and the part
-  most likely to die on a driver; it must not share an address space with the analyzer. This
-  also keeps the ETW-vs-WinDivert-vs-pcap choice an implementation detail behind an argv
-  instead of a compile-time dependency of N0xis. **Depends on the per-plugin timeout debt**
-  recorded above — a capture plugin is long-running by definition, and the global 10 s
-  constant forecloses it.
-- Schemas follow the standing policy: `n0xis.net.*.v1`.
-
-### Prioritized plan (leverage × cost)
-
-0. ⬜ **Offline first — `net import <pcap|jsonl>` + `net frames`.** No capture, no hooks, no
-   driver, no target, nothing privileged: a `FrameSource` over a file and the envelope shape.
-   Same trick as Phase 12's item 0 — it fixes the schema before anything that can crash a
-   game exists, and from here on every later item is testable against a checked-in capture.
-1. ⬜ **`net dissect` / `net diff` — field inference by differential capture.** This is
-   `scan filter`'s narrowing algorithm applied to frames instead of an address space: record
-   two sessions differing by one deliberate action, keep the bytes that changed, repeat.
-   Field offsets, widths and candidate types fall out of it. Conceptually the same engine as
-   the value scanner — **do not write a second one.**
-2. ⬜ **`net capture --pid`, API detour then app detour.** Ship the `ws2_32` variant first: it
-   works with zero prior RE and proves the live path end to end. Then the "hook this
-   function" variant, which is where the plaintext and the provenance anchor both live. Both
-   land in the existing undo journal like every other mutation — a capture hook is a patch,
-   and it must be removable by `patch undo` on the same terms.
-3. ⬜ **`net provenance` — the point of the phase, and the reason to do the phase at all.** Frame
-   field → the memory address it was serialized from → the function that wrote that address,
-   through the watchpoint + unwinder + decompiler stack that already exists. Sequence this as
-   early as its dependencies allow, exactly as Phase 12's managed provenance is sequenced —
-   it is the item a third party cannot copy without also owning a watchpoint engine and an
-   unwinder, and without it this phase is a worse Wireshark.
-4. ⬜ **`net replay` — deterministic re-send of a recorded session against a server you
-   operate.** Replay with one field mutated; record whether the server accepted it. Output is
-   a pass/fail matrix over mutated fields — the server-authority test from the framing above.
-   This is the single most valuable thing a studio can run against its own build before ship,
-   and the artifact is a report, never a payload.
-
-### What this phase deliberately does **not** build
-
-- **No MITM proxy against third-party servers**, no TLS interception, no certificate
-  injection. In a build you own you hook above the crypto, which is both easier and the only
-  framing this project accepts.
-- **No anti-cheat evasion, no traffic obfuscation, and no injection into titles you do not
-  operate.** Out of scope permanently — not "later", not behind a flag.
-- **No protocol emulation or server reimplementation.** Replay goes against a real server you
-  run. Rewriting someone's server is a different project with a different license question.
-- **No general network-security tooling.** Not a port scanner, not a fuzzer-for-hire, not a
-  traffic generator. The scope is one process's own traffic and its join back to that
-  process's code; anything that does not need the join belongs in Wireshark, and should be
-  sent there.
-
-### Framing rules this phase encodes
-
-- **Capture is a source, not a feature.** Frames enter through a trait the same way bytes
-  enter through `MemorySource`, so the analysis half never learns whether it is looking at a
-  live socket, a pcap, or a journal — and stays testable without a network.
-- **The join is the product.** Bytes on the wire are a commodity that four free tools already
-  print. The map from a wire field back to a named function is not, and every design choice
-  here should be settled by asking which option preserves that map.
-- **A test result is not an exploit.** Anything this phase emits about a server answers
-  "did the check hold", and is shaped so that the answer is the deliverable.
 
 ---
 
@@ -2070,7 +2287,9 @@ of the rest is recorded below.
   trade), `profile` (IL2CPP metadata detection, same reason), and `bindings.list`
   (live module-scoped `.text`/`.rdata` windows that do not fit the existing helpers
   cleanly).
-- ⏳ **The rest of the surface** — 87 leaf commands exist; 41 capabilities are registered.
+- ⏳ **The rest of the surface** — 91 leaf commands exist; 45 capabilities are registered.
+  (Phases 12 and 13 each added two of both, and each landed registry-first: their CLI
+  handlers are argument mapping only, and MCP reached them with no new `#[tool]`.)
   Everything else still goes through the older shape (a `clap` variant plus an arm in
   `n0xis-cli`'s `match`, plus a separate `#[tool]` in `n0xis-mcp`). Migrate in batches;
   each batch also closes part of the CLI/MCP parity gap, since both frontends then ask the
@@ -2083,7 +2302,7 @@ of the rest is recorded below.
 
 ### Still open from the same audit ⬜
 
-- ⬜ **CLI/MCP parity** — 87 CLI leaf commands vs ~20 MCP tools. Closes as a side effect of
+- ⬜ **CLI/MCP parity** — 91 CLI leaf commands vs ~20 MCP tools. Closes as a side effect of
   the registry migration above; not worth hand-writing 65 more `#[tool]` methods.
 - ⬜ **Event sourcing is partial** — patch journal (`.n0x/patches/`) and per-address
   annotation history, but no shared op-log. Fine for undo; insufficient if replication or
@@ -2147,8 +2366,7 @@ wanted, which is the whole argument for writing them down before that day.
   Named rather than inline, so anti-hardcode is satisfied to the letter — but a single
   global value cannot serve both a sub-second transform and a plugin that streams for a
   minute. It belongs in the `PluginRecord` in `.n0x/plugins.json`, with 10 s as the
-  default. This is a hard blocker for any long-running plugin, and Phase 13's capture
-  process is exactly that shape.
+  default. This is a hard blocker for any long-running or streaming plugin.
 
 ## Sequencing notes
 - **Phases 1–2 are non-negotiable prerequisites** — the optimizing decompiler
@@ -2177,18 +2395,11 @@ wanted, which is the whole argument for writing them down before that day.
   what the rest of the phase is actually worth before you write a metadata parser. Then
   drive to item 3 (managed provenance) — that is the point of the phase, and it is the item a
   third party cannot copy without also owning a watchpoint engine and an unwinder.
-- **Phase 13 is independent of 10 and 12, and compounds with both.** It needs nothing from
-  the decompiler-depth work and nothing from IL2CPP — item 0 is a file parser and a schema.
-  But its payoff *multiplies* with 12: `net provenance` on a Unity target reports native
-  `sub_…` frames without the managed layer and C# method names with it, which is the same
-  artifact at two wildly different levels of usefulness. If both are on the table, 12 first.
-  Within 13, ship item 0 before anything that can touch a running game, and drive to item 3
-  (`net provenance`) as early as its dependencies allow — items 0-2 are table stakes that
-  several free tools already cover, and item 3 is the only one that is N0xis-shaped.
 - **The architectural debts are not a work item — they are triggers.** Do not schedule a
   "seams sprint". Each one names the change that should force it: the format seam lands as
   the *first commit of the second container format*, the VM seam as the first commit of the
   second scripting runtime, `Arch::capabilities()` when ARM64 verification starts (it is the
   thing that makes the verification legible), and the per-plugin timeout as a prerequisite
-  of Phase 13's capture process. Recorded now so the trigger is recognized when it arrives,
-  rather than discovered as a two-week detour halfway through the work that tripped it.
+  of the first long-running or streaming plugin. Recorded now so the trigger is recognized
+  when it arrives, rather than discovered as a two-week detour halfway through the work that
+  tripped it.

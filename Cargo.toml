@@ -69,6 +69,9 @@ n0xis-frontend = { path = "crates/n0xis-frontend" }
 n0xis-bitsquid = { path = "crates/n0xis-bitsquid" }
 n0xis-lua = { path = "crates/n0xis-lua" }
 n0xis-luajit = { path = "crates/n0xis-luajit" }
+# The IL2CPP managed layer (Phase 12). Same adapter rule: a format parser the
+# analysis core must never reach for.
+n0xis-il2cpp = { path = "crates/n0xis-il2cpp" }
 
 [profile.release]
 lto = "thin"

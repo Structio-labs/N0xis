@@ -145,8 +145,29 @@ pub trait MemorySource {
     /// data through the seam — e.g. the switch resolver rejects jump-table
     /// entries that don't land in code. Default `None`: unknown, so callers
     /// fall back to [`contains`](MemorySource::contains).
+    ///
+    /// ⚠️ **One range cannot describe every image.** Prefer
+    /// [`code_ranges`](MemorySource::code_ranges) for anything that must cover
+    /// *all* the code; this stays for callers that genuinely want the primary
+    /// extent.
     fn code_range(&self) -> Option<(Va, u64)> {
         None
+    }
+
+    /// **Every** executable range this source knows about, in address order.
+    ///
+    /// `.text` is not always where the code is. A Unity IL2CPP build puts the
+    /// transpiled C# in a section named `il2cpp` with the same
+    /// `CODE|EXECUTE|READ` characteristics as `.text` — measured on a real
+    /// target: `.text` 7 247 840 bytes, `il2cpp` 61 303 411. Anything that
+    /// treats `.text` as "the code" then covers a tenth of the image and
+    /// reports the rest as containing nothing, which is a silent false
+    /// negative rather than a visible refusal.
+    ///
+    /// Default: [`code_range`](MemorySource::code_range) as a one-element list,
+    /// so a source that knows only one extent behaves exactly as it did.
+    fn code_ranges(&self) -> Vec<(Va, u64)> {
+        self.code_range().into_iter().collect()
     }
 
     /// Write bytes at `va`. Default: [`SourceError::ReadOnly`] — only live
@@ -167,6 +188,59 @@ pub trait SymbolProvider {
     fn iat_slot(&self, _va: Va) -> Option<Symbol> {
         None
     }
+
+    /// A stable token identifying **which names this provider will give**.
+    ///
+    /// Cached analysis artifacts embed *resolved* names, so a cache key built
+    /// only from the bytes serves stale, unnamed artifacts forever after a new
+    /// symbol source appears — measured: importing an IL2CPP index changed
+    /// nothing on any function already analyzed, until `.n0x/ir-cache/` was
+    /// deleted by hand. Providers whose names are derived from the same bytes
+    /// the key already covers (a PE's own exports) can leave this empty;
+    /// anything loaded from beside the binary must not.
+    fn symbol_fingerprint(&self) -> String {
+        String::new()
+    }
+}
+
+/// Two [`SymbolProvider`]s consulted as one — the composition the seam needed
+/// once a target could have names from more than one place (a PE's exports
+/// *and* an imported IL2CPP index, say).
+///
+/// **The tighter fit wins, not the first answer.** Both providers report the
+/// address of the symbol they matched, so the one whose symbol starts closest
+/// at-or-below the query is the more specific answer and is preferred. Taking
+/// the primary's answer unconditionally would let a provider that attributes a
+/// whole function span swallow an exact hit from the other — e.g. an imported
+/// method at `0x1000` claiming a runtime export at `0x1100` simply because it
+/// was asked first. Ties go to `primary`.
+pub struct ChainedSymbols<'a> {
+    primary: &'a dyn SymbolProvider,
+    fallback: &'a dyn SymbolProvider,
+}
+
+impl<'a> ChainedSymbols<'a> {
+    pub fn new(primary: &'a dyn SymbolProvider, fallback: &'a dyn SymbolProvider) -> Self {
+        ChainedSymbols { primary, fallback }
+    }
+}
+
+impl SymbolProvider for ChainedSymbols<'_> {
+    fn symbol_at(&self, va: Va) -> Option<Symbol> {
+        match (self.primary.symbol_at(va), self.fallback.symbol_at(va)) {
+            (Some(a), Some(b)) => Some(if b.va.0 > a.va.0 { b } else { a }),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn iat_slot(&self, va: Va) -> Option<Symbol> {
+        self.primary.iat_slot(va).or_else(|| self.fallback.iat_slot(va))
+    }
+
+    fn symbol_fingerprint(&self) -> String {
+        let (a, b) = (self.primary.symbol_fingerprint(), self.fallback.symbol_fingerprint());
+        if a.is_empty() && b.is_empty() { String::new() } else { format!("{a}+{b}") }
+    }
 }
 
 /// Enumerate the modules mapped in an address space and locate an owner.
@@ -175,5 +249,66 @@ pub trait ModuleProvider {
 
     fn owner_of(&self, va: Va) -> Option<&Module> {
         self.modules().iter().find(|m| m.contains(va))
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+    use n0xis_contracts::SymKind;
+
+    /// A provider that owns everything from `at` upwards, like an index that
+    /// attributes a whole function span to its start.
+    struct Spanning {
+        at: u64,
+        name: &'static str,
+    }
+    impl SymbolProvider for Spanning {
+        fn symbol_at(&self, va: Va) -> Option<Symbol> {
+            (va.0 >= self.at).then(|| Symbol { va: Va(self.at), module: "m".into(), name: self.name.into(), kind: SymKind::Function })
+        }
+    }
+
+    /// A provider that answers only on an exact address, like an export table.
+    struct Exact {
+        at: u64,
+        name: &'static str,
+    }
+    impl SymbolProvider for Exact {
+        fn symbol_at(&self, va: Va) -> Option<Symbol> {
+            (va.0 == self.at).then(|| Symbol { va: Va(self.at), module: "m".into(), name: self.name.into(), kind: SymKind::Export })
+        }
+    }
+
+    #[test]
+    fn the_tighter_fit_wins_even_when_it_is_the_fallback() {
+        let index = Spanning { at: 0x1000, name: "Managed$$Method" };
+        let exports = Exact { at: 0x1100, name: "il2cpp_runtime_thing" };
+        let chain = ChainedSymbols::new(&index, &exports);
+
+        // Inside the span and nothing more specific: the index answers.
+        assert_eq!(chain.symbol_at(Va(0x1050)).unwrap().name, "Managed$$Method");
+        // Exactly on the export: the closer symbol wins despite being second,
+        // which is the whole reason this is not a plain `or_else`.
+        assert_eq!(chain.symbol_at(Va(0x1100)).unwrap().name, "il2cpp_runtime_thing");
+    }
+
+    #[test]
+    fn either_side_alone_still_answers_and_neither_means_none() {
+        let index = Spanning { at: 0x1000, name: "A" };
+        let empty = Exact { at: 0x9999, name: "unused" };
+        let chain = ChainedSymbols::new(&index, &empty);
+        assert_eq!(chain.symbol_at(Va(0x1000)).unwrap().name, "A");
+        assert!(chain.symbol_at(Va(0x0fff)).is_none());
+
+        let chain = ChainedSymbols::new(&empty, &index);
+        assert_eq!(chain.symbol_at(Va(0x1000)).unwrap().name, "A", "order must not decide whether an answer exists");
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_primary() {
+        let a = Exact { at: 0x2000, name: "primary" };
+        let b = Exact { at: 0x2000, name: "fallback" };
+        assert_eq!(ChainedSymbols::new(&a, &b).symbol_at(Va(0x2000)).unwrap().name, "primary");
     }
 }

@@ -107,7 +107,60 @@ pub trait Arch {
     /// Decode a linear run of up to `max` instructions starting at `va`. Stops
     /// at the end of `bytes` or on the first invalid instruction (which is
     /// still emitted, marked [`InsnKind::Invalid`], so nothing is dropped).
+    ///
+    /// ⚠️ **Stopping is right for a function and wrong for a section.** Use
+    /// [`decode_range`](Arch::decode_range) to sweep a whole code range.
     fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn>;
+
+    /// Sweep a whole code **range**, resynchronizing past bytes that do not
+    /// decode instead of stopping at them.
+    ///
+    /// A compiled section is not a pure instruction stream: it carries jump
+    /// tables, alignment padding, string blobs and data islands between
+    /// functions. [`decode_stream`](Arch::decode_stream) stops at the first of
+    /// those, which is correct when the caller is walking one function — an
+    /// undecodable byte means the function ended — and **catastrophic** when the
+    /// caller is scanning a section, because everything past that byte silently
+    /// disappears from the result.
+    ///
+    /// That is not hypothetical. On a Unity IL2CPP target whose code lives in a
+    /// 61 MB section, the section-wide passes were reporting a *fraction* of the
+    /// real references and it looked like a property of the binary rather than
+    /// of the sweep: three builds returned 43 %, 4 % and 0 % of their icall
+    /// sites, which reads as three codegen variants and is really three places
+    /// where one sweep happened to die.
+    ///
+    /// Default: repeatedly `decode_stream`, and on an invalid instruction skip a
+    /// single byte and start again — the standard linear-sweep recovery. An ISA
+    /// with fixed-width instructions can override with something exact.
+    fn decode_range(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
+        let mut out: Vec<DecodedInsn> = Vec::new();
+        let mut at = 0usize;
+        while at < bytes.len() && out.len() < max {
+            let chunk = self.decode_stream(&bytes[at..], Va(va.0 + at as u64), max - out.len());
+            if chunk.is_empty() {
+                at += 1;
+                continue;
+            }
+            // Advance past everything decoded. When the run ended on an invalid
+            // instruction, that entry is dropped and the sweep restarts one byte
+            // later: an instruction may well begin inside what the decoder just
+            // rejected.
+            let consumed: usize = chunk.iter().map(|i| i.len as usize).sum();
+            let ended_invalid = chunk.last().is_some_and(|i| i.kind == InsnKind::Invalid);
+            if ended_invalid {
+                let keep = chunk.len() - 1;
+                let kept_bytes: usize = chunk.iter().take(keep).map(|i| i.len as usize).sum();
+                out.extend(chunk.into_iter().take(keep));
+                at += kept_bytes.max(1);
+                at += 1;
+            } else {
+                out.extend(chunk);
+                at += consumed.max(1);
+            }
+        }
+        out
+    }
 
     /// Lower one instruction to micro-IR. Default: preserves the instruction
     /// verbatim (sound, uninterpreted) — ISA impls override per-mnemonic.

@@ -90,6 +90,12 @@ pub trait LiveTarget: MemorySource + ModuleProvider + SymbolProvider {
     /// page and would silently clamp `read`'s read-up-to-region-end semantics.
     fn section_range_of(&self, module_base: Va, name: &str) -> Option<(Va, u64)>;
 
+    /// The executable extent(s) of the module loaded at `module_base` — the
+    /// answer to "the code of *this* module", not the whole process. Used to
+    /// scope range analysis (`xref`, `function trace`) to one image rather than
+    /// scanning every mapped executable region.
+    fn code_ranges_of(&self, module_base: Va) -> Vec<(Va, u64)>;
+
     /// Walk the process address space, up to `limit` regions (`mem map`).
     fn regions(&self, limit: usize) -> Vec<MemRegion>;
 

@@ -34,6 +34,9 @@ use serde::Serialize;
 
 use crate::CoreError;
 
+/// `IMAGE_SCN_MEM_EXECUTE` — the section holds executable code.
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+
 /// One PE section as the image declares it.
 #[derive(Clone, Debug, Serialize)]
 pub struct SectionInfo {
@@ -41,6 +44,14 @@ pub struct SectionInfo {
     pub va: Va,
     pub virtual_size: u32,
     pub raw_size: u32,
+    /// `IMAGE_SCN_MEM_EXECUTE`. Carried because **`.text` is not always where
+    /// the code is**: a Unity IL2CPP build puts the transpiled C# in a section
+    /// literally named `il2cpp`, with `.text` holding only the runtime.
+    /// Measured on a real target: `.text` 7 247 840 bytes, `il2cpp`
+    /// 61 303 411 — the same characteristics, 8.5× the size. Every range-scoped
+    /// command defaults its code window to `.text`, so without this the tool
+    /// scans a tenth of the binary and reports the rest as empty.
+    pub executable: bool,
 }
 
 /// An exported symbol and where it really lands.
@@ -213,6 +224,7 @@ pub fn profile_image(
             va: module_base.offset(rd_u32(raw, 12).unwrap_or(0) as u64),
             virtual_size: rd_u32(raw, 8).unwrap_or(0),
             raw_size: rd_u32(raw, 16).unwrap_or(0),
+            executable: rd_u32(raw, 36).unwrap_or(0) & IMAGE_SCN_MEM_EXECUTE != 0,
         });
     }
 
@@ -397,20 +409,62 @@ pub fn advisories(profile: &ImageProfile, il2cpp_metadata: Option<&str>, live: b
             Some(p) => format!("managed metadata at {p}"),
             None => "managed metadata (global-metadata.dat)".to_string(),
         };
+        // Both of these read "ineffective, full stop" until 2026-08-08, when
+        // measuring them proved the claim too broad. The strings *are* in the
+        // image — just not the ones people mean by "string literal". Narrowed
+        // to what was actually observed, because an overstated advisory sends
+        // an agent away from a command that would have worked.
         out.push(Advisory {
             command: "xref string".into(),
-            verdict: "ineffective".into(),
-            reason: format!("IL2CPP keeps managed string literals in {where_}, not in the image; a data-window scan has nothing to find"),
+            verdict: "degraded".into(),
+            // No borrowed counts here. An advisory fires on *this* target, so
+            // quoting another binary's measurement — however real — states a
+            // fact about a game the caller is not looking at. Describe the
+            // mechanism; let `il2cpp icalls` report this target's own numbers.
+            reason: format!(
+                "managed C# literals are in {where_}, not in the image — search them with `il2cpp metadata --query`. \
+                 Engine internal-call names, by contrast, ARE in `.rdata` and this command does find them; \
+                 `il2cpp icalls` enumerates them and reports how many this binary actually has"
+            ),
         });
         out.push(Advisory {
             command: "bindings list".into(),
             verdict: "ineffective".into(),
-            reason: "IL2CPP has no binding-name strings in `.rdata`, so the name/function-pointer pairing this looks for cannot occur".into(),
+            reason: "IL2CPP resolves internal calls by name at runtime: the emitted code loads the name string, calls the resolver, \
+                     and caches the returned pointer into a `.data` slot. The name is in the image but the function pointer is not, \
+                     so the static name/pointer pairing this looks for does not exist to be found"
+                .into(),
         });
         out.push(Advisory {
             command: "xref to".into(),
             verdict: "degraded".into(),
             reason: "virtual and interface calls dispatch through vtable slots; those edges are indirect and will not appear".into(),
+        });
+    }
+
+    // Not gated on IL2CPP: any PE may carry more than one executable section,
+    // and every range-scoped command defaults its code window to `.text`. It is
+    // IL2CPP where it bites hardest — measured on a real Unity build, `.text`
+    // is 10.6% of the executable bytes, so `xref`/`discover` scanned a tenth of
+    // the binary and reported the other nine as containing nothing. A silent
+    // zero is the most misleading shape a result can take (Phase 11), and this
+    // is one the tool can see coming.
+    let extra_code: Vec<&SectionInfo> = profile.sections.iter().filter(|s| s.executable && s.name != ".text").collect();
+    if !extra_code.is_empty() {
+        let text_size = profile.sections.iter().find(|s| s.name == ".text").map(|s| s.virtual_size).unwrap_or(0);
+        let named = extra_code
+            .iter()
+            .map(|s| format!("`{}` ({} bytes at {}, pass `--start {} --size 0x{:x}`)", s.name, s.virtual_size, s.va, s.va, s.virtual_size))
+            .collect::<Vec<_>>()
+            .join("; ");
+        out.push(Advisory {
+            command: "xref, xref string, function discover, ir manifest, function trace".into(),
+            verdict: "degraded".into(),
+            reason: format!(
+                "code is not confined to `.text` ({text_size} bytes): this image also has {named}. \
+                 These commands default their code window to `.text`, so anything living in the other section(s) is silently absent from the result, \
+                 not reported as out of range"
+            ),
         });
     }
 
@@ -588,14 +642,81 @@ mod tests {
 
         let adv = advisories(&p, Some("Game_Data/il2cpp_data/Metadata/global-metadata.dat"), false);
         let for_cmd = |c: &str| adv.iter().find(|a| a.command == c);
-        assert_eq!(for_cmd("xref string").unwrap().verdict, "ineffective");
+        // `xref string` is *degraded*, not ineffective — measured 2026-08-08:
+        // managed C# literals are indeed absent from the image, but engine
+        // internal-call names sit in `.rdata` and this command does find them.
+        // The advisory has to carry both halves or it sends the caller away
+        // from a command that works.
+        assert_eq!(for_cmd("xref string").unwrap().verdict, "degraded");
         assert!(for_cmd("xref string").unwrap().reason.contains("global-metadata.dat"));
+        assert!(for_cmd("xref string").unwrap().reason.contains("ARE in `.rdata`"));
+        // An advisory describes *this* target. Quoting a number measured on
+        // another binary states a fact about a game the caller is not looking
+        // at, however real that number was elsewhere.
+        assert!(
+            !for_cmd("xref string").unwrap().reason.contains("2189"),
+            "no measurement borrowed from another target may appear in an advisory"
+        );
         assert_eq!(for_cmd("bindings list").unwrap().verdict, "ineffective");
+        // …and for the right reason: the name is there, the pointer is not.
+        assert!(for_cmd("bindings list").unwrap().reason.contains("resolves internal calls by name at runtime"));
         // The thunk and folding advisories come from measured image facts.
         assert!(adv.iter().any(|a| a.reason.contains("branch stubs")));
         assert!(adv.iter().any(|a| a.reason.contains("folded addresses")));
         // `.pdata` exists here, so nothing should claim otherwise.
         assert!(for_cmd("function discover --pdata").is_none());
+    }
+
+    /// A PE whose code does not all live in `.text` — the Unity IL2CPP shape,
+    /// where the transpiled C# is in a section of its own and `.text` holds
+    /// only the runtime.
+    fn pe_with_two_code_sections() -> (Snapshot, Va) {
+        let base = Va(0x180000000);
+        let mut img = vec![0u8; 0x2000];
+        let e_lfanew = 0x80usize;
+        img[0x3c..0x40].copy_from_slice(&(e_lfanew as u32).to_le_bytes());
+        img[e_lfanew..e_lfanew + 4].copy_from_slice(b"PE\0\0");
+        img[e_lfanew + 4..e_lfanew + 6].copy_from_slice(&0x8664u16.to_le_bytes());
+        img[e_lfanew + 6..e_lfanew + 8].copy_from_slice(&2u16.to_le_bytes());
+
+        let sec = e_lfanew + 24 + 240;
+        for (i, (name, rva, vsize)) in [(&b".text"[..], 0x200u32, 0x300u32), (&b"il2cpp"[..], 0x600, 0x1000)].iter().enumerate() {
+            let at = sec + i * 40;
+            img[at..at + name.len()].copy_from_slice(name);
+            img[at + 8..at + 12].copy_from_slice(&vsize.to_le_bytes());
+            img[at + 12..at + 16].copy_from_slice(&rva.to_le_bytes());
+            img[at + 16..at + 20].copy_from_slice(&vsize.to_le_bytes());
+            img[at + 36..at + 40].copy_from_slice(&IMAGE_SCN_MEM_EXECUTE.to_le_bytes());
+        }
+        (Snapshot::builder().region(base, img).build(), base)
+    }
+
+    #[test]
+    fn a_second_executable_section_is_called_out_with_the_window_to_pass() {
+        // The failure this prevents: `.text` is 10.6% of a real IL2CPP image's
+        // executable bytes, so every range-scoped command scanned a tenth of it
+        // and reported the rest as containing nothing — a silent zero, which is
+        // the most misleading shape a result can take.
+        let (snap, base) = pe_with_two_code_sections();
+        let arch = X64::new();
+        let p = profile_image(&snap, &arch, base, false).unwrap();
+        assert!(p.sections.iter().all(|s| s.executable), "both sections declare IMAGE_SCN_MEM_EXECUTE");
+
+        let adv = advisories(&p, None, false);
+        let hit = adv.iter().find(|a| a.reason.contains("code is not confined")).expect("an extra code section must be called out");
+        assert!(hit.command.contains("xref"), "the advisory must name the commands it degrades: {}", hit.command);
+        assert!(hit.reason.contains("`il2cpp`"), "…and name the section: {}", hit.reason);
+        // The point of the advisory is that it is actionable, not that it warns.
+        assert!(hit.reason.contains("--start 0x180000600") && hit.reason.contains("--size 0x1000"), "it must hand over the exact window: {}", hit.reason);
+    }
+
+    #[test]
+    fn one_code_section_raises_nothing() {
+        // The ordinary PE must not grow a warning it does not need.
+        let (snap, base) = tiny_pe();
+        let arch = X64::new();
+        let p = profile_image(&snap, &arch, base, false).unwrap();
+        assert!(!advisories(&p, None, false).iter().any(|a| a.reason.contains("code is not confined")));
     }
 
     #[test]

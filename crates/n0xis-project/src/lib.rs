@@ -94,6 +94,13 @@ impl ProjectRoot {
     pub fn ir_cache_dir(&self) -> PathBuf {
         self.dir.join("ir-cache")
     }
+
+    /// Imported IL2CPP symbol indices (Phase 12), one JSON file per named
+    /// index. A build's managed symbol table is expensive to obtain and cheap
+    /// to keep, so it belongs beside the project rather than being re-derived.
+    pub fn il2cpp_dir(&self) -> PathBuf {
+        self.dir.join("il2cpp")
+    }
     pub fn shim_path(&self) -> PathBuf {
         self.dir.join(SHIM_NAME)
     }

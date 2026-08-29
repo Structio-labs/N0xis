@@ -1,0 +1,14 @@
+[package]
+name = "n0xis-il2cpp"
+description = "IL2CPP managed layer (Phase 12): the symbol index that pairs a Unity target's addresses with its C# names. Item 0 — import an external dump (Il2CppDumper script.json) and serve it as a SymbolProvider. Address spaces are explicit, so a Unity WebGL dump can never be bound to a native PE target by accident."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-sources = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

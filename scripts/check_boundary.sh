@@ -29,8 +29,12 @@ PURE_CRATES="${PURE_CRATES:-n0xis-contracts n0xis-arch n0xis-core}"
 #   n0xis-frontend                — the frontend seam; the arrow points down
 #                                   only (frontends depend on the core, never
 #                                   the reverse), and this is what keeps it so
+#   n0xis-il2cpp                  — the IL2CPP managed layer (Phase 12). A
+#                                   format parser for `global-metadata.dat` and
+#                                   external dumps; same adapter rule, listed
+#                                   the day the crate landed.
 # One regex, anchored, matched against bare package names.
-FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend)$'
+FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp)$'
 
 status=0
 

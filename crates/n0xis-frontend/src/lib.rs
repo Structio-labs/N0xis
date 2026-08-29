@@ -25,6 +25,7 @@
 //! *means*.
 
 pub mod arch;
+pub mod il2cpp_caps;
 pub mod method_caps;
 pub mod parse;
 pub mod project_caps;

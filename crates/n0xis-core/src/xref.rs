@@ -77,7 +77,7 @@ impl Pass for XrefPass {
         // Generous instruction cap: a full window can be large.
         let insns = ctx
             .arch
-            .decode_stream(&bytes, input.scan_start, bytes.len());
+            .decode_range(&bytes, input.scan_start, bytes.len());
         let mut refs = Vec::new();
 
         for ins in &insns {

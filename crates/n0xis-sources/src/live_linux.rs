@@ -458,6 +458,24 @@ impl LiveTarget for LinuxProcess {
         elf_section_range(&self.module_path(module_base)?, module_base, name)
     }
 
+    fn code_ranges_of(&self, module_base: Va) -> Vec<(Va, u64)> {
+        // The ELF `.text` when the section headers are reachable; otherwise the
+        // module's own executable (`r-xp`) mappings from /proc/<pid>/maps — the
+        // same fallback `text_range` uses, scoped to this module's extent.
+        if let Some(r) = LiveTarget::section_range_of(self, module_base, ".text") {
+            return vec![r];
+        }
+        let Some(m) = self.modules().iter().find(|m| m.base == module_base).cloned() else {
+            return Vec::new();
+        };
+        self.maps
+            .borrow()
+            .iter()
+            .filter(|e| e.executable() && e.start >= m.base.0 && e.start < m.base.0 + m.size)
+            .map(|e| (Va(e.start), e.end - e.start))
+            .collect()
+    }
+
     fn regions(&self, limit: usize) -> Vec<MemRegion> {
         let fresh = parse_maps(self.pid).unwrap_or_default();
         let out: Vec<MemRegion> = fresh

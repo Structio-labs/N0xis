@@ -16,6 +16,9 @@ n0xis-core = { workspace = true }
 # `cfg_cached` — capabilities go through the pipeline's content-addressed
 # artifact cache, exactly as the CLI's own handlers did.
 n0xis-pipeline = { workspace = true }
+# The IL2CPP managed layer (Phase 12): imported symbol indices served through
+# the existing SymbolProvider seam.
+n0xis-il2cpp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

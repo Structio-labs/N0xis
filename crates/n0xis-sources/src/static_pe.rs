@@ -25,7 +25,13 @@ struct SectionRange {
     va_end: u64,
     file_offset: usize,
     file_size: usize,
+    /// `IMAGE_SCN_MEM_EXECUTE`. See [`MemorySource::code_ranges`] for why one
+    /// `.text` is not enough on this corpus.
+    executable: bool,
 }
+
+/// `IMAGE_SCN_MEM_EXECUTE`.
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 
 /// A PE image on disk, mapped at its preferred base.
 #[derive(Debug)]
@@ -101,6 +107,7 @@ impl StaticPe {
                 va_end: image_base.saturating_add(size_of_headers),
                 file_offset: 0,
                 file_size: size_of_headers as usize,
+                executable: false,
             });
         }
         for s in &pe.sections {
@@ -120,6 +127,7 @@ impl StaticPe {
                 va_end,
                 file_offset,
                 file_size,
+                executable: s.characteristics & IMAGE_SCN_MEM_EXECUTE != 0,
             });
         }
 
@@ -219,6 +227,16 @@ impl MemorySource for StaticPe {
 
     fn code_range(&self) -> Option<(Va, u64)> {
         self.text_range()
+    }
+
+    /// Every section the image marks executable, in address order — not just
+    /// `.text`. On a Unity IL2CPP build that is the difference between covering
+    /// 10 % of the code and covering all of it.
+    fn code_ranges(&self) -> Vec<(Va, u64)> {
+        let mut out: Vec<(Va, u64)> =
+            self.sections.iter().filter(|s| s.executable && s.va_end > s.va_start).map(|s| (Va(s.va_start), s.va_end - s.va_start)).collect();
+        out.sort_by_key(|(va, _)| va.0);
+        out
     }
 
     fn label(&self) -> String {

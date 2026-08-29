@@ -178,6 +178,20 @@ impl LiveProcess {
         parse_section_range(&hdr, module_base.0, name)
     }
 
+    /// Every executable section of an arbitrary loaded module.
+    ///
+    /// The plural, module-scoped twin of [`section_range_of`](Self::section_range_of),
+    /// and the one a Unity target needs: the main module of a running Unity
+    /// game is a thin player executable, while the code is in
+    /// `GameAssembly.dll` — so "the code ranges of this process" and "the code
+    /// ranges of the module you mean" are different answers.
+    pub fn code_ranges_of(&self, module_base: Va) -> Vec<(Va, u64)> {
+        match self.read(module_base, 0x1000) {
+            Ok(hdr) => parse_code_sections(&hdr, module_base.0),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Walk the process address space via `VirtualQueryEx`, up to `limit`
     /// regions (`mem map`).
     pub fn regions(&self, limit: usize) -> Vec<MemRegion> {
@@ -297,6 +311,37 @@ fn parse_section_range(hdr: &[u8], base: u64, name: &str) -> Option<(Va, u64)> {
     None
 }
 
+/// `IMAGE_SCN_MEM_EXECUTE`.
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+
+/// Every executable section in a PE header blob, in address order.
+///
+/// The name-matching twin above answers "where is `.text`"; this one answers
+/// "where is the code", which on a Unity IL2CPP image is a different question:
+/// the transpiled C# lives in a section named `il2cpp` carrying the same
+/// characteristics and 8.5× the bytes.
+fn parse_code_sections(hdr: &[u8], base: u64) -> Vec<(Va, u64)> {
+    let rd_u32 = |off: usize| -> Option<u32> { hdr.get(off..off + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) };
+    let rd_u16 = |off: usize| -> Option<u16> { hdr.get(off..off + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
+    let mut out = Vec::new();
+    let Some(e_lfanew) = rd_u32(0x3C).map(|v| v as usize) else { return out };
+    if hdr.get(e_lfanew..e_lfanew + 4) != Some(&b"PE\0\0"[..]) {
+        return out;
+    }
+    let coff = e_lfanew + 4;
+    let (Some(num_sections), Some(size_opt_hdr)) = (rd_u16(coff + 2), rd_u16(coff + 16)) else { return out };
+    let sec_table = coff + 20 + size_opt_hdr as usize;
+    for i in 0..num_sections as usize {
+        let s = sec_table + i * 40;
+        let (Some(vsize), Some(rva), Some(chars)) = (rd_u32(s + 8), rd_u32(s + 12), rd_u32(s + 36)) else { break };
+        if chars & IMAGE_SCN_MEM_EXECUTE != 0 && vsize > 0 {
+            out.push((Va(base + rva as u64), vsize as u64));
+        }
+    }
+    out.sort_by_key(|(va, _)| va.0);
+    out
+}
+
 fn snapshot_modules(pid: u32) -> Result<Vec<Module>, SourceError> {
     let mut out = Vec::new();
     unsafe {
@@ -364,6 +409,9 @@ impl LiveTarget for LiveProcess {
     }
     fn section_range_of(&self, module_base: Va, name: &str) -> Option<(Va, u64)> {
         LiveProcess::section_range_of(self, module_base, name)
+    }
+    fn code_ranges_of(&self, module_base: Va) -> Vec<(Va, u64)> {
+        LiveProcess::code_ranges_of(self, module_base)
     }
     fn regions(&self, limit: usize) -> Vec<MemRegion> {
         LiveProcess::regions(self, limit)
@@ -473,6 +521,18 @@ impl MemorySource for LiveProcess {
 
     fn code_range(&self) -> Option<(Va, u64)> {
         self.text_range()
+    }
+
+    /// Every executable section of the **main module**, read from its mapped
+    /// headers. Falls back to `code_range` when the headers cannot be read, so
+    /// a process that refuses the read behaves as it did rather than reporting
+    /// no code at all.
+    fn code_ranges(&self) -> Vec<(Va, u64)> {
+        let ranges = self
+            .main_module()
+            .and_then(|m| self.read(m.base, 0x1000).ok().map(|hdr| parse_code_sections(&hdr, m.base.0)))
+            .unwrap_or_default();
+        if ranges.is_empty() { self.code_range().into_iter().collect() } else { ranges }
     }
 
     fn label(&self) -> String {

@@ -2218,6 +2218,7 @@ dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
  "n0xis-core",
+ "n0xis-il2cpp",
  "n0xis-pipeline",
  "n0xis-project",
  "n0xis-sources",
@@ -2242,6 +2243,17 @@ dependencies = [
  "serde_json",
  "toml",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "n0xis-il2cpp"
+version = "0.1.0"
+dependencies = [
+ "n0xis-contracts",
+ "n0xis-sources",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

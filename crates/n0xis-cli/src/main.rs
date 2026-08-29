@@ -245,6 +245,185 @@ enum Command {
     /// no frame capture, no pixels — see docs/PHASE9_UI_LOCATE_BRIEF.md.
     #[command(subcommand)]
     Ui(UiCmd),
+    /// IL2CPP managed layer (Phase 12): the C# names behind a Unity target's
+    /// addresses. Item 0 imports an index another tool produced (Il2CppDumper)
+    /// and serves it through the same symbol seam the PE exports use, so
+    /// `decomp pseudo`, `xref` and friends start naming with no changes of
+    /// their own. Windows and Unity WebGL dumps are both importable — and an
+    /// address space is never applied to the wrong kind of target.
+    #[command(subcommand)]
+    Il2cpp(Il2cppCmd),
+}
+
+#[derive(Subcommand)]
+enum Il2cppCmd {
+    /// Import an external dump as a named index under `.n0x/il2cpp/`. With a
+    /// target it also *measures* how the dump's addresses map onto it — dumper
+    /// versions disagree about RVA vs VA, so both are tried against `.text` and
+    /// a mismatch is refused rather than applied.
+    Import(Il2cppImportArgs),
+    /// Query an index by name substring, or by address with a target. Name
+    /// lookups return a set: generic sharing and ICF both make one answer a lie.
+    Symbols(Il2cppSymbolsArgs),
+    /// Read `global-metadata.dat` natively — format version, the tables its
+    /// header declares, and the string literals. Needs no external dumper, and
+    /// `--file <image>` finds the blob beside the target on its own.
+    Metadata(Il2cppMetadataArgs),
+    /// Recover Unity engine internal calls from the code that resolves them:
+    /// the registration name and the `.data` slot its resolved pointer is
+    /// cached into. Against a live target the slots are read, turning names
+    /// into real addresses on a process that reports no symbols at all.
+    Icalls(Il2cppIcallsArgs),
+    /// Identify a live address through the runtime type system: its C# class and
+    /// every field with the offset the runtime states. No metadata parse, no
+    /// external dumper — the layout is discovered and validated.
+    Obj(Il2cppObjArgs),
+    /// Enumerate the C# classes a running game has loaded, by sampling the heap
+    /// for object headers. No metadata parse, no dumper — and a sample, which
+    /// the answer says plainly.
+    Classes(Il2cppClassesArgs),
+}
+
+#[derive(Args)]
+struct Il2cppImportArgs {
+    /// Path to an Il2CppDumper `script.json`.
+    #[arg(long = "script-json")]
+    script_json: String,
+    /// Name to store the index under (default `default`).
+    #[arg(long)]
+    name: Option<String>,
+    /// Address space of the dump: `native` (a PE such as `GameAssembly.dll`)
+    /// or `wasm` (a Unity WebGL build). A `wasm` index is importable and
+    /// searchable but is never bound to a native image — its addresses are
+    /// WebAssembly offsets and would name every function wrongly.
+    #[arg(long)]
+    space: Option<String>,
+    /// The module the dump was taken from, e.g. `GameAssembly.dll`.
+    #[arg(long)]
+    module: Option<String>,
+    /// Target to validate the binding against.
+    #[arg(long)]
+    pid: Option<u32>,
+    /// Static target to validate the binding against.
+    #[arg(long)]
+    file: Option<String>,
+    /// Store the index even when its addresses do not fit the target. Off by
+    /// default: names from a mismatched dump are worse than no names.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct Il2cppSymbolsArgs {
+    /// Which stored index to query (default `default`).
+    #[arg(long)]
+    name: Option<String>,
+    /// Case-insensitive substring of the symbol name.
+    #[arg(long)]
+    query: Option<String>,
+    /// Look up the symbol owning this address instead (needs `--pid`/`--file`).
+    #[arg(long)]
+    addr: Option<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Maximum symbols to return (default 50, capped at 1000).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    limit: Option<usize>,
+}
+
+#[derive(Args)]
+struct Il2cppClassesArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Case-insensitive substring of the class or namespace name.
+    #[arg(long)]
+    query: Option<String>,
+    /// Heap regions to sample, biggest first (default 8).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    regions: Option<usize>,
+    /// Bytes to read from each region (default 0x20000).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    window: Option<usize>,
+    /// Candidate pointers to probe before stopping (default 2000).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    max_probe: Option<usize>,
+    /// How often a pointer must repeat to be worth probing (default 2).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    min_hits: Option<usize>,
+    /// Accept classes with no pointer to themselves. Needed only for builds
+    /// older than Unity 2018.1, and much slower — the self-pointer is what
+    /// rejects candidates without reading strings.
+    #[arg(long)]
+    any_layout: bool,
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    limit: Option<usize>,
+    #[arg(long)]
+    arch: Option<String>,
+}
+
+#[derive(Args)]
+struct Il2cppObjArgs {
+    /// A managed object address, or an Il2CppClass address.
+    #[arg(long)]
+    addr: String,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Object bytes to read for field values (default 0x100).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    size: Option<usize>,
+    /// Bytes of the class structure to probe when discovering the layout.
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    probe: Option<usize>,
+    #[arg(long)]
+    arch: Option<String>,
+}
+
+#[derive(Args)]
+struct Il2cppIcallsArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Which module to scan, by case-insensitive substring. Required in
+    /// practice on a live Unity target: the main module is a thin player and
+    /// the code is in `GameAssembly.dll`.
+    #[arg(long)]
+    module: Option<String>,
+    /// Case-insensitive substring of the registration name.
+    #[arg(long)]
+    query: Option<String>,
+    /// Do not read the cache slots even on a live target.
+    #[arg(long)]
+    no_resolve: bool,
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    limit: Option<usize>,
+    #[arg(long)]
+    arch: Option<String>,
+}
+
+#[derive(Args)]
+struct Il2cppMetadataArgs {
+    /// Path to a `global-metadata.dat`.
+    #[arg(long)]
+    metadata: Option<String>,
+    /// Target image; the blob is looked for in a sibling `*_Data` directory.
+    #[arg(long)]
+    file: Option<String>,
+    /// Case-insensitive substring to search the string literals for — the
+    /// static answer to "is this on-screen text in the game".
+    #[arg(long)]
+    query: Option<String>,
+    /// Maximum literals to return (default 50, capped at 1000).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    limit: Option<usize>,
+    /// Skip this many matches before the page — a big build carries tens of
+    /// thousands of literals.
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    offset: Option<usize>,
 }
 
 #[derive(Subcommand)]
@@ -1430,6 +1609,12 @@ enum XrefCmd {
 
 #[derive(Args)]
 struct XrefStringArgs {
+    /// Restrict the scan to this module, by case-insensitive name substring
+    /// (e.g. `GameAssembly.dll`). Live Unity targets need it: the main module is
+    /// a thin player executable and the code lives in a DLL.
+    #[arg(long)]
+    module: Option<String>,
+
     /// The string to search for.
     #[arg(long)]
     query: String,
@@ -1466,6 +1651,12 @@ struct XrefStringArgs {
 
 #[derive(Args)]
 struct XrefArgs {
+    /// Restrict the scan to this module, by case-insensitive name substring
+    /// (e.g. `GameAssembly.dll`). Live Unity targets need it: the main module is
+    /// a thin player executable and the code lives in a DLL.
+    #[arg(long)]
+    module: Option<String>,
+
     /// The address of interest.
     #[arg(long)]
     addr: String,
@@ -1514,6 +1705,12 @@ enum IrCmd {
 
 #[derive(Args)]
 struct ManifestArgs {
+    /// Restrict the scan to this module, by case-insensitive name substring
+    /// (e.g. `GameAssembly.dll`). Live Unity targets need it: the main module is
+    /// a thin player executable and the code lives in a DLL.
+    #[arg(long)]
+    module: Option<String>,
+
     #[arg(long)]
     pid: Option<u32>,
     #[arg(long)]
@@ -2084,6 +2281,12 @@ fn main() {
         Command::Ui(UiCmd::Windows(a)) => cmd_ui_windows(a, pretty),
         Command::Ui(UiCmd::Screenshot(a)) => cmd_ui_screenshot(a, pretty),
         Command::Ui(UiCmd::Focus(a)) => cmd_ui_focus(a, pretty),
+        Command::Il2cpp(Il2cppCmd::Import(a)) => cmd_il2cpp_import(a, pretty),
+        Command::Il2cpp(Il2cppCmd::Symbols(a)) => cmd_il2cpp_symbols(a, pretty),
+        Command::Il2cpp(Il2cppCmd::Metadata(a)) => cmd_il2cpp_metadata(a, pretty),
+        Command::Il2cpp(Il2cppCmd::Icalls(a)) => cmd_il2cpp_icalls(a, pretty),
+        Command::Il2cpp(Il2cppCmd::Obj(a)) => cmd_il2cpp_obj(a, pretty),
+        Command::Il2cpp(Il2cppCmd::Classes(a)) => cmd_il2cpp_classes(a, pretty),
     };
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -2106,7 +2309,12 @@ fn cmd_doctor(pretty: bool) -> bool {
             "decoder": { "ok": true, "engines": ["iced-x86 (x64)", "disarm64 (arm64)"] },
             "project_resolves": { "ok": proj_ok, "dir": proj_dir, "local": proj_local },
         },
-        "roadmap": "Phases 1-7 complete — see ROADMAP.md",
+        // Deliberately not a phase list. The previous value ("Phases 1-7
+        // complete") was stale the moment Phase 8 landed and stayed stale for
+        // four more phases, because a status baked into a binary drifts from
+        // the document that owns it. Same reasoning as `guide`, which is
+        // generated from the clap tree rather than hand-maintained.
+        "roadmap": "ROADMAP.md is the authority on phase status; this build reports its own capabilities via `guide` and `capability list`",
     });
     emit(&Response::success(schema::v1::DOCTOR, data), pretty)
 }
@@ -2121,6 +2329,7 @@ fn guide_category(top: &str) -> &'static str {
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
         "ui" => "UI-layer localization (Phase 9)",
+        "il2cpp" => "IL2CPP managed layer (Phase 12)",
         "bundle" | "lua" => "Game-engine assets (Bitsquid/LuaJIT)",
         _ => "Other",
     }
@@ -2515,31 +2724,13 @@ fn cmd_function_trace(a: FunctionTraceArgs, pretty: bool) -> bool {
 
 /// Locate a Unity IL2CPP metadata blob next to `image_path`, if one exists.
 ///
-/// Lives here rather than in `n0xis-core::profile` because it touches the
-/// filesystem, and the core crate's whole boundary discipline is that it
-/// cannot. Unity's layout is `<Game>/<Game>_Data/il2cpp_data/Metadata/
-/// global-metadata.dat`, with the executable/`GameAssembly.dll` beside the
-/// `*_Data` directory — so the search is "any sibling directory ending in
-/// `_Data`", never a hardcoded game name.
+/// The layout rule itself lives in `n0xis-frontend::il2cpp_caps` — `profile`
+/// and `il2cpp metadata` must agree about where the blob is, and two copies of
+/// a directory convention drift the moment Unity changes it. It stays out of
+/// `n0xis-core::profile` for the older reason: that crate's whole boundary
+/// discipline is that it does not touch the filesystem.
 fn find_il2cpp_metadata(image_path: &str) -> Option<String> {
-    // `Path::new("GameAssembly.dll").parent()` is `""`, not the current
-    // directory — reading that fails, and the metadata would be silently
-    // "absent" whenever the target was passed as a bare filename.
-    let dir = match std::path::Path::new(image_path).parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => std::path::PathBuf::from("."),
-    };
-    for entry in std::fs::read_dir(dir).ok()? {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_name().to_string_lossy().ends_with("_Data") {
-            continue;
-        }
-        let candidate = entry.path().join("il2cpp_data").join("Metadata").join("global-metadata.dat");
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    None
+    n0xis_frontend::il2cpp_caps::find_metadata_near(image_path)
 }
 
 /// The IL2CPP metadata format version, read straight from the blob's header:
@@ -2715,6 +2906,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
             "limit": a.limit,
             "max_bytes": a.max_bytes,
             "arch": a.arch,
+            "module": a.module,
             "pid": a.pid,
             "file": a.file,
             "bytes": a.bytes,
@@ -2734,6 +2926,7 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
             "start": a.start,
             "size": a.size,
             "arch": a.arch,
+            "module": a.module,
             "pid": a.pid,
             "file": a.file,
             "bytes": a.bytes,
@@ -2759,6 +2952,7 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
             "data_size": a.data_size,
             "limit": a.limit,
             "arch": a.arch,
+            "module": a.module,
             "pid": a.pid,
             "file": a.file,
             "bytes": a.bytes,
@@ -4798,6 +4992,87 @@ fn cmd_sig_validate(a: SigValidateArgs, pretty: bool) -> bool {
             "signature": a.signature,
             "varied": a.varied,
             "min_independent": a.min_independent,
+        }),
+        pretty,
+    )
+}
+
+// ============================================================================
+// Phase 12 — IL2CPP managed layer (item 0: import an external index)
+// ============================================================================
+
+fn cmd_il2cpp_import(a: Il2cppImportArgs, pretty: bool) -> bool {
+    run_capability(
+        "il2cpp.import",
+        json!({
+            "script_json": a.script_json,
+            "name": a.name,
+            "space": a.space,
+            "module": a.module,
+            "pid": a.pid,
+            "file": a.file,
+            "force": a.force,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_il2cpp_symbols(a: Il2cppSymbolsArgs, pretty: bool) -> bool {
+    run_capability(
+        "il2cpp.symbols",
+        json!({
+            "name": a.name,
+            "query": a.query,
+            "addr": a.addr,
+            "pid": a.pid,
+            "file": a.file,
+            "limit": a.limit,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_il2cpp_classes(a: Il2cppClassesArgs, pretty: bool) -> bool {
+    run_capability(
+        "il2cpp.classes",
+        json!({ "pid": a.pid, "query": a.query, "regions": a.regions, "window": a.window, "max_probe": a.max_probe, "min_hits": a.min_hits, "any_layout": a.any_layout, "limit": a.limit, "arch": a.arch }),
+        pretty,
+    )
+}
+
+fn cmd_il2cpp_obj(a: Il2cppObjArgs, pretty: bool) -> bool {
+    run_capability(
+        "il2cpp.obj",
+        json!({ "addr": a.addr, "pid": a.pid, "file": a.file, "size": a.size, "probe": a.probe, "arch": a.arch }),
+        pretty,
+    )
+}
+
+fn cmd_il2cpp_icalls(a: Il2cppIcallsArgs, pretty: bool) -> bool {
+    run_capability(
+        "il2cpp.icalls",
+        json!({
+            "pid": a.pid,
+            "file": a.file,
+            "module": a.module,
+            "query": a.query,
+            "resolve": !a.no_resolve,
+            "limit": a.limit,
+            "arch": a.arch,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_il2cpp_metadata(a: Il2cppMetadataArgs, pretty: bool) -> bool {
+    run_capability(
+        "il2cpp.metadata",
+        json!({
+            "metadata": a.metadata,
+            "file": a.file,
+            "query": a.query,
+            "limit": a.limit,
+            "offset": a.offset,
         }),
         pretty,
     )

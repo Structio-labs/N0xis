@@ -48,6 +48,13 @@ pub struct FunctionCandidate {
 /// headers through the [`MemorySource`] seam, so it behaves identically on a
 /// [`StaticPe`](n0xis_sources::StaticPe) and a live module. Returns an empty
 /// list (not an error) when the image has no exception directory.
+///
+/// ⚠️ Takes a bare [`MemorySource`], not a [`Ctx`], so it has no symbol seam to
+/// consult: its candidates are always `sub_<addr>`. The prologue scan below
+/// names its own through [`name_at`]. Closing this asymmetry means giving the
+/// CLI's hand-written `--pdata` handler a symbol-carrying context, which it
+/// does not build today — a known gap, stated here rather than left to be
+/// discovered as "why does `--pdata` lose the names".
 pub fn discover_pdata(source: &dyn MemorySource, module_base: Va) -> Result<Vec<FunctionCandidate>, CoreError> {
     let hdr = source.read(module_base, 0x400)?;
     let rd_u32 = |off: usize| -> Option<u32> { hdr.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())) };
@@ -84,6 +91,27 @@ pub fn discover_pdata(source: &dyn MemorySource, module_base: Va) -> Result<Vec<
         });
     }
     Ok(out)
+}
+
+/// The name to report for a function starting at `va`.
+///
+/// **Only an exact hit counts.** A provider that attributes a whole function
+/// span answers for any address inside it, so accepting a near miss would name
+/// a discovered function after whichever one precedes it — the same
+/// sound-over-complete rule `decomp`'s own-name resolution follows. With no
+/// symbol source, or no exact hit, the address stands in exactly as it always
+/// did.
+///
+/// This is what makes the managed layer visible in triage: on an IL2CPP target
+/// with an imported index, `ir manifest` ranks *named C# methods* instead of a
+/// wall of `sub_`, which is the difference between a browsable index and a list
+/// of numbers.
+fn name_at(ctx: &Ctx, va: Va) -> String {
+    ctx.symbols
+        .and_then(|s| s.symbol_at(va))
+        .filter(|sym| sym.va == va)
+        .map(|sym| crate::render::render_callee_name(&sym.name))
+        .unwrap_or_else(|| format!("sub_{:X}", va.0))
 }
 
 /// The discovery artifact (`n0xis.function.discover.v1`).
@@ -140,11 +168,7 @@ impl Pass for DiscoverPass {
                         break;
                     }
                     let va = Va(input.start.0 + i as u64);
-                    functions.push(FunctionCandidate {
-                        name: format!("sub_{:X}", va.0),
-                        va,
-                        end: None,
-                    });
+                    functions.push(FunctionCandidate { name: name_at(ctx, va), va, end: None });
                 }
                 seen += 1;
                 // Skip ahead so overlapping patterns in one prologue count once.
@@ -190,6 +214,25 @@ mod tests {
         assert_eq!(art.functions[0].va, Va(0x1000));
         assert_eq!(art.functions[0].name, "sub_1000");
         assert_eq!(art.functions[1].va, Va(0x1008));
+    }
+
+    #[test]
+    fn a_symbol_on_a_function_start_names_the_candidate() {
+        use n0xis_contracts::{SymKind, Symbol};
+        let code = vec![0x55, 0x48, 0x8B, 0xEC, 0x90, 0x90, 0x90, 0x90, 0x48, 0x83, 0xEC, 0x20, 0xC3];
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .symbol(Symbol { va: Va(0x1000), name: "PlayerHealth$$ApplyDamage".into(), kind: SymKind::Function, module: String::new() })
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+        let art = DiscoverPass.run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 }).unwrap();
+        assert!(art.functions[0].name.contains("PlayerHealth"), "a named function start must carry its name, got {}", art.functions[0].name);
+        assert_eq!(art.functions[1].name, "sub_1008", "a function with no symbol keeps the address placeholder");
+        // The *near-miss* half of the rule cannot be proved here: `Snapshot`
+        // resolves symbols by exact address, so it can never return a covering
+        // one. It is asserted where a span-attributing provider actually exists
+        // — `phase12_il2cpp.rs`, against a real imported index.
     }
 
     /// The blob from the test above, three prologues instead of two, so a
