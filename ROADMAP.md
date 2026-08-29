@@ -1422,9 +1422,18 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     The delta now tags each forward "within its block" vs "across a block
     boundary" — the explainability that made this real-corpus verification
     possible (surfaced via `decomp pseudo --explain`).
-  - **1c — dead-store elimination.** ⬜ A store to a slot whose address never
-    escapes and is overwritten/unused is removed. *Output:* the prolog's spill
-    housekeeping stops cluttering the body.
+  - **1c — dead-store elimination.** ✅ *(2026-08-30, verified.)* A `Store` to a
+    non-escaping *stack* slot (frame/stack-pointer base) that is read nowhere and
+    whose value has no side effect is removed — once stage-1 forwarding has
+    replaced the reloads, the callee-saved spill stores are provably dead.
+    Sound: restricted to `rsp`/`rbp`-based slots (a store through an arbitrary
+    pointer register `[rax]` is a write to who-knows-where and is never touched),
+    gated on escape analysis (2a) and on nothing loading the slot. **Caught a
+    real soundness bug in the making** — an early cut keyed *any* store base as a
+    "slot", which would have dead-eliminated a pointer write; the frame-base
+    restriction fixes it. **Verified on real x64:** on `CompressToolsLib.dll` it
+    fired in 154/300 functions (317 stores removed), and the outputs read clean
+    — the prolog's register-save housekeeping is gone, the semantic body intact.
 
 - **Rung 2 — Alias / points-to (co-recovered with types).** 🚧 A real points-to
   oracle so "a store through a different base" stops clobbering *everything* — it

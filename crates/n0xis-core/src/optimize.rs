@@ -73,6 +73,7 @@ impl Pass for OptimizePass {
             changed |= const_fold_round(&mut blocks, &mut delta);
             changed |= copy_prop_round(&mut blocks, &mut delta);
             changed |= mem_forward_round(&mut blocks, &mut delta);
+            changed |= dead_store_round(&mut blocks, &mut delta);
             changed |= expr_prop_round(&mut blocks, &mut delta);
             changed |= dce_round(&mut blocks, &mut delta);
             if !changed {
@@ -730,6 +731,12 @@ fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
 /// window (a frame pointer set equal to `rsp` would place its shadow there).
 /// Slots at higher offsets (locals proper, outgoing args a callee only reads)
 /// sit above the outgoing `rsp` and survive. Sound-conservative on both ABIs.
+/// Is `base` the stack or frame pointer — i.e. does `base+off` name a genuine
+/// stack slot rather than a store through an arbitrary pointer register?
+fn is_frame_base(base: &str) -> bool {
+    base.starts_with("rsp") || base.starts_with("rbp")
+}
+
 fn call_clobbers_frame_slot(base: &str, off: i128) -> bool {
     if base.starts_with("rsp") {
         off < 0x20
@@ -850,6 +857,101 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
             {
                 avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
             }
+        }
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------
+// Dead-store elimination (Rung 1c) — remove a `Store` to a non-escaping stack
+// slot that is never read. Sound because escape analysis proves the slot's
+// address never became a value: no call, no foreign store, and no reader inside
+// this function can observe it, so a store whose slot is loaded *nowhere* has no
+// effect. This is what clears the prolog's callee-saved spill housekeeping once
+// stage-1 forwarding has replaced every reload with the stored value.
+// ---------------------------------------------------------------------
+
+fn collect_load_slots(e: &MicroExpr, out: &mut Vec<(String, i128, n0xis_arch::Bits)>) {
+    if let MicroExpr::Load { addr, bits, .. } = e
+        && let Some((base, off)) = mem_key(addr)
+    {
+        out.push((base, off, *bits));
+    }
+    match e {
+        MicroExpr::Load { addr, .. } => collect_load_slots(addr, out),
+        MicroExpr::Unary(_, v) => collect_load_slots(v, out),
+        MicroExpr::Binary(_, l, r) => {
+            collect_load_slots(l, out);
+            collect_load_slots(r, out);
+        }
+        MicroExpr::Cast { expr, .. } => collect_load_slots(expr, out),
+        MicroExpr::AddrOf(inner) => collect_load_slots(inner, out),
+        MicroExpr::Compare { lhs, rhs, .. } => {
+            collect_load_slots(lhs, out);
+            collect_load_slots(rhs, out);
+        }
+        MicroExpr::Call { target, args } => {
+            if let CallTarget::Indirect(t) = target {
+                collect_load_slots(t, out);
+            }
+            for a in args {
+                collect_load_slots(a, out);
+            }
+        }
+        MicroExpr::Const { .. } | MicroExpr::Var(_) | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
+    }
+}
+
+fn dead_store_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
+    let esc = escape_info(blocks);
+
+    // Every slot loaded anywhere in the function. A non-escaping slot can only
+    // be read through its own base, so a same-base overlapping load is the only
+    // thing that keeps a store to it live.
+    let mut loaded: Vec<(String, i128, n0xis_arch::Bits)> = Vec::new();
+    for b in blocks.iter() {
+        for s in &b.stmts {
+            for e in stmt_read_exprs(&s.stmt) {
+                collect_load_slots(e, &mut loaded);
+            }
+        }
+        if let Some(c) = &b.condition {
+            collect_load_slots(c, &mut loaded);
+        }
+    }
+
+    let mut changed = false;
+    for b in blocks.iter_mut() {
+        let before = b.stmts.len();
+        b.stmts.retain(|s| {
+            if let MicroStmt::Store { addr, value, bits } = &s.stmt
+                && let Some((base, off)) = mem_key(addr)
+            {
+                let bytes = bytes_of(*bits);
+                // Removable only if:
+                //  - the base is the stack/frame pointer — a store through an
+                //    arbitrary register (`[rax]`) is a pointer write to who-
+                //    knows-where and is always potentially observable;
+                //  - the slot is provably unobservable (non-escaping);
+                //  - the stored value has no side effect (no call/load to drop);
+                //  - and nothing loads the slot anywhere.
+                let dead = is_frame_base(&base)
+                    && esc.call_safe(&base, off)
+                    && expr_is_pure(value)
+                    && !loaded.iter().any(|(lb, lo, lb_bits)| *lb == base && ranges_overlap(*lo, bytes_of(*lb_bits), off, bytes));
+                if dead {
+                    delta.push(OptDeltaEntry {
+                        pass: "dead-store",
+                        at: Some(s.va),
+                        summary: format!("removed dead store to [{base}{off:+}] (non-escaping, never loaded)"),
+                    });
+                    return false;
+                }
+            }
+            true
+        });
+        if b.stmts.len() != before {
+            changed = true;
         }
     }
     changed
@@ -1068,6 +1170,63 @@ mod tests {
     }
     fn mem_forwarded(art: &OptArtifact) -> bool {
         art.delta.iter().any(|d| d.pass == "mem-forward")
+    }
+    fn has_store(art: &OptArtifact) -> bool {
+        art.blocks.iter().flat_map(|b| &b.stmts).any(|s| matches!(s.stmt, MicroStmt::Store { .. }))
+    }
+    fn dead_stored(art: &OptArtifact) -> bool {
+        art.delta.iter().any(|d| d.pass == "dead-store")
+    }
+
+    #[test]
+    fn a_fully_forwarded_spill_store_is_eliminated() {
+        // mov [rbp-8], rcx ; mov rax, [rbp-8] ; ret
+        // Forwarding replaces the reload with rcx; the store to the non-escaping
+        // slot is then read nowhere, so dead-store elimination removes it — the
+        // whole spill/reload housekeeping disappears (Rung 1c).
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(dead_stored(&art), "the fully-forwarded spill store should be dead-eliminated: {:#?}", art.delta);
+        assert!(!has_store(&art), "no store to the slot should remain: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn an_address_taken_slot_store_is_kept() {
+        // mov [rbp-8], rcx ; lea rdx, [rbp-8] ; mov [r8], rdx ; ret
+        // The slot's address is taken *and* escapes (the pointer is stored
+        // through another register), so the callee/anyone could read the slot —
+        // the store to it must never be dead-eliminated. (The address must
+        // genuinely escape; a `lea` whose result is discarded means the address
+        // never left, so that store *would* legitimately be dead.)
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0x48, 0x8d, 0x55, 0xf8, // lea rdx, [rbp-8]
+            0x49, 0x89, 0x10, // mov [r8], rdx
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!dead_stored(&art), "an escaped-address slot's store must not be removed: {:#?}", art.delta);
+        assert!(has_store(&art), "the store must remain: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_store_still_read_is_kept() {
+        // mov [rsp+8], rcx ; call +0 ; mov rax, [rsp+8] ; ret
+        // The reload can't forward (shadow slot clobbered by the call), so the
+        // load survives — and a slot that is still loaded must keep its store.
+        let code = vec![
+            0x48, 0x89, 0x4c, 0x24, 0x08, // mov [rsp+8], rcx
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0x48, 0x8b, 0x44, 0x24, 0x08, // mov rax, [rsp+8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!dead_stored(&art), "a still-loaded slot's store must not be removed: {:#?}", art.delta);
+        assert!(has_store(&art), "the store must remain: {:#?}", art.blocks);
     }
 
     #[test]
