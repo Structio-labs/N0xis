@@ -711,20 +711,33 @@ fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
             None => avail.retain(|a| esc.call_safe(&a.base, a.off)),
         },
         // A callee can only write slots whose address escaped to it — *plus*
-        // the Win64 home/shadow space `[rsp .. rsp+0x20]`, which a callee may
-        // write to spill its own register parameters even though the caller
-        // never handed it a pointer. Those low frame slots must not survive a
-        // call, or a caller value there would be forwarded past a clobber.
-        MicroStmt::Call { .. } => avail.retain(|a| esc.call_safe(&a.base, a.off) && !is_shadow_slot(&a.base, a.off)),
+        // any slot at or below the outgoing stack pointer, which the call
+        // clobbers regardless of escape: the System V **red zone** (`[rsp-128
+        // .. rsp]`, scratch a call overwrites) and the Win64 **home/shadow
+        // space** (`[rsp .. rsp+0x20]`, which a callee may write to spill its
+        // register params). Those must not survive a call.
+        MicroStmt::Call { .. } => {
+            avail.retain(|a| esc.call_safe(&a.base, a.off) && !call_clobbers_frame_slot(&a.base, a.off))
+        }
         _ => {}
     }
 }
 
-/// A frame slot in the Win64 home/shadow region `[frameptr .. +0x20]` — the 32
-/// bytes an outgoing call's callee may write. Sound-conservative: keyed on the
-/// stack/frame base name and a small non-negative offset.
-fn is_shadow_slot(base: &str, off: i128) -> bool {
-    (base.starts_with("rsp") || base.starts_with("rbp")) && (0..0x20).contains(&off)
+/// A stack slot a `call` clobbers by position, independent of escape: an
+/// `rsp`-relative slot below the shadow ceiling — negative offsets are the
+/// System V red zone (below `rsp`, overwritten by the callee's frame), and
+/// `[0, 0x20)` is the Win64 shadow space — or an `rbp`-relative slot in that low
+/// window (a frame pointer set equal to `rsp` would place its shadow there).
+/// Slots at higher offsets (locals proper, outgoing args a callee only reads)
+/// sit above the outgoing `rsp` and survive. Sound-conservative on both ABIs.
+fn call_clobbers_frame_slot(base: &str, off: i128) -> bool {
+    if base.starts_with("rsp") {
+        off < 0x20
+    } else if base.starts_with("rbp") {
+        (0..0x20).contains(&off)
+    } else {
+        false
+    }
 }
 
 /// Meet of the available-memory lattice: a fact survives a join only if *every*
@@ -1119,6 +1132,22 @@ mod tests {
         ];
         let art = optimize(code);
         assert!(!mem_forwarded(&art), "a shadow-space slot must not forward across a call: {:#?}", art.delta);
+        assert!(has_load(&art), "the reload must remain a load: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_red_zone_slot_is_not_forwarded_across_a_call() {
+        // mov [rsp-16], rcx ; call +0 ; mov rax, [rsp-16] ; ret
+        // System V red zone: below rsp, so the callee's frame overwrites it —
+        // it must not forward across the call even though its address is safe.
+        let code = vec![
+            0x48, 0x89, 0x4c, 0x24, 0xf0, // mov [rsp-16], rcx
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0x48, 0x8b, 0x44, 0x24, 0xf0, // mov rax, [rsp-16]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!mem_forwarded(&art), "a red-zone slot must not forward across a call: {:#?}", art.delta);
         assert!(has_load(&art), "the reload must remain a load: {:#?}", art.blocks);
     }
 

@@ -1437,14 +1437,20 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     callee, a foreign-base store, or an unknown-address store, so only a store to
     that exact slot can change it. This is what lets stage-1 forwarding survive
     calls, which is where it was previously blocked on call-heavy real code.
-    Sound-conservative: `AddrOf` of a clean slot is recorded precisely (its base
-    does not escape), any other value-use of a base escapes it, and the Win64
-    home/shadow region `[frameptr..+0x20]` is still cleared on a call (a callee
-    may write its shadow space without a pointer). **Verified on real x64:** on
-    `CompressToolsLib.dll` cross-block forwarding jumped from **0 → 28 of 400
-    functions** once calls stopped clobbering non-escaping slots, and the outputs
-    are sound (spot-checked; the forwarded slots sit above the shadow region). The
-    full points-to oracle (heap/global disambiguation, relaxing "different base
+    Sound-conservative on **both ABIs**: `AddrOf` of a clean slot is recorded
+    precisely (its base does not escape), any other value-use of a base escapes
+    it, and a call additionally clobbers every slot at or below the outgoing stack
+    pointer — the System V **red zone** (`rsp`-relative negative offsets) and the
+    Win64 **home/shadow space** (`[rsp..rsp+0x20]`) — since a callee overwrites
+    that region without ever holding a pointer. **Verified on real x64 across two
+    compilers:** on Windows/MSVC `CompressToolsLib.dll`, cross-block forwarding
+    jumped from **0 → 28 of 400 functions**; on Linux/GCC `Factorio` (OpenSSL
+    `dtls1_ctrl`) it decompiles at quality 1.0 with 10 sound forwards. **The
+    Factorio run caught a real soundness bug** — the first cut cleared only the
+    Win64 shadow, so it would have forwarded a System V red-zone slot across a
+    call; the fix (clobber everything below the outgoing `rsp`, both ABIs) blocks
+    it, and now a red-zone slot forwards only along a call-free path. The full
+    points-to oracle (heap/global disambiguation, relaxing "different base
     clobbers non-safe slots") is the rest of Rung 2.
 
 - **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** ⬜
