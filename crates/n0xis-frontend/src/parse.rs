@@ -88,7 +88,17 @@ pub fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
         }
     }
     if out.is_empty() {
-        return Err("no bytes provided".to_string());
+        // The filter above silently drops non-hex characters, so a fully
+        // invalid input like "zz" ends up empty. Distinguish that from a
+        // genuinely empty string, or the error misleadingly reads "no bytes
+        // provided" when bytes *were* given, just not as hex.
+        let stripped = s.replace("0x", "").replace("0X", "");
+        let has_non_hex = stripped.chars().any(|c| !c.is_ascii_hexdigit() && !c.is_whitespace() && c != ',');
+        return Err(if has_non_hex {
+            format!("no valid hex bytes in {s:?} (want hex pairs like \"48 89 c8\")")
+        } else {
+            "no bytes provided".to_string()
+        });
     }
     Ok(out)
 }

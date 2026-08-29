@@ -893,8 +893,10 @@ struct LuaSeedscanArgs {
 
 #[derive(Args)]
 struct LuaDisasmArgs {
-    /// Path to a Lua chunk file (source text, stock bytecode, or LuaJIT
-    /// bytecode — auto-detected from its header).
+    /// Path to a **LuaJIT 2.0 bytecode dump** (a `luajit -b` file, dump
+    /// version 1, `\x1bLJ\x01` magic). Lua source text, stock `luac` output,
+    /// and newer LuaJIT dump versions (2.1 = version 2) are NOT accepted — the
+    /// reader targets the LuaJIT 2.0 format only.
     #[arg(long)]
     file: String,
 }

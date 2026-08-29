@@ -64,8 +64,11 @@ pub fn decompress_archive(bytes: &[u8]) -> Result<Vec<u8>, BitsquidError> {
         if chunk_size as u32 == RAW_CHUNK_SIZE {
             out.extend_from_slice(chunk_bytes);
         } else {
+            // Only the status, never `{e:?}` — a `DecompressError`'s Debug
+            // includes the whole partially-inflated `output` buffer, which on a
+            // real 64 KiB chunk floods the error with tens of thousands of bytes.
             let inflated = miniz_oxide::inflate::decompress_to_vec_zlib(chunk_bytes)
-                .map_err(|e| BitsquidError::Inflate(format!("{e:?}")))?;
+                .map_err(|e| BitsquidError::Inflate(format!("{:?}", e.status)))?;
             out.extend_from_slice(&inflated);
         }
     }
