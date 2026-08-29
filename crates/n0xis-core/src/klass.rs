@@ -209,7 +209,7 @@ pub const WEAK: &str = "weak-name-pair-only";
 /// One read up front, then slot access is arithmetic.
 fn slots_of(ctx: &Ctx, base: Va, probe: usize) -> Vec<u64> {
     let Ok(bytes) = ctx.source.read(base, probe) else { return Vec::new() };
-    bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().expect("8 bytes"))).collect()
+    bytes.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect()
 }
 
 /// The slot holding the class's pointer **to itself**, if there is one.
@@ -697,8 +697,8 @@ impl Pass for ClassScanPass {
             let Ok(bytes) = ctx.source.read(*base, *size) else { continue };
             windows_read += 1;
             bytes_read += bytes.len();
-            for chunk in bytes.chunks_exact(8) {
-                let v = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+            for chunk in bytes.as_chunks::<8>().0 {
+                let v = u64::from_le_bytes(*chunk);
                 // Canonical user-space, pointer-aligned, past the null page.
                 if v > 0x1_0000 && v < 0x7fff_ffff_ffff && v.is_multiple_of(8) {
                     *freq.entry(v).or_default() += 1;
