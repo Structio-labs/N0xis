@@ -1123,7 +1123,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
 | Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
-| noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ **whole-program propagation across N0xis's own discovered functions** (call-graph fixpoint, `function noreturn`, 2026-08-29) — a custom `FatalError`/`Assert` wrapper now propagates like a named import |
+| noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 9 functions, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) is unit-tested only, pending a real-corpus positive |
 | Import-name resolution | ✅ 2026-08-06 — direct, IAT-slot and thunk callees resolve to `module!name`; imports render by name and reach the known-API signature table |
 | Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
 | Memory SSA | ❌ missing |
@@ -1146,7 +1146,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 |---|---|---|
 | Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | ❌ `.pdata`/`.xdata` read for **unwinding only**; no EH edges in the graph |
 | Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | ✅ *(2026-08-06)* both shapes — a direct `jmp` out of the function **and** an import thunk's `jmp qword ptr [__imp_X]` (previously mis-classified `ijmp`, "indirect jump (unrecovered)") — terminate as `tail-call` and lower to `call`+`return` via the new `Arch::lift_tail_call` seam, so every style renders `return f(...)`. Verified on real PEs (`version.dll` thunk → `return …GetFileVersionInfoSizeW(…)`; 15/400 notepad, 52/400 dxgi functions carry the `tail` flag) |
-| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). ✅ *(2026-08-29)* **whole-program propagation** — the `NoReturnPropagatePass` call-graph fixpoint (`function noreturn`) flags a game's *own* `FatalError`/`Assert` wrappers, not just named imports, and feeds them back into CFG fall-through pruning via `Ctx::with_noreturn`; sound-over-complete (only provable noreturns flagged). **Still open**: a *tail-call* to a proven-noreturn function (read conservatively as returning today). |
+| noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). ⏳ *(2026-08-29)* **whole-program propagation** — the `NoReturnPropagatePass` call-graph fixpoint (`function noreturn`) is built and feeds `Ctx::with_noreturn` back into CFG fall-through pruning; sound-over-complete. **Detection** is verified on a real binary (`CompressToolsLib.dll`: 9 functions, cross-checked via `ir build`); the **propagation** step itself is unit-tested only and awaits a real-corpus positive before ✅. **Still open**: a *tail-call* to a proven-noreturn function (read conservatively as returning today). |
 | Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
 | Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
 | Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
@@ -1244,7 +1244,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      green, clippy clean. **Still open in this bullet**: whole-program
      noreturn propagation across N0xis's own discovered functions, and
      exception-edge recovery.
-   - ✅ *(2026-08-29)* **Whole-program noreturn propagation — the call-graph
+   - ⏳ *(2026-08-29)* **Whole-program noreturn propagation — the call-graph
      fixpoint.** The deeper noreturn sub-item the two passes above left open. A
      game rarely calls `ExitProcess`/`abort` directly; it wraps them in its own
      `FatalError`/`Assert`/`Panic` helper — a stripped `sub_XXXX`, not a named
@@ -1268,9 +1268,21 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      whole-program (3 425 functions enumerated on a real `ucrtbase.dll`). 4 new
      tests (direct wrapper, 2-level chain propagation, a returning function is
      not flagged, and the flagged set feeding back into a caller's CFG closure).
-     **Still open in priority 0**: exception-edge recovery (`.xdata` EH handlers
-     → try/catch/finally edges), and resolving a *tail-call* to a proven-noreturn
-     function (today a tail-call is conservatively read as returning).
+     **Verification status (why this is ⏳, not ✅).** noreturn *detection* over
+     the whole `.pdata` function set is **verified on a real binary**: on
+     `CompressToolsLib.dll` (Kenshi) it flags 9 functions, each cross-checked
+     with `ir build` to be a single `call-noreturn` block ending in
+     `_invalid_parameter_noinfo_noreturn` with no reachable `ret`. But every one
+     of those 9 is a *direct import caller* — the novel **propagation** step (a
+     `sub_XXXX` flagged because it calls another flagged `sub_XXXX`) is so far
+     only **unit-tested on a synthetic chain**, not observed on a real corpus
+     (`rounds == 2` is a confirmation round, *not* proof propagation fired). Per
+     the project rule — a feature earns ✅ only on a real-data *positive* — this
+     stays ⏳ until a genuine cross-function propagation instance is confirmed on
+     a real binary. **Still open in priority 0**: exception-edge recovery
+     (`.xdata` EH handlers → try/catch/finally edges), and resolving a
+     *tail-call* to a proven-noreturn function (today read conservatively as
+     returning).
 1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.
