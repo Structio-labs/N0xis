@@ -570,29 +570,161 @@ fn same_slot(a: &Avail, base: &str, off: i128, bits: n0xis_arch::Bits) -> bool {
     a.base == base && a.off == off && a.bits == bits
 }
 
+// ---------------------------------------------------------------------
+// Escape analysis (Rung 2a) — which stack slots a call / foreign store
+// provably cannot touch. A slot is *call-safe* when its address is never
+// materialized as a value anywhere in the function: not `lea`'d (no
+// `AddrOf` of it) and its base register never used as a value (only ever as
+// the base of a load/store address). If the address never becomes a value,
+// no callee can hold a pointer to it and no other store can be computed to
+// it — so only a store to that exact slot can change it. This is the sound
+// keystone that lets forwarding survive calls, foreign stores, and unknown-
+// address stores for the frame locals compilers spill and reload.
+// ---------------------------------------------------------------------
+
+#[derive(Default)]
+struct Escape {
+    /// Base registers whose value escaped (used as anything but an address base).
+    bases: std::collections::HashSet<String>,
+    /// Exact slots whose address was taken (`lea`/`&`), precisely.
+    slots: std::collections::HashSet<(String, i128)>,
+}
+
+impl Escape {
+    /// A slot only a same-slot store can change — safe across calls / foreign
+    /// / unknown-address stores.
+    fn call_safe(&self, base: &str, off: i128) -> bool {
+        !self.bases.contains(base) && !self.slots.contains(&(base.to_string(), off))
+    }
+}
+
+/// Record escapes in `e`. `value_ctx` is true when this expression is used as a
+/// *value* (so a bare base register here means its address/value flowed out);
+/// false inside a load/store address, where base and index registers are
+/// legitimate address uses, not escapes.
+fn visit_escape(e: &MicroExpr, value_ctx: bool, esc: &mut Escape) {
+    match e {
+        MicroExpr::Var(name) => {
+            if value_ctx {
+                esc.bases.insert(name.clone());
+            }
+        }
+        MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
+        // A load yields a value, but its address is an address context.
+        MicroExpr::Load { addr, .. } => visit_escape(addr, false, esc),
+        // Taking an address: a clean slot is recorded precisely (its base does
+        // not escape); a computed address escapes every register in it.
+        MicroExpr::AddrOf(inner) => match mem_key(inner) {
+            Some((base, off)) => {
+                esc.slots.insert((base, off));
+            }
+            None => visit_escape(inner, true, esc),
+        },
+        MicroExpr::Unary(_, v) => visit_escape(v, value_ctx, esc),
+        MicroExpr::Binary(_, l, r) => {
+            visit_escape(l, value_ctx, esc);
+            visit_escape(r, value_ctx, esc);
+        }
+        MicroExpr::Cast { expr, .. } => visit_escape(expr, value_ctx, esc),
+        MicroExpr::Compare { lhs, rhs, .. } => {
+            visit_escape(lhs, value_ctx, esc);
+            visit_escape(rhs, value_ctx, esc);
+        }
+        MicroExpr::Call { target, args } => {
+            if let CallTarget::Indirect(t) = target {
+                visit_escape(t, true, esc);
+            }
+            for a in args {
+                visit_escape(a, true, esc);
+            }
+        }
+    }
+}
+
+fn escape_info(blocks: &[SsaBlock]) -> Escape {
+    let mut esc = Escape::default();
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Assign { value, .. } => visit_escape(value, true, &mut esc),
+                MicroStmt::Store { addr, value, .. } => {
+                    visit_escape(addr, false, &mut esc);
+                    visit_escape(value, true, &mut esc);
+                }
+                MicroStmt::Call { target, args, .. } => {
+                    if let CallTarget::Indirect(t) = target {
+                        visit_escape(t, true, &mut esc);
+                    }
+                    for a in args {
+                        visit_escape(a, true, &mut esc);
+                    }
+                }
+                MicroStmt::Return(Some(e)) => visit_escape(e, true, &mut esc),
+                MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+            }
+        }
+        if let Some(c) = &b.condition {
+            visit_escape(c, true, &mut esc);
+        }
+    }
+    esc
+}
+
 /// Apply a block's stores/calls to the entry facts, keeping only cross-block-
 /// stable facts — the transfer function of the available-memory dataflow. It
 /// forwards nothing; it only computes what memory a block *exports* to its
 /// successors.
-fn transfer_cross(entry: &[Avail], block: &SsaBlock) -> Vec<Avail> {
+fn transfer_cross(entry: &[Avail], block: &SsaBlock, esc: &Escape) -> Vec<Avail> {
     let mut avail: Vec<Avail> = entry.to_vec();
     for s in &block.stmts {
-        match &s.stmt {
-            MicroStmt::Store { addr, value, bits } => match mem_key(addr) {
-                Some((base, off)) => {
-                    let bytes = bytes_of(*bits);
-                    avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
-                    if is_cross_block_stable(value) {
-                        avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
-                    }
-                }
-                None => avail.clear(),
-            },
-            MicroStmt::Call { .. } => avail.clear(),
-            _ => {}
+        clobber_for_stmt(&mut avail, &s.stmt, esc);
+        // Gen: a cross-block-stable store makes its slot available downstream.
+        if let MicroStmt::Store { addr, value, bits } = &s.stmt
+            && let Some((base, off)) = mem_key(addr)
+            && is_cross_block_stable(value)
+        {
+            avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
         }
     }
     avail
+}
+
+/// Kill the facts a statement invalidates, honouring escape analysis: a call,
+/// a foreign-base store, or an unknown-address store cannot touch a *call-safe*
+/// slot, so those facts survive; only a store overlapping the same slot (or any
+/// non-call-safe slot the barrier could reach) is killed.
+fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
+    match stmt {
+        MicroStmt::Store { addr, bits, .. } => match mem_key(addr) {
+            Some((base, off)) => {
+                let bytes = bytes_of(*bits);
+                avail.retain(|a| {
+                    if a.base == base {
+                        !ranges_overlap(a.off, bytes_of(a.bits), off, bytes)
+                    } else {
+                        // A different base cannot alias a call-safe slot.
+                        esc.call_safe(&a.base, a.off)
+                    }
+                });
+            }
+            // An unknown address cannot be a call-safe slot either.
+            None => avail.retain(|a| esc.call_safe(&a.base, a.off)),
+        },
+        // A callee can only write slots whose address escaped to it — *plus*
+        // the Win64 home/shadow space `[rsp .. rsp+0x20]`, which a callee may
+        // write to spill its own register parameters even though the caller
+        // never handed it a pointer. Those low frame slots must not survive a
+        // call, or a caller value there would be forwarded past a clobber.
+        MicroStmt::Call { .. } => avail.retain(|a| esc.call_safe(&a.base, a.off) && !is_shadow_slot(&a.base, a.off)),
+        _ => {}
+    }
+}
+
+/// A frame slot in the Win64 home/shadow region `[frameptr .. +0x20]` — the 32
+/// bytes an outgoing call's callee may write. Sound-conservative: keyed on the
+/// stack/frame base name and a small non-negative offset.
+fn is_shadow_slot(base: &str, off: i128) -> bool {
+    (base.starts_with("rsp") || base.starts_with("rbp")) && (0..0x20).contains(&off)
 }
 
 /// Meet of the available-memory lattice: a fact survives a join only if *every*
@@ -632,12 +764,17 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
         }
     }
 
+    // Escape analysis: which slots a call / foreign / unknown store cannot
+    // touch. Stable across optimizer rounds (forwarding only removes loads),
+    // recomputed here so it tracks the current SSA names.
+    let esc = escape_info(blocks);
+
     // Forward dataflow to a fixpoint: `cross_in[b]` is the memory available on
     // *every* path into block `b`. Entry (block 0, no preds) starts empty.
     // Monotone and bounded — the fact set can only shrink toward agreement.
     let mut cross_in: Vec<Vec<Avail>> = vec![Vec::new(); n];
     for _ in 0..(n + 2) {
-        let cross_out: Vec<Vec<Avail>> = (0..n).map(|b| transfer_cross(&cross_in[b], &blocks[b])).collect();
+        let cross_out: Vec<Vec<Avail>> = (0..n).map(|b| transfer_cross(&cross_in[b], &blocks[b], &esc)).collect();
         let mut changed = false;
         for b in 0..n {
             let new_in = if preds[b].is_empty() {
@@ -688,22 +825,17 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
                     summary: format!("forwarded load of [{base}{off:+}] to its store ({where_})"),
                 });
             }
-            // 2. Apply this statement's effect on the availability map. Same-
-            // block gen may add a mid-function value (valid locally); the
-            // cross-block dataflow above only ever exports entry-stable facts.
-            match &s.stmt {
-                MicroStmt::Store { addr, value, bits } => match mem_key(addr) {
-                    Some((base, off)) => {
-                        let bytes = bytes_of(*bits);
-                        avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
-                        if expr_is_pure(value) {
-                            avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
-                        }
-                    }
-                    None => avail.clear(),
-                },
-                MicroStmt::Call { .. } => avail.clear(),
-                _ => {}
+            // 2. Apply this statement's effect on the availability map. The
+            // barrier kill honours escape analysis (a call / foreign store can
+            // keep a call-safe slot); same-block gen may add a mid-function
+            // value, valid locally, while the cross-block dataflow above only
+            // exports entry-stable facts.
+            clobber_for_stmt(&mut avail, &s.stmt, &esc);
+            if let MicroStmt::Store { addr, value, bits } = &s.stmt
+                && let Some((base, off)) = mem_key(addr)
+                && expr_is_pure(value)
+            {
+                avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
             }
         }
     }
@@ -941,10 +1073,11 @@ mod tests {
     }
 
     #[test]
-    fn a_call_between_store_and_load_blocks_forwarding() {
+    fn a_call_does_not_block_a_non_escaping_slot() {
         // mov [rbp-8], rcx ; call +0 ; mov rax, [rbp-8] ; ret
-        // The call could write through a pointer to the slot, so the reload
-        // must stay a real load — soundness over prettiness.
+        // The slot's address is never taken, so the callee cannot hold a
+        // pointer to it — escape analysis (Rung 2a) proves the reload safe to
+        // forward across the call.
         let code = vec![
             0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
             0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
@@ -952,15 +1085,48 @@ mod tests {
             0xc3, // ret
         ];
         let art = optimize(code);
-        assert!(!mem_forwarded(&art), "a call must block forwarding: {:#?}", art.delta);
-        assert!(has_load(&art), "the reload must remain a load across a call: {:#?}", art.blocks);
+        assert!(mem_forwarded(&art), "a non-escaping slot must forward across a call: {:#?}", art.delta);
+        assert!(!has_load(&art), "no reload should remain: {:#?}", art.blocks);
     }
 
     #[test]
-    fn a_store_through_a_different_base_blocks_forwarding() {
+    fn an_address_taken_slot_is_not_forwarded_across_a_call() {
+        // lea rdx, [rbp-8] ; mov [rbp-8], rcx ; call +0 ; mov rax, [rbp-8] ; ret
+        // The `lea` materializes the slot's address, so the callee *could* have
+        // been handed a pointer to it — the reload must stay a real load.
+        let code = vec![
+            0x48, 0x8d, 0x55, 0xf8, // lea rdx, [rbp-8]
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!mem_forwarded(&art), "an address-taken slot must not forward across a call: {:#?}", art.delta);
+        assert!(has_load(&art), "the reload must remain a load: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_shadow_space_slot_is_not_forwarded_across_a_call() {
+        // mov [rsp+8], rcx ; call +0 ; mov rax, [rsp+8] ; ret
+        // [rsp+8] is in the Win64 home/shadow space, which the callee may write
+        // even without a pointer — so it must not forward across the call.
+        let code = vec![
+            0x48, 0x89, 0x4c, 0x24, 0x08, // mov [rsp+8], rcx
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0x48, 0x8b, 0x44, 0x24, 0x08, // mov rax, [rsp+8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!mem_forwarded(&art), "a shadow-space slot must not forward across a call: {:#?}", art.delta);
+        assert!(has_load(&art), "the reload must remain a load: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_foreign_base_store_does_not_block_a_non_escaping_slot() {
         // mov [rbp-8], rcx ; mov [rax], rdx ; mov rax, [rbp-8] ; ret
-        // The store through `rax` could alias the slot (rax might be rbp-8),
-        // so the reload must not be forwarded.
+        // `rax` cannot equal the address of a non-escaping slot (that address
+        // was never computed), so the foreign store cannot alias it — forward.
         let code = vec![
             0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
             0x48, 0x89, 0x10, // mov [rax], rdx
@@ -968,8 +1134,8 @@ mod tests {
             0xc3, // ret
         ];
         let art = optimize(code);
-        assert!(!mem_forwarded(&art), "a foreign-base store must block forwarding: {:#?}", art.delta);
-        assert!(has_load(&art), "the reload must remain a load: {:#?}", art.blocks);
+        assert!(mem_forwarded(&art), "a foreign-base store must not block a non-escaping slot: {:#?}", art.delta);
+        assert!(!has_load(&art), "the reload should forward: {:#?}", art.blocks);
     }
 
     #[test]

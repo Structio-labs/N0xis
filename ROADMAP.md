@@ -1426,11 +1426,26 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     escapes and is overwritten/unused is removed. *Output:* the prolog's spill
     housekeeping stops cluttering the body.
 
-- **Rung 2 — Alias / points-to (co-recovered with types).** ⬜ A real points-to
+- **Rung 2 — Alias / points-to (co-recovered with types).** 🚧 A real points-to
   oracle so "a store through a different base" stops clobbering *everything* — it
   clobbers only what it *may* actually alias (stack vs heap vs global). This is the
   chicken-and-egg with types (Rung 3): climb them together. *Output:* forwarding
   and propagation survive across real, pointer-heavy code, not just leaf slots.
+  - **2a — escape analysis (the keystone slice).** ✅ *(2026-08-30, verified.)* A
+    stack slot whose address is never materialized as a value — never `lea`'d and
+    its base register only ever used as an address base — cannot be reached by a
+    callee, a foreign-base store, or an unknown-address store, so only a store to
+    that exact slot can change it. This is what lets stage-1 forwarding survive
+    calls, which is where it was previously blocked on call-heavy real code.
+    Sound-conservative: `AddrOf` of a clean slot is recorded precisely (its base
+    does not escape), any other value-use of a base escapes it, and the Win64
+    home/shadow region `[frameptr..+0x20]` is still cleared on a call (a callee
+    may write its shadow space without a pointer). **Verified on real x64:** on
+    `CompressToolsLib.dll` cross-block forwarding jumped from **0 → 28 of 400
+    functions** once calls stopped clobbering non-escaping slots, and the outputs
+    are sound (spot-checked; the forwarded slots sit above the shadow region). The
+    full points-to oracle (heap/global disambiguation, relaxing "different base
+    clobbers non-safe slots") is the rest of Rung 2.
 
 - **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** ⬜
   Coalesce SSA versions back into named, **typed** variables; infer types from use
