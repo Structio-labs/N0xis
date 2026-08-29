@@ -1290,9 +1290,12 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      step stays ⏳ until a genuine instance is confirmed on a real binary.
      **Still open in priority 0**: exception-edge recovery (`.xdata` EH handlers
      → try/catch/finally edges).
-1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
+1. 🚧 **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.
+   Built incrementally — see **the SSA → other tools ladder** below for the staged
+   plan; rung **1a (intra-block store-to-load forwarding) is landed and verified**
+   *(2026-08-29)*.
 2. ⬜ **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
    recovery — chicken-and-egg: alias precision needs types, type recovery needs
    alias. Climb 1–2 together; neither is precise alone.
@@ -1373,6 +1376,75 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
     and devirtualization items are its first two consumers. *(Raised by an
     outside RE specialist's review, 2026-08-29 — a genuine structural gap, not a
     coverage item.)*
+
+### The SSA → other tools ladder (from here to source-level pseudocode)
+
+The single question a decompiler is judged on is *does the pseudocode read like
+source?* The path there is not one feature — it is a **ladder of representations**,
+each rung unlocking the next. This is the concrete plan from where N0xis stands to
+decompiler parity, with the *observable output change* each rung buys, so progress
+is legible and each rung has a real definition-of-done (verified on a real binary,
+not a synthetic sample — the project's verify-before-✅ rule).
+
+- **Rung 0 — Register/flags SSA + optimizer + structuring.** ✅ *Done.* Dominance-
+  frontier phi placement, Cytron renaming, flag-precise branch conditions,
+  const-fold / copy-prop / expr-prop / DCE to a fixpoint, and control structuring.
+  *Output:* SSA pseudo-C, but memory still reads as raw `*(rbp - 8)` and every
+  value dies at the first spill.
+
+- **Rung 1 — Memory SSA (values flow *through* memory).** 🚧
+  - **1a — intra-block store-to-load forwarding.** ✅ *(2026-08-29, verified.)* A
+    `Load` from a slot a dominating un-clobbered `Store` wrote becomes the stored
+    value; keyed by the base's SSA name + constant offset, width-exact, pure-value
+    only, cleared on any call / foreign-base / unknown-address store. *Output:* a
+    spill/reload reads `return rcx`, not `return *(rbp-8)`. Verified on real x64
+    (`CompressToolsLib::OpenImage`: locals forward, 8 deref-loads across 22 local
+    refs; 60 functions decompiled clean).
+  - **1b — cross-block memory SSA.** ⬜ Explicit memory versions + a memory-phi at
+    join points, so forwarding survives an `if`/loop, not just a straight line.
+  - **1c — dead-store elimination.** ⬜ A store to a slot whose address never
+    escapes and is overwritten/unused is removed. *Output:* the prolog's spill
+    housekeeping stops cluttering the body.
+
+- **Rung 2 — Alias / points-to (co-recovered with types).** ⬜ A real points-to
+  oracle so "a store through a different base" stops clobbering *everything* — it
+  clobbers only what it *may* actually alias (stack vs heap vs global). This is the
+  chicken-and-egg with types (Rung 3): climb them together. *Output:* forwarding
+  and propagation survive across real, pointer-heavy code, not just leaf slots.
+
+- **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** ⬜
+  Coalesce SSA versions back into named, **typed** variables; infer types from use
+  (access widths, pointer arithmetic, known-API signatures), recover struct/field
+  layout and enums. *Output:* `player->health -= dmg;` instead of
+  `*(int*)(rbx.7 + 0x40) = *(int*)(rbx.7 + 0x40) - eax.3;`. This rung is the single
+  biggest readability jump.
+
+- **Rung 4 — Calling convention & argument recovery.** ⬜ Classify the CC and
+  recover arg count/types/variadicity by entry-liveness + call-site agreement.
+  *Output:* calls render with the arguments they actually take, and prototypes are
+  right — see Phase-10 item 9.
+
+- **Rung 5 — Expression & idiom quality.** ⬜ Signedness inference, the compiler-
+  idiom library (magic-number division, `cmov`→`min/max`, `rep`→`mem*`, canary
+  recognition), and SIMD/FP lift (items 4, 6, 11). *Output:* the arithmetic reads
+  as the source wrote it, and SIMD-heavy game functions stop degrading to `asm`.
+
+- **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
+  recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control
+  flow reads like C, not a flowchart.
+
+- **Rung 7 — Beyond the v0 port (where N0xis can *win*).** ⬜ The advantages other tools
+  structurally lack: every pass already emits an **inspectable delta** (KF-5); the
+  **provenance ⇄ decompile** join (a live watchpoint → the exact decompiled
+  statement, KF-1); the RTTI/vtable devirtualization (item 7); and depth-limited
+  **symbolic execution** (item 12) for the deobfuscation / computed-target cases a
+  static pass cannot reach. Parity is Rungs 1–6; *surpassing* is Rung 7 layered on
+  a decompiler that is already inspectable and live-aware by construction.
+
+**Sequencing:** Rungs 1→2→3 are the spine and must go in order (each is the
+other's prerequisite). Rungs 4–6 are largely independent and can interleave by
+corpus payoff (SIMD and RTTI rank high for games — see the framing rules). Rung 7
+compounds with everything and needs Memory SSA (Rung 1) underneath.
 
 ### Two framing rules this phase encodes
 

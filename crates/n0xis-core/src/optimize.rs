@@ -72,6 +72,7 @@ impl Pass for OptimizePass {
             let mut changed = false;
             changed |= const_fold_round(&mut blocks, &mut delta);
             changed |= copy_prop_round(&mut blocks, &mut delta);
+            changed |= mem_forward_round(&mut blocks, &mut delta);
             changed |= expr_prop_round(&mut blocks, &mut delta);
             changed |= dce_round(&mut blocks, &mut delta);
             if !changed {
@@ -465,6 +466,129 @@ fn expr_contains_var(e: &MicroExpr, name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------
+// Memory forwarding — the first Memory-SSA increment (ROADMAP Phase 10,
+// priority 1). Store-to-load forwarding over recognized memory locations:
+// a `Load` from an address a *dominating, un-clobbered* `Store` wrote is
+// replaced by the stored value, so a spill/reload or a struct-field write
+// then read reads as the value, not `*(rbp - 8)`. This is what makes the
+// register SSA reach *through* memory — other tools' readable-locals win.
+//
+// **Sound over complete (CONCEPT §3 rule 6), and honest about what it is:**
+// intra-block only (no cross-block memory phi yet), and it forwards only
+// when it can *prove* the load reads exactly what the store wrote:
+//   - the address is a simple `base + const` (a stack slot / field), keyed
+//     by the base's *SSA* name, so a different register version is a
+//     different location by construction;
+//   - the access widths match exactly (no partial-overlap forwarding);
+//   - the stored value is *pure* (no `Load`/`Call`) — SSA already guarantees
+//     its variables are stable between the store and the load;
+//   - and the availability map is conservatively **cleared on any `Call` or
+//     store through an unknown address, and any store to a different base**
+//     — either could alias the slot, so nothing is forwarded across it.
+// A points-to oracle (priority 2) is what later relaxes the "different base
+// clobbers everything" rule; until then this never forwards an unsound value.
+// ---------------------------------------------------------------------
+
+/// The static location a `base + const` address names: the base's SSA name
+/// and the byte offset. `None` for anything richer (an index register, an
+/// absolute/ip-relative address, a nested expression) — those stay opaque and
+/// are treated as may-alias-everything.
+fn mem_key(addr: &MicroExpr) -> Option<(String, i128)> {
+    match addr {
+        MicroExpr::Var(name) => Some((name.clone(), 0)),
+        MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {
+            (MicroExpr::Var(name), MicroExpr::Const { value, .. }) => Some((name.clone(), *value)),
+            (MicroExpr::Const { value, .. }, MicroExpr::Var(name)) => Some((name.clone(), *value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A value safe to duplicate into a later load position: no memory read and no
+/// call, so moving it forward cannot observe or cause a side effect. SSA makes
+/// its variables stable, so the copy reads identically at the load.
+fn expr_is_pure(e: &MicroExpr) -> bool {
+    match e {
+        MicroExpr::Const { .. } | MicroExpr::Var(_) | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => true,
+        MicroExpr::Load { .. } | MicroExpr::Call { .. } => false,
+        MicroExpr::Unary(_, v) => expr_is_pure(v),
+        MicroExpr::Binary(_, l, r) => expr_is_pure(l) && expr_is_pure(r),
+        MicroExpr::Cast { expr, .. } => expr_is_pure(expr),
+        MicroExpr::AddrOf(inner) => expr_is_pure(inner),
+        MicroExpr::Compare { lhs, rhs, .. } => expr_is_pure(lhs) && expr_is_pure(rhs),
+    }
+}
+
+fn bytes_of(bits: n0xis_arch::Bits) -> i128 {
+    (bits.max(8) / 8) as i128
+}
+
+fn ranges_overlap(a_off: i128, a_bytes: i128, b_off: i128, b_bytes: i128) -> bool {
+    a_off < b_off + b_bytes && b_off < a_off + a_bytes
+}
+
+/// One available store: `base+off` (byte-`bits` wide) currently holds `value`.
+struct Avail {
+    base: String,
+    off: i128,
+    bits: n0xis_arch::Bits,
+    value: MicroExpr,
+}
+
+fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
+    let mut changed = false;
+    for b in blocks.iter_mut() {
+        // Availability is intra-block: memory state at a block's entry is not
+        // yet modelled (no memory phi), so start each block empty — sound.
+        let mut avail: Vec<Avail> = Vec::new();
+        for s in b.stmts.iter_mut() {
+            // 1. Forward loads in this statement's read positions.
+            let mut hit: Option<(String, i128)> = None;
+            let rewritten = map_stmt_exprs(&s.stmt, &mut |e| {
+                if let MicroExpr::Load { addr, bits, .. } = &e
+                    && let Some((base, off)) = mem_key(addr)
+                    && let Some(a) = avail.iter().find(|a| a.base == base && a.off == off && a.bits == *bits)
+                {
+                    hit = Some((base, off));
+                    return a.value.clone();
+                }
+                e
+            });
+            if let Some((base, off)) = hit {
+                s.stmt = rewritten;
+                changed = true;
+                delta.push(OptDeltaEntry {
+                    pass: "mem-forward",
+                    at: Some(s.va),
+                    summary: format!("forwarded load of [{base}{off:+}] to its dominating store"),
+                });
+            }
+            // 2. Apply this statement's effect on the availability map.
+            match &s.stmt {
+                MicroStmt::Store { addr, value, bits } => match mem_key(addr) {
+                    Some((base, off)) => {
+                        let bytes = bytes_of(*bits);
+                        // A store keeps only same-base, non-overlapping slots;
+                        // every different-base slot could alias, so it dies.
+                        avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
+                        if expr_is_pure(value) {
+                            avail.push(Avail { base, off, bits: *bits, value: value.clone() });
+                        }
+                    }
+                    // Store through an address we cannot name — may hit anything.
+                    None => avail.clear(),
+                },
+                // A call may write through any pointer it was handed.
+                MicroStmt::Call { .. } => avail.clear(),
+                _ => {}
+            }
+        }
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------
 // DCE — remove Assign/phi defs with zero remaining uses. Never removes
 // Call/Store/Return/Unlifted: those may have effects beyond their `dst`.
 // ---------------------------------------------------------------------
@@ -670,6 +794,75 @@ mod tests {
             ))
         });
         assert!(inlined, "expected `*(call(...) + 0x68)` somewhere: {:#?}", art.blocks);
+    }
+
+    fn has_load(art: &OptArtifact) -> bool {
+        all_exprs(art).into_iter().any(|e| matches!(e, MicroExpr::Load { .. }))
+    }
+    fn mem_forwarded(art: &OptArtifact) -> bool {
+        art.delta.iter().any(|d| d.pass == "mem-forward")
+    }
+
+    #[test]
+    fn a_spill_then_reload_forwards_the_stored_value() {
+        // mov [rbp-8], rcx ; mov rax, [rbp-8] ; ret
+        // The reload must read `rcx`, not a load of the stack slot — the
+        // register SSA reaching *through* memory (Memory-SSA increment 1).
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(mem_forwarded(&art), "the reload should have been forwarded: {:#?}", art.delta);
+        assert!(!has_load(&art), "no load of the stack slot should remain after forwarding: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_call_between_store_and_load_blocks_forwarding() {
+        // mov [rbp-8], rcx ; call +0 ; mov rax, [rbp-8] ; ret
+        // The call could write through a pointer to the slot, so the reload
+        // must stay a real load — soundness over prettiness.
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!mem_forwarded(&art), "a call must block forwarding: {:#?}", art.delta);
+        assert!(has_load(&art), "the reload must remain a load across a call: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_store_through_a_different_base_blocks_forwarding() {
+        // mov [rbp-8], rcx ; mov [rax], rdx ; mov rax, [rbp-8] ; ret
+        // The store through `rax` could alias the slot (rax might be rbp-8),
+        // so the reload must not be forwarded.
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0x48, 0x89, 0x10, // mov [rax], rdx
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!mem_forwarded(&art), "a foreign-base store must block forwarding: {:#?}", art.delta);
+        assert!(has_load(&art), "the reload must remain a load: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_disjoint_slot_store_does_not_block_forwarding() {
+        // mov [rbp-8], rcx ; mov [rbp-16], rdx ; mov rax, [rbp-8] ; ret
+        // The second store is a different, non-overlapping slot on the same
+        // base — it must NOT clobber [rbp-8], so the reload still forwards.
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0x48, 0x89, 0x55, 0xf0, // mov [rbp-16], rdx
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(mem_forwarded(&art), "a disjoint slot must not block forwarding: {:#?}", art.delta);
     }
 
     #[test]
