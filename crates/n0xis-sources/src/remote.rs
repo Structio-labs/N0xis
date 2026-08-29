@@ -17,7 +17,13 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
+use std::time::Duration;
+
+/// How long `connect` waits for the peer's handshake reply before giving up.
+/// A peer that opens the pipe but never answers (a wrong `--remote-cmd` that
+/// blocks, an SSH session stuck on a prompt) must not hang the CLI forever.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 use n0xis_contracts::Va;
 use serde_json::{Value, json};
@@ -117,13 +123,40 @@ impl RemoteAgent {
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|e| SourceError::Load(format!("spawn '{}': {e}", argv.join(" "))))?;
-        let stdin = child.stdin.take().expect("piped stdin");
+        let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
-        let mut io = RemoteIo { stdin, stdout };
 
-        write_line_json(&mut io.stdin, &json!({ "op": "label" }))?;
-        let resp = read_line_json(&mut io.stdout)?;
+        write_line_json(&mut stdin, &json!({ "op": "label" }))?;
+
+        // Read the handshake reply with a deadline. `read_line_json` blocks
+        // forever if the peer opens the pipe but never answers, so run the
+        // blocking read on a thread and time it out — a silent peer must not
+        // wedge the CLI. The reader is handed back on success so the session
+        // keeps using it; on timeout the child is killed (which unblocks the
+        // orphaned read at EOF, so the thread ends cleanly).
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stdout = stdout;
+            let r = read_line_json(&mut stdout);
+            let _ = tx.send((r, stdout));
+        });
+        let (resp, stdout) = match rx.recv_timeout(HANDSHAKE_TIMEOUT) {
+            Ok((Ok(v), reader)) => (v, reader),
+            Ok((Err(e), _)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SourceError::Load(
+                    "remote handshake timed out — the peer opened the connection but sent no response".to_string(),
+                ));
+            }
+        };
         let label = resp["label"].as_str().unwrap_or("remote").to_string();
+        let io = RemoteIo { stdin, stdout };
 
         Ok(RemoteAgent { child, io: Mutex::new(io), label: format!("remote:{label}") })
     }

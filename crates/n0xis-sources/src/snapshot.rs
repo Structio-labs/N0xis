@@ -20,8 +20,15 @@ struct Region {
 }
 
 impl Region {
+    /// Exclusive end address, saturating at `u64::MAX`. A region mapped within
+    /// `len` bytes of the top of the address space (e.g. inline `--bytes` at
+    /// `--addr 0xffff_ffff_ffff_ffff`) would otherwise overflow — a panic in a
+    /// debug build and, with no `overflow-checks` in release, a silent wrap that
+    /// makes the region vanish from `contains`. Saturating keeps it sound both
+    /// ways (the unrepresentable final byte at the very top of the space is
+    /// simply not addressable — a non-issue for any real target).
     fn end(&self) -> u64 {
-        self.base + self.bytes.len() as u64
+        self.base.saturating_add(self.bytes.len() as u64)
     }
     fn contains(&self, va: u64) -> bool {
         va >= self.base && va < self.end()
@@ -167,6 +174,25 @@ mod tests {
         assert_eq!(snap.read(Va(0x1002), 100).unwrap(), vec![3, 4]);
         assert!(snap.contains(Va(0x1003)));
         assert!(!snap.contains(Va(0x2000)));
+    }
+
+    #[test]
+    fn a_region_near_the_top_of_the_address_space_does_not_overflow() {
+        // `base + len == u64::MAX` exactly — no overflow, fully addressable.
+        let snap = Snapshot::builder().region(Va(u64::MAX - 4), vec![1u8, 2, 3, 4]).build();
+        assert!(snap.contains(Va(u64::MAX - 4)));
+        assert_eq!(snap.read(Va(u64::MAX - 4), 4).unwrap(), vec![1, 2, 3, 4]);
+        assert!(!snap.contains(Va(u64::MAX)), "the exclusive end is not mapped");
+
+        // A region based at the very top would wrap `base + len`. `end()` must
+        // saturate — a panic in a debug build, a silent wrap (region vanishes)
+        // in release without overflow-checks. Saturating yields a degenerate
+        // unmapped region instead. Reaching here without a panic is the fix; the
+        // inline `--bytes --addr 0xffff_ffff_ffff_ffff` repro now returns a clean
+        // "not mapped" error rather than crashing with an empty stdout.
+        let top = Snapshot::builder().region(Va(u64::MAX), vec![0x90u8, 0xc3]).build();
+        assert!(!top.contains(Va(u64::MAX)), "a region that cannot fit saturates to empty, never wraps");
+        assert!(matches!(top.read(Va(u64::MAX), 1), Err(SourceError::Unmapped(_))));
     }
 
     #[test]
