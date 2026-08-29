@@ -1123,7 +1123,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
 | Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
-| noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 9 functions, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) is unit-tested only, pending a real-corpus positive |
+| noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** — `call`- *and* `jmp`(tail-call)-to-noreturn — verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 10 functions incl. a `jmp TerminateProcess`, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) fired in 0/14 real DLLs, unit-tested only, pending a real-corpus positive |
 | Import-name resolution | ✅ 2026-08-06 — direct, IAT-slot and thunk callees resolve to `module!name`; imports render by name and reach the known-API signature table |
 | Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
 | Memory SSA | ❌ missing |
@@ -1273,16 +1273,23 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      `CompressToolsLib.dll` (Kenshi) it flags 9 functions, each cross-checked
      with `ir build` to be a single `call-noreturn` block ending in
      `_invalid_parameter_noinfo_noreturn` with no reachable `ret`. But every one
-     of those 9 is a *direct import caller* — the novel **propagation** step (a
-     `sub_XXXX` flagged because it calls another flagged `sub_XXXX`) is so far
-     only **unit-tested on a synthetic chain**, not observed on a real corpus
-     (`rounds == 2` is a confirmation round, *not* proof propagation fired). Per
-     the project rule — a feature earns ✅ only on a real-data *positive* — this
-     stays ⏳ until a genuine cross-function propagation instance is confirmed on
-     a real binary. **Still open in priority 0**: exception-edge recovery
-     (`.xdata` EH handlers → try/catch/finally edges), and resolving a
-     *tail-call* to a proven-noreturn function (today read conservatively as
-     returning).
+     of those 9 is a *direct import caller*. A follow-up added **tail-call →
+     noreturn** handling (MSVC compiles a throw/abort wrapper as `jmp <helper>`,
+     not `call; ret`; the old pass read every tail-call as "may return"),
+     verified on the same binary — a 10th function, `0x18001e3ac`, is now flagged
+     because its sole exit is `jmp TerminateProcess` (cross-checked with
+     `ir build`). But every flagged function across **14 real x64 C++ DLLs**
+     (Kenshi's OGRE stack, CompressToolsLib, …) is still a *direct* import/tail
+     caller — the novel cross-function **propagation** step (a `sub_XXXX` flagged
+     because it calls another flagged `sub_XXXX`) fired in **0 of 14** and is so
+     far only **unit-tested on a synthetic chain** (`rounds == 2` is a
+     confirmation round, *not* proof propagation fired). This is itself a real
+     finding: on this corpus the noreturn wrappers are *leaves* — compilers
+     rarely emit a function whose only exit is a call to another noreturn helper.
+     Per the project rule — ✅ only on a real-data *positive* — the propagation
+     step stays ⏳ until a genuine instance is confirmed on a real binary.
+     **Still open in priority 0**: exception-edge recovery (`.xdata` EH handlers
+     → try/catch/finally edges).
 1. ⬜ **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.

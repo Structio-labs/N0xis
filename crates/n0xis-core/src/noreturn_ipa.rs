@@ -106,7 +106,7 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
             // A function we cannot even build a CFG for is left as "may return"
             // — never flagged on missing evidence.
             if let Ok(cfg) = CfgPass.run(&sub, CfgInput::new(f, max_bytes))
-                && !function_returns(&cfg)
+                && !function_returns(&cfg, &frozen)
             {
                 newly.push(f);
             }
@@ -136,9 +136,16 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
 /// Sound-over-complete: returns `true` on any doubt (a `ret`, an exit we cannot
 /// prove non-returning, an edge leaving the analyzed window, an unrecognized
 /// terminator, or a CFG we could not build). Only a function whose every
-/// reachable exit is a `call-noreturn`, or which has no reachable exit at all
-/// (an infinite loop), returns `false`.
-fn function_returns(cfg: &CfgArtifact) -> bool {
+/// reachable exit is proven non-returning — a `call-noreturn`, or a `tail-call`
+/// whose target is itself noreturn — or which has no reachable exit at all (an
+/// infinite loop), returns `false`.
+///
+/// `noreturn` is the set proven so far, used to classify a *tail-call* exit
+/// (`jmp <fn>` leaving the function): MSVC routinely compiles a throw/abort
+/// wrapper as a tail-call to the noreturn helper, so a tail-call to a known
+/// noreturn — by import name or by a proven address — is a non-returning exit,
+/// not a return.
+fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> bool {
     if cfg.blocks.is_empty() {
         return true; // no evidence → assume it returns
     }
@@ -155,7 +162,15 @@ fn function_returns(cfg: &CfgArtifact) -> bool {
         let b = &cfg.blocks[i];
         match b.terminator.as_str() {
             // A definite return, or an exit we cannot prove non-returning.
-            "ret" | "tail-call" | "ijmp" | "int" => return true,
+            "ret" | "ijmp" | "int" => return true,
+            // A tail-call: non-returning iff its target is itself noreturn
+            // (a known import by name, or a proven function by address);
+            // otherwise it returns whatever the callee returns — assume it may.
+            "tail-call" => {
+                if !tail_call_is_noreturn(b, noreturn) {
+                    return true;
+                }
+            }
             // Proven non-returning — this path dead-ends here, follow no edge.
             "call-noreturn" => {}
             // Internal edge: keep walking, but any successor we cannot place in
@@ -180,8 +195,26 @@ fn function_returns(cfg: &CfgArtifact) -> bool {
             _ => return true,
         }
     }
-    // Every reachable exit was a `call-noreturn`, or there was no exit at all.
+    // Every reachable exit was proven non-returning, or there was no exit at all.
     false
+}
+
+/// Is a `tail-call` block's target a noreturn function? The terminating
+/// instruction carries the resolved import name (`target_name`) and/or the
+/// direct callee address (`target`) — a known-noreturn import by name, or an
+/// address the fixpoint has already proven, makes the tail-call non-returning.
+fn tail_call_is_noreturn(block: &crate::CfgBlock, noreturn: &HashSet<Va>) -> bool {
+    let Some(last) = block.insns.last() else {
+        return false;
+    };
+    let by_name = last
+        .target_name
+        .as_deref()
+        .and_then(|n| n.rsplit('!').next())
+        .map(crate::noreturn::is_known_noreturn)
+        .unwrap_or(false);
+    let by_addr = last.target.is_some_and(|t| noreturn.contains(&t));
+    by_name || by_addr
 }
 
 #[cfg(test)]
@@ -231,6 +264,48 @@ mod tests {
         assert_eq!(art.noreturn, vec![Va(0x1000), Va(0x2000)]);
         assert!(art.rounds >= 2, "flagging the caller needs a second round: {}", art.rounds);
         assert_eq!(art.considered, 3);
+    }
+
+    /// `jmp rel32` bytes from `at` to `target` (a tail call when `target`
+    /// leaves the function).
+    fn jmp_to(at: u64, target: u64) -> Vec<u8> {
+        let rel = (target as i64 - (at as i64 + 5)) as i32;
+        let mut v = vec![0xe9];
+        v.extend_from_slice(&rel.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn a_tail_call_to_a_noreturn_import_is_noreturn_and_propagates() {
+        // throw @ 0x2000:  jmp ExitProcess(0x9000)   — the MSVC throw/abort
+        //                  wrapper shape: a tail call, not `call; ret`.
+        // caller @ 0x1000: call throw(0x2000); ret    — flagged by propagation.
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), call_then(0x1000, 0x2000, &[0xc3]))
+            .region(Va(0x2000), jmp_to(0x2000, 0x9000))
+            .symbol(exitprocess(0x9000))
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = propagate_noreturn(&ctx, &[Va(0x1000), Va(0x2000)], 64);
+        assert!(art.noreturn.contains(&Va(0x2000)), "a tail-call to ExitProcess must be noreturn");
+        assert!(art.noreturn.contains(&Va(0x1000)), "its caller must be flagged by propagation");
+    }
+
+    #[test]
+    fn a_tail_call_to_a_returning_function_is_not_flagged() {
+        // f @ 0x1000: jmp g(0x2000);  g @ 0x2000: ret  — g returns, so the
+        // tail call returns, so f returns. Nothing is noreturn.
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), jmp_to(0x1000, 0x2000))
+            .region(Va(0x2000), vec![0xc3])
+            .build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+
+        let art = propagate_noreturn(&ctx, &[Va(0x1000), Va(0x2000)], 64);
+        assert!(art.noreturn.is_empty(), "a tail-call to a returning function must not be flagged: {:?}", art.noreturn);
     }
 
     #[test]
