@@ -435,10 +435,13 @@ mod tests {
 
     #[test]
     fn coalesces_two_accesses_at_the_same_stack_offset_into_one_local() {
-        // mov [rsp+0x8], rcx ; mov rax, [rsp+0x8] ; ret
+        // Two stores to the same slot: mov [rsp+0x8], rcx ; mov [rsp+0x8], rdx ; ret
+        // (A store/reload pair would no longer test coalescing — the reload is
+        // now store-to-load forwarded away, which is the intended Memory-SSA
+        // behaviour; two stores keep the slot's accesses observable.)
         let code = vec![
             0x48, 0x89, 0x4c, 0x24, 0x08, // mov [rsp+8], rcx
-            0x48, 0x8b, 0x44, 0x24, 0x08, // mov rax, [rsp+8]
+            0x48, 0x89, 0x54, 0x24, 0x08, // mov [rsp+8], rdx
             0xc3,
         ];
         let art = infer_code(code);

@@ -529,6 +529,7 @@ fn ranges_overlap(a_off: i128, a_bytes: i128, b_off: i128, b_bytes: i128) -> boo
 }
 
 /// One available store: `base+off` (byte-`bits` wide) currently holds `value`.
+#[derive(Clone)]
 struct Avail {
     base: String,
     off: i128,
@@ -536,19 +537,134 @@ struct Avail {
     value: MicroExpr,
 }
 
+/// Every `Var` in `e` is an SSA *entry* value (`name.0`), so it is defined at
+/// function entry and thus valid — dominates — in every block. That is what
+/// makes a fact safe to carry *across* blocks without per-value dominance
+/// bookkeeping: `rcx.0` reads the same everywhere, `rax.7` does not.
+fn all_vars_are_entry(e: &MicroExpr) -> bool {
+    match e {
+        MicroExpr::Var(name) => name.ends_with(".0"),
+        MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => true,
+        MicroExpr::Load { addr, .. } => all_vars_are_entry(addr),
+        MicroExpr::Unary(_, v) => all_vars_are_entry(v),
+        MicroExpr::Binary(_, l, r) => all_vars_are_entry(l) && all_vars_are_entry(r),
+        MicroExpr::Cast { expr, .. } => all_vars_are_entry(expr),
+        MicroExpr::AddrOf(inner) => all_vars_are_entry(inner),
+        MicroExpr::Compare { lhs, rhs, .. } => all_vars_are_entry(lhs) && all_vars_are_entry(rhs),
+        MicroExpr::Call { .. } => false,
+    }
+}
+
+/// A value that may be carried across a block boundary: pure (no load/call) and
+/// built only from entry values and constants, so it is valid in any block a
+/// join can reach it from.
+fn is_cross_block_stable(e: &MicroExpr) -> bool {
+    expr_is_pure(e) && all_vars_are_entry(e)
+}
+
+fn same_slot(a: &Avail, base: &str, off: i128, bits: n0xis_arch::Bits) -> bool {
+    a.base == base && a.off == off && a.bits == bits
+}
+
+/// Apply a block's stores/calls to the entry facts, keeping only cross-block-
+/// stable facts — the transfer function of the available-memory dataflow. It
+/// forwards nothing; it only computes what memory a block *exports* to its
+/// successors.
+fn transfer_cross(entry: &[Avail], block: &SsaBlock) -> Vec<Avail> {
+    let mut avail: Vec<Avail> = entry.to_vec();
+    for s in &block.stmts {
+        match &s.stmt {
+            MicroStmt::Store { addr, value, bits } => match mem_key(addr) {
+                Some((base, off)) => {
+                    let bytes = bytes_of(*bits);
+                    avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
+                    if is_cross_block_stable(value) {
+                        avail.push(Avail { base, off, bits: *bits, value: value.clone() });
+                    }
+                }
+                None => avail.clear(),
+            },
+            MicroStmt::Call { .. } => avail.clear(),
+            _ => {}
+        }
+    }
+    avail
+}
+
+/// Meet of the available-memory lattice: a fact survives a join only if *every*
+/// predecessor exports it with the identical value (a disagreement is exactly
+/// where a memory-phi would be needed, so it is conservatively dropped).
+fn intersect_facts(sets: &[&Vec<Avail>]) -> Vec<Avail> {
+    let Some((first, rest)) = sets.split_first() else {
+        return Vec::new();
+    };
+    first
+        .iter()
+        .filter(|a| rest.iter().all(|s| s.iter().any(|o| same_slot(o, &a.base, a.off, a.bits) && o.value == a.value)))
+        .cloned()
+        .collect()
+}
+
+fn facts_eq(a: &[Avail], b: &[Avail]) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|x| b.iter().any(|y| same_slot(y, &x.base, x.off, x.bits) && y.value == x.value))
+}
+
 fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
+    let n = blocks.len();
+    if n == 0 {
+        return false;
+    }
+
+    // Predecessor map over the block Vec (indices key on each block's start VA,
+    // which is how `Successor::to` addresses an edge target).
+    let idx_of: HashMap<u64, usize> = blocks.iter().enumerate().map(|(i, b)| (b.start.0, i)).collect();
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, b) in blocks.iter().enumerate() {
+        for s in &b.successors {
+            if let Some(&j) = idx_of.get(&s.to.0) {
+                preds[j].push(i);
+            }
+        }
+    }
+
+    // Forward dataflow to a fixpoint: `cross_in[b]` is the memory available on
+    // *every* path into block `b`. Entry (block 0, no preds) starts empty.
+    // Monotone and bounded — the fact set can only shrink toward agreement.
+    let mut cross_in: Vec<Vec<Avail>> = vec![Vec::new(); n];
+    for _ in 0..(n + 2) {
+        let cross_out: Vec<Vec<Avail>> = (0..n).map(|b| transfer_cross(&cross_in[b], &blocks[b])).collect();
+        let mut changed = false;
+        for b in 0..n {
+            let new_in = if preds[b].is_empty() {
+                Vec::new()
+            } else {
+                let sets: Vec<&Vec<Avail>> = preds[b].iter().map(|&p| &cross_out[p]).collect();
+                intersect_facts(&sets)
+            };
+            if !facts_eq(&new_in, &cross_in[b]) {
+                cross_in[b] = new_in;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Forwarding pass: seed each block with the memory that reaches its entry
+    // (stage 1b), then run the intra-block walk (stage 1a) which also picks up
+    // same-block stores and forwards every provable load.
     let mut changed = false;
     for b in blocks.iter_mut() {
-        // Availability is intra-block: memory state at a block's entry is not
-        // yet modelled (no memory phi), so start each block empty — sound.
-        let mut avail: Vec<Avail> = Vec::new();
+        let mut avail: Vec<Avail> = cross_in[idx_of[&b.start.0]].clone();
         for s in b.stmts.iter_mut() {
             // 1. Forward loads in this statement's read positions.
             let mut hit: Option<(String, i128)> = None;
             let rewritten = map_stmt_exprs(&s.stmt, &mut |e| {
                 if let MicroExpr::Load { addr, bits, .. } = &e
                     && let Some((base, off)) = mem_key(addr)
-                    && let Some(a) = avail.iter().find(|a| a.base == base && a.off == off && a.bits == *bits)
+                    && let Some(a) = avail.iter().find(|a| same_slot(a, &base, off, *bits))
                 {
                     hit = Some((base, off));
                     return a.value.clone();
@@ -564,22 +680,20 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
                     summary: format!("forwarded load of [{base}{off:+}] to its dominating store"),
                 });
             }
-            // 2. Apply this statement's effect on the availability map.
+            // 2. Apply this statement's effect on the availability map. Same-
+            // block gen may add a mid-function value (valid locally); the
+            // cross-block dataflow above only ever exports entry-stable facts.
             match &s.stmt {
                 MicroStmt::Store { addr, value, bits } => match mem_key(addr) {
                     Some((base, off)) => {
                         let bytes = bytes_of(*bits);
-                        // A store keeps only same-base, non-overlapping slots;
-                        // every different-base slot could alias, so it dies.
                         avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
                         if expr_is_pure(value) {
                             avail.push(Avail { base, off, bits: *bits, value: value.clone() });
                         }
                     }
-                    // Store through an address we cannot name — may hit anything.
                     None => avail.clear(),
                 },
-                // A call may write through any pointer it was handed.
                 MicroStmt::Call { .. } => avail.clear(),
                 _ => {}
             }
@@ -863,6 +977,44 @@ mod tests {
         ];
         let art = optimize(code);
         assert!(mem_forwarded(&art), "a disjoint slot must not block forwarding: {:#?}", art.delta);
+    }
+
+    #[test]
+    fn a_param_stored_before_a_branch_forwards_at_the_join() {
+        // mov [rbp-8], rcx ; if (rdx) rsi=rdx else rsi=r8 ; mov rax,[rbp-8] ; ret
+        // Neither arm touches the slot, so at the join [rbp-8] still holds the
+        // entry value rcx on *both* paths — the cross-block (stage 1b) forward.
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // 0x00 mov [rbp-8], rcx
+            0x48, 0x85, 0xd2, // 0x04 test rdx, rdx
+            0x74, 0x05, // 0x07 je 0x0e
+            0x48, 0x89, 0xd6, // 0x09 mov rsi, rdx
+            0xeb, 0x03, // 0x0c jmp 0x11
+            0x4c, 0x89, 0xc6, // 0x0e mov rsi, r8
+            0x48, 0x8b, 0x45, 0xf8, // 0x11 mov rax, [rbp-8]
+            0xc3, // 0x15 ret
+        ];
+        let art = optimize(code);
+        assert!(mem_forwarded(&art), "the join load should forward across both arms: {:#?}", art.delta);
+        assert!(!has_load(&art), "no stack load should remain at the join: {:#?}", art.blocks);
+    }
+
+    #[test]
+    fn a_slot_overwritten_on_one_path_is_not_forwarded_at_the_join() {
+        // mov [rbp-8], rcx ; if (rdx==0) goto join ; mov [rbp-8], rdx ; join: mov rax,[rbp-8]
+        // One path leaves rcx in the slot, the other rdx — the values disagree
+        // at the join (a memory-phi would be needed), so nothing is forwarded.
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // 0x00 mov [rbp-8], rcx
+            0x48, 0x85, 0xd2, // 0x04 test rdx, rdx
+            0x74, 0x04, // 0x07 je 0x0d
+            0x48, 0x89, 0x55, 0xf8, // 0x09 mov [rbp-8], rdx
+            0x48, 0x8b, 0x45, 0xf8, // 0x0d mov rax, [rbp-8]
+            0xc3, // 0x11 ret
+        ];
+        let art = optimize(code);
+        assert!(!mem_forwarded(&art), "disagreeing values at a join must not forward: {:#?}", art.delta);
+        assert!(has_load(&art), "the join load must remain a load: {:#?}", art.blocks);
     }
 
     #[test]

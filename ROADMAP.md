@@ -1293,8 +1293,8 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 1. 🚧 **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.
-   Built incrementally — see **the SSA → other tools ladder** below for the staged
-   plan; rung **1a (intra-block store-to-load forwarding) is landed and verified**
+   Built incrementally — see **the analysis-depth staged plan** below; stage
+   **1a (intra-block store-to-load forwarding) is landed and verified**
    *(2026-08-29)*.
 2. ⬜ **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
    recovery — chicken-and-egg: alias precision needs types, type recovery needs
@@ -1377,14 +1377,14 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
     outside RE specialist's review, 2026-08-29 — a genuine structural gap, not a
     coverage item.)*
 
-### The SSA → other tools ladder (from here to source-level pseudocode)
+### Decompiler analysis-depth: the staged path to source-level pseudocode
 
-The single question a decompiler is judged on is *does the pseudocode read like
-source?* The path there is not one feature — it is a **ladder of representations**,
-each rung unlocking the next. This is the concrete plan from where N0xis stands to
-decompiler parity, with the *observable output change* each rung buys, so progress
-is legible and each rung has a real definition-of-done (verified on a real binary,
-not a synthetic sample — the project's verify-before-✅ rule).
+A decompiler is judged on one thing — *does the pseudocode read like source?* —
+and the path there is a sequence of **representations**, each a prerequisite for
+the next. This is the concrete, staged plan from where N0xis stands to
+decompiler parity, with the *observable output change* each stage buys, so
+progress is measurable and each stage has a real definition-of-done: verified on
+a real binary, not a synthetic sample (the project's verify-before-✅ rule).
 
 - **Rung 0 — Register/flags SSA + optimizer + structuring.** ✅ *Done.* Dominance-
   frontier phi placement, Cytron renaming, flag-precise branch conditions,
@@ -1400,8 +1400,19 @@ not a synthetic sample — the project's verify-before-✅ rule).
     spill/reload reads `return rcx`, not `return *(rbp-8)`. Verified on real x64
     (`CompressToolsLib::OpenImage`: locals forward, 8 deref-loads across 22 local
     refs; 60 functions decompiled clean).
-  - **1b — cross-block memory SSA.** ⬜ Explicit memory versions + a memory-phi at
-    join points, so forwarding survives an `if`/loop, not just a straight line.
+  - **1b — cross-block forwarding.** 🚧 *(2026-08-30.)* A forward available-memory
+    dataflow carries a slot's value along CFG edges and meets at joins by
+    intersection (a fact survives only if every predecessor exports the identical
+    value — a disagreement is exactly where a memory-phi would be needed, so it is
+    dropped). Restricted to entry-value/constant stores, which dominate every
+    block, so no per-value dominance bookkeeping is needed yet. *Output:* a
+    parameter saved to the stack in the prolog and reloaded in a later block reads
+    as the parameter, across the branch. Unit-tested both ways (forwards at a join
+    when both arms agree; blocked when one arm overwrites the slot), and the
+    optimizer runs clean over 120 real x64 functions (86 multi-block) with no
+    regression — but a *confirmed real-corpus cross-block forward instance* is
+    still pending, so this stays 🚧 (verify-before-✅). Full memory-version/phi
+    representation (relaxing the entry-value restriction) is the follow-on.
   - **1c — dead-store elimination.** ⬜ A store to a slot whose address never
     escapes and is overwritten/unused is removed. *Output:* the prolog's spill
     housekeeping stops cluttering the body.
@@ -1433,8 +1444,8 @@ not a synthetic sample — the project's verify-before-✅ rule).
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control
   flow reads like C, not a flowchart.
 
-- **Rung 7 — Beyond the v0 port (where N0xis can *win*).** ⬜ The advantages other tools
-  structurally lack: every pass already emits an **inspectable delta** (KF-5); the
+- **Rung 7 — Structural advantages this design gets for free.** ⬜ The capabilities the
+  other tools structurally lack: every pass already emits an **inspectable delta** (KF-5); the
   **provenance ⇄ decompile** join (a live watchpoint → the exact decompiled
   statement, KF-1); the RTTI/vtable devirtualization (item 7); and depth-limited
   **symbolic execution** (item 12) for the deobfuscation / computed-target cases a
