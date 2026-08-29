@@ -27,6 +27,9 @@ pub mod v1 {
     pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
     /// Call-graph walk from a root (`function trace`).
     pub const FUNCTION_TRACE: &str = "n0xis.function.trace.v1";
+    /// Whole-program noreturn set: functions proven never to return, via the
+    /// call-graph fixpoint (`function noreturn`, ROADMAP Phase 10 priority 0).
+    pub const FUNCTION_NORETURN: &str = "n0xis.function.noreturn.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).
     pub const XREF: &str = "n0xis.xref.v1";
     /// String-literal search + referencing instructions (`xref string`).

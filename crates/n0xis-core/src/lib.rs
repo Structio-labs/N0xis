@@ -32,6 +32,7 @@ mod ir;
 mod lift;
 mod manifest;
 mod noreturn;
+mod noreturn_ipa;
 mod optimize;
 mod pointer;
 mod profile;
@@ -85,6 +86,7 @@ pub use ir::{
 pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
 pub use noreturn::is_known_noreturn;
+pub use noreturn_ipa::{propagate_noreturn, NoReturnArtifact, NoReturnInput, NoReturnPropagatePass};
 pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};
 pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, PointerPathInput, PointerPathPass, PointerRoot};
 pub use provenance::{ProvenanceEntry, ProvenanceGraph, ProvenanceHit, ProvenanceInput, ProvenancePass};
@@ -131,6 +133,14 @@ pub struct Ctx<'a> {
     pub arch: &'a dyn Arch,
     pub symbols: Option<&'a dyn SymbolProvider>,
     pub modules: Option<&'a dyn ModuleProvider>,
+    /// Entry addresses of functions proven never to return — the output of the
+    /// whole-program noreturn fixpoint ([`NoReturnPropagatePass`]). When set, a
+    /// direct `call` to one of these ends its block like a call to a known
+    /// noreturn import, so a caller's dead fall-through is pruned even when the
+    /// callee is one of N0xis's *own* discovered functions, not a named import
+    /// (ROADMAP Phase 10, priority 0 — the CFG-fidelity follow-on). `None` =
+    /// intraprocedural analysis with imports as the only noreturn oracle.
+    pub noreturn: Option<&'a std::collections::HashSet<n0xis_contracts::Va>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -140,6 +150,7 @@ impl<'a> Ctx<'a> {
             arch,
             symbols: None,
             modules: None,
+            noreturn: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -148,6 +159,11 @@ impl<'a> Ctx<'a> {
     }
     pub fn with_modules(mut self, modules: &'a dyn ModuleProvider) -> Self {
         self.modules = Some(modules);
+        self
+    }
+    /// Attach a set of proven-noreturn function addresses (see the field docs).
+    pub fn with_noreturn(mut self, noreturn: &'a std::collections::HashSet<n0xis_contracts::Va>) -> Self {
+        self.noreturn = Some(noreturn);
         self
     }
 }

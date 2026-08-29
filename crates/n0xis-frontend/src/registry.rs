@@ -1400,6 +1400,73 @@ impl Plugin for AnalysisPasses {
                 }
             }),
         ));
+
+        reg.add(Capability::new(
+            "function.noreturn",
+            "Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that flags every function proven never to return — including a game's own `FatalError`/`Assert` wrappers, not just named imports. Feeds correct CFG fall-through pruning (ROADMAP Phase 10, priority 0).",
+            Some(n0xis_contracts::schema::v1::FUNCTION_NORETURN),
+            Origin::Builtin,
+            Box::new(|args| {
+                let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
+                    Ok(a) => a,
+                    Err(e) => return Response::error("bad-arch", e),
+                };
+                let resolved = match resolve(spec_of(args)) {
+                    Ok(r) => r,
+                    Err((c, m)) => return Response::error(&c, m),
+                };
+                let limit = usize_arg(args, "limit", 4096);
+                let max_bytes = usize_arg(args, "max_bytes", 0x4000);
+                let mem = resolved.src.as_mem();
+
+                // Function entry set. Prefer the exact `.pdata` exception table
+                // (every function, precise) — a whole-program pass wants *every*
+                // node, and a prologue scan misses most of them. Fall back to a
+                // prologue scan over `.text` for a target with no `.pdata`.
+                let funcs: Vec<Va> = 'entries: {
+                    if let Some(base) = crate::source::module_base_of(&resolved.src)
+                        && let Ok(all) = n0xis_core::discover_pdata(mem, base)
+                        && !all.is_empty()
+                    {
+                        break 'entries all.into_iter().take(limit).map(|f| f.va).collect();
+                    }
+                    let explicit_start = args.get("start").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok());
+                    let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
+                    let Some((start, size)) =
+                        crate::source::scan_range(resolved.src.text_range(), resolved.region_len, explicit_start, explicit_size)
+                    else {
+                        break 'entries Vec::new();
+                    };
+                    let dctx = n0xis_core::Ctx::new(mem, arch.as_ref());
+                    let di = n0xis_core::DiscoverInput { start, size, limit, offset: 0 };
+                    match n0xis_core::Pass::run(&n0xis_core::DiscoverPass, &dctx, di) {
+                        Ok(d) => d.functions.iter().map(|f| f.va).collect(),
+                        Err(_) => Vec::new(),
+                    }
+                };
+                if funcs.is_empty() {
+                    return Response::error("no-functions", "no functions discovered to analyze; pass start/size, or use a PE with a `.pdata` table");
+                }
+
+                // Propagate on a symbol-attached `Ctx` (a static PE / snapshot)
+                // so noreturn *imports* seed the fixpoint; a live/remote target
+                // runs without that seed — still correct, just a smaller base.
+                let run = |ctx: &n0xis_core::Ctx| -> Response<Value> {
+                    let art = n0xis_core::propagate_noreturn(ctx, &funcs, max_bytes);
+                    match serde_json::to_value(art) {
+                        Ok(v) => Response::success(n0xis_contracts::schema::v1::FUNCTION_NORETURN, v),
+                        Err(e) => Response::error("serialize", e.to_string()),
+                    }
+                };
+                let resp = match &resolved.src {
+                    Src::Static(pe) => run(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref())),
+                    Src::Snap(s) => run(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(s)),
+                    Src::Live(l) => run(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref())),
+                    Src::Remote(r) => run(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref())),
+                };
+                resp.with_source(resolved.label)
+            }),
+        ));
     }
 }
 

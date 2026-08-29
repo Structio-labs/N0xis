@@ -1496,6 +1496,10 @@ enum FunctionCmd {
     Discover(DiscoverArgs),
     /// Walk the call graph from a root function.
     Trace(FunctionTraceArgs),
+    /// Whole-program noreturn analysis: discover functions, then run the
+    /// call-graph fixpoint that proves which never return — including a game's
+    /// own `FatalError`/`Assert` wrappers, not just named imports.
+    Noreturn(FunctionNoreturnArgs),
 }
 
 #[derive(Args)]
@@ -1552,6 +1556,38 @@ struct ProfileArgs {
     /// counts are what you usually need.
     #[arg(long)]
     exports: bool,
+}
+
+#[derive(Args)]
+struct FunctionNoreturnArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+    /// Inline bytes source; requires `--start` for the base address.
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Analysis range start (defaults to the module's `.text`).
+    #[arg(long)]
+    start: Option<String>,
+    /// Analysis range size in bytes (defaults to the `.text` size).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    size: Option<usize>,
+    /// Cap on functions discovered before the fixpoint runs (default 4096).
+    #[arg(long, default_value_t = 4096)]
+    limit: usize,
+    /// Byte window decoded per function during the fixpoint (default 0x4000).
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    max_bytes: Option<usize>,
 }
 
 #[derive(Args)]
@@ -2222,6 +2258,7 @@ fn main() {
         Command::Ir(IrCmd::Deobfuscate(a)) => cmd_ir_deobfuscate(a, pretty),
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Function(FunctionCmd::Trace(a)) => cmd_function_trace(a, pretty),
+        Command::Function(FunctionCmd::Noreturn(a)) => cmd_function_noreturn(a, pretty),
         Command::Decomp(DecompCmd::Pseudo(a)) => cmd_decomp(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
@@ -3494,6 +3531,25 @@ fn cmd_scan_group(a: ScanGroupArgs, pretty: bool) -> bool {
             "size": a.region.size,
             "pid": a.region.pid,
             "file": a.region.file,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_function_noreturn(a: FunctionNoreturnArgs, pretty: bool) -> bool {
+    run_capability(
+        "function.noreturn",
+        json!({
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+            "arch": a.arch,
+            "start": a.start,
+            "size": a.size,
+            "limit": a.limit,
+            "max_bytes": a.max_bytes,
         }),
         pretty,
     )
