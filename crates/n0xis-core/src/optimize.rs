@@ -529,12 +529,16 @@ fn ranges_overlap(a_off: i128, a_bytes: i128, b_off: i128, b_bytes: i128) -> boo
 }
 
 /// One available store: `base+off` (byte-`bits` wide) currently holds `value`.
+/// `from_seed` records that this fact reached the block along a CFG edge (it was
+/// in `cross_in`), not from a store in this same block — so a forward off it is
+/// a *cross-block* forward (stage 1b), which the delta reports distinctly.
 #[derive(Clone)]
 struct Avail {
     base: String,
     off: i128,
     bits: n0xis_arch::Bits,
     value: MicroExpr,
+    from_seed: bool,
 }
 
 /// Every `Var` in `e` is an SSA *entry* value (`name.0`), so it is defined at
@@ -579,7 +583,7 @@ fn transfer_cross(entry: &[Avail], block: &SsaBlock) -> Vec<Avail> {
                     let bytes = bytes_of(*bits);
                     avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
                     if is_cross_block_stable(value) {
-                        avail.push(Avail { base, off, bits: *bits, value: value.clone() });
+                        avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
                     }
                 }
                 None => avail.clear(),
@@ -658,26 +662,30 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
     let mut changed = false;
     for b in blocks.iter_mut() {
         let mut avail: Vec<Avail> = cross_in[idx_of[&b.start.0]].clone();
+        for a in avail.iter_mut() {
+            a.from_seed = true; // reached this block along an edge, not a local store
+        }
         for s in b.stmts.iter_mut() {
             // 1. Forward loads in this statement's read positions.
-            let mut hit: Option<(String, i128)> = None;
+            let mut hit: Option<(String, i128, bool)> = None;
             let rewritten = map_stmt_exprs(&s.stmt, &mut |e| {
                 if let MicroExpr::Load { addr, bits, .. } = &e
                     && let Some((base, off)) = mem_key(addr)
                     && let Some(a) = avail.iter().find(|a| same_slot(a, &base, off, *bits))
                 {
-                    hit = Some((base, off));
+                    hit = Some((base, off, a.from_seed));
                     return a.value.clone();
                 }
                 e
             });
-            if let Some((base, off)) = hit {
+            if let Some((base, off, cross)) = hit {
                 s.stmt = rewritten;
                 changed = true;
+                let where_ = if cross { "across a block boundary" } else { "within its block" };
                 delta.push(OptDeltaEntry {
                     pass: "mem-forward",
                     at: Some(s.va),
-                    summary: format!("forwarded load of [{base}{off:+}] to its dominating store"),
+                    summary: format!("forwarded load of [{base}{off:+}] to its store ({where_})"),
                 });
             }
             // 2. Apply this statement's effect on the availability map. Same-
@@ -689,7 +697,7 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
                         let bytes = bytes_of(*bits);
                         avail.retain(|a| a.base == base && !ranges_overlap(a.off, bytes_of(a.bits), off, bytes));
                         if expr_is_pure(value) {
-                            avail.push(Avail { base, off, bits: *bits, value: value.clone() });
+                            avail.push(Avail { base, off, bits: *bits, value: value.clone(), from_seed: false });
                         }
                     }
                     None => avail.clear(),

@@ -1400,19 +1400,28 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     spill/reload reads `return rcx`, not `return *(rbp-8)`. Verified on real x64
     (`CompressToolsLib::OpenImage`: locals forward, 8 deref-loads across 22 local
     refs; 60 functions decompiled clean).
-  - **1b — cross-block forwarding.** 🚧 *(2026-08-30.)* A forward available-memory
-    dataflow carries a slot's value along CFG edges and meets at joins by
-    intersection (a fact survives only if every predecessor exports the identical
-    value — a disagreement is exactly where a memory-phi would be needed, so it is
-    dropped). Restricted to entry-value/constant stores, which dominate every
-    block, so no per-value dominance bookkeeping is needed yet. *Output:* a
-    parameter saved to the stack in the prolog and reloaded in a later block reads
-    as the parameter, across the branch. Unit-tested both ways (forwards at a join
-    when both arms agree; blocked when one arm overwrites the slot), and the
-    optimizer runs clean over 120 real x64 functions (86 multi-block) with no
-    regression — but a *confirmed real-corpus cross-block forward instance* is
-    still pending, so this stays 🚧 (verify-before-✅). Full memory-version/phi
-    representation (relaxing the entry-value restriction) is the follow-on.
+  - **1b — cross-block forwarding.** ✅ *(2026-08-30, verified.)* A forward
+    available-memory dataflow carries a slot's value along CFG edges and meets at
+    joins by intersection (a fact survives only if every predecessor exports the
+    identical value — a disagreement is exactly where a memory-phi would be needed,
+    so it is dropped). Restricted to entry-value/constant stores, which dominate
+    every block, so no per-value dominance bookkeeping is needed yet. *Output:* a
+    value written to a slot in one block and read in a later block reads as the
+    value, across the branch. Unit-tested both ways (forwards at a join when both
+    arms agree; blocked when one arm overwrites the slot). **Verified on real x64:**
+    `OIS64.dll` `sub_180005d20` forwards `[rdx.0+0x18]` across a block boundary
+    (cross-checked — the surrounding function decompiles soundly, and a
+    *different* slot whose value disagrees across paths is correctly *not*
+    forwarded). It fires rarely on this corpus (≈2 functions per ~300) precisely
+    because optimized game code is call-heavy and the sound rule clears
+    availability across every call — **which is exactly what escape analysis (a
+    slice of Rung 2) unlocks:** a stack slot whose address is never taken cannot be
+    written by a call, so a callee-saved spill would then forward across the whole
+    body. Full memory-version/phi representation (relaxing the entry-value
+    restriction) is the other follow-on.
+    The delta now tags each forward "within its block" vs "across a block
+    boundary" — the explainability that made this real-corpus verification
+    possible (surfaced via `decomp pseudo --explain`).
   - **1c — dead-store elimination.** ⬜ A store to a slot whose address never
     escapes and is overwritten/unused is removed. *Output:* the prolog's spill
     housekeeping stops cluttering the body.
