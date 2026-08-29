@@ -27,7 +27,7 @@ use n0xis_sources::{plugin_call_once, split_command_line};
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
 use n0xis_sources::{await_watchpoint_hit, MemorySource, WatchKind};
 #[cfg(windows)]
-use n0xis_sources::{best_window, encode_png, focus, list_windows, screenshot, CaptureMethod, LiveProcess, ModuleProvider};
+use n0xis_sources::{best_window, encode_png, focus, list_windows, screenshot, CaptureMethod, LiveProcess};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;

@@ -162,10 +162,10 @@ fn find_header(
             while i + 4 <= bytes.len() {
                 if bytes[i..i + 4] == RTR_MAGIC {
                     let header_rva = region_rva + (off + i) as u32;
-                    if let Some(hb) = read_rva(src, image_base, header_rva, HEADER_MAX) {
-                        if let Some((version, sections)) = parse_header(&hb, image_base) {
-                            return Some((header_rva, version, sections));
-                        }
+                    if let Some(hb) = read_rva(src, image_base, header_rva, HEADER_MAX)
+                        && let Some((version, sections)) = parse_header(&hb, image_base)
+                    {
+                        return Some((header_rva, version, sections));
                     }
                 }
                 i += 4;
@@ -807,6 +807,10 @@ impl Handle {
     }
 }
 
+/// A decoded `TypeDefinition`: `(nsOff, nameOff, encOff, nestedTypeOffs,
+/// methodOffs)` — the shape [`Meta::type_def_ext`] returns.
+type TypeDefExt = (u32, u32, u32, Vec<u32>, Vec<u32>);
+
 /// A reader over the `EmbeddedMetadata` blob. Handle offsets are absolute byte
 /// offsets into `b` (which begins with the metadata signature).
 struct Meta<'a> {
@@ -891,7 +895,7 @@ impl<'a> Meta<'a> {
     }
 
     /// `TypeDefinition` → `(nsOff, nameOff, encOff, nestedTypeOffs, methodOffs)`.
-    fn type_def_ext(&self, off: u32) -> Option<(u32, u32, u32, Vec<u32>, Vec<u32>)> {
+    fn type_def_ext(&self, off: u32) -> Option<TypeDefExt> {
         let (_flags, o) = self.unsigned(off)?;
         let (_base, o) = self.handle(o)?;
         let (ns_off, o) = self.typed_off(o)?;

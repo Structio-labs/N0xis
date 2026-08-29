@@ -713,6 +713,9 @@ impl Pass for GroupScanPass {
             for &a in &matches[anchor] {
                 let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(nfields);
                 let mut ok = true;
+                // `fi` is a field index used as data (compared to `anchor`,
+                // stored in `chosen`), not merely to walk one slice.
+                #[allow(clippy::needless_range_loop)]
                 for fi in 0..nfields {
                     if fi == anchor {
                         chosen.push((fi, a));

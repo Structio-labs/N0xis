@@ -34,3 +34,7 @@ memory.json
 # Linux desktop / archive-manager leftovers on the shared NTFS volume.
 .Trash-*/
 .directory
+
+# The network/protocol layer is a separate private repo (developed as a plugin).
+# It may be checked out here for local work but must never enter this repo.
+/crates/n0xis-net/

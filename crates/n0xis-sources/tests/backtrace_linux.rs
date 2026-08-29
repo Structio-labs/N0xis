@@ -19,14 +19,12 @@ use n0xis_sources::{LinuxProcess, LiveTarget, ModuleProvider, StoppedThread};
 fn wait_until_settled(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        if let Ok(stop) = StoppedThread::attach(pid) {
-            if let Ok(regs) = stop.registers() {
-                if let Ok(live) = LinuxProcess::attach(pid) {
-                    if live.owner_of(n0xis_contracts::Va(regs.rip)).is_some() {
-                        return;
-                    }
-                }
-            }
+        if let Ok(stop) = StoppedThread::attach(pid)
+            && let Ok(regs) = stop.registers()
+            && let Ok(live) = LinuxProcess::attach(pid)
+            && live.owner_of(n0xis_contracts::Va(regs.rip)).is_some()
+        {
+            return;
         }
         if Instant::now() > deadline {
             return;

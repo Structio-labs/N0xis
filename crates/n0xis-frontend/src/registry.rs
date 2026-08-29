@@ -1025,10 +1025,10 @@ impl Plugin for AnalysisPasses {
                             let mods = n0xis_sources::ModuleProvider::modules(live.as_ref()).to_vec();
                             let mut art = None;
                             for m in &mods {
-                                if let Some(f) = &module_filter {
-                                    if !m.name.to_lowercase().contains(f) {
-                                        continue;
-                                    }
+                                if let Some(f) = &module_filter
+                                    && !m.name.to_lowercase().contains(f)
+                                {
+                                    continue;
                                 }
                                 if let Ok(a) = n0xis_core::parse_aot(live.as_ref(), m.base) {
                                     art = Some(a);

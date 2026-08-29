@@ -317,7 +317,7 @@ fn exception_functions(reader: &dyn MemReader, base: u64) -> Option<Vec<RuntimeF
     }
     let raw = reader.read(base + ex_rva, ex_size)?;
     let mut funcs = Vec::with_capacity(ex_size / 12);
-    for c in raw.chunks_exact(12) {
+    for c in raw.as_chunks::<12>().0 {
         funcs.push(RuntimeFunction {
             begin: u32::from_le_bytes(c[0..4].try_into().unwrap()),
             end: u32::from_le_bytes(c[4..8].try_into().unwrap()),

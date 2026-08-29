@@ -530,8 +530,8 @@ fn capture_hit(live: &LinuxProcess, tid: u32, module: Option<&Module>, stack_qwo
     let mut stack = Vec::new();
     let n = stack_qwords.min(512);
     if n > 0 && rsp.0 != 0 && let Ok(buf) = live.read(rsp, n * 8) {
-        for c in buf.chunks_exact(8) {
-            stack.push(u64::from_le_bytes(c.try_into().unwrap()));
+        for c in buf.as_chunks::<8>().0 {
+            stack.push(u64::from_le_bytes(*c));
         }
     }
 
@@ -774,15 +774,15 @@ pub fn await_watchpoint_hit_where(
                     // site is not the setter we want. Resume with the watchpoint
                     // still armed, and — unlike a condition miss — don't spend the
                     // hot-site budget on it (a resumed write does not re-fault).
-                    if let Ok(h) = &captured {
-                        if exclude_rip.iter().any(|&(lo, hi)| h.rip.0 >= lo && h.rip.0 < hi) {
-                            pokeuser(tid, dr_off(6), 0);
-                            if kind == WatchKind::Execute {
-                                set_eflags_rf(tid);
-                            }
-                            s.cont(tid, 0);
-                            continue;
+                    if let Ok(h) = &captured
+                        && exclude_rip.iter().any(|&(lo, hi)| h.rip.0 >= lo && h.rip.0 < hi)
+                    {
+                        pokeuser(tid, dr_off(6), 0);
+                        if kind == WatchKind::Execute {
+                            set_eflags_rf(tid);
                         }
+                        s.cont(tid, 0);
+                        continue;
                     }
                     let matched = match (cond, &captured) {
                         (Some(c), Ok(h)) => c.matches(&h.registers),

@@ -11,6 +11,12 @@
 //! never bind to a native image, and a dump from a different build must be
 //! rejected rather than applied. On this corpus a confident wrong name is the
 //! worst possible output — it poisons every downstream command at once.
+//!
+//! Windows-only: the fixture uses the test binary itself as a real PE with a
+//! known image base and `.text` RVAs. On a non-PE host (an ELF `n0xis`) there
+//! is no equivalent self-image, so these end-to-end assertions are gated to
+//! Windows; the cross-platform `n0xis-il2cpp` unit tests cover the parser.
+#![cfg(windows)]
 
 use std::process::Command;
 

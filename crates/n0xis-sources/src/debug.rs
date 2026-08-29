@@ -353,8 +353,8 @@ fn capture_hit(
             ReadProcessMemory(h_process, rsp.0 as *const c_void, buf.as_mut_ptr() as *mut c_void, want, &mut read)
         };
         if ok != 0 {
-            for chunk in buf[..read - (read % 8)].chunks_exact(8) {
-                stack.push(u64::from_le_bytes(chunk.try_into().unwrap()));
+            for chunk in buf[..read - (read % 8)].as_chunks::<8>().0 {
+                stack.push(u64::from_le_bytes(*chunk));
             }
         }
     }
@@ -688,8 +688,9 @@ pub fn await_watchpoint_hit_where(
     // notification — must be `DBG_CONTINUE`d, not handed back to the target
     // (doing so crashes it: the cause of the "watchpoint kills the game" bug).
     let mut first_bp_seen = false;
-    // Budget for non-matching conditional hits — see the bail-out below.
-    const MAX_CONDITION_MISSES: u32 = 300;
+    // Budget for non-matching conditional hits — see the bail-out below. The
+    // one shared number, not a per-OS copy (`crate::hit`).
+    use crate::hit::MAX_CONDITION_MISSES;
     let mut misses: u32 = 0;
 
     loop {

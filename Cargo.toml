@@ -5,7 +5,11 @@ resolver = "3"
 members = ["crates/*"]
 # The archived v0 binary is its own independent crate (kept buildable for the
 # Phase 2 parity gate) — not a workspace member.
-exclude = ["archive/n0x-cli-rs-v0"]
+# The network/protocol layer lives in its own private repo now (developed as a
+# plugin). If it is checked out into `crates/n0xis-net/` for local work it must
+# NOT be pulled into this workspace by the `crates/*` glob — it is git-ignored
+# here and builds independently.
+exclude = ["archive/n0x-cli-rs-v0", "crates/n0xis-net"]
 
 [workspace.package]
 version = "0.1.0"
