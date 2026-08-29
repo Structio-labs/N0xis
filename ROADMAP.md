@@ -1132,6 +1132,13 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Indirect / virtual call resolution | ❌ missing — IAT/direct only |
 | SIMD / FP lift | ❌ missing — integer set only; degrades to `asm` nodes |
 | PDB / type ingestion | ❌ missing |
+| C++ RTTI / vtable / class recovery | ❌ missing — no RTTI parse, no vtable typing, no class model (highest-leverage gap for a C++ game corpus) |
+| Library-function identification (FLIRT-class) | ❌ missing — statically-linked CRT/STL/runtime code is decompiled by hand; `sig validate` is the primitive, but there is no shipped signature library or auto-apply |
+| Calling-convention & argument recovery | 🚧 early — arity + return only; CC is *assumed* x64-fastcall, no `this`call/vectorcall/variadic detection |
+| Stack-frame reconstruction (SP-delta, FPO) | 🚧 partial — locals recovered, but no explicit frame model, no frame-pointer-omission handling, no stack arrays/spills as typed variables |
+| Output readability (goto-elim, `&&`/`\|\|`, `?:`, loop forms) | 🚧 basic — reducible CFGs structure, but no aggressive goto elimination, compound-condition, ternary, or precise `for`/`while`/`do` recovery |
+| Signedness recovery | ❌ missing — operators/casts render without signed-vs-unsigned inference |
+| Global / data-segment typing | 🚧 early — `xref`/`xref string` exist, but globals are untyped and data-flow does not reach the decompiler |
 
 ### The gap in detail (what parity actually requires)
 
@@ -1147,6 +1154,12 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Memory SSA | SSA over memory (versioned store/load) | ❌ SSA over registers/flags only — **why** expr-prop is conservative |
 | Interprocedural propagation | types / values / CC across the call graph | ❌ intraprocedural; only the ~30-entry API table crosses a call |
 | Compiler idioms | magic-division, `rep`-string→`mem*`, stack canary, strlen-inlining, cmov→min/max, SSE idioms, … | 🚧 a handful (`const identify`, junk, opaque predicates) |
+| C++ RTTI / vtables | parse MSVC (`RTTICompleteObjectLocator`, `type_info`) and Itanium RTTI → class names, base-class graph, vtable→method typing; feed devirtualization | ❌ none — the single biggest lever for a C++ game corpus (another tool "class informer", another tool RTTI analyzer) |
+| Library-function ID | a signature DB (another tool FLIRT / another tool Function-ID) that names statically-linked CRT/STL/runtime code instead of decompiling it | ❌ `sig validate` supplies the invariance primitive; no shipped library, no auto-apply pass |
+| Calling convention | classify the CC and recover arg count/types by entry-liveness + call-site agreement; detect variadic and `this` | 🚧 arity + return only; CC assumed, so an un-prototyped function renders guessed arguments |
+| Stack frame | SP-delta tracking across the function, FPO-function handling, stack arrays/spills surfaced as typed locals | 🚧 locals only; no frame reconstruction, no FPO |
+| Readability | eliminate gotos, recover `&&`/`\|\|` from short-circuit CFG diamonds, `?:`, and `for`/`while`/`do` + `break`/`continue` | 🚧 structures reducible CFGs; the readability passes other tools polished for a decade are not built |
+| Signedness | infer signed/unsigned from flag use and operation shape; render the right operators and casts | ❌ none |
 
 ### Prioritized plan (ordered by leverage × cost, not size)
 
@@ -1254,14 +1267,53 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 6. ⬜ **Compiler-idiom library — the endless backlog.** The "hundreds of idioms"
    that are 20 years of a source-level decompiler/another tool rules. Each idiom is independent and
    individually cheap; grow the library continuously. Never "done."
+7. ⬜ **C++ RTTI / vtable / class recovery — the highest-leverage addition for
+   *this* corpus.** Game engines are deep-hierarchy C++ with pervasive virtual
+   dispatch, and the class graph is *already in the binary*: MSVC RTTI
+   (`RTTICompleteObjectLocator` → `type_info` → base-class array) and Itanium RTTI
+   encode names, bases and vtable layout directly. Parsing it names classes, types
+   each vtable slot to its method, and — composed with priorities 0–1 — turns
+   `call qword ptr [rax+0x40]` into a *resolved* virtual call, closing the ❌
+   "indirect / virtual call resolution" gap the value-set pass cannot. It is both a
+   substantial feature (another tool's class informer, another tool's RTTI analyzer) and a
+   floor-raiser specific to the corpus, so it ranks at the top of the additions.
+8. ⬜ **Library-function identification (FLIRT-class signatures) — the biggest
+   time-lever.** A release build is a large fraction *known* code: the CRT, the
+   STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
+   Function-ID) names `memcpy`, `std::_Tree::_Insert`, `operator new` instead of
+   decompiling them by hand — the single change that most shrinks what a human must
+   read. N0xis already ships the invariance primitive (`sig validate`, refusing
+   <3 independent samples); this item is the *signature library* plus the auto-apply
+   pass over it. High ROI and independent of the memory-SSA track, so it can land
+   early and in parallel.
+9. ⬜ **Calling-convention & argument recovery — the prototype the whole render
+   hangs on.** Classify the CC (fastcall / stdcall / vectorcall / `this` / custom)
+   and recover argument count, types and variadicity from entry-liveness plus
+   call-site agreement, instead of assuming x64-fastcall-with-four-args. Composes
+   directly with the function-summary IPA (priority 3); it is what makes an
+   *un*-prototyped function render the arguments it actually takes.
+10. ⬜ **Stack-frame reconstruction — the foundation readability sits on.** Track
+    the stack-pointer delta across the function, handle frame-pointer-omitted (FPO)
+    functions, and surface stack arrays and spilled locals as *typed* variables
+    rather than raw `[rsp+N]`. Feeds type recovery and alias, and is a prerequisite
+    for other tools' readable-locals output.
+11. ⬜ **Output-readability structuring — the "reads like a source-level decompiler" axis.** Distinct
+    from CFG *correctness* (priority 0), this is what a user sees first: aggressive
+    goto elimination, recovering `&&` / `||` from short-circuit CFG diamonds,
+    ternary `?:`, precise loop forms (`for` / `while` / `do-while` with
+    `break` / `continue`), rendering a jump table as a `switch` rather than an
+    `if`-chain, and **signedness inference** so operators and casts are correct.
+    The other tools have a decade of polish here; it is a continuous dimension, not a
+    single fix.
 
 ### Two framing rules this phase encodes
 
 - **The right priority is a function of the target corpus.** N0xis's is game
-  engines on x64 Windows — which pulls **SIMD up** (a floor problem, not coverage)
-  and **PDB down** (game builds are usually stripped). A general-purpose x64
-  decompiler would order these differently. State the corpus *before* arguing the
-  order.
+  engines on x64 Windows — which pulls **SIMD up** (a floor problem, not coverage),
+  **RTTI/vtable class recovery and library-function ID up** (deep-hierarchy C++
+  with heavy STL/CRT), and **PDB down** (game builds are usually stripped). A
+  general-purpose x64 decompiler would order these differently. State the corpus
+  *before* arguing the order.
 - **Correctness before power.** The lowest foundation is a *correct* CFG, not a
   *powerful* memory model over an incorrect one. `sound over complete` makes a wrong
   graph the worst outcome — fix the graph (priority 0) before deepening the data
@@ -1269,7 +1321,9 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 
 > **Why this is the right shape of work, not a smaller feature list.** The missing
 > pieces classify cleanly into a handful of *independent* projects — Memory SSA,
-> interprocedural analysis, EH recovery, SIMD lift, an idiom library — rather than
+> interprocedural analysis, EH recovery, SIMD lift, an idiom library, RTTI/vtable
+> class recovery, a FLIRT-class signature library, calling-convention recovery,
+> stack-frame reconstruction, and the readability passes — rather than
 > "we don't know how." That is a maturity signal: the decompiler core exists, and
 > what remains is heuristics and depth. This phase also feeds CONCEPT §2's
 > north-star directly — the interprocedural summary layer it builds (priority 3) is
