@@ -1392,7 +1392,9 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
   *Output:* SSA pseudo-C, but memory still reads as raw `*(rbp - 8)` and every
   value dies at the first spill.
 
-- **Rung 1 — Memory SSA (values flow *through* memory).** 🚧
+- **Rung 1 — Memory SSA (values flow *through* memory).** ✅ *(2026-08-30 — the
+  spine is complete: 1a + 1b + 1c, standing on escape analysis 2a; verified sound
+  on real Win64/MSVC and Linux/GCC code.)*
   - **1a — intra-block store-to-load forwarding.** ✅ *(2026-08-29, verified.)* A
     `Load` from a slot a dominating un-clobbered `Store` wrote becomes the stored
     value; keyed by the base's SSA name + constant offset, width-exact, pure-value
