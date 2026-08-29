@@ -1351,6 +1351,28 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
     `if`-chain, and **signedness inference** so operators and casts are correct.
     The other tools have a decade of polish here; it is a continuous dimension, not a
     single fix.
+12. ⬜ **Depth-limited symbolic / concolic execution — the engine the hard cases
+    need.** The passes above are all *static abstract* interpretation:
+    value-set gives the *possible values* of an SSA variable, but never the
+    *conditions* under which each arises. Three of the hardest problems on this
+    corpus are fundamentally about *executing* a slice, not abstracting it:
+    - **Control-flow deobfuscation** — a flattened/opaque-predicate dispatcher is
+      cheap to defeat by concretely (or symbolically) executing the state
+      variable and reading off the real successor, where a pattern matcher stalls.
+    - **Virtual-call / indirect-branch resolution** — concolic-execute the
+      dispatch slice (this-ptr → vtable load → slot) to recover the concrete
+      target, complementing the *static* RTTI/vtable recovery (item 7) when the
+      table is computed rather than a constant.
+    - **State-dependent conditions** — recover *which inputs* drive a branch, not
+      just that the branch exists — the missing half of `ir value-set`.
+    Scope it as a **bounded** engine (depth/loop/path caps, a small SMT or an
+    interval/concrete fallback — *not* a general symbolic executor), built on the
+    existing SSA + `ValueSetPass`, and expose it as its own inspectable pass
+    (`ir symrun` or similar) rather than hiding it inside another. Sequence it
+    alongside priorities 1–2 (it wants Memory SSA underneath) — the deobfuscation
+    and devirtualization items are its first two consumers. *(Raised by an
+    outside RE specialist's review, 2026-08-29 — a genuine structural gap, not a
+    coverage item.)*
 
 ### Two framing rules this phase encodes
 
@@ -2237,6 +2259,21 @@ through plain syscalls — no signed driver, no code-integrity fight:
    via portals). Abstract the HUD hotkey/window backend behind a trait.
 5. ⬜ **macOS** — a `LiveTarget` that stays unimplemented (`HAS_LIVE_ADAPTER=false`) until a
    `mach_vm_read`/`thread_get_state` adapter lands; frontends already degrade, not fail.
+6. ⬜ **Flexible dynamic-symbol resolution for ELF/GLIBC across distros.** The Windows path
+   resolves imports through the PE IAT; the Linux live path needs the ELF equivalent —
+   `.dynsym`/`.dynstr`, the GNU hash table, versioned symbols (`GLIBC_2.xx`), and the PLT/GOT
+   indirection — and it must be *robust to distro variance* (glibc vs musl, stripped
+   `.symtab`, prelink/relro layouts). Without it a Linux-native `--pid` renders `sub_…` where
+   the Windows path renders `module!name`. *(Flagged by an outside RE specialist, 2026-08-29.)*
+7. ⬜ **Verify the ARM64 track on real hardware — resolve the standing caveat.** ARM64 is
+   still "implemented and self-tested, **not** verified" everywhere it appears, because it has
+   only ever run against synthetic samples and disassembler self-checks — exactly the gap the
+   project's verify-before-✅ rule forbids leaving unstated. There is now a real ARM target on
+   the bench: the **x96 mini** Android/AArch64 box (Hi3798MV200), reachable over SSH/ADB. Run
+   the real static→(live) pipeline against genuine AArch64 binaries on it — the same
+   sp-vs-`xzr`-class bug that only surfaced against real LLVM output is exactly what a synthetic
+   test cannot catch. Until this runs, every ARM64 ✅ stays qualified. *(Opportunity noted
+   2026-08-29; ties Phase 7's ARM64 caveat to the verification discipline.)*
 
 ### Framing rules this phase encodes
 
@@ -2407,6 +2444,14 @@ of the rest is recorded below.
 - ⬜ **Event sourcing is partial** — patch journal (`.n0x/patches/`) and per-address
   annotation history, but no shared op-log. Fine for undo; insufficient if replication or
   agent-visible history is ever wanted. Deliberate, not forgotten.
+- ⬜ **Agent-feedback observability — no data on what actually gets used.** The MCP/registry
+  surface is shipped, but nothing records *which* capabilities agents call, where calls error,
+  or which requests repeat — so prioritization is guesswork. Add a lightweight, **opt-in,
+  local-only** structured log to `.n0x/logs/` (one JSON line per capability dispatch:
+  name, source kind, ok/error + error code, duration) — no network, no phone-home, open by
+  construction. It is the cheapest way to let real usage drive the roadmap instead of
+  intuition, and it doubles as a debugging trail for agent sessions. *(Flagged by an outside
+  RE specialist, 2026-08-29.)*
 
 ### Architectural debts (recorded 2026-08-06, from a seam audit) ⬜
 
