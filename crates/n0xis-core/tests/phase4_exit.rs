@@ -61,15 +61,18 @@ fn labeled_arity_with_a_skipped_middle_register() {
 
 /// Label: two accesses at the *same* stack offset coalesce into exactly one
 /// named local, referenced consistently at both use sites.
+///
+/// Uses two live *reads* of the slot: a store/reload version is now fully
+/// store-to-load forwarded and the spent store dead-eliminated (Memory-SSA
+/// Rungs 1a–1c), which correctly collapses `[rsp+0x10] = rcx; … = [rsp+0x10]`
+/// to the value itself — the "local" was only a spill. Two live reads keep a
+/// genuine slot to name.
 #[test]
 fn labeled_local_used_at_two_sites_stays_one_name() {
-    // mov [rsp+0x10], rcx ; mov rax, [rsp+0x10] ; add rax, 1 ; mov [rsp+0x10], rax ; mov rax, [rsp+0x10] ; ret
+    // mov rax, [rsp+0x10] ; add rax, [rsp+0x10] ; ret
     let code = vec![
-        0x48, 0x89, 0x4c, 0x24, 0x10, // mov [rsp+0x10], rcx
         0x48, 0x8b, 0x44, 0x24, 0x10, // mov rax, [rsp+0x10]
-        0x48, 0x83, 0xc0, 0x01, // add rax, 1
-        0x48, 0x89, 0x44, 0x24, 0x10, // mov [rsp+0x10], rax
-        0x48, 0x8b, 0x44, 0x24, 0x10, // mov rax, [rsp+0x10]
+        0x48, 0x03, 0x44, 0x24, 0x10, // add rax, [rsp+0x10]
         0xc3,
     ];
     let out = decomp(code);
@@ -77,7 +80,7 @@ fn labeled_local_used_at_two_sites_stays_one_name() {
     let occurrences = body.matches("local_10").count();
     assert!(occurrences >= 2, "expected local_10 referenced at 2+ sites: {body}");
     // Exactly one distinct local name at offset 0x10 — never local_10 *and*
-    // some other alias for the same slot.
+    // some other alias for the same slot, and never the raw `rsp+off` form.
     assert!(!body.contains("rsp"), "the raw rsp+offset form must not leak through: {body}");
 }
 
