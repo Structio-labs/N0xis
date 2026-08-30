@@ -571,9 +571,68 @@ fn param_api_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, &
     out
 }
 
+/// Map a register parameter's entry version (`"rcx.0"`) to the C++ class whose
+/// vtable a constructor installs into `*this` — the strongest possible
+/// identification of the pointer's type, and what turns `struct_rcx_0 *rcx`
+/// into `icu_64::GregorianCalendar *rcx` (ROADMAP Phase 10 item 7). Detects the
+/// MSVC constructor idiom `*param = &Class::vtable` in either form — the store
+/// value is the vtable constant directly, or a copy of an intermediate that
+/// holds it (`t = &Class::vtable; *param = t`, the shape after lifting) — using
+/// the RTTI vtable→class map the frontend attached. Empty without that map.
+fn constructor_vtable_params(blocks: &[SsaBlock], vtables: Option<&std::collections::HashMap<u64, String>>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(vt) = vtables else { return out };
+    // A constant — bare or address-of — that equals a known vtable → its class.
+    let class_of = |e: &MicroExpr| -> Option<&String> {
+        let value = match e {
+            MicroExpr::AddrOf(inner) => match inner.as_ref() {
+                MicroExpr::Const { value, .. } => *value,
+                _ => return None,
+            },
+            MicroExpr::Const { value, .. } => *value,
+            _ => return None,
+        };
+        vt.get(&u64::try_from(value).ok()?)
+    };
+    // SSA var ← a materialized vtable address (the copied-form intermediate).
+    let mut var_class: BTreeMap<&str, &String> = BTreeMap::new();
+    for b in blocks {
+        for s in &b.stmts {
+            if let MicroStmt::Assign { dst, value } = &s.stmt
+                && let Some(c) = class_of(value)
+            {
+                var_class.insert(dst.as_str(), c);
+            }
+        }
+    }
+    // A store of such an address to offset 0 of a parameter's *entry* version
+    // (`*rcx.0 = &Class::vtable`) types that parameter as the class. Keying on
+    // the `.0` version keeps it to the incoming pointer — a later, reassigned
+    // version storing a vtable is a different object, not this parameter.
+    for b in blocks {
+        for s in &b.stmts {
+            if let MicroStmt::Store { addr, value, .. } = &s.stmt
+                && let Some((base, 0)) = as_base_offset(addr)
+                && base.ends_with(".0")
+            {
+                let class = class_of(value).or_else(|| match value {
+                    MicroExpr::Var(x) => var_class.get(x.as_str()).copied(),
+                    _ => None,
+                });
+                if let Some(c) = class {
+                    out.insert(base, c.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The display type of one register parameter, inferred from how it is used —
 /// the "recover typed variables from use" half of Rung 3, for the signature.
 /// Precedence is by strength of evidence:
+/// 0. a **constructor-installed vtable class** (`*this = &Class::vtable` — the
+///    definitive identity of the object, RTTI item 7),
 /// 1. a **recovered struct pointer** (we saw concrete field accesses through
 ///    it — the strongest, most local proof it's a pointer-to-aggregate),
 /// 2. a **known-API argument type** (`HANDLE`, `LPCWSTR`, `DWORD`, …),
@@ -582,10 +641,14 @@ fn param_api_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, &
 /// 4. otherwise the generic `uint64_t` (unchanged from before).
 fn param_ctype(
     pname: &str,
+    ctor_classes: &BTreeMap<String, String>,
     ptr_bases: &BTreeSet<&str>,
     struct_map: &BTreeMap<&str, &str>,
     api: &BTreeMap<String, &'static str>,
 ) -> CType {
+    if let Some(class) = ctor_classes.get(pname) {
+        return CType::named(format!("{class} *"));
+    }
     if let Some(sty) = struct_map.get(pname) {
         return CType::named(format!("{sty} *"));
     }
@@ -609,11 +672,12 @@ fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let struct_map: BTreeMap<&str, &str> = structs.iter().map(|s| (s.base_var.as_str(), s.type_name.as_str())).collect();
     let ptr_bases: BTreeSet<&str> = accesses.iter().map(|a| a.base.as_str()).collect();
     let api_types = param_api_types(cfg, blocks);
+    let ctor_classes = constructor_vtable_params(blocks, ctx.vtables);
     let params = arg_regs[..arity]
         .iter()
         .map(|&reg| {
             let pname = format!("{reg}.0");
-            ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ptr_bases, &struct_map, &api_types) }
+            ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ctor_classes, &ptr_bases, &struct_map, &api_types) }
         })
         .collect();
 
@@ -638,6 +702,69 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
         TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks }).unwrap()
+    }
+
+    fn block_with(stmts: Vec<MicroStmt>) -> SsaBlock {
+        SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1010),
+            terminator: "ret".to_string(),
+            successors: vec![],
+            phis: vec![],
+            stmts: stmts.into_iter().map(|stmt| crate::ssa::SsaStmt { va: Va(0x1000), stmt }).collect(),
+            condition: None,
+        }
+    }
+
+    #[test]
+    fn a_constructor_vtable_store_types_this_as_the_class() {
+        // Both idiom forms: inlined (`*rcx.0 = &Class::vtable`) and copied
+        // (`t = &Class::vtable; *rdx.0 = t`), plus the copied form for the
+        // AddrOf-wrapped constant the lift actually produces for a `lea`.
+        let mut vt = std::collections::HashMap::new();
+        vt.insert(0x180021548u64, "std::exception".to_string());
+        vt.insert(0x147ccc5f8u64, "icu_64::GregorianCalendar".to_string());
+
+        let inlined = block_with(vec![MicroStmt::Store {
+            addr: MicroExpr::var("rcx.0"),
+            value: MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))),
+            bits: 64,
+        }]);
+        let copied = block_with(vec![
+            MicroStmt::Assign { dst: "rax.2".into(), value: MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x147ccc5f8, 64))) },
+            MicroStmt::Store { addr: MicroExpr::var("rdx.0"), value: MicroExpr::var("rax.2"), bits: 64 },
+        ]);
+
+        let m = constructor_vtable_params(&[inlined, copied], Some(&vt));
+        assert_eq!(m.get("rcx.0").map(String::as_str), Some("std::exception"));
+        assert_eq!(m.get("rdx.0").map(String::as_str), Some("icu_64::GregorianCalendar"));
+        // Precedence: the ctor class beats a recovered `struct_rcx_0`.
+        let struct_map: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
+        let ty = param_ctype("rcx.0", &m, &BTreeSet::new(), &struct_map, &BTreeMap::new());
+        assert_eq!(ty.name.as_deref(), Some("std::exception *"));
+    }
+
+    #[test]
+    fn a_non_vtable_store_and_a_missing_map_leave_the_type_untouched() {
+        // Soundness: a store of an ordinary constant, or no RTTI map at all,
+        // yields no class typing — the parameter types exactly as before.
+        let mut vt = std::collections::HashMap::new();
+        vt.insert(0x180021548u64, "std::exception".to_string());
+        // A store to `*rcx.0` of a value that is NOT a vtable.
+        let non_vtable = block_with(vec![MicroStmt::Store {
+            addr: MicroExpr::var("rcx.0"),
+            value: MicroExpr::constant(0x1234, 64),
+            bits: 64,
+        }]);
+        assert!(constructor_vtable_params(std::slice::from_ref(&non_vtable), Some(&vt)).is_empty());
+        // A real vtable store but with no map attached → still empty.
+        let vtable_store = block_with(vec![MicroStmt::Store {
+            addr: MicroExpr::var("rcx.0"),
+            value: MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))),
+            bits: 64,
+        }]);
+        assert!(constructor_vtable_params(&[vtable_store], None).is_empty());
     }
 
     #[test]
@@ -746,14 +873,15 @@ mod tests {
         let structs: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
         let api: BTreeMap<String, &'static str> = [("rdx.0".to_string(), "HANDLE"), ("rcx.0".to_string(), "LPVOID")].into_iter().collect();
         let ptr: BTreeSet<&str> = ["rcx.0", "r8.0"].into_iter().collect();
+        let no_ctor = BTreeMap::new();
         // rcx: deref'd struct *and* an API hit -> struct wins.
-        assert_eq!(param_ctype("rcx.0", &ptr, &structs, &api).name.as_deref(), Some("struct_rcx_0 *"));
+        assert_eq!(param_ctype("rcx.0", &no_ctor, &ptr, &structs, &api).name.as_deref(), Some("struct_rcx_0 *"));
         // rdx: only an API hit -> the named API type.
-        assert_eq!(param_ctype("rdx.0", &ptr, &structs, &api).name.as_deref(), Some("HANDLE"));
+        assert_eq!(param_ctype("rdx.0", &no_ctor, &ptr, &structs, &api).name.as_deref(), Some("HANDLE"));
         // r8: dereferenced but no struct/API -> void *.
-        assert_eq!(param_ctype("r8.0", &ptr, &structs, &api).name.as_deref(), Some("void *"));
+        assert_eq!(param_ctype("r8.0", &no_ctor, &ptr, &structs, &api).name.as_deref(), Some("void *"));
         // r9: no evidence at all -> generic (name None, renders uint64_t).
-        assert_eq!(param_ctype("r9.0", &ptr, &structs, &api).name, None);
+        assert_eq!(param_ctype("r9.0", &no_ctor, &ptr, &structs, &api).name, None);
     }
 
     #[test]
