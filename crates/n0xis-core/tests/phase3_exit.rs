@@ -91,10 +91,13 @@ fn a_condition_separated_from_its_guard_by_another_flag_write_never_reuses_a_sta
     // block from the `cmp`, matching how this bug actually manifests across
     // a CFG rather than within one straight-line block).
     // Block B: add rcx,rdx ; je <target>   -- B's own `add` is the *last*
-    // flags-setter before B's own `je`; if the renderer ever showed
-    // `rcx == 0` here it would be silently reusing block A's stale compare
-    // across an instruction that provably changed the flags in between —
-    // exactly the v0 bug ROADMAP calls out.
+    // flags-setter before B's own `je`. The `add` records its own result
+    // flags, so the `je` reconstructs from the add's result (`rcx.1 == 0`,
+    // where `rcx.1 = rcx.0 + rdx.0`) — provably *not* block A's stale
+    // `cmp rcx,0` (`rcx.0 == 0`), the v0 bug ROADMAP calls out. The stale
+    // compare across a provable intervening flags-write is the thing under
+    // test; that it now reconstructs the *right* condition instead of an
+    // opaque placeholder is the Result-flags improvement.
     let code = vec![
         0x48, 0x83, 0xF9, 0x00, // 0x1000 cmp rcx, 0
         0xEB, 0x00, // 0x1004 jmp 0x1006 (unconditional, same address)
@@ -115,7 +118,11 @@ fn a_condition_separated_from_its_guard_by_another_flag_write_never_reuses_a_sta
         "the je must not have reused block A's stale `cmp rcx,0` across the intervening `add`: {body}"
     );
     assert!(
-        body.contains("cond(je)"),
-        "expected an honest placeholder for the je (flags were opaque, not a compare) — sound over silently wrong: {body}"
+        body.contains("rcx.1 == 0x0"),
+        "the je must reconstruct from block B's own `add` result (rcx.1), not a stale compare or an opaque placeholder: {body}"
+    );
+    assert!(
+        !body.contains("cond(je)"),
+        "the je condition is reconstructable from the add's result flags — it must not stay an opaque placeholder: {body}"
     );
 }

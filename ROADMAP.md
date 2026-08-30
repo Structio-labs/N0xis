@@ -1512,10 +1512,28 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     forwarding argument), still ⬜. System V argument registers (`rdi`/`rsi`/…)
     are a separate follow-on — the arity signal is Win64-register-specific today.
 
-- **Rung 5 — Expression & idiom quality.** ⬜ Signedness inference, the compiler-
+- **Rung 5 — Expression & idiom quality.** 🚧 Signedness inference, the compiler-
   idiom library (magic-number division, `cmov`→`min/max`, `rep`→`mem*`, canary
   recognition), and SIMD/FP lift (items 4, 6, 11). *Output:* the arithmetic reads
   as the source wrote it, and SIMD-heavy game functions stop degrading to `asm`.
+  - **5a — branch conditions from arithmetic flags.** ✅ *(2026-08-30, verified.)*
+    A `Jcc` after an arithmetic/logical op that keeps its result (`dec ecx; jne`,
+    `sub rax,rbx; je`, `and edx,edx; jne`) previously rendered `/*cond(jne)*/`:
+    the lifter modelled those flags as `OpaqueFlags`, so `branch_condition` had
+    no compare to decode — most notably leaving loop latches with **no visible
+    condition** (`while (/*cond(jne)*/)`). The zero flag is a pure function of the
+    stored result, so a 32/64-bit **register** result now records a `Result`
+    compare and the equality branch reconstructs as `result == 0` / `!= 0`. Kept
+    sound-conservative: only `je`/`jne` are recovered (sign/magnitude conditions
+    depend on carry/overflow the result alone doesn't carry — those stay opaque,
+    never a wrong guess), and 8/16-bit or memory destinations stay opaque (the
+    full register's zero-ness isn't the sub-register result's). **Verified on real
+    MSVC x64** (`CompressToolsLib.dll`, 200 functions): **69 of 75 loop headers
+    now carry a real condition** (was near-zero for arithmetic latches), e.g.
+    `while ((*(uint8_t*)(rdx.0 + rbx.3) != 0x0))` — a real string scan; the 6
+    still-opaque loops and the remaining `/*cond*/` placeholders are the genuinely
+    unreconstructable magnitude branches. Still ⬜ for this rung: signedness,
+    the idiom library, and SIMD/FP.
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control

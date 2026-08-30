@@ -141,6 +141,34 @@ fn compare_flags(kind: CmpKind, lhs: MicroExpr, rhs: MicroExpr) -> MicroStmt {
     MicroStmt::Assign { dst: FLAGS_VAR.to_string(), value: MicroExpr::compare(kind, lhs, rhs) }
 }
 
+/// Flags left by a result-producing op (`add`/`sub`/`dec`/`and`/…). The zero
+/// flag is a pure function of the written result, so a 32- or 64-bit
+/// **register** destination lets `branch_condition` reconstruct an equality
+/// branch — `dec ecx; jne` becomes `ecx != 0`, the common loop-latch idiom
+/// that previously rendered `/*cond(jne)*/`. Guarded to 32/64-bit register
+/// destinations on purpose:
+/// - a 32- or 64-bit register write zeroes the rest of the 64-bit register on
+///   x64, so the full register's zero-ness *is* the result's zero-ness;
+/// - an 8/16-bit destination leaves the upper bits intact (`dec cl` doesn't
+///   make `rcx == 0` mean `cl == 0`), and a memory destination isn't a plain
+///   `Var` to re-read — both stay `opaque_flags`, which is sound (an
+///   unreconstructable condition, never a wrong one).
+///
+/// The flags statement is emitted *after* the result write, so its re-read of
+/// the destination resolves — under SSA's statement ordering — to the written
+/// result, exactly the value whose zero-ness the branch tests.
+fn result_flags(instr: &Instruction, mn: Mnemonic, out: &mut Vec<MicroStmt>) {
+    if instr.op0_kind() == OpKind::Register {
+        let bits = op_bits(instr, 0);
+        if bits == 32 || bits == 64 {
+            let result = read_operand(instr, 0);
+            out.push(compare_flags(CmpKind::Result, result, MicroExpr::constant(0, bits)));
+            return;
+        }
+    }
+    out.push(opaque_flags(mn));
+}
+
 /// A read-modify-write binary op: `dst @= src` where `dst` is operand 0
 /// (register or memory, read *and* written) and `src` is operand 1.
 fn binary_rmw(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
@@ -279,27 +307,27 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
         }
         Mnemonic::Add => {
             binary_rmw(&instr, BinOp::Add, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Sub => {
             binary_rmw(&instr, BinOp::Sub, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Adc => {
             binary_rmw(&instr, BinOp::Add, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Sbb => {
             binary_rmw(&instr, BinOp::Sub, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::And => {
             binary_rmw(&instr, BinOp::And, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Or => {
             binary_rmw(&instr, BinOp::Or, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Xor => {
             // `xor reg, reg` zeroing idiom — the value is exactly 0 even
@@ -313,36 +341,36 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
             } else {
                 binary_rmw(&instr, BinOp::Xor, &mut out);
             }
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Shl | Mnemonic::Sal => {
             binary_rmw(&instr, BinOp::Shl, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Shr => {
             binary_rmw(&instr, BinOp::Shr, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Sar => {
             binary_rmw(&instr, BinOp::Sar, &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Inc => {
             let bits = op_bits(&instr, 0);
             let cur = read_operand(&instr, 0);
             write_operand(&instr, 0, MicroExpr::binary(BinOp::Add, cur, MicroExpr::constant(1, bits)), &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Dec => {
             let bits = op_bits(&instr, 0);
             let cur = read_operand(&instr, 0);
             write_operand(&instr, 0, MicroExpr::binary(BinOp::Sub, cur, MicroExpr::constant(1, bits)), &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Neg => {
             let cur = read_operand(&instr, 0);
             write_operand(&instr, 0, MicroExpr::unary(UnOp::Neg, cur), &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Not => {
             let cur = read_operand(&instr, 0);
@@ -359,7 +387,7 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
                 (read_operand(&instr, 0), read_operand(&instr, 1))
             };
             write_operand(&instr, 0, MicroExpr::binary(BinOp::Mul, lhs, rhs), &mut out);
-            out.push(opaque_flags(mn));
+            result_flags(&instr, mn, &mut out);
         }
         Mnemonic::Test => {
             let lhs = read_operand(&instr, 0);
@@ -434,6 +462,20 @@ pub(crate) fn branch_condition(mnemonic: &str, flags_value: &MicroExpr) -> Micro
     };
     let (lhs, rhs) = (lhs.as_ref().clone(), rhs.as_ref().clone());
 
+    if *kind == CmpKind::Result {
+        // Flags from a stored result (`dec ecx`, `sub rax,rbx`, `and edx,edx`):
+        // `lhs` is the result, `rhs` is the constant 0. Only the zero flag is a
+        // sound function of the result alone, so recover just the equality
+        // branches; the sign/magnitude conditions need carry/overflow the
+        // result doesn't carry and stay opaque (a missing condition, never a
+        // wrong one).
+        return match mnemonic {
+            "je" => MicroExpr::binary(BinOp::Eq, lhs, rhs),
+            "jne" => MicroExpr::binary(BinOp::Ne, lhs, rhs),
+            _ => MicroExpr::Unknown(format!("cond({mnemonic}) after result")),
+        };
+    }
+
     if *kind == CmpKind::Test {
         // `test a,b` sets flags from `a & b` without storing it; `a,a` is the
         // common "is a zero / negative" idiom.
@@ -488,6 +530,15 @@ mod tests {
         arch.lift(&insns[0])
     }
 
+    /// The `flags = <expr>` value written by the last statement of a lifted
+    /// instruction (every flag-touching instruction writes `FLAGS_VAR` last).
+    fn last_flags(stmts: &[MicroStmt]) -> MicroExpr {
+        match stmts.last() {
+            Some(MicroStmt::Assign { dst, value }) if dst == FLAGS_VAR => value.clone(),
+            other => panic!("expected a trailing flags assign, got {other:?}"),
+        }
+    }
+
     #[test]
     fn mov_lifts_to_a_plain_assign() {
         // mov rax, rcx
@@ -516,19 +567,55 @@ mod tests {
     }
 
     #[test]
-    fn je_after_an_intervening_flag_setter_is_a_placeholder_not_a_stale_compare() {
-        // This is the correctness property ROADMAP Phase 3 calls out: a
-        // flag-setting instruction between `cmp` and `jcc` must invalidate
-        // the compare rather than let a stale one render a wrong condition.
+    fn je_after_an_intervening_flag_setter_uses_that_setter_not_a_stale_compare() {
+        // The correctness property ROADMAP Phase 3 calls out: a flag-setting
+        // instruction between `cmp` and `jcc` must invalidate the compare
+        // rather than let a stale one render a wrong condition. `add rcx,rdx`
+        // now records its *own* result flags (a `Result` compare), so a
+        // following `je` decodes from the add's result (`rcx == 0`) — the
+        // stale `cmp` can never be what a subsequent branch reads.
         let add_stmts = lift_one(&[0x48, 0x01, 0xD1]); // add rcx, rdx
-        assert_eq!(add_stmts.last(), Some(&MicroStmt::Assign {
-            dst: FLAGS_VAR.into(),
-            value: MicroExpr::OpaqueFlags { mnemonic: "add".into() },
-        }));
+        assert_eq!(
+            add_stmts.last(),
+            Some(&MicroStmt::Assign {
+                dst: FLAGS_VAR.into(),
+                value: MicroExpr::compare(CmpKind::Result, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)),
+            })
+        );
 
-        let stale = MicroExpr::OpaqueFlags { mnemonic: "add".into() };
-        let cond = branch_condition("je", &stale);
-        assert_eq!(cond, MicroExpr::Unknown("cond(je)".into()));
+        let cond = branch_condition("je", &last_flags(&add_stmts));
+        assert_eq!(cond, MicroExpr::binary(BinOp::Eq, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)));
+    }
+
+    #[test]
+    fn dec_then_jne_reconstructs_the_loop_latch_condition() {
+        // `dec ecx ; jne` is the canonical loop-counter latch. `dec` keeps its
+        // result in ecx and sets ZF from it, so the branch reads `ecx != 0`
+        // instead of the old opaque `/*cond(jne)*/`.
+        let dec_stmts = lift_one(&[0xFF, 0xC9]); // dec ecx
+        let flags = last_flags(&dec_stmts);
+        assert_eq!(flags, MicroExpr::compare(CmpKind::Result, MicroExpr::var("rcx"), MicroExpr::constant(0, 32)));
+        assert_eq!(branch_condition("jne", &flags), MicroExpr::binary(BinOp::Ne, MicroExpr::var("rcx"), MicroExpr::constant(0, 32)));
+    }
+
+    #[test]
+    fn a_result_flag_magnitude_branch_stays_opaque() {
+        // Only the zero flag is a sound function of a stored result; a signed
+        // magnitude branch (`jg`) after `sub` needs overflow the result alone
+        // does not carry, so it must stay a placeholder, never a wrong guess.
+        let flags = MicroExpr::compare(CmpKind::Result, MicroExpr::var("rax"), MicroExpr::constant(0, 64));
+        assert_eq!(branch_condition("jg", &flags), MicroExpr::Unknown("cond(jg) after result".into()));
+    }
+
+    #[test]
+    fn an_eight_bit_result_destination_stays_opaque_for_soundness() {
+        // `dec cl` leaves the upper bits of rcx intact, so `rcx == 0` would not
+        // mean `cl == 0` — the guard keeps sub-32-bit destinations opaque.
+        let dec_cl = lift_one(&[0xFE, 0xC9]); // dec cl
+        assert_eq!(
+            dec_cl.last(),
+            Some(&MicroStmt::Assign { dst: FLAGS_VAR.into(), value: MicroExpr::OpaqueFlags { mnemonic: "dec".into() } })
+        );
     }
 
     #[test]

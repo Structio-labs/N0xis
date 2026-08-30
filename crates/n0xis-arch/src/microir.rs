@@ -76,6 +76,14 @@ pub enum BinOp {
 pub enum CmpKind {
     Cmp,
     Test,
+    /// Flags left by an arithmetic/logical op that *keeps* its result in `lhs`
+    /// (e.g. `dec ecx`, `sub rax,rbx`, `and edx,edx`). Only the zero flag —
+    /// `je`/`jne`, reconstructed as `lhs == 0` / `lhs != 0` — is a pure
+    /// function of the stored result and therefore sound to recover; the
+    /// magnitude/sign conditions depend on carry/overflow, which the result
+    /// alone does not carry, so `branch_condition` leaves those opaque. `rhs`
+    /// is the constant `0`.
+    Result,
 }
 
 /// A typed expression — the arch-neutral lowering of an operand or a flags
