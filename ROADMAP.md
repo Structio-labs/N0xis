@@ -1359,12 +1359,20 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      std::ios_base, std::_Iosb<int>`; STALKER 2 (UE5) 516/561 vtables carry
      bases — `GregorianCalendar : Calendar, UObject, UMemory`,
      `StringCharacterIterator`'s five-level ICU chain.
-   - ⬜ Still open for this item: **virtual-call devirtualization** (resolve
-     `call [vtable+k]` to the slot's method — needs per-vtable slot→target
-     extraction and the this-pointer's class flowing to the call site), feeding
-     the recovered **bases into the decompiler** (type a `this` as the whole
-     `Derived : Base` chain, name inherited fields), and **Itanium RTTI** for
-     ELF/GCC targets.
+   - ⬜ Still open for this item: **virtual-call devirtualization**. Measured on
+     the corpus (Kenshi `CompressToolsLib`, ~210 indirect-call sites / 200
+     functions): the virtual calls dispatch through a **runtime** vtable pointer
+     (`rax = *this; call [rax+k]`), not a constant — so statically resolving the
+     slot would be **unsound** (a derived class overrides it), which rule #1
+     forbids. The soundly-resolvable slice (`call [&Class::vtable + k]`, a
+     *constant* vtable — inside a constructor after the vtable store, once
+     store-to-load forwarding exposes it) does not visibly fire here (the
+     compiler already de-virtualizes in-constructor calls). Sound devirt
+     therefore needs precise `this`-type flow across *all* methods — call-site
+     class propagation / points-to (**Rung 2**), not a local pattern — so it is
+     correctly gated on that, not a quick win. Also open: feeding the recovered
+     **bases into the decompiler** (type a `this` as the `Derived : Base` chain),
+     and **Itanium RTTI** for ELF/GCC targets.
 8. ⬜ **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool

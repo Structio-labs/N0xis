@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use n0xis_arch::{Bits, CallTarget, MicroExpr, MicroStmt};
+use n0xis_arch::{BinOp, Bits, CallTarget, MicroExpr, MicroStmt};
 use n0xis_contracts::Va;
 use serde::Serialize;
 
@@ -250,7 +250,82 @@ fn collect_mem_accesses(blocks: &[SsaBlock]) -> Vec<MemAccess> {
     out
 }
 
-fn recover_locals(accesses: &[MemAccess]) -> Vec<LocalVar> {
+/// A binary operator whose operands the ISA treats as **signed** — a signed
+/// comparison (`jl`/`jg`-family), signed division/modulo, or an arithmetic
+/// (sign-propagating) right shift. A value flowing into one of these is signed,
+/// which is evidence the per-access `movsx`/`movzx` encoding alone does not
+/// carry (a plain `mov` load reveals nothing, but comparing that value with
+/// `jl` does).
+fn is_signed_use(op: BinOp) -> bool {
+    matches!(op, BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge | BinOp::SDiv | BinOp::SMod | BinOp::Sar)
+}
+
+/// Collect every stack-slot offset whose `Load` appears anywhere in `e`.
+fn harvest_stack_loads(e: &MicroExpr, out: &mut BTreeSet<i64>) {
+    if let MicroExpr::Load { addr, .. } = e
+        && let Some((base, off)) = as_base_offset(addr)
+        && is_stack_root(root(&base))
+    {
+        out.insert(off);
+    }
+    for child in expr_children(e) {
+        harvest_stack_loads(child, out);
+    }
+}
+
+/// The immediate sub-expressions of `e`, for a generic recursive walk.
+fn expr_children(e: &MicroExpr) -> Vec<&MicroExpr> {
+    match e {
+        MicroExpr::Load { addr, .. } => vec![addr],
+        MicroExpr::Unary(_, v) | MicroExpr::Cast { expr: v, .. } | MicroExpr::AddrOf(v) => vec![v],
+        MicroExpr::Binary(_, l, r) | MicroExpr::Compare { lhs: l, rhs: r, .. } => vec![l, r],
+        MicroExpr::Select { cond, a, b } => vec![cond, a, b],
+        MicroExpr::Call { args, .. } => args.iter().collect(),
+        MicroExpr::Const { .. } | MicroExpr::Var(_) | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => vec![],
+    }
+}
+
+/// Mark, in `signed`, the stack-slot offsets of any `Load` used as an operand of
+/// a signed operator anywhere in `e` (Rung 3/5 — signedness inferred from use).
+fn mark_signed_uses(e: &MicroExpr, signed: &mut BTreeSet<i64>) {
+    if let MicroExpr::Binary(op, l, r) = e
+        && is_signed_use(*op)
+    {
+        harvest_stack_loads(l, signed);
+        harvest_stack_loads(r, signed);
+    }
+    for child in expr_children(e) {
+        mark_signed_uses(child, signed);
+    }
+}
+
+/// Every stack-slot offset that a signed operator consumes — the "signed by
+/// use" evidence that complements the per-access load encoding. Affects only
+/// the *displayed* type of the local (the IR ops are already correctly
+/// signed/unsigned), so this is a readability inference, never a soundness one.
+fn collect_signed_use_offsets(blocks: &[SsaBlock]) -> BTreeSet<i64> {
+    let mut signed = BTreeSet::new();
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Assign { value, .. } => mark_signed_uses(value, &mut signed),
+                MicroStmt::Store { addr, value, .. } => {
+                    mark_signed_uses(addr, &mut signed);
+                    mark_signed_uses(value, &mut signed);
+                }
+                MicroStmt::Call { args, .. } => args.iter().for_each(|a| mark_signed_uses(a, &mut signed)),
+                MicroStmt::Return(Some(e)) => mark_signed_uses(e, &mut signed),
+                MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+            }
+        }
+        if let Some(c) = &b.condition {
+            mark_signed_uses(c, &mut signed);
+        }
+    }
+    signed
+}
+
+fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>) -> Vec<LocalVar> {
     let mut by_offset: BTreeMap<i64, (Bits, bool, usize)> = BTreeMap::new();
     for a in accesses {
         if !is_stack_root(root(&a.base)) {
@@ -267,7 +342,9 @@ fn recover_locals(accesses: &[MemAccess]) -> Vec<LocalVar> {
             offset,
             name: format!("local_{:x}", offset.unsigned_abs()),
             size_bits: bits,
-            signed,
+            // A signed use (compared with `jl`, divided with `idiv`, …) is
+            // evidence the load encoding alone misses.
+            signed: signed || signed_use.contains(&offset),
             access_count: count,
         })
         .collect()
@@ -663,7 +740,8 @@ fn param_ctype(
 
 fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
-    let locals = recover_locals(&accesses);
+    let signed_use = collect_signed_use_offsets(blocks);
+    let locals = recover_locals(&accesses, &signed_use);
     let structs = recover_structs(&accesses);
 
     let arg_regs = abi_arg_regs(ctx);
@@ -743,6 +821,30 @@ mod tests {
         let struct_map: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
         let ty = param_ctype("rcx.0", &m, &BTreeSet::new(), &struct_map, &BTreeMap::new());
         assert_eq!(ty.name.as_deref(), Some("std::exception *"));
+    }
+
+    #[test]
+    fn a_stack_local_compared_signed_is_inferred_signed() {
+        // A local at [rsp+8] loaded and compared with a signed `<` (`jl`). Even
+        // with an unsigned load encoding, the signed comparison makes it signed.
+        let load = || MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(8, 64)), 32, false);
+        let mut blk = block_with(vec![]);
+        blk.condition = Some(MicroExpr::binary(BinOp::Slt, load(), MicroExpr::constant(0, 32)));
+        let signed = collect_signed_use_offsets(std::slice::from_ref(&blk));
+        assert!(signed.contains(&8), "offset 8 should be flagged signed by its `<` use: {signed:?}");
+        // An *unsigned* comparison of a different slot must not flag it.
+        let mut ublk = block_with(vec![]);
+        ublk.condition = Some(MicroExpr::binary(
+            BinOp::Ult,
+            MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x10, 64)), 32, false),
+            MicroExpr::constant(0, 32),
+        ));
+        assert!(collect_signed_use_offsets(std::slice::from_ref(&ublk)).is_empty());
+        // recover_locals honors the signed-use set even for an unsigned access.
+        let acc = vec![MemAccess { base: "rsp".into(), offset: 8, bits: 32, signed: false }];
+        let locals = recover_locals(&acc, &signed);
+        assert_eq!(locals.len(), 1);
+        assert!(locals[0].signed, "the compared-signed local should render signed");
     }
 
     #[test]
