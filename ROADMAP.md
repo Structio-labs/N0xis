@@ -1768,13 +1768,29 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     recovered. Remaining ⬜: eliminating the residual irreducible `goto`s and the
     `default`-vs-unresolved-case distinction when the table read is partial.
 
-- **Rung 7 — Structural advantages this design gets for free.** ⬜ The capabilities the
-  other tools structurally lack: every pass already emits an **inspectable delta** (KF-5); the
-  **provenance ⇄ decompile** join (a live watchpoint → the exact decompiled
-  statement, KF-1); the RTTI/vtable devirtualization (item 7); and depth-limited
-  **symbolic execution** (item 12) for the deobfuscation / computed-target cases a
-  static pass cannot reach. Parity is Rungs 1–6; *surpassing* is Rung 7 layered on
-  a decompiler that is already inspectable and live-aware by construction.
+- **Rung 7 — Structural advantages this design gets for free.** 🚧 The capabilities the
+  other tools structurally lack. Two are already present by construction: every pass
+  emits an **inspectable delta** (KF-5), and the **provenance ⇄ decompile** join (a
+  live watchpoint → the exact decompiled statement, KF-1, shipped in Phase 4c).
+  - **7a — MSVC RTTI / vtable class recovery.** ✅ *(2026-08-30, verified.)* A C++
+    virtual call dispatches through a vtable slot — an edge the CFG can only mark
+    "indirect". But an MSVC binary built with RTTI (`/GR`, the default) stores, right
+    before each vtable, a pointer to a `CompleteObjectLocator`; the COL points by
+    image-relative RVA at a `TypeDescriptor` whose tail is the decorated class name
+    (`.?AVFoo@@`). `rtti::scan_msvc_rtti` walks `.rdata` for these, validated by the
+    COL's **self-reference** (its `pSelf` RVA must resolve back to the COL — a far
+    stronger filter than the signature word) plus a check that the vtable's first
+    slot points into `.text`. `demangle_rtti_name` reverses the `@`-qualified name
+    (`.?AUData@Ns@@` → `Ns::Data`) and — sound over pretty — returns a
+    template/special-mangled name (`?$`) **verbatim** rather than mis-decoding it.
+    Exposed as `rtti scan`. **Verified on `Kenshi` (MSVC/Ogre/Havok):** 3055 vtables
+    recovered — `AnimationEvent`, `std::bad_alloc`, `AnimationSFXEvent` demangled
+    cleanly, `Ogre::STLAllocator<…>` templates kept verbatim. The last-hop
+    devirtualization (joining a call site's vtable slot to `Class::method`) and using
+    a recovered vtable to *type* a struct's first field build on this.
+  - Still ⬜: depth-limited **symbolic execution** (item 12) for the
+    deobfuscation / computed-target cases a static pass cannot reach — a
+    research-grade effort, deliberately not rushed.
 
 **Sequencing:** Rungs 1→2→3 are the spine and must go in order (each is the
 other's prerequisite). Rungs 4–6 are largely independent and can interleave by

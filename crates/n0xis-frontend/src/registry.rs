@@ -491,6 +491,29 @@ impl Plugin for AnalysisPasses {
             }),
         ));
 
+        reg.add(Capability::new(
+            "rtti.scan",
+            "Recover MSVC RTTI vtables and their class names by walking `.rdata`'s COL→TypeDescriptor chains (PE/MSVC only).",
+            Some(n0xis_contracts::schema::v1::RTTI_SCAN),
+            Origin::Builtin,
+            Box::new(|args| {
+                let resolved = match resolve(spec_of(args)) {
+                    Ok(r) => r,
+                    Err((c, m)) => return Response::error(&c, m),
+                };
+                let Some(image_base) = resolved.src.module_base() else {
+                    return Response::error("no-image-base", "RTTI scan needs a static PE image base".to_string());
+                };
+                let Some(rdata) = resolved.src.section_range(".rdata") else {
+                    return Response::error("no-rdata", "no .rdata section — MSVC RTTI lives there".to_string());
+                };
+                let text = resolved.src.text_range();
+                let vtables = n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, rdata, text);
+                let payload = json!({ "count": vtables.len(), "vtables": vtables });
+                ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
+            }),
+        ));
+
         // --- function-scoped analysis, all sharing `with_cfg_ctx` ---
 
         reg.add(Capability::new(

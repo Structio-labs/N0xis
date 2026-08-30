@@ -144,6 +144,9 @@ enum Command {
     /// Cross-references.
     #[command(subcommand)]
     Xref(XrefCmd),
+    /// MSVC RTTI vtable → class-name recovery.
+    #[command(subcommand)]
+    Rtti(RttiCmd),
     /// Raw memory access.
     #[command(subcommand)]
     Mem(MemCmd),
@@ -1636,6 +1639,31 @@ struct DiscoverArgs {
 }
 
 #[derive(Subcommand)]
+enum RttiCmd {
+    /// Scan `.rdata` for MSVC RTTI vtables and recover each one's class name.
+    Scan(RttiScanArgs),
+}
+
+#[derive(Args)]
+struct RttiScanArgs {
+    /// Restrict to this module by case-insensitive name substring.
+    #[arg(long)]
+    module: Option<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+}
+
+#[derive(Subcommand)]
 enum XrefCmd {
     /// Who references `--addr`.
     To(XrefArgs),
@@ -2265,6 +2293,7 @@ fn main() {
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),
         Command::Xref(XrefCmd::String(a)) => cmd_xref_string(a, pretty),
+        Command::Rtti(RttiCmd::Scan(a)) => cmd_rtti_scan(a, pretty),
         Command::Mem(MemCmd::Read(a)) => cmd_mem_read(a, pretty),
         Command::Mem(MemCmd::Write(a)) => cmd_mem_write(a, pretty),
         Command::Mem(MemCmd::Map(a)) => cmd_mem_map(a, pretty),
@@ -2363,7 +2392,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory (a memory scanner class)",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -2945,6 +2974,21 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
             "limit": a.limit,
             "max_bytes": a.max_bytes,
             "arch": a.arch,
+            "module": a.module,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_rtti_scan(a: RttiScanArgs, pretty: bool) -> bool {
+    run_capability(
+        "rtti.scan",
+        json!({
             "module": a.module,
             "pid": a.pid,
             "file": a.file,

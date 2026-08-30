@@ -107,6 +107,9 @@ pub mod v1 {
     /// Phase 7).
     pub const DIFF: &str = "n0xis.diff.v1";
 
+    /// MSVC RTTI vtable → class-name recovery (`rtti scan`).
+    pub const RTTI_SCAN: &str = "n0xis.rtti.scan.v1";
+
     /// Bitsquid/Stingray bundle entry listing (`bundle list`).
     pub const BUNDLE_LIST: &str = "n0xis.bundle.list.v1";
     /// Bitsquid/Stingray bundle extraction result (`bundle extract`).
