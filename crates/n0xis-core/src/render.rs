@@ -226,7 +226,15 @@ fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> 
     }
     if names.structs.contains_key(base) {
         let base = names.display_var(base);
-        return Some(if offset == 0 { format!("*{base}") } else { format!("{base}->field_0x{offset:x}") });
+        // A negative offset accesses memory *before* the base (a header/cookie,
+        // or a mid-object pointer) — render it signed as `field_neg_0x8`, not as
+        // the two's-complement giant hex `field_0xfffff…f8` that `{:x}` on a
+        // negative `i128` would produce.
+        return Some(match offset {
+            0 => format!("*{base}"),
+            o if o < 0 => format!("{base}->field_neg_0x{:x}", o.unsigned_abs()),
+            o => format!("{base}->field_0x{o:x}"),
+        });
     }
     None
 }
@@ -749,6 +757,25 @@ mod tests {
             MicroExpr::var("rdx.1"),
         );
         assert_eq!(render_expr(&sel, &names), "((rax.1 < /*u*/ rbx.1) ? rcx.1 : rdx.1)");
+    }
+
+    #[test]
+    fn a_negative_struct_field_offset_renders_signed_not_as_giant_hex() {
+        use crate::typeinfer::{RecoveredSignature, TypeArtifact};
+        // A recovered struct base accessed at a negative offset (`*(rcx.1 - 8)`).
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![crate::typeinfer::RecoveredType { base_var: "rcx.1".into(), type_name: "struct_rcx_1".into(), fields: vec![] }],
+            signature: RecoveredSignature { params: vec![], ret: None },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        let addr = MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(-8, 64));
+        let load = MicroExpr::load(addr, 64, false);
+        // Not `field_0xfffffffffffffffffffffffffffffff8`.
+        assert_eq!(render_expr(&load, &names), "rcx.1->field_neg_0x8");
+        // A positive offset is unchanged.
+        let pos = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(0x10, 64)), 64, false);
+        assert_eq!(render_expr(&pos, &names), "rcx.1->field_0x10");
     }
 
     #[test]
