@@ -283,18 +283,53 @@ fn emit_if_else(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         return;
     }
 
-    ctx.out.push(format!("{}if ({cond}) {{", pad(ctx.indent)));
+    // Emit both arms into buffers first, so an *empty* arm can be cleaned up the
+    // way other tools do: an empty then-arm inverts the condition
+    // (`if (c) {} else { B }` → `if (!c) { B }`), and an empty else-arm is simply
+    // dropped. Both are pure readability rewrites — the guarded body and the
+    // condition's truth value are unchanged.
     ctx.indent += 1;
-    emit_node(ctx, t, merge);
+    let then_lines = capture_arm(ctx, t, merge);
+    let else_lines = capture_arm(ctx, f, merge);
     ctx.indent -= 1;
-    ctx.out.push(format!("{}}} else {{", pad(ctx.indent)));
-    ctx.indent += 1;
-    emit_node(ctx, f, merge);
-    ctx.indent -= 1;
-    ctx.out.push(format!("{}}}", pad(ctx.indent)));
+
+    let has_code = |ls: &[String]| ls.iter().any(|l| is_code_line(l));
+    let pad0 = pad(ctx.indent);
+    if !has_code(&then_lines) && has_code(&else_lines) {
+        ctx.out.push(format!("{pad0}if ({}) {{", negated_cond_text(ctx, n)));
+        ctx.out.extend(else_lines);
+        ctx.out.push(format!("{pad0}}}"));
+    } else if has_code(&then_lines) && !has_code(&else_lines) {
+        ctx.out.push(format!("{pad0}if ({cond}) {{"));
+        ctx.out.extend(then_lines);
+        ctx.out.push(format!("{pad0}}}"));
+    } else {
+        ctx.out.push(format!("{pad0}if ({cond}) {{"));
+        ctx.out.extend(then_lines);
+        ctx.out.push(format!("{pad0}}} else {{"));
+        ctx.out.extend(else_lines);
+        ctx.out.push(format!("{pad0}}}"));
+    }
     if let Some(m) = merge {
         emit_node(ctx, m, until);
     }
+}
+
+/// Emit one `if` arm (the subtree rooted at `arm`, stopping at `until`) into a
+/// detached buffer, returning its lines. `visited`/`fallback_count` and all
+/// other structuring state stay shared — only the output is captured — so the
+/// caller can inspect the arm (e.g. is it empty?) before committing it.
+fn capture_arm(ctx: &mut Ctx, arm: usize, until: Option<usize>) -> Vec<String> {
+    let saved = std::mem::take(&mut ctx.out);
+    emit_node(ctx, arm, until);
+    std::mem::replace(&mut ctx.out, saved)
+}
+
+/// A rendered line that is real code — not blank and not a `//` comment (a bare
+/// `// block_N:` label does not make an arm non-empty).
+fn is_code_line(l: &str) -> bool {
+    let t = l.trim();
+    !t.is_empty() && !t.starts_with("//")
 }
 
 /// Fold a 2-block short-circuit chain rooted at `n` into `&&`/`||`, mirroring
@@ -613,6 +648,23 @@ mod tests {
         assert!(text.contains("} else {"), "{text}");
         assert!(text.contains("rax.2 = 0x2;"), "{text}");
         assert_eq!(out.fallback_count, 0, "should structure cleanly: {text}");
+    }
+
+    #[test]
+    fn an_empty_then_arm_inverts_the_condition() {
+        // test rcx,rcx ; je 0x1008 ; mov rax,rdx ; ret — the true edge goes
+        // straight to the return (empty then), the work is on the false edge.
+        // Structuring inverts to `if (rcx != 0) { … }` with no empty arm/else.
+        let code = vec![0x48, 0x85, 0xc9, 0x74, 0x03, 0x48, 0x89, 0xd0, 0xc3];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        assert!(text.contains("if ((rcx.0 != 0x0))"), "condition should invert: {text}");
+        assert!(!text.contains("} else {"), "no else arm expected: {text}");
+        // No empty braced block (`{` immediately followed by `}`).
+        for w in out.lines.windows(2) {
+            assert!(!(w[0].trim_end().ends_with('{') && w[1].trim() == "}"), "no empty block: {text}");
+        }
+        assert_eq!(out.fallback_count, 0, "{text}");
     }
 
     #[test]
