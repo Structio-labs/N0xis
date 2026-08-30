@@ -69,6 +69,26 @@ static WIN64_CC: CallConv = CallConv {
     volatile: WIN64_VOLATILE,
 };
 
+// System V AMD64 (Linux/macOS ELF) argument/return/volatile registers — the
+// *other* x86-64 ABI. Integer args come in a different, six-register order, so
+// a pass that assumed Win64 recovered the wrong parameters on an ELF target.
+// Signature recovery selects between these by the source's declared ABI.
+static SYSV_INT_ARGS: &[Reg] = &[x64reg::RDI, x64reg::RSI, x64reg::RDX, x64reg::RCX, x64reg::R8, x64reg::R9];
+static SYSV_VOLATILE: &[Reg] = &[
+    x64reg::RAX, x64reg::RCX, x64reg::RDX, x64reg::RSI, x64reg::RDI, x64reg::R8, x64reg::R9, x64reg::R10, x64reg::R11,
+];
+static SYSV_CC: CallConv = CallConv {
+    name: "sysv",
+    int_args: SYSV_INT_ARGS,
+    ret: x64reg::RAX,
+    volatile: SYSV_VOLATILE,
+};
+
+/// Both x86-64 calling conventions, Win64 first. `calling_conventions()[0]`
+/// stays Win64 (the lift's default), and signature recovery picks the entry
+/// whose `name` matches the target's ABI (`MemorySource::abi_name`).
+static X64_CCS: &[CallConv] = &[WIN64_CC, SYSV_CC];
+
 /// The x86-64 architecture.
 #[derive(Clone, Copy, Debug)]
 pub struct X64 {
@@ -457,7 +477,7 @@ impl Arch for X64 {
     }
 
     fn calling_conventions(&self) -> &[CallConv] {
-        std::slice::from_ref(&WIN64_CC)
+        X64_CCS
     }
 }
 
@@ -496,5 +516,19 @@ mod tests {
         assert_eq!(arch.regs().name(x64reg::RCX), Some("rcx"));
         assert_eq!(arch.regs().by_name("R8"), Some(x64reg::R8));
         assert_eq!(arch.calling_conventions()[0].int_args[0], x64reg::RCX);
+    }
+
+    #[test]
+    fn exposes_both_win64_and_system_v_conventions() {
+        // Win64 stays first (the lift's default). System V is selectable by
+        // name and puts its integer args in the different rdi/rsi/… order —
+        // this is what lets signature recovery get an ELF's parameters right.
+        let arch = X64::new();
+        let ccs = arch.calling_conventions();
+        let win64 = ccs.iter().find(|c| c.name == "win64").expect("win64 cc");
+        let sysv = ccs.iter().find(|c| c.name == "sysv").expect("sysv cc");
+        assert_eq!(ccs[0].name, "win64", "the lift's default must stay Win64");
+        assert_eq!(win64.int_args, &[x64reg::RCX, x64reg::RDX, x64reg::R8, x64reg::R9]);
+        assert_eq!(sysv.int_args, &[x64reg::RDI, x64reg::RSI, x64reg::RDX, x64reg::RCX, x64reg::R8, x64reg::R9]);
     }
 }

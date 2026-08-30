@@ -186,6 +186,17 @@ pub trait MemorySource {
 
     /// Provenance label for `meta.source`, e.g. `"snapshot:test"`.
     fn label(&self) -> String;
+
+    /// The calling-convention ABI this target uses, as a [`CallConv::name`]
+    /// selector (`n0xis_arch::CallConv`): `"win64"` (default — PE, Windows) or
+    /// `"sysv"` (System V AMD64 — ELF, Linux/macOS). Signature recovery reads
+    /// this to pick the right argument registers (`rcx`/`rdx`/… vs
+    /// `rdi`/`rsi`/…), so an ELF's parameters come out correct instead of
+    /// Win64-shaped. Defaults to `"win64"`; the ELF and Linux-live sources
+    /// override it.
+    fn abi_name(&self) -> &'static str {
+        "win64"
+    }
 }
 
 /// Resolve symbols by address (exports, imports, IAT slots, recovered names).

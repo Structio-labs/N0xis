@@ -124,8 +124,23 @@ impl Pass for TypeInferPass {
         "type.infer"
     }
 
-    fn run(&self, _ctx: &Ctx, input: TypeInferInput) -> Result<TypeArtifact, CoreError> {
-        Ok(infer(&input.cfg, &input.blocks))
+    fn run(&self, ctx: &Ctx, input: TypeInferInput) -> Result<TypeArtifact, CoreError> {
+        Ok(infer(ctx, &input.cfg, &input.blocks))
+    }
+}
+
+/// The integer argument registers of the target's ABI, in order — the fact a
+/// pass must never bake in. It comes from the arch's [`CallConv`] list, and the
+/// **source** declares which convention applies (`MemorySource::abi_name`:
+/// `"win64"` for PE, `"sysv"` for ELF), so an ELF's parameters recover from
+/// `rdi`/`rsi`/… instead of the Win64 `rcx`/`rdx`/…. Falls back to the arch's
+/// first convention if the ABI name isn't found (e.g. AArch64 has only its own).
+fn abi_arg_regs(ctx: &Ctx) -> Vec<&'static str> {
+    let ccs = ctx.arch.calling_conventions();
+    let cc = ccs.iter().find(|c| c.name == ctx.source.abi_name()).or_else(|| ccs.first());
+    match cc {
+        Some(cc) => cc.int_args.iter().filter_map(|&r| ctx.arch.regs().name(r)).collect(),
+        None => Vec::new(),
     }
 }
 
@@ -372,10 +387,11 @@ fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
     out
 }
 
-const WIN64_INT_ARGS: [&str; 4] = ["rcx", "rdx", "r8", "r9"];
-
-fn recover_arity(used: &BTreeSet<String>) -> usize {
-    WIN64_INT_ARGS
+/// Arity = the highest **positional** argument register (in the ABI's order)
+/// whose entry version is used, since argument registers are filled positionally
+/// (using the 3rd implies the 1st and 2nd are real slots even if unread).
+fn recover_arity(used: &BTreeSet<String>, arg_regs: &[&str]) -> usize {
+    arg_regs
         .iter()
         .enumerate()
         .filter(|(_, reg)| used.contains(&format!("{reg}.0")))
@@ -565,19 +581,20 @@ fn param_ctype(
     CType::generic(64, false)
 }
 
-fn infer(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
+fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
     let locals = recover_locals(&accesses);
     let structs = recover_structs(&accesses);
 
+    let arg_regs = abi_arg_regs(ctx);
     let used = collect_definite_param_regs(blocks);
-    let arity = recover_arity(&used);
+    let arity = recover_arity(&used, &arg_regs);
     let struct_map: BTreeMap<&str, &str> = structs.iter().map(|s| (s.base_var.as_str(), s.type_name.as_str())).collect();
     let ptr_bases: BTreeSet<&str> = accesses.iter().map(|a| a.base.as_str()).collect();
     let api_types = param_api_types(cfg, blocks);
-    let params = WIN64_INT_ARGS[..arity]
+    let params = arg_regs[..arity]
         .iter()
-        .map(|reg| {
+        .map(|&reg| {
             let pname = format!("{reg}.0");
             ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ptr_bases, &struct_map, &api_types) }
         })

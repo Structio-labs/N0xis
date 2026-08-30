@@ -409,6 +409,10 @@ impl MemorySource for LinuxProcess {
         let name = self.modules.first().map(|m| m.name.as_str()).unwrap_or("?");
         format!("live:{}:{}", self.pid, name)
     }
+
+    fn abi_name(&self) -> &'static str {
+        "sysv" // A Linux process uses the System V AMD64 ABI.
+    }
 }
 
 impl ModuleProvider for LinuxProcess {

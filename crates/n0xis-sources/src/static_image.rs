@@ -98,6 +98,12 @@ impl MemorySource for StaticImage {
             StaticImage::Elf(e) => e.label(),
         }
     }
+    fn abi_name(&self) -> &'static str {
+        match self {
+            StaticImage::Pe(p) => p.abi_name(),
+            StaticImage::Elf(e) => e.abi_name(),
+        }
+    }
 }
 
 impl SymbolProvider for StaticImage {

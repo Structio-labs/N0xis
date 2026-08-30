@@ -1552,8 +1552,22 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     forwarded straight through to an *unknown* callee has no non-argument use and
     is dropped — resolving it is the **call-site-agreement** half of this rung
     (a callee's arity, learned from all its call sites, back-propagated to each
-    forwarding argument), still ⬜. System V argument registers (`rdi`/`rsi`/…)
-    are a separate follow-on — the arity signal is Win64-register-specific today.
+    forwarding argument), still ⬜.
+  - **4c — ABI-aware argument recovery (System V + Win64).** ✅ *(2026-08-30,*
+    *verified.)* Arity and parameter recovery no longer assume Win64. The arch now
+    exposes **both** x86-64 conventions (`win64` first — the lift's default — and
+    `sysv`), and the **source** declares which applies via `MemorySource::abi_name`
+    (`"win64"` for PE, `"sysv"` for ELF and Linux-live). Signature recovery selects
+    the matching `CallConv` and reads its argument registers, so an ELF's parameters
+    recover from the System V order (`rdi`/`rsi`/`rdx`/`rcx`/`r8`/`r9`) instead of the
+    Win64 `rcx`/`rdx`/`r8`/`r9`. **Verified:** `Factorio` (ELF) — `sub_fe2424` now
+    reads `(uint64_t rdi, uint64_t rsi, uint64_t rdx, struct_rcx_0 *rcx)` (System V,
+    4th arg typed as a struct pointer), while `Kenshi` (PE) is unchanged at Win64
+    (`sub_1800010d0(struct_rcx_0 *rcx, uint64_t rdx)`). Follow-on: the *lift's*
+    call-site arguments are still emitted Win64-shaped (it uses
+    `calling_conventions()[0]`), so an ELF **call site** shows the wrong argument
+    registers even though the function's own signature is now right — making the
+    lift ABI-aware is the remaining ⬜.
   - **4b — drop lift-padding call arguments.** ✅ *(2026-08-30, verified.)* The
     same fixed four-register call convention meant *every* call to a callee not
     in the signature library rendered four arguments (`sub_X(rdi.1, rdx, v1,

@@ -194,6 +194,10 @@ impl MemorySource for StaticElf {
     fn label(&self) -> String {
         format!("static:{}", self.module_name)
     }
+
+    fn abi_name(&self) -> &'static str {
+        "sysv" // ELF → System V AMD64.
+    }
 }
 
 impl SymbolProvider for StaticElf {
