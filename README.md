@@ -88,7 +88,7 @@ cargo build --workspace --release      # → n0x (n0xis), n0xis-mcp, n0xis-hud
 Builds on **Windows and Linux**. `rust-toolchain.toml` pins the Windows gnu host (`stable-x86_64-pc-windows-gnu` — no MSVC Build Tools needed); on Linux, build with your host `stable` toolchain (override the pin with `RUSTUP_TOOLCHAIN`/`+stable` if needed). Tests: `cargo test --workspace --features n0xis-pipeline/live` (some spawn real disposable processes; live debugging on Linux uses `ptrace`, so run them able to trace descendants). The analysis core is OS-free by construction — `cargo test -p n0xis-core` links zero OS crates.
 
 <details>
-<summary><b>Workspace layout — 13 crates</b></summary>
+<summary><b>Workspace layout — 14 crates</b></summary>
 
 ```
 n0xis-contracts/   all wire schemas (n0xis.*.vN) + shared value types — single source of truth
@@ -101,6 +101,7 @@ n0xis-frontend/    shared frontend seam: source/ISA resolution, argument parsing
 n0xis-cli/         thin clap frontend (binary: n0xis, alias n0x)
 n0xis-mcp/         MCP server frontend (binary: n0xis-mcp)
 n0xis-hud/         N0xHUD companion-window frontend (binary: n0xis-hud)
+n0xis-il2cpp/     IL2CPP managed layer — symbol index pairing a Unity target's addresses with C# names
 n0xis-bitsquid/    Bitsquid/Stingray bundle format adapter (not depended on by core)
 n0xis-lua/         offline LuaJIT 2.0 bytecode disassembler/patcher (not depended on by core)
 n0xis-luajit/      live LuaJIT VM introspection — GCstr discovery in a running process
