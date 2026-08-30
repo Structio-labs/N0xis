@@ -196,22 +196,31 @@ fn real_line_count(ctx: &Ctx, n: usize) -> usize {
 /// Branch (`cjmp`/`switch`) regions are deliberately left as `goto` — simpler
 /// and never a bloat risk.
 fn is_duplicable_tail(ctx: &Ctx, n: usize) -> bool {
-    duplicable_region(ctx, n, 0, MAX_DUP_DEPTH)
+    region_lines(ctx, n, MAX_DUP_DEPTH).is_some()
 }
 
-fn duplicable_region(ctx: &Ctx, n: usize, acc_lines: usize, depth: usize) -> bool {
+/// The total rendered-line count of the acyclic tail region rooted at `n`, or
+/// `None` if it is not duplicable — it hits a loop header/back-edge, a
+/// non-terminating terminator, or exceeds [`MAX_DUP_LINES`]/[`MAX_DUP_DEPTH`].
+/// A region is a straight `jmp`/`fall` chain **or a small `if`/`else` whose both
+/// arms are themselves tail regions**, always ending at function exits
+/// (`ret`/`tail-call`). Summing across a branch's two arms bounds the real bloat
+/// (a diamond's shared merge is counted in both, conservatively).
+fn region_lines(ctx: &Ctx, n: usize, depth: usize) -> Option<usize> {
     if depth == 0 || ctx.is_header[n] || ctx.loop_stack.contains(&n) {
-        return false;
+        return None;
     }
-    let lines = acc_lines + real_line_count(ctx, n);
-    if lines > MAX_DUP_LINES {
-        return false;
-    }
+    let mut total = real_line_count(ctx, n);
     match ctx.cfg.blocks[n].terminator.as_str() {
-        "ret" | "tail-call" => ctx.succ[n].is_empty(),
-        "jmp" | "fall" => ctx.succ[n].first().is_some_and(|&s| duplicable_region(ctx, s, lines, depth - 1)),
-        _ => false,
+        "ret" | "tail-call" if ctx.succ[n].is_empty() => {}
+        "jmp" | "fall" => total += region_lines(ctx, *ctx.succ[n].first()?, depth - 1)?,
+        "cjmp" if ctx.succ[n].len() == 2 => {
+            total += region_lines(ctx, ctx.succ[n][0], depth - 1)?;
+            total += region_lines(ctx, ctx.succ[n][1], depth - 1)?;
+        }
+        _ => return None,
     }
+    (total <= MAX_DUP_LINES).then_some(total)
 }
 
 fn emit_block_body_and_terminator(ctx: &mut Ctx, n: usize, until: Option<usize>) {
