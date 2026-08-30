@@ -2748,6 +2748,25 @@ through plain syscalls — no signed driver, no code-integrity fight:
 9. ⬜ **LuaJIT 2.1 (bytecode dump v2).** `lua disasm`/`patch` read only the LuaJIT **2.0**
    dump (version 1); modern games ship LuaJIT 2.1 (dump v2), which is rejected
    (`unsupported LuaJIT dump version 2`). Add the v2 reader.
+10. 🚧 **32-bit PE32 — fail loud, not silent garbage** *(reported by external testers,
+    2026-08-30).* The whole pipeline is x86-64: the decoder is fixed at 64-bit bitness,
+    the register model is `rax`-wide, and argument recovery assumes the Win64 register
+    ABI. A **32-bit PE32** (optional-header magic `0x10b`) shares only its first `rel32`
+    call/jmp encodings with x64, then desyncs at the first differently-encoded opcode
+    (`A1 mov moffs` — 4 address bytes vs 8) and produced confident garbage returned as
+    `ok:true` — the worst outcome for an agent-native tool. ✅ **Fixed:** `StaticPe::load`
+    now checks `goblin`'s `is_64` and refuses a PE32 with a clear `ok:false` ("32-bit
+    PE32 … decoding as x86-64 would silently produce garbage; i386 not yet supported"),
+    so `profile`/`ir`/`decomp` all fail honestly instead of mis-decoding (this also
+    dissolves the tester's finding B — a garbage section table on PE32 — since the load
+    itself now errors). Regression-guarded with a synthetic PE32/PE32+ pair. **Verified**
+    on a real 32-bit DLL (a memory scanner `allochook-i386.dll`) — clean `ok:false`; 64-bit
+    Kenshi still loads. ⬜ **Follow-on — real i386 mode:** a proper 32-bit register model
+    (`eax`-wide) and **stack-based cdecl/stdcall** argument recovery, plus flipping
+    iced to 32-bit bitness and auto-selecting it from the magic — a feature-Phase, not a
+    decoder switch, deliberately not rushed (the same soundness discipline that made
+    fail-loud the right interim). *(Bonus tester ask: surface the Authenticode signer CN
+    in `profile` — a high-value malware/RE triage signal, currently invisible.)*
 
 ### Framing rules this phase encodes
 

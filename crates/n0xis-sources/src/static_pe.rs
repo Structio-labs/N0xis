@@ -80,6 +80,25 @@ impl StaticPe {
         let pe = PE::parse(&bytes)
             .map_err(|e| SourceError::Load(format!("parse '{}': {e}", path.display())))?;
 
+        // Refuse a 32-bit PE32 rather than silently mis-decode it. The whole
+        // pipeline is x86-64: the decoder is fixed at 64-bit bitness, the
+        // register model is `rax`-wide, and argument recovery assumes the Win64
+        // register ABI. A PE32 (optional-header magic 0x10b, `is_64 == false`)
+        // shares only its first few `rel32` call/jmp encodings with x64, then
+        // desyncs at the first differently-encoded opcode (e.g. `A1 mov moffs`,
+        // 4 address bytes in 32-bit vs 8 in 64-bit) and every downstream
+        // disasm/IR/decomp is confident garbage returned as `ok:true` — the
+        // worst outcome for an agent-native tool. Real i386 support needs its
+        // own register model and stack-based cdecl/stdcall ABIs, not just a
+        // decoder-bitness flip, so until it exists we fail loudly (CONCEPT
+        // `sound over complete`; the `verify before ✅` rule applied to loading).
+        if !pe.is_64 {
+            return Err(SourceError::Load(format!(
+                "'{}' is a 32-bit PE32 (this pipeline requires a 64-bit PE32+): decoding it as x86-64 would silently produce garbage. 32-bit (i386) targets are not yet supported.",
+                path.display()
+            )));
+        }
+
         let oh = pe
             .header
             .optional_header
@@ -259,3 +278,53 @@ impl ModuleProvider for StaticPe {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a syntactically minimal PE whose optional-header `magic` selects
+    /// PE32 (`0x10b`) or PE32+ (`0x20b`) — enough for `goblin` to set `is_64`,
+    /// with no sections. Just the bytes the bitness guard keys on.
+    fn minimal_pe(magic: u16) -> Vec<u8> {
+        let opt_size: u16 = if magic == 0x20b { 240 } else { 224 };
+        let mut b = vec![0u8; 0x58 + opt_size as usize + 16];
+        b[0..2].copy_from_slice(b"MZ");
+        b[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes()); // e_lfanew -> PE header
+        b[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let machine: u16 = if magic == 0x20b { 0x8664 } else { 0x14c };
+        b[0x44..0x46].copy_from_slice(&machine.to_le_bytes()); // machine
+        // num_sections = 0, timestamp/symtab/num_symbols = 0
+        b[0x54..0x56].copy_from_slice(&opt_size.to_le_bytes()); // size_of_optional_header
+        b[0x56..0x58].copy_from_slice(&0x102u16.to_le_bytes()); // characteristics (executable)
+        b[0x58..0x5a].copy_from_slice(&magic.to_le_bytes()); // optional-header magic
+        b
+    }
+
+    fn temp(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("n0xis_static_pe_{}_{}.bin", std::process::id(), tag));
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_32bit_pe32_is_refused_loudly_not_silently_mis_decoded() {
+        // The high-severity regression guard: a PE32 must error at load, never
+        // reach the x86-64 decoder and return confident garbage.
+        let p = temp("pe32", &minimal_pe(0x10b));
+        let err = StaticPe::load(&p).unwrap_err();
+        assert!(format!("{err}").contains("32-bit PE32"), "expected a loud 32-bit rejection, got: {err}");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_64bit_pe32plus_is_not_rejected_on_bitness() {
+        // The mirror: a PE32+ must pass the bitness guard (it may still fail for
+        // other reasons in this stripped-down image, but never on bitness).
+        let p = temp("pe32plus", &minimal_pe(0x20b));
+        if let Err(e) = StaticPe::load(&p) {
+            assert!(!format!("{e}").contains("32-bit PE32"), "a 64-bit PE was wrongly rejected as 32-bit: {e}");
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+}
