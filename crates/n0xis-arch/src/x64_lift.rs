@@ -199,6 +199,23 @@ fn intr_binary(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
     smart_write(instr, 0, MicroExpr::intrinsic(name, vec![dst, src]), out);
 }
 
+/// Sign-extend the accumulator's low `from` bits to `to` bits in place — the
+/// `cbw`/`cwde`/`cdqe` family. The inner cast reinterprets the low bits, the
+/// outer sign-extends, so it renders as `(int64_t)(int32_t)rax`.
+fn sext_acc(from: Bits, to: Bits, out: &mut Vec<MicroStmt>) {
+    let low = MicroExpr::Cast { signed: true, bits: from, expr: Box::new(MicroExpr::var("rax")) };
+    let value = MicroExpr::Cast { signed: true, bits: to, expr: Box::new(low) };
+    out.push(MicroStmt::Assign { dst: "rax".to_string(), value });
+}
+
+/// A BMI2 flag-less shift (`shlx`/`shrx`/`sarx`): `op0 = op1 <shift> op2`, with
+/// no flag side effect (unlike the legacy `shl`/`shr`).
+fn bmi_shift(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
+    let src = read_operand(instr, 1);
+    let count = read_operand(instr, 2);
+    write_operand(instr, 0, MicroExpr::binary(op, src, count), out);
+}
+
 /// `dst @= src` for an SSE *bitwise* op — bitwise operations don't cross lanes,
 /// so a packed `pxor`/`por`/`pand` is exactly a 128-bit scalar bit-op and needs
 /// no intrinsic. Sound and precise.
@@ -744,6 +761,53 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             out.push(MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::binary(BinOp::Mul, rax, src) });
             out.push(opaque_flags(mn));
         }
+        // Sign-extend the accumulator in place (`cbw`/`cwde`/`cdqe`): the low
+        // `from` bits, sign-extended to `to`. Reads as `(int64_t)(int32_t)rax`.
+        Mnemonic::Cbw => sext_acc(8, 16, &mut out),
+        Mnemonic::Cwde => sext_acc(16, 32, &mut out),
+        Mnemonic::Cdqe => sext_acc(32, 64, &mut out),
+        // Sign-extend rax into rdx (`cdq`/`cqo`) — the `rdx:rax` dividend setup.
+        Mnemonic::Cdq | Mnemonic::Cqo => {
+            out.push(MicroStmt::Assign { dst: "rdx".into(), value: MicroExpr::intrinsic(mnemonic_intrinsic(mn), vec![MicroExpr::var("rax")]) });
+        }
+        // BMI2 flag-less shifts (`shlx`/`shrx`/`sarx`): `dst = src <shift> count`,
+        // three operands and — the whole point of the BMI2 forms — no flag write.
+        Mnemonic::Shlx => bmi_shift(&instr, BinOp::Shl, &mut out),
+        Mnemonic::Shrx => bmi_shift(&instr, BinOp::Shr, &mut out),
+        Mnemonic::Sarx => bmi_shift(&instr, BinOp::Sar, &mut out),
+        // BMI2 `bzhi dst, src, index` — zero `src`'s bits from `index` up. The
+        // mask is index-dependent, so it reads as an intrinsic; sets flags.
+        Mnemonic::Bzhi => {
+            let src = read_operand(&instr, 1);
+            let index = read_operand(&instr, 2);
+            write_operand(&instr, 0, MicroExpr::intrinsic("__bzhi", vec![src, index]), &mut out);
+            out.push(opaque_flags(mn));
+        }
+        // BMI2 `mulx hi, lo, src` — `hi:lo = src * rdx` (implicit `rdx`), no
+        // flags. Low half is the product, high half `__umulh`; the high write is
+        // emitted first so both read the pre-multiply `rdx`.
+        Mnemonic::Mulx => {
+            let src = read_operand(&instr, 2);
+            let rdx = MicroExpr::var("rdx");
+            write_operand(&instr, 0, MicroExpr::intrinsic("__umulh", vec![rdx.clone(), src.clone()]), &mut out);
+            write_operand(&instr, 1, MicroExpr::binary(BinOp::Mul, rdx, src), &mut out);
+        }
+        // Bit test-and-reset/set/complement, immediate index: the value change is
+        // exact (`dst &= ~(1<<n)` / `|=` / `^=`); the CF it also sets (the old
+        // bit) stays opaque. A register index falls through to the opaque path.
+        Mnemonic::Btr | Mnemonic::Bts | Mnemonic::Btc if instr.op1_kind() == OpKind::Immediate8 => {
+            let bits = op_bits(&instr, 0);
+            let n = (instr.immediate8() as u32) & bits.saturating_sub(1);
+            let mask = MicroExpr::constant(1i128 << n, bits);
+            let dst = read_operand(&instr, 0);
+            let value = match mn {
+                Mnemonic::Btr => MicroExpr::binary(BinOp::And, dst, MicroExpr::unary(UnOp::Not, mask)),
+                Mnemonic::Bts => MicroExpr::binary(BinOp::Or, dst, mask),
+                _ => MicroExpr::binary(BinOp::Xor, dst, mask),
+            };
+            write_operand(&instr, 0, value, &mut out);
+            out.push(opaque_flags(mn));
+        }
         Mnemonic::Rol | Mnemonic::Ror => {
             // A rotate by an **immediate** is exact as a shift/shift/or, which is
             // also the shape a reverse-engineer recognizes (hash/PRNG code is
@@ -1004,6 +1068,42 @@ mod tests {
                 dst: "xmm0".into(),
                 value: MicroExpr::intrinsic("__addsd", vec![MicroExpr::var("xmm0"), MicroExpr::var("xmm1")]),
             },
+        );
+    }
+
+    #[test]
+    fn cdqe_sign_extends_the_accumulator() {
+        // cdqe = 48 98  ->  rax = (int64_t)(int32_t)rax
+        let stmts = lift_one(&[0x48, 0x98]);
+        assert_eq!(
+            stmts,
+            vec![MicroStmt::Assign {
+                dst: "rax".into(),
+                value: MicroExpr::Cast {
+                    signed: true,
+                    bits: 64,
+                    expr: Box::new(MicroExpr::Cast { signed: true, bits: 32, expr: Box::new(MicroExpr::var("rax")) }),
+                },
+            }],
+        );
+    }
+
+    #[test]
+    fn btr_and_bts_with_an_immediate_flip_exactly_one_bit() {
+        // btr eax, 5 = 0F BA F0 05  ->  rax = rax & ~0x20
+        let btr = lift_one(&[0x0F, 0xBA, 0xF0, 0x05]);
+        assert_eq!(
+            btr[0],
+            MicroStmt::Assign {
+                dst: "rax".into(),
+                value: MicroExpr::binary(BinOp::And, MicroExpr::var("rax"), MicroExpr::unary(UnOp::Not, MicroExpr::constant(0x20, 32))),
+            },
+        );
+        // bts eax, 5 = 0F BA E8 05  ->  rax = rax | 0x20
+        let bts = lift_one(&[0x0F, 0xBA, 0xE8, 0x05]);
+        assert_eq!(
+            bts[0],
+            MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::binary(BinOp::Or, MicroExpr::var("rax"), MicroExpr::constant(0x20, 32)) },
         );
     }
 

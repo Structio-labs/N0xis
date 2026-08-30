@@ -1747,6 +1747,23 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     decompiled **500/500 with 0 errors**. Remaining ⬜ for Rung 5: mapping an FP
     compare + its `jcc` to a real ordered/unordered condition, and signedness
     inference — both separate from this lift-coverage work.
+  - **5i — BMI/BMI2 + sign-extend lift (STALKER 2 finding).** ✅ *(2026-08-30,*
+    *verified.)* The `STALKER 2` (UE5) verification sweep surfaced that it was built
+    for a **newer ISA** than the rest of the corpus, hitting `// asm:` on instructions
+    the others never used: `shlx`/`shrx`/`sarx` (BMI2 flag-less shifts, ~21),
+    `cdqe`/`cwde`/`cbw` (sign-extend the accumulator, ~17), `bzhi` (BMI2 zero-high,
+    ~9), `mulx` (BMI2 wide multiply, ~8), `btr`/`bts`/`btc` (bit reset/set/complement).
+    Lifted, reusing existing shapes where exact: the BMI2 shifts are plain
+    `Shl`/`Shr`/`Sar` with **no flag write** (their whole point vs the legacy forms);
+    `cdqe` is `(int64_t)(int32_t)rax`; `mulx` is the product plus `__umulh` like the
+    1-operand `mul`; immediate `btr`/`bts`/`btc` are exact `& ~(1<<n)` / `| (1<<n)` /
+    `^ (1<<n)` with the CF they set left opaque; `bzhi` reads as an intrinsic.
+    **Verified:** re-sweeping `STALKER 2`'s 200 functions stays 200/200, 0 errors,
+    and the new lifts *compose* with the earlier idioms —
+    `(int64_t)(int32_t)((rbx.1 >= /*u*/ 0x2) ? rbx.1 : 0x1)` (cdqe over a min) and
+    `(rdx.18 * __umulh(rdx.18, 0x1642c8590b21642d)) >> 0x1` (mulx exposing a
+    magic-number division for `const identify`). The census tail is now only `bt`
+    (flag-only), `lock`-prefixed atomics, and CL-count `rol` — all sound to leave.
 
 - **Rung 6 — Readability structuring.** 🚧 The structuring engine
   (`structure.rs`) already reconstructs `if`/`else`, `&&`/`||` short-circuit
