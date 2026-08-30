@@ -500,13 +500,28 @@ fn expr_contains_var(e: &MicroExpr, name: &str) -> bool {
 // clobbers everything" rule; until then this never forwards an unsound value.
 // ---------------------------------------------------------------------
 
-/// The static location a `base + const` address names: the base's SSA name
-/// and the byte offset. `None` for anything richer (an index register, an
-/// absolute/ip-relative address, a nested expression) — those stay opaque and
-/// are treated as may-alias-everything.
+/// The synthetic base name for an **absolute** address (a global / static
+/// datum at a fixed VA). Distinct constant addresses are keyed under this one
+/// base with the address as the offset, so two different globals are two
+/// non-overlapping "slots" that provably do not alias — the global slice of the
+/// Rung 2 points-to oracle. Starts with `__` so it can never collide with a
+/// register or `"flags"` SSA name.
+const ABS_BASE: &str = "__abs";
+
+/// The static location a `base + const` address names: the base's SSA name and
+/// the byte offset. An **absolute** constant address is keyed under [`ABS_BASE`]
+/// with the address as the offset (see there). `None` for anything richer (an
+/// index register, a nested expression) — those stay opaque and are treated as
+/// may-alias-everything.
 fn mem_key(addr: &MicroExpr) -> Option<(String, i128)> {
     match addr {
         MicroExpr::Var(name) => Some((name.clone(), 0)),
+        // A fixed absolute address — a global. Two different constants name two
+        // different memory locations, so keying them lets a store to one global
+        // stop clobbering a load of another (sound: they cannot alias). A store
+        // through a *register* base still clobbers these (the register could
+        // hold the global's address), handled by the different-base rule.
+        MicroExpr::Const { value, .. } => Some((ABS_BASE.to_string(), *value)),
         MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {
             (MicroExpr::Var(name), MicroExpr::Const { value, .. }) => Some((name.clone(), *value)),
             (MicroExpr::Const { value, .. }, MicroExpr::Var(name)) => Some((name.clone(), *value)),
@@ -605,9 +620,14 @@ struct Escape {
 
 impl Escape {
     /// A slot only a same-slot store can change — safe across calls / foreign
-    /// / unknown-address stores.
+    /// / unknown-address stores. **Never** true for a global ([`ABS_BASE`]): a
+    /// call can write any global, and a store through a register base may target
+    /// it (the register could hold the global's address), so a global must be
+    /// killed by both — only the non-overlapping *same*-`__abs` case (a store to
+    /// a different global) lets it survive, and that is decided by the offset
+    /// overlap check, never here.
     fn call_safe(&self, base: &str, off: i128) -> bool {
-        !self.bases.contains(base) && !self.slots.contains(&(base.to_string(), off))
+        base != ABS_BASE && !self.bases.contains(base) && !self.slots.contains(&(base.to_string(), off))
     }
 }
 
@@ -1102,6 +1122,46 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg).unwrap();
         OptimizePass.run(&ctx, ssa).unwrap()
+    }
+
+    /// Does a `Load` from the absolute address `abs` survive anywhere in the
+    /// optimized function? False means it was store-to-load forwarded away.
+    fn has_load_from_abs(art: &OptArtifact, abs: i128) -> bool {
+        all_exprs(art).into_iter().any(|e| {
+            matches!(e, MicroExpr::Load { addr, .. } if matches!(addr.as_ref(), MicroExpr::Const { value, .. } if *value == abs))
+        })
+    }
+
+    #[test]
+    fn a_global_load_forwards_past_a_store_to_a_different_global() {
+        // Rung 2 (global points-to): two distinct absolute addresses cannot
+        // alias, so a store to [0x4000] must not clobber the value available at
+        // [0x3000]. mov [0x3000],rcx ; mov [0x4000],rdx ; mov rax,[0x3000] ; ret
+        let code = vec![
+            0x48, 0x89, 0x0d, 0xf9, 0x1f, 0x00, 0x00, 0x48, 0x89, 0x15, 0xf2, 0x2f, 0x00, 0x00, 0x48, 0x8b, 0x05, 0xeb, 0x1f,
+            0x00, 0x00, 0xc3,
+        ];
+        let art = optimize(code);
+        assert!(!has_load_from_abs(&art, 0x3000), "the [0x3000] load should forward past the unrelated [0x4000] store");
+    }
+
+    #[test]
+    fn a_global_load_does_not_forward_past_a_register_store() {
+        // Soundness: a store through a register base ([rdx]) may target the
+        // global (rdx could hold 0x3000), so it must clobber the available value.
+        // mov [0x3000],rcx ; mov [rdx],r8 ; mov rax,[0x3000] ; ret
+        let code = vec![0x48, 0x89, 0x0d, 0xf9, 0x1f, 0x00, 0x00, 0x4c, 0x89, 0x02, 0x48, 0x8b, 0x05, 0xef, 0x1f, 0x00, 0x00, 0xc3];
+        let art = optimize(code);
+        assert!(has_load_from_abs(&art, 0x3000), "a register store may alias the global — the load must NOT forward");
+    }
+
+    #[test]
+    fn a_global_load_does_not_forward_past_a_call() {
+        // Soundness: a callee can write any global. mov [0x3000],rcx ; call ;
+        // mov rax,[0x3000] ; ret
+        let code = vec![0x48, 0x89, 0x0d, 0xf9, 0x1f, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x05, 0xed, 0x1f, 0x00, 0x00, 0xc3];
+        let art = optimize(code);
+        assert!(has_load_from_abs(&art, 0x3000), "a call may write the global — the load must NOT forward");
     }
 
     /// Every expression reachable from any statement or condition in the
