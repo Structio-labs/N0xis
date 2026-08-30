@@ -38,6 +38,12 @@ pub struct RenderNames {
     /// there is never a bare `rcx` for this to collide with.
     param_names: HashMap<String, String>,
     void_return: bool,
+    /// Recovered C++ vtable address → class name (ROADMAP Phase 10 item 7). A
+    /// constant equal to a key is the address of that class's vtable — the
+    /// value an MSVC constructor stores into `*this` — so it renders
+    /// `&Class::vtable` instead of an opaque `(void*)0x…`. Empty unless
+    /// [`Self::with_vtables`] was given the RTTI scan's result.
+    vtables: HashMap<u64, String>,
 }
 
 impl RenderNames {
@@ -57,6 +63,7 @@ impl RenderNames {
             structs: HashMap::new(),
             param_names: HashMap::new(),
             void_return: false,
+            vtables: HashMap::new(),
         }
     }
 
@@ -77,6 +84,22 @@ impl RenderNames {
     pub fn with_coalescing(mut self, var_names: HashMap<String, String>) -> Self {
         self.param_names = var_names;
         self
+    }
+
+    /// Attach the recovered vtable-address → class-name map so a vtable constant
+    /// renders as `&Class::vtable` (ROADMAP Phase 10 item 7 — RTTI in the
+    /// decompiler). See the [`RenderNames::vtables`] field.
+    pub fn with_vtables(mut self, vtables: HashMap<u64, String>) -> Self {
+        self.vtables = vtables;
+        self
+    }
+
+    /// If `value` is the address of a recovered vtable, the readable
+    /// `&Class::vtable` reference for it. A verbatim (undecoded, template) class
+    /// name is used as-is — sound over pretty, exactly as callee names are.
+    fn vtable_ref(&self, value: i128) -> Option<String> {
+        let va = u64::try_from(value).ok()?;
+        self.vtables.get(&va).map(|class| format!("&{class}::vtable"))
     }
 
     fn callee(&self, va: Va) -> String {
@@ -312,7 +335,7 @@ fn is_comparison(op: BinOp) -> bool {
 
 pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
     match e {
-        MicroExpr::Const { value, bits } => render_const(*value, *bits),
+        MicroExpr::Const { value, bits } => names.vtable_ref(*value).unwrap_or_else(|| render_const(*value, *bits)),
         MicroExpr::Var(name) => names.display_var(name),
         MicroExpr::Load { addr, bits, signed } => {
             if let Some(text) = field_or_local_text(addr, names) {
@@ -331,7 +354,9 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
         }
         MicroExpr::Cast { signed, bits, expr } => format!("({}){}", c_type(*bits, *signed), render_expr(expr, names)),
         MicroExpr::AddrOf(inner) => match inner.as_ref() {
-            MicroExpr::Const { value, .. } => format!("(void*)0x{:x}", *value as u64),
+            // `lea rax, [rip+vtable]` — the address of a recovered vtable reads
+            // as `&Class::vtable`, otherwise as the raw pointer constant.
+            MicroExpr::Const { value, .. } => names.vtable_ref(*value).unwrap_or_else(|| format!("(void*)0x{:x}", *value as u64)),
             other => format!("&{}", render_expr(other, names)),
         },
         MicroExpr::Compare { kind, lhs, rhs } => {
@@ -724,6 +749,31 @@ mod tests {
             MicroExpr::var("rdx.1"),
         );
         assert_eq!(render_expr(&sel, &names), "((rax.1 < /*u*/ rbx.1) ? rcx.1 : rdx.1)");
+    }
+
+    #[test]
+    fn a_vtable_constant_renders_as_a_named_class_vtable_reference() {
+        // ROADMAP Phase 10 item 7 — RTTI in the decompiler. The MSVC constructor
+        // idiom `mov rax, offset vtable; mov [rcx], rax` stores the vtable
+        // address into `*this`; with the RTTI map attached that address names
+        // its class instead of reading as an opaque pointer.
+        let mut vtables = HashMap::new();
+        vtables.insert(0x180021548u64, "std::exception".to_string());
+        let names = RenderNames::new(&[]).with_vtables(vtables);
+        // Both the `lea`-shaped AddrOf(Const) and a bare Const of the same
+        // address resolve to the class.
+        assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "&std::exception::vtable");
+        assert_eq!(render_expr(&MicroExpr::constant(0x180021548, 64), &names), "&std::exception::vtable");
+        // A different constant is untouched — sound, no misfire.
+        assert_eq!(render_expr(&MicroExpr::constant(0x180021549, 64), &names), "0x180021549");
+    }
+
+    #[test]
+    fn without_the_rtti_map_a_pointer_constant_reads_exactly_as_before() {
+        // Soundness/regression: with no vtable map attached, the address renders
+        // as the raw pointer constant it always did.
+        let names = RenderNames::new(&[]);
+        assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "(void*)0x180021548");
     }
 
     #[test]

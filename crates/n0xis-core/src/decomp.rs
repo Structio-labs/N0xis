@@ -98,7 +98,13 @@ impl Pass for DecompPass {
         // opaque — then applied to whichever style's own IR is rendered.
         let opt = OptimizePass.run(ctx, ssa.clone())?;
         let types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone() })?;
-        let names = RenderNames::new(&cfg.callsites).with_types(&types);
+        let mut names = RenderNames::new(&cfg.callsites).with_types(&types);
+        // RTTI (ROADMAP Phase 10 item 7): if the frontend attached the recovered
+        // vtable map, a vtable constant renders as `&Class::vtable`. Cloned in
+        // (cheap — a handful of classes) so every render site shares it.
+        if let Some(vtables) = ctx.vtables {
+            names = names.with_vtables(vtables.clone());
+        }
         // The function's own name, when a symbol source has one. **Only an
         // exact hit counts**: a provider that attributes a whole function span
         // answers for any address inside it, so accepting a near miss would

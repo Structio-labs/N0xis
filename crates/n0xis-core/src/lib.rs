@@ -144,6 +144,13 @@ pub struct Ctx<'a> {
     /// (ROADMAP Phase 10, priority 0 — the CFG-fidelity follow-on). `None` =
     /// intraprocedural analysis with imports as the only noreturn oracle.
     pub noreturn: Option<&'a std::collections::HashSet<n0xis_contracts::Va>>,
+    /// Recovered C++ vtable address → class name, from [`scan_msvc_rtti`]
+    /// (ROADMAP Phase 10 item 7). The frontend scans `.rdata` once and attaches
+    /// the map so a pass can name a vtable constant: the constructor idiom
+    /// `*this = 0x180021548` reads `*this = &std::exception::vtable`, and the
+    /// `this` pointer types to that class. `None` on a non-PE/non-MSVC target
+    /// (ELF, live, stripped) — every such site renders exactly as before.
+    pub vtables: Option<&'a std::collections::HashMap<u64, String>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -154,6 +161,7 @@ impl<'a> Ctx<'a> {
             symbols: None,
             modules: None,
             noreturn: None,
+            vtables: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -167,6 +175,11 @@ impl<'a> Ctx<'a> {
     /// Attach a set of proven-noreturn function addresses (see the field docs).
     pub fn with_noreturn(mut self, noreturn: &'a std::collections::HashSet<n0xis_contracts::Va>) -> Self {
         self.noreturn = Some(noreturn);
+        self
+    }
+    /// Attach the recovered vtable-address → class-name map (see the field docs).
+    pub fn with_vtables(mut self, vtables: &'a std::collections::HashMap<u64, String>) -> Self {
+        self.vtables = Some(vtables);
         self
     }
 }

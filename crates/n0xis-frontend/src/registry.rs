@@ -187,6 +187,21 @@ fn bool_arg(args: &Value, key: &str) -> bool {
 /// This is the JSON twin of `n0xis-cli`'s `run_ir` — and the reason the CLI's
 /// copy is now four lines that call `dispatch`. `Ctx` borrows the source, so
 /// this hands it to a closure rather than returning it.
+/// The recovered vtable-address → class-name map for a target, or an empty map
+/// when RTTI does not apply (no image base, no `.rdata`, or a non-MSVC/non-PE
+/// source). Keyed by the vtable's first-slot VA — the value an MSVC constructor
+/// stores into `*this`, so a pass can name that constant `&Class::vtable`
+/// (ROADMAP Phase 10 item 7). One `.rdata` scan; see [`n0xis_core::scan_msvc_rtti`].
+fn rtti_vtable_map(src: &Src) -> std::collections::HashMap<u64, String> {
+    let (Some(base), Some(rdata)) = (src.module_base(), src.section_range(".rdata")) else {
+        return std::collections::HashMap::new();
+    };
+    n0xis_core::scan_msvc_rtti(src.as_mem(), base, rdata, src.text_range())
+        .into_iter()
+        .map(|v| (v.vtable.get(), v.name))
+        .collect()
+}
+
 fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str) -> Response<Value>) -> Response<Value> {
     let addr = match required_addr(args, "addr") {
         Ok(v) => v,
@@ -236,13 +251,20 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     let attach = crate::il2cpp_caps::attach_for(args, &resolved.src);
     let managed = attach.symbols();
 
+    // RTTI (ROADMAP Phase 10 item 7): pre-scan `.rdata` for MSVC vtables once so
+    // any function-scoped pass can name a vtable constant `&Class::vtable`. Only
+    // a static PE with an image base and `.rdata` yields entries; every other
+    // target gets an empty map and renders exactly as before. The scan reads the
+    // section buffer once and indexes in memory, so it is cheap per invocation.
+    let vtables = rtti_vtable_map(&resolved.src);
+
     let resp = match &resolved.src {
         Src::Static(pe) => match managed {
             Some(m) => {
                 let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()), input, &label)
+                work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
             }
-            None => work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()), input, &label),
+            None => work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label),
         },
         Src::Live(l) => match managed {
             Some(m) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(m), input, &label),
