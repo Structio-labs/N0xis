@@ -65,28 +65,40 @@ fn collect_loop_body(header: usize, tail: usize, pred: &[Vec<usize>]) -> BTreeSe
     body
 }
 
-/// Detect a counter step (`x++`, `x--`, `x += k`, …) at the tail of a
-/// rendered block body — a `for`-loop prettification heuristic only (falls
-/// back to `while` on any doubt), same scope as v0's version.
-fn detect_step_text(body_lines: &[String]) -> Option<String> {
-    for line in body_lines.iter().rev().take(3) {
-        let trimmed = line.trim().trim_end_matches(';').trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            continue;
-        }
-        let looks_like_step = trimmed.ends_with("++")
-            || trimmed.ends_with("--")
-            || trimmed.starts_with("++")
-            || trimmed.starts_with("--")
-            || trimmed.contains(" += ")
-            || trimmed.contains(" -= ")
-            || (trimmed.contains(" = ") && (trimmed.contains(" + ") || trimmed.contains(" - ")));
-        if looks_like_step && !trimmed.contains('(') && trimmed.len() < 96 {
-            return Some(trimmed.to_string());
-        }
+/// If a rendered loop body's **last top-level statement** is an induction step,
+/// return the body with that line removed plus the step text (no indent, no
+/// trailing `;`) — for hoisting into a `for (; cond; step)` header. Recognizes
+/// `++`/`--`/`+=`/`-=` and a self-referential `x = (x + k)` / `x = x - k` (the
+/// shape our renderer emits — the step variable recurs on the right with a
+/// `+`/`-`); self-reference excludes a call assignment `x = f(…)`. The step must
+/// sit at the body's **outermost** indent (not nested inside an `if`), so a
+/// counter update tucked in a branch is never mistaken for the loop step.
+/// `None` leaves the loop as a `while` — sound over pretty.
+fn split_trailing_step(body: &[String]) -> Option<(Vec<String>, String)> {
+    let indent_of = |l: &str| l.len() - l.trim_start().len();
+    let min_indent = body.iter().filter(|l| is_code_line(l)).map(|l| indent_of(l)).min()?;
+    let last_idx = body.iter().rposition(|l| is_code_line(l))?;
+    if indent_of(&body[last_idx]) != min_indent {
         return None;
     }
-    None
+    let last = body[last_idx].trim().trim_end_matches(';').trim();
+    if last.len() >= 96 {
+        return None;
+    }
+    let is_step = last.ends_with("++")
+        || last.ends_with("--")
+        || last.contains(" += ")
+        || last.contains(" -= ")
+        || last.split_once(" = ").is_some_and(|(l, r)| {
+            let l = l.trim();
+            !l.is_empty() && r.contains(l) && (r.contains(" + ") || r.contains(" - "))
+        });
+    if !is_step {
+        return None;
+    }
+    let mut rest = body.to_vec();
+    rest.remove(last_idx);
+    Some((rest, last.to_string()))
 }
 
 struct Ctx<'a> {
@@ -491,41 +503,32 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                 let inside = if t_in { t } else { f };
                 let outside = if t_in { f } else { t };
 
-                let mut for_step: Option<String> = None;
-                let mut latch: Option<usize> = None;
-                if back_edges.len() == 1 {
-                    let l = back_edges[0];
-                    if l != h && matches!(ctx.cfg.blocks[l].terminator.as_str(), "fall" | "jmp") && ctx.succ[l].first().copied() == Some(h)
-                        && let Some(step) = detect_step_text(&ctx.body_lines[l])
-                    {
-                        for_step = Some(step);
-                        latch = Some(l);
-                    }
-                }
-
-                if let (Some(step), Some(latch)) = (for_step, latch) {
-                    ctx.out.push(format!("{}for (; {cond_for_loop}; {step}) {{", pad(ctx.indent)));
-                    ctx.indent += 1;
-                    for line in &ctx.body_lines[h] {
-                        ctx.out.push(format!("{}{}", pad(ctx.indent), line));
-                    }
-                    ctx.visited[latch] = true;
-                    emit_node(ctx, inside, Some(h));
-                    ctx.indent -= 1;
-                    ctx.out.push(format!("{}}}", pad(ctx.indent)));
-                    ctx.loop_stack.pop();
-                    emit_node(ctx, outside, until);
-                    return;
-                }
-
-                ctx.out.push(format!("{}while ({cond_for_loop}) {{", pad(ctx.indent)));
+                // Emit the loop body (header block + the in-loop arm) into a
+                // buffer, then reformat: if its last top-level statement is an
+                // induction step and the condition is clean, hoist that step
+                // into a `for (; cond; step)`. This is a pure text reformat of an
+                // already-correct `while` body — no CFG re-scoping — so unlike a
+                // direct for-emission it cannot mis-structure a complex loop
+                // (absorb trailing blocks, emit a `for` over an opaque cond).
                 ctx.indent += 1;
-                for line in &ctx.body_lines[h] {
-                    ctx.out.push(format!("{}{}", pad(ctx.indent), line));
-                }
+                let mut body: Vec<String> = ctx.body_lines[h].iter().map(|l| format!("{}{}", pad(ctx.indent), l)).collect();
+                let saved = std::mem::take(&mut ctx.out);
                 emit_node(ctx, inside, Some(h));
+                let inside_lines = std::mem::replace(&mut ctx.out, saved);
+                body.extend(inside_lines);
                 ctx.indent -= 1;
-                ctx.out.push(format!("{}}}", pad(ctx.indent)));
+
+                let pad0 = pad(ctx.indent);
+                let for_form = if cond_for_loop.contains("/*") { None } else { split_trailing_step(&body) };
+                if let Some((body_wo_step, step)) = for_form {
+                    ctx.out.push(format!("{pad0}for (; {cond_for_loop}; {step}) {{"));
+                    ctx.out.extend(body_wo_step);
+                    ctx.out.push(format!("{pad0}}}"));
+                } else {
+                    ctx.out.push(format!("{pad0}while ({cond_for_loop}) {{"));
+                    ctx.out.extend(body);
+                    ctx.out.push(format!("{pad0}}}"));
+                }
                 ctx.loop_stack.pop();
                 emit_node(ctx, outside, until);
                 return;
@@ -723,6 +726,36 @@ mod tests {
             assert!(!(w[0].trim_end().ends_with('{') && w[1].trim() == "}"), "no empty block: {text}");
         }
         assert_eq!(out.fallback_count, 0, "{text}");
+    }
+
+    #[test]
+    fn split_trailing_step_hoists_only_a_top_level_induction_step() {
+        // The `for`-header step is the last top-level statement, self-referential.
+        let body = vec!["    v1 = (v1 + *rdi);".to_string(), "    rdi = (rdi + 0x8);".to_string()];
+        let (rest, step) = split_trailing_step(&body).expect("should find the step");
+        assert_eq!(step, "rdi = (rdi + 0x8)");
+        assert_eq!(rest, vec!["    v1 = (v1 + *rdi);".to_string()]);
+        // `++`/`+=` forms.
+        assert_eq!(split_trailing_step(&["    i += 0x2;".to_string()]).unwrap().1, "i += 0x2");
+        // A non-step last line (a plain store / call) is not a step.
+        assert!(split_trailing_step(&["    rdi = (rdi + 0x8);".to_string(), "    *rcx = v1;".to_string()]).is_none());
+        // A step nested one level deeper (inside an inner `if`, not the loop's own
+        // step) must be refused — it is not at the body's outermost indent.
+        let nested = vec!["    v1 = (v1 + *rdi);".to_string(), "    if ((x != 0x0)) {".to_string(), "        i = (i + 0x1);".to_string(), "    }".to_string()];
+        assert!(split_trailing_step(&nested).is_none());
+    }
+
+    #[test]
+    fn a_real_compiled_counting_for_loop_recovers_as_for() {
+        // Ground-truth guard using a compiled pointer-walk shape the corpus test
+        // covers end-to-end: a `while` whose body's last top-level line is the
+        // induction step reformats to `for (; cond; step)`. Exercised here at the
+        // helper level (the CFG-level recovery is verified on real binaries —
+        // gcc/clang -O1/-O2 sum_array/count_down/every_other/ptr_sum).
+        let body = vec!["    v2 = (v2 + *(uint64_t*)((rdi + (v1 * 0x8))));".to_string(), "    v1 = (v1 + 0x2);".to_string()];
+        let (rest, step) = split_trailing_step(&body).unwrap();
+        assert_eq!(step, "v1 = (v1 + 0x2)");
+        assert_eq!(rest.len(), 1);
     }
 
     #[test]
