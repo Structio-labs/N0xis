@@ -2737,11 +2737,24 @@ through plain syscalls — no signed driver, no code-integrity fight:
      the CFG splits blocks and follows edges — verified against `llvm-objdump` (a Thumb
      `b.w` at `0x799e` resolves to `0x79a4`, its exact target; 0 mismatches where the
      linear-Thumb and mapping-symbol streams align). A target is set only when reliably
-     computable, else `None` — a sound "unknown edge", never a wrong one. Lift stays
-     default (Unlifted) — `disasm`/`ir`/CFG work, a full A32/T32 **semantic lift** (every
-     instruction → micro-IR, with predication as `cond ? effect : old` and the AAPCS32
-     arg model) is the follow-on; it carries a soundness burden (an unhandled instruction
-     must invalidate its writes) that makes it a dedicated effort, not a partial bolt-on. `--arch arm32` (A32) / `--arch
+     computable, else `None` — a sound "unknown edge", never a wrong one.
+     - **Partial semantic lift.** 🚧 The common **unconditional** forms lift to micro-IR:
+       data-processing (`mov`/`mvn`/`add`/`sub`/`and`/`orr`/`eor`/`bic`/`mul`), simple
+       `ldr`/`str` (`[Rn,#±off]`, with write-back), `cmp` → `flags` + the AArch32 branch
+       conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed the same way x64 does for
+       `jcc`, and `bl`/`bx lr` as AAPCS32 calls/returns (`r0` = f(`r0`-`r3`), caller-saved
+       clobbered). Everything else — **predicated** (`cond != AL`) forms, shifted-register
+       operands, `ldm`/`stm`, FP/SIMD — is preserved as `asm` and **soundly invalidates
+       its writes** (`writes_of` is a sound over-approximation, incl. the `ldm` reg-list
+       and write-back bases: an unhandled instruction never lets a later read reuse a
+       stale value — the exact soundness burden that makes a *partial* lift correct).
+       **Verified** on the box's own `toybox` (Thumb-2): `sub sp, #0x10` →
+       `sp.1 = (sp.0 - 0x10)`, `ldr r2, [r3]` → `r2.3 = *r3.2`, `bl` →
+       `r0.1 = sub_6a12(r0.0, r1.4, r2.3, r3.4)`, matching `llvm-objdump`; a sweep of 50
+       functions (found by their `push {…,lr}` prologue, since ARM function discovery is
+       still x64-shaped) decompiled **50/50 with 0 errors, ~52 % of statement lines
+       lifted**, the rest honest `asm`. ⬜ remaining: predication-as-`cond ? effect : old`,
+       operand-2 shift lifting, `ldm`/`stm`, and ARM-shaped function discovery. `--arch arm32` (A32) / `--arch
      thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
      BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
      on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-
