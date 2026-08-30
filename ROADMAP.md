@@ -1902,9 +1902,15 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     two's-complement giant `field_0xfffff…f8`; it now reads `field_neg_0x8`.
     **Verified:** corpus giant-hex lines 116 → 18 (the 18 remaining are genuine
     64-bit constants — `0x7fffffffffffffff` masks, the magic-division multiplier).
-  - Remaining ⬜: `for`-loop recovery (the step detector does not fire on the
-    corpus's counting loops — they read `while`/`do`), the residual shared-body
-    gotos, and the switch `default`/unresolved-case distinction.
+  - Remaining ⬜: `for`-loop recovery. Investigated — the step detector's
+    paren-ban meant the `for` path never fired on our always-parenthesized
+    output (`x = (x + k)`); relaxing it to a self-reference test *does* fire, but
+    exposed that the `for`-emission path itself mis-scopes complex loops (absorbs
+    trailing blocks, emits a `for` over an opaque condition). Reverted rather
+    than ship worse output — the `for` **emission** needs hardening, not just the
+    detector, so counting loops read as sound `while`/`do` for now. Also ⬜: the
+    residual shared-body gotos and the switch `default`/unresolved-case
+    distinction.
 
 - **Rung 7 — Structural advantages this design gets for free.** 🚧 The capabilities the
   other tools structurally lack. Two are already present by construction: every pass
