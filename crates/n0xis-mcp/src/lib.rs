@@ -39,7 +39,7 @@ pub use n0xis_contracts as contracts;
 pub use n0xis_core as core;
 
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, ServiceExt, tool_handler};
 
 /// The N0xis MCP server. Stateless in memory beyond what `.n0x/session.json`
@@ -60,14 +60,20 @@ impl N0xisServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for N0xisServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+        // `ServerInfo::new` fills `server_info` via `Implementation::from_build_env()`,
+        // whose `env!("CARGO_CRATE_NAME")` expands *inside rmcp* — so the default
+        // announces the SDK ("rmcp" 2.2.0) rather than this server. Declare ours.
+        let mut info =
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "N0xis: reverse-engineering and live-memory toolkit. Tools mirror the `n0xis` CLI's \
              verbs and return the identical `{ok,data,meta}` envelope (meta.schema names the \
              payload shape). Typical flow: `attach` (pid or file) to set the session default, \
              `function_discover` to find candidates, `decomp_pseudo` to decompile one, \
              `explain_opt_delta` or `provenance_trace` to see *why* the decompiler produced \
              what it did.",
-        )
+        );
+        info.server_info = Implementation::new("n0xis", env!("CARGO_PKG_VERSION"));
+        info
     }
 }
 

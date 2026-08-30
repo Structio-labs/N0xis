@@ -1,0 +1,1095 @@
+{
+  "author": "LargoScript",
+  "authorUrl": "https://github.com/LargoScript",
+  "category": "developer",
+  "description": "Reverse-engineering and live-memory toolkit for Windows and Linux: an optimizing SSA decompiler, live value/pointer/AOB memory scanning, and hardware watchpoints — one analysis pipeline over static PE/ELF files and live processes alike. Arm a watchpoint on a live value and get back the decompiled statement that wrote it.",
+  "homepage": "https://github.com/LargoScript/n0xis",
+  "identifier": "largoscript-n0xis",
+  "name": "N0xis",
+  "tags": [
+    "reverse-engineering",
+    "decompiler",
+    "disassembler",
+    "debugger",
+    "memory-scanner",
+    "binary-analysis",
+    "static-analysis",
+    "watchpoint",
+    "rust",
+    "il2cpp"
+  ],
+  "version": "0.1.0",
+  "prompts": [],
+  "resources": [],
+  "tools": [
+    {
+      "name": "annotate_get",
+      "description": "The current name/type/comment + full history recorded at an address, if any.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "annotate_list",
+      "description": "Every annotated address, va-sorted.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "annotate_set",
+      "description": "Assert (or clear, with no value) a name/type/comment at an address — the analysis DB, kept as versioned truth: every change is appended to that address's history rather than overwriting it. field is one of \"name\", \"type\", or \"comment\".",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "type": "string"
+          },
+          "field": {
+            "description": "`\"name\"`, `\"type\"`, or `\"comment\"`.",
+            "type": "string"
+          },
+          "value": {
+            "default": null,
+            "description": "New value; omit to clear the field.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "addr",
+          "field"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "attach",
+      "description": "Attach to a pid or load a static PE file, and record it as the session default in `.n0x/session.json` so later tool calls can omit pid/file. Shared with the CLI (same project directory).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "default": null,
+            "description": "Path to a PE file to load (static source). Provide exactly one of `pid`/`file`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "default": null,
+            "description": "PID of a running process to attach to (live source).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "capability_list",
+      "description": "List every capability this build can run — built-in analysis and user-registered plugins alike, each with its origin and the schema it emits. Read this instead of guessing what exists; a plugin the user registered shows up here exactly like a built-in does.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "capability_run",
+      "description": "Run a capability by name (see `capability_list`) with JSON arguments. Target arguments are the usual pid/file/snapshot/remote_cmd/bytes. Dispatching a built-in and dispatching a plugin are the same call — that is the point of the registry.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "args": {
+            "default": null,
+            "description": "Arguments object, passed through to the capability unchanged."
+          },
+          "name": {
+            "description": "Capability name, as reported by `capability_list` (e.g. `\"decode\"`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "decomp_pseudo",
+      "description": "Decompile a function to pseudo-C. style=ssa (default) is the main path: optimized + structured, and its response includes `delta` — the per-pass optimization log (also available standalone via explain_opt_delta).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "description": "Function start address, e.g. `\"0x140001000\"`.",
+            "type": "string"
+          },
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "explain": {
+            "default": null,
+            "description": "Also return the per-round optimization delta (`ssa` style only). Off by\ndefault: measured larger than the pseudocode itself (59% of the\npayload). The `ir_opt_delta` tool is the dedicated way to ask for it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "no_auto_end": {
+            "default": false,
+            "type": "boolean"
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "default": 4096,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "style": {
+            "default": "ssa",
+            "description": "One of `\"goto\"`, `\"structured\"`, `\"ssa\"` (default: `\"ssa\"`, the optimized + structured style).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "disasm",
+      "description": "Linear disassembly of `count` instructions starting at `addr`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "description": "Address to start disassembling at, e.g. `\"0x140001000\"`.",
+            "type": "string"
+          },
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "count": {
+            "default": 16,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "doctor",
+      "description": "Environment / readiness check (arch decoder, project resolution).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "explain_opt_delta",
+      "description": "Explain *why* the decompiler produced what it did: runs the same pipeline as decomp_pseudo(style=ssa) and returns only the per-pass optimization delta (n0xis.opt.delta.v1) — copy/const/expr propagation and dead-code elimination, each entry naming the pass, the address, and a summary of what changed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "description": "Function start address, e.g. `\"0x140001000\"`.",
+            "type": "string"
+          },
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "explain": {
+            "default": null,
+            "description": "Also return the per-round optimization delta (`ssa` style only). Off by\ndefault: measured larger than the pseudocode itself (59% of the\npayload). The `ir_opt_delta` tool is the dedicated way to ask for it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "no_auto_end": {
+            "default": false,
+            "type": "boolean"
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "default": 4096,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "style": {
+            "default": "ssa",
+            "description": "One of `\"goto\"`, `\"structured\"`, `\"ssa\"` (default: `\"ssa\"`, the optimized + structured style).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "function_discover",
+      "description": "Heuristic function discovery over a code range (defaults to `.text`).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 64,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "default": null,
+            "description": "Skip this many candidates before collecting — page through a range\ntogether with `limit`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start": {
+            "default": null,
+            "description": "Start of the scan range; defaults to the module's `.text`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "function_trace",
+      "description": "Call-graph walk (BFS) from a root function address.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "description": "Root address (or RVA if `addr_rva` is set) to walk the call graph from.",
+            "type": "string"
+          },
+          "addr_rva": {
+            "default": false,
+            "type": "boolean"
+          },
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "default": 3,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "default": 4096,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_nodes": {
+            "default": 0,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "mem_read",
+      "description": "Read raw bytes from a live process or static file at an address.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "type": "string"
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "addr",
+          "size"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "mem_write",
+      "description": "Write raw bytes into a live process's memory at an address.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "type": "string"
+          },
+          "bytes": {
+            "description": "Space- or contiguous-hex bytes, e.g. `\"90 90 C3\"` or `\"9090C3\"`.",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Live-process only (writing a static file's on-disk bytes isn't a thing).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "addr",
+          "bytes"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "module_list",
+      "description": "List loaded modules of a live process or a static PE's imports/module table.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "plugin_list",
+      "description": "Every registered analysis plugin (name -> spawn command + declared artifact kinds), from .n0x/plugins.json.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "plugin_run",
+      "description": "Manually invoke one registered plugin by name against an arbitrary JSON artifact and return its response. Fails visibly (never panics) if the plugin isn't registered, its command can't spawn, or it crashes/times out — matching PluginHost's own fail-open-but-visible posture.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "artifact": {
+            "description": "The artifact JSON to send on the plugin's stdin."
+          },
+          "kind": {
+            "description": "Artifact kind label sent to the plugin alongside `artifact`\n(`\"cfg\"`/`\"pseudo\"`/`\"discover\"`, or any caller-chosen string for a\nmanual test invocation).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Which registered plugin (`.n0x/plugins.json`) to invoke.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "artifact"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "process_ps",
+      "description": "List running processes, optionally filtered by name substring.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filter": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "provenance_trace",
+      "description": "Explain a live memory access: arms a hardware watchpoint on addr, waits for one real hit, then fuses it with the SSA decompiler to resolve the containing function and return the exact decompiled statement responsible — provenance, not just an address.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "description": "Address of the value to watch.",
+            "type": "string"
+          },
+          "kind": {
+            "default": "write",
+            "description": "`\"execute\"`, `\"write\"`, or `\"read-or-write\"`.",
+            "type": "string"
+          },
+          "len": {
+            "default": 4,
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeout_ms": {
+            "default": 5000,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "ui_focus",
+      "description": "Bring a window to the foreground (window selector). NOT read-only — it activates a window on the target. Verifies success via GetForegroundWindow (data.foreground), since the OS often only flashes the taskbar instead of truly focusing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "hwnd": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "ui_locate",
+      "description": "Screen region -> memory addresses: hit-test a live target's own UI bounding boxes and report the elements drawing inside a rectangle. Read-only (no breakpoints, no writes). Use `space:\"auto\"` first and read `observed_range` to learn which coordinate space the target's boxes are in. For noisy results, run once over a rect where the widget is ABSENT with `save_as`, then re-run over the rect where it is PRESENT with `exclude_from` — the spatial diff drops structures that overlap every rect.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "align": {
+            "default": 4,
+            "description": "Byte stride between candidate positions (fields are dword-aligned).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "exclude_from": {
+            "default": [],
+            "description": "Exclude every address found in these previously-saved queries — the\nspatial-diff filter (save a rect where the widget is absent, exclude it\nfrom one where it is present).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "force": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "description": "Live process to hit-test. `ui locate` is live-only: it reads the\ntarget's current retained scene graph.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rect": {
+            "description": "Query rectangle as `\"x0,y0,x1,y1\"` (any corner order).",
+            "type": "string"
+          },
+          "save_as": {
+            "default": null,
+            "description": "Persist this query's addresses under `.n0x/dumps/ui_locate/<name>.json`\nso a later query can `exclude_from` it (spatial-diff workflow).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "space": {
+            "default": "auto",
+            "description": "`\"auto\"` (default), `\"screen\"`, or `\"ndc\"`. `auto` uses a permissive\nbound and reports the observed coordinate range, so you can tell which\nspace the target's boxes are actually in instead of guessing.",
+            "type": "string"
+          },
+          "start": {
+            "default": null,
+            "description": "Region start (hex). Omit (with `size`) to scan every committed\nwritable region.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pid",
+          "rect"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "ui_screenshot",
+      "description": "Capture a target window to a PNG so you can visually choose a rect for ui_locate. Read-only-ish (window-dc is fully read-only; printwindow makes the target's UI thread render). CRITICAL: GDI/PrintWindow return an all-black frame for flip-model DirectX windows — this tool detects that and sets data.blank=true with a reason; NEVER treat a blank capture as an empty UI. Key on data.blank, not on ok. Pass out=<path> to write the PNG, base64=true to embed it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base64": {
+            "default": false,
+            "description": "Embed the PNG as base64 in the response. Off by default — a full-window\nPNG can be large.",
+            "type": "boolean"
+          },
+          "hwnd": {
+            "default": null,
+            "description": "Specific window HWND (from `ui_windows`); defaults to the best-guess\ngame window for the pid.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "method": {
+            "default": "auto",
+            "description": "`\"auto\"` (default), `\"window-dc\"`, or `\"printwindow\"`.",
+            "type": "string"
+          },
+          "out": {
+            "default": null,
+            "description": "Write the PNG here (server-side path). Written even on a blank capture.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "ui_windows",
+      "description": "List a target process's top-level windows (title, class, visibility, rects, DPI), best-guess game window first. Read-only. Use it to pick an hwnd for ui_screenshot / ui_focus, or to see why a capture is blank (minimized / cloaked / off-screen). rect_frame is the canonical visible bounds; rect_client is where the game renders.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "xref",
+      "description": "Cross-references to (dir=to) or from (dir=from) an address, scanned over a code range.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "description": "The address of interest.",
+            "type": "string"
+          },
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dir": {
+            "default": "to",
+            "description": "`\"to\"` (who references `addr`) or `\"from\"` (what `addr` references).",
+            "type": "string"
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "xref_string",
+      "description": "Search a data window for a string literal and find the code that references it (lea xref).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "arch": {
+            "default": null,
+            "description": "Instruction set to decode: `\"x64\"` (default) or `\"arm64\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_size": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "code_start": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data_size": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "data_start": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 64,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "The string literal to search for.",
+            "type": "string"
+          },
+          "remote_cmd": {
+            "default": null,
+            "description": "Attach over a remote transport, e.g. `\"ssh host n0xis remote-serve --pid 1234\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "default": null,
+            "description": "Reload a captured `snapshot dump` by name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    }
+  ]
+}
