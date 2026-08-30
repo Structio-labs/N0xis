@@ -2738,23 +2738,33 @@ through plain syscalls — no signed driver, no code-integrity fight:
      `b.w` at `0x799e` resolves to `0x79a4`, its exact target; 0 mismatches where the
      linear-Thumb and mapping-symbol streams align). A target is set only when reliably
      computable, else `None` — a sound "unknown edge", never a wrong one.
-     - **Partial semantic lift.** 🚧 The common **unconditional** forms lift to micro-IR:
+     - **A32 semantic lift.** ✅ *(2026-08-30, verified.)* A32 lifts to micro-IR:
        data-processing (`mov`/`mvn`/`add`/`sub`/`and`/`orr`/`eor`/`bic`/`mul`), simple
        `ldr`/`str` (`[Rn,#±off]`, with write-back), `cmp` → `flags` + the AArch32 branch
-       conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed the same way x64 does for
-       `jcc`, and `bl`/`bx lr` as AAPCS32 calls/returns (`r0` = f(`r0`-`r3`), caller-saved
-       clobbered). Everything else — **predicated** (`cond != AL`) forms, shifted-register
-       operands, `ldm`/`stm`, FP/SIMD — is preserved as `asm` and **soundly invalidates
-       its writes** (`writes_of` is a sound over-approximation, incl. the `ldm` reg-list
-       and write-back bases: an unhandled instruction never lets a later read reuse a
-       stale value — the exact soundness burden that makes a *partial* lift correct).
-       **Verified** on the box's own `toybox` (Thumb-2): `sub sp, #0x10` →
-       `sp.1 = (sp.0 - 0x10)`, `ldr r2, [r3]` → `r2.3 = *r3.2`, `bl` →
-       `r0.1 = sub_6a12(r0.0, r1.4, r2.3, r3.4)`, matching `llvm-objdump`; a sweep of 50
-       functions (found by their `push {…,lr}` prologue, since ARM function discovery is
-       still x64-shaped) decompiled **50/50 with 0 errors, ~52 % of statement lines
-       lifted**, the rest honest `asm`. ⬜ remaining: predication-as-`cond ? effect : old`,
-       operand-2 shift lifting, `ldm`/`stm`, and ARM-shaped function discovery. `--arch arm32` (A32) / `--arch
+       conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed the way x64 does for `jcc`,
+       `push`/`pop` (the `sp` move; `pop {…,pc}` is the return), `bl`/`bx lr` as AAPCS32
+       calls/returns, **and predication** — a conditional instruction (`addne`) becomes
+       `dst = cond ? effect : dst` via the *same* `Select` + reaching-flags resolver x64
+       uses for `cmovcc`, reused across arches. Anything unmodelled — shifted-register
+       operands, `ldm`/`stm` other than push/pop, FP/SIMD — is preserved as `asm` and
+       **soundly invalidates its writes** (`writes_of` is a sound over-approximation incl.
+       the `ldm` reg-list and write-back bases: an unhandled instruction never lets a
+       later read reuse a stale value). **Verified end-to-end** on synthetic A32:
+       `add r0,r0,r1; sub r0,r0,#4; bx lr` → `return ((r0 + r1) - 0x4)` (chain folded,
+       `r0`/`r1` recovered as AAPCS32 params), and `cmp r0,#0; addne r0,r0,r1; bx lr` →
+       `return ((r0 != 0x0) ? (r0 + r1) : r0)` — predication reconstructed; plus
+       instruction-level unit tests.
+     - **Thumb lift.** ⬜ **Deliberately decode-only, for soundness.** yaxpeax does not
+       track `IT` (if-then) blocks and the core's `LiftPass` re-decodes each instruction
+       standalone, so a post-`IT` conditional Thumb instruction (`addeq`) comes back
+       unconditional (`adds`, `cond=AL`) — lifting it would silently drop its predicate.
+       Rather than emit a confidently-wrong body (the exact bug class the testers flagged),
+       Thumb stays honest disassembly + CFG (verified: a 50-function toybox sweep, all
+       `push {…,lr}`-prologue functions, decompiles 50/50 with **0 errors and 0 dataflow
+       lines** — pure `asm`, no unsound claims). A sound Thumb lift needs IT-aware decoding
+       threaded to the lift (a `LiftPass` change so it uses the CFG's stateful decode
+       instead of re-decoding) — a follow-on. ARM-shaped function discovery (the sweep had
+       to find functions by prologue, since discovery is still x64-scanning) is another. `--arch arm32` (A32) / `--arch
      thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
      BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
      on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-

@@ -3,18 +3,21 @@
 //! Our [`Arm64`](crate::Arm64) arch (disarm64) decodes **AArch64 only**; the
 //! 32-bit ARM targets that matter here — Android `armeabi-v7a`, the X96 TV-box
 //! (`armv7l`) — are a different instruction set it cannot read. This is a
-//! decompiler for them: correct decode (A32 by default, Thumb via
-//! [`Arm32::thumb`]), control-flow classification + resolved branch targets for
-//! the CFG, and a **partial semantic lift** to micro-IR — the common
-//! unconditional data-processing (`mov`/`add`/`sub`/`and`/`orr`/`eor`/`bic`/
-//! `mvn`/`mul`), simple `ldr`/`str`, `cmp` + the AArch32 branch conditions, and
-//! `bl`/`bx lr` calls/returns under AAPCS32. Everything else — predicated
-//! (`cond != AL`) forms, shifted-register operands, `ldm`/`stm`, and FP/SIMD —
-//! is preserved verbatim and **soundly invalidates its writes** (an unhandled
-//! instruction must never let a later read reuse a stale value), so `decomp`
-//! yields real pseudocode for the modelled subset and honest `asm` for the rest.
-//! Predication-as-`cond ? effect : old`, shift lifting, and `ldm`/`stm` are the
-//! remaining follow-ons.
+//! decoder for them (A32 by default, Thumb via [`Arm32::thumb`]) with
+//! control-flow classification + resolved branch targets for the CFG, plus a
+//! **semantic lift for A32**: data-processing (`mov`/`add`/`sub`/`and`/`orr`/
+//! `eor`/`bic`/`mvn`/`mul`), simple `ldr`/`str`, `cmp` + the AArch32 branch
+//! conditions, `push`/`pop`, `bl`/`bx lr` under AAPCS32, and **predication**
+//! (`addne` → `dst = cond ? effect : dst`, via the same `Select` + reaching-flags
+//! resolver x64 uses for `cmovcc`). Unmodelled forms (shifted-register operands,
+//! `ldm`/`stm` beyond push/pop, FP/SIMD) are preserved as `asm` and **soundly
+//! invalidate their writes** so no later read reuses a stale value.
+//!
+//! **Thumb is decode-only, on purpose.** yaxpeax does not track `IT` (if-then)
+//! blocks, and the core re-decodes each instruction standalone, so a post-`IT`
+//! conditional Thumb instruction returns as unconditional — lifting it would
+//! silently drop its predicate. Rather than a confidently-wrong body, Thumb
+//! stays honest disassembly until IT-aware decoding is threaded to the lift.
 
 use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
 use yaxpeax_arm::armv7::{InstDecoder, Instruction, Opcode, Operand};
@@ -203,6 +206,29 @@ fn assign(dst: String, value: MicroExpr) -> MicroStmt {
     MicroStmt::Assign { dst, value }
 }
 
+/// Assign `dst = value`, honoring AArch32 **predication**: an unconditional
+/// (`AL`) instruction is a plain assign; a predicated one (`addeq`, `movne`, …)
+/// only writes when its condition holds, so it becomes `dst = cond ? value :
+/// dst`. The condition rides as the same `setcc:<jcc>` marker the SSA builder
+/// resolves from the reaching flags — the identical mechanism x64 uses for
+/// `setcc`/`cmov`, reused across arches (the resolver calls `Arch::branch_
+/// condition`, which for ARM maps `beq`→`==`, `bhi`→`>u`, …).
+fn pred_assign(dst: String, value: MicroExpr, cond_lc: &str, out: &mut Vec<MicroStmt>) {
+    if cond_lc == "al" {
+        out.push(assign(dst, value));
+    } else {
+        let cond = MicroExpr::OpaqueFlags { mnemonic: format!("setcc:b{cond_lc}") };
+        out.push(assign(dst.clone(), MicroExpr::select(cond, value, MicroExpr::var(dst))));
+    }
+}
+
+fn reglist_mask(op: &Operand) -> Option<u16> {
+    match op {
+        Operand::RegList(m) => Some(*m),
+        _ => None,
+    }
+}
+
 /// The registers an instruction **writes**, a *sound over-approximation* — the
 /// contract the lift's fallback relies on: an unhandled instruction must
 /// invalidate every register it could write, or SSA would reuse a stale value
@@ -326,25 +352,39 @@ impl Arch for Arm32 {
 
     fn lift(&self, insn: &DecodedInsn, _abi: &str) -> Vec<MicroStmt> {
         use Opcode::*;
+        // Thumb is decode-only for now: **soundness**. yaxpeax does not track
+        // `IT` (if-then) blocks, and the core re-decodes each instruction
+        // standalone, so a post-`IT` conditional instruction (`addeq`) comes back
+        // as unconditional (`adds`, `cond=AL`) — lifting it would drop its
+        // predicate and execute it always. Rather than emit a confidently-wrong
+        // body, Thumb stays an honest disassembly (every instruction preserved as
+        // `asm`, no dataflow claimed). A32 has its condition in each 32-bit
+        // encoding, so it lifts soundly below. (Sound Thumb lift needs IT-aware
+        // decoding threaded to the lift — a core `LiftPass` change, a follow-on.)
+        if self.thumb {
+            return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+        }
         let Some(inst) = self.redecode(insn) else {
             return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
         };
-        // Predicated (`cond != AL`) forms and any shifted-register operand aren't
-        // modelled yet — preserve them and soundly invalidate their writes.
-        let cond_al = format!("{:?}", inst.condition) == "AL";
+        // A shifted-register operand (`add r0, r1, r2, lsl #3`) isn't modelled
+        // yet — preserve it and soundly invalidate its writes. Predication is
+        // handled per-instruction below (`pred_assign`), not bailed on.
+        let cond_lc = format!("{:?}", inst.condition).to_lowercase();
+        let cond_al = cond_lc == "al";
         let has_shift = inst.operands.iter().any(|o| matches!(o, Operand::RegShift(_)));
-        if !cond_al || has_shift {
+        if has_shift {
             return self.unlifted(&inst, insn);
         }
         let ops = &inst.operands;
         let mut out = Vec::new();
         match inst.opcode {
             MOV => match (&ops[0], op_rvalue(&ops[1])) {
-                (Operand::Reg(rd), Some(v)) => out.push(assign(reg_name(*rd), v)),
+                (Operand::Reg(rd), Some(v)) => pred_assign(reg_name(*rd), v, &cond_lc, &mut out),
                 _ => return self.unlifted(&inst, insn),
             },
             MVN => match (&ops[0], op_rvalue(&ops[1])) {
-                (Operand::Reg(rd), Some(v)) => out.push(assign(reg_name(*rd), MicroExpr::unary(UnOp::Not, v))),
+                (Operand::Reg(rd), Some(v)) => pred_assign(reg_name(*rd), MicroExpr::unary(UnOp::Not, v), &cond_lc, &mut out),
                 _ => return self.unlifted(&inst, insn),
             },
             ADD | SUB | AND | ORR | EOR | BIC => match (&ops[0], op_rvalue(&ops[1]), op_rvalue(&ops[2])) {
@@ -358,25 +398,34 @@ impl Arch for Arm32 {
                         // `bic Rd, Rn, op2` = Rn AND NOT op2.
                         _ => MicroExpr::binary(BinOp::And, a, MicroExpr::unary(UnOp::Not, b)),
                     };
-                    out.push(assign(reg_name(*rd), expr));
+                    pred_assign(reg_name(*rd), expr, &cond_lc, &mut out);
                 }
                 _ => return self.unlifted(&inst, insn),
             },
             MUL => match (&ops[0], op_rvalue(&ops[1]), op_rvalue(&ops[2])) {
-                (Operand::Reg(rd), Some(a), Some(b)) => out.push(assign(reg_name(*rd), MicroExpr::binary(BinOp::Mul, a, b))),
+                (Operand::Reg(rd), Some(a), Some(b)) => pred_assign(reg_name(*rd), MicroExpr::binary(BinOp::Mul, a, b), &cond_lc, &mut out),
                 _ => return self.unlifted(&inst, insn),
             },
             LDR => match (&ops[0], &ops[1]) {
                 (Operand::Reg(rd), Operand::RegDerefPreindexOffset(base, off, add, wb)) => {
                     let addr = deref_addr(*base, *off, *add);
-                    out.push(assign(reg_name(*rd), MicroExpr::load(addr.clone(), 32, false)));
                     if *wb {
+                        // A conditional write-back is two conditional effects —
+                        // not modelled; the unconditional form is exact.
+                        if !cond_al {
+                            return self.unlifted(&inst, insn);
+                        }
+                        out.push(assign(reg_name(*rd), MicroExpr::load(addr.clone(), 32, false)));
                         out.push(assign(reg_name(*base), addr));
+                    } else {
+                        pred_assign(reg_name(*rd), MicroExpr::load(addr, 32, false), &cond_lc, &mut out);
                     }
                 }
                 _ => return self.unlifted(&inst, insn),
             },
-            STR => match (&ops[0], &ops[1]) {
+            // A conditional store/compare/call/return is more than one predicated
+            // register write; those stay `asm` (sound) until modelled.
+            STR if cond_al => match (&ops[0], &ops[1]) {
                 (Operand::Reg(rs), Operand::RegDerefPreindexOffset(base, off, add, wb)) => {
                     let addr = deref_addr(*base, *off, *add);
                     out.push(MicroStmt::Store { addr: addr.clone(), value: MicroExpr::var(reg_name(*rs)), bits: 32 });
@@ -386,7 +435,7 @@ impl Arch for Arm32 {
                 }
                 _ => return self.unlifted(&inst, insn),
             },
-            CMP => {
+            CMP if cond_al => {
                 // `cmp Rn, op2` — yaxpeax's S-form carries `Rn` twice; the compare
                 // is `operand[0]` against the last (immediate/register) operand.
                 let lhs = op_rvalue(&ops[0]);
@@ -399,18 +448,48 @@ impl Arch for Arm32 {
                     _ => return self.unlifted(&inst, insn),
                 }
             }
+            // `push {…}` — the prologue's stack allocation. Only its `sp`
+            // decrement is a GPR effect (the listed registers are *saved*, i.e.
+            // read); the memory writes aren't modelled. `pop` is the mirror.
+            STM(..) if cond_al && insn.text.starts_with("push") => match (&ops[0], reglist_mask(&ops[1])) {
+                (Operand::RegWBack(base, true), Some(mask)) => {
+                    let bytes = (mask.count_ones() * 4) as i128;
+                    out.push(assign(reg_name(*base), MicroExpr::binary(BinOp::Sub, MicroExpr::var(reg_name(*base)), MicroExpr::constant(bytes, 32))));
+                }
+                _ => return self.unlifted(&inst, insn),
+            },
+            LDM(..) if cond_al && insn.text.starts_with("pop") => match (&ops[0], reglist_mask(&ops[1])) {
+                (Operand::RegWBack(base, true), Some(mask)) => {
+                    let regs = reglist(mask);
+                    let has_pc = regs.iter().any(|r| r == "pc");
+                    // Restored callee-saved values come off a stack this IR does
+                    // not track — mark them Unknown (sound), then adjust `sp`.
+                    for r in &regs {
+                        if r != "pc" {
+                            out.push(assign(r.clone(), MicroExpr::Unknown("restored".to_string())));
+                        }
+                    }
+                    let bytes = (mask.count_ones() * 4) as i128;
+                    out.push(assign(reg_name(*base), MicroExpr::binary(BinOp::Add, MicroExpr::var(reg_name(*base)), MicroExpr::constant(bytes, 32))));
+                    // `pop {…, pc}` is the function return.
+                    if has_pc {
+                        out.push(MicroStmt::Return(Some(MicroExpr::var("r0"))));
+                    }
+                }
+                _ => return self.unlifted(&inst, insn),
+            },
             B => {
                 // Structural: the CFG carries the edge; a conditional `b` is
                 // reconstructed by `branch_condition` from the reaching flags.
             }
-            BX | BXJ => {
+            BX | BXJ if cond_al => {
                 // `bx lr` is the function return; any other `bx` is a computed
                 // branch the CFG already models structurally.
                 if insn.text.contains("lr") {
                     out.push(MicroStmt::Return(Some(MicroExpr::var("r0"))));
                 }
             }
-            BL | BLX => {
+            BL | BLX if cond_al => {
                 let args = ARM32_CCS[0].int_args.iter().filter_map(|&r| self.regfile.name(r)).map(MicroExpr::var).collect();
                 let target = insn
                     .target
@@ -557,10 +636,10 @@ mod tests {
 
     #[test]
     fn an_unhandled_instruction_invalidates_its_writes_for_soundness() {
-        // e92d4010 push {r4, lr} — not lifted, but must not let a later read of a
-        // written register reuse a stale value. push writes sp (the writeback
-        // base); its regs are a *source*. So sp is invalidated, r4 is not.
-        let stmts = lift1(&[0x10, 0x40, 0x2d, 0xe9]);
+        // e0820181 add r0, r2, r1, lsl #3 — a shifted-register operand isn't
+        // modelled, so it stays `asm`; but it must invalidate its destination r0
+        // so a later read can't reuse a stale value.
+        let stmts = lift1(&[0x81, 0x01, 0x82, 0xe0]);
         assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })));
         let invalidated: Vec<&str> = stmts
             .iter()
@@ -569,7 +648,35 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(invalidated.contains(&"sp"), "push updates sp (writeback): {stmts:?}");
+        assert!(invalidated.contains(&"r0"), "the unmodelled add must invalidate its dest r0: {stmts:?}");
+    }
+
+    #[test]
+    fn a_predicated_instruction_lifts_to_a_conditional_write() {
+        // 00810002 addeq r0, r1, r2 — writes only when Z: r0 = cond ? (r1+r2) : r0.
+        let a = Arm32::a32();
+        let di = a.decode(&[0x02, 0x00, 0x81, 0x00], Va(0x1000)).unwrap();
+        let stmts = a.lift(&di, "aapcs32");
+        let MicroStmt::Assign { dst, value: MicroExpr::Select { a: then, b: els, .. } } = &stmts[0] else {
+            panic!("a predicated add must be a conditional select, got {stmts:?}");
+        };
+        assert_eq!(dst, "r0");
+        assert_eq!(**then, MicroExpr::binary(BinOp::Add, MicroExpr::var("r1"), MicroExpr::var("r2")));
+        assert_eq!(**els, MicroExpr::var("r0"), "the else-branch keeps the old r0");
+    }
+
+    #[test]
+    fn push_and_pop_move_the_stack_pointer_and_pop_pc_returns() {
+        // e92d4010 push {r4, lr} → sp = sp - 8 (2 regs).
+        let push = lift1(&[0x10, 0x40, 0x2d, 0xe9]);
+        assert_eq!(
+            push,
+            vec![MicroStmt::Assign { dst: "sp".into(), value: MicroExpr::binary(BinOp::Sub, MicroExpr::var("sp"), MicroExpr::constant(8, 32)) }],
+        );
+        // e8bd8010 pop {r4, pc} → r4 restored, sp += 8, return.
+        let pop = lift1(&[0x10, 0x80, 0xbd, 0xe8]);
+        assert!(pop.iter().any(|s| matches!(s, MicroStmt::Assign { dst, .. } if dst == "sp")));
+        assert!(pop.iter().any(|s| matches!(s, MicroStmt::Return(_))), "pop {{…,pc}} returns: {pop:?}");
     }
 
     #[test]
