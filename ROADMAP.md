@@ -1346,11 +1346,25 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      (the 66 the MSVC demangler itself declines fall back to verbatim — sound);
      `sub_180003f70` decompiles
      `&std::basic_ifstream<unsigned char, struct std::char_traits<unsigned char> >::vtable`.
+   - ✅ *(2026-08-30, verified)* **Base-class / inheritance graph.** Each COL's
+     `RTTIClassHierarchyDescriptor` → base-class array → `BaseClassDescriptor`s
+     → `TypeDescriptor`s is walked to reconstruct a class's bases (most-derived
+     first, self excluded), added to `rtti scan`'s output as `bases`. The
+     inheritance tree the binary already carries — `class Derived : Base` —
+     recovered statically, the "complex C++ class tree" capability. Sound
+     (out-of-`.rdata` entries skipped, bounded by `MAX_BASES`) and **verified
+     against known-correct ground truth:** CompressToolsLib
+     `std::bad_array_new_length : std::bad_alloc, std::exception`,
+     `std::basic_ifstream<> : std::basic_istream<>, std::basic_ios<>,
+     std::ios_base, std::_Iosb<int>`; STALKER 2 (UE5) 516/561 vtables carry
+     bases — `GregorianCalendar : Calendar, UObject, UMemory`,
+     `StringCharacterIterator`'s five-level ICU chain.
    - ⬜ Still open for this item: **virtual-call devirtualization** (resolve
      `call [vtable+k]` to the slot's method — needs per-vtable slot→target
-     extraction and the this-pointer's class flowing to the call site),
-     **base-class / inheritance graph** (the COL base-class array), and
-     **Itanium RTTI** for ELF/GCC targets.
+     extraction and the this-pointer's class flowing to the call site), feeding
+     the recovered **bases into the decompiler** (type a `this` as the whole
+     `Derived : Base` chain, name inherited fields), and **Itanium RTTI** for
+     ELF/GCC targets.
 8. ⬜ **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
