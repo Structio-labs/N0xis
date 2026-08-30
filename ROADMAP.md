@@ -1869,8 +1869,42 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     … }` and `Tiny Glade` `sub_30b4f5` recovers a full `switch (rdi)` over cases
     `0x0`–`0x20` (fall-through cases correctly stacked); sweep of 100 functions each
     on `Kenshi`, `Factorio`, `Tiny Glade` — 300/300 ok, 0 errors, 6 switches
-    recovered. Remaining ⬜: eliminating the residual irreducible `goto`s and the
-    `default`-vs-unresolved-case distinction when the table read is partial.
+    recovered. Remaining ⬜: the `default`-vs-unresolved-case distinction when
+    the table read is partial.
+  - **6b — tail-duplicate shared return regions.** ✅ *(2026-08-31, verified.)* A
+    block reached from several paths that would emit `goto block_N` is inlined
+    instead when it is a small **tail region** — a `jmp`/`fall` chain, or a small
+    `if`/`else` whose both arms are themselves tail regions, ending at function
+    exits (`ret`/`tail-call`) with a ≤8-line body and no loop header. Sound (no
+    successors past the exit, no back-edge, SSA reads stay valid inlined) — the
+    other tools' tail duplication, bounded so a large shared body stays a single
+    `goto` not bloat. **Verified:** `CompressToolsLib` `sub_1800021e0` 2 gotos →
+    0; corpus residual-goto lines ~halved (`CompressToolsLib` 246→112, `Factorio`
+    156→74, `kenshi_x64` 82→46), STALKER 2 200 fns 0 errors. The remaining gotos
+    are large shared-body merges (irreducible or bloat-if-duplicated — real C
+    keeps these too).
+  - **6c — invert empty-then ifs, drop empty else arms.** ✅ *(2026-08-31,*
+    *verified.)* `if (c) {} else { B }` reads `if (!c) { B }` and an empty else is
+    dropped — both arms are emitted into buffers first so emptiness is known
+    before the shape is committed (a bare `// block_N:` label is not content).
+    Pure rewrite. **Verified:** `sub_1800010d0` reads `if ((rdx & 0x1) != 0x0) {…}`
+    (no empty then/else); corpus empty-then ifs 398 → 15 across `CompressToolsLib`
+    + STALKER 2.
+  - **6d — do/while when the header is an inner branch.** ✅ *(2026-08-31,*
+    *verified.)* Bottom-test detection no longer requires a non-`cjmp` header, so
+    a loop whose header carries an inner `if` (both arms in-loop) and whose real
+    test is the bottom latch recovers as `do { … } while (c)` instead of the
+    `while (1) { … if (c) continue; break; }` fallback. **Verified:** STALKER 2
+    `sub_140012757`'s inner-`if` loop reads `do { … if (…) {…} … } while ((r15.1
+    != v3))`; 20 do/while loops recovered across 200 STALKER 2 functions, 0 errors.
+  - **6e — negative struct-field offsets read signed.** ✅ *(2026-08-31,*
+    *verified.)* A struct access before its base (`*(rcx.1 - 8)`) rendered as the
+    two's-complement giant `field_0xfffff…f8`; it now reads `field_neg_0x8`.
+    **Verified:** corpus giant-hex lines 116 → 18 (the 18 remaining are genuine
+    64-bit constants — `0x7fffffffffffffff` masks, the magic-division multiplier).
+  - Remaining ⬜: `for`-loop recovery (the step detector does not fire on the
+    corpus's counting loops — they read `while`/`do`), the residual shared-body
+    gotos, and the switch `default`/unresolved-case distinction.
 
 - **Rung 7 — Structural advantages this design gets for free.** 🚧 The capabilities the
   other tools structurally lack. Two are already present by construction: every pass
