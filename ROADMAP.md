@@ -2740,10 +2740,12 @@ through plain syscalls — no signed driver, no code-integrity fight:
      computable, else `None` — a sound "unknown edge", never a wrong one.
      - **Semantic lift (A32 + Thumb, incl. Thumb `IT` blocks).** ✅ *(2026-08-30,*
        *verified.)* Lifts to micro-IR: data-processing (`mov`/`mvn`/`add`/`sub`/`and`/
-       `orr`/`eor`/`bic`/`mul`), simple `ldr`/`str` (`[Rn,#±off]`, with write-back), `cmp`
-       → `flags` + the AArch32 branch conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed
-       the way x64 does for `jcc`, `push`/`pop` (the `sp` move; `pop {…,pc}` is the return),
-       `bl`/`bx lr` as AAPCS32 calls/returns, **and predication** — a conditional
+       `orr`/`eor`/`bic`/`mul`) **including shifted second operands** (`add r0,r1,r2,lsl #3`
+       → `r0 = r1 + (r2 << 3)`, for `lsl`/`lsr`/`asr` by an immediate or a register; `ror`
+       stays `asm`), simple `ldr`/`str` (`[Rn,#±off]`, with write-back), `cmp` → `flags` +
+       the AArch32 branch conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed the way x64
+       does for `jcc`, `push`/`pop` (the `sp` move; `pop {…,pc}` is the return), `bl`/`bx
+       lr` as AAPCS32 calls/returns, **and predication** — a conditional
        instruction (`addne`) becomes `dst = cond ? effect : dst` via the *same* `Select` +
        reaching-flags resolver x64 uses for `cmovcc`, reused across arches. Anything
        unmodelled (shifted-register operands, `ldm`/`stm` beyond push/pop, FP/SIMD) is
@@ -2768,10 +2770,13 @@ through plain syscalls — no signed driver, no code-integrity fight:
        `((r0 == 0x0) ? 0x63 : ((r0 != 0x0) ? r0->field_0x7c : r0))` — Then(`ne`)→`!=0` and
        Else(`eq`)→`==0` both exactly right. Sweep of 60 toybox functions: 60/60 ok, 0
        errors, ~54 % of lines lifted; plus instruction-level unit tests (data-proc, mem,
-       predication→`Select`, push/pop, `bl`, `it`/`ite` then-else, `decode_stream` stamping).
-       ⬜ remaining: `ldm`/`stm` beyond push/pop, operand-2 shift lifting, FP/SIMD, and
-       ARM-shaped function discovery (the sweep found functions by their `push {…,lr}`
-       prologue, since discovery is still x64-scanning). `--arch arm32` (A32) / `--arch
+       shifted operand, predication→`Select`, push/pop, `bl`, `it`/`ite` then-else,
+       `decode_stream` stamping). The shift lift is verified against `llvm-objdump` too:
+       `add.w r0, r6, r5, lsl #3` at `0xa372` → `(… + (r5 << 0x3))`. ⬜ remaining: `ldm`/
+       `stm` beyond push/pop, shifted-index memory (`ldr [r0, r5, lsl #3]`), FP/SIMD, `ror`,
+       and ARM-shaped function discovery (the sweep found functions by their `push {…,lr}`
+       prologue, since discovery is still x64-scanning). All are verifiable now on the same
+       `llvm-objdump` + `toybox`/box-binary loop — no external blocker. `--arch arm32` (A32) / `--arch
      thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
      BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
      on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-

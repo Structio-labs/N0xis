@@ -23,7 +23,7 @@
 //! the lift reads its condition from `insn.cond`, never a fresh re-decode.
 
 use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
-use yaxpeax_arm::armv7::{InstDecoder, Instruction, Opcode, Operand};
+use yaxpeax_arm::armv7::{InstDecoder, Instruction, Opcode, Operand, RegShiftStyle, ShiftStyle};
 
 use n0xis_contracts::{Reg, Va};
 
@@ -219,12 +219,33 @@ fn reglist(mask: u16) -> Vec<String> {
     (0u8..16).filter(|i| mask & (1u16 << i) != 0).map(reg_n).collect()
 }
 
-/// A simple operand as an rvalue: a register or an immediate. Shifted registers,
-/// derefs and reg-lists return `None` (their instructions aren't lifted yet).
+/// The binary op for a shift style — `LSL`/`LSR`/`ASR` map to the IR shifts;
+/// `ROR` (rotate) has no single IR op and returns `None` (its instruction stays
+/// `asm`, sound).
+fn shift_op(style: ShiftStyle) -> Option<BinOp> {
+    match style {
+        ShiftStyle::LSL => Some(BinOp::Shl),
+        ShiftStyle::LSR => Some(BinOp::Shr),
+        ShiftStyle::ASR => Some(BinOp::Sar),
+        _ => None,
+    }
+}
+
+/// A second-operand as an rvalue: a register, an immediate, or a **shifted
+/// register** (`r2, lsl #3` → `(r2 << 3)`; `r2, lsr r7` → `(r2 >>u r7)`).
+/// Derefs, reg-lists and `ROR` shifts return `None` (not modelled here).
 fn op_rvalue(op: &Operand) -> Option<MicroExpr> {
     match op {
         Operand::Reg(r) => Some(MicroExpr::var(reg_name(*r))),
         Operand::Imm32(v) => Some(MicroExpr::constant(*v as i128, 32)),
+        Operand::RegShift(rs) => match rs.into_shift() {
+            RegShiftStyle::RegImm(s) => {
+                shift_op(s.stype()).map(|op| MicroExpr::binary(op, MicroExpr::var(reg_name(s.shiftee())), MicroExpr::constant(s.imm() as i128, 32)))
+            }
+            RegShiftStyle::RegReg(s) => {
+                shift_op(s.stype()).map(|op| MicroExpr::binary(op, MicroExpr::var(reg_name(s.shiftee())), MicroExpr::var(reg_name(s.shifter()))))
+            }
+        },
         _ => None,
     }
 }
@@ -397,14 +418,11 @@ impl Arch for Arm32 {
         // Thumb `IT`-block member it is the real predicate that `decode_stream`
         // recovered statefully (a standalone re-decode of it reads `AL`). This is
         // what makes the Thumb lift sound — the predicate is never dropped. A
-        // shifted-register operand (`add r0, r1, r2, lsl #3`) still isn't
-        // modelled — preserve it and soundly invalidate its writes.
+        // shifted-register operand (`add r0, r1, r2, lsl #3`) is handled by
+        // `op_rvalue` (→ `(r2 << 3)`); a shift it can't model (`ror`) makes the
+        // arm fall through to the sound `asm` fallback.
         let cond_lc = insn.cond.as_deref().unwrap_or("al").to_string();
         let cond_al = cond_lc == "al";
-        let has_shift = inst.operands.iter().any(|o| matches!(o, Operand::RegShift(_)));
-        if has_shift {
-            return self.unlifted(&inst, insn);
-        }
         let ops = &inst.operands;
         let mut out = Vec::new();
         match inst.opcode {
@@ -686,12 +704,28 @@ mod tests {
     }
 
     #[test]
+    fn a_shifted_register_operand_lifts_to_a_shift() {
+        // e0820181 add r0, r2, r1, lsl #3 → r0 = (r2 + (r1 << 3)).
+        assert_eq!(
+            lift1(&[0x81, 0x01, 0x82, 0xe0]),
+            vec![MicroStmt::Assign {
+                dst: "r0".into(),
+                value: MicroExpr::binary(
+                    BinOp::Add,
+                    MicroExpr::var("r2"),
+                    MicroExpr::binary(BinOp::Shl, MicroExpr::var("r1"), MicroExpr::constant(3, 32)),
+                ),
+            }],
+        );
+    }
+
+    #[test]
     fn an_unhandled_instruction_invalidates_its_writes_for_soundness() {
-        // e0820181 add r0, r2, r1, lsl #3 — a shifted-register operand isn't
-        // modelled, so it stays `asm`; but it must invalidate its destination r0
-        // so a later read can't reuse a stale value.
-        let stmts = lift1(&[0x81, 0x01, 0x82, 0xe0]);
-        assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })));
+        // e08201e1 add r0, r2, r1, ror #3 — `ror` has no single IR op, so the
+        // instruction stays `asm`; but it must invalidate its destination r0 so a
+        // later read can't reuse a stale value.
+        let stmts = lift1(&[0xe1, 0x01, 0x82, 0xe0]);
+        assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })), "ror stays asm: {stmts:?}");
         let invalidated: Vec<&str> = stmts
             .iter()
             .filter_map(|s| match s {
@@ -699,7 +733,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(invalidated.contains(&"r0"), "the unmodelled add must invalidate its dest r0: {stmts:?}");
+        assert!(invalidated.contains(&"r0"), "the unmodelled ror-add must invalidate its dest r0: {stmts:?}");
     }
 
     #[test]
