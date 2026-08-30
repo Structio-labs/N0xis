@@ -242,6 +242,26 @@ fn bin_op_text(op: BinOp) -> &'static str {
     }
 }
 
+/// Recognize the stack-canary XOR: `x ^ <stack-pointer>` (either operand
+/// order). The compiler's stack protector is the *only* thing that XORs a
+/// value with the raw stack pointer — a load of `__security_cookie` XORed with
+/// `rsp` on function entry (`mov rax, cookie; xor rax, rsp`) and the frame
+/// copy XORed with `rsp` again before the epilogue check. No legitimate
+/// arithmetic ever does this, so matching on a stack-pointer XOR operand is a
+/// sound recognizer (it cannot misfire on real code). Returns the *other*
+/// operand — the value being guarded — so the caller can render the idiom by
+/// name instead of as opaque arithmetic on a mystery global.
+fn stack_guard_operand<'a>(l: &'a MicroExpr, r: &'a MicroExpr) -> Option<&'a MicroExpr> {
+    let is_stack_ptr = |e: &MicroExpr| matches!(e, MicroExpr::Var(name) if is_stack_root(name.split('.').next().unwrap_or(name)));
+    if is_stack_ptr(r) {
+        Some(l)
+    } else if is_stack_ptr(l) {
+        Some(r)
+    } else {
+        None
+    }
+}
+
 fn is_comparison(op: BinOp) -> bool {
     matches!(
         op,
@@ -261,6 +281,10 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
         }
         MicroExpr::Unary(UnOp::Neg, v) => format!("-{}", render_expr(v, names)),
         MicroExpr::Unary(UnOp::Not, v) => format!("~{}", render_expr(v, names)),
+        MicroExpr::Binary(BinOp::Xor, l, r) if stack_guard_operand(l, r).is_some() => {
+            let guarded = stack_guard_operand(l, r).expect("just checked is_some");
+            format!("__stack_guard({})", render_expr(guarded, names))
+        }
         MicroExpr::Binary(op, l, r) => {
             format!("({} {} {})", render_expr(l, names), bin_op_text(*op), render_expr(r, names))
         }
@@ -596,5 +620,31 @@ mod tests {
         let cond = MicroExpr::binary(BinOp::Eq, MicroExpr::var("rcx"), MicroExpr::constant(0, 64));
         let negated = negate_condition(&cond);
         assert_eq!(negated, MicroExpr::binary(BinOp::Ne, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)));
+    }
+
+    #[test]
+    fn a_stack_pointer_xor_renders_as_the_named_stack_guard_idiom() {
+        let names = RenderNames::new(&[]);
+        // `mov rax, __security_cookie; xor rax, rsp` — the canary setup.
+        let cookie = MicroExpr::load(MicroExpr::constant(0x1421173c8, 64), 64, false);
+        let setup = MicroExpr::binary(BinOp::Xor, cookie, MicroExpr::var("rsp.1"));
+        assert_eq!(render_expr(&setup, &names), "__stack_guard(*(uint64_t*)(0x1421173c8))");
+
+        // The epilogue check XORs the frame copy with rsp; operand order reversed.
+        let check = MicroExpr::binary(
+            BinOp::Xor,
+            MicroExpr::var("rsp.1"),
+            MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x8, 64)), 64, false),
+        );
+        assert_eq!(render_expr(&check, &names), "__stack_guard(local_8)");
+    }
+
+    #[test]
+    fn a_plain_xor_of_two_data_registers_is_never_mistaken_for_a_stack_guard() {
+        // Soundness: the recognizer keys strictly on a stack-pointer operand, so
+        // ordinary `xor rax, rbx` arithmetic renders as itself, not as a guard.
+        let names = RenderNames::new(&[]);
+        let plain = MicroExpr::binary(BinOp::Xor, MicroExpr::var("rax.2"), MicroExpr::var("rbx.1"));
+        assert_eq!(render_expr(&plain, &names), "(rax.2 ^ rbx.1)");
     }
 }

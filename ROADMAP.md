@@ -1617,7 +1617,26 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `while ((*(uint8_t*)(rdx.0 + rbx.3) != 0x0))` — a real string scan; the 6
     still-opaque loops and the remaining `/*cond*/` placeholders are the genuinely
     unreconstructable magnitude branches. Still ⬜ for this rung: signedness,
-    the idiom library, and SIMD/FP.
+    the rest of the idiom library, and SIMD/FP.
+  - **5b — stack-canary recognition.** ✅ *(2026-08-30, verified.)* The compiler's
+    stack protector littered every guarded MSVC function with opaque arithmetic on a
+    mystery global: `rax.2 = (*(uint64_t*)(0x1421173c8) ^ rsp.1)` on entry (a load of
+    `__security_cookie` XORed with `rsp`) and `(local_8 ^ rsp.1)` before the epilogue
+    check. XORing a value with the **raw stack pointer** is something *only* the stack
+    protector ever does — no legitimate arithmetic touches `rsp` that way — so the
+    recognizer keys strictly on a stack-pointer XOR operand and is sound by
+    construction: it cannot misfire on real code. Such an XOR now renders as
+    `__stack_guard(<guarded value>)` (recognition + labeling; nothing is deleted, so
+    the transform is information-preserving). **Verified:** `Kenshi` (PE/MSVC)
+    `sub_140064abf` reads `rax.2 = __stack_guard(*(uint64_t*)(0x1421173c8))` at entry
+    and `return __security_check_cookie(__stack_guard(local_8), …)` at exit — the
+    whole canary dance now self-labels. Corpus sweep of 80 functions each:
+    `Kenshi` fires on its real canaries (6 guards / 3 functions, a setup+check pair
+    each), while `Factorio` (ELF/GCC), `Tiny Glade` (ELF/Rust) and `ChainedTogether`
+    (PE/UE5) show **zero** — the Linux `%fs:0x28` canary never XORs `rsp`, proving no
+    false positives; 320/320 functions decompiled with 0 errors. Follow-on: sound
+    *elision* of the now-labeled setup/check (they are dead once recognized) would
+    remove the noise entirely rather than only naming it.
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control
