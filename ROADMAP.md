@@ -1910,15 +1910,24 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     two's-complement giant `field_0xfffff…f8`; it now reads `field_neg_0x8`.
     **Verified:** corpus giant-hex lines 116 → 18 (the 18 remaining are genuine
     64-bit constants — `0x7fffffffffffffff` masks, the magic-division multiplier).
-  - Remaining ⬜: `for`-loop recovery. Investigated — the step detector's
-    paren-ban meant the `for` path never fired on our always-parenthesized
-    output (`x = (x + k)`); relaxing it to a self-reference test *does* fire, but
-    exposed that the `for`-emission path itself mis-scopes complex loops (absorbs
-    trailing blocks, emits a `for` over an opaque condition). Reverted rather
-    than ship worse output — the `for` **emission** needs hardening, not just the
-    detector, so counting loops read as sound `while`/`do` for now. Also ⬜: the
-    residual shared-body gotos and the switch `default`/unresolved-case
-    distinction.
+  - **6g — `for`-loop recovery (step hoisting).** ✅ *(2026-08-31, verified*
+    *against compiled ground truth.)* First cut emitted the `for` directly and
+    mis-scoped complex loops (absorbed trailing blocks, `for` over an opaque
+    condition) — reverted. The sound approach ships here: emit the loop body into
+    a buffer exactly as the already-correct `while` would, then hoist its last
+    *top-level* induction step into `for (; cond; step)` — a pure text reformat,
+    no CFG re-scoping, so a complex loop stays a sound `while`. `split_trailing_step`
+    keys on `++`/`--`/`+=`/`-=` and the self-referential `x = (x + k)` the renderer
+    emits, only at the body's outermost indent, and an opaque `/*cond*/` keeps the
+    `while`. **Verified against ground-truth compiled C** (gcc/clang -O1/-O2):
+    `sum_array` → `for (; (rdi != rcx.1); rdi = (rdi + 0x8))`, `count_down`,
+    `every_other` (step +2), `ptr_sum`, `sum_positive` (inner `if` folded to `?:`).
+    Corpus: 33 for-loops (`CompressToolsLib` 10, STALKER 2 23), 0 opaque, 0
+    brace-unbalanced, 0 errors; the once-mis-scoped `sub_180002fa0` is now
+    brace-balanced with one clean `for`.
+  - Remaining ⬜: the residual shared-body gotos (large shared merges — real C
+    keeps these) and the switch `default`/unresolved-case distinction when the
+    table read is partial.
 
 - **Rung 7 — Structural advantages this design gets for free.** 🚧 The capabilities the
   other tools structurally lack. Two are already present by construction: every pass
