@@ -1657,6 +1657,26 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     versioning and struct-field recovery firing through the xmm value. Sweep of 60
     functions each on `Kenshi`, `Factorio`, `Tiny Glade`: 180/180 ok, 0 errors
     (18 of Tiny Glade's 60 now render `__m128`).
+  - **5d — `setcc` condition reconstruction.** ✅ *(2026-08-30, verified.)* A
+    `setCC dst` writes the boolean of a condition code, and the census left every
+    one as `/*sete cl*/` — a *computed value* dropped to a placeholder, worse than
+    an unlifted line because a real dataflow edge goes missing. The condition codes
+    are identical to the `jcc` family, so a `setcc` can reuse the exact
+    `branch_condition` reconstruction 5a built — the only difference is that a
+    `setcc` is mid-block, not a terminator, so the reaching `flags` aren't known
+    until SSA. The lifter emits a `setcc:<jcc>` marker; the SSA renamer resolves it
+    against the `flags` value on the rename stack at that point — the mid-block twin
+    of how a `cjmp` resolves from `end_flags_name`, with the identical soundness
+    guarantee (the reaching `Compare` captured its operands at flag-set time, so the
+    recovered boolean is right even if a source register was reassigned between the
+    compare and the `setcc`). When the reaching flags are opaque, it stays a
+    `/*cond*/` placeholder — never a fabricated condition. **Verified:** `Kenshi`
+    `sub_140064abf` now reads `rcx.43 = (v6 == 0x0); rcx->field_0xa8 = rcx.43;`
+    (was `rcx.43 = /*sete cl*/`); `setne`/`setae` vanish from the `// asm:` census;
+    a corpus sweep of 60 functions each on `Kenshi`, `Factorio`, `Tiny Glade` and
+    `ChainedTogether` decompiled 240/240 with 0 errors and no `/*set*/` placeholders
+    left in-sample. Follow-on: `cmovcc` reuses the same reaching-flags resolution but
+    also needs a ternary (`cond ? a : b`) node — that overlaps Rung 6.
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control

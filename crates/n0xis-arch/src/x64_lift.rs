@@ -224,6 +224,36 @@ fn binary_rmw(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
     write_operand(instr, 0, MicroExpr::binary(op, lhs, rhs), out);
 }
 
+/// Map a `setcc` mnemonic to the equivalent `jcc` string that
+/// [`branch_condition`] understands. The condition codes are identical — only
+/// the opcode family differs (`sete`↔`je`, `setb`↔`jb`, …) — so a `setcc` can
+/// reuse the exact branch-condition reconstruction, evaluated against the same
+/// reaching flags. `None` for anything that isn't a conditional-set (matched
+/// explicitly so unrelated `set*` opcodes like the CET `setssbsy` never slip
+/// in).
+pub(crate) fn setcc_jcc(m: Mnemonic) -> Option<&'static str> {
+    use Mnemonic as M;
+    Some(match m {
+        M::Sete => "je",
+        M::Setne => "jne",
+        M::Seta => "ja",
+        M::Setae => "jae",
+        M::Setb => "jb",
+        M::Setbe => "jbe",
+        M::Setg => "jg",
+        M::Setge => "jge",
+        M::Setl => "jl",
+        M::Setle => "jle",
+        M::Sets => "js",
+        M::Setns => "jns",
+        M::Seto => "jo",
+        M::Setno => "jno",
+        M::Setp => "jp",
+        M::Setnp => "jnp",
+        _ => return None,
+    })
+}
+
 pub(crate) fn is_jcc(m: Mnemonic) -> bool {
     use Mnemonic as M;
     matches!(
@@ -490,6 +520,15 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             // Structural: the condition is synthesized by `branch_condition`
             // from whatever SSA value of `FLAGS_VAR` reaches this point, not
             // lifted eagerly here.
+        }
+        m if setcc_jcc(m).is_some() => {
+            // `setcc dst` writes 0/1 from a condition code. The value depends on
+            // the *reaching* flags — known only after SSA — so it is emitted as a
+            // `setcc:<jcc>` marker the SSA builder resolves through
+            // `branch_condition`, exactly as it resolves a `cjmp` terminator (see
+            // `n0xis-core::ssa`). Left as a marker here, never guessed.
+            let jcc = setcc_jcc(m).expect("guarded by the arm pattern");
+            write_operand(&instr, 0, MicroExpr::OpaqueFlags { mnemonic: format!("setcc:{jcc}") }, &mut out);
         }
         _ => {
             // Unrecognized instruction: preserve it verbatim (never silently

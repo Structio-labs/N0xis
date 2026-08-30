@@ -181,6 +181,29 @@ fn rename_expr(e: &MicroExpr, stacks: &HashMap<String, Vec<String>>) -> MicroExp
     }
 }
 
+/// Resolve a `setcc` carrier the lifter emitted (`OpaqueFlags{"setcc:<jcc>"}`)
+/// into the reconstructed boolean of that condition, using the `flags` value
+/// reaching this point — the mid-block twin of how a `cjmp` terminator is
+/// resolved from `end_flags_name`. The soundness guarantee is identical: the
+/// reaching `Compare` captured its operands at flag-set time, so the recovered
+/// condition tests the right values even if a source register was reassigned
+/// between the compare and the `setcc`. When the reaching flags are not a
+/// precise `Compare` (an intervening opaque flag-setter), `branch_condition`
+/// yields a `/*cond*/` placeholder — sound-but-vague, never a wrong guess.
+/// Anything that is not a `setcc:` marker passes through untouched.
+fn resolve_flag_marker(
+    value: MicroExpr,
+    arch: &dyn Arch,
+    stacks: &HashMap<String, Vec<String>>,
+    defs: &HashMap<String, MicroExpr>,
+) -> MicroExpr {
+    let MicroExpr::OpaqueFlags { mnemonic } = &value else { return value };
+    let Some(jcc) = mnemonic.strip_prefix("setcc:") else { return value };
+    let unknown = MicroExpr::Unknown("no-flags-reached".to_string());
+    let flags = stacks.get(FLAGS_VAR).and_then(|s| s.last()).and_then(|n| defs.get(n)).unwrap_or(&unknown);
+    arch.branch_condition(jcc, flags)
+}
+
 fn rename_call_target(target: &CallTarget, stacks: &HashMap<String, Vec<String>>) -> CallTarget {
     match target {
         CallTarget::Direct { va } => CallTarget::Direct { va: *va },
@@ -200,6 +223,7 @@ fn fresh(var: &str, counters: &mut HashMap<String, u32>) -> String {
 /// the stacks on the way back out of this block.
 fn rename_stmt(
     stmt: &MicroStmt,
+    arch: &dyn Arch,
     stacks: &mut HashMap<String, Vec<String>>,
     counters: &mut HashMap<String, u32>,
     defs: &mut HashMap<String, MicroExpr>,
@@ -207,16 +231,18 @@ fn rename_stmt(
 ) -> MicroStmt {
     match stmt {
         MicroStmt::Assign { dst, value } => {
-            let renamed_value = rename_expr(value, stacks);
+            let renamed_value = resolve_flag_marker(rename_expr(value, stacks), arch, stacks, defs);
             let name = fresh(dst, counters);
             stacks.entry(dst.clone()).or_default().push(name.clone());
             defs.insert(name.clone(), renamed_value.clone());
             pushed.push(dst.clone());
             MicroStmt::Assign { dst: name, value: renamed_value }
         }
-        MicroStmt::Store { addr, value, bits } => {
-            MicroStmt::Store { addr: rename_expr(addr, stacks), value: rename_expr(value, stacks), bits: *bits }
-        }
+        MicroStmt::Store { addr, value, bits } => MicroStmt::Store {
+            addr: rename_expr(addr, stacks),
+            value: resolve_flag_marker(rename_expr(value, stacks), arch, stacks, defs),
+            bits: *bits,
+        },
         MicroStmt::Call { target, args, ret } => {
             let renamed_target = rename_call_target(target, stacks);
             let renamed_args = args.iter().map(|a| rename_expr(a, stacks)).collect();
@@ -241,6 +267,7 @@ fn rename_stmt(
 #[allow(clippy::too_many_arguments)]
 fn rename_block(
     b: usize,
+    arch: &dyn Arch,
     cfg: &CfgArtifact,
     lifted: &LiftedFunction,
     succ: &[Vec<usize>],
@@ -267,7 +294,7 @@ fn rename_block(
 
     // 2. Straight-line statements.
     for lstmt in &lifted.blocks[b].stmts {
-        let renamed = rename_stmt(&lstmt.stmt, stacks, counters, defs, &mut pushed);
+        let renamed = rename_stmt(&lstmt.stmt, arch, stacks, counters, defs, &mut pushed);
         out_stmts[b].push(SsaStmt { va: lstmt.va, stmt: renamed });
     }
     end_flags_name[b] = stacks.get(FLAGS_VAR).and_then(|s| s.last()).cloned();
@@ -283,7 +310,7 @@ fn rename_block(
 
     // 4. Recurse into the dominator-tree children.
     for &c in &children[b] {
-        rename_block(c, cfg, lifted, succ, children, phis, stacks, counters, defs, out_stmts, end_flags_name, visited);
+        rename_block(c, arch, cfg, lifted, succ, children, phis, stacks, counters, defs, out_stmts, end_flags_name, visited);
     }
 
     // 5. Restore the stacks for siblings.
@@ -359,6 +386,7 @@ fn build_ssa(arch: &dyn Arch, cfg: &CfgArtifact, lifted: &LiftedFunction) -> Ssa
 
     rename_block(
         0,
+        arch,
         cfg,
         lifted,
         &succ,
@@ -465,6 +493,46 @@ mod tests {
         assert_eq!(
             cond,
             MicroExpr::binary(BinOp::Eq, MicroExpr::var("rcx.0"), MicroExpr::constant(0, 64))
+        );
+    }
+
+    fn rcx_assign_value(art: &SsaArtifact) -> MicroExpr {
+        art.blocks
+            .iter()
+            .flat_map(|b| &b.stmts)
+            .find_map(|s| match &s.stmt {
+                MicroStmt::Assign { dst, value } if dst.starts_with("rcx") => Some(value.clone()),
+                _ => None,
+            })
+            .expect("an assign to the setcc destination register")
+    }
+
+    #[test]
+    fn setcc_reconstructs_the_condition_from_the_reaching_compare() {
+        // cmp eax, 5 ; setne cl ; ret  — `cl` is the boolean `eax != 5`, and it
+        // must be recovered against the compare that set the flags, exactly like
+        // a `jne` would be.
+        //   83 F8 05  cmp eax, 5
+        //   0F 95 C1  setne cl
+        //   C3        ret
+        let art = build(vec![0x83, 0xF8, 0x05, 0x0F, 0x95, 0xC1, 0xC3]);
+        assert_eq!(
+            rcx_assign_value(&art),
+            MicroExpr::binary(BinOp::Ne, MicroExpr::var("rax.0"), MicroExpr::constant(5, 32)),
+        );
+    }
+
+    #[test]
+    fn setcc_without_a_preceding_compare_stays_a_placeholder_never_a_guess() {
+        // setne cl ; ret  — no compare set the flags, so the reaching value is
+        // the opaque entry flags. The result must be a sound `/*cond*/`
+        // placeholder, not a fabricated condition.
+        //   0F 95 C1  setne cl
+        //   C3        ret
+        let art = build(vec![0x0F, 0x95, 0xC1, 0xC3]);
+        assert!(
+            matches!(rcx_assign_value(&art), MicroExpr::Unknown(_)),
+            "an unreconstructable setcc must stay opaque, not guess",
         );
     }
 
