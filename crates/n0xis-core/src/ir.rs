@@ -117,6 +117,12 @@ pub struct IrInsn {
     pub writes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub def_use: Vec<DefUse>,
+    /// The instruction's condition when it executes conditionally (AArch32), e.g.
+    /// `Some("eq")` — carried from the arch's stateful decode (a Thumb `IT`-block
+    /// condition can't be re-derived from a standalone re-decode) so the lift
+    /// reads it here. `None` for unconditional / other arches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cond: Option<String>,
 }
 
 /// A read of `reg` linked back to the instruction that last defined it in this
@@ -379,6 +385,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                 reads: access.reads.clone(),
                 writes: access.writes.clone(),
                 def_use,
+                cond: ins.cond.clone(),
             });
             for w in &access.writes {
                 last_def.insert(w.clone(), (cur_index, ins.va.0));

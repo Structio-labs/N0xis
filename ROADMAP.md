@@ -2738,33 +2738,40 @@ through plain syscalls — no signed driver, no code-integrity fight:
      `b.w` at `0x799e` resolves to `0x79a4`, its exact target; 0 mismatches where the
      linear-Thumb and mapping-symbol streams align). A target is set only when reliably
      computable, else `None` — a sound "unknown edge", never a wrong one.
-     - **A32 semantic lift.** ✅ *(2026-08-30, verified.)* A32 lifts to micro-IR:
-       data-processing (`mov`/`mvn`/`add`/`sub`/`and`/`orr`/`eor`/`bic`/`mul`), simple
-       `ldr`/`str` (`[Rn,#±off]`, with write-back), `cmp` → `flags` + the AArch32 branch
-       conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed the way x64 does for `jcc`,
-       `push`/`pop` (the `sp` move; `pop {…,pc}` is the return), `bl`/`bx lr` as AAPCS32
-       calls/returns, **and predication** — a conditional instruction (`addne`) becomes
-       `dst = cond ? effect : dst` via the *same* `Select` + reaching-flags resolver x64
-       uses for `cmovcc`, reused across arches. Anything unmodelled — shifted-register
-       operands, `ldm`/`stm` other than push/pop, FP/SIMD — is preserved as `asm` and
-       **soundly invalidates its writes** (`writes_of` is a sound over-approximation incl.
-       the `ldm` reg-list and write-back bases: an unhandled instruction never lets a
-       later read reuse a stale value). **Verified end-to-end** on synthetic A32:
-       `add r0,r0,r1; sub r0,r0,#4; bx lr` → `return ((r0 + r1) - 0x4)` (chain folded,
-       `r0`/`r1` recovered as AAPCS32 params), and `cmp r0,#0; addne r0,r0,r1; bx lr` →
-       `return ((r0 != 0x0) ? (r0 + r1) : r0)` — predication reconstructed; plus
-       instruction-level unit tests.
-     - **Thumb lift.** ⬜ **Deliberately decode-only, for soundness.** yaxpeax does not
-       track `IT` (if-then) blocks and the core's `LiftPass` re-decodes each instruction
-       standalone, so a post-`IT` conditional Thumb instruction (`addeq`) comes back
-       unconditional (`adds`, `cond=AL`) — lifting it would silently drop its predicate.
-       Rather than emit a confidently-wrong body (the exact bug class the testers flagged),
-       Thumb stays honest disassembly + CFG (verified: a 50-function toybox sweep, all
-       `push {…,lr}`-prologue functions, decompiles 50/50 with **0 errors and 0 dataflow
-       lines** — pure `asm`, no unsound claims). A sound Thumb lift needs IT-aware decoding
-       threaded to the lift (a `LiftPass` change so it uses the CFG's stateful decode
-       instead of re-decoding) — a follow-on. ARM-shaped function discovery (the sweep had
-       to find functions by prologue, since discovery is still x64-scanning) is another. `--arch arm32` (A32) / `--arch
+     - **Semantic lift (A32 + Thumb, incl. Thumb `IT` blocks).** ✅ *(2026-08-30,*
+       *verified.)* Lifts to micro-IR: data-processing (`mov`/`mvn`/`add`/`sub`/`and`/
+       `orr`/`eor`/`bic`/`mul`), simple `ldr`/`str` (`[Rn,#±off]`, with write-back), `cmp`
+       → `flags` + the AArch32 branch conditions (`beq`→`==`, `bhi`→`>u`, …) reconstructed
+       the way x64 does for `jcc`, `push`/`pop` (the `sp` move; `pop {…,pc}` is the return),
+       `bl`/`bx lr` as AAPCS32 calls/returns, **and predication** — a conditional
+       instruction (`addne`) becomes `dst = cond ? effect : dst` via the *same* `Select` +
+       reaching-flags resolver x64 uses for `cmovcc`, reused across arches. Anything
+       unmodelled (shifted-register operands, `ldm`/`stm` beyond push/pop, FP/SIMD) is
+       preserved as `asm` and **soundly invalidates its writes** (`writes_of` is a sound
+       over-approximation incl. the `ldm` reg-list and write-back bases — no later read
+       reuses a stale value).
+       - **The Thumb `IT`-block soundness fix.** yaxpeax doesn't track `IT` (if-then)
+         blocks, so a post-`IT` conditional Thumb instruction decoded *standalone* reads
+         `AL` (unconditional) — lifting it would silently drop its predicate (the exact
+         confidently-wrong-body class the testers flagged). Fixed by threading the real
+         condition through a new **stateful decode**: `decode_stream` walks the `IT`
+         mnemonic's Then/Else pattern (inverting the condition for `E` slots), stamps each
+         guarded instruction's `DecodedInsn.cond`, the CFG carries it on `IrInsn.cond`, and
+         the `LiftPass` overlays it onto the re-decoded instruction so the lift reads the
+         predicate instead of re-deriving it. (A32's condition is in every 32-bit encoding,
+         so it was already right.)
+       **Verified.** Synthetic A32: `add r0,r0,r1; sub r0,r0,#4; bx lr` →
+       `return ((r0 + r1) - 0x4)` (folded, `r0`/`r1` recovered as AAPCS32 params);
+       `cmp r0,#0; addne r0,r0,r1; bx lr` → `return ((r0 != 0x0) ? (r0 + r1) : r0)`. **Real
+       Thumb `IT` block on the box's `toybox`**, checked against `llvm-objdump`: the
+       `cmp r0,#0; ite ne; ldrne r0,[r0,#0x7c]; moveq r0,#0x63` sequence decompiles to
+       `((r0 == 0x0) ? 0x63 : ((r0 != 0x0) ? r0->field_0x7c : r0))` — Then(`ne`)→`!=0` and
+       Else(`eq`)→`==0` both exactly right. Sweep of 60 toybox functions: 60/60 ok, 0
+       errors, ~54 % of lines lifted; plus instruction-level unit tests (data-proc, mem,
+       predication→`Select`, push/pop, `bl`, `it`/`ite` then-else, `decode_stream` stamping).
+       ⬜ remaining: `ldm`/`stm` beyond push/pop, operand-2 shift lifting, FP/SIMD, and
+       ARM-shaped function discovery (the sweep found functions by their `push {…,lr}`
+       prologue, since discovery is still x64-scanning). `--arch arm32` (A32) / `--arch
      thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
      BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
      on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-

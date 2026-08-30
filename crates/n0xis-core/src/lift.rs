@@ -74,7 +74,12 @@ impl Pass for LiftPass {
                     Err(_) => None,
                 };
                 match decoded {
-                    Some(decoded) => {
+                    Some(mut decoded) => {
+                        // Carry the CFG's stateful condition (a Thumb `IT`-block
+                        // predicate the standalone re-decode above can't recover)
+                        // onto the instruction the arch lifts — the seam that lets
+                        // a predicated Thumb instruction lift soundly.
+                        decoded.cond = insn.cond.clone();
                         let abi = ctx.source.abi_name();
                         let lowered = if tail_index == Some(idx) {
                             ctx.arch.lift_tail_call(&decoded, abi)

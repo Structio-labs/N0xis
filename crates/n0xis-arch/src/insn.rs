@@ -48,6 +48,15 @@ pub struct DecodedInsn {
     /// leaking into the passes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rip_target: Option<Va>,
+    /// The instruction's condition code, when it executes conditionally — the
+    /// AArch32 case (`Some("eq")` for `addeq`). `None` means unconditional. It is
+    /// carried on the decoded instruction (not re-derived at lift time) because a
+    /// Thumb `IT`-block condition is *stateful* — a post-`IT` instruction decoded
+    /// standalone looks unconditional, so the arch's stateful `decode_stream`
+    /// stamps the real condition here and the CFG/lift read it instead of
+    /// re-decoding. Other arches leave it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cond: Option<String>,
 }
 
 fn ser_hex_bytes<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {

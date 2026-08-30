@@ -249,6 +249,7 @@ fn build_insn(bits: u32, va: Va) -> DecodedInsn {
                 kind,
                 target: direct_target(bits, va, def.class),
                 rip_target: None, // ARM64 has no separate "RIP-relative memory operand" concept the way x64 does; ADR/ADRP recovery is a documented follow-on.
+                cond: None,
             }
         }
         None => DecodedInsn {
@@ -260,6 +261,7 @@ fn build_insn(bits: u32, va: Va) -> DecodedInsn {
             kind: InsnKind::Invalid,
             target: None,
             rip_target: None,
+            cond: None,
         },
     }
 }

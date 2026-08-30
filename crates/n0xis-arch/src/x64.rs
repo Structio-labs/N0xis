@@ -303,6 +303,7 @@ fn build_insn(
         kind,
         target: direct_target(instr, kind),
         rip_target,
+        cond: None,
     }
 }
 

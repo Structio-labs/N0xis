@@ -13,11 +13,14 @@
 //! `ldm`/`stm` beyond push/pop, FP/SIMD) are preserved as `asm` and **soundly
 //! invalidate their writes** so no later read reuses a stale value.
 //!
-//! **Thumb is decode-only, on purpose.** yaxpeax does not track `IT` (if-then)
-//! blocks, and the core re-decodes each instruction standalone, so a post-`IT`
-//! conditional Thumb instruction returns as unconditional — lifting it would
-//! silently drop its predicate. Rather than a confidently-wrong body, Thumb
-//! stays honest disassembly until IT-aware decoding is threaded to the lift.
+//! **Thumb `IT` blocks are handled soundly.** yaxpeax does not track `IT`
+//! (if-then) blocks, so a post-`IT` conditional Thumb instruction decoded
+//! standalone reads unconditional — lifting it would silently drop its
+//! predicate. So [`Arm32::decode_stream`] is *stateful*: it walks the `IT`
+//! mnemonic's Then/Else pattern and stamps each guarded instruction's
+//! [`DecodedInsn::cond`], which the CFG carries and the `LiftPass` overlays onto
+//! the re-decoded instruction, so the lift reads the real predicate. That is why
+//! the lift reads its condition from `insn.cond`, never a fresh re-decode.
 
 use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
 use yaxpeax_arm::armv7::{InstDecoder, Instruction, Opcode, Operand};
@@ -175,6 +178,40 @@ fn reg_n(n: u8) -> String {
 }
 fn reg_name(r: yaxpeax_arm::armv7::Reg) -> String {
     reg_n(r.number())
+}
+
+/// The instruction's condition code (`Some("eq")`), or `None` when
+/// unconditional (`AL`).
+fn cond_of(inst: &Instruction) -> Option<String> {
+    let c = format!("{:?}", inst.condition).to_lowercase();
+    (c != "al").then_some(c)
+}
+
+/// The inverse AArch32 condition, for the `else` (`E`) slots of an `IT` block.
+fn invert_cond(c: &str) -> String {
+    match c {
+        "eq" => "ne", "ne" => "eq", "cs" | "hs" => "cc", "cc" | "lo" => "cs",
+        "mi" => "pl", "pl" => "mi", "vs" => "vc", "vc" => "vs",
+        "hi" => "ls", "ls" => "hi", "ge" => "lt", "lt" => "ge",
+        "gt" => "le", "le" => "gt", other => other,
+    }
+    .to_string()
+}
+
+/// From an `IT` instruction's mnemonic (`it`/`itt`/`itte`/…) and its base
+/// condition, the per-instruction conditions for the 1-4 instructions it guards.
+/// The mnemonic's letters after `it` are `T`(hen)/`E`(lse) for instructions
+/// 2..N; instruction 1 is always `Then`. Returns them in order.
+fn it_block_conds(mnemonic: &str, cond: &str) -> Vec<String> {
+    let Some(pattern) = mnemonic.strip_prefix("it") else {
+        return Vec::new();
+    };
+    let mut conds = vec![cond.to_string()]; // instruction 1 is always Then
+    let inv = invert_cond(cond);
+    for ch in pattern.chars() {
+        conds.push(if ch == 'e' { inv.clone() } else { cond.to_string() });
+    }
+    conds
 }
 
 /// The registers named in an `LDM`/`STM` register-list bitmask.
@@ -352,25 +389,17 @@ impl Arch for Arm32 {
 
     fn lift(&self, insn: &DecodedInsn, _abi: &str) -> Vec<MicroStmt> {
         use Opcode::*;
-        // Thumb is decode-only for now: **soundness**. yaxpeax does not track
-        // `IT` (if-then) blocks, and the core re-decodes each instruction
-        // standalone, so a post-`IT` conditional instruction (`addeq`) comes back
-        // as unconditional (`adds`, `cond=AL`) — lifting it would drop its
-        // predicate and execute it always. Rather than emit a confidently-wrong
-        // body, Thumb stays an honest disassembly (every instruction preserved as
-        // `asm`, no dataflow claimed). A32 has its condition in each 32-bit
-        // encoding, so it lifts soundly below. (Sound Thumb lift needs IT-aware
-        // decoding threaded to the lift — a core `LiftPass` change, a follow-on.)
-        if self.thumb {
-            return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
-        }
         let Some(inst) = self.redecode(insn) else {
             return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
         };
-        // A shifted-register operand (`add r0, r1, r2, lsl #3`) isn't modelled
-        // yet — preserve it and soundly invalidate its writes. Predication is
-        // handled per-instruction below (`pred_assign`), not bailed on.
-        let cond_lc = format!("{:?}", inst.condition).to_lowercase();
+        // The condition comes from the *decoded instruction* (`insn.cond`), not a
+        // fresh re-decode: for A32 that is the encoding's condition, and for a
+        // Thumb `IT`-block member it is the real predicate that `decode_stream`
+        // recovered statefully (a standalone re-decode of it reads `AL`). This is
+        // what makes the Thumb lift sound — the predicate is never dropped. A
+        // shifted-register operand (`add r0, r1, r2, lsl #3`) still isn't
+        // modelled — preserve it and soundly invalidate its writes.
+        let cond_lc = insn.cond.as_deref().unwrap_or("al").to_string();
         let cond_al = cond_lc == "al";
         let has_shift = inst.operands.iter().any(|o| matches!(o, Operand::RegShift(_)));
         if has_shift {
@@ -524,16 +553,37 @@ impl Arch for Arm32 {
         let target = matches!(kind, InsnKind::Jump | InsnKind::CondJump | InsnKind::Call)
             .then(|| branch_target(&inst, &text, va, self.thumb))
             .flatten();
-        Ok(DecodedInsn { va, len: len as u8, bytes: bytes[..len].to_vec(), mnemonic, text, kind, target, rip_target: None })
+        // The condition as decoded standalone. Correct for A32 (it is in the
+        // 32-bit encoding); for a Thumb `IT`-block member this reads `al` here
+        // and is corrected by the stateful `decode_stream`.
+        let cond = cond_of(&inst);
+        Ok(DecodedInsn { va, len: len as u8, bytes: bytes[..len].to_vec(), mnemonic, text, kind, target, rip_target: None, cond })
     }
 
     fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
         let mut out = Vec::new();
         let mut off = 0usize;
+        // Thumb `IT`-block state: the conditions queued for the next instructions
+        // (yaxpeax doesn't track this, and a post-`IT` instruction decoded
+        // standalone reads `AL`). Because this walk is sequential, it can carry
+        // the real per-instruction condition and stamp it onto each `DecodedInsn`
+        // — which the CFG (`IrInsn.cond`) and the lift then read instead of a
+        // stateless re-decode. This is what makes the Thumb lift *sound*.
+        let mut it_conds: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         while out.len() < max && off < bytes.len() {
             match self.decode(&bytes[off..], Va(va.0 + off as u64)) {
-                Ok(di) => {
+                Ok(mut di) => {
                     let l = di.len as usize;
+                    if self.thumb {
+                        if di.mnemonic.starts_with("it") && di.mnemonic.chars().all(|c| matches!(c, 'i' | 't' | 'e')) {
+                            // An `IT` instruction: queue conditions for the block
+                            // it opens (its own condition is the text's suffix).
+                            let base = di.text.split_whitespace().nth(1).unwrap_or("al");
+                            it_conds = it_block_conds(&di.mnemonic, base).into();
+                        } else if let Some(c) = it_conds.pop_front() {
+                            di.cond = Some(c);
+                        }
+                    }
                     out.push(di);
                     if l == 0 {
                         break;
@@ -552,6 +602,7 @@ impl Arch for Arm32 {
                         kind: InsnKind::Invalid,
                         target: None,
                         rip_target: None,
+                        cond: None,
                     });
                     break;
                 }
@@ -649,6 +700,31 @@ mod tests {
             })
             .collect();
         assert!(invalidated.contains(&"r0"), "the unmodelled add must invalidate its dest r0: {stmts:?}");
+    }
+
+    #[test]
+    fn it_block_conditions_follow_the_then_else_pattern() {
+        // `it eq` guards one Then instruction.
+        assert_eq!(it_block_conds("it", "eq"), vec!["eq"]);
+        // `itt eq` — two Thens.
+        assert_eq!(it_block_conds("itt", "eq"), vec!["eq", "eq"]);
+        // `ite ne` — Then(ne), Else(eq = the inverse).
+        assert_eq!(it_block_conds("ite", "ne"), vec!["ne", "eq"]);
+        // `itet gt` — Then(gt), Else(le), Then(gt).
+        assert_eq!(it_block_conds("itet", "gt"), vec!["gt", "le", "gt"]);
+        assert_eq!(invert_cond("ne"), "eq");
+        assert_eq!(invert_cond("hi"), "ls");
+    }
+
+    #[test]
+    fn thumb_decode_stream_stamps_the_it_block_condition() {
+        // Thumb: bf14 'ite ne' ; 6fc0 'ldrne r0,[r0,#0x7c]' ; then the else slot.
+        // The instruction after the IT must carry cond=Some("ne"), which the
+        // standalone decode of its bytes would report as unconditional.
+        let t = Arm32::thumb();
+        let stream = t.decode_stream(&[0x14, 0xbf, 0xc0, 0x6f, 0x00, 0x20], Va(0x1000), 3);
+        assert!(stream[0].mnemonic.starts_with("it"));
+        assert_eq!(stream[1].cond.as_deref(), Some("ne"), "the Then slot gets the IT condition");
     }
 
     #[test]
