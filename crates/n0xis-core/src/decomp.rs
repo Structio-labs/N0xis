@@ -18,7 +18,7 @@ use crate::optimize::{OptDeltaEntry, OptimizePass};
 use crate::render::{c_type, render_condition, render_stmt, RenderNames};
 use crate::ssa::{SsaBlock, SsaPass};
 use crate::structure::structure;
-use crate::typeinfer::{RecoveredSignature, TypeInferInput, TypeInferPass};
+use crate::typeinfer::{RecoveredSignature, TypeArtifact, TypeInferInput, TypeInferPass};
 use crate::{Ctx, CoreError, Pass};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,7 +159,24 @@ impl Pass for DecompPass {
             flags.push("low-coverage");
         }
 
+        // source-style typed-locals declaration block (Rung 3): the recovered
+        // stack locals, declared with their inferred C type at the top of the
+        // function before the body — only for the C-like styles, and only those
+        // that actually appear in the rendered body (so a local dead-eliminated
+        // by the optimizer is not declared as if it were used). `goto` stays a
+        // flat instruction listing with no preamble.
+        let decls = match input.style {
+            DecompStyle::Structured | DecompStyle::Ssa => local_decls(&types, &pseudo),
+            DecompStyle::Goto => Vec::new(),
+        };
+        let preamble = if decls.is_empty() {
+            Vec::new()
+        } else {
+            decls.into_iter().chain(std::iter::once(String::new())).collect::<Vec<_>>()
+        };
+
         let body_lines: Vec<String> = std::iter::once(format!("{signature} {{"))
+            .chain(preamble)
             .chain(pseudo)
             .chain(std::iter::once("}".to_string()))
             .collect();
@@ -222,6 +239,19 @@ fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> Str
         Some(n) => format!("{ret} {n}({params})"),
         None => format!("{ret} sub_{:x}({params})", va.get()),
     }
+}
+
+/// The typed-locals declaration lines for a function's body — one
+/// `type local_XX;` per recovered stack local that actually appears in the
+/// rendered `body`, in stack-offset order. Filtering on appearance keeps the
+/// block honest: a local the optimizer removed (dead store, fully forwarded)
+/// leaves no reference to declare. The `local_XX` name matches the renderer's
+/// (both derive it from the offset — single source of truth).
+fn local_decls(types: &TypeArtifact, body: &[String]) -> Vec<String> {
+    let joined = body.join("\n");
+    let mut locals: Vec<&crate::typeinfer::LocalVar> = types.locals.iter().filter(|l| joined.contains(&l.name)).collect();
+    locals.sort_by_key(|l| l.offset);
+    locals.iter().map(|l| format!("    {} {};", c_type(l.size_bits, l.signed), l.name)).collect()
 }
 
 fn count_unlifted(blocks: &[SsaBlock]) -> usize {
@@ -368,6 +398,27 @@ mod tests {
         // `ret name(params)` rendering — only a full prototype is verbatim.
         let sig = RecoveredSignature { params: vec![], ret: None };
         assert_eq!(format_signature(Va(0x1000), &sig, Some("Compress")), "void Compress(void)");
+    }
+
+    #[test]
+    fn the_ssa_style_emits_a_typed_locals_declaration_block() {
+        // A width-mismatched spill/reload keeps a real stack local at [rsp+8]:
+        // mov [rsp+8], rcx ; mov eax, [rsp+8] ; ret. The C-like styles now
+        // declare it at the top (`uint... local_8;`); `goto` does not.
+        let code = vec![0x48, 0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0xc3];
+        let ssa = decomp(code.clone(), DecompStyle::Ssa);
+        // A declaration line: `local_8` on its own, ending in `;`, no `=`.
+        let decl = ssa.pseudo.iter().find(|l| l.contains("local_8;") && !l.contains('='));
+        assert!(decl.is_some(), "expected a typed-locals decl for local_8: {:#?}", ssa.pseudo);
+        assert!(decl.unwrap().contains("local_8"), "{decl:?}");
+        // The declaration precedes the first use of the local in the body.
+        let joined = ssa.pseudo.join("\n");
+        let decl_pos = ssa.pseudo.iter().position(|l| l.contains("local_8;") && !l.contains('=')).unwrap();
+        let use_pos = ssa.pseudo.iter().position(|l| l.contains("local_8") && l.contains('=')).unwrap();
+        assert!(decl_pos < use_pos, "decl must precede use: {joined}");
+        // `goto` style stays a flat listing — no declaration preamble.
+        let goto = decomp(code, DecompStyle::Goto);
+        assert!(!goto.pseudo.iter().any(|l| l.contains("local_8;") && !l.contains('=')), "goto should not declare locals: {:#?}", goto.pseudo);
     }
 
     #[test]
