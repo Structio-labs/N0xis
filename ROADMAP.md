@@ -1897,6 +1897,14 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `while (1) { … if (c) continue; break; }` fallback. **Verified:** STALKER 2
     `sub_140012757`'s inner-`if` loop reads `do { … if (…) {…} … } while ((r15.1
     != v3))`; 20 do/while loops recovered across 200 STALKER 2 functions, 0 errors.
+  - **6f — collapse nested else-if into an else-if chain.** ✅ *(2026-08-31,*
+    *verified.)* `else { if (c) {…} else {…} }` reads `else if (c) {…} else {…}` —
+    the if-else-if ladder. `try_else_if` detects that a captured else arm is
+    exactly one `if` spanning the whole block (brace-balance walk — safe since
+    rendered expressions never contain `{`/`}`), dedents a level, and merges the
+    `} else ` onto the inner `if`. **Verified:** a 3-way ladder reads `if (rcx==1)
+    {…} else if (rcx==2) {…} else {…}`; 36 else-if chains across `CompressToolsLib`
+    + STALKER 2 with **0 brace-unbalanced functions**.
   - **6e — negative struct-field offsets read signed.** ✅ *(2026-08-31,*
     *verified.)* A struct access before its base (`*(rcx.1 - 8)`) rendered as the
     two's-complement giant `field_0xfffff…f8`; it now reads `field_neg_0x8`.
