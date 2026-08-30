@@ -278,7 +278,30 @@ fn recover_structs(accesses: &[MemAccess]) -> Vec<RecoveredType> {
         .collect()
 }
 
-fn collect_used_vars(blocks: &[SsaBlock]) -> BTreeSet<String> {
+/// Registers (as `<reg>.0`) used in a position that *proves* they're a real
+/// incoming parameter — any use that is **not** a bare pass-through argument
+/// in a call's argument list.
+///
+/// The lift emits all four Win64 register slots (`rcx`/`rdx`/`r8`/`r9`) as
+/// arguments at *every* call, regardless of the callee's real arity — it can't
+/// know the callee takes fewer. So a register that appears *only* as a bare
+/// `Var` call argument is indistinguishable from that injected noise, and
+/// counting it would peg every calling function at arity 4 (measured on
+/// `CompressToolsLib.dll`: nearly every function reported 4 args, real arity
+/// 1–2). Such a register is therefore left out of the arity signal — the same
+/// trimming the renderer already applies to the call *display*
+/// (`render.rs::render_call`). A register used even once in a non-argument
+/// position (an address base, arithmetic, a branch condition, a return, a
+/// store value, or *nested* inside a call argument like `g(*rcx.0)`) is a
+/// definite parameter and is counted.
+///
+/// Known under-count: a parameter forwarded *straight through* to an unknown
+/// callee (`void f(T a){ g(a); }`) has no non-argument use and is dropped;
+/// fully resolving it needs Rung 4's whole-program call-site agreement (a
+/// callee's arity, learned from all its call sites, back-propagated to each
+/// forwarding argument). Sound-over-complete: the forwarded value still
+/// renders in the body; only the signature's arity is conservative.
+fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
     fn walk(e: &MicroExpr, out: &mut BTreeSet<String>) {
         match e {
             MicroExpr::Var(n) => {
@@ -301,7 +324,12 @@ fn collect_used_vars(blocks: &[SsaBlock]) -> BTreeSet<String> {
                     walk(t, out);
                 }
                 for a in args {
-                    walk(a, out);
+                    // A bare `Var` argument is an ambiguous pass-through (see
+                    // the doc above) — skip it. Any *computed* argument uses
+                    // its inner vars for real, so descend into those.
+                    if !matches!(a, MicroExpr::Var(_)) {
+                        walk(a, out);
+                    }
                 }
             }
             MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
@@ -326,7 +354,11 @@ fn collect_used_vars(blocks: &[SsaBlock]) -> BTreeSet<String> {
                         walk(t, &mut out);
                     }
                     for a in args {
-                        walk(a, &mut out);
+                        // Same pass-through rule as the expression walker: a
+                        // bare `Var` argument is ambiguous injected noise.
+                        if !matches!(a, MicroExpr::Var(_)) {
+                            walk(a, &mut out);
+                        }
                     }
                 }
                 MicroStmt::Return(Some(e)) => walk(e, &mut out),
@@ -403,7 +435,7 @@ fn infer(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let locals = recover_locals(&accesses);
     let structs = recover_structs(&accesses);
 
-    let used = collect_used_vars(blocks);
+    let used = collect_definite_param_regs(blocks);
     let arity = recover_arity(&used);
     let params = WIN64_INT_ARGS[..arity]
         .iter()
@@ -475,6 +507,41 @@ mod tests {
         let code = vec![0x48, 0x89, 0xC8, 0x4C, 0x01, 0xC0, 0xC3];
         let art = infer_code(code);
         assert_eq!(art.signature.params.len(), 3, "{:#?}", art.signature.params);
+    }
+
+    #[test]
+    fn a_register_only_forwarded_as_a_call_argument_is_not_a_parameter() {
+        // mov rdx, [rcx] ; call +0 ; ret
+        // `rcx` is a real pointer parameter (dereferenced, and the loaded value
+        // survives as a *computed* call argument, so it isn't DCE'd). The lift
+        // forwards all four Win64 arg registers (rcx/rdx/r8/r9) into the call as
+        // bare pass-throughs, but only rcx's dereference is a real use — the
+        // rest are the fixed 4-register call convention's injected noise, not
+        // real parameters. Arity must be 1, not the old fixed 4.
+        let code = vec![
+            0x48, 0x8B, 0x11, // mov rdx, [rcx]
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0xC3, // ret
+        ];
+        let art = infer_code(code);
+        assert_eq!(art.signature.params.len(), 1, "{:#?}", art.signature.params);
+        assert_eq!(art.signature.params[0].reg, "rcx");
+    }
+
+    #[test]
+    fn a_register_used_in_a_real_position_is_counted_even_when_also_forwarded() {
+        // and rcx, 1 ; mov rax, rcx ; call +0 ; ret
+        // rcx is used in real arithmetic *and* forwarded as a call arg — the
+        // real use must win, keeping it a parameter.
+        let code = vec![
+            0x48, 0x83, 0xE1, 0x01, // and rcx, 1
+            0x48, 0x89, 0xC8, // mov rax, rcx
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call +0
+            0xC3, // ret
+        ];
+        let art = infer_code(code);
+        assert!(!art.signature.params.is_empty(), "rcx used in real arithmetic must stay a param: {:#?}", art.signature.params);
+        assert_eq!(art.signature.params[0].reg, "rcx");
     }
 
     #[test]

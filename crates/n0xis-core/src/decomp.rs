@@ -173,6 +173,18 @@ impl Pass for DecompPass {
 /// an export table, or an imported IL2CPP index (Phase 12). Absent, the address
 /// stands in as it always did, so a target with no symbols renders unchanged.
 fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> String {
+    // A *demangled* name is already a complete C++ prototype — return type,
+    // qualified name, and its own (real, source-level) parameter list, e.g.
+    // `unsigned short __cdecl CompressToolsLib::ReadHeightValue(struct … *,
+    // unsigned int, unsigned int)`. It is authoritative: prepending our
+    // recovered `ret` and appending our register-name `(params)` produced the
+    // garbled `uint32_t <full-prototype>(uint64_t rcx, …)` seen on real MSVC
+    // exports. When the name carries its own arg list, use it verbatim.
+    if let Some(n) = name
+        && n.contains('(')
+    {
+        return n.to_string();
+    }
     let ret = match &sig.ret {
         Some(ty) => ty.name.clone().unwrap_or_else(|| c_type(ty.bits, ty.signed).to_string()),
         None => "void".to_string(),
@@ -314,6 +326,24 @@ mod tests {
         // expression — the shape a human would write.
         let body = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
         assert!(body.contains("return sub_1500("), "{body}");
+    }
+
+    #[test]
+    fn a_demangled_prototype_name_is_used_verbatim_not_wrapped() {
+        // A demangled C++ name already carries return type + real parameters;
+        // wrapping it produced the garbled
+        // `uint32_t <full-prototype>(uint64_t rcx, …)` seen on MSVC exports.
+        let sig = RecoveredSignature { params: vec![], ret: None };
+        let name = "unsigned short __cdecl CompressToolsLib::ReadHeightValue(struct CompressToolsLib::CompressedImageFile *, unsigned int, unsigned int)";
+        assert_eq!(format_signature(Va(0x1940), &sig, Some(name)), name);
+    }
+
+    #[test]
+    fn a_plain_symbol_name_without_args_still_gets_the_recovered_signature() {
+        // A plain C export (no parenthesized arg list) keeps the recovered
+        // `ret name(params)` rendering — only a full prototype is verbatim.
+        let sig = RecoveredSignature { params: vec![], ret: None };
+        assert_eq!(format_signature(Va(0x1000), &sig, Some("Compress")), "void Compress(void)");
     }
 
     #[test]

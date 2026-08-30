@@ -1471,10 +1471,32 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
   `*(int*)(rbx.7 + 0x40) = *(int*)(rbx.7 + 0x40) - eax.3;`. This rung is the single
   biggest readability jump.
 
-- **Rung 4 — Calling convention & argument recovery.** ⬜ Classify the CC and
+- **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.
   *Output:* calls render with the arguments they actually take, and prototypes are
   right — see Phase-10 item 9.
+  - **4a — precise register-argument arity (Win64).** ✅ *(2026-08-30, verified.)*
+    The lift emits all four Win64 argument registers (`rcx`/`rdx`/`r8`/`r9`) at
+    *every* call — it can't know the callee's real arity — so counting a register
+    as a parameter merely because it appears in a call's argument list pegged
+    **every** calling function at arity 4. Fix: a register counts toward arity
+    only when it is used in a position that is *not* a bare pass-through call
+    argument (an address base, arithmetic, a branch condition, a return, a store
+    value, or nested inside a computed argument) — the same trimming the renderer
+    already applies to the call *display*. **Verified on real MSVC x64:** on
+    `CompressToolsLib.dll` the arity-4 count collapsed from ~100% to a realistic
+    spread (0:7 / 1:32 / 2:27 / 3:23 / 4:25 over 120 functions), and
+    `sub_1800010d0` — which really takes 2 (`*rcx`, `rdx & 1`) — now reports 2,
+    not 4; cross-checked on `OIS64.dll` (100 functions, no regression). Also
+    fixed here: a **demangled C++ prototype** (which already carries its own
+    return type and real parameter list) is now used verbatim as the signature
+    instead of being wrapped into the garbled
+    `uint32_t <full-prototype>(uint64_t rcx, …)`. Known under-count: a parameter
+    forwarded straight through to an *unknown* callee has no non-argument use and
+    is dropped — resolving it is the **call-site-agreement** half of this rung
+    (a callee's arity, learned from all its call sites, back-propagated to each
+    forwarding argument), still ⬜. System V argument registers (`rdi`/`rsi`/…)
+    are a separate follow-on — the arity signal is Win64-register-specific today.
 
 - **Rung 5 — Expression & idiom quality.** ⬜ Signedness inference, the compiler-
   idiom library (magic-number division, `cmov`→`min/max`, `rep`→`mem*`, canary
