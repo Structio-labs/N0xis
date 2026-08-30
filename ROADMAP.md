@@ -1337,13 +1337,20 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
      `AnimationEvent`/Ogre allocators; **STALKER 2 (UE5)** `Stalker2-Win64-Shipping.exe`
      — 561 vtables (432 cleanly demangled ICU classes), `sub_140cecb83` →
      `icu_64::GregorianCalendar *rcx` with `*rcx = &icu_64::GregorianCalendar::vtable`.
+   - ✅ *(2026-08-30, verified)* **Full templated-name demangling.** A RTTI
+     TypeDescriptor name for a template is wrapped back into its `??_R0<type>@8`
+     symbol and run through the real MSVC demangler, so `.?AV?$vector@H@std@@`
+     reads `std::vector<int>` instead of the verbatim decorated form — the case
+     Gemini flagged as where other tools win. **Verified corpus-wide:**
+     CompressToolsLib 30/30 demangled, STALKER 2 561/561, `kenshi_x64` 2989/3055
+     (the 66 the MSVC demangler itself declines fall back to verbatim — sound);
+     `sub_180003f70` decompiles
+     `&std::basic_ifstream<unsigned char, struct std::char_traits<unsigned char> >::vtable`.
    - ⬜ Still open for this item: **virtual-call devirtualization** (resolve
      `call [vtable+k]` to the slot's method — needs per-vtable slot→target
      extraction and the this-pointer's class flowing to the call site),
-     **base-class / inheritance graph** (the COL base-class array), **full
-     template-name demangling** (RTTI TypeDescriptor names for `.?AV?$…@@`
-     templates render verbatim today — sound but mangled), and **Itanium RTTI**
-     for ELF/GCC targets.
+     **base-class / inheritance graph** (the COL base-class array), and
+     **Itanium RTTI** for ELF/GCC targets.
 8. ⬜ **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool

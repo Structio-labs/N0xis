@@ -35,6 +35,13 @@ pub struct RttiVtable {
     /// The COL's `offset` field — this base's offset within the complete
     /// object, non-zero for a secondary base under multiple inheritance.
     pub offset: u32,
+    /// The class's **base classes**, recovered from the RTTI class-hierarchy
+    /// descriptor's base-class array (readable names, most-derived base first,
+    /// self excluded). Empty for a class with no bases, or when the hierarchy
+    /// descriptor is absent/out of `.rdata`. This is the inheritance graph the
+    /// binary already carries — `class Derived : Base` reconstructed statically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bases: Vec<String>,
 }
 
 /// Turn an MSVC RTTI decorated type name into a readable one.
@@ -70,6 +77,13 @@ pub fn demangle_rtti_name(mangled: &str) -> String {
 }
 
 const COL_SIZE: usize = 24; // sig,u32 | offset,u32 | cdOffset,u32 | pTD,rva | pClass,rva | pSelf,rva
+const COL_PCLASS: usize = 16; // RVA of the RTTIClassHierarchyDescriptor
+// RTTIClassHierarchyDescriptor: signature,u32 | attributes,u32 | numBaseClasses,u32 | pBaseClassArray,rva
+const CHD_NUM_BASES: usize = 8;
+const CHD_BASE_ARRAY: usize = 12;
+/// Base-class count ceiling — bounds the walk so a mis-read descriptor can
+/// never drive an unbounded loop/allocation (the OOM lesson, again).
+const MAX_BASES: usize = 256;
 const MAX_NAME: usize = 512;
 /// A hard ceiling so a mis-identified `.rdata` size can never drive an
 /// unbounded allocation (the machine's OOM lesson, applied to a parsed length).
@@ -115,7 +129,9 @@ pub fn scan_msvc_rtti(src: &dyn MemorySource, image_base: Va, rdata: (Va, u64), 
                         && mangled.starts_with(".?A")
                     {
                         let name = demangle_rtti_name(&mangled);
-                        out.push(RttiVtable { vtable: Va(vtable), type_descriptor: Va(td_name_va - 16), mangled, name, offset });
+                        let pclass = u32_le(&buf, col_off + COL_PCLASS).unwrap_or(0);
+                        let bases = read_base_classes(&buf, rd_base, image_base.get(), src, pclass);
+                        out.push(RttiVtable { vtable: Va(vtable), type_descriptor: Va(td_name_va - 16), mangled, name, offset, bases });
                     }
                 }
             }
@@ -123,6 +139,47 @@ pub fn scan_msvc_rtti(src: &dyn MemorySource, image_base: Va, rdata: (Va, u64), 
         off += 8;
     }
     out
+}
+
+/// Walk an MSVC RTTI class-hierarchy descriptor to the class's base-class
+/// names. `pclass_rva` is the COL's `pClassDescriptor` RVA; the descriptor's
+/// base-class array holds, most-derived first, an entry per class in the
+/// hierarchy — index 0 is the class itself, so 1.. are its bases. Every
+/// structure here lives in `.rdata`, so reads index the already-loaded buffer;
+/// anything out of range is skipped (sound — a missing base is dropped, never
+/// guessed). Bounded by [`MAX_BASES`].
+fn read_base_classes(buf: &[u8], rd_base: u64, image_base: u64, src: &dyn MemorySource, pclass_rva: u32) -> Vec<String> {
+    let mut bases = Vec::new();
+    if pclass_rva == 0 {
+        return bases;
+    }
+    // The `.rdata` buffer offset of an image RVA, if it lands inside `.rdata`.
+    let at = |rva: u32| -> Option<usize> {
+        let va = image_base.wrapping_add(rva as u64);
+        (va >= rd_base && va < rd_base + buf.len() as u64).then_some((va - rd_base) as usize)
+    };
+    let Some(chd) = at(pclass_rva) else { return bases };
+    let (Some(num), Some(bca_rva)) = (u32_le(buf, chd + CHD_NUM_BASES), u32_le(buf, chd + CHD_BASE_ARRAY)) else {
+        return bases;
+    };
+    let Some(bca) = at(bca_rva) else { return bases };
+    let num = (num as usize).min(MAX_BASES);
+    // Skip index 0 (the class itself); collect the remaining bases in order.
+    for i in 1..num {
+        let Some(bcd_rva) = u32_le(buf, bca + i * 4) else { break };
+        let Some(bcd) = at(bcd_rva) else { continue };
+        // BaseClassDescriptor's first field is its TypeDescriptor RVA; the
+        // decorated name sits 16 bytes into the TypeDescriptor (past its two
+        // leading pointer slots), exactly as for the primary type above.
+        let Some(td_rva) = u32_le(buf, bcd) else { continue };
+        let td_name_va = image_base.wrapping_add(td_rva as u64) + 16;
+        if let Some(m) = read_cstr(src, Va(td_name_va))
+            && m.starts_with(".?A")
+        {
+            bases.push(demangle_rtti_name(&m));
+        }
+    }
+    bases
 }
 
 /// Read a NUL-terminated ASCII string (bounded), the shape a `TypeDescriptor`
@@ -165,5 +222,47 @@ mod tests {
     #[test]
     fn a_non_rtti_string_passes_through() {
         assert_eq!(demangle_rtti_name("not a name"), "not a name");
+    }
+
+    #[test]
+    fn scans_a_synthetic_vtable_and_recovers_its_base_classes() {
+        use n0xis_sources::Snapshot;
+        let image_base = 0x140000000u64;
+        let rd_base = 0x140010000u64;
+        let mut buf = vec![0u8; 0x800];
+        let put_u32 = |b: &mut [u8], off: usize, v: u32| b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        let put_u64 = |b: &mut [u8], off: usize, v: u64| b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+        let put_str = |b: &mut [u8], off: usize, s: &str| b[off..off + s.len()].copy_from_slice(s.as_bytes());
+        let rva = |off: usize| ((rd_base + off as u64) - image_base) as u32;
+        // TypeDescriptors: name sits 16 bytes in (past two pointer slots).
+        put_str(&mut buf, 0x110, ".?AVDerived@@\0");
+        put_str(&mut buf, 0x150, ".?AVBase1@@\0");
+        put_str(&mut buf, 0x190, ".?AVBase2@@\0");
+        // BaseClassDescriptors: first field is the TypeDescriptor RVA. Index 0 is
+        // the class itself, 1 and 2 its bases.
+        put_u32(&mut buf, 0x1e0, rva(0x100)); // BCD0 -> self TD
+        put_u32(&mut buf, 0x200, rva(0x140)); // BCD1 -> Base1 TD
+        put_u32(&mut buf, 0x220, rva(0x180)); // BCD2 -> Base2 TD
+        // Base-class array: three BCD RVAs.
+        put_u32(&mut buf, 0x260, rva(0x1e0));
+        put_u32(&mut buf, 0x264, rva(0x200));
+        put_u32(&mut buf, 0x268, rva(0x220));
+        // ClassHierarchyDescriptor: numBaseClasses=3, pBaseClassArray.
+        put_u32(&mut buf, 0x288, 3);
+        put_u32(&mut buf, 0x28c, rva(0x260));
+        // CompleteObjectLocator: pTD, pClassDescriptor, and the self-reference.
+        put_u32(&mut buf, 0x2a0 + 12, rva(0x100)); // pTypeDescriptor
+        put_u32(&mut buf, 0x2a0 + 16, rva(0x280)); // pClassHierarchyDescriptor
+        put_u32(&mut buf, 0x2a0 + 20, rva(0x2a0)); // pSelf (validates the COL)
+        // The vtable: a COL pointer, then a first slot pointing into "code".
+        put_u64(&mut buf, 0x300, rd_base + 0x2a0); // -> COL
+        put_u64(&mut buf, 0x308, 0x140001000); // first method slot
+
+        let snap = Snapshot::builder().region(Va(rd_base), buf).build();
+        let vts = scan_msvc_rtti(&snap, Va(image_base), (Va(rd_base), 0x800), None);
+        assert_eq!(vts.len(), 1, "{vts:#?}");
+        assert_eq!(vts[0].name, "Derived");
+        assert_eq!(vts[0].vtable, Va(rd_base + 0x308));
+        assert_eq!(vts[0].bases, vec!["Base1".to_string(), "Base2".to_string()]);
     }
 }
