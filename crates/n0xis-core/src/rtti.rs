@@ -44,6 +44,13 @@ pub struct RttiVtable {
 /// carrying template or other special mangling (`?$`, a bare `?`) is returned
 /// **verbatim** rather than mis-decoded — sound over pretty.
 pub fn demangle_rtti_name(mangled: &str) -> String {
+    // Prefer the real MSVC demangler — it reads the templated names
+    // (`.?AV?$vector@H@std@@` → `std::vector<int>`) the hand-rolled `@`-splitter
+    // below deliberately refuses. The splitter stays as a fallback for a name
+    // the demangler declines, and verbatim is the final, always-sound floor.
+    if let Some(full) = crate::demangle::demangle_rtti_type_descriptor(mangled) {
+        return full;
+    }
     let Some(rest) = mangled.strip_prefix(".?A") else {
         return mangled.to_string();
     };
@@ -142,11 +149,17 @@ mod tests {
     }
 
     #[test]
-    fn a_template_name_is_returned_verbatim_never_mis_decoded() {
-        // `?$` is a template; reversing the `@`-parts would be nonsense, so the
-        // decorated form is kept as-is.
-        let t = ".?AV?$vector@H@std@@";
-        assert_eq!(demangle_rtti_name(t), t);
+    fn a_template_name_is_fully_demangled_via_the_msvc_demangler() {
+        // `?$` is a template; the hand-rolled `@`-splitter refuses it, but the
+        // real MSVC demangler (wrapping it as an `??_R0…@8` type descriptor)
+        // reads it — a readable class name, never mis-decoded nonsense.
+        assert_eq!(demangle_rtti_name(".?AV?$vector@H@std@@"), "std::vector<int>");
+        // A real Havok template name from the corpus demangles rather than
+        // falling through to verbatim.
+        assert_eq!(
+            demangle_rtti_name(".?AV?$basic_ios@EU?$char_traits@E@std@@@std@@"),
+            "std::basic_ios<unsigned char, struct std::char_traits<unsigned char> >",
+        );
     }
 
     #[test]
