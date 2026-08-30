@@ -7,6 +7,10 @@ aliases: [CLI README, n0x-cli-rs README]
 
 # n0x-cli-rs
 
+> **ARCHIVED v0 — superseded.** This describes the abandoned first implementation and
+> its framing, not the current project. See the repository root `README.md` / `CONCEPT.md`
+> for what N0xis actually is today.
+
 Rust backend CLI for N0x (JSON-capable).
 
 > Roadmap and command surface: [[CLI_FEATURES_SPEC]]. Chronological change log: [[DEVLOG]].

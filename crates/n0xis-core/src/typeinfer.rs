@@ -35,7 +35,7 @@ use n0xis_contracts::Va;
 use serde::Serialize;
 
 use crate::ir::CfgArtifact;
-use crate::signatures::known_signature;
+use crate::signatures::{known_signature, KnownSignature};
 use crate::ssa::SsaBlock;
 use crate::{Ctx, CoreError, Pass};
 
@@ -430,6 +430,141 @@ fn callee_return_types(cfg: &CfgArtifact) -> BTreeMap<Va, &'static str> {
         .collect()
 }
 
+/// Resolve a call's known-API signature the way the renderer does
+/// (`render.rs::render_call`): a direct call by target address, an indirect
+/// import call by its IAT slot address (`call qword ptr [rip+disp]` lifts to
+/// `Indirect(Load(Const slot))`).
+fn known_sig_for_call(
+    target: &CallTarget,
+    by_target: &BTreeMap<u64, &'static KnownSignature>,
+    by_slot: &BTreeMap<u64, &'static KnownSignature>,
+) -> Option<&'static KnownSignature> {
+    match target {
+        CallTarget::Direct { va } => by_target.get(&va.get()).copied(),
+        CallTarget::Indirect(t) => match t.as_ref() {
+            MicroExpr::Load { addr, .. } => match addr.as_ref() {
+                MicroExpr::Const { value, .. } => u64::try_from(*value).ok().and_then(|slot| by_slot.get(&slot).copied()),
+                _ => None,
+            },
+            _ => None,
+        },
+    }
+}
+
+/// For each SSA value passed *directly* (as a bare `Var`) to a known API, the
+/// parameter type that API declares for that position — the "infer types from
+/// use (known-API signatures)" half of Rung 3. A value passed as
+/// `CloseHandle(hObject)` is a `HANDLE`; `CreateFileW`'s first argument is an
+/// `LPCWSTR`. First hit wins: this is an advisory *display* type, not a fact
+/// driving further inference (sound-over-complete keeps it out of the analysis
+/// substrate).
+fn param_api_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, &'static str> {
+    let sig_by = |pick: fn(&crate::ir::Callsite) -> Option<Va>| -> BTreeMap<u64, &'static KnownSignature> {
+        cfg.callsites
+            .iter()
+            .filter_map(|c| {
+                let name = c.target_name.as_deref()?;
+                let bare = name.rsplit('!').next().unwrap_or(name);
+                Some((pick(c)?.get(), known_signature(bare)?))
+            })
+            .collect()
+    };
+    let by_target = sig_by(|c| c.target);
+    let by_slot = sig_by(|c| c.via_slot);
+
+    let mut out: BTreeMap<String, &'static str> = BTreeMap::new();
+    let mut record = |target: &CallTarget, args: &[MicroExpr]| {
+        if let Some(sig) = known_sig_for_call(target, &by_target, &by_slot) {
+            for (i, a) in args.iter().enumerate() {
+                if let (Some(p), MicroExpr::Var(name)) = (sig.params.get(i), a) {
+                    out.entry(name.clone()).or_insert(p.type_name);
+                }
+            }
+        }
+    };
+
+    fn walk(e: &MicroExpr, record: &mut impl FnMut(&CallTarget, &[MicroExpr])) {
+        match e {
+            MicroExpr::Call { target, args } => {
+                record(target, args);
+                if let CallTarget::Indirect(t) = target {
+                    walk(t, record);
+                }
+                for a in args {
+                    walk(a, record);
+                }
+            }
+            MicroExpr::Load { addr, .. } => walk(addr, record),
+            MicroExpr::Unary(_, v) => walk(v, record),
+            MicroExpr::Binary(_, l, r) => {
+                walk(l, record);
+                walk(r, record);
+            }
+            MicroExpr::Cast { expr, .. } => walk(expr, record),
+            MicroExpr::AddrOf(inner) => walk(inner, record),
+            MicroExpr::Compare { lhs, rhs, .. } => {
+                walk(lhs, record);
+                walk(rhs, record);
+            }
+            MicroExpr::Var(_) | MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
+        }
+    }
+
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Assign { value, .. } => walk(value, &mut record),
+                MicroStmt::Store { addr, value, .. } => {
+                    walk(addr, &mut record);
+                    walk(value, &mut record);
+                }
+                MicroStmt::Call { target, args, .. } => {
+                    record(target, args);
+                    if let CallTarget::Indirect(t) = target {
+                        walk(t, &mut record);
+                    }
+                    for a in args {
+                        walk(a, &mut record);
+                    }
+                }
+                MicroStmt::Return(Some(e)) => walk(e, &mut record),
+                MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+            }
+        }
+        if let Some(c) = &b.condition {
+            walk(c, &mut record);
+        }
+    }
+    out
+}
+
+/// The display type of one register parameter, inferred from how it is used —
+/// the "recover typed variables from use" half of Rung 3, for the signature.
+/// Precedence is by strength of evidence:
+/// 1. a **recovered struct pointer** (we saw concrete field accesses through
+///    it — the strongest, most local proof it's a pointer-to-aggregate),
+/// 2. a **known-API argument type** (`HANDLE`, `LPCWSTR`, `DWORD`, …),
+/// 3. a plain **`void *`** when the value is dereferenced but no struct/API
+///    evidence pins a better type,
+/// 4. otherwise the generic `uint64_t` (unchanged from before).
+fn param_ctype(
+    pname: &str,
+    ptr_bases: &BTreeSet<&str>,
+    struct_map: &BTreeMap<&str, &str>,
+    api: &BTreeMap<String, &'static str>,
+) -> CType {
+    if let Some(sty) = struct_map.get(pname) {
+        return CType::named(format!("{sty} *"));
+    }
+    if let Some(t) = api.get(pname) {
+        return CType::named(*t);
+    }
+    if ptr_bases.contains(pname) {
+        return CType::named("void *");
+    }
+    CType::generic(64, false)
+}
+
 fn infer(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
     let locals = recover_locals(&accesses);
@@ -437,9 +572,15 @@ fn infer(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
 
     let used = collect_definite_param_regs(blocks);
     let arity = recover_arity(&used);
+    let struct_map: BTreeMap<&str, &str> = structs.iter().map(|s| (s.base_var.as_str(), s.type_name.as_str())).collect();
+    let ptr_bases: BTreeSet<&str> = accesses.iter().map(|a| a.base.as_str()).collect();
+    let api_types = param_api_types(cfg, blocks);
     let params = WIN64_INT_ARGS[..arity]
         .iter()
-        .map(|reg| ParamInfo { reg, name: reg.to_string(), ty: CType::generic(64, false) })
+        .map(|reg| {
+            let pname = format!("{reg}.0");
+            ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ptr_bases, &struct_map, &api_types) }
+        })
         .collect();
 
     let callee_rets = callee_return_types(cfg);
@@ -542,6 +683,43 @@ mod tests {
         let art = infer_code(code);
         assert!(!art.signature.params.is_empty(), "rcx used in real arithmetic must stay a param: {:#?}", art.signature.params);
         assert_eq!(art.signature.params[0].reg, "rcx");
+    }
+
+    #[test]
+    fn a_dereferenced_pointer_parameter_is_typed_as_a_struct_pointer() {
+        // mov rdx, [rcx+8] ; mov rax, [rcx+0x10] ; add rax, rdx ; ret
+        // rcx is dereferenced at two offsets -> a recovered struct, and it is
+        // the first parameter, so its signature type is `struct_rcx_0 *`, not
+        // the generic `uint64_t`.
+        let code = vec![
+            0x48, 0x8B, 0x51, 0x08, // mov rdx, [rcx+8]
+            0x48, 0x8B, 0x41, 0x10, // mov rax, [rcx+0x10]
+            0x48, 0x01, 0xD0, // add rax, rdx
+            0xC3, // ret
+        ];
+        let art = infer_code(code);
+        assert_eq!(art.signature.params[0].reg, "rcx");
+        assert_eq!(art.signature.params[0].ty.name.as_deref(), Some("struct_rcx_0 *"), "{:#?}", art.signature.params[0].ty);
+    }
+
+    #[test]
+    fn param_type_precedence_prefers_struct_then_api_then_void_pointer() {
+        // Unit-level check of the evidence precedence in `param_ctype`, so the
+        // known-API-argument path (which needs a real import table to fire
+        // end-to-end, hence not exercised by the byte-level tests above) is
+        // still covered: struct evidence > known-API type > bare `void *`
+        // dereference > generic `uint64_t`.
+        let structs: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
+        let api: BTreeMap<String, &'static str> = [("rdx.0".to_string(), "HANDLE"), ("rcx.0".to_string(), "LPVOID")].into_iter().collect();
+        let ptr: BTreeSet<&str> = ["rcx.0", "r8.0"].into_iter().collect();
+        // rcx: deref'd struct *and* an API hit -> struct wins.
+        assert_eq!(param_ctype("rcx.0", &ptr, &structs, &api).name.as_deref(), Some("struct_rcx_0 *"));
+        // rdx: only an API hit -> the named API type.
+        assert_eq!(param_ctype("rdx.0", &ptr, &structs, &api).name.as_deref(), Some("HANDLE"));
+        // r8: dereferenced but no struct/API -> void *.
+        assert_eq!(param_ctype("r8.0", &ptr, &structs, &api).name.as_deref(), Some("void *"));
+        // r9: no evidence at all -> generic (name None, renders uint64_t).
+        assert_eq!(param_ctype("r9.0", &ptr, &structs, &api).name, None);
     }
 
     #[test]

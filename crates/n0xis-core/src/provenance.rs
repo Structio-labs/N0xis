@@ -1,4 +1,4 @@
-//! [`ProvenancePass`] — ROADMAP Phase 4c, the principal killer feature
+//! [`ProvenancePass`] — ROADMAP Phase 4c, the static⇄dynamic fusion
 //! (CONCEPT §11, KF-1): fuses the dynamic side (a hardware-watchpoint hit —
 //! "something at this address just read/wrote/executed this instruction",
 //! already built in Phase 4b's `debug watch`) with the static side (the SSA

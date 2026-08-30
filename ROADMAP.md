@@ -361,7 +361,7 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   plain integer; `table add`/`table freeze` persisted and drove a real live write loop;
   `debug watch` caught a real hardware trap.
 
-## Phase 4c — Killer feature: Provenance-Driven Memory Intelligence 🎯 ✅
+## Phase 4c — Provenance-Driven Memory Intelligence 🎯 ✅
 Goal: fuse the two worlds (CONCEPT §11) — the core capability.
 - ✅ **Value → meaning** — `n0xis-core::ProvenancePass` (`provenance.rs`): given one or
   more `(instruction_va, access_kind)` hits (typically from Phase 4b's `debug watch`),
@@ -1464,12 +1464,32 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     points-to oracle (heap/global disambiguation, relaxing "different base
     clobbers non-safe slots") is the rest of Rung 2.
 
-- **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** ⬜
+- **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** 🚧
   Coalesce SSA versions back into named, **typed** variables; infer types from use
   (access widths, pointer arithmetic, known-API signatures), recover struct/field
   layout and enums. *Output:* `player->health -= dmg;` instead of
   `*(int*)(rbx.7 + 0x40) = *(int*)(rbx.7 + 0x40) - eax.3;`. This rung is the single
   biggest readability jump.
+  - **3a — parameter typing from use.** ✅ *(2026-08-30, pointer typing verified;*
+    *API-type path unit-tested, real-target hit still pending.)* A register
+    parameter's signature type is inferred from how the function uses it, by
+    strength of evidence: a **recovered struct pointer** (concrete field accesses
+    through it) → `struct_<base> *`; a **known-API argument type** → that named
+    type (`HANDLE`, `LPCWSTR`, `DWORD`, …); a bare **dereference** with no better
+    evidence → `void *`; otherwise the generic `uint64_t` as before. The
+    signature renderer now honors the recovered type (`void *rcx`, not
+    `void * rcx`) instead of stamping every parameter `uint64_t`. **Verified on
+    real MSVC x64** (`CompressToolsLib.dll`): 87 of 120 functions recover a
+    pointer/struct parameter type — the C++ `this` in `rcx` now reads
+    `struct_rcx_0 *rcx`. The struct/`void *` (pointer-from-dereference) paths are
+    what fire on this corpus; the **known-API argument-type** path is unit-tested
+    (precedence + resolution) but has not yet been observed firing on a real
+    binary here (these libraries dereference their pointer params — so the struct
+    rule wins by precedence — rather than forwarding a bare param straight into a
+    small-set Win32 API), so it stays ⏳ real-target-unconfirmed, per the
+    verify-before-✅ rule. Still ⬜ for this rung: **local-variable typing/decls**
+    (a source-style typed locals block), **SSA-version coalescing into one
+    named variable**, width/signedness inference from access, and enums.
 
 - **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.

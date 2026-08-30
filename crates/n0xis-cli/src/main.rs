@@ -70,7 +70,7 @@ use emit::emit;
 
 use n0xis_bitsquid::{lua_resource, open_bundle, LuaFormat};
 
-/// N0xis — reverse-engineering and live-memory toolkit.
+/// N0xis — reverse-engineering and live-memory toolkit for Windows and Linux.
 #[derive(Parser)]
 #[command(name = "n0xis", version, about, long_about = None)]
 struct Cli {

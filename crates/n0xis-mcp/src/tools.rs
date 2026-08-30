@@ -822,7 +822,7 @@ impl N0xisServer {
     }
 
     #[tool(
-        description = "The principal 'explain a live memory access' tool: arms a hardware \
+        description = "Explain a live memory access: arms a hardware \
                         watchpoint on addr, waits for one real hit, then fuses it with the SSA \
                         decompiler to resolve the containing function and return the exact \
                         decompiled statement responsible — provenance, not just an address."

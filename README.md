@@ -1,7 +1,7 @@
 # N0xis
 
 **Deterministic reverse engineering — one analysis pipeline for static binaries *and* live processes.**
-Every capability is a stable CLI verb *and* an MCP tool returning versioned JSON: drive it from a terminal or an autonomous agent. No GUI to click, no ML nondeterminism in the core.
+Every capability is a stable CLI verb — and the same verb again as an MCP tool — returning versioned JSON: read it, pipe it through `jq`, script it, or drive it from an agent. No GUI **yet** — deferred, not ruled out; no ML nondeterminism in the core, ever.
 
 > **One command. One JSON schema. One analysis pipeline** — whether the bytes come from a PE file, a live process, a snapshot, or a remote machine.
 
@@ -28,7 +28,7 @@ No other does this: a memory scanner's "find what accesses this" stops at a raw 
 - ✔ **Live memory analysis** — value/pointer/AOB scanning, freeze, hooks (a memory scanner class)
 - ✔ **Provenance** — hardware watchpoint → decompiled statement
 - ✔ **Managed-runtime name recovery** — .NET NativeAOT `RVA ↔ Namespace.Type.Method`, LuaJIT, Bitsquid; turns stripped `sub_XXXX` back into real names
-- ✔ **Stable CLI + MCP** — the same versioned JSON from a terminal or an agent
+- ✔ **Stable CLI + MCP** — the same versioned JSON whether you type it, script it, or drive it from an agent
 
 ---
 
@@ -42,7 +42,7 @@ No other does this: a memory scanner's "find what accesses this" stops at a raw 
 | Windows **and** Linux, one pipeline | ✅ | ~ | ~ |
 | Structured-JSON automation (CLI + MCP) | ✅ | ❌ | ~ |
 
-N0xis does **not** try to out-decompile other tools — theirs are mature and multi-arch, and the honest gap is written down ([ROADMAP Phase 10](ROADMAP.md)). It wins where they're structurally weak: **the live⇄static seam, cross-platform reach, and a fully scriptable JSON surface** that a human pipes through `jq` or an agent drives over MCP — equally.
+N0xis does **not** try to out-decompile other tools — theirs are mature and multi-arch, and the honest gap is written down ([ROADMAP Phase 10](ROADMAP.md)). It aims at what's structurally hard for them: **the live⇄static seam, cross-platform reach, and a fully scriptable JSON surface** that a human pipes through `jq` or an agent drives over MCP — equally.
 
 ---
 
@@ -68,12 +68,14 @@ n0x doctor                                                      # environment ch
 n0x function discover --file game.exe --pdata                   # authoritative .pdata discovery
 n0x decomp pseudo --file game.exe --addr 0x140012a00 --style ssa --pretty
 n0x scan value --pid 4821 --type i32 --criterion unknown --save-as hp
-n0x provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty   # ← the principal
+n0x provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty   # ← watchpoint → statement
 ```
 
 The same commands run on a live `--pid`, a static `--file`, a captured `--snapshot`, or a remote process over SSH (`--remote-cmd "ssh user@host n0x remote-serve --pid …"`).
 
-**From an agent:** point any MCP client at `n0xis-mcp` — [details below](#mcp).
+**From a program or an agent:** point any MCP client at `n0xis-mcp` — [details below](#mcp). The CLI is the reference frontend; MCP mirrors it.
+
+**From a shell:** it's ordinary Unix plumbing — `n0x function discover --file game.exe --pdata | jq -r '.data.functions[].va'` feeds straight into the next command.
 
 ---
 
@@ -109,7 +111,7 @@ n0xis-luajit/      live LuaJIT VM introspection — GCstr discovery in a running
 
 ## MCP
 
-`n0xis-mcp` exposes the pipeline as **18 MCP tools** returning the identical `{ok,data,meta}` envelope the CLI prints — an agent's parsing code is the same either way. It speaks JSON-RPC over pure stdio (no port, no flags). Point a client at it:
+`n0xis-mcp` exposes the pipeline as **25 MCP tools** returning the identical `{ok,data,meta}` envelope the CLI prints — an agent's parsing code is the same either way. It speaks JSON-RPC over pure stdio (no port, no flags). Point a client at it:
 
 ```json
 { "mcpServers": { "n0xis": { "command": "/path/to/target/release/n0xis-mcp.exe" } } }
@@ -118,9 +120,9 @@ n0xis-luajit/      live LuaJIT VM introspection — GCstr discovery in a running
 Run it with the working directory set to your `.n0x/` project so `attach` state is shared with the CLI. Typical flow: `attach` → `function_discover` → `decomp_pseudo` → `explain_opt_delta` / `provenance_trace` to see *why* the decompiler produced what it did.
 
 <details>
-<summary><b>The 18 tools</b></summary>
+<summary><b>The 25 tools</b></summary>
 
-Session/environment (`attach`, `doctor`, `process_ps`, `module_list`), static analysis (`disasm`, `function_discover`/`function_trace`, `decomp_pseudo`, `explain_opt_delta`, `xref`/`xref_string`), live memory (`mem_read`/`mem_write`), the provenance principal (`provenance_trace`), annotations (`annotate_set`/`annotate_get`/`annotate_list`), and `ui_locate`. Source args mirror the CLI: `pid` XOR `file` XOR `snapshot` XOR `remote_cmd`, falling back to the session default.
+Session/environment (`attach`, `doctor`, `process_ps`, `module_list`), static analysis (`disasm`, `function_discover`/`function_trace`, `decomp_pseudo`, `explain_opt_delta`, `xref`/`xref_string`), live memory (`mem_read`/`mem_write`), provenance (`provenance_trace`), annotations (`annotate_set`/`annotate_get`/`annotate_list`), on-screen UI location (`ui_locate`, `ui_windows`, `ui_focus`, `ui_screenshot`), the capability registry (`capability_list`/`capability_run`), and external plugins (`plugin_list`/`plugin_run`). Source args mirror the CLI: `pid` XOR `file` XOR `snapshot` XOR `remote_cmd`, falling back to the session default.
 
 Stateful cross-call workflows that want in-memory session state (`scan`/`filter`, `.n0xt` tables, `patch`/`debug watch`) are a **documented follow-on, not a silent gap** — driven from the CLI today.
 </details>
@@ -144,7 +146,7 @@ Full phase-by-phase history and the decompiler-depth plan (Phase 10): **[ROADMAP
 - **[docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md)** — current, code-verified command reference (every command, args, sources, schema id).
 - **[CONCEPT.md](CONCEPT.md)** — the architecture: adapters, passes, seams, the dynamic-memory layer, and the *"one model, many projections"* north-star.
 - **[ROADMAP.md](ROADMAP.md)** — phased build history + the honest decompiler-parity gap (Phase 10).
-- **[docs/KILLER_FEATURES.md](docs/KILLER_FEATURES.md)** — what's actually unique vs. other tools, kept honest against re-checks.
+- **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** — what N0xis does that other tools don't, with the third party analysis and caveats behind each claim.
 - **[docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)** — **N0xHUD**, the companion-window frontend (a window over the engine, not a GUI rewrite of it).
 - **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** · **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 

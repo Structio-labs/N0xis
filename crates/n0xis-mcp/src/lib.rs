@@ -24,7 +24,7 @@
 //! **Scope of this pass**: the tool set below covers the Phase 5 exit test
 //! (attach → discover → decompile → explain, end-to-end through MCP only)
 //! plus the core read-only RE workflow (process/module inspection, disasm,
-//! xrefs, memory read/write, the provenance principal). Stateful multi-call
+//! xrefs, memory read/write, provenance). Stateful multi-call
 //! workflows that need cross-call state on the CLI side today (`scan
 //! value`/`scan filter`, `.n0xt` tables, `patch`/`debug watch`) are a
 //! documented follow-on: an MCP server is a long-lived process, so they
@@ -61,7 +61,7 @@ impl N0xisServer {
 impl ServerHandler for N0xisServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "N0xis: agent-native reverse-engineering toolkit. Tools mirror the `n0xis` CLI's \
+            "N0xis: reverse-engineering and live-memory toolkit. Tools mirror the `n0xis` CLI's \
              verbs and return the identical `{ok,data,meta}` envelope (meta.schema names the \
              payload shape). Typical flow: `attach` (pid or file) to set the session default, \
              `function_discover` to find candidates, `decomp_pseudo` to decompile one, \

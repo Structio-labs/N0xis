@@ -6,7 +6,7 @@
 //! concrete case targets. Because the seam is source-agnostic, this resolves
 //! tables from a **running process** exactly as from a file on disk — so an
 //! indirect `switch` in a live game gets its edges filled in, which a
-//! file-only disassembler cannot do (CONCEPT §5.1, KILLER_FEATURES).
+//! file-only disassembler cannot do (CONCEPT §5.1, CAPABILITIES).
 
 use n0xis_arch::{SwitchDispatch, SwitchKind};
 use n0xis_contracts::Va;

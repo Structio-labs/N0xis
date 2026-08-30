@@ -12,10 +12,20 @@
 
 ## 1. What N0xis is
 
-N0xis is an **reverse-engineering and live-memory toolkit** for
-x64 Windows (primary target: game binaries), driven entirely through a stable CLI
-+ MCP contract. It analyzes both **files on disk** (static PE) and **live
+N0xis is a **reverse-engineering and live-memory toolkit** for **Windows and
+Linux** (x64 throughout; ARM64 decoder + CFG), driven through a stable CLI — with
+an MCP server and a companion window as two further frontends over the same
+contract. It analyzes both **files on disk** (static PE/ELF) and **live
 processes** (runtime memory) through one and the same analysis pipeline.
+
+**The CLI is the primary frontend, and a person is the primary user** — someone at
+a terminal who reads the output, pipes it through `jq`, and writes their own
+scripts around it.
+That the same versioned JSON is also trivially machine-readable is a *property* of
+the contract, not a statement about the audience — MCP is one frontend of three,
+not the product. Game binaries are the best-exercised target, not the definition.
+There is no GUI **yet**: that is an unbuilt feature (see §2 and N0xHUD in §4), not
+a claim that the tool is meant for bots.
 
 It is a **synthesis of two worlds that today live apart**:
 
@@ -30,20 +40,22 @@ No other does both well: CE finds runtime *values* but can't explain the
 afterthought. N0xis fuses them, and does it **contract-first (CLI + MCP first)** —
 a GUI is **deferred, not forbidden** (see §2).
 
-> **The best reverse-engineering *and live-memory* backend for autonomous agents**
-> — deterministic, inspectable, contract-first, equally at home on a live process
-> and a static file, aiming to match every other feature and beat it on the
+> **One deterministic, inspectable analysis engine for a whole binary — on disk or
+> running — with every capability reachable from a shell script as directly as
+> from a program.** Contract-first, equally at home on a live process and a static
+> file, aiming to match every other feature and beat it on the
 > static⇄dynamic seam.
 
-## 2. The one-line thesis (and why it beats other tools)
+## 2. The one-line thesis (and where it differs from other tools)
 
 What exists elsewhere are **GUI-first**; scripting/automation is bolted on top of an
 interactive core. Their decompiler microcode is a black box: you see the final C,
 not the reasoning. N0xis inverts this:
 
 - **Contract-first (GUI deferred, not forbidden).** Every capability is a CLI verb
-  + MCP tool that returns a versioned JSON artifact (`ok/data/meta`). A human reads
-  it; an agent parses it. There is no hidden interactive state. A GUI is **not now,
+  + MCP tool that returns a versioned JSON artifact (`ok/data/meta`). A person reads
+  it or pipes it through `jq`; a script or an agent parses the same bytes. There is
+  no hidden interactive state. A GUI is **not now,
   but not never** — the earlier "GUI-never" absolutism is retired. If a GUI lands it
   is a *thin visualization layer over these same `ok/data/meta` artifacts*, never a
   rewrite of the CLI/MCP core. **N0xHUD already exists as a third frontend of exactly
@@ -52,20 +64,21 @@ not the reasoning. N0xis inverts this:
   becoming GUI-first.
 - **Explainable decompilation.** Every analysis pass emits an *inspectable*
   artifact: raw IR, SSA form, the propagation/DCE delta, recovered types, the
-  structured control tree. An agent can ask "why is this condition `x > 4`?" or
-  "what did DCE remove?" — impossible to ask a source-level decompiler.
+  structured control tree. You can ask "why is this condition `x > 4`?" or
+  "what did DCE remove?" — from a prompt, a script, or an agent, and impossible to
+  ask a source-level decompiler at all.
 - **One pipeline, live + static.** Runtime and file analysis differ only in which
   *adapter* supplies bytes/symbols. The SSA→opt→types→render pipeline is byte-for-byte
   the same. (v0 already proved this with `IrSource`; v1 makes it a first-class seam.)
 - **Deterministic & reproducible.** Same input → same output, no ML nondeterminism
-  in the core. Agents can diff runs and trust anchors.
+  in the core. Runs are diffable and anchors are trustworthy.
 
 ### 2.1 The north-star — one model, many projections
 
 A sharper way to state all of the above, and the direction the architecture is
 converging on: **N0xis is not "a decompiler." It is a deterministic model of a
 binary program — of which decompilation, provenance, live-memory analysis,
-watchpoints, and agent workflows are all *projections of one graph*, differing
+watchpoints, and scripted workflows are all *projections of one graph*, differing
 only in which view you ask for, not in which tool you reach for.**
 
 Be precise about what is true *today* versus where this points, because the
@@ -265,7 +278,7 @@ heuristic). v1 makes the optimizing IR the core, structured as real passes:
 5. **Signature recovery** — real arity and return type (which of rcx/rdx/r8/r9/stack
    are read before write; whether rax is consumed by callers) instead of the fixed
    `void sub_X(uint64_t rcx, rdx, r8, r9)`.
-6. **Control structuring** — port v0's already-good dominator/post-dominator +
+6. **Control structuring** — port v0's dominator/post-dominator +
    natural-loop + `if/else`/`while`/`for`/`do-while` + `&&`/`||` reconstruction as a
    pass consuming the *optimized* IR (v0 ran it over raw instructions).
 7. **Render** — pseudo-C from the optimized, typed, structured IR.
@@ -281,11 +294,11 @@ process** and a **static file** — satisfying "works at runtime too" by constru
 | Decompiler internals | black-box microcode | every pass emits inspectable JSON |
 | Live + static | separate tools/flows | one pipeline, adapter-selected |
 | Determinism | mostly | strict, reproducible core |
-| Agent ergonomics | plugin-in-GUI | native MCP tools + stable schemas |
+| Automation ergonomics | plugin-in-GUI | stable JSON schemas, CLI + MCP |
 | Extensibility | plugin API | swappable adapters (source/arch/pass) |
 
 We do **not** try to out-a source-level decompiler a source-level decompiler on raw decompiler maturity (20 yrs of
-microcode opts). We win where they're structurally weak: agent-native, inspectable,
+microcode opts). We win where they're structurally weak: scriptable, inspectable,
 unified live/static, reproducible. If a GUI ever lands, it rides on top of these same
 artifacts (N0xHUD is the existing proof) rather than displacing the contract.
 
@@ -325,7 +338,7 @@ Feature parity target (match CE, then beat it):
 - **AOB (array-of-bytes) scanning** — signature scan with wildcards; used for
   code-cave/anchor discovery and version-resilient hooking.
 - **Struct dissection** — walk a region as a struct, infer field sizes/types
-  (fused with static type recovery — see killer feature).
+  (fused with static type recovery — see the point of the phase registry).
 - **Write / freeze** — one-shot write, continuous freeze, and script-driven writes.
 - **Code injection / patching** — the existing `patch` surface + code caves +
   detour/trampoline hooks, all with persisted undo.
@@ -333,7 +346,7 @@ Feature parity target (match CE, then beat it):
   `--when reg=value`), periodic re-scan; a speedhack-style time hook is a later stretch.
 
 Every one of these is a CLI verb + MCP tool returning a schema'd artifact — so an
-agent can drive a full scan→filter→freeze loop headlessly. N0xHUD (§4) puts an
+shell script (or an agent) can drive a full scan→filter→freeze loop headlessly. N0xHUD (§4) puts an
 interactive, always-on-top face on the same write/freeze/watch machinery for
 in-the-moment runtime instrumentation.
 
@@ -348,26 +361,26 @@ table plus everything the RE side knows:
 - **The N0xis superset:** each entry can link to its **recovered function**,
   **recovered struct + field**, and **value provenance** (what code writes/reads it),
   plus a **verification state** (last confirmed live, on which module version/hash).
-- Deterministic, diffable, agent-authorable text format (TOML/JSON core, not opaque
+- Deterministic, diffable, hand- and machine-authorable text format (TOML/JSON core, not opaque
   binary), versioned like every other contract in `n0xis-contracts`.
 
-## 11. Killer features — a portfolio + a standing synthesis loop
+## 11. Capabilities — a registry + a standing review loop
 
-There is **not one killer feature — there is a growing portfolio of them**, and,
-more importantly, a **standing process** that produces them. This is a core operating
-mode of the project, not a one-off design decision:
+Rather than one main feature, the project keeps a **registry of the things it
+does that other tools don't**, and a **standing review process** that keeps that
+registry honest as both sides change:
 
-> **The synthesis loop:** for each capability area, the agent (a) maps what the
-> other tools do (BN / another tool / another tool / a memory scanner / others), (b) maps what we do,
-> (c) finds the gap no other fills — usually on the static⇄dynamic seam, (d)
-> proposes a feature that *surpasses* them, and (e) records it, its rationale, and
-> its status. This runs continuously as the project matures.
+> **The review loop:** for each capability area, (a) map what other tools do
+> (BN / another tool / another tool / a memory scanner / others), (b) map what we do, (c) find the gap
+> no other fills — usually on the static⇄dynamic seam, (d) decide whether it is
+> worth filling, and (e) record it, its rationale, and its status. Re-run it as the
+> project — and other tools — change.
 
 The living registry of these features (with the per-capability third party analysis)
-is **[`docs/KILLER_FEATURES.md`](docs/KILLER_FEATURES.md)** — the single source of
-truth for the portfolio. It is expected to grow; CONCEPT only names the principal.
+is **[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)**. CONCEPT names only the
+first entry.
 
-### Principal (#1): Provenance-Driven Memory Intelligence
+### #1: Provenance-Driven Memory Intelligence
 
 The one thing no other can do, because none spans both worlds:
 
@@ -383,8 +396,8 @@ The one thing no other can do, because none spans both worlds:
   value/code via the fused model → synthesize patch/table entry → apply → **verify
   live** → record in `.n0xt` with provenance.
 
-Why it wins: it collapses the manual static⇄dynamic bridge into one automated,
-explainable, agent-native operation — the reason the two worlds must share one core.
+Why it matters: it collapses the manual static⇄dynamic bridge into one automated,
+explainable, scriptable operation — the reason the two worlds must share one core.
 Other candidates in the portfolio (version-resilient anchors, typed pointer-path
 fusion, snapshot-diff causal attribution, cross-version binary diffing, UI-layer
 localization, …) live in the registry.

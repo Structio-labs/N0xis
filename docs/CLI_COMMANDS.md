@@ -4,7 +4,7 @@ This is the **current, living** command surface of the `n0xis` CLI (invocable as
 It was renamed from `CLI_COMMANDS_v0.md`; the old "frozen v0 snapshot" framing no longer
 applies — this document tracks the binary as it actually is today.
 
-`n0xis` is an agent-native reverse-engineering + live-memory toolkit. The same pipeline is
+`n0xis` is a reverse-engineering + live-memory toolkit, driven from a terminal. The same pipeline is
 exposed three ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this document), the
 **n0xis-mcp** MCP server (a subset of the same verbs + identical envelope), and the **N0xHUD**
 companion window.
@@ -109,7 +109,7 @@ results.
 - Schema: `n0xis.profile.v1`
 
 ### `guide [<topic>] [--brief]`
-Agent-oriented capability catalog: every command, its args, and composable workflow recipes, as
+Machine-readable capability catalog: every command, its args, and composable workflow recipes, as
 structured JSON derived from the live clap tree.
 - `<topic>` (positional, optional) — filter to command paths containing this substring (e.g.
   `scan`, `game`).
@@ -444,7 +444,7 @@ Repeatedly write an entry's frozen value for a bounded duration.
 
 ### `provenance trace --pid <u32> --addr <hex>`
 Arm a hardware watchpoint on a value's address, wait for one hit, then explain it: resolved
-module+function + decompiled statement (Phase 4c principal — watchpoint × decompiler, fused).
+module+function + decompiled statement (Phase 4c — watchpoint × decompiler, fused).
 - `--addr` (required); `--kind execute|write|read-or-write` (default `write`); `--len` (default
   4); `--timeout-ms` (default 30000).
 - `--save-to-table <name>` + `--entry <name>` — record the explained provenance onto a `.n0xt`

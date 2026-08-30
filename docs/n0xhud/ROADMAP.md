@@ -277,6 +277,6 @@ export/re-import does not exist.
 - **Linux/X11/Wayland** surface backend behind the same seam (once the seam exists).
 - **Controller (gamepad) binds** alongside keyboard, in the same config model.
 - **Drive the menu over n0xis MCP** — let an agent flip instrumentation / inspect
-  state through the same actions a human uses (ties N0xHUD back into the
-  agent-native story n0xis is built around).
+  state through the same actions a human uses (the same contract every n0xis
+  frontend goes through).
 - **Profile repository** — a shared index of community `.n0x/` game profiles.

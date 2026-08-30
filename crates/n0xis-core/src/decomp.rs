@@ -192,7 +192,17 @@ fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> Str
     let params = if sig.params.is_empty() {
         "void".to_string()
     } else {
-        sig.params.iter().map(|p| format!("uint64_t {}", p.name)).collect::<Vec<_>>().join(", ")
+        sig.params
+            .iter()
+            .map(|p| {
+                let tyname = p.ty.name.clone().unwrap_or_else(|| c_type(p.ty.bits, p.ty.signed).to_string());
+                // `void *rcx`, not `void * rcx` — a pointer type already ends
+                // with `*`, so it butts against the name the way C is written.
+                let sep = if tyname.ends_with('*') { "" } else { " " };
+                format!("{tyname}{sep}{}", p.name)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     match name {
         Some(n) => format!("{ret} {n}({params})"),
