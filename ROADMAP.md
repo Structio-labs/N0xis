@@ -1587,9 +1587,18 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     exactly as the renderer's does. **Verified** on `CompressToolsLib.dll`
     `GetBlockLODs` — declares `local_18/20/28/30/38` with inferred types (incl.
     `__m128` for a vector spill), each used below.
-  - Still ⬜ for this rung: **width/signedness inference from *use*** (the type
-    a value acquires from the operators/comparisons it flows into, beyond the
-    per-access encoding already used), and **enums**.
+  - **3f — signedness inference from use.** ✅ *(2026-08-30, verified.)* A stack
+    local's displayed type now takes evidence from the operators its value flows
+    into, not just the `movsx`/`movzx` load encoding: a value compared with a
+    signed `<`/`>` (jl/jg), divided with `idiv`, or arithmetic-shifted (`sar`) is
+    signed. Readability-only (the IR ops are already correctly signed/unsigned),
+    so never a soundness risk; unsigned uses never flag a slot. **Verified** on
+    `CompressToolsLib.dll` `GetBottomPixels` — `local_28`/`local_30`, used in
+    `(local - x) >> 1` arithmetic shifts (`sar`, a signed midpoint), declare
+    `int64_t` while the canary/saved-reg locals stay `uint64_t`.
+  - Still ⬜ for this rung: **width/signedness for register variables** (the
+    same use-inference applied to coalesced `vN`, not only stack locals), and
+    **enums**.
 
 - **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.
