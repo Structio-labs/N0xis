@@ -1,0 +1,42 @@
+# mdBook configuration for the N0xis documentation site.
+#
+# The sources under `target/book-src` are *generated* by `scripts/build_book.py`
+# from the canonical Markdown in this repository — never edit them, and never
+# commit them. Build the whole site with:
+#
+#     python3 scripts/build_book.py
+#
+# Both paths live under `target/`, which is already git-ignored, so a docs build
+# leaves no untracked files behind.
+
+[book]
+title = "N0xis"
+description = "Reverse-engineering and live-memory toolkit for Windows and Linux: an optimizing SSA decompiler, live value/pointer/AOB memory scanning, and hardware watchpoints — one analysis pipeline over static PE/ELF files and live processes alike."
+authors = ["LargoScript"]
+language = "en"
+src = "target/book-src"
+
+[build]
+build-dir = "target/book"
+
+[output.html]
+# Binds every page title to the project ("CLI Reference - N0xis"), which is what
+# separates this from the unrelated musicians and games that share the name.
+git-repository-url = "https://github.com/LargoScript/n0xis"
+git-repository-icon = "fab-github"
+# Points at the *canonical* file, not the generated copy: the provenance comment
+# at the top of each generated page names it.
+edit-url-template = "https://github.com/LargoScript/n0xis/edit/main/{path}"
+site-url = "/n0xis/"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+no-section-label = true
+
+[output.html.search]
+enable = true
+# The reason for splitting the docs at all: a reader searching "watchpoint" or
+# "IL2CPP" should land on the chapter, not scroll a 3000-line page.
+limit-results = 20
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2

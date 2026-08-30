@@ -208,7 +208,7 @@ tools today — the read-oriented static/dynamic workflow plus the working-tree
   load/unload so it can never narrow onto a stale map — would cut the
   steady-state cost without changing results. N0xHUD's interact-combo solver
   already does exactly this ad-hoc for its own pool region
-  ([`combo_watcher.rs`](../crates/n0xis-hud/src/combo_watcher.rs)); this task
+  (see [`n0xis-hud`](../crates/n0xis-hud/)); this task
   promotes it to a first-class `scan` option. `A-DynamicMemory` / `D-Modest`.
   Status: Open.
 - **Smarter `alloc_code_cave` placement** — currently a plain `VirtualAllocEx`
