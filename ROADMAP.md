@@ -2726,11 +2726,20 @@ through plain syscalls — no signed driver, no code-integrity fight:
    out of scope, see below.)* **Minor finding:** AArch64 `stp`/`ldp` immediates print in
    decimal while the rest of the operands (and the x64 path) use hex — a rendering-consistency
    nit worth unifying.
-   - **Do we need 32-bit ARM (AArch32)?** No. It is a declining legacy niche — pre-2019 Android
-     (Play now mandates 64-bit), cheap IoT/TV boxes, and Cortex-M firmware (a different product
-     than desktop/game binary RE). The relevant ARM target is AArch64 (modern phones, Apple
-     Silicon, ARM servers, current Android games). Adding AArch32 would be a whole separate ISA
-     (A32/T32/Thumb) for a shrinking audience — explicitly out of scope.
+   - **Do we need 32-bit ARM (AArch32)?** ✅ **Yes — reversed by a real target** *(2026-08-30).*
+     The earlier "no, declining niche" call assumed no concrete use. But cheap TV boxes are
+     exactly the corpus: the X96 box is `armv7l` (`armeabi-v7a`), its whole userspace is 32-bit
+     ARM, and our AArch64 arch (disarm64) cannot read a byte of it. So a **decode-only `Arm32`
+     arch** landed: `yaxpeax-arm` (pure Rust, keeps the build C-free like disarm64), A32 +
+     Thumb/Thumb-2, the `r0`-`r15` register model and AAPCS32 declared, and a best-effort
+     control-flow classification for the CFG. Lift stays default (Unlifted) — `disasm`/`ir`
+     work, a full A32/T32 **semantic lift** is the follow-on. `--arch arm32` (A32) / `--arch
+     thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
+     BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
+     on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-
+     instruction, including the Thumb-2 mix of 2- and 4-byte forms (`b.w`, `ldr.w` sized 4;
+     `push`, `mov` sized 2). Ground-truth loop: pull the box's binaries over SSH → decode on the
+     PC → diff against llvm-objdump.
 8. ✅ **Static ELF loading.** *(2026-08-30, verified.)* `--file` now sniffs the leading magic
    (`MZ` → PE, `\x7fELF` → ELF) and routes to the right parser via a unified `StaticImage`
    enum; the old `load-failed: DOS header is malformed` on a Linux binary is gone. The new

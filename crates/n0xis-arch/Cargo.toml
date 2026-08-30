@@ -13,6 +13,8 @@ iced-x86 = { workspace = true }
 thiserror = { workspace = true }
 disarm64 = "0.2.0"
 disarm64_defn = "0.2.0"
+yaxpeax-arm = "0.4.0"
+yaxpeax-arch = "0.3.2"
 
 [dev-dependencies]
 serde_json = { workspace = true }

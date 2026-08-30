@@ -13,6 +13,7 @@
 //! [`Arch::branch_condition`], the seam that turns a `Jcc` + the dataflow
 //! value reaching it into an exact condition expression.
 
+mod arm32;
 mod arm64;
 mod frame;
 mod insn;
@@ -21,6 +22,7 @@ mod switch;
 mod x64;
 mod x64_lift;
 
+pub use arm32::{Arm32, arm32reg};
 pub use arm64::{Arm64, arm64reg};
 pub use frame::FrameInfo;
 pub use insn::{DecodeError, DecodedInsn, InsnKind};

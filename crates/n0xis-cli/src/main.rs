@@ -2581,8 +2581,9 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
         "sources": "commands that read a target accept exactly one of: --pid <live process>, --file <static PE>, --snapshot <name of a captured snapshot dump>, --remote-cmd \"<argv, e.g. ssh host n0xis remote-serve --pid N>\", or --bytes \"<hex>\" (inline). Live VAs respect ASLR; static VAs use the image's preferred base.",
         "envelope": "every command emits { ok, data, meta } or { ok:false, error:{code,message,hint?} }; meta.schema is the payload id (n0xis.*.v1, or the archived n0x.*.v1 for ported v0 shapes).",
         "architectures": [
-            "x64 — iced-x86, full pipeline: CFG / SSA / type recovery / optimized decompile",
-            "arm64 — disarm64, CFG / discover / xref / goto+structured decompile (SSA optimization is x64-only so far); pass --arch arm64"
+            "x64 — iced-x86, full pipeline: CFG / SSA / type recovery / optimized decompile. A 32-bit PE32 auto-selects i386 (or force with --arch x86)",
+            "arm64 — disarm64, CFG / discover / xref / goto+structured decompile (SSA optimization is x64-only so far); pass --arch arm64",
+            "arm32 / thumb — yaxpeax-arm, AArch32/ARMv7 disassembly (decode-only so far: correct decode + CFG, lift is a follow-on). --arch arm32 (A32) or --arch thumb"
         ],
         "categories": categories,
         "command_count": commands.len(),

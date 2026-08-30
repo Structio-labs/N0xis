@@ -1,6 +1,6 @@
 //! ISA selection — the frontend half of the `Arch` seam.
 
-use n0xis_arch::{Arch, Arm64, X64};
+use n0xis_arch::{Arch, Arm32, Arm64, X64};
 
 /// The ISA used when a frontend names none.
 pub const DEFAULT_ARCH: &str = "x64";
@@ -19,7 +19,9 @@ pub fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
         "x64" | "x86-64" | "x86_64" => Ok(Box::new(X64::new())),
         "x86" | "i386" | "x86-32" | "x86_32" => Ok(Box::new(X64::x86())),
         "arm64" | "aarch64" => Ok(Box::new(Arm64::new())),
-        other => Err(format!("unknown arch '{other}', expected x64|x86|arm64")),
+        "arm32" | "armv7" | "aarch32" | "arm" => Ok(Box::new(Arm32::a32())),
+        "thumb" | "thumb2" | "t32" => Ok(Box::new(Arm32::thumb())),
+        other => Err(format!("unknown arch '{other}', expected x64|x86|arm64|arm32|thumb")),
     }
 }
 
