@@ -1510,6 +1510,21 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     it, and now a red-zone slot forwards only along a call-free path. The full
     points-to oracle (heap/global disambiguation, relaxing "different base
     clobbers non-safe slots") is the rest of Rung 2.
+  - **2b — global (distinct-constant) disambiguation.** ✅ *(2026-08-30, sound;
+    synthetic + unit-verified.)* An absolute address is keyed under a synthetic
+    `__abs` base with the address as its offset, so two **different constant
+    addresses are two non-overlapping slots that provably cannot alias** — a
+    store to global A no longer clobbers a value available at global B, the one
+    "different base" case that is always sound. Sound at every boundary (each
+    pinned by a synthetic case): a store to a *different* global forwards past;
+    a store through a *register* base still clobbers a global (the register may
+    hold its address — `call_safe` excludes `__abs`, a fix a soundness test
+    caught pre-commit); a *call* still clobbers every global. Three optimize
+    unit tests; goldens and the 2a escape tests unchanged. Real-corpus firing
+    is rare — it needs a global written and re-read in a call-free window — so
+    this is verified by construction/soundness rather than a corpus count; the
+    remaining Rung 2 is heap/allocation-site and distinct-parameter
+    disambiguation (needs real points-to, the devirt prerequisite).
 
 - **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** 🚧
   Coalesce SSA versions back into named, **typed** variables; infer types from use
