@@ -481,7 +481,13 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
         }
     }
 
-    if term != "cjmp" && back_edges.len() == 1 {
+    // Bottom-test (`do`/`while`) detection: a single back-edge from a `cjmp`
+    // latch that tests at the *bottom*. Reached either when the header is not a
+    // cjmp, or when the header *is* a cjmp but an inner branch (both arms stay in
+    // the loop) — the `term == "cjmp"` path above already returned if the header
+    // itself was the loop's exit test, so getting here means the real test is the
+    // latch below, which is exactly a `do`/`while`.
+    if back_edges.len() == 1 {
         let t = back_edges[0];
         if t != h && ctx.cfg.blocks[t].terminator == "cjmp" {
             let (tt, tf) = cjmp_arms(ctx.cfg, ctx.succ, t);
@@ -664,6 +670,31 @@ mod tests {
         for w in out.lines.windows(2) {
             assert!(!(w[0].trim_end().ends_with('{') && w[1].trim() == "}"), "no empty block: {text}");
         }
+        assert_eq!(out.fallback_count, 0, "{text}");
+    }
+
+    #[test]
+    fn a_bottom_test_loop_with_an_inner_if_becomes_a_do_while() {
+        // do { if (rdx) rax++; rcx-- } while (rcx != 0). The loop header is
+        // itself a `cjmp` (the inner `if`), and the real test is the bottom
+        // latch — the case the `term != "cjmp"` gate used to miss, leaving a
+        // `while (1)` + continue/break instead of this `do`/`while`.
+        // test rdx,rdx ; je 0x1008 ; inc rax ; dec rcx ; jne 0x1000 ; ret
+        let code = vec![
+            0x48, 0x85, 0xd2, // 0x1000 test rdx, rdx  (header / inner if)
+            0x74, 0x03, // 0x1003 je 0x1008
+            0x48, 0xff, 0xc0, // 0x1005 inc rax
+            0x48, 0xff, 0xc9, // 0x1008 dec rcx        (latch)
+            0x75, 0xf3, // 0x100b jne 0x1000
+            0xc3, // 0x100d ret
+        ];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        assert!(out.has_loop, "{text}");
+        assert!(text.contains("do {"), "expected a do/while: {text}");
+        assert!(text.contains("} while ((rcx.1 != 0x0));"), "expected the bottom test: {text}");
+        assert!(text.contains("if ("), "the inner branch must survive inside the loop: {text}");
+        assert!(!text.contains("while (1)"), "should not fall back to while(1): {text}");
         assert_eq!(out.fallback_count, 0, "{text}");
     }
 
