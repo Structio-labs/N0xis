@@ -3052,3 +3052,66 @@ wanted, which is the whole argument for writing them down before that day.
   of the first long-running or streaming plugin. Recorded now so the trigger is recognized
   when it arrives, rather than discovered as a two-week detour halfway through the work that
   tripped it.
+
+## Phase 15 — Packed / protected binaries: the dynamic-unpack seam 🎯 ⬜
+
+*(Raised by an external tester + user, 2026-08-30.)* A packer/protector (UPX,
+ASPack, Themida, VMProtect) makes `decomp`/`ir` decode a stub, not the program —
+today that returns confident-looking pseudo-C of the *packing stub*, the same
+silent-blind-zone class the PE32/i386 bug was. The strategic goal: n0xis becomes
+an excellent **dynamic-unpack → static-pipeline** tool (it is ~80 % there via
+`debug watch`/`await-hit`/`attach`, `snapshot dump`, and live export resolution),
+and keeps VM-devirtualization as a human-in-loop research mode, not a product
+button. Everything here lands on the existing seams — **new `source` plugins
+(Code), the OEP dump as a versioned artifact between layers (Data), an MCP
+pipeline (Process), emulate-don't-run (Trust)** — no core surgery. The heavy
+parts (the emulation backend) live in **their own crate**, not the core.
+
+Tiers, ordered by ROI (not size):
+
+- **15a — Packer detection advisory (`profile`).** ⬜ *Cheapest, first.* Pure-Rust
+  heuristics into the existing `advisories`/`engine_hints`: known section names
+  (`.themida`/`.vmp0`/`.boot`/`UPX!`), high section entropy, and an entry point
+  outside `.text`. Emit e.g. `Themida VM detected — static decode is of the stub,
+  not the program; use the unpack pipeline`. **Advisory, never a wall** — `decomp`/
+  `ir` still run (you may want the stub itself); honest about the blind zone,
+  exactly as the PE32 guard is. Days.
+- **15b — Emulation-unpack backend (`n0xis-emu` crate + `emulated` source plugin).**
+  ⬜ *The strategic direction.* Instruction-level emulation (Unicorn/Qiling-style)
+  as a **new `source` backend behind the process seam**, so untrusted code is
+  *emulated, never run* (Trust seam — defeats a class of anti-debug outright, since
+  no real debugger exists). Because the emulator **is** the CPU, it records every
+  instruction, memory write, and API/syscall into the op-log — event-sourcing the
+  *execution*, which gives replay, pause-before-critical-step, and a queryable
+  "every action" trace for free (this is the user's "byte-by-byte pause / log every
+  action" goal, at instruction granularity — finer than CAPE/Cuckoo's VM-level API
+  hooks, and integrated straight into the SSA/decompile pipeline). Pragmatic build:
+  **wrap Unicorn (or Qiling) as an external plugin** rather than reimplement an OS
+  emulator in Rust — Qiling already does the PE-loader/TEB-PEB/WinAPI shim; n0xis
+  orchestrates `run-to-OEP → dump → IAT-rebuild` and its static pipeline consumes
+  the dumped image. Weeks–months; own crate.
+- **15c — Live-debugger unpack (UPX-class).** ⬜ The classic `run-to-OEP → dump →
+  rebuild IAT`, on the primitives that already exist (`debug watch` for the
+  write-then-execute page and the jump to OEP, `snapshot dump` for the image,
+  `module list` + live export resolution for the IAT rebuild).
+  Simpler than 15b and enough for benign packers, but a real debugger touches the
+  host and is detectable — so 15b is strictly better for hostile samples; keep 15c
+  for the easy class.
+- **15d — Anti-anti-debug (per-version).** ⬜ Hide the debugger (PEB `BeingDebugged`,
+  `NtGlobalFlag`, DR registers, timing — hiding the debugger). Brittle, version-locked,
+  a race Themida updates to win — do only for versions actually needed. 15b sidesteps
+  most of this by not being a debugger at all.
+- **15e — VM devirtualization (research, human-in-loop).** ⬜ Lift a protector VM
+  (find dispatcher → reverse handlers → raise bytecode into the IR, where the
+  existing `ir value-set` / `ir deobfuscate` finally apply). Per-protector,
+  per-version, usually partial — realistic target is an *assist* mode ("map these
+  handlers") for a human, not a button. A separate research branch, not a product
+  feature; chasing Themida-specific devirt is a treadmill (it updates precisely to
+  break public unpackers), so the generic dynamic unpack (15b, protector-agnostic
+  for the unpacking layer) is the main line.
+
+**Priority:** 15a (now, days) → 15b (strategic, own crate) → 15c (easy class) →
+15d/15e as needed. The unpacking layer of 15b/15c is protector-agnostic: you let
+the sample unpack *itself* under emulation and grab the OEP image, so you never
+have to understand Themida's VM to recover the ~majority of the binary that
+unpacks to native — only the functions that stay virtualized need 15e.
