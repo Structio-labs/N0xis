@@ -114,6 +114,7 @@ fn map_expr(e: &MicroExpr, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroE
             let target = match target {
                 CallTarget::Direct { va } => CallTarget::Direct { va: *va },
                 CallTarget::Indirect(inner) => CallTarget::Indirect(Box::new(map_expr(inner, f))),
+                CallTarget::Intrinsic(name) => CallTarget::Intrinsic(name.clone()),
             };
             MicroExpr::Call { target, args: args.iter().map(|a| map_expr(a, f)).collect() }
         }
@@ -131,6 +132,7 @@ fn map_stmt_exprs(stmt: &MicroStmt, f: &mut impl FnMut(MicroExpr) -> MicroExpr) 
             let target = match target {
                 CallTarget::Direct { va } => CallTarget::Direct { va: *va },
                 CallTarget::Indirect(inner) => CallTarget::Indirect(Box::new(map_expr(inner, f))),
+                CallTarget::Intrinsic(name) => CallTarget::Intrinsic(name.clone()),
             };
             MicroStmt::Call { target, args: args.iter().map(|a| map_expr(a, f)).collect(), ret: ret.clone() }
         }

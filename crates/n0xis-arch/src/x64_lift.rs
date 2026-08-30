@@ -154,6 +154,60 @@ fn lift_vector_move(instr: &Instruction, out: &mut Vec<MicroStmt>) {
     }
 }
 
+fn is_vector_reg(r: Register) -> bool {
+    r.is_xmm() || r.is_ymm() || r.is_zmm()
+}
+
+/// Read operand `idx` naming a vector register by its `xmm` view (`read_operand`
+/// would run it through `full_register()` and print `zmm`); everything else —
+/// GPRs, immediates, memory — falls to the ordinary reader.
+fn smart_read(instr: &Instruction, idx: u32) -> MicroExpr {
+    if instr.op_kind(idx) == OpKind::Register && is_vector_reg(instr.op_register(idx)) {
+        MicroExpr::var(vector_reg_name(instr.op_register(idx)))
+    } else {
+        read_operand(instr, idx)
+    }
+}
+
+/// Write `value` to operand `idx`, vector-aware in the same way as
+/// [`smart_read`].
+fn smart_write(instr: &Instruction, idx: u32, value: MicroExpr, out: &mut Vec<MicroStmt>) {
+    if instr.op_kind(idx) == OpKind::Register && is_vector_reg(instr.op_register(idx)) {
+        out.push(MicroStmt::Assign { dst: vector_reg_name(instr.op_register(idx)), value });
+    } else {
+        write_operand(instr, idx, value, out);
+    }
+}
+
+/// The intrinsic name for a mnemonic: `Tzcnt` → `__tzcnt`. Uses the mnemonic
+/// itself so the name never drifts from what the instruction actually is.
+fn mnemonic_intrinsic(m: Mnemonic) -> String {
+    format!("__{}", format!("{m:?}").to_lowercase())
+}
+
+/// `dst = __name(src)` — a one-operand-in intrinsic (`op0` written, `op1` read).
+fn intr_unary(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
+    let src = smart_read(instr, 1);
+    smart_write(instr, 0, MicroExpr::intrinsic(name, vec![src]), out);
+}
+
+/// `dst = __name(dst, src)` — a read-modify intrinsic (`op0` read *and* written,
+/// `op1` read), the shape of the packed-compare and scalar-FP-arithmetic ops.
+fn intr_binary(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
+    let dst = smart_read(instr, 0);
+    let src = smart_read(instr, 1);
+    smart_write(instr, 0, MicroExpr::intrinsic(name, vec![dst, src]), out);
+}
+
+/// `dst @= src` for an SSE *bitwise* op — bitwise operations don't cross lanes,
+/// so a packed `pxor`/`por`/`pand` is exactly a 128-bit scalar bit-op and needs
+/// no intrinsic. Sound and precise.
+fn sse_binop(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
+    let dst = smart_read(instr, 0);
+    let src = smart_read(instr, 1);
+    smart_write(instr, 0, MicroExpr::binary(op, dst, src), out);
+}
+
 fn op_bits(instr: &Instruction, idx: u32) -> Bits {
     match instr.op_kind(idx) {
         OpKind::Register => (instr.op_register(idx).size() * 8) as Bits,
@@ -568,6 +622,128 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             let keep = read_operand(&instr, 0);
             write_operand(&instr, 0, MicroExpr::select(cond, src, keep), &mut out);
         }
+        // Bit scan / population count: `dst = __f(src)`, and each sets flags
+        // (ZF at least), so keep an opaque flag write after.
+        Mnemonic::Tzcnt | Mnemonic::Lzcnt | Mnemonic::Popcnt | Mnemonic::Bsf | Mnemonic::Bsr => {
+            intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out);
+            out.push(opaque_flags(mn));
+        }
+        // Byte swap is one operand, read and written in place, and touches no flags.
+        Mnemonic::Bswap => {
+            let src = smart_read(&instr, 0);
+            smart_write(&instr, 0, MicroExpr::intrinsic("__bswap", vec![src]), &mut out);
+        }
+        // SSE *bitwise* ops are exact 128-bit bit-operations (no intrinsic).
+        Mnemonic::Pxor | Mnemonic::Xorps | Mnemonic::Xorpd => sse_binop(&instr, BinOp::Xor, &mut out),
+        Mnemonic::Por | Mnemonic::Orps | Mnemonic::Orpd => sse_binop(&instr, BinOp::Or, &mut out),
+        Mnemonic::Pand | Mnemonic::Andps | Mnemonic::Andpd => sse_binop(&instr, BinOp::And, &mut out),
+        Mnemonic::Pandn | Mnemonic::Andnps | Mnemonic::Andnpd => {
+            // `pandn dst, src` = (~dst) & src (same for the float-typed forms —
+            // bitwise is bitwise regardless of the lane type).
+            let dst = smart_read(&instr, 0);
+            let src = smart_read(&instr, 1);
+            smart_write(&instr, 0, MicroExpr::binary(BinOp::And, MicroExpr::unary(UnOp::Not, dst), src), &mut out);
+        }
+        // SSE packed compare (produces a mask) and the byte-mask extract — the
+        // core of the SSE2 string-scan idioms — as named intrinsics.
+        Mnemonic::Pmovmskb => intr_unary(&instr, "__pmovmskb", &mut out),
+        Mnemonic::Pcmpeqb
+        | Mnemonic::Pcmpgtb
+        | Mnemonic::Pcmpeqw
+        | Mnemonic::Pcmpgtw
+        | Mnemonic::Pcmpeqd
+        | Mnemonic::Pcmpgtd => intr_binary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        // Scalar/packed FP arithmetic — the IR has no float type, so these read
+        // as named intrinsics over their operands (`__addsd(x, y)`), which is
+        // honest and keeps the dataflow intact.
+        Mnemonic::Addsd
+        | Mnemonic::Subsd
+        | Mnemonic::Mulsd
+        | Mnemonic::Divsd
+        | Mnemonic::Minsd
+        | Mnemonic::Maxsd
+        | Mnemonic::Addss
+        | Mnemonic::Subss
+        | Mnemonic::Mulss
+        | Mnemonic::Divss
+        | Mnemonic::Minss
+        | Mnemonic::Maxss
+        // packed forms — same shape, one intrinsic per instruction.
+        | Mnemonic::Addpd
+        | Mnemonic::Subpd
+        | Mnemonic::Mulpd
+        | Mnemonic::Divpd
+        | Mnemonic::Minpd
+        | Mnemonic::Maxpd
+        | Mnemonic::Addps
+        | Mnemonic::Subps
+        | Mnemonic::Mulps
+        | Mnemonic::Divps
+        | Mnemonic::Minps
+        | Mnemonic::Maxps
+        // pack/unpack/shuffle permutes — a value out of the two register
+        // operands; the shuffle-control immediate (when present) is a permute
+        // detail the dataflow doesn't need.
+        | Mnemonic::Punpcklqdq
+        | Mnemonic::Punpckhqdq
+        | Mnemonic::Punpckldq
+        | Mnemonic::Punpckhdq
+        | Mnemonic::Punpcklbw
+        | Mnemonic::Punpcklwd
+        | Mnemonic::Unpcklpd
+        | Mnemonic::Unpckhpd
+        | Mnemonic::Unpcklps
+        | Mnemonic::Unpckhps
+        | Mnemonic::Shufps
+        | Mnemonic::Shufpd => intr_binary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        Mnemonic::Sqrtsd | Mnemonic::Sqrtss => intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        // Int↔FP conversions (scalar and packed): `dst = __cvt*(src)`.
+        Mnemonic::Cvtsi2sd
+        | Mnemonic::Cvtsi2ss
+        | Mnemonic::Cvtsd2si
+        | Mnemonic::Cvtss2si
+        | Mnemonic::Cvttsd2si
+        | Mnemonic::Cvttss2si
+        | Mnemonic::Cvtsd2ss
+        | Mnemonic::Cvtss2sd
+        | Mnemonic::Cvtps2pd
+        | Mnemonic::Cvtpd2ps
+        | Mnemonic::Cvtdq2ps
+        | Mnemonic::Cvtps2dq
+        | Mnemonic::Cvttps2dq
+        | Mnemonic::Cvtdq2pd
+        | Mnemonic::Cvtpd2dq
+        | Mnemonic::Cvttpd2dq => intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        // Scalar / cross-domain moves (`movss`/`movsd`/`movd`/`movq`). Only lift
+        // when a vector register is actually involved — that disambiguates the
+        // SSE scalar `movsd` from the string `movsd`, which has no xmm operand
+        // and must stay opaque.
+        Mnemonic::Movss | Mnemonic::Movsd | Mnemonic::Movd | Mnemonic::Movq => {
+            let vector = (0..instr.op_count())
+                .any(|i| instr.op_kind(i) == OpKind::Register && is_vector_reg(instr.op_register(i)));
+            if vector {
+                let src = smart_read(&instr, 1);
+                smart_write(&instr, 0, src, &mut out);
+            } else {
+                lift_opaque(arch, insn, mn, &mut out);
+            }
+        }
+        // A trap: it produces no value and does not return. Emit a no-result
+        // intrinsic call so it reads as `__ud2();` instead of a raw `// asm:`.
+        Mnemonic::Ud2 | Mnemonic::Int3 => {
+            out.push(MicroStmt::Call { target: CallTarget::Intrinsic(mnemonic_intrinsic(mn)), args: vec![], ret: None });
+        }
+        // 1-operand unsigned multiply: `rdx:rax = rax * src`. The low half is a
+        // plain product; the high half is the `__umulh` intrinsic. Both read the
+        // pre-multiply `rax`, so the high write is emitted first. Only the 32/64-
+        // bit forms (which really target rdx:rax) are lifted.
+        Mnemonic::Mul if op_bits(&instr, 0) >= 32 => {
+            let src = read_operand(&instr, 0);
+            let rax = MicroExpr::var("rax");
+            out.push(MicroStmt::Assign { dst: "rdx".into(), value: MicroExpr::intrinsic("__umulh", vec![rax.clone(), src.clone()]) });
+            out.push(MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::binary(BinOp::Mul, rax, src) });
+            out.push(opaque_flags(mn));
+        }
         Mnemonic::Rol | Mnemonic::Ror => {
             // A rotate by an **immediate** is exact as a shift/shift/or, which is
             // also the shape a reverse-engineer recognizes (hash/PRNG code is
@@ -782,6 +958,52 @@ mod tests {
         assert!(
             stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { .. })),
             "a variable-count rotate must stay opaque: {stmts:?}",
+        );
+    }
+
+    #[test]
+    fn tzcnt_lifts_to_a_named_intrinsic_over_its_source() {
+        // tzcnt eax, ecx  = F3 0F BC C1
+        let stmts = lift_one(&[0xF3, 0x0F, 0xBC, 0xC1]);
+        assert_eq!(
+            stmts[0],
+            MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::intrinsic("__tzcnt", vec![MicroExpr::var("rcx")]) },
+        );
+    }
+
+    #[test]
+    fn pxor_is_an_exact_128_bit_bitwise_xor_not_an_intrinsic() {
+        // pxor xmm0, xmm1  = 66 0F EF C1  -> xmm0 = (xmm0 ^ xmm1), named xmm
+        let stmts = lift_one(&[0x66, 0x0F, 0xEF, 0xC1]);
+        assert_eq!(
+            stmts,
+            vec![MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::binary(BinOp::Xor, MicroExpr::var("xmm0"), MicroExpr::var("xmm1")),
+            }],
+        );
+    }
+
+    #[test]
+    fn pmovmskb_extracts_a_gpr_mask_from_an_xmm_source() {
+        // pmovmskb eax, xmm1  = 66 0F D7 C1
+        let stmts = lift_one(&[0x66, 0x0F, 0xD7, 0xC1]);
+        assert_eq!(
+            stmts[0],
+            MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::intrinsic("__pmovmskb", vec![MicroExpr::var("xmm1")]) },
+        );
+    }
+
+    #[test]
+    fn addsd_reads_as_a_scalar_fp_intrinsic_over_both_xmm_operands() {
+        // addsd xmm0, xmm1  = F2 0F 58 C1
+        let stmts = lift_one(&[0xF2, 0x0F, 0x58, 0xC1]);
+        assert_eq!(
+            stmts[0],
+            MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::intrinsic("__addsd", vec![MicroExpr::var("xmm0"), MicroExpr::var("xmm1")]),
+            },
         );
     }
 

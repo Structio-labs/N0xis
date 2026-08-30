@@ -370,6 +370,13 @@ fn is_padding_arg(a: &MicroExpr, names: &RenderNames) -> bool {
 }
 
 fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> String {
+    // An intrinsic prints its own name over its exact operands — no symbol
+    // resolution, no known-signature lookup, and no padding trim (its arguments
+    // are precise, not the Win64 four-register spray a real call carries).
+    if let CallTarget::Intrinsic(name) = target {
+        let inner = args.iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", ");
+        return format!("{name}({inner})");
+    }
     // An indirect call through a *known* slot (`call qword ptr [rip+disp]` to
     // an import) is only syntactically indirect: the callee has a name, and
     // printing `(*(uint64_t*)(0x14002a3e8))(...)` instead of
@@ -381,11 +388,13 @@ fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> 
         (Some(name), _) => render_callee_name(name),
         (None, CallTarget::Direct { va }) => names.callee(*va),
         (None, CallTarget::Indirect(t)) => format!("(*{})", render_expr(t, names)),
+        // Unreachable: intrinsics return above. Kept total and non-panicking.
+        (None, CallTarget::Intrinsic(name)) => name.clone(),
     };
     let known = match (slot, target) {
         (Some(name), _) => known_signature(name.rsplit('!').next().unwrap_or(name)),
         (None, CallTarget::Direct { va }) => names.known_sig_for(*va),
-        (None, CallTarget::Indirect(_)) => None,
+        (None, CallTarget::Indirect(_)) | (None, CallTarget::Intrinsic(_)) => None,
     };
     let args_text = match known {
         Some(sig) => {

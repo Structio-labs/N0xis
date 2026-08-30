@@ -474,6 +474,8 @@ fn known_sig_for_call(
             },
             _ => None,
         },
+        // Intrinsics resolve to no callable symbol.
+        CallTarget::Intrinsic(_) => None,
     }
 }
 

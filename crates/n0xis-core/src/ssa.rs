@@ -228,6 +228,7 @@ fn rename_call_target(target: &CallTarget, stacks: &HashMap<String, Vec<String>>
     match target {
         CallTarget::Direct { va } => CallTarget::Direct { va: *va },
         CallTarget::Indirect(e) => CallTarget::Indirect(Box::new(rename_expr(e, stacks))),
+        CallTarget::Intrinsic(name) => CallTarget::Intrinsic(name.clone()),
     }
 }
 

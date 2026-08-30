@@ -1721,6 +1721,32 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `rcx.11 = ((rcx.10 << 0xd) | (rcx.10 >> 0x33))` — a 64-bit `rol rcx, 13`
     (`0xd + 0x33 = 64`), a hash mix laid bare; `rol`/`ror` leave the census; sweep of
     80 functions each on `Kenshi`, `Factorio`, `Tiny Glade`: 240/240 ok, 0 errors.
+  - **5h — the intrinsic layer (bit-scan, SSE, scalar FP).** ✅ *(2026-08-30,*
+    *verified.)* A census of everything still hitting `// asm:` was dominated by
+    instructions the IR had no shape for: SSE integer/string idioms
+    (`pmovmskb`·152, `pcmpgtb`·57, `pxor`·70, `por`·57), bit-scan/count (`tzcnt`·95,
+    `bsr`·18), and scalar FP. Added one mechanism — `CallTarget::Intrinsic(name)`,
+    modelled as a call-shaped **value** so the whole expression machinery (renaming,
+    propagation, rendering) handles its operands for free but it resolves to no
+    symbol and reads as `name(args)`. Through it: bit-scan/count (`__tzcnt`/`__lzcnt`/
+    `__popcnt`/`__bsf`/`__bsr`, flag-setting) and `__bswap`; the SSE mask/compare
+    idioms (`__pmovmskb`, `__pcmpeqb`/`__pcmpgtb`…); scalar **and** packed FP
+    arithmetic (`__addsd`/`__mulss`/`__addpd`…, `__sqrtsd`); int↔FP conversions
+    (`__cvtsi2sd`, `__cvttsd2si`, `__cvtps2pd`…); pack/unpack/shuffle permutes; the
+    1-operand `mul` (low half a real product, high half `__umulh`); and `ud2`/`int3`
+    as no-result trap intrinsics (`__ud2();`). SSE *bitwise* ops need no intrinsic at
+    all — bitwise doesn't cross lanes, so `pxor`/`por`/`pand`/`xorps`… lower to exact
+    128-bit `^`/`|`/`&`. Scalar/vector `movss`/`movsd`/`movd`/`movq` lift as moves
+    only when an xmm register is actually involved — which soundly disambiguates the
+    SSE `movsd` from the *string* `movsd`. **Verified:** the `// asm:` census collapses
+    from thousands to a handful — only FP *compares* (`comisd`/`ucomiss`, flag-setters
+    left opaque) and `div` remain, both sound as opaque. `Tiny Glade`'s SIMD
+    string-scan reads `v31 = __pmovmskb(v33)` (316 `__pmovmskb`, 198 `__tzcnt`, 87
+    `__pcmpgtb`), `Kenshi` `return (__cvttsd2si(v2) + v1)`; a sweep of 100 functions
+    each on `Kenshi`, `Factorio`, `Tiny Glade`, `ChainedTogether` and `Pit of Goblin`
+    decompiled **500/500 with 0 errors**. Remaining ⬜ for Rung 5: mapping an FP
+    compare + its `jcc` to a real ordered/unordered condition, and signedness
+    inference — both separate from this lift-coverage work.
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control

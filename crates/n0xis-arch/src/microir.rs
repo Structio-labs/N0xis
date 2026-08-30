@@ -178,6 +178,11 @@ impl MicroExpr {
     pub fn select(cond: MicroExpr, a: MicroExpr, b: MicroExpr) -> Self {
         MicroExpr::Select { cond: Box::new(cond), a: Box::new(a), b: Box::new(b) }
     }
+    /// A pure intrinsic call value, e.g. `__tzcnt(src)`. See
+    /// [`CallTarget::Intrinsic`].
+    pub fn intrinsic(name: impl Into<String>, args: Vec<MicroExpr>) -> Self {
+        MicroExpr::Call { target: CallTarget::Intrinsic(name.into()), args }
+    }
 }
 
 /// A direct or indirect call target. Direct calls carry only the address —
@@ -191,6 +196,12 @@ pub enum CallTarget {
     // Boxed: `MicroExpr::Call` embeds a `CallTarget`, so an unboxed
     // `MicroExpr` here would make the type infinitely recursive.
     Indirect(Box<MicroExpr>),
+    /// A compiler *intrinsic* — a named pure operation the ISA exposes as one
+    /// instruction with no callable address (`__tzcnt`, `__popcnt`, `__pmovmskb`,
+    /// `__addsd`, …). Modelled as a call-shaped value so the whole expression
+    /// machinery (renaming, propagation, rendering) handles its operands for
+    /// free, but it resolves to no symbol and reads as `name(args)`.
+    Intrinsic(String),
 }
 
 /// One micro-IR statement — the arch-neutral lowering of one machine
