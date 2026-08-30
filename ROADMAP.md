@@ -1570,8 +1570,18 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     arms (`if (…) { rax.6 = rcx; } else { rax.5 = *rcx; rax.6 = rax.5; }`).
     Synthetic split-block addresses are non-canonical and render as
     `// block_N: (edge split)`.
-  - Still ⬜ for this rung: **local-variable typing/decls** (a source-style
-    typed locals block), width/signedness inference from access, and enums.
+  - **3e — typed-locals declaration block.** ✅ *(2026-08-30, verified.)* The
+    recovered stack locals now render as a source-style typed declaration
+    block at the top of the function (`uint64_t local_18; __m128 local_20; …`)
+    before the body, for the `structured`/`ssa` styles (`goto` stays flat). Only
+    locals that actually appear in the body are declared (an optimizer-removed
+    local is not listed), and the `local_XX` name derives from the offset
+    exactly as the renderer's does. **Verified** on `CompressToolsLib.dll`
+    `GetBlockLODs` — declares `local_18/20/28/30/38` with inferred types (incl.
+    `__m128` for a vector spill), each used below.
+  - Still ⬜ for this rung: **width/signedness inference from *use*** (the type
+    a value acquires from the operators/comparisons it flows into, beyond the
+    per-access encoding already used), and **enums**.
 
 - **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.
