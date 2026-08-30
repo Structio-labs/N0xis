@@ -1481,9 +1481,21 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     binary here (these libraries dereference their pointer params — so the struct
     rule wins by precedence — rather than forwarding a bare param straight into a
     small-set Win32 API), so it stays ⏳ real-target-unconfirmed, per the
-    verify-before-✅ rule. Still ⬜ for this rung: **local-variable typing/decls**
-    (a source-style typed locals block), **SSA-version coalescing into one
-    named variable**, width/signedness inference from access, and enums.
+    verify-before-✅ rule.
+  - **3b — parameter naming in the body.** ✅ *(2026-08-30, verified.)* A
+    recovered parameter's entry SSA version (`rcx.0`) now renders under its
+    parameter name (`rcx`) everywhere in the body — bare use, struct-field base,
+    store target — connecting the body to the signature. Sound by construction:
+    the `.0` version of a register is uniquely its incoming value, so dropping
+    the redundant subscript never conflates (`rcx.1`/`rcx.2`, genuine later
+    definitions, keep their subscripts, and there is never a bare `rcx` to
+    collide with). **Verified on `CompressToolsLib.dll`:** `sub_1800010d0` reads
+    `*rcx = …; if ((rdx & 0x1) == 0x0) …; return rcx;` against the signature
+    `(struct_rcx_0 *rcx, uint64_t rdx)` — no `.0` noise on parameters.
+  - Still ⬜ for this rung: **local-variable typing/decls** (a source-style
+    typed locals block), **SSA-version coalescing** of *non-entry* versions and
+    phi-webs into one named variable, width/signedness inference from access,
+    and enums.
 
 - **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.

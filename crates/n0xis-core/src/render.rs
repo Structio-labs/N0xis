@@ -30,6 +30,13 @@ pub struct RenderNames {
     slot_names: HashMap<u64, String>,
     locals: HashMap<i64, String>,
     structs: HashMap<String, ()>,
+    /// A recovered parameter's entry SSA version (`"rcx.0"`) → its parameter
+    /// name (`"rcx"`). The `.0` version of a register is uniquely its incoming
+    /// value — i.e. the parameter itself — so rendering it under the parameter
+    /// name (dropping the redundant `.0`) connects the body to the signature
+    /// without conflating anything: `rcx.1`/`rcx.2` keep their subscripts, and
+    /// there is never a bare `rcx` for this to collide with.
+    param_names: HashMap<String, String>,
     void_return: bool,
 }
 
@@ -48,6 +55,7 @@ impl RenderNames {
             slot_names,
             locals: HashMap::new(),
             structs: HashMap::new(),
+            param_names: HashMap::new(),
             void_return: false,
         }
     }
@@ -56,6 +64,7 @@ impl RenderNames {
     pub fn with_types(mut self, types: &TypeArtifact) -> Self {
         self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
         self.structs = types.structs.iter().map(|s| (s.base_var.clone(), ())).collect();
+        self.param_names = types.signature.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
         self.void_return = types.signature.ret.is_none();
         self
     }
@@ -65,6 +74,14 @@ impl RenderNames {
             Some(name) => render_callee_name(name),
             None => format!("sub_{:x}", va.get()),
         }
+    }
+
+    /// A variable's display name: a recovered parameter's entry version
+    /// (`"rcx.0"`) renders as the parameter name (`"rcx"`), everything else
+    /// unchanged. Single source of truth so every render site — bare `Var`,
+    /// struct-field base, store target — agrees.
+    fn display_var(&self, name: &str) -> String {
+        self.param_names.get(name).cloned().unwrap_or_else(|| name.to_string())
     }
 
     /// The known-API signature for a direct call target, if its resolved
@@ -168,6 +185,7 @@ fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> 
         return Some(name);
     }
     if names.structs.contains_key(base) {
+        let base = names.display_var(base);
         return Some(if offset == 0 { format!("*{base}") } else { format!("{base}->field_0x{offset:x}") });
     }
     None
@@ -224,7 +242,7 @@ fn is_comparison(op: BinOp) -> bool {
 pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
     match e {
         MicroExpr::Const { value, bits } => render_const(*value, *bits),
-        MicroExpr::Var(name) => name.clone(),
+        MicroExpr::Var(name) => names.display_var(name),
         MicroExpr::Load { addr, bits, signed } => {
             if let Some(text) = field_or_local_text(addr, names) {
                 return text;
@@ -473,6 +491,27 @@ mod tests {
             args: vec![MicroExpr::var("rcx.0")],
         };
         assert!(render_expr(&call, &names).starts_with("(*"), "{}", render_expr(&call, &names));
+    }
+
+    #[test]
+    fn a_recovered_parameter_entry_version_renders_as_its_name() {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, TypeArtifact};
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![],
+            signature: RecoveredSignature {
+                params: vec![ParamInfo { reg: "rcx", name: "rcx".into(), ty: CType { bits: 64, signed: false, name: Some("void *".into()) } }],
+                ret: None,
+            },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        // The entry version `rcx.0` *is* the parameter -> rendered as its name.
+        assert_eq!(render_expr(&MicroExpr::var("rcx.0"), &names), "rcx");
+        // A later definition `rcx.1` is a different value -> keeps its subscript
+        // (no conflation with the parameter).
+        assert_eq!(render_expr(&MicroExpr::var("rcx.1"), &names), "rcx.1");
+        // A register that isn't a recovered parameter is untouched.
+        assert_eq!(render_expr(&MicroExpr::var("rbx.0"), &names), "rbx.0");
     }
 
     #[test]
