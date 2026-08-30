@@ -200,6 +200,11 @@ fn walk_loads(e: &MicroExpr, out: &mut Vec<MemAccess>) {
             walk_loads(lhs, out);
             walk_loads(rhs, out);
         }
+        MicroExpr::Select { cond, a, b } => {
+            walk_loads(cond, out);
+            walk_loads(a, out);
+            walk_loads(b, out);
+        }
         MicroExpr::Call { target, args } => {
             if let CallTarget::Indirect(t) = target {
                 walk_loads(t, out);
@@ -333,6 +338,11 @@ fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
             MicroExpr::Compare { lhs, rhs, .. } => {
                 walk(lhs, out);
                 walk(rhs, out);
+            }
+            MicroExpr::Select { cond, a, b } => {
+                walk(cond, out);
+                walk(a, out);
+                walk(b, out);
             }
             MicroExpr::Call { target, args } => {
                 if let CallTarget::Indirect(t) = target {
@@ -521,6 +531,11 @@ fn param_api_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, &
             MicroExpr::Compare { lhs, rhs, .. } => {
                 walk(lhs, record);
                 walk(rhs, record);
+            }
+            MicroExpr::Select { cond, a, b } => {
+                walk(cond, record);
+                walk(a, record);
+                walk(b, record);
             }
             MicroExpr::Var(_) | MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
         }

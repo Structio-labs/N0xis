@@ -142,6 +142,10 @@ pub(crate) fn eval(expr: &MicroExpr, env: &HashMap<String, ValueSet>) -> ValueSe
             ValueSet::Values(vs) => ValueSet::Values(vs.iter().map(|v| truncate(*v, *bits, *signed)).collect()),
             other => other,
         },
+        // A select is one of its two branches, so its value set is exactly the
+        // lattice join of them — precise, and sound (never narrower than the
+        // real set). The condition doesn't constrain the value here.
+        MicroExpr::Select { a, b, .. } => ValueSet::join(&eval(a, env), &eval(b, env)),
         // Memory, calls, addresses-of-unknown-things, and unmodeled flags are
         // all sound-but-unknown — never guessed.
         MicroExpr::Load { .. }

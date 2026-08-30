@@ -105,6 +105,11 @@ fn map_expr(e: &MicroExpr, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroE
         MicroExpr::Compare { kind, lhs, rhs } => {
             MicroExpr::Compare { kind: *kind, lhs: Box::new(map_expr(lhs, f)), rhs: Box::new(map_expr(rhs, f)) }
         }
+        MicroExpr::Select { cond, a, b } => MicroExpr::Select {
+            cond: Box::new(map_expr(cond, f)),
+            a: Box::new(map_expr(a, f)),
+            b: Box::new(map_expr(b, f)),
+        },
         MicroExpr::Call { target, args } => {
             let target = match target {
                 CallTarget::Direct { va } => CallTarget::Direct { va: *va },
@@ -458,6 +463,9 @@ fn expr_contains_var(e: &MicroExpr, name: &str) -> bool {
         MicroExpr::Cast { expr, .. } => expr_contains_var(expr, name),
         MicroExpr::AddrOf(inner) => expr_contains_var(inner, name),
         MicroExpr::Compare { lhs, rhs, .. } => expr_contains_var(lhs, name) || expr_contains_var(rhs, name),
+        MicroExpr::Select { cond, a, b } => {
+            expr_contains_var(cond, name) || expr_contains_var(a, name) || expr_contains_var(b, name)
+        }
         MicroExpr::Call { target, args } => {
             let in_target = matches!(target, CallTarget::Indirect(t) if expr_contains_var(t, name));
             in_target || args.iter().any(|a| expr_contains_var(a, name))
@@ -518,6 +526,7 @@ fn expr_is_pure(e: &MicroExpr) -> bool {
         MicroExpr::Cast { expr, .. } => expr_is_pure(expr),
         MicroExpr::AddrOf(inner) => expr_is_pure(inner),
         MicroExpr::Compare { lhs, rhs, .. } => expr_is_pure(lhs) && expr_is_pure(rhs),
+        MicroExpr::Select { cond, a, b } => expr_is_pure(cond) && expr_is_pure(a) && expr_is_pure(b),
     }
 }
 
@@ -556,6 +565,7 @@ fn all_vars_are_entry(e: &MicroExpr) -> bool {
         MicroExpr::Cast { expr, .. } => all_vars_are_entry(expr),
         MicroExpr::AddrOf(inner) => all_vars_are_entry(inner),
         MicroExpr::Compare { lhs, rhs, .. } => all_vars_are_entry(lhs) && all_vars_are_entry(rhs),
+        MicroExpr::Select { cond, a, b } => all_vars_are_entry(cond) && all_vars_are_entry(a) && all_vars_are_entry(b),
         MicroExpr::Call { .. } => false,
     }
 }
@@ -630,6 +640,14 @@ fn visit_escape(e: &MicroExpr, value_ctx: bool, esc: &mut Escape) {
         MicroExpr::Compare { lhs, rhs, .. } => {
             visit_escape(lhs, value_ctx, esc);
             visit_escape(rhs, value_ctx, esc);
+        }
+        // A select yields whichever branch value flows out, so `a`/`b` keep the
+        // caller's context; the condition is boolean, but recursing it in the
+        // same context only over-approximates escapes, which is sound.
+        MicroExpr::Select { cond, a, b } => {
+            visit_escape(cond, value_ctx, esc);
+            visit_escape(a, value_ctx, esc);
+            visit_escape(b, value_ctx, esc);
         }
         MicroExpr::Call { target, args } => {
             if let CallTarget::Indirect(t) = target {
@@ -890,6 +908,11 @@ fn collect_load_slots(e: &MicroExpr, out: &mut Vec<(String, i128, n0xis_arch::Bi
             collect_load_slots(lhs, out);
             collect_load_slots(rhs, out);
         }
+        MicroExpr::Select { cond, a, b } => {
+            collect_load_slots(cond, out);
+            collect_load_slots(a, out);
+            collect_load_slots(b, out);
+        }
         MicroExpr::Call { target, args } => {
             if let CallTarget::Indirect(t) = target {
                 collect_load_slots(t, out);
@@ -1000,6 +1023,11 @@ fn walk_expr_vars(e: &MicroExpr, f: &mut impl FnMut(&str)) {
             walk_expr_vars(lhs, f);
             walk_expr_vars(rhs, f);
         }
+        MicroExpr::Select { cond, a, b } => {
+            walk_expr_vars(cond, f);
+            walk_expr_vars(a, f);
+            walk_expr_vars(b, f);
+        }
         MicroExpr::Call { target, args } => {
             if let CallTarget::Indirect(t) = target {
                 walk_expr_vars(t, f);
@@ -1095,6 +1123,11 @@ mod tests {
                 MicroExpr::Compare { lhs, rhs, .. } => {
                     walk(lhs, out);
                     walk(rhs, out);
+                }
+                MicroExpr::Select { cond, a, b } => {
+                    walk(cond, out);
+                    walk(a, out);
+                    walk(b, out);
                 }
                 MicroExpr::Call { target, args } => {
                     if let CallTarget::Indirect(t) = target {

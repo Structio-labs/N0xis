@@ -1677,6 +1677,23 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `ChainedTogether` decompiled 240/240 with 0 errors and no `/*set*/` placeholders
     left in-sample. Follow-on: `cmovcc` reuses the same reaching-flags resolution but
     also needs a ternary (`cond ? a : b`) node — that overlaps Rung 6.
+  - **5e — `cmovcc` → ternary select.** ✅ *(2026-08-30, verified.)* `cmovcc dst,
+    src` is `dst = cond ? src : dst` — a conditional *select*, not a branch, so it
+    dropped to `/*cmovb r8,rbx*/`, losing a computed value just like `setcc` did.
+    Lowered now to a real ternary: a new `MicroExpr::Select { cond, a, b }` node
+    (also the building block Rung 6's `?:`/`&&`/`||` recovery will reuse), with the
+    condition carried as the same `setcc:<jcc>` marker the SSA builder resolves from
+    the reaching flags (5d) — so `cmovb` after a `cmp` recovers its exact unsigned
+    condition. The node threads through every SSA/optimizer/type/valueset walker
+    (var-collection and use-counting recurse into all three children, so DCE never
+    drops a def used only inside a select; value-set analysis takes the lattice
+    *join* of the two branches — precise and sound). **Verified:** `Kenshi`
+    `sub_140064abf` now reads `r8.30 = ((rbx.3 < /*u*/ r8.29) ? rbx.3 : r8.29)` (was
+    `/*cmovb r8,rbx*/`) — which is exactly the unsigned-`min` idiom, now *visible* for
+    a later idiom pass to fold. `cmovb`/`cmovbe` leave the `// asm:` census; a sweep
+    of 60 functions each on `Kenshi`, `Factorio`, `Tiny Glade`, `ChainedTogether` and
+    `Pit of Goblin` decompiled 300/300 with 0 errors (ternaries now render in 20, 19
+    and 7 of the Kenshi / Tiny Glade / Pit-of-Goblin samples).
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control

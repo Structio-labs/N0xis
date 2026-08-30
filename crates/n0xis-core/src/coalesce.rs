@@ -52,6 +52,11 @@ fn expr_vars(e: &MicroExpr, out: &mut HashSet<String>) {
         }
         MicroExpr::Cast { expr, .. } => expr_vars(expr, out),
         MicroExpr::AddrOf(inner) => expr_vars(inner, out),
+        MicroExpr::Select { cond, a, b } => {
+            expr_vars(cond, out);
+            expr_vars(a, out);
+            expr_vars(b, out);
+        }
         MicroExpr::Compare { lhs, rhs, .. } => {
             expr_vars(lhs, out);
             expr_vars(rhs, out);

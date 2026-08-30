@@ -254,6 +254,32 @@ pub(crate) fn setcc_jcc(m: Mnemonic) -> Option<&'static str> {
     })
 }
 
+/// Map a `cmovcc` mnemonic to the equivalent `jcc` string, on the same
+/// principle as [`setcc_jcc`] — the condition code is identical, only the
+/// opcode family differs (`cmovb`↔`jb`). `None` for a non-conditional-move.
+pub(crate) fn cmovcc_jcc(m: Mnemonic) -> Option<&'static str> {
+    use Mnemonic as M;
+    Some(match m {
+        M::Cmove => "je",
+        M::Cmovne => "jne",
+        M::Cmova => "ja",
+        M::Cmovae => "jae",
+        M::Cmovb => "jb",
+        M::Cmovbe => "jbe",
+        M::Cmovg => "jg",
+        M::Cmovge => "jge",
+        M::Cmovl => "jl",
+        M::Cmovle => "jle",
+        M::Cmovs => "js",
+        M::Cmovns => "jns",
+        M::Cmovo => "jo",
+        M::Cmovno => "jno",
+        M::Cmovp => "jp",
+        M::Cmovnp => "jnp",
+        _ => return None,
+    })
+}
+
 pub(crate) fn is_jcc(m: Mnemonic) -> bool {
     use Mnemonic as M;
     matches!(
@@ -529,6 +555,18 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             // `n0xis-core::ssa`). Left as a marker here, never guessed.
             let jcc = setcc_jcc(m).expect("guarded by the arm pattern");
             write_operand(&instr, 0, MicroExpr::OpaqueFlags { mnemonic: format!("setcc:{jcc}") }, &mut out);
+        }
+        m if cmovcc_jcc(m).is_some() => {
+            // `cmovcc dst, src` is `dst = cond ? src : dst` — a conditional
+            // select, not a branch. The condition rides in the `Select` as a
+            // `setcc:<jcc>` marker the SSA builder resolves from the reaching
+            // flags (same path as `setcc`); `a` is the source, `b` is the
+            // current destination (the value kept when the condition is false).
+            let jcc = cmovcc_jcc(m).expect("guarded by the arm pattern");
+            let cond = MicroExpr::OpaqueFlags { mnemonic: format!("setcc:{jcc}") };
+            let src = read_operand(&instr, 1);
+            let keep = read_operand(&instr, 0);
+            write_operand(&instr, 0, MicroExpr::select(cond, src, keep), &mut out);
         }
         _ => {
             // Unrecognized instruction: preserve it verbatim (never silently

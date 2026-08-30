@@ -306,6 +306,9 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
             // fallback, not the normal rendering path for a condition.
             format!("/*{:?}({}, {})*/", kind, render_expr(lhs, names), render_expr(rhs, names))
         }
+        MicroExpr::Select { cond, a, b } => {
+            format!("({} ? {} : {})", render_expr(cond, names), render_expr(a, names), render_expr(b, names))
+        }
         MicroExpr::OpaqueFlags { mnemonic } => format!("/*flags after {mnemonic}*/"),
         MicroExpr::Call { target, args } => render_call(target, args, names),
         MicroExpr::Unknown(s) => format!("/*{s}*/"),

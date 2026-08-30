@@ -138,6 +138,16 @@ pub enum MicroExpr {
         target: CallTarget,
         args: Vec<MicroExpr>,
     },
+    /// A ternary select — `cond ? a : b`. The lowering of `cmovcc` (`dst =
+    /// cond ? src : dst`), and the node Rung 6's `?:`/`&&`/`||` recovery builds
+    /// on. `cond` is a boolean expression; for a freshly-lifted `cmovcc` it is a
+    /// `setcc:<jcc>` flag marker the SSA builder resolves against the reaching
+    /// flags, exactly as it does for a bare `setcc`.
+    Select {
+        cond: Box<MicroExpr>,
+        a: Box<MicroExpr>,
+        b: Box<MicroExpr>,
+    },
     /// Preserves an unlifted operand/expression verbatim so no semantics are
     /// silently dropped.
     Unknown(String),
@@ -164,6 +174,9 @@ impl MicroExpr {
     }
     pub fn compare(kind: CmpKind, lhs: MicroExpr, rhs: MicroExpr) -> Self {
         MicroExpr::Compare { kind, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+    }
+    pub fn select(cond: MicroExpr, a: MicroExpr, b: MicroExpr) -> Self {
+        MicroExpr::Select { cond: Box::new(cond), a: Box::new(a), b: Box::new(b) }
     }
 }
 

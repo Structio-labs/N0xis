@@ -113,6 +113,11 @@ fn collect_expr_vars(e: &MicroExpr, out: &mut BTreeSet<String>) {
             collect_expr_vars(lhs, out);
             collect_expr_vars(rhs, out);
         }
+        MicroExpr::Select { cond, a, b } => {
+            collect_expr_vars(cond, out);
+            collect_expr_vars(a, out);
+            collect_expr_vars(b, out);
+        }
         // Never produced by `lift`/SSA renaming (only by the optimizer's
         // expression-propagation), but matched exhaustively for correctness.
         MicroExpr::Call { target, args } => {
@@ -174,6 +179,11 @@ fn rename_expr(e: &MicroExpr, stacks: &HashMap<String, Vec<String>>) -> MicroExp
         MicroExpr::Compare { kind, lhs, rhs } => {
             MicroExpr::Compare { kind: *kind, lhs: Box::new(rename_expr(lhs, stacks)), rhs: Box::new(rename_expr(rhs, stacks)) }
         }
+        MicroExpr::Select { cond, a, b } => MicroExpr::Select {
+            cond: Box::new(rename_expr(cond, stacks)),
+            a: Box::new(rename_expr(a, stacks)),
+            b: Box::new(rename_expr(b, stacks)),
+        },
         MicroExpr::Call { target, args } => MicroExpr::Call {
             target: rename_call_target(target, stacks),
             args: args.iter().map(|a| rename_expr(a, stacks)).collect(),
@@ -197,11 +207,21 @@ fn resolve_flag_marker(
     stacks: &HashMap<String, Vec<String>>,
     defs: &HashMap<String, MicroExpr>,
 ) -> MicroExpr {
-    let MicroExpr::OpaqueFlags { mnemonic } = &value else { return value };
-    let Some(jcc) = mnemonic.strip_prefix("setcc:") else { return value };
-    let unknown = MicroExpr::Unknown("no-flags-reached".to_string());
-    let flags = stacks.get(FLAGS_VAR).and_then(|s| s.last()).and_then(|n| defs.get(n)).unwrap_or(&unknown);
-    arch.branch_condition(jcc, flags)
+    match value {
+        // A bare `setcc` value.
+        MicroExpr::OpaqueFlags { mnemonic } if mnemonic.starts_with("setcc:") => {
+            let jcc = mnemonic.strip_prefix("setcc:").expect("just checked the prefix");
+            let unknown = MicroExpr::Unknown("no-flags-reached".to_string());
+            let flags = stacks.get(FLAGS_VAR).and_then(|s| s.last()).and_then(|n| defs.get(n)).unwrap_or(&unknown);
+            arch.branch_condition(jcc, flags)
+        }
+        // A `cmovcc` select carries the marker in its condition; resolve that,
+        // leaving the already-renamed `a`/`b` operands untouched.
+        MicroExpr::Select { cond, a, b } => {
+            MicroExpr::Select { cond: Box::new(resolve_flag_marker(*cond, arch, stacks, defs)), a, b }
+        }
+        other => other,
+    }
 }
 
 fn rename_call_target(target: &CallTarget, stacks: &HashMap<String, Vec<String>>) -> CallTarget {
@@ -534,6 +554,24 @@ mod tests {
             matches!(rcx_assign_value(&art), MicroExpr::Unknown(_)),
             "an unreconstructable setcc must stay opaque, not guess",
         );
+    }
+
+    #[test]
+    fn cmov_becomes_a_ternary_select_with_the_recovered_condition() {
+        // cmp eax, 5 ; cmovb ecx, edx ; ret — `ecx = (eax < 5) ? edx : ecx`,
+        // a conditional select whose condition is reconstructed from the compare.
+        //   83 F8 05     cmp eax, 5
+        //   0F 42 CA     cmovb ecx, edx
+        //   C3           ret
+        let art = build(vec![0x83, 0xF8, 0x05, 0x0F, 0x42, 0xCA, 0xC3]);
+        let value = rcx_assign_value(&art);
+        let MicroExpr::Select { cond, a, b } = value else {
+            panic!("cmovb must lower to a Select, got {value:?}");
+        };
+        // condition: unsigned-below from the compare (cmovb ↔ jb ↔ Ult)
+        assert_eq!(*cond, MicroExpr::binary(BinOp::Ult, MicroExpr::var("rax.0"), MicroExpr::constant(5, 32)));
+        assert_eq!(*a, MicroExpr::var("rdx.0"), "the moved-in source when the condition holds");
+        assert_eq!(*b, MicroExpr::var("rcx.0"), "the kept destination otherwise");
     }
 
     #[test]
