@@ -149,6 +149,17 @@ fn emit_node(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         return;
     }
     if ctx.visited[n] {
+        // A small, successor-free tail block (a shared `return`/epilogue reached
+        // from several paths) is **tail-duplicated** inline instead of jumped to
+        // — the transform other tools use to erase the most common residual goto.
+        // Sound: the block has no successors (nothing downstream to re-run or
+        // re-enter), its body is straight-line, and every SSA value it reads was
+        // valid at the original join, so it is equally valid inlined at this
+        // predecessor. Not a fallback, so `fallback_count` is untouched.
+        if is_duplicable_tail(ctx, n) {
+            emit_block_body_and_terminator(ctx, n, until);
+            return;
+        }
         ctx.out.push(format!("{}goto block_{n};", pad(ctx.indent)));
         ctx.fallback_count += 1;
         return;
@@ -160,6 +171,47 @@ fn emit_node(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         return;
     }
     emit_block_body_and_terminator(ctx, n, until);
+}
+
+/// The most real (non-comment, non-blank) lines a shared tail *region* may hold
+/// and still be duplicated inline — a shared epilogue is a handful of lines; a
+/// larger shared region stays a `goto` rather than bloating every predecessor.
+const MAX_DUP_LINES: usize = 8;
+/// Depth cap on the linear tail chain, a belt-and-braces guard against a
+/// pathological CFG (real epilogue chains are 1–3 blocks).
+const MAX_DUP_DEPTH: usize = 6;
+
+/// Real (non-comment, non-blank) rendered lines in block `n`.
+fn real_line_count(ctx: &Ctx, n: usize) -> usize {
+    ctx.body_lines[n].iter().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//")).count()
+}
+
+/// May block `n` be tail-duplicated inline where it would otherwise be reached by
+/// a `goto`? True for a small **linear tail region** — a straight `jmp`/`fall`
+/// chain that ends at a function exit (`ret`/`tail-call`, no successors) — with
+/// no loop header on the way and a small total line count. These are exactly the
+/// shared `return`/epilogue sequences that produce the bulk of residual gotos;
+/// duplicating them is sound (no successors past the exit to re-run, no
+/// back-edge, and every SSA value stays valid inlined at the predecessor).
+/// Branch (`cjmp`/`switch`) regions are deliberately left as `goto` — simpler
+/// and never a bloat risk.
+fn is_duplicable_tail(ctx: &Ctx, n: usize) -> bool {
+    duplicable_region(ctx, n, 0, MAX_DUP_DEPTH)
+}
+
+fn duplicable_region(ctx: &Ctx, n: usize, acc_lines: usize, depth: usize) -> bool {
+    if depth == 0 || ctx.is_header[n] || ctx.loop_stack.contains(&n) {
+        return false;
+    }
+    let lines = acc_lines + real_line_count(ctx, n);
+    if lines > MAX_DUP_LINES {
+        return false;
+    }
+    match ctx.cfg.blocks[n].terminator.as_str() {
+        "ret" | "tail-call" => ctx.succ[n].is_empty(),
+        "jmp" | "fall" => ctx.succ[n].first().is_some_and(|&s| duplicable_region(ctx, s, lines, depth - 1)),
+        _ => false,
+    }
 }
 
 fn emit_block_body_and_terminator(ctx: &mut Ctx, n: usize, until: Option<usize>) {
@@ -551,6 +603,21 @@ mod tests {
         assert!(text.contains("rax.1 = 0x1;"), "{text}");
         assert!(text.contains("} else {"), "{text}");
         assert!(text.contains("rax.2 = 0x2;"), "{text}");
+        assert_eq!(out.fallback_count, 0, "should structure cleanly: {text}");
+    }
+
+    #[test]
+    fn a_cross_edge_diamond_structures_without_a_goto() {
+        // Two conditional edges converge on a shared block that returns — the
+        // shape that used to leave a `goto`. Structuring now resolves it fully
+        // (here the second guard folds into `||`, and the shared return is
+        // reached cleanly), with no residual `goto` and no fallback.
+        // test rcx,rcx ; je 0x100c ; test rdx,rdx ; je 0x100c ; jmp 0x100e ;
+        // mov al,7 ; ret
+        let code = vec![0x48, 0x85, 0xc9, 0x74, 0x07, 0x48, 0x85, 0xd2, 0x74, 0x02, 0xeb, 0x02, 0xb0, 0x07, 0xc3];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        assert!(!text.contains("goto"), "no residual goto expected: {text}");
         assert_eq!(out.fallback_count, 0, "should structure cleanly: {text}");
     }
 
