@@ -282,13 +282,39 @@ fn try_short_circuit(ctx: &Ctx, n: usize, cond_a: &str, t: usize, f: usize) -> O
 
 fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     let merge = ctx.ipdom[n];
-    ctx.out.push(format!("{}switch (/* dispatcher */) {{", pad(ctx.indent)));
+    // The resolved jump-table dispatch for this block's indirect jump (its `at`
+    // is the `ijmp`, which sits inside `[block.start, block.end)`), when the
+    // switch pass recovered one. It gives the switched register and the table's
+    // case→target map, turning the old `/* dispatcher */` / `/* block N */`
+    // placeholders into real `switch (idx)` / `case K:` labels.
+    let (bstart, bend) = {
+        let b = &ctx.cfg.blocks[n];
+        (b.start.get(), b.end.get())
+    };
+    let sw = ctx.cfg.switches.iter().find(|s| s.at.get() >= bstart && s.at.get() < bend);
+    let disp = sw.and_then(|s| s.index_reg.clone()).unwrap_or_else(|| "/* dispatcher */".to_string());
+    ctx.out.push(format!("{}switch ({disp}) {{", pad(ctx.indent)));
     let mut emitted: BTreeSet<usize> = BTreeSet::new();
     for &s in &ctx.succ[n].to_vec() {
         if !emitted.insert(s) {
             continue;
         }
-        ctx.out.push(format!("{}    case /* {s} */:", pad(ctx.indent)));
+        // Every table index whose target is this successor becomes a `case`
+        // (fall-through cases share a block, so a block can carry several); a
+        // successor with no matching index is the out-of-range `default`.
+        let target = ctx.cfg.blocks[s].start.get();
+        let cases: Vec<usize> = sw
+            .map(|w| w.cases.iter().enumerate().filter(|(_, va)| va.get() == target).map(|(i, _)| i).collect())
+            .unwrap_or_default();
+        if sw.is_none() {
+            ctx.out.push(format!("{}    case /* block {s} */:", pad(ctx.indent)));
+        } else if cases.is_empty() {
+            ctx.out.push(format!("{}    default:", pad(ctx.indent)));
+        } else {
+            for i in cases {
+                ctx.out.push(format!("{}    case 0x{i:x}:", pad(ctx.indent)));
+            }
+        }
         ctx.indent += 2;
         emit_node(ctx, s, merge);
         ctx.out.push(format!("{}break;", pad(ctx.indent)));

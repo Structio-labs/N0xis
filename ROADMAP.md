@@ -1748,9 +1748,25 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     compare + its `jcc` to a real ordered/unordered condition, and signedness
     inference — both separate from this lift-coverage work.
 
-- **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
-  recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control
-  flow reads like C, not a flowchart.
+- **Rung 6 — Readability structuring.** 🚧 The structuring engine
+  (`structure.rs`) already reconstructs `if`/`else`, `&&`/`||` short-circuit
+  chains, `for`/`while`/`do-while` loops, and `switch`, falling back to a plain
+  `goto block_N` only on an irreducible edge (sound over pretty). The `ternary`
+  half arrived via Rungs 5e/5f (`cmovcc` → `Select`, folded to `min`/`max`).
+  - **6a — `switch` dispatcher + case recovery.** ✅ *(2026-08-30, verified.)* The
+    switch emitter printed `switch (/* dispatcher */)` and `case /* block N */:` —
+    the shape was there but the *values* were placeholders. The jump-table pass
+    already resolves a `ResolvedSwitch { index_reg, cases: Vec<Va> }` into the CFG,
+    so the emitter now names the switched register (`switch (rax)`) and turns each
+    successor into its real `case 0xK:` label(s) by matching the block's start VA
+    against the table's case→target map — fall-through cases that share a block
+    stack their labels, and a successor with no table index becomes `default:`.
+    **Verified:** `Factorio` `sub_fe2424` reads `switch (rax) { case 0x0: case 0x2:
+    … }` and `Tiny Glade` `sub_30b4f5` recovers a full `switch (rdi)` over cases
+    `0x0`–`0x20` (fall-through cases correctly stacked); sweep of 100 functions each
+    on `Kenshi`, `Factorio`, `Tiny Glade` — 300/300 ok, 0 errors, 6 switches
+    recovered. Remaining ⬜: eliminating the residual irreducible `goto`s and the
+    `default`-vs-unresolved-case distinction when the table read is partial.
 
 - **Rung 7 — Structural advantages this design gets for free.** ⬜ The capabilities the
   other tools structurally lack: every pass already emits an **inspectable delta** (KF-5); the
