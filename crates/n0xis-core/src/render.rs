@@ -69,6 +69,16 @@ impl RenderNames {
         self
     }
 
+    /// Replace the variable-display map with the full SSA-coalescing result
+    /// (Rung 3b): it maps each coalesced version and each parameter entry
+    /// version to its single display name, and *subsumes* the parameter naming
+    /// [`Self::with_types`] set. Applied only for the optimized (`ssa`) style,
+    /// which is the one whose IR the coalescing was computed against.
+    pub fn with_coalescing(mut self, var_names: HashMap<String, String>) -> Self {
+        self.param_names = var_names;
+        self
+    }
+
     fn callee(&self, va: Va) -> String {
         match self.callee_names.get(&va.get()) {
             Some(name) => render_callee_name(name),
@@ -341,7 +351,7 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
         return None;
     }
     Some(match stmt {
-        MicroStmt::Assign { dst, value } => format!("{dst} = {};", render_expr(value, names)),
+        MicroStmt::Assign { dst, value } => format!("{} = {};", names.display_var(dst), render_expr(value, names)),
         MicroStmt::Store { addr, value, bits } => {
             if let Some(text) = field_or_local_text(addr, names) {
                 format!("{text} = {};", render_expr(value, names))
@@ -352,7 +362,7 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
         MicroStmt::Call { target, args, ret } => {
             let call = render_call(target, args, names);
             match ret {
-                Some(r) => format!("{r} = {call};"),
+                Some(r) => format!("{} = {call};", names.display_var(r)),
                 None => format!("{call};"),
             }
         }

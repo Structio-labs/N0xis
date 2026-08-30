@@ -1492,10 +1492,26 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     collide with). **Verified on `CompressToolsLib.dll`:** `sub_1800010d0` reads
     `*rcx = …; if ((rdx & 0x1) == 0x0) …; return rcx;` against the signature
     `(struct_rcx_0 *rcx, uint64_t rdx)` — no `.0` noise on parameters.
+  - **3c — SSA-version coalescing (phi-webs → named variables).** ✅ *(2026-08-30,*
+    *verified.)* A register's phi-web of versions (`rcx.1`/`rcx.2`/`rcx.3`, the
+    loop-carried counter) collapses to one named variable — the a source-level decompiler
+    readable-locals win: a `dec`/`jne` counter now reads
+    `v1 = 3; while (v1 != 0) { v1 = v1 - 1; }` and a scan reads
+    `while (*(uint8_t*)(rdx + v1) != 0x0) { v1 = v1 + 1; }`. This is SSA
+    destruction, unsound if naive (the lost-copy / swap / pre-update-tested-value
+    hazards), so it is **guarded by a statement-granularity liveness +
+    interference analysis** and refuses to coalesce any class whose members are
+    ever simultaneously live with different values (a refused class keeps its
+    subscripts — sound-over-complete). Naming is collision-free by construction:
+    a phi merges only versions of one register, so a class is single-root and is
+    named after its parameter if it contains one, else a fresh `vN` (which
+    collides with neither a register, a `root.version`, nor another `vN`). Runs
+    only on the optimized `ssa` style. **Verified on `CompressToolsLib.dll`:**
+    **110 of 200 functions** coalesce at least one variable; adversarial unit
+    tests confirm the escaping-value, pre-update-tested, and swap hazards are
+    refused while the sound loop counter and parameter-in-loop cases collapse.
   - Still ⬜ for this rung: **local-variable typing/decls** (a source-style
-    typed locals block), **SSA-version coalescing** of *non-entry* versions and
-    phi-webs into one named variable, width/signedness inference from access,
-    and enums.
+    typed locals block), width/signedness inference from access, and enums.
 
 - **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.

@@ -27,6 +27,7 @@ mod dom;
 mod dot;
 mod gamegrep;
 mod icalls;
+mod coalesce;
 mod klass;
 mod ir;
 mod lift;

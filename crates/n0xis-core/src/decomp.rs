@@ -118,6 +118,12 @@ impl Pass for DecompPass {
                 (out.lines, out.has_loop, out.fallback_count, Vec::new())
             }
             DecompStyle::Ssa => {
+                // Coalesce SSA-version phi-webs into named variables (Rung 3b),
+                // computed against the exact blocks this style renders. Only
+                // the optimized style gets this — the raw/structured styles show
+                // the un-coalesced SSA on purpose.
+                let var_names = crate::coalesce::coalesce_vars(&opt.blocks, &types.signature);
+                let names = names.with_coalescing(var_names);
                 let out = structure(&cfg, &opt.blocks, &names);
                 let delta = if input.explain { opt.delta } else { Vec::new() };
                 (out.lines, out.has_loop, out.fallback_count, delta)
