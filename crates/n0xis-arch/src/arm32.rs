@@ -240,12 +240,33 @@ fn op_rvalue(op: &Operand) -> Option<MicroExpr> {
         Operand::Imm32(v) => Some(MicroExpr::constant(*v as i128, 32)),
         Operand::RegShift(rs) => match rs.into_shift() {
             RegShiftStyle::RegImm(s) => {
-                shift_op(s.stype()).map(|op| MicroExpr::binary(op, MicroExpr::var(reg_name(s.shiftee())), MicroExpr::constant(s.imm() as i128, 32)))
+                // `lsl #0` is a plain register (the index-register form of a deref).
+                if s.stype() == ShiftStyle::LSL && s.imm() == 0 {
+                    Some(MicroExpr::var(reg_name(s.shiftee())))
+                } else {
+                    shift_op(s.stype()).map(|op| MicroExpr::binary(op, MicroExpr::var(reg_name(s.shiftee())), MicroExpr::constant(s.imm() as i128, 32)))
+                }
             }
             RegShiftStyle::RegReg(s) => {
                 shift_op(s.stype()).map(|op| MicroExpr::binary(op, MicroExpr::var(reg_name(s.shiftee())), MicroExpr::var(reg_name(s.shifter()))))
             }
         },
+        _ => None,
+    }
+}
+
+/// The effective address of a `ldr`/`str` memory operand and, when it
+/// write-backs, the base register it updates. Handles both `[Rn, #±off]` and the
+/// **shifted-register index** `[Rn, Rm, lsl #k]` / `[Rn, Rm]`. `None` for an
+/// addressing form (or a `ror` index) not modelled.
+fn deref_addr_of(op: &Operand) -> Option<(MicroExpr, Option<String>)> {
+    match op {
+        Operand::RegDerefPreindexOffset(base, off, add, wb) => Some((deref_addr(*base, *off, *add), wb.then(|| reg_name(*base)))),
+        Operand::RegDerefPreindexRegShift(base, rs, add, wb) => {
+            let idx = op_rvalue(&Operand::RegShift(*rs))?;
+            let addr = MicroExpr::binary(if *add { BinOp::Add } else { BinOp::Sub }, MicroExpr::var(reg_name(*base)), idx);
+            Some((addr, wb.then(|| reg_name(*base))))
+        }
         _ => None,
     }
 }
@@ -453,17 +474,16 @@ impl Arch for Arm32 {
                 (Operand::Reg(rd), Some(a), Some(b)) => pred_assign(reg_name(*rd), MicroExpr::binary(BinOp::Mul, a, b), &cond_lc, &mut out),
                 _ => return self.unlifted(&inst, insn),
             },
-            LDR => match (&ops[0], &ops[1]) {
-                (Operand::Reg(rd), Operand::RegDerefPreindexOffset(base, off, add, wb)) => {
-                    let addr = deref_addr(*base, *off, *add);
-                    if *wb {
+            LDR => match (&ops[0], deref_addr_of(&ops[1])) {
+                (Operand::Reg(rd), Some((addr, wb))) => {
+                    if let Some(base) = wb {
                         // A conditional write-back is two conditional effects —
                         // not modelled; the unconditional form is exact.
                         if !cond_al {
                             return self.unlifted(&inst, insn);
                         }
                         out.push(assign(reg_name(*rd), MicroExpr::load(addr.clone(), 32, false)));
-                        out.push(assign(reg_name(*base), addr));
+                        out.push(assign(base, addr));
                     } else {
                         pred_assign(reg_name(*rd), MicroExpr::load(addr, 32, false), &cond_lc, &mut out);
                     }
@@ -472,12 +492,11 @@ impl Arch for Arm32 {
             },
             // A conditional store/compare/call/return is more than one predicated
             // register write; those stay `asm` (sound) until modelled.
-            STR if cond_al => match (&ops[0], &ops[1]) {
-                (Operand::Reg(rs), Operand::RegDerefPreindexOffset(base, off, add, wb)) => {
-                    let addr = deref_addr(*base, *off, *add);
+            STR if cond_al => match (&ops[0], deref_addr_of(&ops[1])) {
+                (Operand::Reg(rs), Some((addr, wb))) => {
                     out.push(MicroStmt::Store { addr: addr.clone(), value: MicroExpr::var(reg_name(*rs)), bits: 32 });
-                    if *wb {
-                        out.push(assign(reg_name(*base), addr));
+                    if let Some(base) = wb {
+                        out.push(assign(base, addr));
                     }
                 }
                 _ => return self.unlifted(&inst, insn),
@@ -716,6 +735,27 @@ mod tests {
                     MicroExpr::binary(BinOp::Shl, MicroExpr::var("r1"), MicroExpr::constant(3, 32)),
                 ),
             }],
+        );
+    }
+
+    #[test]
+    fn a_shifted_index_load_lifts_to_the_scaled_address() {
+        // e7900105 ldr r0, [r0, r5, lsl #2] → r0 = *(r0 + (r5 << 2)).
+        assert_eq!(
+            lift1(&[0x05, 0x01, 0x90, 0xe7]),
+            vec![MicroStmt::Assign {
+                dst: "r0".into(),
+                value: MicroExpr::load(
+                    MicroExpr::binary(BinOp::Add, MicroExpr::var("r0"), MicroExpr::binary(BinOp::Shl, MicroExpr::var("r5"), MicroExpr::constant(2, 32))),
+                    32,
+                    false,
+                ),
+            }],
+        );
+        // e7900005 ldr r0, [r0, r5] (plain register index, lsl #0) → r0 = *(r0 + r5).
+        assert_eq!(
+            lift1(&[0x05, 0x00, 0x90, 0xe7]),
+            vec![MicroStmt::Assign { dst: "r0".into(), value: MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("r0"), MicroExpr::var("r5")), 32, false) }],
         );
     }
 

@@ -2772,11 +2772,15 @@ through plain syscalls — no signed driver, no code-integrity fight:
        errors, ~54 % of lines lifted; plus instruction-level unit tests (data-proc, mem,
        shifted operand, predication→`Select`, push/pop, `bl`, `it`/`ite` then-else,
        `decode_stream` stamping). The shift lift is verified against `llvm-objdump` too:
-       `add.w r0, r6, r5, lsl #3` at `0xa372` → `(… + (r5 << 0x3))`. ⬜ remaining: `ldm`/
-       `stm` beyond push/pop, shifted-index memory (`ldr [r0, r5, lsl #3]`), FP/SIMD, `ror`,
-       and ARM-shaped function discovery (the sweep found functions by their `push {…,lr}`
-       prologue, since discovery is still x64-scanning). All are verifiable now on the same
-       `llvm-objdump` + `toybox`/box-binary loop — no external blocker. `--arch arm32` (A32) / `--arch
+       `add.w r0, r6, r5, lsl #3` at `0xa372` → `(… + (r5 << 0x3))`. **Shifted-index
+       memory** also lifts — `ldr r0,[r0,r5,lsl #2]` → `r0 = *(r0 + (r5 << 2))`, and a plain
+       register index `[r0,r5]` → `*(r0 + r5)` (unit-tested; the Thumb-2 `ldr.w` at `0xa39c`
+       decodes to the same handled operand shape). ⬜ remaining: `ldm`/`stm` beyond
+       push/pop, FP/SIMD, `ror`, and ARM-shaped function discovery — the last needs the
+       prologue mechanism to grow **masked patterns** (Thumb `push {*,lr}` = `[reglist,
+       0xb5]`, a variable first byte the exact-prefix scan can't express), a small core
+       generalization. All verifiable now on the same `llvm-objdump` + `toybox`/box-binary
+       loop — no external blocker. `--arch arm32` (A32) / `--arch
      thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
      BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
      on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-
