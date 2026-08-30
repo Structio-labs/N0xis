@@ -26,8 +26,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use n0xis_arch::{CallTarget, MicroExpr, MicroStmt};
+use n0xis_contracts::Va;
 
-use crate::ssa::SsaBlock;
+use crate::ir::{CfgArtifact, CfgBlock, Successor};
+use crate::ssa::{SsaBlock, SsaStmt};
 use crate::typeinfer::RecoveredSignature;
 
 /// The `flags` pseudo-register is never rendered (it's filtered as noise), so
@@ -362,6 +364,101 @@ pub fn coalesce_vars(blocks: &[SsaBlock], sig: &RecoveredSignature) -> HashMap<S
     out
 }
 
+/// Base for synthetic block addresses minted when splitting a critical edge.
+/// Non-canonical (in the address-space hole, bit 63 set) so it can never
+/// collide with a real image or live address, and stays obviously synthetic in
+/// a rendered `// block_…:` comment.
+pub(crate) const SYNTHETIC_VA_BASE: u64 = 0xF000_0000_0000_0000;
+
+/// Whether an address is a synthetic edge-split block minted by
+/// [`destruct_ssa`] (it has no real instruction address to show).
+pub(crate) fn is_synthetic_va(va: Va) -> bool {
+    va.get() >= SYNTHETIC_VA_BASE
+}
+
+/// Complete SSA destruction: eliminate every phi that [`coalesce_vars`] did
+/// **not** merge, so no phi destination is ever read without a visible
+/// definition (the `rax.6` "undefined variable" artifact). A coalesced phi
+/// needs nothing — its members already share one name and one defining
+/// assignment. A phi that survived coalescing (an interference refused it) is
+/// materialized with edge copies:
+///
+/// ```text
+///   dst = φ(v_i from pred_i)   ->   append  dst = v_i  at the end of pred_i
+/// ```
+///
+/// When the edge `pred_i -> phi-block` is **critical** (`pred_i` has more than
+/// one successor) the copy cannot live in `pred_i` — it would also run on
+/// `pred_i`'s other out-edges — so the edge is split by a fresh fall-through
+/// block that carries the copy. In structured output that split block becomes
+/// the matching `if`/`else` arm. Returns modified copies of the CFG and SSA
+/// blocks (the caller keeps the originals for the other render styles).
+pub fn destruct_ssa(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &HashMap<String, String>) -> (CfgArtifact, Vec<SsaBlock>) {
+    let mut cfg = cfg.clone();
+    let mut blocks = blocks.to_vec();
+    let disp = |n: &str| names.get(n).cloned().unwrap_or_else(|| n.to_string());
+    let id_to_idx: HashMap<usize, usize> = blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+
+    // The copies each edge must carry: (from_idx, phi_block_idx) -> [(dst, val)].
+    let mut edge_copies: BTreeMap<(usize, usize), Vec<(String, String)>> = BTreeMap::new();
+    for (bi, b) in blocks.iter().enumerate() {
+        for phi in &b.phis {
+            if phi.dst.is_empty() {
+                continue;
+            }
+            let dn = disp(&phi.dst);
+            // Coalesced: dst and every input already render as one name.
+            if phi.inputs.iter().all(|i| disp(&i.value) == dn) {
+                continue;
+            }
+            for inp in &phi.inputs {
+                let Some(&fi) = id_to_idx.get(&inp.from_block) else { continue };
+                if disp(&inp.value) == dn {
+                    continue; // this arm already agrees — no copy needed.
+                }
+                edge_copies.entry((fi, bi)).or_default().push((phi.dst.clone(), inp.value.clone()));
+            }
+        }
+    }
+    if edge_copies.is_empty() {
+        return (cfg, blocks);
+    }
+
+    let mut next_id = blocks.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+    let mut synth = 0u64;
+    for ((from_idx, to_idx), copies) in edge_copies {
+        let to_start = blocks[to_idx].start;
+        let copy_stmts: Vec<SsaStmt> = copies
+            .into_iter()
+            .map(|(dst, val)| SsaStmt { va: to_start, stmt: MicroStmt::Assign { dst, value: MicroExpr::var(val) } })
+            .collect();
+        let distinct_succ: HashSet<u64> = cfg.blocks[from_idx].successors.iter().map(|s| s.to.get()).collect();
+
+        if distinct_succ.len() <= 1 {
+            // Non-critical: the copies run exactly when from -> to is taken.
+            blocks[from_idx].stmts.extend(copy_stmts);
+        } else {
+            // Critical: split the edge with a fresh fall-through block. The
+            // copies (phi dsts) are defined at the merge and their sources
+            // before it, so they never conflict and sequentialize in any order.
+            let new_start = Va(SYNTHETIC_VA_BASE + synth);
+            synth += 1;
+            let new_id = next_id;
+            next_id += 1;
+            let succ = vec![Successor { to: to_start, kind: "jmp".into(), confidence: 1.0 }];
+            cfg.blocks.push(CfgBlock { id: new_id, start: new_start, end: new_start, terminator: "jmp".into(), successors: succ.clone(), insns: vec![] });
+            blocks.push(SsaBlock { id: new_id, start: new_start, end: new_start, terminator: "jmp".into(), successors: succ, phis: vec![], stmts: copy_stmts, condition: None });
+            for e in cfg.blocks[from_idx].successors.iter_mut().filter(|e| e.to == to_start) {
+                e.to = new_start;
+            }
+            for e in blocks[from_idx].successors.iter_mut().filter(|e| e.to == to_start) {
+                e.to = new_start;
+            }
+        }
+    }
+    (cfg, blocks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +477,144 @@ mod tests {
 
     fn empty_sig() -> RecoveredSignature {
         RecoveredSignature { params: vec![], ret: None }
+    }
+
+    /// A minimal `CfgArtifact` mirroring the SSA blocks' ids/starts/successors
+    /// — enough for `destruct_ssa`, which only reads `cfg.blocks`.
+    fn mk_cfg(blocks: &[SsaBlock]) -> crate::ir::CfgArtifact {
+        let cfg_blocks = blocks
+            .iter()
+            .map(|b| crate::ir::CfgBlock {
+                id: b.id,
+                start: b.start,
+                end: b.end,
+                terminator: b.terminator.clone(),
+                successors: b.successors.clone(),
+                insns: vec![],
+            })
+            .collect();
+        crate::ir::CfgArtifact {
+            start: blocks[0].start,
+            end: blocks.last().unwrap().end,
+            block_count: blocks.len(),
+            insn_count: 0,
+            blocks: cfg_blocks,
+            callsites: vec![],
+            switches: vec![],
+            frame: n0xis_arch::FrameInfo::default(),
+            stats: crate::ir::CfgStats::default(),
+        }
+    }
+
+    fn succ_to(va: u64, kind: &str) -> crate::ir::Successor {
+        crate::ir::Successor { to: Va(va), kind: kind.into(), confidence: 1.0 }
+    }
+
+    #[test]
+    fn a_critical_edge_phi_is_materialized_by_splitting_the_edge() {
+        // Diamond with an *empty* then-arm, so the then-edge goes straight from
+        // the cjmp block (0x1000, two successors) to the merge (0x1030) — a
+        // critical edge. rax.6 = φ(rax.3 @0x1000, rax.5 @0x1010) is not
+        // coalesced (empty name map), so destruction must define rax.6 on both
+        // paths: the non-critical else-edge (0x1010, one successor) gets the
+        // copy appended, and the critical then-edge is split by a new block.
+        let b0 = SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1008),
+            terminator: "cjmp".into(),
+            successors: vec![succ_to(0x1030, "cjmp-true"), succ_to(0x1010, "cjmp-false")],
+            phis: vec![],
+            stmts: vec![assign("rax.3", MicroExpr::constant(7, 64))],
+            condition: Some(MicroExpr::binary(BinOp::Ne, MicroExpr::var("rcx.0"), MicroExpr::constant(0, 64))),
+        };
+        let b2 = SsaBlock {
+            id: 2,
+            start: Va(0x1010),
+            end: Va(0x1018),
+            terminator: "jmp".into(),
+            successors: vec![succ_to(0x1030, "jmp")],
+            phis: vec![],
+            stmts: vec![assign("rax.5", MicroExpr::load(MicroExpr::var("rcx.0"), 64, false))],
+            condition: None,
+        };
+        let b3 = SsaBlock {
+            id: 3,
+            start: Va(0x1030),
+            end: Va(0x1038),
+            terminator: "ret".into(),
+            successors: vec![],
+            phis: vec![Phi {
+                var: "rax".into(),
+                dst: "rax.6".into(),
+                inputs: vec![PhiInput { from_block: 0, value: "rax.3".into() }, PhiInput { from_block: 2, value: "rax.5".into() }],
+            }],
+            stmts: vec![SsaStmt { va: Va(0), stmt: MicroStmt::Return(Some(MicroExpr::var("rax.6"))) }],
+            condition: None,
+        };
+        let cfg = mk_cfg(&[b0.clone(), b2.clone(), b3.clone()]);
+        let names: HashMap<String, String> = HashMap::new();
+        let (dcfg, dblocks) = destruct_ssa(&cfg, &[b0, b2, b3], &names);
+
+        // A split block was appended (both views stay index-aligned).
+        assert_eq!(dblocks.len(), 4);
+        assert_eq!(dcfg.blocks.len(), 4);
+
+        let is_copy = |s: &SsaStmt, d: &str, v: &str| matches!(&s.stmt, MicroStmt::Assign { dst, value } if dst == d && *value == MicroExpr::var(v));
+        // The non-critical else-edge appended `rax.6 = rax.5` to block 0x1010 (index 1).
+        assert!(dblocks[1].stmts.iter().any(|s| is_copy(s, "rax.6", "rax.5")), "{:?}", dblocks[1].stmts);
+        // The split block (index 3) carries the then-edge copy `rax.6 = rax.3`.
+        assert!(dblocks[3].stmts.iter().any(|s| is_copy(s, "rax.6", "rax.3")), "{:?}", dblocks[3].stmts);
+        // The cjmp's true-edge was redirected off the merge, and the split block
+        // falls through to it — in both the SSA and CFG views.
+        assert!(!dblocks[0].successors.iter().any(|e| e.to == Va(0x1030)), "true edge must be redirected: {:?}", dblocks[0].successors);
+        assert!(!dcfg.blocks[0].successors.iter().any(|e| e.to == Va(0x1030)), "cfg true edge must be redirected too");
+        assert!(dblocks[3].successors.iter().any(|e| e.to == Va(0x1030)), "split block must fall through to the merge");
+    }
+
+    #[test]
+    fn a_coalesced_phi_needs_no_edge_copies() {
+        // When the phi's members all coalesce to one name, destruction inserts
+        // nothing (the shared name is already defined by the real assignments).
+        let b0 = SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1004),
+            terminator: "jmp".into(),
+            successors: vec![succ_to(0x1004, "jmp")],
+            phis: vec![],
+            stmts: vec![assign("rcx.1", MicroExpr::constant(3, 64))],
+            condition: None,
+        };
+        let b1 = SsaBlock {
+            id: 1,
+            start: Va(0x1004),
+            end: Va(0x1008),
+            terminator: "cjmp".into(),
+            successors: vec![succ_to(0x1004, "cjmp-true"), succ_to(0x1008, "cjmp-false")],
+            phis: vec![Phi {
+                var: "rcx".into(),
+                dst: "rcx.2".into(),
+                inputs: vec![PhiInput { from_block: 0, value: "rcx.1".into() }, PhiInput { from_block: 1, value: "rcx.3".into() }],
+            }],
+            stmts: vec![assign("rcx.3", MicroExpr::binary(BinOp::Sub, MicroExpr::var("rcx.2"), MicroExpr::constant(1, 64)))],
+            condition: Some(MicroExpr::binary(BinOp::Ne, MicroExpr::var("rcx.3"), MicroExpr::constant(0, 64))),
+        };
+        let b2 = SsaBlock {
+            id: 2,
+            start: Va(0x1008),
+            end: Va(0x1009),
+            terminator: "ret".into(),
+            successors: vec![],
+            phis: vec![],
+            stmts: vec![SsaStmt { va: Va(0), stmt: MicroStmt::Return(None) }],
+            condition: None,
+        };
+        let cfg = mk_cfg(&[b0.clone(), b1.clone(), b2.clone()]);
+        // The loop counter coalesces to one name -> the phi is satisfied.
+        let names = coalesce_vars(&[b0.clone(), b1.clone(), b2.clone()], &empty_sig());
+        let (_dcfg, dblocks) = destruct_ssa(&cfg, &[b0, b1, b2], &names);
+        assert_eq!(dblocks.len(), 3, "no split blocks should be added for a coalesced phi");
     }
 
     #[test]

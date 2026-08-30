@@ -1510,6 +1510,21 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     **110 of 200 functions** coalesce at least one variable; adversarial unit
     tests confirm the escaping-value, pre-update-tested, and swap hazards are
     refused while the sound loop counter and parameter-in-loop cases collapse.
+  - **3d — complete SSA destruction (edge copies for un-coalesced phis).** ✅
+    *(2026-08-30, verified.)* A phi that coalescing *refused* (an interference)
+    previously left its destination read with no visible definition — the
+    `rax.6` "undefined variable" artifact. Destruction now materializes every
+    such phi by inserting copies on its incoming edges (`dst = φ(v_i)` →
+    `dst = v_i` at the end of each predecessor). A **critical** edge (the
+    predecessor has more than one successor) is **split** by a fresh
+    fall-through block that carries the copy — in structured output that block
+    becomes the matching `if`/`else` arm. Coalesced phis need nothing. **Verified
+    on `CompressToolsLib.dll`:** all **200 functions decompile with zero errors
+    at 0.969 average quality**, **90** use edge-split destruction (326 split
+    blocks), and the showcase `sub_180002380`'s `rax.6` is now defined on both
+    arms (`if (…) { rax.6 = rcx; } else { rax.5 = *rcx; rax.6 = rax.5; }`).
+    Synthetic split-block addresses are non-canonical and render as
+    `// block_N: (edge split)`.
   - Still ⬜ for this rung: **local-variable typing/decls** (a source-style
     typed locals block), width/signedness inference from access, and enums.
 

@@ -454,7 +454,12 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
     let body_lines: Vec<Vec<String>> = blocks
         .iter()
         .map(|b| {
-            let mut lines = vec![format!("// block_{}: {}", b.id, b.start)];
+            let header = if crate::coalesce::is_synthetic_va(b.start) {
+                format!("// block_{}: (edge split)", b.id)
+            } else {
+                format!("// block_{}: {}", b.id, b.start)
+            };
+            let mut lines = vec![header];
             lines.extend(b.stmts.iter().filter_map(|s| render_stmt(&s.stmt, names)));
             lines
         })
