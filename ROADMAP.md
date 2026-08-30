@@ -2525,16 +2525,20 @@ through plain syscalls — no signed driver, no code-integrity fight:
      than desktop/game binary RE). The relevant ARM target is AArch64 (modern phones, Apple
      Silicon, ARM servers, current Android games). Adding AArch32 would be a whole separate ISA
      (A32/T32/Thumb) for a shrinking audience — explicitly out of scope.
-8. ⬜ **Static ELF loading — a Linux-native gap surfaced by the QA sweep.** The static
-   loader is PE-only (`StaticPe`/goblin's PE path): a real ELF (e.g. Factorio's 244 MB Linux
-   x86-64 build, or any Linux `.so`) is rejected with `load-failed: DOS header is malformed`.
-   It fails *cleanly* (no panic/OOM — confirmed by the fuzzing pass), but a tool that runs on
-   Linux and cannot statically analyze a Linux binary is an obvious hole. goblin already
-   parses ELF; this is a new `StaticElf` source behind the existing seam (section map, symbol
-   table — ELF binaries are often *not stripped*, a symbol windfall), decode/CFG/decomp then
-   work unchanged (verified: feeding a Factorio function's raw `.text` via `--bytes --arch x64`
-   decompiles at quality 1.0). System V vs Win64 calling-convention recovery (Rung 4) is the
-   related follow-on so the *signature* is right, not just the body.
+8. ✅ **Static ELF loading.** *(2026-08-30, verified.)* `--file` now sniffs the leading magic
+   (`MZ` → PE, `\x7fELF` → ELF) and routes to the right parser via a unified `StaticImage`
+   enum; the old `load-failed: DOS header is malformed` on a Linux binary is gone. The new
+   `StaticElf` source (goblin's ELF path) mirrors `StaticPe` behind the same seams: a section
+   map for `read`/`code_ranges` (allocated sections, `.bss` reads short), the preferred base
+   from the minimum `PT_LOAD` vaddr, and **defined function symbols from `.symtab`/`.dynsym`**
+   (ELF binaries are often *not stripped* — a windfall). **Verified:** **Tiny Glade** (Bevy/Rust
+   PIE, not stripped) — 38 048 functions discovered, Rust names recovered and demangled
+   (`once_cell::imp::OnceCell<T>::initialize` decompiles at quality 1.0); **Factorio** (GCC/System
+   V, 24 106 functions) decompiles at 1.0 with `.dynsym` naming the OpenSSL calls
+   (`factorio__BIO_new_ssl_connect`, `BIO_push`). Follow-ons: **System V calling-convention
+   recovery** (Rung 4 is Win64-register-specific, so ELF *signatures*/args are not yet right — the
+   body is), **PLT/GOT import-slot naming** (`iat_slot` returns `None` on ELF today), and **DWARF**
+   type/line recovery from `.debug_info` (Tiny Glade carries it — a ground-truth goldmine).
 9. ⬜ **LuaJIT 2.1 (bytecode dump v2).** `lua disasm`/`patch` read only the LuaJIT **2.0**
    dump (version 1); modern games ship LuaJIT 2.1 (dump v2), which is rejected
    (`unsupported LuaJIT dump version 2`). Add the v2 reader.

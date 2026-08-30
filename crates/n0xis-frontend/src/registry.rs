@@ -365,7 +365,7 @@ fn with_scan_ctx(
             Ok(v) => v,
             Err(e) => return Response::error("bad-addr", e.to_string()),
         };
-        let pe = match n0xis_sources::StaticPe::load(std::path::Path::new(file)) {
+        let pe = match n0xis_sources::StaticImage::load(std::path::Path::new(file)) {
             Ok(p) => p,
             Err(e) => return Response::error("load-failed", e.to_string()),
         };
@@ -1046,7 +1046,7 @@ impl Plugin for AnalysisPasses {
                         Err((c, m)) => Err(Response::error(&c, m)),
                     }
                 } else if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
-                    match n0xis_sources::StaticPe::load(std::path::Path::new(file)) {
+                    match n0xis_sources::StaticImage::load(std::path::Path::new(file)) {
                         Ok(pe) => {
                             let label = n0xis_sources::MemorySource::label(&pe);
                             match n0xis_core::parse_aot(&pe, pe.image_base()) {

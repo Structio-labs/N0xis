@@ -6,7 +6,7 @@
 //! already drifted — see [`resolve`]'s note on the session default.
 
 use n0xis_contracts::Va;
-use n0xis_sources::{LiveTarget, MemorySource, ModuleProvider, RemoteAgent, Snapshot, StaticPe, split_command_line};
+use n0xis_sources::{LiveTarget, MemorySource, ModuleProvider, RemoteAgent, Snapshot, StaticImage, split_command_line};
 
 /// A stable `(code, message)` pair. Frontends turn it into their own error
 /// shape — `{ok:false,error:{code,message}}` for both the CLI and MCP, which
@@ -31,7 +31,7 @@ fn err(code: &str, message: impl Into<String>) -> FrontendError {
 /// `match`.
 pub enum Src {
     Live(Box<dyn LiveTarget>),
-    Static(Box<StaticPe>),
+    Static(Box<StaticImage>),
     Snap(Snapshot),
     Remote(Box<RemoteAgent>),
 }
@@ -257,7 +257,7 @@ pub fn resolve(spec: SourceSpec<'_>) -> Result<ResolvedSource, FrontendError> {
         return Ok(ResolvedSource { src: Src::Live(live), label, region_len: None });
     }
     if let Some(file) = file {
-        let pe = StaticPe::load(std::path::Path::new(file)).map_err(|e| err("load-failed", e.to_string()))?;
+        let pe = StaticImage::load(std::path::Path::new(file)).map_err(|e| err("load-failed", e.to_string()))?;
         let label = pe.label();
         return Ok(ResolvedSource { src: Src::Static(Box::new(pe)), label, region_len: None });
     }

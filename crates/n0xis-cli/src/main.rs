@@ -51,7 +51,7 @@ use n0xis_pipeline::{Pipeline, cfg_cached};
 // (offline sources), `RemoteAgent`/`remote_serve_stdio` (the SSH/remote-serve
 // transport — a Linux box can drive a *remote* Windows target over this
 // without itself needing Win32) — none of these require the `live` feature.
-use n0xis_sources::{MemorySource, Snapshot, StaticPe, remote_serve_stdio};
+use n0xis_sources::{MemorySource, Snapshot, StaticImage, remote_serve_stdio};
 // Live-process (Win32) sources: only ever compiled in on Windows, matching
 // n0xis-sources' own `#[cfg(feature = "live")]` gates (see its lib.rs) and
 // this crate's Cargo.toml `[target.'cfg(windows)'.dependencies]` split.
@@ -3359,7 +3359,7 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
     }
 
     if let Some(file) = a.file.as_deref() {
-        let pe = match StaticPe::load(std::path::Path::new(file)) {
+        let pe = match StaticImage::load(std::path::Path::new(file)) {
             Ok(pe) => pe,
             Err(e) => {
                 return emit(

@@ -30,6 +30,14 @@ pub use plugin::{call_once as plugin_call_once, PluginSession};
 mod static_pe;
 #[cfg(feature = "static-pe")]
 pub use static_pe::StaticPe;
+#[cfg(feature = "static-pe")]
+mod static_elf;
+#[cfg(feature = "static-pe")]
+pub use static_elf::StaticElf;
+#[cfg(feature = "static-pe")]
+mod static_image;
+#[cfg(feature = "static-pe")]
+pub use static_image::StaticImage;
 
 // The live-target seam itself is OS-free and always compiled: `trait
 // LiveTarget` plus the vocabulary its answers are phrased in. Frontends can
