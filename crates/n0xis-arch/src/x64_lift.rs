@@ -568,25 +568,47 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             let keep = read_operand(&instr, 0);
             write_operand(&instr, 0, MicroExpr::select(cond, src, keep), &mut out);
         }
-        _ => {
-            // Unrecognized instruction: preserve it verbatim (never silently
-            // drop semantics — CONCEPT §3 rule 6), *and* soundly invalidate
-            // everything it might have written, using the arch's own
-            // register-access info so a later read can't reuse a stale SSA
-            // value across an instruction we don't understand.
-            out.push(MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() });
-            let access = arch.reg_access(insn);
-            for w in &access.writes {
-                out.push(MicroStmt::Assign {
-                    dst: w.clone(),
-                    value: MicroExpr::Unknown(insn.text.clone()),
-                });
+        Mnemonic::Rol | Mnemonic::Ror => {
+            // A rotate by an **immediate** is exact as a shift/shift/or, which is
+            // also the shape a reverse-engineer recognizes (hash/PRNG code is
+            // full of them — making them visible feeds `const identify`). Only
+            // the immediate, 32/64-bit form is lifted: a `CL`-count rotate would
+            // need the x86 count-masking modelled to stay sound, so it falls
+            // through to the opaque path instead of guessing.
+            let width = op_bits(&instr, 0);
+            let n = (instr.immediate8() as u32) & width.saturating_sub(1);
+            if instr.op1_kind() == OpKind::Immediate8 && (width == 32 || width == 64) && n != 0 {
+                // `rol n` = (x << n) | (x >> (w-n)); `ror n` swaps the two shift
+                // *directions* — note each direction keeps its own amount, so
+                // the two forms are not a mere reordering of the same shifts.
+                let shift = |op, amount: u32| MicroExpr::binary(op, read_operand(&instr, 0), MicroExpr::constant(amount as i128, width));
+                let value = match mn {
+                    Mnemonic::Rol => MicroExpr::binary(BinOp::Or, shift(BinOp::Shl, n), shift(BinOp::Shr, width - n)),
+                    _ => MicroExpr::binary(BinOp::Or, shift(BinOp::Shr, n), shift(BinOp::Shl, width - n)),
+                };
+                write_operand(&instr, 0, value, &mut out);
+                out.push(opaque_flags(mn));
+            } else {
+                lift_opaque(arch, insn, mn, &mut out);
             }
-            out.push(opaque_flags(mn));
         }
+        _ => lift_opaque(arch, insn, mn, &mut out),
     }
 
     out
+}
+
+/// Unrecognized (or deliberately unmodelled) instruction: preserve it verbatim
+/// (never silently drop semantics — CONCEPT §3 rule 6), *and* soundly
+/// invalidate everything it might have written, using the arch's own
+/// register-access info so a later read can't reuse a stale SSA value across an
+/// instruction we don't understand.
+fn lift_opaque(arch: &crate::X64, insn: &DecodedInsn, mn: Mnemonic, out: &mut Vec<MicroStmt>) {
+    out.push(MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() });
+    for w in &arch.reg_access(insn).writes {
+        out.push(MicroStmt::Assign { dst: w.clone(), value: MicroExpr::Unknown(insn.text.clone()) });
+    }
+    out.push(opaque_flags(mn));
 }
 
 /// The x64 condition-code table: which combination of `"flags"` each `Jcc`
@@ -716,6 +738,51 @@ mod tests {
         // movaps xmm1, xmm0  = 0F 28 C8
         let stmts = lift_one(&[0x0F, 0x28, 0xC8]);
         assert_eq!(stmts, vec![MicroStmt::Assign { dst: "xmm1".into(), value: MicroExpr::var("xmm0") }]);
+    }
+
+    #[test]
+    fn rol_by_an_immediate_lifts_to_the_exact_shift_or_shift() {
+        // rol eax, 5  = C1 C0 05  ->  eax = (eax << 5) | (eax >> 27)
+        let stmts = lift_one(&[0xC1, 0xC0, 0x05]);
+        assert_eq!(
+            stmts[0],
+            MicroStmt::Assign {
+                dst: "rax".into(),
+                value: MicroExpr::binary(
+                    BinOp::Or,
+                    MicroExpr::binary(BinOp::Shl, MicroExpr::var("rax"), MicroExpr::constant(5, 32)),
+                    MicroExpr::binary(BinOp::Shr, MicroExpr::var("rax"), MicroExpr::constant(27, 32)),
+                ),
+            },
+        );
+    }
+
+    #[test]
+    fn ror_by_an_immediate_mirrors_rol() {
+        // ror eax, 5  = C1 C8 05  ->  eax = (eax >> 5) | (eax << 27)
+        let stmts = lift_one(&[0xC1, 0xC8, 0x05]);
+        assert_eq!(
+            stmts[0],
+            MicroStmt::Assign {
+                dst: "rax".into(),
+                value: MicroExpr::binary(
+                    BinOp::Or,
+                    MicroExpr::binary(BinOp::Shr, MicroExpr::var("rax"), MicroExpr::constant(5, 32)),
+                    MicroExpr::binary(BinOp::Shl, MicroExpr::var("rax"), MicroExpr::constant(27, 32)),
+                ),
+            },
+        );
+    }
+
+    #[test]
+    fn a_register_count_rotate_stays_opaque_rather_than_guess_the_mask() {
+        // rol eax, cl  = D3 C0 — a CL-count rotate needs x86 count-masking to be
+        // sound, so it is preserved verbatim, not lifted to an unmasked shift.
+        let stmts = lift_one(&[0xD3, 0xC0]);
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { .. })),
+            "a variable-count rotate must stay opaque: {stmts:?}",
+        );
     }
 
     #[test]

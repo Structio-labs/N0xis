@@ -1707,6 +1707,20 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     now reads `__umin(rbx.3, r8.29)`; a sweep of 80 functions each recovered 16
     min/max on `Kenshi` and 38 on `Tiny Glade` (Rust's slice-bound and clamp code),
     0 on `Factorio` in-sample, with 240/240 ok and 0 errors.
+  - **5g — immediate rotate lift (`rol`/`ror`).** ✅ *(2026-08-30, verified.)* A
+    rotate by an immediate is *exactly* a shift/shift/or, and it needs no new IR node:
+    `rol x, n` → `(x << n) | (x >> (w-n))`, `ror` mirrors the directions (each keeps
+    its own amount — the two forms are not a reordering of the same shifts). Low by
+    raw count but high-value for the `const identify` workflow: hash/PRNG code is
+    built from rotates, and making them visible is what lets a rotate-heavy mix be
+    recognized. Only the immediate, 32/64-bit form is lifted — a `CL`-count rotate
+    would need x86 count-masking modelled to stay sound, so it falls through to the
+    opaque path rather than emitting an unmasked shift. The old catch-all was
+    extracted to a shared `lift_opaque` helper so both paths invalidate writes
+    identically. **Verified:** `Tiny Glade` `sub_305686` now reads
+    `rcx.11 = ((rcx.10 << 0xd) | (rcx.10 >> 0x33))` — a 64-bit `rol rcx, 13`
+    (`0xd + 0x33 = 64`), a hash mix laid bare; `rol`/`ror` leave the census; sweep of
+    80 functions each on `Kenshi`, `Factorio`, `Tiny Glade`: 240/240 ok, 0 errors.
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control
