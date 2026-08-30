@@ -232,6 +232,19 @@ fn ret_reg(regs: &RegisterFile, cc: &CallConv) -> String {
     regs.name(cc.ret).unwrap_or("rax").to_string()
 }
 
+/// Pick the [`CallConv`] whose name matches the source `abi` (e.g. `"sysv"`
+/// for an ELF, `"win64"` for a PE), falling back to the arch's first/native
+/// convention when the name is unknown. This is what makes a `call`'s argument
+/// registers *and* its caller-saved clobber set follow the target's ABI rather
+/// than always assuming Win64 — on System V that both forwards the right
+/// registers (`rdi, rsi, …`) and, crucially, invalidates `rsi`/`rdi` across the
+/// call (they are caller-saved there but callee-saved on Win64), so a later read
+/// can't unsoundly reuse a pre-call value.
+fn cc_for<'a>(arch: &'a crate::X64, abi: &str) -> &'a CallConv {
+    let ccs = arch.calling_conventions();
+    ccs.iter().find(|c| c.name == abi).unwrap_or(&ccs[0])
+}
+
 /// The callee expression of a call-like instruction: a direct near-branch
 /// operand, else the RIP-relative memory operand (the IAT-slot shape of both
 /// `call qword ptr [rip+disp]` and an import thunk's `jmp qword ptr
@@ -263,11 +276,11 @@ fn call_target(instr: &Instruction, insn: &DecodedInsn) -> CallTarget {
 /// No clobber invalidation and no flags statement follow the call here (as
 /// they do for an ordinary call): control returns to *this function's* caller,
 /// so nothing in this frame can observe a clobbered register afterwards.
-pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
+pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
     let Some(instr) = decode_raw(insn) else {
         return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
     };
-    let cc = &arch.calling_conventions()[0];
+    let cc = cc_for(arch, abi);
     let ret = ret_reg(arch.regs(), cc);
     vec![
         MicroStmt::Call {
@@ -279,7 +292,7 @@ pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn) -> Vec<Micro
     ]
 }
 
-pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
+pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
     let Some(instr) = decode_raw(insn) else {
         return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
     };
@@ -407,7 +420,7 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn) -> Vec<MicroStmt> {
             out.push(MicroStmt::Return(Some(MicroExpr::var("rax"))));
         }
         Mnemonic::Call => {
-            let cc = &arch.calling_conventions()[0];
+            let cc = cc_for(arch, abi);
             out.push(MicroStmt::Call {
                 target: call_target(&instr, insn),
                 args: call_args(arch.regs(), cc),
@@ -527,7 +540,7 @@ mod tests {
     fn lift_one(bytes: &[u8]) -> Vec<MicroStmt> {
         let arch = X64::new();
         let insns = arch.decode_stream(bytes, Va(0x1000), 4);
-        arch.lift(&insns[0])
+        arch.lift(&insns[0], "win64")
     }
 
     /// The `flags = <expr>` value written by the last statement of a lifted
@@ -654,10 +667,70 @@ mod tests {
         )));
     }
 
+    fn lift_one_abi(bytes: &[u8], abi: &str) -> Vec<MicroStmt> {
+        let arch = X64::new();
+        let insns = arch.decode_stream(bytes, Va(0x1000), 4);
+        arch.lift(&insns[0], abi)
+    }
+
+    fn call_arg_regs(stmts: &[MicroStmt]) -> Vec<String> {
+        let Some(MicroStmt::Call { args, .. }) = stmts.iter().find(|s| matches!(s, MicroStmt::Call { .. })) else {
+            panic!("expected a Call stmt in {stmts:?}");
+        };
+        args.iter()
+            .map(|a| match a {
+                MicroExpr::Var(n) => n.clone(),
+                other => panic!("a call arg should be a register var, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_system_v_call_forwards_the_sysv_argument_registers_not_the_win64_ones() {
+        // call +5, lowered under the ELF/System V ABI.
+        let stmts = lift_one_abi(&[0xE8, 0x00, 0x00, 0x00, 0x00], "sysv");
+        assert_eq!(
+            call_arg_regs(&stmts),
+            ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
+            "System V passes six integer args starting at rdi, not the Win64 rcx,rdx,r8,r9",
+        );
+    }
+
+    #[test]
+    fn a_system_v_call_invalidates_rsi_and_rdi_which_win64_would_wrongly_preserve() {
+        // The soundness half of ABI-aware lifting: rsi/rdi are caller-saved on
+        // System V (clobbered by any call) but callee-saved on Win64. Lowering an
+        // ELF call with the Win64 clobber set would let a later read reuse a
+        // pre-call rsi/rdi value that the callee is free to have destroyed.
+        let call = &[0xE8, 0x00, 0x00, 0x00, 0x00];
+        let clobbered = |stmts: &[MicroStmt], reg: &str| {
+            stmts.iter().any(|s| matches!(
+                s,
+                MicroStmt::Assign { dst, value: MicroExpr::Unknown(_) } if dst == reg
+            ))
+        };
+
+        let sysv = lift_one_abi(call, "sysv");
+        assert!(clobbered(&sysv, "rsi"), "rsi is caller-saved on System V");
+        assert!(clobbered(&sysv, "rdi"), "rdi is caller-saved on System V");
+
+        let win64 = lift_one_abi(call, "win64");
+        assert!(!clobbered(&win64, "rsi"), "rsi is callee-saved on Win64 — must survive the call");
+        assert!(!clobbered(&win64, "rdi"), "rdi is callee-saved on Win64 — must survive the call");
+    }
+
+    #[test]
+    fn an_unknown_abi_falls_back_to_the_native_win64_convention() {
+        // A source whose abi_name the arch does not recognize must not crash or
+        // drop calls — it gets the arch's first/native convention.
+        let stmts = lift_one_abi(&[0xE8, 0x00, 0x00, 0x00, 0x00], "made-up");
+        assert_eq!(call_arg_regs(&stmts), ["rcx", "rdx", "r8", "r9"]);
+    }
+
     fn lift_tail_one(bytes: &[u8]) -> Vec<MicroStmt> {
         let arch = X64::new();
         let insns = arch.decode_stream(bytes, Va(0x1000), 4);
-        arch.lift_tail_call(&insns[0])
+        arch.lift_tail_call(&insns[0], "win64")
     }
 
     #[test]

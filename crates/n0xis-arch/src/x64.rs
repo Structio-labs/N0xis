@@ -329,12 +329,12 @@ impl Arch for X64 {
         access
     }
 
-    fn lift(&self, insn: &DecodedInsn) -> Vec<crate::MicroStmt> {
-        crate::x64_lift::lift(self, insn)
+    fn lift(&self, insn: &DecodedInsn, abi: &str) -> Vec<crate::MicroStmt> {
+        crate::x64_lift::lift(self, insn, abi)
     }
 
-    fn lift_tail_call(&self, insn: &DecodedInsn) -> Vec<crate::MicroStmt> {
-        crate::x64_lift::lift_tail_call(self, insn)
+    fn lift_tail_call(&self, insn: &DecodedInsn, abi: &str) -> Vec<crate::MicroStmt> {
+        crate::x64_lift::lift_tail_call(self, insn, abi)
     }
 
     fn branch_condition(&self, mnemonic: &str, flags_value: &crate::MicroExpr) -> crate::MicroExpr {

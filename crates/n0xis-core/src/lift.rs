@@ -75,10 +75,11 @@ impl Pass for LiftPass {
                 };
                 match decoded {
                     Some(decoded) => {
+                        let abi = ctx.source.abi_name();
                         let lowered = if tail_index == Some(idx) {
-                            ctx.arch.lift_tail_call(&decoded)
+                            ctx.arch.lift_tail_call(&decoded, abi)
                         } else {
-                            ctx.arch.lift(&decoded)
+                            ctx.arch.lift(&decoded, abi)
                         };
                         for stmt in lowered {
                             stmts.push(LiftedStmt { va: insn.va, stmt });

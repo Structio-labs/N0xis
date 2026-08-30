@@ -1563,11 +1563,25 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     Win64 `rcx`/`rdx`/`r8`/`r9`. **Verified:** `Factorio` (ELF) — `sub_fe2424` now
     reads `(uint64_t rdi, uint64_t rsi, uint64_t rdx, struct_rcx_0 *rcx)` (System V,
     4th arg typed as a struct pointer), while `Kenshi` (PE) is unchanged at Win64
-    (`sub_1800010d0(struct_rcx_0 *rcx, uint64_t rdx)`). Follow-on: the *lift's*
-    call-site arguments are still emitted Win64-shaped (it uses
-    `calling_conventions()[0]`), so an ELF **call site** shows the wrong argument
-    registers even though the function's own signature is now right — making the
-    lift ABI-aware is the remaining ⬜.
+    (`sub_1800010d0(struct_rcx_0 *rcx, uint64_t rdx)`). Follow-on **4d** closes the
+    lift half.
+  - **4d — ABI-aware *call sites* in the lift.** ✅ *(2026-08-30, verified.)* 4c
+    fixed each function's own signature, but the lift still emitted every `call`'s
+    arguments and clobbers Win64-shaped (`calling_conventions()[0]`), so an ELF
+    **call site** showed the wrong registers even where the signature was right. The
+    lift now takes the source `abi` (threaded from `MemorySource::abi_name` through
+    `Arch::lift`/`lift_tail_call`) and selects the matching `CallConv`. Two effects,
+    one cosmetic and one **sound-critical**: (1) a System V call forwards
+    `rdi, rsi, rdx, rcx, r8, r9` instead of the four Win64 registers; (2) it now
+    invalidates `rsi`/`rdi` across the call — caller-saved on System V but
+    callee-saved on Win64 — so a later read can no longer unsoundly reuse a pre-call
+    value the callee was free to destroy. An unknown ABI falls back to the arch's
+    native (first) convention. **Verified:** `Factorio` (ELF) `sub_fe2104` now emits
+    `BIO_new(rax.1, rsi.1, rdx.1, rcx.1, r8.1, r9.1)` (six System V registers, arg 1
+    being rdi's value from the preceding `mov rdi, rax`), while `Kenshi` (PE) call
+    sites stay Win64 (`(rcx.2, rdx.2, r8, r9)`). Corpus sweep — 40 call-bearing
+    functions each on `Factorio`, `Tiny Glade` (ELF) and `Kenshi` (PE): 120/120 ok,
+    0 errors, 0 anomalies.
   - **4b — drop lift-padding call arguments.** ✅ *(2026-08-30, verified.)* The
     same fixed four-register call convention meant *every* call to a callee not
     in the signature library rendered four arguments (`sub_X(rdi.1, rdx, v1,

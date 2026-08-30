@@ -164,7 +164,14 @@ pub trait Arch {
 
     /// Lower one instruction to micro-IR. Default: preserves the instruction
     /// verbatim (sound, uninterpreted) — ISA impls override per-mnemonic.
-    fn lift(&self, insn: &DecodedInsn) -> Vec<MicroStmt> {
+    ///
+    /// `abi` names the source's calling convention (e.g. `"win64"`, `"sysv"`);
+    /// it selects which [`CallConv`] a `call` forwards as arguments and which
+    /// registers it invalidates as caller-saved. A convention this arch does
+    /// not expose falls back to its first (native default). The default `lift`
+    /// emits no calls, so it ignores `abi`.
+    fn lift(&self, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
+        let _ = abi;
         vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }]
     }
 
@@ -179,8 +186,8 @@ pub trait Arch {
     /// Default: whatever `lift` produces, i.e. no promotion. An ISA with no
     /// override keeps the honest "structural edge only" behavior rather than
     /// synthesizing a call it has no lowering for.
-    fn lift_tail_call(&self, insn: &DecodedInsn) -> Vec<MicroStmt> {
-        self.lift(insn)
+    fn lift_tail_call(&self, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
+        self.lift(insn, abi)
     }
 
     /// Turn a conditional-branch mnemonic (`"je"`, `"jg"`, …) plus the
