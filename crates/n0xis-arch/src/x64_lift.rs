@@ -22,8 +22,8 @@ use crate::{Arch, CallConv, RegisterFile};
 /// intentionally omits. Mirrors `x64::decode_raw` (kept separate: that one is
 /// private to `x64.rs`, and duplicating a 6-line decode is cheaper than
 /// threading visibility through a third module).
-fn decode_raw(insn: &DecodedInsn) -> Option<Instruction> {
-    let mut decoder = Decoder::with_ip(64, &insn.bytes, insn.va.0, DecoderOptions::NONE);
+fn decode_raw(insn: &DecodedInsn, bitness: u32) -> Option<Instruction> {
+    let mut decoder = Decoder::with_ip(bitness, &insn.bytes, insn.va.0, DecoderOptions::NONE);
     if !decoder.can_decode() {
         return None;
     }
@@ -448,7 +448,7 @@ fn call_target(instr: &Instruction, insn: &DecodedInsn) -> CallTarget {
 /// they do for an ordinary call): control returns to *this function's* caller,
 /// so nothing in this frame can observe a clobbered register afterwards.
 pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
-    let Some(instr) = decode_raw(insn) else {
+    let Some(instr) = decode_raw(insn, arch.bitness()) else {
         return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
     };
     let cc = cc_for(arch, abi);
@@ -464,7 +464,7 @@ pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -
 }
 
 pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
-    let Some(instr) = decode_raw(insn) else {
+    let Some(instr) = decode_raw(insn, arch.bitness()) else {
         return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
     };
     let mut out: Vec<MicroStmt> = Vec::new();

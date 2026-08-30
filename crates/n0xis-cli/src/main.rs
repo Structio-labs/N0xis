@@ -3412,6 +3412,12 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
                 );
             }
         };
+        // A 32-bit PE32 auto-selects the i386 decoder, so a bare `disasm --file`
+        // decodes it correctly instead of mis-reading it as x64.
+        let arch = match n0xis_frontend::pick_arch(a.arch.as_deref(), !pe.is_64()) {
+            Ok(x) => x,
+            Err(e) => return ir_err("bad-arch", &e, pretty),
+        };
         if !pe.contains(start) {
             return emit(
                 &Response::<serde_json::Value>::error(

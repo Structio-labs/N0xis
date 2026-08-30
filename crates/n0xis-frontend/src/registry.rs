@@ -192,10 +192,6 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
         Ok(v) => v,
         Err((code, msg)) => return Response::error(code, msg),
     };
-    let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
-        Ok(a) => a,
-        Err(e) => return Response::error("bad-arch", e),
-    };
     let addr_rva = bool_arg(args, "addr_rva");
 
     // With `addr_rva` the real address is not known until the source is open
@@ -210,6 +206,12 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     let resolved = match resolve(spec) {
         Ok(r) => r,
         Err((c, m)) => return Response::error(&c, m),
+    };
+    // Arch is picked *after* the source so a 32-bit PE auto-selects the i386
+    // decoder instead of being mis-read as x64 (the silent-garbage bug).
+    let arch = match crate::pick_arch(args.get("arch").and_then(|v| v.as_str()), !resolved.src.is_64()) {
+        Ok(a) => a,
+        Err(e) => return Response::error("bad-arch", e),
     };
     let start = if addr_rva {
         match crate::source::base_for_module(&resolved.src, args.get("addr_module").and_then(|v| v.as_str())) {
@@ -281,15 +283,16 @@ fn with_src_ctx(
     bytes_base: Va,
     work: impl FnOnce(&n0xis_core::Ctx, &Src, Option<usize>, &str) -> Response<Value>,
 ) -> Response<Value> {
-    let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
-        Ok(a) => a,
-        Err(e) => return Response::error("bad-arch", e),
-    };
     let mut spec = spec_of(args);
     spec.bytes_base = Some(bytes_base);
     let resolved = match resolve(spec) {
         Ok(r) => r,
         Err((c, m)) => return Response::error(&c, m),
+    };
+    // 32-bit PE auto-selects the i386 decoder (see `pick_arch`).
+    let arch = match crate::pick_arch(args.get("arch").and_then(|v| v.as_str()), !resolved.src.is_64()) {
+        Ok(a) => a,
+        Err(e) => return Response::error("bad-arch", e),
     };
     let (src, label, region_len) = (resolved.src, resolved.label, resolved.region_len);
     // Phase 12 item 2, second half. The function-scoped helper above chained
@@ -471,13 +474,13 @@ impl Plugin for AnalysisPasses {
                     Ok(v) => v,
                     Err((code, msg)) => return Response::error(code, msg),
                 };
-                let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
-                    Ok(a) => a,
-                    Err(e) => return Response::error("bad-arch", e),
-                };
                 let resolved = match resolve(spec_of(args)) {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
+                };
+                let arch = match crate::pick_arch(args.get("arch").and_then(|v| v.as_str()), !resolved.src.is_64()) {
+                    Ok(a) => a,
+                    Err(e) => return Response::error("bad-arch", e),
                 };
                 let ctx = n0xis_core::Ctx::new(resolved.src.as_mem(), arch.as_ref());
                 let input = n0xis_core::DecodeInput::count(addr, usize_arg(args, "count", 16));
@@ -1397,13 +1400,13 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::FUNCTION_DISCOVER),
             Origin::Builtin,
             Box::new(|args| {
-                let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
-                    Ok(a) => a,
-                    Err(e) => return Response::error("bad-arch", e),
-                };
                 let resolved = match resolve(spec_of(args)) {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
+                };
+                let arch = match crate::pick_arch(args.get("arch").and_then(|v| v.as_str()), !resolved.src.is_64()) {
+                    Ok(a) => a,
+                    Err(e) => return Response::error("bad-arch", e),
                 };
                 let explicit_start = args.get("start").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok());
                 let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
@@ -1430,13 +1433,13 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::FUNCTION_NORETURN),
             Origin::Builtin,
             Box::new(|args| {
-                let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
-                    Ok(a) => a,
-                    Err(e) => return Response::error("bad-arch", e),
-                };
                 let resolved = match resolve(spec_of(args)) {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
+                };
+                let arch = match crate::pick_arch(args.get("arch").and_then(|v| v.as_str()), !resolved.src.is_64()) {
+                    Ok(a) => a,
+                    Err(e) => return Response::error("bad-arch", e),
                 };
                 let limit = usize_arg(args, "limit", 4096);
                 let max_bytes = usize_arg(args, "max_bytes", 0x4000);

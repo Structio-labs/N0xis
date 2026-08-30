@@ -32,7 +32,7 @@ pub mod project_caps;
 pub mod registry;
 pub mod source;
 
-pub use arch::resolve_arch;
+pub use arch::{pick_arch, resolve_arch};
 pub use registry::{Capability, Origin, Plugin, Registry, build_registry};
 pub use parse::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, strip_hex_marker};
 pub use source::{FrontendError, ResolvedSource, SourceSpec, Src, base_for_module, load_snapshot, module_base_of, scan_range};

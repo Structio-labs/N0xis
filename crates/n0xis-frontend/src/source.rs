@@ -157,6 +157,17 @@ impl Src {
             Src::Snap(_) | Src::Remote(_) => None,
         }
     }
+
+    /// Whether the source is 64-bit. A 32-bit **static PE32** returns `false`
+    /// (so the frontend picks the i386 arch); everything else defaults to `true`
+    /// (64-bit ELF, and live/snapshot/remote whose bitness this seam does not
+    /// yet carry — those stay x64 as today).
+    pub fn is_64(&self) -> bool {
+        match self {
+            Src::Static(img) => img.is_64(),
+            _ => true,
+        }
+    }
 }
 
 /// How a frontend names its target. All fields optional: what is left after

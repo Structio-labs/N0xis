@@ -65,6 +65,23 @@ impl StaticImage {
             StaticImage::Elf(e) => e.section_range(name),
         }
     }
+
+    /// 64-bit image? PE32+ / 64-bit ELF → `true`; 32-bit PE32 → `false`. (Only
+    /// 64-bit ELF is supported, so an ELF is always 64-bit here.)
+    pub fn is_64(&self) -> bool {
+        match self {
+            StaticImage::Pe(p) => p.is_64(),
+            StaticImage::Elf(_) => true,
+        }
+    }
+
+    /// Native pointer size in bytes (4 for a 32-bit PE32, else 8).
+    pub fn pointer_size(&self) -> u8 {
+        match self {
+            StaticImage::Pe(p) => p.pointer_size(),
+            StaticImage::Elf(_) => 8,
+        }
+    }
 }
 
 impl MemorySource for StaticImage {

@@ -17,8 +17,22 @@ pub const DEFAULT_ARCH: &str = "x64";
 pub fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
     match name.unwrap_or(DEFAULT_ARCH).to_ascii_lowercase().as_str() {
         "x64" | "x86-64" | "x86_64" => Ok(Box::new(X64::new())),
+        "x86" | "i386" | "x86-32" | "x86_32" => Ok(Box::new(X64::x86())),
         "arm64" | "aarch64" => Ok(Box::new(Arm64::new())),
-        other => Err(format!("unknown arch '{other}', expected x64|arm64")),
+        other => Err(format!("unknown arch '{other}', expected x64|x86|arm64")),
+    }
+}
+
+/// Pick the arch for a resolved source: an explicit `--arch` always wins;
+/// otherwise the default is x64, **except** a 32-bit source auto-selects the
+/// i386 (`x86`) arch. This is what keeps a PE32 from being silently mis-decoded
+/// as x86-64 — the bitness comes from the image, not a flag the user must
+/// remember to pass.
+pub fn pick_arch(explicit: Option<&str>, source_is_32bit: bool) -> Result<Box<dyn Arch>, String> {
+    match explicit {
+        Some(a) => resolve_arch(Some(a)),
+        None if source_is_32bit => Ok(Box::new(X64::x86())),
+        None => resolve_arch(None),
     }
 }
 

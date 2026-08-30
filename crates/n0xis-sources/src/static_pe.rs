@@ -45,6 +45,8 @@ pub struct StaticPe {
     exports: BTreeMap<u64, Symbol>,
     /// IAT slot VA → the imported symbol it resolves to.
     iat: BTreeMap<u64, Symbol>,
+    /// 64-bit PE32+ (`true`) vs 32-bit PE32 (`false`).
+    is_64: bool,
 }
 
 impl StaticPe {
@@ -80,24 +82,15 @@ impl StaticPe {
         let pe = PE::parse(&bytes)
             .map_err(|e| SourceError::Load(format!("parse '{}': {e}", path.display())))?;
 
-        // Refuse a 32-bit PE32 rather than silently mis-decode it. The whole
-        // pipeline is x86-64: the decoder is fixed at 64-bit bitness, the
-        // register model is `rax`-wide, and argument recovery assumes the Win64
-        // register ABI. A PE32 (optional-header magic 0x10b, `is_64 == false`)
-        // shares only its first few `rel32` call/jmp encodings with x64, then
-        // desyncs at the first differently-encoded opcode (e.g. `A1 mov moffs`,
-        // 4 address bytes in 32-bit vs 8 in 64-bit) and every downstream
-        // disasm/IR/decomp is confident garbage returned as `ok:true` — the
-        // worst outcome for an agent-native tool. Real i386 support needs its
-        // own register model and stack-based cdecl/stdcall ABIs, not just a
-        // decoder-bitness flip, so until it exists we fail loudly (CONCEPT
-        // `sound over complete`; the `verify before ✅` rule applied to loading).
-        if !pe.is_64 {
-            return Err(SourceError::Load(format!(
-                "'{}' is a 32-bit PE32 (this pipeline requires a 64-bit PE32+): decoding it as x86-64 would silently produce garbage. 32-bit (i386) targets are not yet supported.",
-                path.display()
-            )));
-        }
+        // 64-bit (PE32+, magic 0x20b) vs 32-bit (PE32, 0x10b). This drives the
+        // whole pipeline's bitness: decoding a PE32 with the x86-64 decoder
+        // desyncs at the first differently-encoded opcode (`A1 mov moffs`: 4
+        // address bytes vs 8) and yields confident garbage. The frontend reads
+        // this to select the 32-bit (`X64::x86`) arch and the `cdecl` ABI, so a
+        // PE32 decodes correctly instead of being mis-read as x64 — no longer a
+        // load-time rejection, now a first-class (if register-arg-conservative)
+        // target.
+        let is_64 = pe.is_64;
 
         let oh = pe
             .header
@@ -211,7 +204,19 @@ impl StaticPe {
             sections,
             exports,
             iat,
+            is_64,
         })
+    }
+
+    /// `true` for a 64-bit PE32+, `false` for a 32-bit PE32. The frontend uses
+    /// this to pick the decoder bitness / arch.
+    pub fn is_64(&self) -> bool {
+        self.is_64
+    }
+
+    /// Native pointer size in bytes (8 for PE32+, 4 for PE32).
+    pub fn pointer_size(&self) -> u8 {
+        if self.is_64 { 8 } else { 4 }
     }
 
     fn section_for(&self, va: u64) -> Option<&SectionRange> {
@@ -261,6 +266,10 @@ impl MemorySource for StaticPe {
     fn label(&self) -> String {
         format!("static:{}", self.module_name)
     }
+    fn abi_name(&self) -> &'static str {
+        // 64-bit PE → Win64 register ABI; 32-bit PE → cdecl (stack-based args).
+        if self.is_64 { "win64" } else { "cdecl" }
+    }
 }
 
 impl SymbolProvider for StaticPe {
@@ -308,23 +317,26 @@ mod tests {
     }
 
     #[test]
-    fn a_32bit_pe32_is_refused_loudly_not_silently_mis_decoded() {
-        // The high-severity regression guard: a PE32 must error at load, never
-        // reach the x86-64 decoder and return confident garbage.
+    fn a_pe32_loads_and_reports_32bit_so_the_frontend_picks_the_i386_arch() {
+        // The bitness must be detected and surfaced (not rejected): the frontend
+        // keys on it to select the 32-bit decoder, which is what stops a PE32
+        // from being silently mis-decoded as x64. `is_64 == false`, 4-byte
+        // pointers, and a `cdecl` ABI.
         let p = temp("pe32", &minimal_pe(0x10b));
-        let err = StaticPe::load(&p).unwrap_err();
-        assert!(format!("{err}").contains("32-bit PE32"), "expected a loud 32-bit rejection, got: {err}");
+        let pe = StaticPe::load(&p).expect("a PE32 now loads");
+        assert!(!pe.is_64(), "a PE32 must report 32-bit");
+        assert_eq!(pe.pointer_size(), 4);
+        assert_eq!(MemorySource::abi_name(&pe), "cdecl");
         let _ = std::fs::remove_file(&p);
     }
 
     #[test]
-    fn a_64bit_pe32plus_is_not_rejected_on_bitness() {
-        // The mirror: a PE32+ must pass the bitness guard (it may still fail for
-        // other reasons in this stripped-down image, but never on bitness).
+    fn a_pe32plus_reports_64bit_and_win64() {
         let p = temp("pe32plus", &minimal_pe(0x20b));
-        if let Err(e) = StaticPe::load(&p) {
-            assert!(!format!("{e}").contains("32-bit PE32"), "a 64-bit PE was wrongly rejected as 32-bit: {e}");
-        }
+        let pe = StaticPe::load(&p).expect("a PE32+ loads");
+        assert!(pe.is_64());
+        assert_eq!(pe.pointer_size(), 8);
+        assert_eq!(MemorySource::abi_name(&pe), "win64");
         let _ = std::fs::remove_file(&p);
     }
 }

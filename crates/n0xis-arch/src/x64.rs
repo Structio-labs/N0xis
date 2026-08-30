@@ -89,17 +89,57 @@ static SYSV_CC: CallConv = CallConv {
 /// whose `name` matches the target's ABI (`MemorySource::abi_name`).
 static X64_CCS: &[CallConv] = &[WIN64_CC, SYSV_CC];
 
-/// The x86-64 architecture.
+// 32-bit i386 **cdecl**: all integer arguments are pushed on the stack (no
+// argument *registers*), the result comes back in `eax`, and `eax`/`ecx`/`edx`
+// are caller-saved. With an empty `int_args`, register-based argument recovery
+// correctly finds zero args on a 32-bit target — the real args live in stack
+// slots (`[esp+4]`, `[esp+8]`, …), whose recovery is a follow-on; conservative
+// and sound, never a wrong register guess. (`stdcall`/`fastcall` differ only in
+// who cleans the stack / two register args — added when arg recovery grows a
+// stack model.)
+static CDECL_INT_ARGS: &[Reg] = &[];
+static CDECL_VOLATILE: &[Reg] = &[x64reg::RAX, x64reg::RCX, x64reg::RDX];
+static CDECL_CC: CallConv = CallConv {
+    name: "cdecl",
+    int_args: CDECL_INT_ARGS,
+    ret: x64reg::RAX,
+    volatile: CDECL_VOLATILE,
+};
+static X86_CCS: &[CallConv] = &[CDECL_CC];
+
+/// The x86 architecture (64-bit by default; 32-bit i386 via [`X64::x86`]). The
+/// instruction *semantics* are shared — the same iced mnemonics lift identically
+/// — so a single implementation serves both, parameterized by decoder
+/// `bitness`. What 32-bit changes: the decoder reads 32-bit forms (e.g. `A1 mov
+/// moffs` takes a 4-byte address, not 8, the very desync that made a PE32
+/// decoded as x64 produce garbage), pointers are 4 bytes, and the calling
+/// convention is stack-based cdecl rather than the Win64 register ABI.
 #[derive(Clone, Copy, Debug)]
 pub struct X64 {
     regfile: RegisterFile,
+    bitness: u32,
 }
 
 impl X64 {
     pub const fn new() -> Self {
         X64 {
             regfile: RegisterFile::new(X64_REGS),
+            bitness: 64,
         }
+    }
+
+    /// 32-bit (i386) mode — same register file and lift, decoder at 32-bit
+    /// bitness. Selected by the frontend for a PE32 image.
+    pub const fn x86() -> Self {
+        X64 {
+            regfile: RegisterFile::new(X64_REGS),
+            bitness: 32,
+        }
+    }
+
+    /// Decoder bitness (32 or 64).
+    pub fn bitness(&self) -> u32 {
+        self.bitness
     }
 }
 
@@ -160,8 +200,8 @@ fn push_unique(v: &mut Vec<String>, s: String) {
 /// Re-decode a single `DecodedInsn` back to an iced [`Instruction`] from its
 /// captured bytes. Used by structural recognizers (e.g. switch detection) that
 /// need operand-level detail the neutral `DecodedInsn` intentionally omits.
-fn decode_raw(insn: &DecodedInsn) -> Option<Instruction> {
-    let mut decoder = Decoder::with_ip(64, &insn.bytes, insn.va.0, DecoderOptions::NONE);
+fn decode_raw(insn: &DecodedInsn, bitness: u32) -> Option<Instruction> {
+    let mut decoder = Decoder::with_ip(bitness, &insn.bytes, insn.va.0, DecoderOptions::NONE);
     if !decoder.can_decode() {
         return None;
     }
@@ -272,7 +312,7 @@ impl Arch for X64 {
     }
 
     fn decode(&self, bytes: &[u8], va: Va) -> Result<DecodedInsn, DecodeError> {
-        let mut decoder = Decoder::with_ip(64, bytes, va.0, DecoderOptions::NONE);
+        let mut decoder = Decoder::with_ip(self.bitness, bytes, va.0, DecoderOptions::NONE);
         if !decoder.can_decode() {
             return Err(DecodeError::Truncated(va));
         }
@@ -285,7 +325,7 @@ impl Arch for X64 {
     }
 
     fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
-        let mut decoder = Decoder::with_ip(64, bytes, va.0, DecoderOptions::NONE);
+        let mut decoder = Decoder::with_ip(self.bitness, bytes, va.0, DecoderOptions::NONE);
         let mut fmt = IntelFormatter::new();
         let mut out = Vec::new();
         let mut instr = Instruction::default();
@@ -302,7 +342,7 @@ impl Arch for X64 {
     }
 
     fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
-        let mut decoder = Decoder::with_ip(64, &insn.bytes, insn.va.0, DecoderOptions::NONE);
+        let mut decoder = Decoder::with_ip(self.bitness, &insn.bytes, insn.va.0, DecoderOptions::NONE);
         if !decoder.can_decode() {
             return RegAccess::default();
         }
@@ -358,7 +398,7 @@ impl Arch for X64 {
 
     fn detect_switch(&self, block: &[DecodedInsn]) -> Option<SwitchDispatch> {
         let (term_idx, term_di) = block.iter().enumerate().next_back()?;
-        let term = decode_raw(term_di)?;
+        let term = decode_raw(term_di, self.bitness)?;
         if term.flow_control() != FlowControl::IndirectBranch {
             return None;
         }
@@ -367,7 +407,7 @@ impl Arch for X64 {
         let bound = block[..term_idx]
             .iter()
             .rev()
-            .filter_map(decode_raw)
+            .filter_map(|di| decode_raw(di, self.bitness))
             .find_map(|ins| guard_bound(&ins));
 
         // Form 1: `jmp [table + idx*scale]` — the table holds absolute pointers.
@@ -398,7 +438,7 @@ impl Arch for X64 {
             let mut index_reg: Option<String> = None;
             let mut scale: u32 = 0;
             for di in block[..term_idx].iter().rev() {
-                let Some(ins) = decode_raw(di) else { continue };
+                let Some(ins) = decode_raw(di, self.bitness) else { continue };
                 // `mov`/`movsxd r,[base + idx*scale]` discloses index + scale.
                 if index_reg.is_none() && ins.memory_index() != Register::None {
                     index_reg = Some(reg_name(ins.memory_index()));
@@ -436,7 +476,7 @@ impl Arch for X64 {
         // handful of instructions, so a longer run means we've walked past it
         // into the function body without matching anything else.
         for di in instrs.iter().take(16) {
-            let Some(ins) = decode_raw(di) else { continue };
+            let Some(ins) = decode_raw(di, self.bitness) else { continue };
             let recognized = match ins.mnemonic() {
                 Mnemonic::Push if ins.op0_kind() == OpKind::Register => {
                     push_unique(&mut out.spilled_regs, reg_name(ins.op0_register()));
@@ -476,8 +516,16 @@ impl Arch for X64 {
         &self.regfile
     }
 
+    fn pointer_size(&self) -> u8 {
+        (self.bitness / 8) as u8
+    }
+
     fn calling_conventions(&self) -> &[CallConv] {
-        X64_CCS
+        if self.bitness == 32 {
+            X86_CCS
+        } else {
+            X64_CCS
+        }
     }
 }
 
