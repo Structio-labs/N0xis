@@ -1,6 +1,6 @@
 # N0xis
 
-**Deterministic reverse engineering — one analysis pipeline for static binaries *and* live processes.**
+**Deterministic reverse engineering — an optimizing SSA decompiler and a live-memory engine in one analysis pipeline, for static binaries *and* live processes.**
 Every capability is a stable CLI verb — and the same verb again as an MCP tool — returning versioned JSON: read it, pipe it through `jq`, script it, or drive it from an agent. No GUI **yet** — deferred, not ruled out; no ML nondeterminism in the core, ever.
 
 > **One command. One JSON schema. One analysis pipeline** — whether the bytes come from a PE file, a live process, a snapshot, or a remote machine.
@@ -23,8 +23,8 @@ No other does this: a memory scanner's "find what accesses this" stops at a raw 
 
 <!-- ▶ HERO GIF GOES HERE — record `provenance trace` running live and drop it at docs/assets/provenance.gif, then:  ![demo](docs/assets/provenance.gif) -->
 
-- ✔ **Windows + Linux** — the full static pipeline on both; live memory & hardware-watchpoint debugging on each through a native adapter (x64; early ARM64)
-- ✔ **Optimizing SSA decompiler** — and every pass emits an *inspectable* artifact, not a black-box answer
+- ✔ **Windows + Linux, PE + ELF** — the full static pipeline on both formats; live memory & hardware-watchpoint debugging on each through a native adapter (x64; early ARM64)
+- ✔ **Optimizing SSA decompiler** — Memory-SSA, phi-web variable coalescing, complete SSA destruction, exact branch conditions; source-level readability on x64, and every pass an *inspectable* artifact
 - ✔ **Live memory analysis** — value/pointer/AOB scanning, freeze, hooks (a memory scanner class)
 - ✔ **Provenance** — hardware watchpoint → decompiled statement
 - ✔ **Managed-runtime name recovery** — .NET NativeAOT `RVA ↔ Namespace.Type.Method`, LuaJIT, Bitsquid; turns stripped `sub_XXXX` back into real names
@@ -37,12 +37,52 @@ No other does this: a memory scanner's "find what accesses this" stops at a raw 
 |  | N0xis | a memory scanner | another tool / another tool / another tool |
 |---|:---:|:---:|:---:|
 | **Watchpoint → decompiled statement** | ✅ | ❌ | ❌ |
+| Optimizing **SSA decompiler** (Memory-SSA, variable coalescing) | ✅ | ❌ | ✅ |
+| Every pass an **inspectable artifact** (not a black box) | ✅ | ❌ | ~ |
 | Live value / pointer / AOB scanning | ✅ | ✅ | ❌ |
 | Static *and* live in one pipeline | ✅ | ❌ | ~ |
-| Windows **and** Linux, one pipeline | ✅ | ~ | ~ |
+| Windows **and** Linux, PE **and** ELF, one pipeline | ✅ | ~ | ~ |
 | Structured-JSON automation (CLI + MCP) | ✅ | ❌ | ~ |
 
-N0xis does **not** try to out-decompile other tools — theirs are mature and multi-arch, and the honest gap is written down ([ROADMAP Phase 10](ROADMAP.md)). It aims at what's structurally hard for them: **the live⇄static seam, cross-platform reach, and a fully scriptable JSON surface** that a human pipes through `jq` or an agent drives over MCP — equally.
+**This is a real optimizing decompiler, not an automation wrapper.** Its SSA pipeline
+reconstructs source-level pseudocode — Memory-SSA (values flow *through* memory), phi-web
+**variable coalescing**, complete SSA destruction, and exact branch conditions recovered
+from arithmetic flags — reaching source-level readability on x64, verified on real AAA
+binaries (see below). The honest remaining ladder — full type recovery, compiler-idiom
+lifting, more architectures — is written down rung by rung ([ROADMAP](ROADMAP.md)); the
+other tools are still broader and more mature there. What they *structurally* can't match is
+layered on top: the live⇄static seam, cross-platform reach, the inspectable per-pass delta,
+and a scriptable JSON surface a human pipes through `jq` or an agent drives over MCP —
+equally.
+
+---
+
+## Reads like C — see for yourself
+
+A raw string-scan loop from a **real MSVC binary** (Kenshi's `CompressToolsLib.dll`),
+`decomp pseudo --style ssa`:
+
+```c
+uint64_t sub_180002380(struct_rcx_0 *rcx, uint64_t rdx) {   // recovered pointer parameter type
+    v1 = -0x1;
+    while ((*(uint8_t*)(rdx + v1) != 0x0)) {   // a strlen scan — ONE named counter,
+        v1 = (v1 + 0x1);                       // not rax.1 / rax.2 / rax.3 SSA noise
+    }
+    r8.1 = rcx->field_0x18;                    // struct fields, not *(rcx+0x18)
+    rcx.1 = rcx->field_0x10;
+    if ((v1 > /*u*/ (r8.1 - rcx.1))) {
+        return sub_1800033e0(rcx, v1, r8.1, rdx);
+    } else { /* … */ }
+}
+```
+
+That readability is the product of the whole SSA pipeline — Memory-SSA, variable coalescing
+into named locals, complete SSA destruction (no undefined temporaries), branch conditions
+rebuilt from `dec`/`sub`/`and` flags, and pointer/struct parameter typing — and **every one
+of those passes emits a checkable delta** (`--explain`), so a claim is auditable, not taken
+on faith. Verified on real AAA binaries across compilers and engines: **Kenshi** (MSVC),
+an **Unreal Engine 5** shipping build, **Factorio** (GCC/System V), and a **Bevy/Rust**
+title — PE and ELF alike.
 
 ---
 
