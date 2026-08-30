@@ -1637,6 +1637,26 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     false positives; 320/320 functions decompiled with 0 errors. Follow-on: sound
     *elision* of the now-labeled setup/check (they are dead once recognized) would
     remove the noise entirely rather than only naming it.
+  - **5c — SSE data-move lift.** ✅ *(2026-08-30, verified.)* A corpus census of
+    every mnemonic still falling through to `// asm:` put the legacy 128-bit SSE
+    **data moves** at the top by a wide margin — `movups` alone 3648 lines, plus
+    `movdqu`/`movaps`/`movdqa` (~4272 together). These are pure data movement (no
+    packed *arithmetic*), so modelling them as a 128-bit load/store/copy is sound.
+    The lift required two fixes the generic `mov` path got wrong for vectors: (1)
+    **width** — `memory_size()` reports `Packed128_*`, which `mem_bits_signed`
+    deliberately doesn't special-case, so the move now takes its 128-bit width from
+    the xmm register operand (and `c_type` gained `__m128`/`__m256`/`__m512` so a
+    vector store can't masquerade as a 64-bit one); (2) **naming** — `reg_name` runs
+    every register through `full_register()`, which widens `xmm6`→`zmm6`; a
+    128-bit lane move now presents the `xmm` view the source used. Scalar `movss`/
+    `movsd` are deliberately left as `asm` — `movsd` shares its mnemonic with the
+    string instruction, so lifting it as a scalar move would be unsound. **Verified:**
+    the census's ~4272 SSE lines drop to zero `// asm:`; `Kenshi` `sub_140064e17`
+    reads its nonvolatile spill as `local_70 = xmm6.0`, and `Tiny Glade` (Rust)
+    struct copies read as `xmm0.1 = *rsi` / `local_10 = xmm0.1` with correct SSA
+    versioning and struct-field recovery firing through the xmm value. Sweep of 60
+    functions each on `Kenshi`, `Factorio`, `Tiny Glade`: 180/180 ok, 0 errors
+    (18 of Tiny Glade's 60 now render `__m128`).
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control

@@ -149,6 +149,13 @@ pub(crate) fn c_type(bits: n0xis_arch::Bits, signed: bool) -> &'static str {
         (32, false) => "uint32_t",
         (32, true) => "int32_t",
         (64, true) => "int64_t",
+        // SSE/AVX vector widths — the neutral intrinsic types a 128/256/512-bit
+        // data move (`movdqu`/`movups`) lands in. Naming the real width keeps a
+        // vector store from masquerading as a 64-bit one (which would falsely
+        // imply the upper bytes are untouched).
+        (128, _) => "__m128",
+        (256, _) => "__m256",
+        (512, _) => "__m512",
         _ => "uint64_t",
     }
 }

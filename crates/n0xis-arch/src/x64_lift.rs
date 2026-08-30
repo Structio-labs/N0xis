@@ -110,6 +110,50 @@ fn read_operand(instr: &Instruction, idx: u32) -> MicroExpr {
     }
 }
 
+/// Name a vector register for the 128-bit SSE view the source used. `reg_name`
+/// runs every register through `full_register()`, which widens `xmm6` to
+/// `zmm6` — correct for the SSA-normalization of GPRs (`al`→`rax`) but
+/// misleading here: a legacy `movaps`/`movdqu` only touches the low 128-bit
+/// lane, so it should read as `xmm6`, not imply a full 512-bit `zmm6` write.
+fn vector_reg_name(r: Register) -> String {
+    reg_name(r).replacen("zmm", "xmm", 1)
+}
+
+/// One operand of a vector move as an rvalue: an xmm register var, or a load of
+/// `bits` width from a memory operand. Unlike [`read_operand`], the memory
+/// width comes from the move's own vector size (`memory_size()` reports
+/// `Packed128_*`, which [`mem_bits_signed`] deliberately doesn't special-case),
+/// so a 128-bit load is modelled as 128 bits rather than the scalar fallback.
+fn vector_operand(instr: &Instruction, idx: u32, bits: Bits) -> MicroExpr {
+    match instr.op_kind(idx) {
+        OpKind::Register => MicroExpr::var(vector_reg_name(instr.op_register(idx))),
+        OpKind::Memory => MicroExpr::load(mem_addr_expr(instr), bits, false),
+        _ => MicroExpr::Unknown(format!("vop{idx}")),
+    }
+}
+
+/// Lower a legacy 128-bit SSE **data move** (`movups`/`movupd`/`movaps`/
+/// `movapd`/`movdqu`/`movdqa`) — the single largest source of `// asm:` fallout
+/// in the corpus census, and pure data movement (no FP/packed *arithmetic*), so
+/// modelling it as a load/store/copy is sound. The width is taken from the xmm
+/// register operand (16 bytes → 128 bits); one operand is always an xmm
+/// register in these forms, so the two sides agree on 128.
+fn lift_vector_move(instr: &Instruction, out: &mut Vec<MicroStmt>) {
+    if instr.op_count() < 2 {
+        return;
+    }
+    let bits = (0..instr.op_count())
+        .find(|&i| instr.op_kind(i) == OpKind::Register)
+        .map(|i| (instr.op_register(i).size() as Bits) * 8)
+        .unwrap_or(128);
+    let src = vector_operand(instr, 1, bits);
+    match instr.op_kind(0) {
+        OpKind::Register => out.push(MicroStmt::Assign { dst: vector_reg_name(instr.op_register(0)), value: src }),
+        OpKind::Memory => out.push(MicroStmt::Store { addr: mem_addr_expr(instr), value: src, bits }),
+        _ => {}
+    }
+}
+
 fn op_bits(instr: &Instruction, idx: u32) -> Bits {
     match instr.op_kind(idx) {
         OpKind::Register => (instr.op_register(idx).size() * 8) as Bits,
@@ -303,6 +347,9 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Mov => {
             let v = read_operand(&instr, 1);
             write_operand(&instr, 0, v, &mut out);
+        }
+        Mnemonic::Movups | Mnemonic::Movupd | Mnemonic::Movaps | Mnemonic::Movapd | Mnemonic::Movdqu | Mnemonic::Movdqa => {
+            lift_vector_move(&instr, &mut out);
         }
         Mnemonic::Movzx => {
             let bits = op_bits(&instr, 0);
@@ -560,6 +607,41 @@ mod tests {
     }
 
     #[test]
+    fn an_sse_store_moves_128_bits_named_xmm_not_zmm() {
+        // movups [rdi], xmm0  = 0F 11 07
+        let stmts = lift_one(&[0x0F, 0x11, 0x07]);
+        assert_eq!(
+            stmts,
+            vec![MicroStmt::Store {
+                addr: MicroExpr::var("rdi"),
+                value: MicroExpr::var("xmm0"),
+                bits: 128,
+            }],
+            "a legacy SSE move is 128-bit data movement, and the register reads as the xmm view",
+        );
+    }
+
+    #[test]
+    fn an_sse_load_reads_128_bits_from_memory() {
+        // movaps xmm6, [rsp+0x70]  = 0F 28 74 24 70
+        let stmts = lift_one(&[0x0F, 0x28, 0x74, 0x24, 0x70]);
+        assert_eq!(
+            stmts,
+            vec![MicroStmt::Assign {
+                dst: "xmm6".into(),
+                value: MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x70, 64)), 128, false),
+            }],
+        );
+    }
+
+    #[test]
+    fn an_sse_register_copy_is_a_plain_assign_between_xmm_registers() {
+        // movaps xmm1, xmm0  = 0F 28 C8
+        let stmts = lift_one(&[0x0F, 0x28, 0xC8]);
+        assert_eq!(stmts, vec![MicroStmt::Assign { dst: "xmm1".into(), value: MicroExpr::var("xmm0") }]);
+    }
+
+    #[test]
     fn cmp_writes_flags_as_a_precise_compare() {
         // cmp rcx, 0
         let stmts = lift_one(&[0x48, 0x83, 0xF9, 0x00]);
@@ -766,3 +848,4 @@ mod tests {
         assert_eq!(stmts[1], MicroStmt::Return(Some(MicroExpr::var("rax"))));
     }
 }
+
