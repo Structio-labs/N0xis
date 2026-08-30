@@ -1114,7 +1114,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Optimizer (copy/const/expr-prop, DCE) | ✅ production |
 | Renderer (pseudo-C) | ✅ production |
 | Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (narrower idiom set than other tools) |
-| Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs |
+| Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs + **C++ class from RTTI vtable** (constructor `this` typed to its class, vtable constants named — verified on Kenshi/STALKER 2) |
 | Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
 | noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** — `call`- *and* `jmp`(tail-call)-to-noreturn — verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 10 functions incl. a `jmp TerminateProcess`, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) fired in 0/14 real DLLs, unit-tested only, pending a real-corpus positive |
@@ -1310,7 +1310,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 6. ⬜ **Compiler-idiom library — the endless backlog.** The "hundreds of idioms"
    that are 20 years of a source-level decompiler/another tool rules. Each idiom is independent and
    individually cheap; grow the library continuously. Never "done."
-7. ⬜ **C++ RTTI / vtable / class recovery — the highest-leverage addition for
+7. 🚧 **C++ RTTI / vtable / class recovery — the highest-leverage addition for
    *this* corpus.** Game engines are deep-hierarchy C++ with pervasive virtual
    dispatch, and the class graph is *already in the binary*: MSVC RTTI
    (`RTTICompleteObjectLocator` → `type_info` → base-class array) and Itanium RTTI
@@ -1320,6 +1320,30 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
    "indirect / virtual call resolution" gap the value-set pass cannot. It is both a
    substantial feature (another tool's class informer, another tool's RTTI analyzer) and a
    floor-raiser specific to the corpus, so it ranks at the top of the additions.
+   - ✅ *(2026-08-30, verified)* **RTTI scan → decompiler composition.** The
+     `rtti scan` COL→TypeDescriptor walk is now threaded onto `Ctx` as a
+     vtable-address → class-name map (frontend scans `.rdata` once), and two
+     consumers turn it into readable C++: **(a)** a vtable constant renders
+     `&Class::vtable` instead of an opaque `(void*)0x…`, naming the object a
+     store initializes; **(b)** a function that installs a vtable into `*this`
+     at offset 0 — the constructor — types that parameter as the class, so
+     `struct_rcx_0 *rcx` reads `std::exception *rcx`. Sound on non-MSVC/non-PE
+     targets (no `.rdata` ⇒ empty map ⇒ output unchanged; **verified zero on
+     Factorio ELF**). **Verified on three PE/MSVC binaries:** Kenshi
+     `CompressToolsLib.dll` — 94/815 functions carry a named vtable across 27
+     classes (`std::exception`@0x180021548 cross-checked vs `rtti scan`; user
+     classes `FileIOStream`/`WaveletDecodeLayer`/…), `sub_1800010d0` →
+     `std::exception *rcx`; Kenshi `kenshi_x64.exe` — 24/60 with
+     `AnimationEvent`/Ogre allocators; **STALKER 2 (UE5)** `Stalker2-Win64-Shipping.exe`
+     — 561 vtables (432 cleanly demangled ICU classes), `sub_140cecb83` →
+     `icu_64::GregorianCalendar *rcx` with `*rcx = &icu_64::GregorianCalendar::vtable`.
+   - ⬜ Still open for this item: **virtual-call devirtualization** (resolve
+     `call [vtable+k]` to the slot's method — needs per-vtable slot→target
+     extraction and the this-pointer's class flowing to the call site),
+     **base-class / inheritance graph** (the COL base-class array), **full
+     template-name demangling** (RTTI TypeDescriptor names for `.?AV?$…@@`
+     templates render verbatim today — sound but mangled), and **Itanium RTTI**
+     for ELF/GCC targets.
 8. ⬜ **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
