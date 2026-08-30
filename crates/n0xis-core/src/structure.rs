@@ -306,9 +306,15 @@ fn emit_if_else(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     } else {
         ctx.out.push(format!("{pad0}if ({cond}) {{"));
         ctx.out.extend(then_lines);
-        ctx.out.push(format!("{pad0}}} else {{"));
-        ctx.out.extend(else_lines);
-        ctx.out.push(format!("{pad0}}}"));
+        // `else { if (…) … }` collapses to `else if (…)` when the else arm is
+        // exactly one `if` spanning the whole block — other tools' else-if chain.
+        if let Some(collapsed) = try_else_if(&else_lines, ctx.indent) {
+            ctx.out.extend(collapsed);
+        } else {
+            ctx.out.push(format!("{pad0}}} else {{"));
+            ctx.out.extend(else_lines);
+            ctx.out.push(format!("{pad0}}}"));
+        }
     }
     if let Some(m) = merge {
         emit_node(ctx, m, until);
@@ -330,6 +336,52 @@ fn capture_arm(ctx: &mut Ctx, arm: usize, until: Option<usize>) -> Vec<String> {
 fn is_code_line(l: &str) -> bool {
     let t = l.trim();
     !t.is_empty() && !t.starts_with("//")
+}
+
+/// Net brace nesting a rendered pseudo-C line changes: `if (…) {` → +1, `}` →
+/// −1, `} else {` → 0, `} while (…);` → −1. Safe to count literal braces since
+/// our rendered expressions never contain `{`/`}` (calls use `()`, fields `->`).
+fn brace_delta(l: &str) -> i32 {
+    l.matches('{').count() as i32 - l.matches('}').count() as i32
+}
+
+/// If a captured else-arm is **exactly one `if` statement** spanning the whole
+/// block (`else { if (c) {…} else {…} }`), return the lines that collapse it into
+/// an `else if (c) …` chain — dedented one level, the leading `} else ` merged
+/// onto the inner `if`, and the arm's own closing brace reused as the chain's.
+/// `None` when the else arm is anything else (statements around the `if`, or not
+/// an `if` at all), leaving the plain `else { … }` form. Pure text rewrite over
+/// lines the renderer produced, so indentation and brace structure stay exact.
+fn try_else_if(else_lines: &[String], indent: usize) -> Option<Vec<String>> {
+    let first_code = else_lines.iter().position(|l| is_code_line(l))?;
+    if !else_lines[first_code].trim_start().starts_with("if (") {
+        return None;
+    }
+    // The `if` must balance back to depth 0 exactly at the last code line — i.e.
+    // it is the entire else body, with nothing (bar comments) after its close.
+    let mut depth = 0i32;
+    let mut closed_at = None;
+    for (i, l) in else_lines.iter().enumerate() {
+        depth += brace_delta(l);
+        if i >= first_code && depth == 0 {
+            closed_at = Some(i);
+            break;
+        }
+    }
+    let closed_at = closed_at?;
+    if else_lines[closed_at + 1..].iter().any(|l| is_code_line(l)) {
+        return None;
+    }
+    // Dedent one level (each line was rendered at `indent + 1`).
+    let dedent = |l: &str| l.strip_prefix("    ").unwrap_or(l).to_string();
+    let pad0 = pad(indent);
+    // Drop the else-if condition block's own leading `// block_N:` label (it is
+    // redundant once the block is the `else if` itself), keep the body's lines.
+    let mut out = vec![format!("{pad0}}} else {}", else_lines[first_code].trim_start())];
+    for l in &else_lines[first_code + 1..] {
+        out.push(dedent(l));
+    }
+    Some(out)
 }
 
 /// Fold a 2-block short-circuit chain rooted at `n` into `&&`/`||`, mirroring
@@ -670,6 +722,28 @@ mod tests {
         for w in out.lines.windows(2) {
             assert!(!(w[0].trim_end().ends_with('{') && w[1].trim() == "}"), "no empty block: {text}");
         }
+        assert_eq!(out.fallback_count, 0, "{text}");
+    }
+
+    #[test]
+    fn a_nested_else_if_collapses_into_an_else_if_chain() {
+        // cmp rcx,1; je A ; cmp rcx,2; je B ; C: ret 30 ; A: ret 10 ; B: ret 20
+        // The else arm is exactly one `if`, so it reads `else if`, not `else { if }`.
+        let code = vec![
+            0x48, 0x83, 0xf9, 0x01, // cmp rcx, 1
+            0x74, 0x09, // je A (0x100f)
+            0x48, 0x83, 0xf9, 0x02, // cmp rcx, 2
+            0x74, 0x06, // je B (0x1012)
+            0xb0, 0x1e, 0xc3, // C: mov al,30 ; ret
+            0xb0, 0x0a, 0xc3, // A: mov al,10 ; ret
+            0xb0, 0x14, 0xc3, // B: mov al,20 ; ret
+        ];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        assert!(text.contains("} else if ((rcx.0 == 0x2))"), "expected an else-if chain: {text}");
+        // Braces stay balanced after the collapse.
+        let balance: i32 = out.lines.iter().map(|l| l.matches('{').count() as i32 - l.matches('}').count() as i32).sum();
+        assert_eq!(balance, 0, "braces must balance: {text}");
         assert_eq!(out.fallback_count, 0, "{text}");
     }
 
