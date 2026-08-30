@@ -1,7 +1,7 @@
 //! Control structuring — dominators + natural-loop detection +
 //! `if`/`else`/`&&`/`||`/`for`/`while`/`do-while` reconstruction, ported from
 //! the archived v0 template renderer
-//! (`archive/n0x-cli-rs-v0/src/pseudo.rs::render_structured`) onto our typed
+//! (v0's `pseudo.rs::render_structured`) onto our typed
 //! IR. The algorithm itself is unchanged (dominators/post-dominators →
 //! natural loops → recursive descent with an `until` stop-point and a
 //! `loop_stack` for `continue`/`break`); what's different is *what* it

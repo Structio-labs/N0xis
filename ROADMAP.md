@@ -1,19 +1,13 @@
 # N0xis — Roadmap (v1 rewrite)
 
 > Companion to [`CONCEPT.md`](CONCEPT.md). Strategy: **full rewrite** into a Cargo
-> workspace, porting the sound parts of v0 ([`archive/`](archive/)) rather than
+> workspace, porting the sound parts of v0 rather than
 > re-deriving them from a blank page. Each phase ends with the tool **buildable and
 > usable** — no phase leaves `main`/CLI broken.
 
 Legend: 🎯 milestone · ✅ done · ⏳ in progress · ⬜ todo · ⚠️ caveat.
 
 ---
-
-## Phase 0 — Reset & docs ✅
-- ✅ Archive v0 to `archive/` (code + docs).
-- ✅ Delete the web/Tauri frontend prototype entirely.
-- ✅ Preserve the CLI surface → [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md) (originally captured as `CLI_COMMANDS_v0.md`; since **renamed** and now the current command reference, not a frozen snapshot).
-- ✅ Concept + roadmap.
 
 ## Phase 1 — Workspace skeleton & seams ✅
 Goal: the empty-but-correct architecture. No analysis yet; the boundaries exist.
@@ -191,7 +185,7 @@ Goal: the reason for the rewrite. Pseudo-C that reads like C. All as `n0xis-core
   isn't gated behind `--style ssa`, only the expression-collapsing prettification is.
   Reuses the v0 schema `n0x.decomp.pseudo.v1` (additive style, not a new capability).
 - ✅ **Exit test** — [`crates/n0xis-core/tests/phase3_exit.rs`](crates/n0xis-core/tests/phase3_exit.rs).
-  The original binary behind [`archive/docs-v0/Decompile.txt`](archive/docs-v0/Decompile.txt)
+  The original binary behind the v0 decompiler transcript
   isn't in the repo, so this reconstructs its motivating shape as synthetic x64 (a call
   result whose fields get read twice at `+0x68`/`+0x6C`, exactly like the transcript,
   plus a branch separated from its guard by another flag-touching instruction across a

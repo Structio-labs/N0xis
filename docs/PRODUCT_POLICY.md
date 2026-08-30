@@ -41,8 +41,8 @@ assumptions?
 
 This is why `trait Arch` was built in Phase 1 with exactly **one**
 implementation (`X64`) — the seam exists before it's needed twice, so ISA
-knowledge never leaks into the passes (the mistake that sank the archived v0
-implementation, see `archive/`). It's also why `n0xis-contracts::schema`
+knowledge never leaks into the passes (the mistake that sank the v0
+implementation). It's also why `n0xis-contracts::schema`
 reserves both a `v0` namespace (the archived tool's wire shapes, kept
 byte-compatible) and a `v1` namespace (new shapes) with an explicit rule:
 **a breaking shape change bumps the version, it never mutates a shipped one.**

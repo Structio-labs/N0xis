@@ -1,6 +1,6 @@
 //! **The Phase 3 exit test** (ROADMAP P3 / CONCEPT §8).
 //!
-//! ROADMAP's wording: on [`archive/docs-v0/Decompile.txt`] — "no bare
+//! ROADMAP's wording: on the v0 decompiler transcript — "no bare
 //! `rax`/`rcx` in the common path; loads resolved to named locals/fields;
 //! conditions correct under intervening flag writes." We don't have the
 //! original game binary those addresses came from (it was never part of the
@@ -17,8 +17,6 @@
 //! `local_XX` stack-slot convention — real *struct field names*
 //! (`state->count`) are explicitly Phase 4 scope (CONCEPT §6 step 4). This
 //! test holds Phase 3 to what it actually owns.
-//!
-//! [`archive/docs-v0/Decompile.txt`]: ../../../archive/docs-v0/Decompile.txt
 
 use n0xis_arch::X64;
 use n0xis_contracts::Va;

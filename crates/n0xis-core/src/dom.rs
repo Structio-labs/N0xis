@@ -4,7 +4,7 @@
 //! what dominates what (CONCEPT §3 rule 3: a duplicated contract is a bug).
 //!
 //! The dominator computation itself is the same O(blocks²) iterative
-//! fixed-point v0 used (`archive/n0x-cli-rs-v0/src/pseudo.rs`) — correct and
+//! fixed-point v0 used (its `pseudo.rs`) — correct and
 //! simple; a real function rarely has enough blocks for this to matter, and
 //! the roadmap's perf pass (Phase 6) is the place to revisit it, not here.
 

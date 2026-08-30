@@ -83,7 +83,7 @@ Of those 91, **45 are backed by the capability registry** (`n0xis-frontend::regi
 | [docs/n0xhud/ROADMAP.md](docs/n0xhud/ROADMAP.md) — [[docs/n0xhud/ROADMAP\|N0xHUD roadmap]] | N0xHUD phase plan + landed-vs-open status | dev, agent |
 | [CONTRIBUTING.md](CONTRIBUTING.md) — [[CONTRIBUTING]] | How to build, test, and contribute; CLA note for outside PRs | contributor |
 
-> Archived v0 documentation lives under [`archive/`](archive/) (`archive/README.md`, `archive/docs-v0/`, `archive/n0x-cli-rs-v0/`). It describes the superseded React/Tauri frontend and the old `n0x-cli-rs` crate — **superseded, do not cite it.** The current command reference is [[CLI_COMMANDS]] (`docs/CLI_COMMANDS.md`), which was renamed from the old `CLI_COMMANDS_v0.md` and is now the live reference, not a frozen snapshot.
+> The current command reference is [[CLI_COMMANDS]] (`docs/CLI_COMMANDS.md`) — the live reference, not a frozen snapshot.
 
 ---
 

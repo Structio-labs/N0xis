@@ -4,7 +4,7 @@
 //! seam like everything else in this crate.
 //!
 //! Coverage mirrors the archived v0 template renderer
-//! (`archive/n0x-cli-rs-v0/src/pseudo.rs::lift_instruction`) — same mnemonic
+//! (v0's `pseudo.rs::lift_instruction`) — same mnemonic
 //! set — but every operand becomes a typed [`MicroExpr`], and every
 //! flag-touching instruction (not just `cmp`/`test`) writes the shared
 //! [`FLAGS_VAR`], which is what makes SSA construction able to detect a stale

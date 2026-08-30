@@ -4,7 +4,6 @@
 > `main`; Phase 9 lives in the working tree). This is the design/architecture doc,
 > but no longer a greenfield plan: the shape described below is **built, not merely
 > proposed** — verify any specific "done" against the code and [`ROADMAP.md`](ROADMAP.md).
-> v0 is archived in [`archive/`](archive/).
 > Companion docs: [`ROADMAP.md`](ROADMAP.md) · [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md).
 > Created 2026-07-08.
 
@@ -315,7 +314,7 @@ artifacts (N0xHUD is the existing proof) rather than displacing the contract.
   `function discover`, `xref`, switch resolution and `decomp pseudo` match or beat
   v0 output on a fixed corpus of test functions (captured from the archived binary).
 - **Quality bar for pseudo-C:** on the motivating example
-  ([`archive/docs-v0/Decompile.txt`](archive/docs-v0/Decompile.txt)) no bare
+  (a captured v0 decompiler transcript) no bare
   `rax`/`rcx` in the common path; memory dereferences resolved to named
   fields/locals; conditions provably correct under intervening flag writes.
 
