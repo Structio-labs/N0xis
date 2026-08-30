@@ -1694,6 +1694,19 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     of 60 functions each on `Kenshi`, `Factorio`, `Tiny Glade`, `ChainedTogether` and
     `Pit of Goblin` decompiled 300/300 with 0 errors (ternaries now render in 20, 19
     and 7 of the Kenshi / Tiny Glade / Pit-of-Goblin samples).
+  - **5f — `min`/`max` idiom fold.** ✅ *(2026-08-30, verified.)* Once `cmovcc`
+    lowers to a select (5e), the classic `cmov`-after-`cmp` becomes the visible shape
+    `(l <cmp> r) ? x : y`. When the two branch values *are* the two compared
+    operands, that select is exactly `min`/`max`; which one — and signed vs unsigned
+    — is fixed by the comparison operator and by whether the true branch keeps the
+    left or the right operand. A render-level recognizer folds it to
+    `__min`/`__umin`/`__max`/`__umax(l, r)`. Sound: it fires only on that exact shape
+    (the branches must be structurally the compared values), so it can never relabel
+    an unrelated ternary — an unrelated select still renders as a plain `?:`.
+    **Verified:** `Kenshi` `sub_140064abf`'s `((rbx.3 < /*u*/ r8.29) ? rbx.3 : r8.29)`
+    now reads `__umin(rbx.3, r8.29)`; a sweep of 80 functions each recovered 16
+    min/max on `Kenshi` and 38 on `Tiny Glade` (Rust's slice-bound and clamp code),
+    0 on `Factorio` in-sample, with 240/240 ok and 0 errors.
 
 - **Rung 6 — Readability structuring.** ⬜ Goto elimination, `&&`/`||` and ternary
   recovery, precise loop forms, `switch` rendering (item 11). *Output:* the control

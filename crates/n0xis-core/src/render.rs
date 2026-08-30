@@ -269,6 +269,40 @@ fn stack_guard_operand<'a>(l: &'a MicroExpr, r: &'a MicroExpr) -> Option<&'a Mic
     }
 }
 
+/// Recognize the `min`/`max` idiom a `cmovcc`-after-`cmp` lowers to: a select
+/// `(l <cmp> r) ? x : y` where the two branch values are exactly the two
+/// compared operands. Which of min/max — and signed vs unsigned — is fixed by
+/// the comparison operator and by whether the "true" branch keeps the left or
+/// the right operand. Sound: it fires only on that exact shape (the branches
+/// must be structurally the compared values), so it can never relabel an
+/// unrelated ternary. Returns the intrinsic name and the two operands.
+fn min_max_idiom<'a>(cond: &'a MicroExpr, a: &'a MicroExpr, b: &'a MicroExpr) -> Option<(&'static str, &'a MicroExpr, &'a MicroExpr)> {
+    let MicroExpr::Binary(op, l, r) = cond else { return None };
+    if !is_comparison(*op) {
+        return None;
+    }
+    let (l, r) = (l.as_ref(), r.as_ref());
+    let straight = a == l && b == r; // (l <cmp> r) ? l : r
+    let swapped = a == r && b == l; //  (l <cmp> r) ? r : l
+    if !straight && !swapped {
+        return None;
+    }
+    use BinOp::*;
+    let picks_smaller_when_true = matches!(op, Ult | Ule | Slt | Sle);
+    // "true" keeps the smaller operand AND the true-branch is the left operand
+    // ⇒ min; the two flips (a greater-than compare, or swapped branches) each
+    // invert it.
+    let is_min = picks_smaller_when_true == straight;
+    let signed = matches!(op, Slt | Sle | Sgt | Sge);
+    let name = match (is_min, signed) {
+        (true, true) => "__min",
+        (true, false) => "__umin",
+        (false, true) => "__max",
+        (false, false) => "__umax",
+    };
+    Some((name, l, r))
+}
+
 fn is_comparison(op: BinOp) -> bool {
     matches!(
         op,
@@ -307,7 +341,11 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
             format!("/*{:?}({}, {})*/", kind, render_expr(lhs, names), render_expr(rhs, names))
         }
         MicroExpr::Select { cond, a, b } => {
-            format!("({} ? {} : {})", render_expr(cond, names), render_expr(a, names), render_expr(b, names))
+            if let Some((name, l, r)) = min_max_idiom(cond, a, b) {
+                format!("{name}({}, {})", render_expr(l, names), render_expr(r, names))
+            } else {
+                format!("({} ? {} : {})", render_expr(cond, names), render_expr(a, names), render_expr(b, names))
+            }
         }
         MicroExpr::OpaqueFlags { mnemonic } => format!("/*flags after {mnemonic}*/"),
         MicroExpr::Call { target, args } => render_call(target, args, names),
@@ -647,6 +685,36 @@ mod tests {
             MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x8, 64)), 64, false),
         );
         assert_eq!(render_expr(&check, &names), "__stack_guard(local_8)");
+    }
+
+    #[test]
+    fn a_compare_select_over_its_own_operands_renders_as_min_or_max() {
+        let names = RenderNames::new(&[]);
+        let sel = |op, a: &str, b: &str| {
+            MicroExpr::select(
+                MicroExpr::binary(op, MicroExpr::var("rax.1"), MicroExpr::var("rbx.1")),
+                MicroExpr::var(a),
+                MicroExpr::var(b),
+            )
+        };
+        // (a <u b) ? a : b  = unsigned min ; branches swapped = unsigned max
+        assert_eq!(render_expr(&sel(BinOp::Ult, "rax.1", "rbx.1"), &names), "__umin(rax.1, rbx.1)");
+        assert_eq!(render_expr(&sel(BinOp::Ult, "rbx.1", "rax.1"), &names), "__umax(rax.1, rbx.1)");
+        // signed greater-than keeping the left operand = signed max
+        assert_eq!(render_expr(&sel(BinOp::Sgt, "rax.1", "rbx.1"), &names), "__max(rax.1, rbx.1)");
+    }
+
+    #[test]
+    fn a_select_whose_branches_are_not_the_compared_values_stays_a_ternary() {
+        // Soundness: the min/max fold requires the branches to *be* the compared
+        // operands; an unrelated select must render as a plain `?:`.
+        let names = RenderNames::new(&[]);
+        let sel = MicroExpr::select(
+            MicroExpr::binary(BinOp::Ult, MicroExpr::var("rax.1"), MicroExpr::var("rbx.1")),
+            MicroExpr::var("rcx.1"),
+            MicroExpr::var("rdx.1"),
+        );
+        assert_eq!(render_expr(&sel, &names), "((rax.1 < /*u*/ rbx.1) ? rcx.1 : rdx.1)");
     }
 
     #[test]
