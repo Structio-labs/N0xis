@@ -2732,8 +2732,16 @@ through plain syscalls — no signed driver, no code-integrity fight:
      ARM, and our AArch64 arch (disarm64) cannot read a byte of it. So a **decode-only `Arm32`
      arch** landed: `yaxpeax-arm` (pure Rust, keeps the build C-free like disarm64), A32 +
      Thumb/Thumb-2, the `r0`-`r15` register model and AAPCS32 declared, and a best-effort
-     control-flow classification for the CFG. Lift stays default (Unlifted) — `disasm`/`ir`
-     work, a full A32/T32 **semantic lift** is the follow-on. `--arch arm32` (A32) / `--arch
+     control-flow classification for the CFG, and **resolved direct-branch targets** (A32
+     from the `BranchOffset` operand; Thumb from the `$±0xN` display, base `PC=va+4`) so
+     the CFG splits blocks and follows edges — verified against `llvm-objdump` (a Thumb
+     `b.w` at `0x799e` resolves to `0x79a4`, its exact target; 0 mismatches where the
+     linear-Thumb and mapping-symbol streams align). A target is set only when reliably
+     computable, else `None` — a sound "unknown edge", never a wrong one. Lift stays
+     default (Unlifted) — `disasm`/`ir`/CFG work, a full A32/T32 **semantic lift** (every
+     instruction → micro-IR, with predication as `cond ? effect : old` and the AAPCS32
+     arg model) is the follow-on; it carries a soundness burden (an unhandled instruction
+     must invalidate its writes) that makes it a dedicated effort, not a partial bolt-on. `--arch arm32` (A32) / `--arch
      thumb` (T32); mode is chosen up front (auto A32↔Thumb tracking via mapping symbols / the
      BX-to-odd-address rule is a follow-on). **Verified against `llvm-objdump --triple=thumbv7`
      on the box's own `toybox` (armv7, stripped, Thumb-2):** the decode matches instruction-for-

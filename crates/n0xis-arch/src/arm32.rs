@@ -11,7 +11,7 @@
 //! that lift, when it lands, has them; nothing is hardcoded in a pass.
 
 use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
-use yaxpeax_arm::armv7::{InstDecoder, Instruction, Opcode};
+use yaxpeax_arm::armv7::{InstDecoder, Instruction, Opcode, Operand};
 
 use n0xis_contracts::{Reg, Va};
 
@@ -128,6 +128,32 @@ fn classify(inst: &Instruction, text: &str) -> InsnKind {
     }
 }
 
+/// Resolve a PC-relative branch/call target so the CFG can split blocks and
+/// follow edges. A32 exposes a clean `BranchOffset(words)` operand (`target =
+/// va + words*4`, the offset already pipeline-adjusted relative to `va`). Thumb
+/// doesn't surface the operand the same way, so its target is parsed from the
+/// formatted `$±0xN` displacement — which for Thumb is relative to `PC = va+4`.
+/// Returns `None` (a sound "unknown edge") for a computed/register branch or an
+/// unparseable form, never a guess.
+fn branch_target(inst: &Instruction, text: &str, va: Va, thumb: bool) -> Option<Va> {
+    if let Operand::BranchOffset(words) = inst.operands[0] {
+        // A32: pipeline-adjusted word offset from `va`.
+        return Some(Va(va.0.wrapping_add((words as i64 as u64).wrapping_mul(4))));
+    }
+    // Thumb: parse `$+0xN` / `$-0xN` from the display; base is `PC = va+4`.
+    let rest = text.get(text.find('$')? + 1..)?;
+    let (neg, digits) = match rest.as_bytes().first()? {
+        b'+' => (false, &rest[1..]),
+        b'-' => (true, &rest[1..]),
+        _ => return None,
+    };
+    let hex = digits.trim_start_matches("0x");
+    let hex: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    let n = u64::from_str_radix(&hex, 16).ok()?;
+    let base = if thumb { va.0.wrapping_add(4) } else { va.0 };
+    Some(Va(if neg { base.wrapping_sub(n) } else { base.wrapping_add(n) }))
+}
+
 impl Arch for Arm32 {
     fn name(&self) -> &'static str {
         if self.thumb {
@@ -162,7 +188,11 @@ impl Arch for Arm32 {
         // want in the mnemonic.
         let mnemonic = text.split_whitespace().next().unwrap_or("").to_string();
         let kind = classify(&inst, &text);
-        Ok(DecodedInsn { va, len: len as u8, bytes: bytes[..len].to_vec(), mnemonic, text, kind, target: None, rip_target: None })
+        // Resolve the target of a direct branch/call so the CFG follows it.
+        let target = matches!(kind, InsnKind::Jump | InsnKind::CondJump | InsnKind::Call)
+            .then(|| branch_target(&inst, &text, va, self.thumb))
+            .flatten();
+        Ok(DecodedInsn { va, len: len as u8, bytes: bytes[..len].to_vec(), mnemonic, text, kind, target, rip_target: None })
     }
 
     fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
@@ -224,6 +254,18 @@ mod tests {
         // e8bd8000 pop {pc} → Ret
         let pop = dis(&a, &[0x00, 0x80, 0xbd, 0xe8]);
         assert_eq!(pop.kind, InsnKind::Ret);
+    }
+
+    #[test]
+    fn a32_branch_target_is_resolved_for_the_cfg() {
+        // ea000000 `b $+0x8` at 0x1000 → target 0x1008 (word offset 2 × 4).
+        let a = Arm32::a32();
+        let b = a.decode(&[0x00, 0x00, 0x00, 0xea], Va(0x1000)).unwrap();
+        assert_eq!(b.kind, InsnKind::Jump);
+        assert_eq!(b.target, Some(Va(0x1008)));
+        // A `bx lr` (register/return) has no resolvable direct target.
+        let bx = a.decode(&[0x1e, 0xff, 0x2f, 0xe1], Va(0x1000)).unwrap();
+        assert_eq!(bx.target, None);
     }
 
     #[test]
