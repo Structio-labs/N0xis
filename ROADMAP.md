@@ -1539,6 +1539,19 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     (a callee's arity, learned from all its call sites, back-propagated to each
     forwarding argument), still ⬜. System V argument registers (`rdi`/`rsi`/…)
     are a separate follow-on — the arity signal is Win64-register-specific today.
+  - **4b — drop lift-padding call arguments.** ✅ *(2026-08-30, verified.)* The
+    same fixed four-register call convention meant *every* call to a callee not
+    in the signature library rendered four arguments (`sub_X(rdi.1, rdx, v1,
+    r9.0)`). A **trailing** argument that is the bare entry value (`rN.0`) of a
+    register the current function neither takes as a parameter nor writes is
+    padding — the uninitialized incoming register — and is dropped, while any
+    computed argument or a genuine parameter forward (including a trailing
+    `rdx.0` when `rdx` *is* a parameter) is kept. Per-function and sound-
+    consistent with 4a's arity model. **Verified on `CompressToolsLib.dll`:**
+    `sub_18001eebd(rdi.1, rdx, v1)` (was `…, v1, r9.0)`), while a sibling call
+    that really passes four (`sub_1800033e0(rcx, v1, r8.1, rdx)`) is untouched.
+    The whole-program call-site-agreement recovery (4a's ⬜ half) would let this
+    trim to the callee's *exact* arity instead of this local heuristic.
 
 - **Rung 5 — Expression & idiom quality.** 🚧 Signedness inference, the compiler-
   idiom library (magic-number division, `cmov`→`min/max`, `rep`→`mem*`, canary

@@ -287,6 +287,16 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
 /// known return type (`(HANDLE)CreateFileW(...)`) when known. Falls back to
 /// the plain 4-arg rendering when the callee isn't in the library — sound,
 /// just less pretty.
+/// A call argument that is lift padding: the bare entry value (`rN.0`) of a
+/// register that is not a recovered parameter of the current function. Such a
+/// value is the uninitialized incoming register, injected only because the
+/// Win64 lift passes four argument registers at every call — never a real
+/// argument. A recovered parameter's entry version is in `param_names` (the
+/// coalescing/parameter map), so it is *not* padding.
+fn is_padding_arg(a: &MicroExpr, names: &RenderNames) -> bool {
+    matches!(a, MicroExpr::Var(n) if n.ends_with(".0") && !names.param_names.contains_key(n))
+}
+
 fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> String {
     // An indirect call through a *known* slot (`call qword ptr [rip+disp]` to
     // an import) is only syntactically indirect: the callee has a name, and
@@ -315,7 +325,18 @@ fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> 
                 .collect::<Vec<_>>()
                 .join(", ")
         }
-        None => args.iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", "),
+        None => {
+            // Drop trailing lift-padding arguments. The Win64 lift passes all
+            // four argument registers (rcx/rdx/r8/r9) at *every* call — it can't
+            // know the callee's arity — so a **trailing** argument that is the
+            // bare entry value (`rN.0`) of a register this function neither
+            // takes as a parameter nor ever writes is padding, not a real
+            // argument (it's the uninitialized incoming register). Only trailing
+            // padding is dropped, and only bare non-parameter entry values, so a
+            // genuine forwarded value or any computed argument is always kept.
+            let keep = args.iter().rposition(|a| !is_padding_arg(a, names)).map_or(0, |i| i + 1);
+            args[..keep].iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", ")
+        }
     };
     let call = format!("{callee}({args_text})");
     match known.and_then(|s| s.ret) {
@@ -501,6 +522,52 @@ mod tests {
             args: vec![MicroExpr::var("rcx.0")],
         };
         assert!(render_expr(&call, &names).starts_with("(*"), "{}", render_expr(&call, &names));
+    }
+
+    #[test]
+    fn trailing_lift_padding_arguments_are_dropped_from_an_unknown_call() {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, TypeArtifact};
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![],
+            signature: RecoveredSignature {
+                params: vec![ParamInfo { reg: "rcx", name: "rcx".into(), ty: CType { bits: 64, signed: false, name: None } }],
+                ret: None,
+            },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        // Unknown callee, args = (rcx.0 [parameter], rdx.1 [computed], r8.0, r9.0 [padding]).
+        let call = MicroExpr::Call {
+            target: CallTarget::Direct { va: Va(0x5000) },
+            args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.1"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
+        };
+        // Trailing non-parameter entry values r8.0/r9.0 are dropped; the
+        // parameter rcx.0 renders as its name, the computed rdx.1 is kept.
+        assert_eq!(render_expr(&call, &names), "sub_5000(rcx, rdx.1)");
+    }
+
+    #[test]
+    fn a_parameter_entry_value_in_a_trailing_argument_is_kept() {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, TypeArtifact};
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![],
+            signature: RecoveredSignature {
+                params: vec![
+                    ParamInfo { reg: "rcx", name: "rcx".into(), ty: CType { bits: 64, signed: false, name: None } },
+                    ParamInfo { reg: "rdx", name: "rdx".into(), ty: CType { bits: 64, signed: false, name: None } },
+                ],
+                ret: None,
+            },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        // rdx.0 is a real parameter forwarded straight through — it must NOT be
+        // trimmed even though it is a trailing bare entry value.
+        let call = MicroExpr::Call {
+            target: CallTarget::Direct { va: Va(0x5000) },
+            args: vec![MicroExpr::var("rcx.1"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0")],
+        };
+        assert_eq!(render_expr(&call, &names), "sub_5000(rcx.1, rdx)");
     }
 
     #[test]
