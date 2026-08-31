@@ -2074,6 +2074,96 @@ compounds with everything and needs Memory SSA (Rung 1) underneath.
 
 ---
 
+## Tooling & dependencies — the build-out plan (static **and** dynamic)
+
+N0xis is **not** a static-only tool: the live-memory engine, hardware-watchpoint
+provenance, hooks and managed-runtime recovery are a first-class half, and the
+seam between them (`watchpoint → decompiled statement`) is the main. So the
+external tooling is planned across **three consumers** — *static*, *dynamic*, and
+**both** — and the highest-value tools are the ones that serve *both*, because
+they work the seam. Each entry says how it is pulled in: a **crate** (a
+`Cargo.toml` dependency added when the feature is built — never pre-vendored), a
+**system package**, or a **standalone** tool downloaded to the tools directory.
+
+### Dynamic engine — deepen the existing strength
+
+| Tool | Why | Half | Pull-in |
+|---|---|---|---|
+| **Unicorn Engine** | CPU emulation — execute code slices, concolic, foreign-arch dynamic; the engine Rung 7 stands on | both | crate `unicorn-engine` |
+| **eBPF / uprobes** | Trace writes to an address with no byte patch (the "beyond-parity provenance" item); a Linux superpower | dynamic | crate `aya` (pure-Rust) |
+| **GDB-remote client** | Attach to `qemu-user --gdb`, embedded targets, other machines → dynamic analysis of *any* arch for free | dynamic | build (protocol) |
+| **HW debug registers** | Cross-platform HW watchpoints (DR0-3 / `PTRACE_POKEUSER`) — extend the current adapter | dynamic | in-tree |
+| **Frida** *(optional)* | Alternative hook/stalker backend, fast prototyping | dynamic | system / bindings |
+| **rr** *(optional)* | Deterministic record-replay → provenance "backwards in time" | dynamic | system pkg |
+
+### Static breadth — the multipliers
+
+| Tool | Why | Half | Pull-in |
+|---|---|---|---|
+| **SLEIGH ingest** (`.sla` → P-code → MicroIR) | One `SleighArch` backend behind `trait Arch` unlocks another tool's ~40 ISAs; the arch-breadth lever | static | crate/port + another tool specs |
+| **yaxpeax-{mips,ppc,riscv}** / **Capstone** | Cheap per-ISA decoders (decode ≠ semantics); Capstone as a broad fallback | static | crates |
+| **goblin/object** (Mach-O) + a **format seam** | Close Mach-O and firmware loaders (the Phase-15 format-seam debt) | static | crate (have goblin) |
+| **gimli** (DWARF) + **pdb** | Type/symbol ingest — the base for whole-program types and the PDB item | static | crates |
+
+### The shared engine — symbolic / concolic (serves both)
+
+| **SMT solver: Z3** (or lighter **bitwuzla**) | Path constraints: deobfuscation (static) **and** runtime computed-target resolution (dynamic) — Rung 7 / priority 12, on SSA + `ValueSet` + Unicorn | **both** | crate `z3` |
+
+This is the most important *seam* tool: one concolic engine powers both static
+deobfuscation and dynamic target recovery.
+
+### Whole-program infrastructure (priority 1 — the core gap)
+
+- **Persistent project DB** (`redb`, pure-Rust embedded — or `rusqlite`): a
+  call-graph-wide type/xref/annotation store that scales past the current
+  per-function + `.n0x`-journal model. This *is* the materialization of CONCEPT's
+  "one model, many projections."
+- **Type-constraint solver**: union-find for type unification + a constraint
+  propagation engine over the call graph — the machinery of whole-program type
+  propagation.
+
+### Verification infrastructure (make verify-before-✅ mechanical)
+
+- **Ground-truth compilers** (gcc/clang/rustc/MSVC-cross) — already used
+  (for-loops); formalize as a corpus generator.
+- **Differential oracles**: (a) **Unicorn** — execute a lifted function vs. the
+  real bytes, diff the semantics; (b) **other tools headless**
+  (`analyzeHeadless` / the reference API) — benchmark output quality against other tools on
+  the same binary.
+- **Fuzzing** (`cargo-fuzz`/libFuzzer) of the format/ISA parsers — mandatory,
+  since they parse untrusted bytes (the OOM lesson: never `with_capacity` on a
+  parsed length).
+- **Cross-arch corpus** — beyond games: MIPS/PPC/RISC-V/ARM samples, malware,
+  embedded firmware.
+
+### Cross-cutting
+
+- **Cross-compilation / remote** for ARM devices: build n0xis for armv7/aarch64
+  to run *on* the device, or use the existing `remote-serve` over SSH; Unicorn +
+  a gdbstub client covers the rest of the arches dynamically.
+- **VM seam** (a recorded debt): engine support (IL2CPP/LuaJIT/Bitsquid) is
+  per-engine and hardcoded — lift it to one plugin contract so Unity-Mono / Godot
+  / Unreal / V8 register as plugins, not surgery.
+
+### Recommended acquisition order
+
+1. **Unicorn** — one dependency, three payoffs: the concolic engine (Rung 7), a
+   differential oracle for lift verification, and non-x86 dynamic reach.
+2. **Z3 + Unicorn** → the symbolic slice (deobfuscation + computed-target
+   devirtualization).
+3. **Persistent DB (`redb`) + union-find** → whole-program type propagation
+   (priority 1, the core gap).
+4. **SLEIGH ingest** → architecture breadth, strategically.
+5. **eBPF/uprobes + gdbstub client** → dynamic breadth and no-patch provenance.
+
+**`Unicorn` and `Z3` serve static *and* dynamic at once — one investment, both
+halves — so they rank first.** Standalone tooling (another tool for its SLEIGH specs +
+the headless oracle, and a matching JDK) is downloaded to the shared tools
+directory on the Opus partition; crates are added to `Cargo.toml` at integration
+time, and system packages (`unicorn`, `z3`, `qemu-user`, `rr`) via the distro.
+
+---
+
 ## Companion tooling (not a numbered phase) — N0xHUD, game-asset & LuaJIT track
 
 A parallel track landed outside the numbered roadmap (commits `4cc5f4e`,
