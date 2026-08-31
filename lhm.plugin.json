@@ -2,7 +2,7 @@
   "author": "LargoScript",
   "authorUrl": "https://github.com/LargoScript",
   "category": "developer",
-  "description": "An optimizing SSA decompiler and live-memory engine for Windows and Linux, PE and ELF alike. Memory-SSA, phi-web variable coalescing and branch-condition recovery turn raw x64 into readable, source-level pseudocode; live value/pointer/AOB scanning and hardware watchpoints cover the runtime. One pipeline over static files and live processes — arm a watchpoint on a value and get back the exact decompiled statement that wrote it. Every capability is a stable CLI verb and an MCP tool.",
+  "description": "An optimizing SSA decompiler and live-memory engine for Windows and Linux, PE and ELF alike. Memory-SSA, alias/points-to (stack/global/heap disambiguation), C++ RTTI class recovery (vtable naming, this-typing, template demangling, base-class inheritance graph) and source-level readability structuring (if/else-if/for/while/do-while) turn raw x64 into readable, source-level pseudocode; live value/pointer/AOB scanning and hardware watchpoints cover the runtime. One pipeline over static files and live processes — arm a watchpoint on a value and get back the exact decompiled statement that wrote it. Every capability is a stable CLI verb and an MCP tool returning versioned JSON.",
   "homepage": "https://github.com/LargoScript/n0xis",
   "identifier": "largoscript-n0xis",
   "name": "N0xis",
@@ -18,7 +18,7 @@
     "rust",
     "il2cpp"
   ],
-  "version": "0.1.1",
+  "version": "0.2.1",
   "prompts": [],
   "resources": [],
   "tools": [
