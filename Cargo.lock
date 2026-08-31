@@ -2361,6 +2361,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "n0xis-warp"
+version = "0.2.1"
+
+[[package]]
 name = "naga"
 version = "22.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

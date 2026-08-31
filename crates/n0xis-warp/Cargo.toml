@@ -1,0 +1,14 @@
+[package]
+name = "n0xis-warp"
+description = "Clean-room implementation of WARP function/basic-block GUIDs (Vector 35's cross-tool signature identity): UUIDv5 over normalized code, dependency-free. The interoperability primitive n0xis shares with another tool's WARP format."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["warp", "reverse-engineering", "signature", "uuid", "decompiler"]
+categories = ["development-tools", "algorithms"]
+
+[dependencies]
+# Dependency-free by design, exactly like n0xis-flirt: the SHA-1 and UUIDv5 the
+# WARP GUID needs are implemented here, so this crate is a pure primitive with no
+# supply-chain surface — which matters for a commercial product.
