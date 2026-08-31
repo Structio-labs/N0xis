@@ -2314,9 +2314,15 @@ third party's format). Each increment is verified on a real binary before ✅.
   exact-address hit only (no borrowing the symbol before an interior offset), and
   data symbols are excluded from `sig gen`'s function set. Verified on zlib: the
   CRC table base reads `&crc_table`, the lookups `crc_table[i]`.
-- ⬜ Calling-convention & argument/return-type recovery (params still render as
-  raw `uint64_t`; blocked on phi-aware copy propagation — the pointer flows
-  param→copy→phi-in-loop→deref, so simple copy-chaining doesn't reach it).
+- 🟡 **Argument-type recovery — pointer parameters.** A parameter whose value
+  reaches a dereference is now typed a pointer even when it gets there through a
+  copy and a loop-carried phi: `propagate_pointerness` grows the pointer-base set
+  backward through `dst = Var(src)` copies and `dst = phi(…)` phis to a fixpoint
+  (sound — only sources of already-known pointers are marked). Verified: zlib's
+  `crc32_z(uint64_t, void *rsi, uint64_t)` recovers `buf` as `void *` (its pointer
+  reaches the table loop only via `rbx = buf` + a phi), where before it was raw
+  `uint64_t`. Still ⬜: the *pointee* type (`void *`→`const u8 *`), and integer
+  arg widths / signedness / return-type polish.
   ✅ Switch/jump-table rendering
   (`emit_switch`: real `switch (x) { case K: }` from resolved jump tables) —
   already shipped in the structuring rung.

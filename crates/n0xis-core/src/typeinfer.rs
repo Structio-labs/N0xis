@@ -773,6 +773,37 @@ fn constructor_vtable_params(blocks: &[SsaBlock], vtables: Option<&std::collecti
     out
 }
 
+/// Grow `ptrs` with every SSA value that a known pointer was copied or phi'd
+/// from: the source of a pointer-valued copy, and each operand of a
+/// pointer-valued phi, is itself a pointer. Iterated to a fixpoint over plain
+/// `dst = Var(src)` copies and `dst = phi(srcs)` phis, so pointer-ness reaches
+/// back through a loop-carried copy to the parameter it came from. Only sources
+/// of already-known pointers are added, so nothing unrelated is ever widened.
+fn propagate_pointerness(blocks: &[SsaBlock], ptrs: &mut BTreeSet<String>) {
+    // def -> its source SSA vars (copy source, or every phi operand).
+    let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for b in blocks {
+        for phi in &b.phis {
+            sources.entry(phi.dst.clone()).or_default().extend(phi.inputs.iter().map(|i| i.value.clone()));
+        }
+        for s in &b.stmts {
+            if let MicroStmt::Assign { dst, value: MicroExpr::Var(src) } = &s.stmt {
+                sources.entry(dst.clone()).or_default().push(src.clone());
+            }
+        }
+    }
+    let mut work: Vec<String> = ptrs.iter().cloned().collect();
+    while let Some(v) = work.pop() {
+        if let Some(srcs) = sources.get(&v) {
+            for s in srcs.clone() {
+                if ptrs.insert(s.clone()) {
+                    work.push(s);
+                }
+            }
+        }
+    }
+}
+
 /// The display type of one register parameter, inferred from how it is used —
 /// the "recover typed variables from use" half of Rung 3, for the signature.
 /// Precedence is by strength of evidence:
@@ -822,7 +853,15 @@ fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let used = collect_definite_param_regs(blocks);
     let arity = recover_arity(&used, &arg_regs);
     let struct_map: BTreeMap<&str, &str> = structs.iter().map(|s| (s.base_var.as_str(), s.type_name.as_str())).collect();
-    let ptr_bases: BTreeSet<&str> = accesses.iter().map(|a| a.base.as_str()).collect();
+    // A dereferenced value is a pointer, and so is anything it was *copied from*.
+    // Propagate that backward through plain copies and phi operands to a fixpoint,
+    // so a parameter whose pointer reaches a dereference only after a copy (and,
+    // through a loop, a phi) — `rbx = buf; … while … rbx->f` — is still recovered
+    // as a pointer rather than a raw `uint64_t`. Sound: each step only ever marks
+    // a *source* of an already-known pointer, never widens an unrelated value.
+    let mut ptr_owned: BTreeSet<String> = accesses.iter().map(|a| a.base.clone()).collect();
+    propagate_pointerness(blocks, &mut ptr_owned);
+    let ptr_bases: BTreeSet<&str> = ptr_owned.iter().map(String::as_str).collect();
     let api_types = param_api_types(cfg, blocks);
     let ctor_classes = constructor_vtable_params(blocks, ctx.vtables);
     let method_classes = collect_method_this_types(cfg, blocks);
@@ -855,6 +894,39 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
         TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks }).unwrap()
+    }
+
+    #[test]
+    fn pointerness_flows_back_through_a_copy_and_a_phi_to_the_parameter() {
+        use crate::ssa::{Phi, PhiInput, SsaBlock, SsaStmt};
+        use n0xis_arch::{MicroExpr, MicroStmt};
+        let blk = |id, stmts, phis| SsaBlock {
+            id,
+            start: Va(0x1000 + id as u64 * 0x10),
+            end: Va(0x1000 + id as u64 * 0x10 + 0x8),
+            terminator: "ret".into(),
+            successors: Vec::new(),
+            phis,
+            stmts,
+            condition: None,
+        };
+        let assign = |dst: &str, src: &str| SsaStmt {
+            va: Va(0x1000),
+            stmt: MicroStmt::Assign { dst: dst.into(), value: MicroExpr::var(src) },
+        };
+        // rbx.2 = rsi.0 ; rbx.9 = φ(rbx.2, rbx.3) ; *(rbx.9) accessed → rbx.9 is
+        // the pointer base. Pointer-ness must reach rbx.2 (phi operand) then
+        // rsi.0 (copy source).
+        let blocks = vec![
+            blk(0, vec![assign("rbx.2", "rsi.0")], vec![]),
+            blk(1, vec![], vec![Phi { var: "rbx".into(), dst: "rbx.9".into(), inputs: vec![PhiInput { from_block: 0, value: "rbx.2".into() }, PhiInput { from_block: 1, value: "rbx.3".into() }] }]),
+        ];
+        let mut ptrs: BTreeSet<String> = ["rbx.9".to_string()].into_iter().collect();
+        propagate_pointerness(&blocks, &mut ptrs);
+        assert!(ptrs.contains("rbx.2"), "pointer-ness must reach the phi operand");
+        assert!(ptrs.contains("rsi.0"), "and back through the copy to the parameter");
+        // A value unrelated to the pointer chain is never marked.
+        assert!(!ptrs.contains("rdx.0"));
     }
 
     fn block_with(stmts: Vec<MicroStmt>) -> SsaBlock {
