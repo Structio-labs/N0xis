@@ -59,6 +59,16 @@ impl StaticImage {
         }
     }
 
+    /// The named function symbols the image carries (`(va, name)`, address-
+    /// ordered) — a signature generator's input. A PE contributes its exports,
+    /// an ELF its `.symtab`/`.dynsym`; a fully stripped image yields nothing.
+    pub fn named_functions(&self) -> Vec<(Va, String)> {
+        match self {
+            StaticImage::Pe(p) => p.named_functions(),
+            StaticImage::Elf(e) => e.named_functions(),
+        }
+    }
+
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
         match self {
             StaticImage::Pe(p) => p.section_range(name),

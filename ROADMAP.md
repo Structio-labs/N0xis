@@ -1468,10 +1468,32 @@ lift/SLEIGH-ingest per ISA.
      `sub_18001d84c(rcx, rdx.2, r8.1, r9.1)` into `free(/*ptr*/ rcx)` in
      `CompressToolsLib.dll` (bare name, correct arity), while the same decomp
      without `--flirt` still shows `sub_18001d84c` — the difference is genuinely
-     the matcher. **Still ⬜: the signature *data*** — the CRT/STL/runtime pattern
-     corpus (from xwin MSVC static libs, a another tool `.fidb` conversion, or a
-     symbolized build) that makes it name real functions without a hand-authored
-     `.npat`. The engine is done; the library it consumes is the remaining work.
+     the matcher.
+   - ✅ **Rung 10b — `sig gen`: learn a signature library from a symbolized
+     image.** The generator that turns any *symbolized* binary (an ELF with a
+     `.symtab`/`.dynsym`, a PE with exports) into a `.npat` database, so the
+     corpus no longer has to be hand-authored. For each named function it decodes
+     the leading bytes (`--window`, default 32) and wildcards exactly the bytes a
+     linker varies: a relative call/jump displacement (the trailing 1/4 bytes,
+     confirmed by reconstructing the target) and a RIP-relative displacement
+     (`rip_target − (va+len)`, located by its little-endian value in the
+     instruction). A relocation it cannot place soundly *truncates* the pattern
+     rather than leave a varying byte fixed; a trailing displacement is trimmed;
+     absolute immediates stay fixed (conservative — a cross-binary miss, never a
+     false name). `--min-fixed` drops signatures with too little concrete code.
+     Sound over complete throughout. **Verified end to end on a stripped ELF:**
+     `sig gen` on a symbolized build emits patterns for `adler_mix`/`greet`/`main`
+     (wildcarding their `jcc`/`call`/RIP displacements); after `strip --strip-all`,
+     `decomp … --flirt <gen.npat>` re-derives every one of those names — `greet`
+     is named `greet` and its body calls `adler_mix(…)`, `main` calls `greet(…)` —
+     purely from the generated signatures, while the same stripped decomp without
+     `--flirt` shows only `sub_XXXX`. Three unit tests pin the wildcarding
+     (relative-call, RIP-relative, trailing-trim).
+   - ⬜ **Still open: the *shipped* CRT/STL corpus.** `sig gen` needs a symbolized
+     reference to learn from; the remaining work is producing (and shipping) the
+     real MSVC/libstdc++ signature libraries — run `sig gen` over xwin's static
+     CRT `.lib`s / a debug STL build, or convert a another tool `.fidb`. The engine and
+     the generator are done; the distributed library is what is left.
 9. ⬜ **Calling-convention & argument recovery — the prototype the whole render
    hangs on.** Classify the CC (fastcall / stdcall / vectorcall / `this` / custom)
    and recover argument count, types and variadicity from entry-liveness plus

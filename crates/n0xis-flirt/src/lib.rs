@@ -79,7 +79,7 @@ impl Pattern {
 
     /// Fixed (non-wildcard) positions — the pattern's *specificity*. A tie in
     /// length is broken by this so a pattern with more concrete bytes wins.
-    fn fixed_count(&self) -> usize {
+    pub fn fixed_count(&self) -> usize {
         self.0.iter().filter(|b| matches!(b, PatByte::Fixed(_))).count()
     }
 
@@ -101,6 +101,41 @@ impl Pattern {
             PatByte::Fixed(v) => *v == c,
             PatByte::Any => true,
         })
+    }
+
+    /// Build a pattern from a function's leading bytes, wildcarding the byte
+    /// ranges a linker may vary (relocated displacements: a relative call/jump
+    /// target, a RIP-relative displacement). Each `(offset, len)` in `wildcards`
+    /// is a half-open byte range within `window` to mask; the rest are fixed.
+    ///
+    /// Trailing wildcards are trimmed — a pattern ending in `..` gains no
+    /// specificity yet forces the candidate to carry those bytes, so a signature
+    /// must end on a concrete byte. The producer is responsible for supplying a
+    /// window that ends at a real instruction boundary.
+    pub fn from_window(window: &[u8], wildcards: &[(usize, usize)]) -> Pattern {
+        let mut bytes: Vec<PatByte> = window.iter().map(|&b| PatByte::Fixed(b)).collect();
+        for &(off, len) in wildcards {
+            for pos in off..off.saturating_add(len).min(bytes.len()) {
+                bytes[pos] = PatByte::Any;
+            }
+        }
+        while matches!(bytes.last(), Some(PatByte::Any)) {
+            bytes.pop();
+        }
+        Pattern(bytes)
+    }
+
+    /// Render as an `.npat` pattern token string: two hex digits per fixed byte,
+    /// `..` per wildcard, space-separated. Round-trips through [`Pattern::parse`].
+    pub fn to_npat(&self) -> String {
+        self.0
+            .iter()
+            .map(|b| match b {
+                PatByte::Fixed(v) => format!("{v:02x}"),
+                PatByte::Any => "..".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -291,5 +326,29 @@ mod tests {
         assert_eq!(db.len(), 2);
         assert_eq!(db.lookup(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x57]), Some("free"));
         assert_eq!(db.lookup(&[0x48, 0x83, 0xec, 0x28, 0x90]), Some("memcpy"));
+    }
+
+    #[test]
+    fn builds_a_pattern_and_round_trips_through_npat() {
+        // `e8 <rel32> 90` — a relative call whose 4 displacement bytes vary
+        // between builds, so they must become wildcards.
+        let window = [0xe8, 0x11, 0x22, 0x33, 0x44, 0x90];
+        let pat = Pattern::from_window(&window, &[(1, 4)]);
+        assert_eq!(pat.to_npat(), "e8 .. .. .. .. 90");
+        // A pattern round-trips: format then parse yields the same thing.
+        assert_eq!(Pattern::parse(&pat.to_npat()).unwrap(), pat);
+        // It matches a differently-relocated instance of the same code…
+        assert!(pat.matches(&[0xe8, 0xaa, 0xbb, 0xcc, 0xdd, 0x90]));
+        // …but not code that differs on a fixed byte.
+        assert!(!pat.matches(&[0xe8, 0xaa, 0xbb, 0xcc, 0xdd, 0x91]));
+    }
+
+    #[test]
+    fn trailing_wildcards_are_trimmed() {
+        // A window ending in a relocated tail must not keep dangling `..`: they
+        // add no specificity yet would force the candidate to carry those bytes.
+        let window = [0x48, 0x83, 0xec, 0x28, 0xe9, 0x11, 0x22, 0x33, 0x44];
+        let pat = Pattern::from_window(&window, &[(5, 4)]);
+        assert_eq!(pat.to_npat(), "48 83 ec 28 e9");
     }
 }

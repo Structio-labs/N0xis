@@ -2198,6 +2198,7 @@ dependencies = [
  "n0xis-bitsquid",
  "n0xis-contracts",
  "n0xis-core",
+ "n0xis-flirt",
  "n0xis-frontend",
  "n0xis-lua",
  "n0xis-luajit",

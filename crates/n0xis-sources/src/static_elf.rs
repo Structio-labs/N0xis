@@ -153,6 +153,13 @@ impl StaticElf {
     fn section_for(&self, va: u64) -> Option<&SectionRange> {
         self.sections.iter().find(|s| va >= s.va_start && va < s.va_end)
     }
+
+    /// The defined function symbols (`.symtab`/`.dynsym`), address-ordered — the
+    /// `(va, name)` list a signature generator fingerprints. Empty on a stripped
+    /// binary, which is exactly why signatures are needed in the first place.
+    pub fn named_functions(&self) -> Vec<(Va, String)> {
+        self.symbols.values().map(|s| (s.va, s.name.clone())).collect()
+    }
 }
 
 impl MemorySource for StaticElf {

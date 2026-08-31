@@ -222,6 +222,13 @@ impl StaticPe {
     fn section_for(&self, va: u64) -> Option<&SectionRange> {
         self.sections.iter().find(|s| va >= s.va_start && va < s.va_end)
     }
+
+    /// The exported functions, address-ordered — the `(va, name)` list a
+    /// signature generator fingerprints. A static CRT `.lib` linked into a DLL
+    /// that re-exports it is one bootstrap source for a signature library.
+    pub fn named_functions(&self) -> Vec<(Va, String)> {
+        self.exports.values().map(|s| (s.va, s.name.clone())).collect()
+    }
 }
 
 impl MemorySource for StaticPe {

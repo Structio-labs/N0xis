@@ -13,7 +13,7 @@
 mod emit;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use n0xis_arch::{Arch, Arm64, X64};
+use n0xis_arch::{Arch, Arm64, InsnKind, X64};
 // The shared frontend seam (source resolution, ISA selection, argument
 // parsing) — `n0xis-mcp` goes through the exact same functions, so `--pid`
 // and `"pid"` cannot mean different things (CONCEPT §3 rules 3 and 5).
@@ -738,6 +738,12 @@ enum SigCmd {
     /// Report which bytes are invariant across samples; refuse to bless a
     /// signature from <3 deliberately-varied samples.
     Validate(SigValidateArgs),
+    /// Generate a FLIRT-class `.npat` signature database from a *symbolized*
+    /// image: fingerprint each named function's leading bytes, wildcarding the
+    /// displacements a linker varies (relative call/jump targets, RIP-relative
+    /// offsets). Feed the output back with `decomp … --flirt` to name the same
+    /// functions in a *stripped* binary that statically links them.
+    Gen(SigGenArgs),
 }
 
 #[derive(Args)]
@@ -771,6 +777,25 @@ struct SigValidateArgs {
     /// Independence bar (default 3).
     #[arg(long, default_value_t = 3)]
     min_independent: usize,
+}
+
+#[derive(Args)]
+struct SigGenArgs {
+    /// The symbolized image to learn signatures from (an ELF with a `.symtab`/
+    /// `.dynsym`, or a PE with exports). A fully stripped image yields nothing.
+    #[arg(long)]
+    file: String,
+    /// Instruction-decoder override; auto-selected from the image otherwise.
+    #[arg(long)]
+    arch: Option<String>,
+    /// Bytes of each function to fingerprint (default 32). Longer is more
+    /// specific but more likely to run past a short function into padding.
+    #[arg(long, default_value_t = 32, value_parser = parse_hex_or_decimal_usize)]
+    window: usize,
+    /// Drop a signature with fewer than this many fixed (non-wildcard) bytes —
+    /// too little concrete code to name a function without collisions.
+    #[arg(long, default_value_t = 6)]
+    min_fixed: usize,
 }
 
 #[derive(Subcommand)]
@@ -2350,6 +2375,7 @@ fn main() {
         Command::Const(ConstCmd::Identify(a)) => cmd_const_identify(a, pretty),
         Command::Bindings(BindingsCmd::List(a)) => cmd_bindings_list(a, pretty),
         Command::Sig(SigCmd::Validate(a)) => cmd_sig_validate(a, pretty),
+        Command::Sig(SigCmd::Gen(a)) => cmd_sig_gen(a, pretty),
         Command::Ui(UiCmd::Locate(a)) => cmd_ui_locate(a, pretty),
         Command::Ui(UiCmd::Windows(a)) => cmd_ui_windows(a, pretty),
         Command::Ui(UiCmd::Screenshot(a)) => cmd_ui_screenshot(a, pretty),
@@ -5112,6 +5138,160 @@ fn cmd_sig_validate(a: SigValidateArgs, pretty: bool) -> bool {
     )
 }
 
+/// The byte range within one instruction that a linker fills in and so must
+/// become a wildcard: a relative branch's displacement, or a RIP-relative
+/// memory displacement. Returns `None` when the instruction carries no
+/// relocation, and `Err(())` when it carries one we cannot locate soundly (the
+/// caller then truncates the pattern rather than leave a varying byte fixed).
+fn reloc_span(ins: &n0xis_arch::DecodedInsn) -> Result<Option<(usize, usize)>, ()> {
+    let len = ins.len as usize;
+    // A relative near-branch (`e8`/`e9` rel32, `7x`/`eb` rel8, `0f 8x` rel32):
+    // the displacement is the instruction's trailing bytes — 1 for a 2-byte
+    // short branch, 4 otherwise. Confirm by reconstructing the target from them.
+    if matches!(ins.kind, InsnKind::Call | InsnKind::Jump | InsnKind::CondJump)
+        && let Some(target) = ins.target
+    {
+        let dlen = if len <= 2 { 1 } else { 4 };
+        if dlen > len {
+            return Err(());
+        }
+        let off = len - dlen;
+        let disp = target.0.wrapping_sub(ins.va.0.wrapping_add(len as u64));
+        let bytes = &ins.bytes[off..off + dlen];
+        // Sign-extend the trailing bytes and check they encode this target; if
+        // not, the branch is not simple-relative and we can't wildcard it.
+        let mut val = 0i64;
+        for (i, &b) in bytes.iter().enumerate() {
+            val |= (b as i64) << (8 * i);
+        }
+        let sign = 1i64 << (8 * dlen - 1);
+        let signed = (val ^ sign) - sign;
+        if (signed as u64) == disp {
+            return Ok(Some((off, dlen)));
+        }
+        return Err(());
+    }
+    // A RIP-relative memory operand: `disp32 = rip_target - (va + len)`, located
+    // by finding that little-endian value inside the instruction bytes. Unique
+    // occurrence → wildcard it; otherwise we cannot place it soundly.
+    if let Some(rt) = ins.rip_target {
+        if len < 4 {
+            return Err(());
+        }
+        let disp = rt.0.wrapping_sub(ins.va.0.wrapping_add(len as u64)) as u32;
+        let le = disp.to_le_bytes();
+        let mut found: Option<usize> = None;
+        for w in 0..=len - 4 {
+            if ins.bytes[w..w + 4] == le {
+                if found.is_some() {
+                    return Err(()); // ambiguous placement — refuse to guess
+                }
+                found = Some(w);
+            }
+        }
+        return found.map(|p| Some((p, 4))).ok_or(());
+    }
+    Ok(None)
+}
+
+/// Fingerprint one function: decode its leading `window` bytes, wildcard the
+/// relocated displacements, and stop at the first `ret`/invalid byte or a
+/// relocation we cannot place. Returns the `.npat` pattern token string and its
+/// fixed-byte count, or `None` when too little decodable code is present.
+fn generate_pattern(window: &[u8], window_va: Va, arch: &dyn Arch) -> Option<(String, usize)> {
+    let insns = arch.decode_stream(window, window_va, window.len());
+    let mut wild: Vec<(usize, usize)> = Vec::new();
+    let mut covered = 0usize;
+    for ins in &insns {
+        let off = (ins.va.0 - window_va.0) as usize;
+        let len = ins.len as usize;
+        if matches!(ins.kind, InsnKind::Invalid) || off + len > window.len() {
+            break;
+        }
+        match reloc_span(ins) {
+            Ok(Some((rel_off, rel_len))) => wild.push((off + rel_off, rel_len)),
+            Ok(None) => {}
+            // A relocation we cannot place soundly: end the pattern *before* this
+            // instruction so no varying byte is ever left fixed.
+            Err(()) => break,
+        }
+        covered = off + len;
+        // A `ret` is a natural, stable pattern boundary — stop after it.
+        if matches!(ins.kind, InsnKind::Ret) {
+            break;
+        }
+    }
+    if covered == 0 {
+        return None;
+    }
+    let pat = n0xis_flirt::Pattern::from_window(&window[..covered], &wild);
+    Some((pat.to_npat(), pat.fixed_count()))
+}
+
+fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
+    let img = match StaticImage::load(std::path::Path::new(&a.file)) {
+        Ok(i) => i,
+        Err(e) => return emit(&Response::<serde_json::Value>::error("load-failed", e.to_string()), pretty),
+    };
+    let arch = match n0xis_frontend::pick_arch(a.arch.as_deref(), !img.is_64()) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
+
+    let funcs = img.named_functions();
+    let mut lines: Vec<String> = Vec::new();
+    let mut sigs: Vec<serde_json::Value> = Vec::new();
+    let mut skipped_short = 0usize;
+    let mut skipped_unreadable = 0usize;
+    for (va, name) in &funcs {
+        let window = match img.read(*va, a.window) {
+            Ok(b) if !b.is_empty() => b,
+            _ => {
+                skipped_unreadable += 1;
+                continue;
+            }
+        };
+        let Some((pattern, fixed)) = generate_pattern(&window, *va, arch.as_ref()) else {
+            skipped_unreadable += 1;
+            continue;
+        };
+        if fixed < a.min_fixed {
+            skipped_short += 1;
+            continue;
+        }
+        lines.push(format!("{pattern} {name}"));
+        sigs.push(json!({ "va": format!("{va}"), "name": name, "pattern": pattern, "fixed": fixed }));
+    }
+
+    let header = format!(
+        "# n0xis {} signatures generated from {} ({} functions, {} emitted)\n",
+        schema::v1::SIG_GEN,
+        a.file,
+        funcs.len(),
+        lines.len()
+    );
+    let npat = format!("{header}{}\n", lines.join("\n"));
+
+    emit(
+        &Response::success(
+            schema::v1::SIG_GEN,
+            json!({
+                "source": a.file,
+                "functions_total": funcs.len(),
+                "emitted": lines.len(),
+                "skipped_below_min_fixed": skipped_short,
+                "skipped_unreadable": skipped_unreadable,
+                "window": a.window,
+                "min_fixed": a.min_fixed,
+                "npat": npat,
+                "signatures": sigs,
+            }),
+        )
+        .with_source(img.module().name.clone()),
+        pretty,
+    )
+}
+
 // ============================================================================
 // Phase 12 — IL2CPP managed layer (item 0: import an external index)
 // ============================================================================
@@ -5564,5 +5744,44 @@ mod guide_recipe_tests {
                 });
             assert!(runnable, "recipe `{name}` has no runnable step");
         }
+    }
+}
+
+#[cfg(test)]
+mod sig_gen_tests {
+    use super::*;
+
+    /// A relative `call`'s 4 displacement bytes vary between builds, so the
+    /// generator must wildcard exactly them and keep every other byte fixed.
+    #[test]
+    fn wildcards_a_relative_call_displacement() {
+        // sub rsp,0x28 ; call rel32 ; add rsp,0x28 ; ret
+        let window = [0x48, 0x83, 0xec, 0x28, 0xe8, 0x11, 0x22, 0x33, 0x44, 0x48, 0x83, 0xc4, 0x28, 0xc3];
+        let arch = X64::default();
+        let (pat, fixed) = generate_pattern(&window, Va(0x1000), &arch).unwrap();
+        assert_eq!(pat, "48 83 ec 28 e8 .. .. .. .. 48 83 c4 28 c3");
+        assert_eq!(fixed, 10); // 14 bytes − 4 wildcarded displacement bytes
+    }
+
+    /// A RIP-relative `lea` displacement is `rip_target − (va + len)`, located
+    /// by its little-endian value inside the instruction; it too is wildcarded.
+    #[test]
+    fn wildcards_a_rip_relative_displacement() {
+        // lea rax,[rip+0x0] ; ret  → disp32 = 0, at instruction bytes [3..7]
+        let window = [0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc3];
+        let arch = X64::default();
+        let (pat, _fixed) = generate_pattern(&window, Va(0x2000), &arch).unwrap();
+        assert_eq!(pat, "48 8d 05 .. .. .. .. c3");
+    }
+
+    /// A trailing relocated displacement (a tail-call/jump ending the window) is
+    /// trimmed, not left as dangling wildcards.
+    #[test]
+    fn trims_a_trailing_relocated_tail_call() {
+        // xor eax,eax ; jmp rel32  → the jump's disp is the window's tail
+        let window = [0x31, 0xc0, 0xe9, 0xaa, 0xbb, 0xcc, 0xdd];
+        let arch = X64::default();
+        let (pat, _fixed) = generate_pattern(&window, Va(0x3000), &arch).unwrap();
+        assert_eq!(pat, "31 c0 e9");
     }
 }

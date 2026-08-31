@@ -139,6 +139,10 @@ pub mod v1 {
     /// (`sig validate`).
     pub const SIG_VALIDATE: &str = "n0xis.sig.validate.v1";
 
+    /// FLIRT-class signature database generated from a symbolized image
+    /// (`sig gen`).
+    pub const SIG_GEN: &str = "n0xis.sig.gen.v1";
+
     // --- Phase 9: UI-layer localization ---
     /// Structural-predicate scan: matches by relations between fields, not
     /// byte constants (the generalized primitive `ui locate` is built on).
