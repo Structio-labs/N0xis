@@ -1114,25 +1114,88 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Optimizer (copy/const/expr-prop, DCE) | ✅ production |
 | Renderer (pseudo-C) | ✅ production |
 | Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (narrower idiom set than other tools) |
-| Type recovery | 🚧 early — locals / struct-field / arity / return + ~30 API sigs + **C++ class from RTTI vtable** (constructor `this` typed to its class, vtable constants named — verified on Kenshi/STALKER 2) |
-| Alias analysis | 🚧 basic — bounded value-set, intraprocedural, `Top` on loads |
+| Type recovery | 🚧 **per-function** — typed locals block, phi-web coalescing, struct-field/arity/return + ~30 API sigs + **C++ class from RTTI** (`this` typed to its class, vtable naming, template demangling, **inheritance graph**). **Whole-program type propagation** (a recovered struct flowed to every function that uses it) is the core gap vs other tools |
+| Alias analysis | 🚧 **intraprocedural points-to** — escape analysis (2a), global distinct-constant (2b) and **heap-allocation** (2c) disambiguation; `Top` on loads through unknown pointers. Whole-program/distinct-parameter points-to still missing |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
 | noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** — `call`- *and* `jmp`(tail-call)-to-noreturn — verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 10 functions incl. a `jmp TerminateProcess`, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) fired in 0/14 real DLLs, unit-tested only, pending a real-corpus positive |
 | Import-name resolution | ✅ 2026-08-06 — direct, IAT-slot and thunk callees resolve to `module!name`; imports render by name and reach the known-API signature table |
-| Compiler-idiom recovery | 🚧 early — `const identify`, junk, opaque predicates only |
-| Memory SSA | ❌ missing |
-| Interprocedural propagation | ❌ missing (bar the known-API table) |
+| Compiler-idiom recovery | 🚧 growing — `const identify`, junk, opaque predicates, **stack-canary, `min`/`max`, magic-division, rotates, `cmov`→`?:`, full intrinsic layer (SSE/bit-scan/FP), BMI/BMI2** (Rung 5b–5i) |
+| Memory SSA | ✅ Rung 1 — intra- and cross-block store-to-load forwarding + dead-store elimination, on escape analysis; verified on real Win64/MSVC and Linux/GCC |
+| Interprocedural propagation | 🚧 partial — whole-program noreturn IPA + call-site name/ABI resolution; **whole-program type propagation still missing** (the core remaining gap) |
 | Exception-edge recovery | ❌ missing — `.xdata` parsed for unwinding only |
-| Indirect / virtual call resolution | ❌ missing — IAT/direct only |
-| SIMD / FP lift | ❌ missing — integer set only; degrades to `asm` nodes |
-| PDB / type ingestion | ❌ missing |
-| C++ RTTI / vtable / class recovery | ❌ missing — no RTTI parse, no vtable typing, no class model (highest-leverage gap for a C++ game corpus) |
+| Indirect / virtual call resolution | 🚧 partial — RTTI vtable constants **named** (`&Class::vtable`), `this` typed to its class; last-hop **devirtualization** (slot→method) still ⬜ (needs whole-program `this`-type flow) |
+| SIMD / FP lift | ✅ Rung 5c/5h — SSE data moves as 128-bit ops + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); FP *compares* left opaque |
+| PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
+| C++ RTTI / vtable / class recovery | ✅ Rung 7a — MSVC RTTI scan, vtable naming, `this`-typing, **full template demangling, base-class inheritance graph** (Kenshi 3055 / STALKER 2 561 vtables). Whole-program class-graph propagation into every method still ⬜ |
 | Library-function identification (FLIRT-class) | ❌ missing — statically-linked CRT/STL/runtime code is decompiled by hand; `sig validate` is the primitive, but there is no shipped signature library or auto-apply |
 | Calling-convention & argument recovery | 🚧 early — arity + return only; CC is *assumed* x64-fastcall, no `this`call/vectorcall/variadic detection |
 | Stack-frame reconstruction (SP-delta, FPO) | 🚧 partial — locals recovered, but no explicit frame model, no frame-pointer-omission handling, no stack arrays/spills as typed variables |
-| Output readability (goto-elim, `&&`/`\|\|`, `?:`, loop forms) | 🚧 basic — reducible CFGs structure, but no aggressive goto elimination, compound-condition, ternary, or precise `for`/`while`/`do` recovery |
-| Signedness recovery | ❌ missing — operators/casts render without signed-vs-unsigned inference |
+| Output readability (goto-elim, `&&`/`\|\|`, `?:`, loop forms) | ✅ Rung 6 — `switch`, `&&`/`\|\|`, `?:`, `if`/`else if`, `for`/`while`/`do-while`, tail-duplication (residual gotos ~halved). Residual shared-body gotos on irreducible merges remain |
+| Signedness recovery | 🚧 Rung 3f/5 — signed vs unsigned comparisons render distinctly; stack-local signedness inferred from use. Register-variable signedness still ⬜ |
 | Global / data-segment typing | 🚧 early — `xref`/`xref string` exist, but globals are untyped and data-flow does not reach the decompiler |
+
+### Where other tools still lead — the honest gap map (2026-08-31, v0.2.1)
+
+With Rungs 1–7a landed, the *local* decompilation quality is measured against the
+free other tools on x64 (cleaner ABI-stripped output, C++ RTTI class + inheritance
+recovery, alias 2a/2b/2c). What another tool and another tool still lead on is **not**
+per-function analysis — it is breadth, scale, and surface:
+
+- **Whole-program type propagation — the one *core-decompilation* gap.** N0xis
+  recovers types **per function**; a `struct_rcx_0` recovered in one function is
+  not yet flowed to every other function that touches the same object. other tools
+  keep a persistent, call-graph-wide type database that binds hundreds of
+  functions into one class model. This is the next big rung (see priority 3 →
+  extended below) and the honest reason "massive C++" still favours other tools.
+- **GUI — "eyes and hands."** Graph view, click-to-rename, an interactive type
+  manager, xref navigation, instant re-analysis, undo. N0xis is headless
+  (CLI/MCP) by design; a GUI is deferred, not ruled out, and can be built over
+  the JSON/MCP surface.
+- **Architecture breadth.** N0xis: x64 (mature), i386, AArch64 (early), AArch32
+  (new). another tool (~40 ISAs via SLEIGH) and BN cover MIPS/PPC/RISC-V/SPARC and the
+  long tail. See the strategy below — this is a *seam* question, not a rewrite.
+- **File formats.** PE + ELF today; no Mach-O, no firmware loaders. A format
+  seam (Phase 15 debt) closes this the same way `trait Arch` closed the ISA one.
+- **Maturity on adversarial / varied code** and a plugin/type-library ecosystem
+  (another tool GDT, FunctionID/FLIRT, OOAnalyzer; the reference implementation's Python object model). N0xis is
+  young; `sound over complete` keeps it honest, but idiom/edge-case coverage is
+  narrower and there is no shipped signature/type-library yet.
+
+Everything above is breadth/scale/surface **except** whole-program type
+propagation, which is the single remaining *core* decompilation gap — so it
+ranks first among the additions.
+
+### Overcoming the architecture-breadth limit — the seam strategy
+
+Arch breadth is two separable costs, and only one is expensive:
+
+- **Decode** is cheap — a Rust decoder crate per ISA behind the existing
+  `trait Arch` seam (already: iced-x86 for x64/i386, disarm64 for AArch64,
+  yaxpeax-arm for AArch32; the yaxpeax family also ships mips/ppc/riscv decoders).
+- **Semantics (the lift, decoded-insn → MicroIR)** is the real per-arch work.
+
+Two ways to pay it, and they compose:
+
+1. **Hand-lift the few high-value ISAs** (current path) — premium, sound,
+   `O(arch)` effort. Worth it for RISC-V (small, clean, rising) and MIPS
+   (consoles/embedded); each is far smaller than x64.
+2. **Ingest another tool SLEIGH → P-code → MicroIR — the breadth multiplier.** SLEIGH
+   is a declarative ISA-semantics language with **~40 shipped specs**; one
+   `SleighArch` backend behind `trait Arch` that loads a `.sla` and lowers P-code
+   to MicroIR unlocks the whole matrix at "sound-but-generic" quality, while the
+   hand-lifted arches stay premium. This is exactly the modular-on-the-Code-seam
+   principle: SLEIGH is just another `Arch` plugin. (Apache-2.0 specs; the lower
+   is P-code→MicroIR, a bounded one-time integration.)
+
+**VMs/emulators (Unicorn/QEMU/Qiling) are orthogonal — dynamic, not static.**
+They *execute* foreign-arch code; they do not produce pseudocode, so they do not
+substitute for a lifter. Where they *do* expand reach: (a) the **live-analysis
+seam on non-x86 devices** (e.g. the ARM TV-box), (b) the **concolic/symbolic
+engine** (Rung 7 / item 12) for deobfuscation and computed-target resolution, and
+(c) a differential oracle to validate a new lift against real execution. So the
+answer to "expand via VMs?" is: **yes for the dynamic and verification sides, no
+for the static decompiler** — the static path still needs a decoder + a
+lift/SLEIGH-ingest per ISA.
 
 ### The gap in detail (what parity actually requires)
 
@@ -1293,11 +1356,20 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 2. ⬜ **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
    recovery — chicken-and-egg: alias precision needs types, type recovery needs
    alias. Climb 1–2 together; neither is precise alone.
-3. ⬜ **Function-summary IPA — the high-ROI slice.** Per-function summaries
-   (returns / `noreturn` / clobber set / arg & return types / side effects), **not**
-   full context-sensitive interprocedural analysis. Composes directly with the
-   existing `ManifestPass`, which already computes per-function flags — so this is
-   an extension, not a new subsystem.
+3. ⬜ **Function-summary IPA + whole-program type propagation — now the #1 core
+   gap vs other tools.** Two layers. (a) **Summaries**: per-function returns /
+   `noreturn` / clobber set / arg & return types / side effects — composes with
+   the existing `ManifestPass`, an extension not a new subsystem. (b) **Whole-program
+   type propagation** (the layer other tools lead on): a persistent, call-graph-wide
+   type store so a `struct` recovered in one function — or a class recovered from
+   RTTI — is *flowed to every function that touches the same object* (callee arg
+   types ⇄ caller arg values, return types ⇄ consumers, field layouts unified
+   across all users). This is what turns N0xis's *per-function* type recovery
+   (Rung 3, verified) into the one class model over hundreds of functions that
+   other tools build — the honest reason "massive C++" still favours them. Builds on the
+   RTTI class graph (Rung 7a) + the summary layer here; it is the single remaining
+   *core-decompilation* gap (everything else other tools lead on is breadth/GUI/
+   maturity — see "Where other tools still lead" above), so it ranks first.
 4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
    decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
    it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few
