@@ -648,6 +648,74 @@ fn param_api_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, &
     out
 }
 
+/// Map an SSA var passed as **arg 0 to a C++ member function** to that method's
+/// class-pointer type — whole-program `this`-type propagation (other tools' win):
+/// a value handed to `Class::method` *is* a `Class *`. Only non-static members
+/// contribute (a free function's or static member's arg 0 is not a `this`), and
+/// the callee name is resolved through the same call-site table the renderer
+/// uses. First hit wins (advisory display type, sound-over-complete).
+fn collect_method_this_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, String> {
+    let name_by_target: BTreeMap<u64, &str> =
+        cfg.callsites.iter().filter_map(|c| Some((c.target?.get(), c.target_name.as_deref()?))).collect();
+    let name_by_slot: BTreeMap<u64, &str> =
+        cfg.callsites.iter().filter_map(|c| Some((c.via_slot?.get(), c.target_name.as_deref()?))).collect();
+    let callee_name = move |target: &CallTarget| -> Option<&str> {
+        match target {
+            CallTarget::Direct { va } => name_by_target.get(&va.get()).copied(),
+            CallTarget::Indirect(inner) => match inner.as_ref() {
+                MicroExpr::Load { addr, .. } => match addr.as_ref() {
+                    MicroExpr::Const { value, .. } => u64::try_from(*value).ok().and_then(|s| name_by_slot.get(&s).copied()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            CallTarget::Intrinsic(_) => None,
+        }
+    };
+
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut record = |target: &CallTarget, args: &[MicroExpr]| {
+        if let (Some(name), Some(MicroExpr::Var(a0))) = (callee_name(target), args.first()) {
+            let bare = name.rsplit('!').next().unwrap_or(name);
+            if let Some(class) = crate::demangle::member_function_class(bare) {
+                out.entry(a0.clone()).or_insert(format!("{class} *"));
+            }
+        }
+    };
+
+    fn walk(e: &MicroExpr, record: &mut impl FnMut(&CallTarget, &[MicroExpr])) {
+        if let MicroExpr::Call { target, args } = e {
+            record(target, args);
+        }
+        for child in expr_children(e) {
+            walk(child, record);
+        }
+    }
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Assign { value, .. } => walk(value, &mut record),
+                MicroStmt::Store { addr, value, .. } => {
+                    walk(addr, &mut record);
+                    walk(value, &mut record);
+                }
+                MicroStmt::Call { target, args, .. } => {
+                    record(target, args);
+                    for a in args {
+                        walk(a, &mut record);
+                    }
+                }
+                MicroStmt::Return(Some(e)) => walk(e, &mut record),
+                MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+            }
+        }
+        if let Some(c) = &b.condition {
+            walk(c, &mut record);
+        }
+    }
+    out
+}
+
 /// Map a register parameter's entry version (`"rcx.0"`) to the C++ class whose
 /// vtable a constructor installs into `*this` — the strongest possible
 /// identification of the pointer's type, and what turns `struct_rcx_0 *rcx`
@@ -710,21 +778,27 @@ fn constructor_vtable_params(blocks: &[SsaBlock], vtables: Option<&std::collecti
 /// Precedence is by strength of evidence:
 /// 0. a **constructor-installed vtable class** (`*this = &Class::vtable` — the
 ///    definitive identity of the object, RTTI item 7),
-/// 1. a **recovered struct pointer** (we saw concrete field accesses through
-///    it — the strongest, most local proof it's a pointer-to-aggregate),
-/// 2. a **known-API argument type** (`HANDLE`, `LPCWSTR`, `DWORD`, …),
-/// 3. a plain **`void *`** when the value is dereferenced but no struct/API
+/// 1. a **C++ member-function `this`** (passed as arg 0 to `Class::method` — the
+///    class is named ground truth, and beats a synthesized `struct_`),
+/// 2. a **recovered struct pointer** (we saw concrete field accesses through
+///    it — a local proof it's a pointer-to-aggregate),
+/// 3. a **known-API argument type** (`HANDLE`, `LPCWSTR`, `DWORD`, …),
+/// 4. a plain **`void *`** when the value is dereferenced but no struct/API
 ///    evidence pins a better type,
-/// 4. otherwise the generic `uint64_t` (unchanged from before).
+/// 5. otherwise the generic `uint64_t` (unchanged from before).
 fn param_ctype(
     pname: &str,
     ctor_classes: &BTreeMap<String, String>,
+    method_classes: &BTreeMap<String, String>,
     ptr_bases: &BTreeSet<&str>,
     struct_map: &BTreeMap<&str, &str>,
     api: &BTreeMap<String, &'static str>,
 ) -> CType {
     if let Some(class) = ctor_classes.get(pname) {
         return CType::named(format!("{class} *"));
+    }
+    if let Some(ty) = method_classes.get(pname) {
+        return CType::named(ty.clone());
     }
     if let Some(sty) = struct_map.get(pname) {
         return CType::named(format!("{sty} *"));
@@ -751,11 +825,12 @@ fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let ptr_bases: BTreeSet<&str> = accesses.iter().map(|a| a.base.as_str()).collect();
     let api_types = param_api_types(cfg, blocks);
     let ctor_classes = constructor_vtable_params(blocks, ctx.vtables);
+    let method_classes = collect_method_this_types(cfg, blocks);
     let params = arg_regs[..arity]
         .iter()
         .map(|&reg| {
             let pname = format!("{reg}.0");
-            ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ctor_classes, &ptr_bases, &struct_map, &api_types) }
+            ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ctor_classes, &method_classes, &ptr_bases, &struct_map, &api_types) }
         })
         .collect();
 
@@ -819,7 +894,7 @@ mod tests {
         assert_eq!(m.get("rdx.0").map(String::as_str), Some("icu_64::GregorianCalendar"));
         // Precedence: the ctor class beats a recovered `struct_rcx_0`.
         let struct_map: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
-        let ty = param_ctype("rcx.0", &m, &BTreeSet::new(), &struct_map, &BTreeMap::new());
+        let ty = param_ctype("rcx.0", &m, &BTreeMap::new(), &BTreeSet::new(), &struct_map, &BTreeMap::new());
         assert_eq!(ty.name.as_deref(), Some("std::exception *"));
     }
 
@@ -976,14 +1051,15 @@ mod tests {
         let api: BTreeMap<String, &'static str> = [("rdx.0".to_string(), "HANDLE"), ("rcx.0".to_string(), "LPVOID")].into_iter().collect();
         let ptr: BTreeSet<&str> = ["rcx.0", "r8.0"].into_iter().collect();
         let no_ctor = BTreeMap::new();
+        let no_method = BTreeMap::new();
         // rcx: deref'd struct *and* an API hit -> struct wins.
-        assert_eq!(param_ctype("rcx.0", &no_ctor, &ptr, &structs, &api).name.as_deref(), Some("struct_rcx_0 *"));
+        assert_eq!(param_ctype("rcx.0", &no_ctor, &no_method, &ptr, &structs, &api).name.as_deref(), Some("struct_rcx_0 *"));
         // rdx: only an API hit -> the named API type.
-        assert_eq!(param_ctype("rdx.0", &no_ctor, &ptr, &structs, &api).name.as_deref(), Some("HANDLE"));
+        assert_eq!(param_ctype("rdx.0", &no_ctor, &no_method, &ptr, &structs, &api).name.as_deref(), Some("HANDLE"));
         // r8: dereferenced but no struct/API -> void *.
-        assert_eq!(param_ctype("r8.0", &no_ctor, &ptr, &structs, &api).name.as_deref(), Some("void *"));
+        assert_eq!(param_ctype("r8.0", &no_ctor, &no_method, &ptr, &structs, &api).name.as_deref(), Some("void *"));
         // r9: no evidence at all -> generic (name None, renders uint64_t).
-        assert_eq!(param_ctype("r9.0", &no_ctor, &ptr, &structs, &api).name, None);
+        assert_eq!(param_ctype("r9.0", &no_ctor, &no_method, &ptr, &structs, &api).name, None);
     }
 
     #[test]

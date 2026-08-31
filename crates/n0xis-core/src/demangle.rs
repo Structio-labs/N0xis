@@ -46,6 +46,31 @@ pub fn demangle_msvc_name_only(name: &str) -> Option<String> {
     msvc_demangler::demangle(name, flags).ok()
 }
 
+/// If `name` is a **non-static C++ member function**, the class it belongs to —
+/// the type of its implicit `this` (the first argument under the x64 ABI). This
+/// is the seam for whole-program `this`-type propagation (matching other tools):
+/// a value passed as arg 0 to `Class::method` is a `Class *`. `None` for a free
+/// function, a static member, or a non-C++ symbol — those have no `this`, so
+/// their arg 0 must not be mistyped. Membership is read from the demangler's
+/// access specifier (`public:`/`private:`/`protected:`), which only a member
+/// carries, gated against `static`.
+pub fn member_function_class(name: &str) -> Option<String> {
+    if !name.starts_with('?') {
+        return None;
+    }
+    let full = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm()).ok()?;
+    let is_member = full.starts_with("public:") || full.starts_with("private:") || full.starts_with("protected:");
+    if !is_member || full.contains("static ") {
+        return None;
+    }
+    // Drop the trailing `::method` from the qualified name; the last `::` is the
+    // method separator (a template argument's `::` sits inside `<…>`, after
+    // which `method` has none).
+    let qualified = demangle_msvc_name_only(name)?;
+    let class = qualified.rsplit_once("::")?.0;
+    (!class.is_empty()).then(|| class.to_string())
+}
+
 /// Fully demangle an MSVC RTTI **TypeDescriptor** decorated name (`.?AVFoo@@`,
 /// `.?AV?$vector@H@std@@`) to its readable class name (`Foo`,
 /// `std::vector<int>`) — including the templated names `demangle_rtti_name`'s
@@ -96,6 +121,22 @@ mod tests {
     fn demangles_an_msvc_symbol() {
         // `int __cdecl foo(int)`
         assert_eq!(demangle("?foo@@YAHH@Z"), "int __cdecl foo(int)");
+    }
+
+    #[test]
+    fn member_function_class_identifies_only_non_static_members() {
+        // A non-static member (`QEAA` = public) → its class is the `this` type.
+        assert_eq!(
+            member_function_class("?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ").as_deref(),
+            Some("std::basic_ostream<char,struct std::char_traits<char> >")
+        );
+        // A free function (`YA`) has no `this` — must return None.
+        assert_eq!(member_function_class("?uncaught_exception@std@@YA_NXZ"), None);
+        assert_eq!(member_function_class("?foo@@YAHH@Z"), None);
+        // A static member (`SA`) has no `this` either.
+        assert_eq!(member_function_class("?max@?$numeric_limits@H@std@@SAHXZ"), None);
+        // Not an MSVC symbol at all.
+        assert_eq!(member_function_class("CreateFileW"), None);
     }
 
     #[test]
