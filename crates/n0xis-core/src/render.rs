@@ -372,6 +372,35 @@ fn min_max_idiom<'a>(cond: &'a MicroExpr, a: &'a MicroExpr, b: &'a MicroExpr) ->
     Some((name, l, r))
 }
 
+/// Recognize an array subscript inside a load/store address: `base + i*stride`
+/// where `stride` equals the element size (`bits/8`). Returns `(base, index)` so
+/// the access renders `base[i]` instead of `*(T*)(base + i*4)` — identical C
+/// semantics, far more readable. Requires an explicit `* stride` with `stride ≥
+/// 2`: a byte array (`base + i`) is left as a pointer add, since a bare sum is
+/// too ambiguous to reshape soundly.
+fn as_array_index(addr: &MicroExpr, bits: n0xis_arch::Bits) -> Option<(&MicroExpr, &MicroExpr)> {
+    let stride = i128::from(bits / 8);
+    if stride < 2 {
+        return None;
+    }
+    let MicroExpr::Binary(BinOp::Add, a, b) = addr else { return None };
+    // The index term is `i * stride` (either operand order); the other Add
+    // operand is the base. Try both arrangements.
+    for (base, offset) in [(a.as_ref(), b.as_ref()), (b.as_ref(), a.as_ref())] {
+        if let MicroExpr::Binary(BinOp::Mul, m1, m2) = offset {
+            let idx = match (m1.as_ref(), m2.as_ref()) {
+                (idx, MicroExpr::Const { value, .. }) if *value == stride => Some(idx),
+                (MicroExpr::Const { value, .. }, idx) if *value == stride => Some(idx),
+                _ => None,
+            };
+            if let Some(idx) = idx {
+                return Some((base, idx));
+            }
+        }
+    }
+    None
+}
+
 fn is_comparison(op: BinOp) -> bool {
     matches!(
         op,
@@ -389,6 +418,9 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
         MicroExpr::Load { addr, bits, signed } => {
             if let Some(text) = field_or_local_text(addr, names) {
                 return text;
+            }
+            if let Some((base, idx)) = as_array_index(addr, *bits) {
+                return format!("{}[{}]", render_expr(base, names), render_expr(idx, names));
             }
             format!("*({}*)({})", c_type(*bits, *signed), render_expr(addr, names))
         }
@@ -534,6 +566,8 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
         MicroStmt::Store { addr, value, bits } => {
             if let Some(text) = field_or_local_text(addr, names) {
                 format!("{text} = {};", render_expr(value, names))
+            } else if let Some((base, idx)) = as_array_index(addr, *bits) {
+                format!("{}[{}] = {};", render_expr(base, names), render_expr(idx, names), render_expr(value, names))
             } else {
                 format!("*({}*)({}) = {};", c_type(*bits, false), render_expr(addr, names), render_expr(value, names))
             }
@@ -814,6 +848,35 @@ mod tests {
             MicroExpr::var("rdx.1"),
         );
         assert_eq!(render_expr(&sel, &names), "((rax.1 < /*u*/ rbx.1) ? rcx.1 : rdx.1)");
+    }
+
+    #[test]
+    fn a_scaled_pointer_load_renders_as_an_array_subscript() {
+        let names = RenderNames::new(&[]);
+        // *(uint32_t*)(v9 + (idx * 4))  →  v9[idx]  (stride 4 == sizeof u32)
+        let load = MicroExpr::Load {
+            addr: Box::new(MicroExpr::binary(
+                BinOp::Add,
+                MicroExpr::var("v9"),
+                MicroExpr::binary(BinOp::Mul, MicroExpr::var("idx"), MicroExpr::constant(4, 64)),
+            )),
+            bits: 32,
+            signed: false,
+        };
+        assert_eq!(render_expr(&load, &names), "v9[idx]");
+
+        // Soundness: a stride that is NOT the element size is left as a pointer
+        // deref — reshaping it to `base[i]` would silently change the semantics.
+        let mismatch = MicroExpr::Load {
+            addr: Box::new(MicroExpr::binary(
+                BinOp::Add,
+                MicroExpr::var("v9"),
+                MicroExpr::binary(BinOp::Mul, MicroExpr::var("idx"), MicroExpr::constant(4, 64)),
+            )),
+            bits: 64, // sizeof u64 == 8, but the stride is 4 → not an array access
+            signed: false,
+        };
+        assert_eq!(render_expr(&mismatch, &names), "*(uint64_t*)((v9 + (idx * 0x4)))");
     }
 
     #[test]

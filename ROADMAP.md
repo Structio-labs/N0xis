@@ -2292,9 +2292,13 @@ third party's format). Each increment is verified on a real binary before ✅.
   `AddrOf`) and non-PIE (bare `mov imm`) builds; both PLT-`printf` sites show the
   real format string.
 - ⬜ **Whole-program type propagation (priority 1)** — the biggest lever; below.
+- ✅ **Array-access recovery.** `*(T*)(base + i*sizeof(T))` renders `base[i]`
+  (both load and store) — identical C semantics, far more readable. Sound: an
+  explicit `* stride` matching the element size (`stride ≥ 2`) is required; a
+  stride mismatch stays a pointer deref, a byte add stays a pointer add. Verified
+  on zlib's `crc32_z`: the table lookups became `v9[(uint32_t)v12]`.
 - ⬜ Calling-convention & argument/return-type recovery (params still render as
-  raw `uint64_t`). ⬜ Data-symbol / global naming. ⬜ Array-access recovery
-  (`table[i]` for the `*(u32*)(base + i*4)` shape). ⬜ Switch/jump-table already
+  raw `uint64_t`). ⬜ Data-symbol / global naming. ⬜ Switch/jump-table already
   has a `has-switch` path — polish to real `switch` rendering.
 
 ### Whole-program infrastructure (priority 1 — the core gap)
