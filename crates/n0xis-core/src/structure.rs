@@ -683,6 +683,17 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
     };
     emit_node(&mut ctx, 0, None);
 
+    // No-code-loss sweep. The recursive descent starts at the entry and follows
+    // structure; a block it never reaches — an irreducible multi-exit-loop
+    // continuation, say — would otherwise be silently dropped, the one failure a
+    // decompiler must never have. Emit every such block (with real content) as a
+    // top-level region, its `// block_N:` header serving as the target for the
+    // `goto block_N` the descent already emits. Iterated because emitting one
+    // region can structure others; the visited flags guarantee termination.
+    while let Some(b) = (0..n).find(|&b| !ctx.visited[b] && real_line_count(&ctx, b) > 0) {
+        emit_node(&mut ctx, b, None);
+    }
+
     StructuredOutput { lines: ctx.out, has_loop: !loop_body.is_empty(), fallback_count: ctx.fallback_count }
 }
 
