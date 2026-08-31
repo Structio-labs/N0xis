@@ -2297,17 +2297,24 @@ third party's format). Each increment is verified on a real binary before ✅.
   explicit `* stride` matching the element size (`stride ≥ 2`) is required; a
   stride mismatch stays a pointer deref, a byte add stays a pointer add. Verified
   on zlib's `crc32_z`: the table lookups became `v9[(uint32_t)v12]`.
-- ⬜ **Multi-exit loop follow-node (structuring residual, diagnosed).** A loop with
-  a *second* exit — a `break` to a block outside the loop, in addition to the
-  header's own exit — currently inlines that block's whole subtree *inside* the
-  loop body instead of emitting it after the loop. Root-caused on zlib's
-  `crc32_z`: the byte-alignment loop `{@1580 header, @1589 body}` has exits at both
-  @196f (header) and @15a8 (the body's `break`); `emit_loop` treats only the
-  header's arm as `outside`, so the entire main CRC loop that follows @15a8 renders
-  nested under the alignment `while`, after a `break;` that makes it look dead. The
-  fix is real loop-follow computation (the join past *all* exits) + emitting each
-  non-latch exit as `break`/`continue` with the follow placed after — a careful,
-  golden-covered structuring change, not a rushed one.
+- ✅ **Multi-exit loop structuring (#5) — fixed in two sound steps.**
+  1. **No-code-loss sweep.** The recursive descent emitted only what it reached
+     from the entry; a block reached solely by a `goto block_N` it emitted but
+     never structured was silently dropped — the one failure a decompiler must
+     never have. `structure()` now sweeps every unvisited block with real content
+     into a top-level region after the descent. **Measured, 0 lines removed:**
+     zlib's `inflate_table` had been dropping 259 body lines (522→781), `crc32_z`
+     9 (its `goto block_6` target). The goto style was unaffected — proof these
+     were genuine omissions.
+  2. **Don't nest a loop's continuation after a `break`.** When both arms of an
+     `if/else` leave (an enclosing loop's `continue`/`break`), control does not
+     fall through to the merge, so emitting it there nested the loop's
+     continuation *inside* the loop under a dead-looking `break`. `emit_if_else`
+     now skips that merge (`both_diverge`); the exit edge reaches it and the sweep
+     places it correctly. On `crc32_z` the alignment `while` now closes cleanly and
+     the main CRC loop follows at the outer level. **Verified by set-diff: 0
+     statements gained or lost — the code is identical, only re-placed.** Unit
+     tests pin `arm_diverges`; `cargo test --workspace` + clippy green.
 - ✅ **Data-symbol / global naming.** ELF `.symtab`/`.dynsym` `STT_OBJECT` symbols
   are now collected (`SymKind::Data`) and a constant equal to a global's exact
   address renders `&name` (`v9 = &crc_table;`) instead of `(void*)0x…`. Sound:

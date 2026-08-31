@@ -305,6 +305,8 @@ fn emit_if_else(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     let else_lines = capture_arm(ctx, f, merge);
     ctx.indent -= 1;
 
+    // Computed before the arms are moved into the output below.
+    let both_diverge = arm_diverges(&then_lines) && arm_diverges(&else_lines);
     let has_code = |ls: &[String]| ls.iter().any(|l| is_code_line(l));
     let pad0 = pad(ctx.indent);
     if !has_code(&then_lines) && has_code(&else_lines) {
@@ -328,6 +330,14 @@ fn emit_if_else(ctx: &mut Ctx, n: usize, until: Option<usize>) {
             ctx.out.push(format!("{pad0}}}"));
         }
     }
+    // Both arms leave (e.g. an enclosing loop's `continue` / `break`): the merge
+    // is not reached by falling through this `if`, so emitting it here would nest
+    // the loop's continuation *inside* the loop after a `break`, reading as
+    // unreachable code. Leave it — the real exit edge reaches it, and the
+    // no-code-loss sweep emits it as a top-level region if nothing else does.
+    if both_diverge {
+        return;
+    }
     if let Some(m) = merge {
         emit_node(ctx, m, until);
     }
@@ -341,6 +351,21 @@ fn capture_arm(ctx: &mut Ctx, arm: usize, until: Option<usize>) -> Vec<String> {
     let saved = std::mem::take(&mut ctx.out);
     emit_node(ctx, arm, until);
     std::mem::replace(&mut ctx.out, saved)
+}
+
+/// Does a captured arm's control flow *leave* — its last real line is a
+/// `break`/`continue`/`return`/`goto`? If both arms of an `if/else` leave, control
+/// never falls through past it, so its merge block is not this `if`'s
+/// continuation and must not be emitted nested under it (it is reached by the
+/// exit edge elsewhere, and the no-code-loss sweep emits it if nothing else does).
+fn arm_diverges(lines: &[String]) -> bool {
+    match lines.iter().rev().find(|l| is_code_line(l)) {
+        Some(l) => {
+            let t = l.trim();
+            t == "break;" || t == "continue;" || t.starts_with("return") || t.starts_with("goto ")
+        }
+        None => false,
+    }
 }
 
 /// A rendered line that is real code — not blank and not a `//` comment (a bare
@@ -713,6 +738,20 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let names = RenderNames::new(&cfg.callsites);
         structure(&cfg, &ssa.blocks, &names)
+    }
+
+    #[test]
+    fn arm_diverges_detects_leaving_control_flow() {
+        let arm = |last: &str| vec!["    x = 1;".to_string(), format!("    {last}")];
+        assert!(arm_diverges(&arm("break;")));
+        assert!(arm_diverges(&arm("continue;")));
+        assert!(arm_diverges(&arm("return 0x0;")));
+        assert!(arm_diverges(&arm("goto block_7;")));
+        // A plain assignment falls through — the merge IS this if's continuation.
+        assert!(!arm_diverges(&arm("y = 2;")));
+        // A trailing comment/label does not change the last *code* line's verdict.
+        assert!(arm_diverges(&["    break;".to_string(), "    // block_9: 0x1234".to_string()]));
+        assert!(!arm_diverges(&[]));
     }
 
     #[test]
