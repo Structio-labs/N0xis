@@ -112,6 +112,16 @@ impl Pass for DecompPass {
         if let Some(vtables) = ctx.vtables {
             names = names.with_vtables(vtables.clone());
         }
+        // String-literal recovery: a constant that is the address of a printable
+        // NUL-terminated string in the source renders as that C literal
+        // (`"hello %s"`) instead of a bare `0x…`. Read straight from the image
+        // bytes and validated to be a real string before it is trusted — sound
+        // over pretty, the same rule the vtable naming follows. Scans both the raw
+        // and optimized IR so a string used only in dead code still resolves.
+        let strings = recover_strings(&[&ssa.blocks, &opt.blocks], ctx.source);
+        if !strings.is_empty() {
+            names = names.with_strings(strings);
+        }
         // The function's own name, when a symbol source has one. **Only an
         // exact hit counts**: a provider that attributes a whole function span
         // answers for any address inside it, so accepting a near miss would
@@ -355,6 +365,125 @@ fn render_goto(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) -> V
     lines
 }
 
+/// The widest byte window read at a candidate string address. A real C string a
+/// decompiler wants to inline is short; a "string" longer than this is treated as
+/// not-a-string (data), so the read — and the cost — stay bounded.
+const MAX_STRING_LEN: usize = 200;
+/// Below this many characters a match is too likely to be a coincidence (a small
+/// integer that happens to address printable bytes), so short runs are ignored.
+const MIN_STRING_LEN: usize = 4;
+
+/// Recover the `address → C-string-literal` map for every constant that appears
+/// in `block_sets` and turns out to address a printable NUL-terminated string in
+/// the image. Reading the bytes and validating them *is* the soundness check: a
+/// constant that is not a mapped address, or whose bytes are not a clean string,
+/// simply gets no entry and renders as a number exactly as before.
+fn recover_strings(block_sets: &[&[SsaBlock]], source: &dyn n0xis_sources::MemorySource) -> std::collections::HashMap<u64, String> {
+    let mut addrs: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for blocks in block_sets {
+        for b in *blocks {
+            for s in &b.stmts {
+                collect_const_addrs(&s.stmt, &mut addrs);
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for va in addrs {
+        if let Some(lit) = read_c_string(source, va) {
+            out.insert(va, lit);
+        }
+    }
+    out
+}
+
+/// Read the bytes at `va` and, if they are a printable NUL-terminated string of
+/// at least [`MIN_STRING_LEN`] characters, return its escaped, quoted C literal.
+fn read_c_string(source: &dyn n0xis_sources::MemorySource, va: u64) -> Option<String> {
+    let bytes = source.read(Va(va), MAX_STRING_LEN).ok()?;
+    let nul = bytes.iter().position(|&b| b == 0)?; // must terminate within the window
+    if nul < MIN_STRING_LEN {
+        return None;
+    }
+    let text = &bytes[..nul];
+    // Every byte must be printable ASCII or ordinary whitespace; one stray
+    // control/high byte means this is data that merely contains a run of text.
+    if !text.iter().all(|&b| (0x20..=0x7e).contains(&b) || matches!(b, b'\t' | b'\n' | b'\r')) {
+        return None;
+    }
+    let mut lit = String::with_capacity(nul + 2);
+    lit.push('"');
+    for &b in text {
+        match b {
+            b'"' => lit.push_str("\\\""),
+            b'\\' => lit.push_str("\\\\"),
+            b'\t' => lit.push_str("\\t"),
+            b'\n' => lit.push_str("\\n"),
+            b'\r' => lit.push_str("\\r"),
+            _ => lit.push(b as char),
+        }
+    }
+    lit.push('"');
+    Some(lit)
+}
+
+/// Add every constant used as (or foldable into) an address in `stmt` to `out`.
+fn collect_const_addrs(stmt: &n0xis_arch::MicroStmt, out: &mut std::collections::HashSet<u64>) {
+    use n0xis_arch::MicroStmt;
+    match stmt {
+        MicroStmt::Assign { value, .. } => collect_const_exprs(value, out),
+        MicroStmt::Store { addr, value, .. } => {
+            collect_const_exprs(addr, out);
+            collect_const_exprs(value, out);
+        }
+        MicroStmt::Call { target, args, .. } => {
+            if let n0xis_arch::CallTarget::Indirect(e) = target {
+                collect_const_exprs(e, out);
+            }
+            for a in args {
+                collect_const_exprs(a, out);
+            }
+        }
+        MicroStmt::Return(Some(e)) => collect_const_exprs(e, out),
+        MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+    }
+}
+
+fn collect_const_exprs(e: &n0xis_arch::MicroExpr, out: &mut std::collections::HashSet<u64>) {
+    use n0xis_arch::MicroExpr;
+    match e {
+        MicroExpr::Const { value, .. } => {
+            if let Ok(v) = u64::try_from(*value) {
+                out.insert(v);
+            }
+        }
+        MicroExpr::AddrOf(inner) | MicroExpr::Unary(_, inner) | MicroExpr::Cast { expr: inner, .. } | MicroExpr::Load { addr: inner, .. } => {
+            collect_const_exprs(inner, out)
+        }
+        MicroExpr::Binary(_, l, r) => {
+            collect_const_exprs(l, out);
+            collect_const_exprs(r, out);
+        }
+        MicroExpr::Compare { lhs, rhs, .. } => {
+            collect_const_exprs(lhs, out);
+            collect_const_exprs(rhs, out);
+        }
+        MicroExpr::Select { cond, a, b } => {
+            collect_const_exprs(cond, out);
+            collect_const_exprs(a, out);
+            collect_const_exprs(b, out);
+        }
+        MicroExpr::Call { target, args } => {
+            if let n0xis_arch::CallTarget::Indirect(inner) = target {
+                collect_const_exprs(inner, out);
+            }
+            for a in args {
+                collect_const_exprs(a, out);
+            }
+        }
+        MicroExpr::Var(_) | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +497,27 @@ mod tests {
         let ctx = Ctx::new(&snap, &arch);
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false }).unwrap()
+    }
+
+    #[test]
+    fn read_c_string_recovers_a_real_string_and_rejects_non_strings() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"hi %s\n\0"); // 0x3000: a genuine string (len 6)
+        bytes.extend_from_slice(b"abc\x01d\0"); // 0x3007: long enough, but a control byte inside
+        bytes.extend_from_slice(b"ab\0"); // 0x300d: too short (< MIN_STRING_LEN)
+        bytes.extend_from_slice(b"no terminator within this window"); // 0x3010: never NUL
+        let snap = Snapshot::builder().region(Va(0x3000), bytes).build();
+
+        // A clean string is recovered, escaped and quoted.
+        assert_eq!(read_c_string(&snap, 0x3000), Some("\"hi %s\\n\"".to_string()));
+        // A control byte inside a long-enough run → not a string.
+        assert_eq!(read_c_string(&snap, 0x3007), None);
+        // Below the minimum length → ignored as a likely coincidence.
+        assert_eq!(read_c_string(&snap, 0x300d), None);
+        // No terminator before the buffer ends → treated as data, not a string.
+        assert_eq!(read_c_string(&snap, 0x3010), None);
+        // An unmapped address simply yields nothing.
+        assert_eq!(read_c_string(&snap, 0x9999), None);
     }
 
     /// The Phase 3 exit-test property (ROADMAP Phase 3 / CONCEPT §6.3):

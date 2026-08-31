@@ -44,6 +44,14 @@ pub struct RenderNames {
     /// `&Class::vtable` instead of an opaque `(void*)0x…`. Empty unless
     /// [`Self::with_vtables`] was given the RTTI scan's result.
     vtables: HashMap<u64, String>,
+    /// Address of a read-only C string → its already-escaped C literal
+    /// (`"hello %s"`). A constant equal to a key is the address of that string —
+    /// what a `lea`/`mov imm` into a format-string or message argument produces —
+    /// so it renders as the literal instead of a bare `0x…`/`(void*)0x…`. Built
+    /// by [`crate::decomp`] from the source bytes; empty otherwise. Sound because
+    /// the bytes at the address are validated to be a printable NUL-terminated
+    /// string before an entry is ever added.
+    strings: HashMap<u64, String>,
 }
 
 impl RenderNames {
@@ -64,6 +72,7 @@ impl RenderNames {
             param_names: HashMap::new(),
             void_return: false,
             vtables: HashMap::new(),
+            strings: HashMap::new(),
         }
     }
 
@@ -100,6 +109,20 @@ impl RenderNames {
     fn vtable_ref(&self, value: i128) -> Option<String> {
         let va = u64::try_from(value).ok()?;
         self.vtables.get(&va).map(|class| format!("&{class}::vtable"))
+    }
+
+    /// Attach the recovered string-address → C-literal map (see
+    /// [`RenderNames::strings`]).
+    pub fn with_strings(mut self, strings: HashMap<u64, String>) -> Self {
+        self.strings = strings;
+        self
+    }
+
+    /// If `value` is the address of a recovered read-only string, its C literal
+    /// (`"hello %s"`) — already escaped and quoted.
+    fn string_ref(&self, value: i128) -> Option<String> {
+        let va = u64::try_from(value).ok()?;
+        self.strings.get(&va).cloned()
     }
 
     fn callee(&self, va: Va) -> String {
@@ -358,7 +381,10 @@ fn is_comparison(op: BinOp) -> bool {
 
 pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
     match e {
-        MicroExpr::Const { value, bits } => names.vtable_ref(*value).unwrap_or_else(|| render_const(*value, *bits)),
+        MicroExpr::Const { value, bits } => names
+            .vtable_ref(*value)
+            .or_else(|| names.string_ref(*value))
+            .unwrap_or_else(|| render_const(*value, *bits)),
         MicroExpr::Var(name) => names.display_var(name),
         MicroExpr::Load { addr, bits, signed } => {
             if let Some(text) = field_or_local_text(addr, names) {
@@ -379,7 +405,10 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
         MicroExpr::AddrOf(inner) => match inner.as_ref() {
             // `lea rax, [rip+vtable]` — the address of a recovered vtable reads
             // as `&Class::vtable`, otherwise as the raw pointer constant.
-            MicroExpr::Const { value, .. } => names.vtable_ref(*value).unwrap_or_else(|| format!("(void*)0x{:x}", *value as u64)),
+            MicroExpr::Const { value, .. } => names
+                .vtable_ref(*value)
+                .or_else(|| names.string_ref(*value))
+                .unwrap_or_else(|| format!("(void*)0x{:x}", *value as u64)),
             other => format!("&{}", render_expr(other, names)),
         },
         MicroExpr::Compare { kind, lhs, rhs } => {

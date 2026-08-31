@@ -2275,6 +2275,28 @@ they work the seam. Each entry says how it is pulled in: a **crate** (a
 This is the most important *seam* tool: one concolic engine powers both static
 deobfuscation and dynamic target recovery.
 
+### Level 1 — static-output quality (our own way, verified on real targets)
+
+The depth where a decompiler is judged, done as our own passes (not by imitating a
+third party's format). Each increment is verified on a real binary before ✅.
+
+- ✅ **Bare local names.** A function defined in the analyzed image renders by its
+  plain name (`crc32_z`, not `libz.so!crc32_z` / `image__name`); the `module!`
+  prefix is imports-only. Verified: crc32's thunk → `crc32_z()`, imports keep their
+  module (`VCRUNTIME140_dll__…`).
+- ✅ **String-literal recovery.** A constant that addresses a printable
+  NUL-terminated string in the image renders as its C literal (`"hello %s\n"`),
+  escaped, instead of a bare `0x…`. Sound: the bytes are read and validated
+  (printable, terminated, ≥4 chars) before an entry is trusted — a math-heavy
+  function (`crc32_z`) gains *zero* spurious strings. Verified on PIE (via
+  `AddrOf`) and non-PIE (bare `mov imm`) builds; both PLT-`printf` sites show the
+  real format string.
+- ⬜ **Whole-program type propagation (priority 1)** — the biggest lever; below.
+- ⬜ Calling-convention & argument/return-type recovery (params still render as
+  raw `uint64_t`). ⬜ Data-symbol / global naming. ⬜ Array-access recovery
+  (`table[i]` for the `*(u32*)(base + i*4)` shape). ⬜ Switch/jump-table already
+  has a `has-switch` path — polish to real `switch` rendering.
+
 ### Whole-program infrastructure (priority 1 — the core gap)
 
 - **Persistent project DB** (`redb`, pure-Rust embedded — or `rusqlite`): a
