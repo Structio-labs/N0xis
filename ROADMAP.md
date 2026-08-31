@@ -2045,9 +2045,37 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     Corpus: 33 for-loops (`CompressToolsLib` 10, STALKER 2 23), 0 opaque, 0
     brace-unbalanced, 0 errors; the once-mis-scoped `sub_180002fa0` is now
     brace-balanced with one clean `for`.
+  - **6h — no-return paths excluded from post-dominance (readability).** ✅
+    *(2026-08-31, verified.)* A another tool review found N0xis emitting a
+    branch-arm + `goto` where another tool inverts the condition and flows a shared
+    tail as fall-through. Root cause: `dominators_rev` connected *any*
+    successor-less block to the virtual exit, so a `call-noreturn`/`int` abort
+    counted as normal completion and broke the post-dominance of a shared tail
+    every *returning* path converges on. It now takes `is_abort` and connects a
+    dead-end to the exit only when it is not an abort — what other tools do (drop
+    no-return paths for structuring). **Verified:** `CompressToolsLib`
+    `sub_180002780` 2 gotos → 0, structuring the shared assignment tail once as
+    fall-through with an inverted condition, *identical* to another tool; corpus
+    residual gotos drop on CRT-heavy code (`CompressToolsLib` 117 → 72).
+  - **6i — strip unreferenced block-label anchors from display.** ✅
+    *(2026-08-31, verified.)* The `// block_N: <addr>` anchor emitted on every
+    block made N0xis ~30% more verbose than another tool, which labels only jump
+    targets. `DecompInput::strip_block_labels` drops the anchor from any block no
+    `goto` targets on the display/agent paths, while `ProvenancePass` keeps them
+    (its line→address map needs them). **Verified:** over 40 functions the line
+    count fell 1779 → 1257 vs another tool's 1212 — **within 4%** (from 47% more).
   - Remaining ⬜: the residual shared-body gotos (large shared merges — real C
-    keeps these) and the switch `default`/unresolved-case distinction when the
-    table read is partial.
+    keeps these) and the switch `default`/unresolved-case distinction.
+  - **another tool review standing (2026-08-31, CompressToolsLib, 40 fns).** After
+    this session, N0xis is at another tool's structural/readability quality on the MSVC
+    C++ corpus and *ahead* on C++ class typing: total lines 1257 vs 1212 (within
+    4%), gotos 17 vs 11, opaque conditions ~0 vs 0, C++ method names matched or
+    better. The **one systematic remaining gap is library-function naming** —
+    statically-linked CRT/STL functions (`free`, `memcpy`, `_Throw_C_error`) that
+    another tool names via FunctionID/FLIRT and N0xis leaves `sub_XXXX` (108 vs 70
+    unnamed). Closing it is the **FLIRT-class signature library** (Phase 10
+    priority 8), which needs a reference-library corpus to bootstrap the
+    signatures — the honest blocker, not a small fix.
 
 - **Rung 7 — Structural advantages this design gets for free.** 🚧 The capabilities the
   other tools structurally lack. Two are already present by construction: every pass
