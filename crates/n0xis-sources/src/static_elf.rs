@@ -27,6 +27,8 @@ const SHF_EXECINSTR: u64 = 0x4;
 const SHT_NOBITS: u32 = 8;
 /// `STT_FUNC` — the symbol names a function.
 const STT_FUNC: u8 = 2;
+/// `STT_OBJECT` — the symbol names a data object (a global / static variable).
+const STT_OBJECT: u8 = 1;
 /// `PT_LOAD` — a loadable segment; the minimum `p_vaddr` is the preferred base.
 const PT_LOAD: u32 = 1;
 
@@ -117,7 +119,16 @@ impl StaticElf {
         let mut symbols: BTreeMap<u64, Symbol> = BTreeMap::new();
         let mut collect = |syms: &goblin::elf::Symtab, strtab: &goblin::strtab::Strtab| {
             for sym in syms.iter() {
-                if sym.st_type() != STT_FUNC || sym.st_value == 0 || sym.st_shndx == 0 {
+                // Functions become named code targets; data objects (globals /
+                // statics) become named data references (`&crc_table`). A symbol
+                // with `st_value == 0` or `st_shndx == SHN_UNDEF` is an import
+                // reference, not a definition — skip it.
+                let kind = match sym.st_type() {
+                    STT_FUNC => SymKind::Export,
+                    STT_OBJECT => SymKind::Data,
+                    _ => continue,
+                };
+                if sym.st_value == 0 || sym.st_shndx == 0 {
                     continue;
                 }
                 let Some(name) = strtab.get_at(sym.st_name) else { continue };
@@ -128,7 +139,7 @@ impl StaticElf {
                     va: Va(sym.st_value),
                     module: module_name.clone(),
                     name: name.to_string(),
-                    kind: SymKind::Export,
+                    kind,
                 });
             }
         };
@@ -158,7 +169,7 @@ impl StaticElf {
     /// `(va, name)` list a signature generator fingerprints. Empty on a stripped
     /// binary, which is exactly why signatures are needed in the first place.
     pub fn named_functions(&self) -> Vec<(Va, String)> {
-        self.symbols.values().map(|s| (s.va, s.name.clone())).collect()
+        self.symbols.values().filter(|s| s.kind != SymKind::Data).map(|s| (s.va, s.name.clone())).collect()
     }
 }
 

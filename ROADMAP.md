@@ -2308,8 +2308,16 @@ third party's format). Each increment is verified on a real binary before ✅.
   fix is real loop-follow computation (the join past *all* exits) + emitting each
   non-latch exit as `break`/`continue` with the follow placed after — a careful,
   golden-covered structuring change, not a rushed one.
+- ✅ **Data-symbol / global naming.** ELF `.symtab`/`.dynsym` `STT_OBJECT` symbols
+  are now collected (`SymKind::Data`) and a constant equal to a global's exact
+  address renders `&name` (`v9 = &crc_table;`) instead of `(void*)0x…`. Sound:
+  exact-address hit only (no borrowing the symbol before an interior offset), and
+  data symbols are excluded from `sig gen`'s function set. Verified on zlib: the
+  CRC table base reads `&crc_table`, the lookups `crc_table[i]`.
 - ⬜ Calling-convention & argument/return-type recovery (params still render as
-  raw `uint64_t`). ⬜ Data-symbol / global naming. ✅ Switch/jump-table rendering
+  raw `uint64_t`; blocked on phi-aware copy propagation — the pointer flows
+  param→copy→phi-in-loop→deref, so simple copy-chaining doesn't reach it).
+  ✅ Switch/jump-table rendering
   (`emit_switch`: real `switch (x) { case K: }` from resolved jump tables) —
   already shipped in the structuring rung.
 

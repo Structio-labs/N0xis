@@ -52,6 +52,10 @@ pub struct RenderNames {
     /// the bytes at the address are validated to be a printable NUL-terminated
     /// string before an entry is ever added.
     strings: HashMap<u64, String>,
+    /// Address of a named global/static/function → its `&name` reference. A
+    /// constant equal to a key is that symbol's address (`&crc_table`), rather
+    /// than a bare number. Built from the symbol provider by [`crate::decomp`].
+    data_refs: HashMap<u64, String>,
 }
 
 impl RenderNames {
@@ -73,6 +77,7 @@ impl RenderNames {
             void_return: false,
             vtables: HashMap::new(),
             strings: HashMap::new(),
+            data_refs: HashMap::new(),
         }
     }
 
@@ -123,6 +128,18 @@ impl RenderNames {
     fn string_ref(&self, value: i128) -> Option<String> {
         let va = u64::try_from(value).ok()?;
         self.strings.get(&va).cloned()
+    }
+
+    /// Attach the recovered address → `&name` map (see [`RenderNames::data_refs`]).
+    pub fn with_data_refs(mut self, data_refs: HashMap<u64, String>) -> Self {
+        self.data_refs = data_refs;
+        self
+    }
+
+    /// If `value` is the address of a named global/function, its `&name` form.
+    fn data_ref(&self, value: i128) -> Option<String> {
+        let va = u64::try_from(value).ok()?;
+        self.data_refs.get(&va).cloned()
     }
 
     fn callee(&self, va: Va) -> String {
@@ -413,6 +430,7 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
         MicroExpr::Const { value, bits } => names
             .vtable_ref(*value)
             .or_else(|| names.string_ref(*value))
+            .or_else(|| names.data_ref(*value))
             .unwrap_or_else(|| render_const(*value, *bits)),
         MicroExpr::Var(name) => names.display_var(name),
         MicroExpr::Load { addr, bits, signed } => {
@@ -440,6 +458,7 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
             MicroExpr::Const { value, .. } => names
                 .vtable_ref(*value)
                 .or_else(|| names.string_ref(*value))
+                .or_else(|| names.data_ref(*value))
                 .unwrap_or_else(|| format!("(void*)0x{:x}", *value as u64)),
             other => format!("&{}", render_expr(other, names)),
         },

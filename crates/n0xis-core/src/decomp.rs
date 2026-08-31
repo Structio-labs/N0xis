@@ -122,6 +122,16 @@ impl Pass for DecompPass {
         if !strings.is_empty() {
             names = names.with_strings(strings);
         }
+        // Data-symbol naming: a constant that is the address of a named global /
+        // static (`crc_table`, a vtable, an exported object) renders as `&name`
+        // instead of `0x…`. Only an *exact* symbol hit at that address counts, so
+        // an interior address is never mis-attributed to the symbol before it.
+        if let Some(syms) = ctx.symbols {
+            let data_refs = recover_data_refs(&[&ssa.blocks, &opt.blocks], syms);
+            if !data_refs.is_empty() {
+                names = names.with_data_refs(data_refs);
+            }
+        }
         // The function's own name, when a symbol source has one. **Only an
         // exact hit counts**: a provider that attributes a whole function span
         // answers for any address inside it, so accepting a near miss would
@@ -396,6 +406,29 @@ fn recover_strings(block_sets: &[&[SsaBlock]], source: &dyn n0xis_sources::Memor
     out
 }
 
+/// The `address → &name` map for every constant in `block_sets` that is the
+/// exact address of a named symbol (a data object or a function). Used to render
+/// a global's address as `&crc_table` rather than a bare number. Sound: only an
+/// exact-address hit is taken, so an interior offset never borrows the symbol
+/// that precedes it — the same rule the function's own-name recovery uses.
+fn recover_data_refs(block_sets: &[&[SsaBlock]], syms: &dyn n0xis_sources::SymbolProvider) -> std::collections::HashMap<u64, String> {
+    let mut addrs: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for blocks in block_sets {
+        for b in *blocks {
+            for s in &b.stmts {
+                collect_const_addrs(&s.stmt, &mut addrs);
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for va in addrs {
+        if let Some(sym) = syms.symbol_at(Va(va)).filter(|s| s.va.0 == va) {
+            out.insert(va, format!("&{}", crate::render::render_callee_name(&sym.name)));
+        }
+    }
+    out
+}
+
 /// Read the bytes at `va` and, if they are a printable NUL-terminated string of
 /// at least [`MIN_STRING_LEN`] characters, return its escaped, quoted C literal.
 fn read_c_string(source: &dyn n0xis_sources::MemorySource, va: u64) -> Option<String> {
@@ -497,6 +530,47 @@ mod tests {
         let ctx = Ctx::new(&snap, &arch);
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false }).unwrap()
+    }
+
+    #[test]
+    fn recover_data_refs_names_an_exact_symbol_address_only() {
+        use n0xis_contracts::{SymKind, Symbol};
+        use n0xis_sources::SymbolProvider;
+
+        struct OneGlobal;
+        impl SymbolProvider for OneGlobal {
+            fn symbol_at(&self, va: Va) -> Option<Symbol> {
+                // A global spanning [0x4000, 0x4100): answers for any interior
+                // address, exactly like a real span-attributing provider.
+                (0x4000..0x4100).contains(&va.0).then(|| Symbol {
+                    va: Va(0x4000),
+                    module: String::new(),
+                    name: "crc_table".into(),
+                    kind: SymKind::Data,
+                })
+            }
+        }
+
+        // Two constants: the global's exact start, and an interior offset.
+        let stmt = |dst: &str, v: i128| crate::ssa::SsaStmt {
+            va: Va(0x1000),
+            stmt: n0xis_arch::MicroStmt::Assign { dst: dst.into(), value: n0xis_arch::MicroExpr::constant(v, 64) },
+        };
+        let blocks = vec![SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1010),
+            terminator: "ret".into(),
+            successors: Vec::new(),
+            phis: Vec::new(),
+            stmts: vec![stmt("a", 0x4000), stmt("b", 0x4040)],
+            condition: None,
+        }];
+        let refs = recover_data_refs(&[&blocks], &OneGlobal);
+        // The exact address is named; the interior offset is not (sound — it must
+        // not borrow the symbol that starts before it).
+        assert_eq!(refs.get(&0x4000).map(String::as_str), Some("&crc_table"));
+        assert_eq!(refs.get(&0x4040), None);
     }
 
     #[test]
