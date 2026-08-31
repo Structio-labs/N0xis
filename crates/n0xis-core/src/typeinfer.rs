@@ -38,6 +38,7 @@ use crate::ir::CfgArtifact;
 use crate::signatures::{known_signature, KnownSignature};
 use crate::ssa::SsaBlock;
 use crate::{Ctx, CoreError, Pass};
+use crate::{CfgInput, CfgPass, OptimizePass, SsaPass};
 
 /// A display type: either a generic width/signedness or a known name (e.g.
 /// `"HANDLE"` from the signature library) — this library only needs to be
@@ -823,7 +824,7 @@ fn param_ctype(
     method_classes: &BTreeMap<String, String>,
     ptr_bases: &BTreeSet<&str>,
     struct_map: &BTreeMap<&str, &str>,
-    api: &BTreeMap<String, &'static str>,
+    api: &BTreeMap<String, String>,
 ) -> CType {
     if let Some(class) = ctor_classes.get(pname) {
         return CType::named(format!("{class} *"));
@@ -835,7 +836,7 @@ fn param_ctype(
         return CType::named(format!("{sty} *"));
     }
     if let Some(t) = api.get(pname) {
-        return CType::named(*t);
+        return CType::named(t.clone());
     }
     if ptr_bases.contains(pname) {
         return CType::named("void *");
@@ -843,7 +844,115 @@ fn param_ctype(
     CType::generic(64, false)
 }
 
+/// The byte window scanned when analyzing a callee's signature — generously
+/// function-sized. A larger callee just yields a less-complete signature, never
+/// an error.
+const CALLEE_SCAN_SIZE: usize = 16 * 1024;
+
+/// Recover a called function's parameter types by analyzing it *shallowly* (no
+/// further interprocedural recursion — one level deep). `None` if its bytes do
+/// not form an analyzable function at `va`.
+fn callee_param_types(ctx: &Ctx, va: Va) -> Option<Vec<CType>> {
+    let cfg = CfgPass.run(ctx, CfgInput::new(va, CALLEE_SCAN_SIZE)).ok()?;
+    if cfg.start != va {
+        return None;
+    }
+    let ssa = SsaPass.run(ctx, cfg.clone()).ok()?;
+    let opt = OptimizePass.run(ctx, ssa).ok()?;
+    let types = infer_with(ctx, &cfg, &opt.blocks, false);
+    Some(types.signature.params.iter().map(|p| p.ty.clone()).collect())
+}
+
+/// Whole-program propagation: for each argument this function passes to a *user*
+/// callee (a direct call that is not a known API and not itself), the specific
+/// (named) type that callee recovered for the matching parameter. Only named
+/// types cross — a generic `uint64_t` parameter carries no information — so the
+/// caller's argument is never mistyped. Each callee is analyzed once and cached.
+fn user_callee_arg_types(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, String> {
+    let known_targets: BTreeSet<Va> = cfg
+        .callsites
+        .iter()
+        .filter_map(|c| {
+            let bare = c.target_name.as_deref()?.rsplit('!').next().unwrap_or_default();
+            known_signature(bare).and(c.target)
+        })
+        .collect();
+
+    let mut cache: BTreeMap<Va, Option<Vec<CType>>> = BTreeMap::new();
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut record = |target: &CallTarget, args: &[MicroExpr]| {
+        let CallTarget::Direct { va } = target else { return };
+        if *va == cfg.start || known_targets.contains(va) {
+            return;
+        }
+        let ptypes = cache.entry(*va).or_insert_with(|| callee_param_types(ctx, *va)).clone();
+        let Some(ptypes) = ptypes else { return };
+        for (i, a) in args.iter().enumerate() {
+            if let (MicroExpr::Var(v), Some(cty)) = (a, ptypes.get(i))
+                && let Some(tn) = &cty.name
+            {
+                // A synthesized `struct_<reg>_N` name is local to the callee's
+                // own analysis and meaningless in the caller — carry only the
+                // pointer-ness across as `void *`. A real class name (RTTI) or a
+                // known-API type is portable and propagates verbatim.
+                let ty = if tn.starts_with("struct_") { "void *".to_string() } else { tn.clone() };
+                out.entry(v.clone()).or_insert(ty);
+            }
+        }
+    };
+
+    fn walk(e: &MicroExpr, record: &mut impl FnMut(&CallTarget, &[MicroExpr])) {
+        match e {
+            MicroExpr::Call { target, args } => {
+                record(target, args);
+                if let CallTarget::Indirect(t) = target {
+                    walk(t, record);
+                }
+                args.iter().for_each(|a| walk(a, record));
+            }
+            MicroExpr::Load { addr, .. } => walk(addr, record),
+            MicroExpr::Unary(_, v) | MicroExpr::Cast { expr: v, .. } | MicroExpr::AddrOf(v) => walk(v, record),
+            MicroExpr::Binary(_, l, r) | MicroExpr::Compare { lhs: l, rhs: r, .. } => {
+                walk(l, record);
+                walk(r, record);
+            }
+            MicroExpr::Select { cond, a, b } => {
+                walk(cond, record);
+                walk(a, record);
+                walk(b, record);
+            }
+            _ => {}
+        }
+    }
+
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Call { target, args, .. } => {
+                    record(target, args);
+                    args.iter().for_each(|a| walk(a, &mut record));
+                }
+                MicroStmt::Assign { value, .. } => walk(value, &mut record),
+                MicroStmt::Store { addr, value, .. } => {
+                    walk(addr, &mut record);
+                    walk(value, &mut record);
+                }
+                MicroStmt::Return(Some(e)) => walk(e, &mut record),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
+    // Top-level analysis is interprocedural (`deep`): it consults the recovered
+    // signatures of the user functions this one calls. A callee analyzed for that
+    // purpose runs shallow (`deep = false`) so the walk never recurses.
+    infer_with(ctx, cfg, blocks, true)
+}
+
+fn infer_with(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], deep: bool) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
     let signed_use = collect_signed_use_offsets(blocks);
     let locals = recover_locals(&accesses, &signed_use);
@@ -862,7 +971,16 @@ fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> TypeArtifact {
     let mut ptr_owned: BTreeSet<String> = accesses.iter().map(|a| a.base.clone()).collect();
     propagate_pointerness(blocks, &mut ptr_owned);
     let ptr_bases: BTreeSet<&str> = ptr_owned.iter().map(String::as_str).collect();
-    let api_types = param_api_types(cfg, blocks);
+    // Known-API argument types, plus — for the interprocedural pass — the
+    // parameter types of the *user* functions this one calls: whole-program type
+    // propagation across the call boundary (a callee that takes a `void *` types
+    // the caller's argument `void *`). A known signature wins on conflict.
+    let mut api_types: BTreeMap<String, String> = param_api_types(cfg, blocks).into_iter().map(|(k, v)| (k, v.to_string())).collect();
+    if deep {
+        for (var, ty) in user_callee_arg_types(ctx, cfg, blocks) {
+            api_types.entry(var).or_insert(ty);
+        }
+    }
     let ctor_classes = constructor_vtable_params(blocks, ctx.vtables);
     let method_classes = collect_method_this_types(cfg, blocks);
     let params = arg_regs[..arity]
@@ -894,6 +1012,29 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
         TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks }).unwrap()
+    }
+
+    #[test]
+    fn a_parameter_inherits_its_pointer_type_from_the_user_callee_it_is_passed_to() {
+        // Caller @0x1000 reads rcx (arg0), guards it, and passes it to a callee
+        // that dereferences it — so the callee recovers a pointer parameter, and
+        // whole-program propagation must type the caller's own rcx a pointer even
+        // though the caller never dereferences it itself.
+        let code = vec![
+            0x48, 0x85, 0xC9, // 0x1000 test rcx, rcx      (rcx is read → a parameter)
+            0x74, 0x05, // 0x1003 jz 0x100A
+            0xE8, 0x01, 0x00, 0x00, 0x00, // 0x1005 call 0x100B (the callee)
+            0xC3, // 0x100A ret
+            0x48, 0x8B, 0x01, // 0x100B mov rax, [rcx]     (callee dereferences rcx)
+            0xC3, // 0x100E ret
+        ];
+        let types = infer_code(code);
+        assert_eq!(
+            types.signature.params.first().and_then(|p| p.ty.name.as_deref()),
+            Some("void *"),
+            "the caller's rcx must inherit the callee's pointer parameter type: {:?}",
+            types.signature.params,
+        );
     }
 
     #[test]
@@ -1120,7 +1261,7 @@ mod tests {
         // still covered: struct evidence > known-API type > bare `void *`
         // dereference > generic `uint64_t`.
         let structs: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
-        let api: BTreeMap<String, &'static str> = [("rdx.0".to_string(), "HANDLE"), ("rcx.0".to_string(), "LPVOID")].into_iter().collect();
+        let api: BTreeMap<String, String> = [("rdx.0".to_string(), "HANDLE".to_string()), ("rcx.0".to_string(), "LPVOID".to_string())].into_iter().collect();
         let ptr: BTreeSet<&str> = ["rcx.0", "r8.0"].into_iter().collect();
         let no_ctor = BTreeMap::new();
         let no_method = BTreeMap::new();

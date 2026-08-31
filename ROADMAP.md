@@ -2291,7 +2291,22 @@ third party's format). Each increment is verified on a real binary before ✅.
   function (`crc32_z`) gains *zero* spurious strings. Verified on PIE (via
   `AddrOf`) and non-PIE (bare `mov imm`) builds; both PLT-`printf` sites show the
   real format string.
-- ⬜ **Whole-program type propagation (priority 1)** — the biggest lever; below.
+- 🟡 **Whole-program type propagation (priority 1) — first interprocedural slice.**
+  Type inference is no longer strictly per-function: when a function passes an
+  argument to a *user* callee (a direct call, not a known API), the specific type
+  that callee recovered for the matching parameter now flows to the caller's
+  argument. `infer` runs interprocedurally at the top level and shallow (one level,
+  cached) for each analyzed callee, so the recursion is bounded; only *named*
+  callee-parameter types cross (a generic `uint64_t` carries no information), and a
+  synthesized `struct_<reg>_N` — local to the callee — is carried as `void *`
+  rather than leaking the callee's private struct name. **Verified end-to-end:** a
+  `wrapper(void *buf, size_t)` that only null-checks `buf` and forwards it to a
+  byte-summing callee recovers `buf` as `void *` purely from the callee's
+  signature; regression-checked — bodies unchanged (crc32_z 0-line body diff),
+  46/46 test groups green, no golden regressed, deflate (many callees) ~95 ms.
+  Still ⬜ the full solver: a call-graph constraint/union-find engine that
+  propagates *both* ways (caller arg → callee param) and across many hops, backed
+  by the project DB below.
 - ✅ **Array-access recovery.** `*(T*)(base + i*sizeof(T))` renders `base[i]`
   (both load and store) — identical C semantics, far more readable. Sound: an
   explicit `* stride` matching the element size (`stride ≥ 2`) is required; a
