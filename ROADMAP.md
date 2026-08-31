@@ -1525,6 +1525,24 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     this is verified by construction/soundness rather than a corpus count; the
     remaining Rung 2 is heap/allocation-site and distinct-parameter
     disambiguation (needs real points-to, the devirt prerequisite).
+  - **2c — heap-allocation disambiguation.** ✅ *(2026-08-31, sound;*
+    *unit-verified.)* Two distinct heap allocations never overlap, so a store
+    through one no longer clobbers a value available at the other — the
+    points-to slice the BN comparison names. Allocation bases are the SSA `ret`s
+    of `Call` sites whose resolved callee is a **curated allocator** (malloc/
+    calloc/aligned_alloc, OpenSSL `CRYPTO_*alloc`, glib, Win32 `HeapAlloc`/…, C++
+    `operator new` — Itanium `_Znwm`/`_Znam`, MSVC `??2`/`??_U`); `realloc` and
+    `free`/`delete` are excluded, only a direct call result is marked (never a
+    phi/copy), and the callsites are carried onto `SsaArtifact` (serde-skipped)
+    so the optimizer can resolve names. Sound at every boundary (unit-verified):
+    a store to a *distinct* alloc does not clobber, a same-slot store does, and a
+    foreign register store still clobbers an *escaped* heap object (may alias it)
+    — the escape analysis already covers the non-escaped case. Real-corpus firing
+    is rare: an optimizing compiler disambiguates distinct allocations itself (a
+    gcc -O1 two-malloc test compiles the load away before n0xis sees it), so this
+    is verified by construction and closes the case they leave; 0 regressions
+    across `ls`/`openssl`/`libcrypto`/`sqlite`/`libc`. The last Rung 2 piece is
+    distinct-*parameter* aliasing, which needs a `restrict`-class proof.
 
 - **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** 🚧
   Coalesce SSA versions back into named, **typed** variables; infer types from use
