@@ -192,14 +192,15 @@ fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
     ins.target
         .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
         .or_else(|| ins.rip_target.and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
-        // A function *defined in this image* (a local name, or a statically-linked
-        // library function recovered by a signature match) is called by its bare
-        // name — `free`, not `CompressToolsLib.dll!free`. The `module!` prefix
-        // exists only to route a cross-module *import* through the demangler and
-        // keep its name identifier-safe, so it belongs to imports alone.
+        // A function *defined in this image* — however we learned its name (an
+        // export table, an ELF `.symtab`, a signature match) — is called by its
+        // bare name: `crc32_z`, not `libz.so!crc32_z`. The `module!` prefix exists
+        // only to route a cross-module **import** (`kernel32!CreateFileW`,
+        // `MSVCP140.dll!?sputc@…`) through the demangler and keep it
+        // identifier-safe, so it belongs to imports alone.
         .map(|sym| match sym.kind {
-            SymKind::Function => sym.name,
-            _ => format!("{}!{}", sym.module, sym.name),
+            SymKind::Import => format!("{}!{}", sym.module, sym.name),
+            _ => sym.name,
         })
 }
 

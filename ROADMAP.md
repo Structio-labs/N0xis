@@ -1542,14 +1542,22 @@ lift/SLEIGH-ingest per ISA.
        exactly, and truncated inputs return `None` rather than panicking (the
        OOM/untrusted-length rule). Exposed as `n0xis warp dump --file x.warp`.
        (Writer + type chunks: later, when a producer needs them.)
-     - ⬜ **Rung 11c — disassembly→normalized bytes** (which relocatable
-       instruction bytes to zero, which NOPs/effective-NOPs to drop) feeding
-       `basic_block_guid` over our CFG, so n0xis can *compute* a target's GUID and
-       name it. **This is the one piece with a hard external blocker:** the
-       normalization must match another tool's WARP plugin byte-for-byte, and
-       validating that needs a another tool reference — a self-consistent GUID
-       that disagrees with the reference implementation's cannot read the reference implementation's databases. Until a BN reference
-       is available it stays unverified.
+     - ❌ **Rung 11c — WARP-compatible GUID computation: deliberately NOT pursued.**
+       Computing a *reference-byte-identical* function GUID would mean replicating Binary
+       Ninja's normalization (`binaryninja-api/plugins/warp/src/lib.rs`), which is
+       defined over the reference implementation's **closed-core LLIL + its exact CFG basic-block boundaries**
+       — a fragile imitation whose only purpose is to read *their* databases, that
+       would couple n0xis to a foreign closed contract and leak the user's function
+       GUIDs to `warp.binary.ninja`. That is an anti-pattern against this project's
+       own principles (own the seams; no coupling to a foreign, closed-core-defined
+       contract). Decision (2026-08-31): we take the *idea* (structural matching
+       that survives relocation) but implement **our own** fingerprint on our own
+       CFG + the relocation masking `sig gen` already computes — verifiable without
+       any oracle (same function in two binaries → same fingerprint, proven on our
+       corpus), no dependency, no egress. 11a/11b stay as cheap *passive* import
+       (read a `.warp` someone hands us); we do not chase byte-compat on compute.
+       The live `warp.binary.ninja` API (no-auth query-by-GUID; sources Vector 35 /
+       Golang / LINUX / .NET AOT) is recorded for reference, not as a dependency.
    - ⬜ **Extend the OSS corpus** (OpenSSL/Qt/libstdc++) via `signatures/generate.sh`.
 9. ⬜ **Calling-convention & argument recovery — the prototype the whole render
    hangs on.** Classify the CC (fastcall / stdcall / vectorcall / `this` / custom)
