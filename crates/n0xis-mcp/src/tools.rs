@@ -749,7 +749,7 @@ impl N0xisServer {
         let out = with_ctx(&src, arch.as_ref(), |ctx| -> Result<_, String> {
             let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
             // This tool *is* the delta, so it always asks for it.
-            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true }).map_err(|e| e.to_string())
+            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true, strip_block_labels: true }).map_err(|e| e.to_string())
         });
         match out {
             Ok(pf) => emit(

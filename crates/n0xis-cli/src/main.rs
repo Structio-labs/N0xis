@@ -4991,7 +4991,7 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
         let pf = DecompPass
-            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto, explain: false })
+            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto, explain: false, strip_block_labels: false })
             .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
         Ok(pf.pseudo)
     };

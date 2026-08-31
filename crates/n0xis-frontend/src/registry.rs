@@ -416,7 +416,7 @@ fn decompile_side(
     let input = n0xis_core::CfgInput { start: addr, max_bytes: size, auto_end: true };
     let run = |ctx: &n0xis_core::Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
-        let pf = n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: false })
+        let pf = n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: false, strip_block_labels: true })
             .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
         Ok(pf.pseudo)
     };
@@ -669,7 +669,7 @@ impl Plugin for AnalysisPasses {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
                     };
-                    match n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain }) {
+                    match n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain, strip_block_labels: true }) {
                         Ok(pf) => {
                             let resp = ok_json(n0xis_contracts::schema::v0::DECOMP_PSEUDO, pf, label);
                             // The optimizer delta used to ride along on `ssa`

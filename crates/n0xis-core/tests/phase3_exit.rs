@@ -28,7 +28,7 @@ fn decomp(code: Vec<u8>, style: DecompStyle) -> n0xis_core::PseudoFunction {
     let arch = X64::new();
     let ctx = Ctx::new(&snap, &arch);
     let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 256)).unwrap();
-    DecompPass.run(&ctx, DecompInput { cfg, style, explain: true }).unwrap()
+    DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false }).unwrap()
 }
 
 /// Every occurrence of `reg` in `text` is immediately followed by an SSA

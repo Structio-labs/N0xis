@@ -111,7 +111,7 @@ fn explain_hit(ctx: &Ctx, hit: ProvenanceHit, module: Option<&Module>, scan_star
             .find(|b| b.start.get() <= hit.instruction_va.get() && hit.instruction_va.get() < b.end.get())
             .map(|b| b.id);
         if let Some(block_id) = block_id
-            && let Ok(pseudo) = DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false })
+            && let Ok(pseudo) = DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false })
         {
             decompiled_context = extract_block_context(&pseudo.pseudo, block_id);
         }

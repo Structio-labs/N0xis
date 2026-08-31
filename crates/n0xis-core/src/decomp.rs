@@ -55,6 +55,13 @@ pub struct DecompInput {
     /// optimizer render it that way"; that question has its own command
     /// (`ir explain`).
     pub explain: bool,
+    /// Drop the `// block_N: <addr>` anchor comment from every block that no
+    /// `goto` targets — other tools show a label only at a jump target, and these
+    /// anchors are otherwise ~a third of the lines and pure noise to a reader (or
+    /// an LLM). Left **off** for a consumer that needs the anchor to map a line
+    /// back to an address — [`crate::ProvenancePass`] extracts a block's pseudo-C
+    /// by that very comment — and **on** for display / agent-facing output.
+    pub strip_block_labels: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -118,6 +125,8 @@ impl Pass for DecompPass {
         let signature = format_signature(cfg.start, &types.signature, own_name.as_deref());
 
         let (pseudo, has_loop, fallback_count, delta) = match input.style {
+            // (the arms below produce `pseudo`; block-label stripping is applied
+            // to it after the match, gated on `input.strip_block_labels`)
             DecompStyle::Goto => (render_goto(&cfg, &ssa.blocks, &names), false, 0, Vec::new()),
             DecompStyle::Structured => {
                 let out = structure(&cfg, &ssa.blocks, &names);
@@ -137,6 +146,8 @@ impl Pass for DecompPass {
                 (out.lines, out.has_loop, out.fallback_count, delta)
             }
         };
+
+        let pseudo = if input.strip_block_labels { strip_unreferenced_block_labels(pseudo) } else { pseudo };
 
         let quality = if cfg.insn_count == 0 { 0.0 } else { 1.0 - (unlifted as f32 / cfg.insn_count as f32) };
         let mut flags: Vec<&'static str> = vec![input.style.as_str()];
@@ -254,6 +265,33 @@ fn local_decls(types: &TypeArtifact, body: &[String]) -> Vec<String> {
     locals.iter().map(|l| format!("    {} {};", c_type(l.size_bits, l.signed), l.name)).collect()
 }
 
+/// Drop the `// block_N: …` anchor comment from every block no `goto` jumps to
+/// — other tools show a label only at a jump target, so on straight-line code
+/// these anchors are pure noise (and ~a third of the lines). A goto-targeted
+/// block keeps its comment as the label the `goto block_N` reads. Pure display
+/// transform; the un-stripped form stays available to
+/// [`crate::ProvenancePass`], which maps a line to an address by this comment.
+fn strip_unreferenced_block_labels(lines: Vec<String>) -> Vec<String> {
+    let mut targets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for l in &lines {
+        if let Some(rest) = l.split("goto block_").nth(1)
+            && let Ok(n) = rest.trim_end().trim_end_matches(';').trim().parse::<usize>()
+        {
+            targets.insert(n);
+        }
+    }
+    lines
+        .into_iter()
+        .filter(|l| {
+            let Some(rest) = l.trim_start().strip_prefix("// block_") else { return true };
+            match rest.split(':').next().and_then(|s| s.trim().parse::<usize>().ok()) {
+                Some(n) => targets.contains(&n),
+                None => true,
+            }
+        })
+        .collect()
+}
+
 fn count_unlifted(blocks: &[SsaBlock]) -> usize {
     blocks
         .iter()
@@ -329,7 +367,7 @@ mod tests {
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
-        DecompPass.run(&ctx, DecompInput { cfg, style, explain: true }).unwrap()
+        DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false }).unwrap()
     }
 
     /// The Phase 3 exit-test property (ROADMAP Phase 3 / CONCEPT §6.3):
