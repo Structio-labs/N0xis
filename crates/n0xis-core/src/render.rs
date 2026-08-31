@@ -144,8 +144,23 @@ fn mangle_call_name(name: &str) -> String {
 /// win. Only a plain `module!function` import name gets the identifier-safe
 /// `!` -> `__` treatment.
 pub(crate) fn render_callee_name(name: &str) -> String {
-    let demangled = demangle(name);
-    if demangled != *name { demangled } else { mangle_call_name(name) }
+    // Split off a `module!` prefix so a C++-mangled *import*
+    // (`MSVCP140.dll!?sputc@…`) reaches the demangler — whose MSVC/Itanium paths
+    // require the bare `?`/`_Z` symbol, which the module prefix otherwise hides.
+    // A successful demangle drops the module, matching other tools
+    // (`std::basic_streambuf<…>::sputc`, not `MSVCP140_dll__…`); a plain C import
+    // (`kernel32!CreateFileW`) doesn't demangle and keeps its `module__name` form.
+    let bare = name.rsplit('!').next().unwrap_or(name);
+    // An MSVC C++ symbol renders as its qualified name only (a call site wants
+    // `std::…::sputc`, not the full return-type/params/access prototype).
+    if let Some(n) = crate::demangle::demangle_msvc_name_only(bare) {
+        return n;
+    }
+    let demangled = demangle(bare);
+    if demangled != *bare {
+        return demangled;
+    }
+    mangle_call_name(name)
 }
 
 /// The slot address of a call made *through memory* — the `CallTarget` shape
@@ -613,6 +628,19 @@ mod tests {
             args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
         };
         assert_eq!(render_expr(&call, &names), "(BOOL)kernel32__CloseHandle(/*hObject*/ rcx.0)");
+    }
+
+    #[test]
+    fn a_module_prefixed_cpp_import_demangles_to_its_qualified_name() {
+        // A C++-mangled import (`MSVCP140.dll!?sputc@…`) must reach the demangler
+        // despite the module prefix, and render as the qualified name only —
+        // `std::basic_streambuf<…>::sputc` — not the full prototype and not the
+        // sanitized `MSVCP140_dll___sputc___…` the pre-split path produced.
+        let n = render_callee_name("MSVCP140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z");
+        assert!(n.contains("basic_streambuf") && n.ends_with("sputc"), "{n}");
+        assert!(!n.contains("MSVCP140") && !n.contains("QEAAHD"), "no module prefix, no prototype: {n}");
+        // A plain C import keeps the identifier-safe module-qualified form.
+        assert_eq!(render_callee_name("kernel32!CloseHandle"), "kernel32__CloseHandle");
     }
 
     #[test]

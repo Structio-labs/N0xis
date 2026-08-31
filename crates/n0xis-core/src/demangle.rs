@@ -34,6 +34,18 @@ fn demangle_msvc(name: &str) -> Option<String> {
     msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm()).ok()
 }
 
+/// Demangle an MSVC C++ symbol to its **qualified name only** — no return type,
+/// parameter list, or access/calling-convention keywords — the form a *call
+/// site* wants (`std::basic_streambuf<…>::sputc`, as other tools show), rather
+/// than [`demangle`]'s full prototype. `None` if `name` is not an MSVC symbol.
+pub fn demangle_msvc_name_only(name: &str) -> Option<String> {
+    if !name.starts_with('?') {
+        return None;
+    }
+    let flags = msvc_demangler::DemangleFlags::NAME_ONLY | msvc_demangler::DemangleFlags::NO_MS_KEYWORDS;
+    msvc_demangler::demangle(name, flags).ok()
+}
+
 /// Fully demangle an MSVC RTTI **TypeDescriptor** decorated name (`.?AVFoo@@`,
 /// `.?AV?$vector@H@std@@`) to its readable class name (`Foo`,
 /// `std::vector<int>`) — including the templated names `demangle_rtti_name`'s
