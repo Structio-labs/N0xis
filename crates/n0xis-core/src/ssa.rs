@@ -19,7 +19,7 @@ use n0xis_contracts::Va;
 use serde::Serialize;
 
 use crate::dom::{block_graph, dom_children, dominance_frontier, dominators_fwd, immediate_doms};
-use crate::ir::{CfgArtifact, Successor};
+use crate::ir::{Callsite, CfgArtifact, Successor};
 use crate::lift::{LiftedFunction, LiftPass};
 use crate::{Ctx, CoreError, Pass};
 
@@ -69,6 +69,12 @@ pub struct SsaArtifact {
     pub start: Va,
     pub end: Va,
     pub blocks: Vec<SsaBlock>,
+    /// The function's call sites, carried from the [`CfgArtifact`] so downstream
+    /// passes can resolve a call's *name* (an allocator, for the Rung 2c heap
+    /// alias slice) without re-deriving it. In-memory metadata only — skipped in
+    /// the `n0xis.ir.ssa.v1` serialization, which never carried it.
+    #[serde(skip)]
+    pub callsites: Vec<Callsite>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -345,7 +351,7 @@ fn rename_block(
 fn build_ssa(arch: &dyn Arch, cfg: &CfgArtifact, lifted: &LiftedFunction) -> SsaArtifact {
     let n = cfg.blocks.len();
     if n == 0 {
-        return SsaArtifact { start: cfg.start, end: cfg.end, blocks: Vec::new() };
+        return SsaArtifact { start: cfg.start, end: cfg.end, blocks: Vec::new(), callsites: cfg.callsites.clone() };
     }
     let (succ, pred) = block_graph(cfg);
     let dom = dominators_fwd(n, &pred);
@@ -461,7 +467,7 @@ fn build_ssa(arch: &dyn Arch, cfg: &CfgArtifact, lifted: &LiftedFunction) -> Ssa
         })
         .collect();
 
-    SsaArtifact { start: cfg.start, end: cfg.end, blocks }
+    SsaArtifact { start: cfg.start, end: cfg.end, blocks, callsites: cfg.callsites.clone() }
 }
 
 #[cfg(test)]

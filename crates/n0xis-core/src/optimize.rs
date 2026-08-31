@@ -65,6 +65,9 @@ impl Pass for OptimizePass {
 
     fn run(&self, _ctx: &Ctx, ssa: SsaArtifact) -> Result<OptArtifact, CoreError> {
         let mut blocks = ssa.blocks;
+        // Heap-allocation result vars (Rung 2c) — the Call `ret`s are SSA defs,
+        // stable across the optimizer rounds, so this is computed once.
+        let alloc_bases = allocation_bases(&blocks, &ssa.callsites);
         let mut delta = Vec::new();
         let mut rounds = 0;
         for _ in 0..MAX_ROUNDS {
@@ -72,7 +75,7 @@ impl Pass for OptimizePass {
             let mut changed = false;
             changed |= const_fold_round(&mut blocks, &mut delta);
             changed |= copy_prop_round(&mut blocks, &mut delta);
-            changed |= mem_forward_round(&mut blocks, &mut delta);
+            changed |= mem_forward_round(&mut blocks, &mut delta, &alloc_bases);
             changed |= dead_store_round(&mut blocks, &mut delta);
             changed |= expr_prop_round(&mut blocks, &mut delta);
             changed |= dce_round(&mut blocks, &mut delta);
@@ -616,6 +619,11 @@ struct Escape {
     bases: std::collections::HashSet<String>,
     /// Exact slots whose address was taken (`lea`/`&`), precisely.
     slots: std::collections::HashSet<(String, i128)>,
+    /// SSA vars that are the result of a heap allocation (`malloc`/`operator new`/
+    /// …) — a **fresh, non-overlapping** object (Rung 2c). Two different such
+    /// bases provably cannot alias, so a store through one does not clobber a
+    /// value available at the other. Empty unless the forwarding round filled it.
+    alloc_bases: std::collections::HashSet<String>,
 }
 
 impl Escape {
@@ -629,6 +637,54 @@ impl Escape {
     fn call_safe(&self, base: &str, off: i128) -> bool {
         base != ABS_BASE && !self.bases.contains(base) && !self.slots.contains(&(base.to_string(), off))
     }
+
+    /// Are `a` and `b` two **distinct** heap-allocation bases? Distinct
+    /// allocations never overlap, so a store through one cannot touch the other
+    /// (Rung 2c). Same base (`a == b`) is not "distinct" — that is an overlap
+    /// question the offset check answers.
+    fn distinct_alloc(&self, a: &str, b: &str) -> bool {
+        a != b && self.alloc_bases.contains(a) && self.alloc_bases.contains(b)
+    }
+}
+
+/// Does a resolved callee name denote a **heap allocator** — a function that
+/// returns a freshly allocated, non-overlapping block (so two of its results
+/// provably do not alias)? A curated allowlist, not a loose `alloc` substring:
+/// `realloc` (may return the same block) and `free`/`delete` are excluded, and a
+/// name must end at an allocator token (`_malloc`, exact `malloc`), so
+/// `deallocate` never matches. Covers C (`malloc`/`calloc`/`aligned_alloc`,
+/// OpenSSL `CRYPTO_*alloc`, glib `g_malloc`), Win32 (`HeapAlloc`/`VirtualAlloc`/…)
+/// and C++ `operator new` (Itanium `_Znwm`/`_Znam`, MSVC `??2`/`??_U`).
+fn is_allocator(name: &str) -> bool {
+    let n = name.rsplit('!').next().unwrap_or(name);
+    const TOKENS: &[&str] = &["malloc", "calloc", "zalloc", "aligned_alloc", "HeapAlloc", "LocalAlloc", "GlobalAlloc", "VirtualAlloc", "RtlAllocateHeap"];
+    TOKENS.iter().any(|a| n == *a || n.ends_with(&format!("_{a}")))
+        || n.starts_with("_Znwm")
+        || n.starts_with("_Znam")
+        || n.starts_with("??2")
+        || n.starts_with("??_U")
+        || n.contains("operator new")
+}
+
+/// The SSA vars bound to a heap-allocation call's result (Rung 2c) — matched by
+/// resolving each `Call` statement's site to its callee name via the carried
+/// [`Callsite`]s. A phi/copy of an allocation is deliberately *not* included
+/// (only the direct call result), so two members are always two real, distinct
+/// allocation sites.
+fn allocation_bases(blocks: &[SsaBlock], callsites: &[crate::ir::Callsite]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for b in blocks {
+        for s in &b.stmts {
+            if let MicroStmt::Call { ret: Some(v), .. } = &s.stmt
+                && let Some(cs) = callsites.iter().find(|c| c.from == s.va)
+                && let Some(name) = &cs.target_name
+                && is_allocator(name)
+            {
+                out.insert(v.clone());
+            }
+        }
+    }
+    out
 }
 
 /// Record escapes in `e`. `value_ctx` is true when this expression is used as a
@@ -743,8 +799,10 @@ fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
                     if a.base == base {
                         !ranges_overlap(a.off, bytes_of(a.bits), off, bytes)
                     } else {
-                        // A different base cannot alias a call-safe slot.
-                        esc.call_safe(&a.base, a.off)
+                        // A different base cannot alias a call-safe slot, nor a
+                        // distinct heap allocation (Rung 2c — two allocations
+                        // never overlap).
+                        esc.distinct_alloc(&base, &a.base) || esc.call_safe(&a.base, a.off)
                     }
                 });
             }
@@ -806,7 +864,7 @@ fn facts_eq(a: &[Avail], b: &[Avail]) -> bool {
         && a.iter().all(|x| b.iter().any(|y| same_slot(y, &x.base, x.off, x.bits) && y.value == x.value))
 }
 
-fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
+fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, alloc_bases: &std::collections::HashSet<String>) -> bool {
     let n = blocks.len();
     if n == 0 {
         return false;
@@ -826,8 +884,10 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) ->
 
     // Escape analysis: which slots a call / foreign / unknown store cannot
     // touch. Stable across optimizer rounds (forwarding only removes loads),
-    // recomputed here so it tracks the current SSA names.
-    let esc = escape_info(blocks);
+    // recomputed here so it tracks the current SSA names. The heap-allocation
+    // bases (Rung 2c) ride along on it for the clobber check.
+    let mut esc = escape_info(blocks);
+    esc.alloc_bases = alloc_bases.clone();
 
     // Forward dataflow to a fixpoint: `cross_in[b]` is the memory available on
     // *every* path into block `b`. Entry (block 0, no preds) starts empty.
@@ -1122,6 +1182,46 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg).unwrap();
         OptimizePass.run(&ctx, ssa).unwrap()
+    }
+
+    #[test]
+    fn is_allocator_matches_real_allocators_and_excludes_lookalikes() {
+        for a in ["malloc", "calloc", "CRYPTO_malloc", "CRYPTO_zalloc", "je_malloc", "aligned_alloc", "HeapAlloc", "kernel32!HeapAlloc", "_Znwm", "_Znam", "operator new"] {
+            assert!(is_allocator(a), "{a} should be an allocator");
+        }
+        for n in ["realloc", "free", "deallocate", "my_reallocate", "malloc_usable_size", "operator delete", "memcpy", "strchr"] {
+            assert!(!is_allocator(n), "{n} must NOT be an allocator");
+        }
+    }
+
+    #[test]
+    fn distinct_heap_allocs_do_not_alias_but_a_foreign_store_still_clobbers() {
+        // Both allocations have escaped (their addresses are live values), so the
+        // escape analysis alone would kill either fact on any foreign-base store.
+        // Rung 2c rescues the case where the store is to a *different* allocation.
+        let mut esc = Escape::default();
+        esc.bases.insert("rax.1".into());
+        esc.bases.insert("rax.2".into());
+        esc.alloc_bases.insert("rax.1".into());
+        esc.alloc_bases.insert("rax.2".into());
+        let fact = || Avail { base: "rax.2".into(), off: 8, bits: 64, value: MicroExpr::var("v"), from_seed: false };
+
+        // Store to the *other* allocation (rax.1) — distinct object, must NOT clobber.
+        let mut avail = vec![fact()];
+        clobber_for_stmt(&mut avail, &MicroStmt::Store { addr: MicroExpr::var("rax.1"), value: MicroExpr::var("x"), bits: 64 }, &esc);
+        assert_eq!(avail.len(), 1, "a store to a distinct heap allocation must not clobber");
+
+        // Store overlapping the *same* allocation slot — must clobber.
+        let mut avail = vec![fact()];
+        let same = MicroExpr::binary(BinOp::Add, MicroExpr::var("rax.2"), MicroExpr::constant(8, 64));
+        clobber_for_stmt(&mut avail, &MicroStmt::Store { addr: same, value: MicroExpr::var("x"), bits: 64 }, &esc);
+        assert_eq!(avail.len(), 0, "a same-slot store must clobber");
+
+        // Store through a non-allocation register base — may alias an escaped
+        // heap object, so it must clobber (soundness).
+        let mut avail = vec![fact()];
+        clobber_for_stmt(&mut avail, &MicroStmt::Store { addr: MicroExpr::var("rdi.0"), value: MicroExpr::var("x"), bits: 64 }, &esc);
+        assert_eq!(avail.len(), 0, "a foreign store may alias an escaped heap object — must clobber");
     }
 
     /// Does a `Load` from the absolute address `abs` survive anywhere in the
