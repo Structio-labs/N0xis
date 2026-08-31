@@ -2297,9 +2297,21 @@ third party's format). Each increment is verified on a real binary before ✅.
   explicit `* stride` matching the element size (`stride ≥ 2`) is required; a
   stride mismatch stays a pointer deref, a byte add stays a pointer add. Verified
   on zlib's `crc32_z`: the table lookups became `v9[(uint32_t)v12]`.
+- ⬜ **Multi-exit loop follow-node (structuring residual, diagnosed).** A loop with
+  a *second* exit — a `break` to a block outside the loop, in addition to the
+  header's own exit — currently inlines that block's whole subtree *inside* the
+  loop body instead of emitting it after the loop. Root-caused on zlib's
+  `crc32_z`: the byte-alignment loop `{@1580 header, @1589 body}` has exits at both
+  @196f (header) and @15a8 (the body's `break`); `emit_loop` treats only the
+  header's arm as `outside`, so the entire main CRC loop that follows @15a8 renders
+  nested under the alignment `while`, after a `break;` that makes it look dead. The
+  fix is real loop-follow computation (the join past *all* exits) + emitting each
+  non-latch exit as `break`/`continue` with the follow placed after — a careful,
+  golden-covered structuring change, not a rushed one.
 - ⬜ Calling-convention & argument/return-type recovery (params still render as
-  raw `uint64_t`). ⬜ Data-symbol / global naming. ⬜ Switch/jump-table already
-  has a `has-switch` path — polish to real `switch` rendering.
+  raw `uint64_t`). ⬜ Data-symbol / global naming. ✅ Switch/jump-table rendering
+  (`emit_switch`: real `switch (x) { case K: }` from resolved jump tables) —
+  already shipped in the structuring rung.
 
 ### Whole-program infrastructure (priority 1 — the core gap)
 
