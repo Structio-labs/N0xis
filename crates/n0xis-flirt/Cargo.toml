@@ -1,0 +1,13 @@
+[package]
+name = "n0xis-flirt"
+description = "A clean-room, dependency-light library-function signature matcher (FLIRT/FunctionID-class) for reverse engineering: fingerprint a function's bytes and recover its name from a pattern database."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["reverse-engineering", "flirt", "signatures", "decompiler", "binary-analysis"]
+categories = ["development-tools", "parsing"]
+
+[dependencies]
+# Intentionally dependency-free: this crate is a pure, publishable primitive.

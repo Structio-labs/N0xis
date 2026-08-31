@@ -2232,6 +2232,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "n0xis-flirt"
+version = "0.2.1"
+
+[[package]]
 name = "n0xis-frontend"
 version = "0.2.1"
 dependencies = [
