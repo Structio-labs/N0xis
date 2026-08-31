@@ -796,6 +796,27 @@ struct SigGenArgs {
     /// too little concrete code to name a function without collisions.
     #[arg(long, default_value_t = 6)]
     min_fixed: usize,
+    /// Keep compiler/CRT glue (`_init`, `register_tm_clones`, `frame_dummy`, …).
+    /// By default these are skipped: they are present, byte-identical, in nearly
+    /// every binary, so signing them adds only noise (and would name unrelated
+    /// glue in a target). A real library's own functions are always kept.
+    #[arg(long)]
+    include_glue: bool,
+}
+
+/// Linker/CRT scaffolding that every compiled image carries — not library code.
+/// Signing it pollutes a signature library with entries that match the identical
+/// boilerplate in any other binary, so `sig gen` drops it unless asked not to.
+fn is_toolchain_glue(name: &str) -> bool {
+    const GLUE: &[&str] = &[
+        "_init", "_fini", "_start", "__libc_csu_init", "__libc_csu_fini",
+        "register_tm_clones", "deregister_tm_clones", "__do_global_dtors_aux",
+        "__do_global_ctors_aux", "frame_dummy", "__gmon_start__", "atexit",
+        "__stack_chk_fail_local", "_dl_relocate_static_pie", "__cxa_finalize",
+    ];
+    GLUE.contains(&name)
+        // GCC/Clang PC-thunks: `__x86.get_pc_thunk.bx`, `__i686.get_pc_thunk.cx`.
+        || name.contains("get_pc_thunk")
 }
 
 #[derive(Subcommand)]
@@ -5243,7 +5264,12 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
     let mut sigs: Vec<serde_json::Value> = Vec::new();
     let mut skipped_short = 0usize;
     let mut skipped_unreadable = 0usize;
+    let mut skipped_glue = 0usize;
     for (va, name) in &funcs {
+        if !a.include_glue && is_toolchain_glue(name) {
+            skipped_glue += 1;
+            continue;
+        }
         let window = match img.read(*va, a.window) {
             Ok(b) if !b.is_empty() => b,
             _ => {
@@ -5281,6 +5307,7 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
                 "emitted": lines.len(),
                 "skipped_below_min_fixed": skipped_short,
                 "skipped_unreadable": skipped_unreadable,
+                "skipped_toolchain_glue": skipped_glue,
                 "window": a.window,
                 "min_fixed": a.min_fixed,
                 "npat": npat,
@@ -5783,5 +5810,17 @@ mod sig_gen_tests {
         let arch = X64::default();
         let (pat, _fixed) = generate_pattern(&window, Va(0x3000), &arch).unwrap();
         assert_eq!(pat, "31 c0 e9");
+    }
+
+    /// CRT/linker scaffolding is recognized as glue (so the default corpus omits
+    /// it), while a genuine library function is not.
+    #[test]
+    fn recognizes_toolchain_glue_but_not_library_code() {
+        for g in ["_init", "_fini", "register_tm_clones", "frame_dummy", "__x86.get_pc_thunk.bx"] {
+            assert!(is_toolchain_glue(g), "{g} should be glue");
+        }
+        for real in ["crc32", "deflate", "std::vector", "memcpy", "SSL_connect"] {
+            assert!(!is_toolchain_glue(real), "{real} is library code, not glue");
+        }
     }
 }

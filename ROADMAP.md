@@ -1489,11 +1489,36 @@ lift/SLEIGH-ingest per ISA.
      purely from the generated signatures, while the same stripped decomp without
      `--flirt` shows only `sub_XXXX`. Three unit tests pin the wildcarding
      (relative-call, RIP-relative, trailing-trim).
-   - ⬜ **Still open: the *shipped* CRT/STL corpus.** `sig gen` needs a symbolized
-     reference to learn from; the remaining work is producing (and shipping) the
-     real MSVC/libstdc++ signature libraries — run `sig gen` over xwin's static
-     CRT `.lib`s / a debug STL build, or convert a another tool `.fidb`. The engine and
-     the generator are done; the distributed library is what is left.
+   - ✅ **Rung 10c — first shipped OSS corpus + `sig gen` glue filter + the
+     commercial licensing model.** `signatures/` now carries a real, verified
+     starter database with the capa-style hygiene a commercial product needs.
+     `sig gen` gained a default filter that drops compiler/linker scaffolding
+     (`_init`, `register_tm_clones`, `frame_dummy`, PC thunks — byte-identical in
+     every binary, pure noise), overridable with `--include-glue`. **Verified
+     coherently (PIC↔PIC, cross-file):** a corpus generated from a from-source
+     `-fPIC` build of **zlib v1.3.1**'s shared `libz.so` (118 signatures after
+     glue-filtering) names `compress`/`crc32`/`uncompress`/`adler32` in a *separate*
+     stripped PIE binary that statically links the same zlib — while the same
+     stripped decomp without `--flirt` shows only `sub_XXXX`. Soundness re-proven:
+     `uncompress` stayed anonymous when the reference did not contain it. Shipped:
+     `signatures/samples/zlib-1.3.1-x86_64.npat` + `NOTICE` (zlib license) +
+     `README.md` (provenance, the capa "not derived from any other reverse-engineering tool sigs"
+     disclaimer, and the generate-locally model for proprietary libs) +
+     `generate.sh` (reproduces the sample from the pinned upstream tag). OpenSSL
+     libcrypto 3.6.4 also generates cleanly (5888 signatures) but is left
+     generate-locally rather than committed as a machine-specific blob.
+   - **Licensing model (researched, sourced — commercial).** What we *redistribute*
+     is the constraint, not the engine. Safe to ship: OSS-generated corpora
+     (zlib/OpenSSL/Qt), WARP-format reuse (Vector 35, Apache-2.0), another tool `.fidb`
+     under Apache-2.0 with attribution, and readers for user-supplied sig files.
+     Kept generate-locally (user runs `sig gen` on their own licensed toolchain,
+     we ship nothing derived): **MSVC CRT/STL**. Never shipped: another tool's bundled
+     `.sig`. FLIRT-signature copyright is genuinely unsettled (no case law); a
+     lawyer should read the FLAIR toolkit license and the exact VS License Terms
+     before any proprietary-derived corpus is distributed.
+   - ⬜ **Next: WARP interop (import/export)** — read/write Vector 35's Apache-2.0
+     interchange format, the legal bridge to a whole external signature ecosystem;
+     then extend the OSS corpus (OpenSSL/Qt/libstdc++) via `generate.sh`.
 9. ⬜ **Calling-convention & argument recovery — the prototype the whole render
    hangs on.** Classify the CC (fastcall / stdcall / vectorcall / `this` / custom)
    and recover argument count, types and variadicity from entry-liveness plus
