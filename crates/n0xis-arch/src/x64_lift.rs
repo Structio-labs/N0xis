@@ -277,7 +277,11 @@ fn result_flags(instr: &Instruction, mn: Mnemonic, out: &mut Vec<MicroStmt>) {
         let bits = op_bits(instr, 0);
         if bits == 32 || bits == 64 {
             let result = read_operand(instr, 0);
-            out.push(compare_flags(CmpKind::Result, result, MicroExpr::constant(0, bits)));
+            // A logical op (`and`/`or`/`xor`) clears OF and CF, so its result
+            // reconstructs the full `jcc` family (LogicalResult); an arithmetic
+            // op's signed/carry branches need the real flags (Result).
+            let kind = if matches!(mn, Mnemonic::And | Mnemonic::Or | Mnemonic::Xor) { CmpKind::LogicalResult } else { CmpKind::Result };
+            out.push(compare_flags(kind, result, MicroExpr::constant(0, bits)));
             return;
         }
     }
@@ -855,6 +859,35 @@ fn lift_opaque(arch: &crate::X64, insn: &DecodedInsn, mn: Mnemonic, out: &mut Ve
 /// tests, given the precise `Compare` that defined it. Only sound when the
 /// dataflow value reaching the branch *is* a `Compare` (see module docs on
 /// [`MicroExpr::OpaqueFlags`]).
+/// The exact branch condition for a `jcc` whose flags came from a **logical**
+/// operation (`test`/`and`/`or`/`xor`), where the value the flags reflect is
+/// `val`. A logical op clears **OF and CF to 0**, so every condition collapses
+/// to a sign/zero test on `val` and reconstructs soundly (unlike an arithmetic
+/// result, whose signed/carry conditions need the real OF/CF):
+///   - signed: `jl`→`val<0`, `jle`→`val<=0`, `jg`→`val>0`, `jge`→`val>=0`;
+///   - unsigned (CF=0): `ja`→`val!=0`, `jbe`→`val==0`, `jae`→always, `jb`→never.
+fn logical_flag_cond(mnemonic: &str, val: MicroExpr) -> MicroExpr {
+    let zero = MicroExpr::constant(0, 64);
+    let cmp = |op| MicroExpr::binary(op, val.clone(), zero.clone());
+    match mnemonic {
+        "je" | "jz" => cmp(BinOp::Eq),
+        "jne" | "jnz" => cmp(BinOp::Ne),
+        "js" => cmp(BinOp::Slt),
+        "jns" => cmp(BinOp::Sge),
+        "jl" | "jnge" => cmp(BinOp::Slt),
+        "jle" | "jng" => cmp(BinOp::Sle),
+        "jg" | "jnle" => cmp(BinOp::Sgt),
+        "jge" | "jnl" => cmp(BinOp::Sge),
+        "ja" | "jnbe" => cmp(BinOp::Ne),
+        "jbe" | "jna" => cmp(BinOp::Eq),
+        // CF is provably 0 after a logical op: `jae`/`jnb` always taken, `jb`/
+        // `jnae` never. Sound constants (compiler artifacts / provable bounds).
+        "jae" | "jnb" | "jnc" => MicroExpr::constant(1, 8),
+        "jb" | "jnae" | "jc" => MicroExpr::constant(0, 8),
+        _ => MicroExpr::Unknown(format!("cond({mnemonic})")),
+    }
+}
+
 pub(crate) fn branch_condition(mnemonic: &str, flags_value: &MicroExpr) -> MicroExpr {
     let MicroExpr::Compare { kind, lhs, rhs } = flags_value else {
         return MicroExpr::Unknown(format!("cond({mnemonic})"));
@@ -871,33 +904,29 @@ pub(crate) fn branch_condition(mnemonic: &str, flags_value: &MicroExpr) -> Micro
         return match mnemonic {
             "je" => MicroExpr::binary(BinOp::Eq, lhs, rhs),
             "jne" => MicroExpr::binary(BinOp::Ne, lhs, rhs),
+            // SF is literally the sign bit of the stored result — a pure function
+            // of it, independent of the overflow the magnitude branches need — so
+            // `js`/`jns` reconstruct even after arithmetic (`rhs` is the `0`).
+            "js" => MicroExpr::binary(BinOp::Slt, lhs, rhs),
+            "jns" => MicroExpr::binary(BinOp::Sge, lhs, rhs),
             _ => MicroExpr::Unknown(format!("cond({mnemonic}) after result")),
         };
     }
 
+    if *kind == CmpKind::LogicalResult {
+        // Flags from a logical op that kept its result (`and edx,edx`): OF=CF=0,
+        // so the whole family reconstructs from the result's sign/zero-ness.
+        return logical_flag_cond(mnemonic, lhs);
+    }
+
     if *kind == CmpKind::Test {
-        // `test a,b` sets flags from `a & b` without storing it; `a,a` is the
-        // common "is a zero / negative" idiom.
-        let same = lhs == rhs;
-        return match mnemonic {
-            "je" => {
-                if same {
-                    MicroExpr::binary(BinOp::Eq, lhs, MicroExpr::constant(0, 64))
-                } else {
-                    MicroExpr::binary(BinOp::Eq, MicroExpr::binary(BinOp::And, lhs, rhs), MicroExpr::constant(0, 64))
-                }
-            }
-            "jne" => {
-                if same {
-                    MicroExpr::binary(BinOp::Ne, lhs, MicroExpr::constant(0, 64))
-                } else {
-                    MicroExpr::binary(BinOp::Ne, MicroExpr::binary(BinOp::And, lhs, rhs), MicroExpr::constant(0, 64))
-                }
-            }
-            "js" => MicroExpr::binary(BinOp::Slt, lhs, MicroExpr::constant(0, 64)),
-            "jns" => MicroExpr::binary(BinOp::Sge, lhs, MicroExpr::constant(0, 64)),
-            _ => MicroExpr::Unknown(format!("cond({mnemonic}) after test")),
-        };
+        // `test a,b` sets flags from `a & b` (a *logical* op, so OF and CF are
+        // cleared to 0) without storing it; `a,a` is the common "is a zero /
+        // negative / <=0" idiom. Because OF=CF=0, every signed *and* unsigned
+        // condition is a pure function of the tested value's sign and zero-ness
+        // — so the whole `jcc` family reconstructs soundly, not just `je`/`jne`.
+        let val = if lhs == rhs { lhs } else { MicroExpr::binary(BinOp::And, lhs, rhs) };
+        return logical_flag_cond(mnemonic, val);
     }
 
     match mnemonic {
@@ -1166,6 +1195,45 @@ mod tests {
         // does not carry, so it must stay a placeholder, never a wrong guess.
         let flags = MicroExpr::compare(CmpKind::Result, MicroExpr::var("rax"), MicroExpr::constant(0, 64));
         assert_eq!(branch_condition("jg", &flags), MicroExpr::Unknown("cond(jg) after result".into()));
+    }
+
+    #[test]
+    fn test_reg_reg_reconstructs_the_full_signed_and_unsigned_jcc_family() {
+        // `test rax,rax` is a logical op (OF=CF=0), so every condition is a
+        // sign/zero test on rax — the whole family reconstructs, not just je/jne.
+        let flags = last_flags(&lift_one(&[0x48, 0x85, 0xC0])); // test rax, rax
+        let z = || MicroExpr::constant(0, 64);
+        let rax = || MicroExpr::var("rax");
+        assert_eq!(branch_condition("jle", &flags), MicroExpr::binary(BinOp::Sle, rax(), z())); // <= 0
+        assert_eq!(branch_condition("jl", &flags), MicroExpr::binary(BinOp::Slt, rax(), z())); // < 0
+        assert_eq!(branch_condition("jg", &flags), MicroExpr::binary(BinOp::Sgt, rax(), z())); // > 0
+        assert_eq!(branch_condition("jge", &flags), MicroExpr::binary(BinOp::Sge, rax(), z())); // >= 0
+        assert_eq!(branch_condition("ja", &flags), MicroExpr::binary(BinOp::Ne, rax(), z())); // != 0
+        assert_eq!(branch_condition("jbe", &flags), MicroExpr::binary(BinOp::Eq, rax(), z())); // == 0
+        assert_eq!(branch_condition("je", &flags), MicroExpr::binary(BinOp::Eq, rax(), z()));
+        // CF is provably 0: jae always, jb never.
+        assert_eq!(branch_condition("jae", &flags), MicroExpr::constant(1, 8));
+        assert_eq!(branch_condition("jb", &flags), MicroExpr::constant(0, 8));
+    }
+
+    #[test]
+    fn and_that_keeps_its_result_reconstructs_signed_branches_via_logical_result() {
+        // `and edx,edx` keeps edx and clears OF/CF, so `jle` after it is `edx<=0`
+        // — a LogicalResult, the full family, not the arithmetic je/jne-only.
+        let flags = last_flags(&lift_one(&[0x21, 0xD2])); // and edx, edx
+        assert_eq!(flags, MicroExpr::compare(CmpKind::LogicalResult, MicroExpr::var("rdx"), MicroExpr::constant(0, 32)));
+        assert_eq!(branch_condition("jle", &flags), MicroExpr::binary(BinOp::Sle, MicroExpr::var("rdx"), MicroExpr::constant(0, 64)));
+    }
+
+    #[test]
+    fn js_jns_reconstruct_after_an_arithmetic_result() {
+        // SF is the sign bit of the stored result, so `js`/`jns` recover even
+        // after `sub`/`add` (the magnitude branches, needing overflow, do not).
+        let flags = last_flags(&lift_one(&[0x48, 0x01, 0xD1])); // add rcx, rdx
+        assert_eq!(branch_condition("js", &flags), MicroExpr::binary(BinOp::Slt, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)));
+        assert_eq!(branch_condition("jns", &flags), MicroExpr::binary(BinOp::Sge, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)));
+        // A magnitude branch still stays opaque (needs the real overflow flag).
+        assert_eq!(branch_condition("jl", &flags), MicroExpr::Unknown("cond(jl) after result".into()));
     }
 
     #[test]
