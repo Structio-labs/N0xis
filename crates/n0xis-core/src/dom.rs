@@ -123,7 +123,7 @@ fn reachable_from_entry(n: usize, pred: &[Vec<usize>]) -> Vec<bool> {
 /// collects every block with no intra-function successor. Index `n` in the
 /// input/output space is that synthetic exit; the returned vec is truncated
 /// back to `0..n` (real blocks only) with the exit removed from each set.
-pub fn dominators_rev(n: usize, succ: &[Vec<usize>], is_exit: &[bool]) -> Vec<BTreeSet<usize>> {
+pub fn dominators_rev(n: usize, succ: &[Vec<usize>], is_exit: &[bool], is_abort: &[bool]) -> Vec<BTreeSet<usize>> {
     if n == 0 {
         return Vec::new();
     }
@@ -131,7 +131,12 @@ pub fn dominators_rev(n: usize, succ: &[Vec<usize>], is_exit: &[bool]) -> Vec<BT
     let total = n + 1;
     let mut rpred: Vec<Vec<usize>> = vec![Vec::new(); total];
     for i in 0..n {
-        if is_exit[i] || succ[i].is_empty() {
+        // Connect to the virtual exit a real exit, or a dead-end (no successors)
+        // that is *not* an abort. A no-return / trap block ends the path without
+        // ever reaching normal completion, so it must not be an exit — otherwise
+        // a shared tail that all *returning* paths converge on would falsely stop
+        // post-dominating (the abort path bypasses it), forcing a `goto`.
+        if is_exit[i] || (succ[i].is_empty() && !is_abort[i]) {
             rpred[i].push(exit);
         }
         for &s in &succ[i] {

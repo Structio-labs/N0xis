@@ -599,8 +599,21 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
     let (succ, pred) = block_graph(cfg);
     let dom = dominators_fwd(n, &pred);
     let idom = immediate_doms(&dom);
-    let is_exit: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "ret" | "tail-call" | "int" | "call-noreturn")).collect();
-    let pdom = dominators_rev(n, &succ, &is_exit);
+    // Only a *normal* return is a post-dominance exit. A `call-noreturn` / `int`
+    // block aborts — it never reaches normal completion — so counting it as an
+    // exit falsely breaks the post-dominance of a real shared tail (every
+    // *returning* path reaches it, but the abort path does not). Excluding them
+    // lets a block that all returning paths converge on become the merge and
+    // structure as a clean fall-through instead of a `goto`, exactly as the
+    // other tools do (they drop no-return paths from the CFG for structuring too).
+    let is_exit: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "ret" | "tail-call")).collect();
+    let mut is_abort: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "call-noreturn" | "int")).collect();
+    // A function with no normal return (every path aborts) — let the aborts act
+    // as exits so post-dominance stays defined instead of empty.
+    if !is_exit.iter().any(|&e| e) {
+        is_abort.iter_mut().for_each(|a| *a = false);
+    }
+    let pdom = dominators_rev(n, &succ, &is_exit, &is_abort);
     let ipdom = immediate_doms(&pdom);
     let _ = &idom; // idom itself isn't needed beyond computing dom sets for back-edge detection
 
