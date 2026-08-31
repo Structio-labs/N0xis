@@ -1445,7 +1445,7 @@ lift/SLEIGH-ingest per ISA.
      correctly gated on that, not a quick win. Also open: feeding the recovered
      **bases into the decompiler** (type a `this` as the `Derived : Base` chain),
      and **Itanium RTTI** for ELF/GCC targets.
-8. ⬜ **Library-function identification (FLIRT-class signatures) — the biggest
+8. 🟡 **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
    Function-ID) names `memcpy`, `std::_Tree::_Insert`, `operator new` instead of
@@ -1454,6 +1454,24 @@ lift/SLEIGH-ingest per ISA.
    <3 independent samples); this item is the *signature library* plus the auto-apply
    pass over it. High ROI and independent of the memory-SSA track, so it can land
    early and in parallel.
+   - ✅ **Rung 10a — own matcher + `.npat` format + auto-apply seam.** The
+     `n0xis-flirt` crate (dependency-free, crates.io-shippable) is the matcher:
+     pattern+wildcard byte fingerprints, most-specific-wins, ambiguity→`None`
+     (sound over complete — a wrong name is worse than none). `FlirtSymbols`
+     exposes it through the existing `SymbolProvider` seam, chained *below* the
+     real exports/imports/IL2CPP index so a genuine symbol always wins and FLIRT
+     only fills the `sub_XXXX` gaps. Wired end to end: `decomp … --flirt <db.npat>`.
+     A signature-named function renders by its **bare** name (`free`, not
+     `CompressToolsLib.dll!free`) — the `module!` prefix is now imports-only, since
+     a statically-linked function is *local* to the image. **Verified on a real
+     target:** a `.npat` signing the free-thunk at `0x18001d84c` turns
+     `sub_18001d84c(rcx, rdx.2, r8.1, r9.1)` into `free(/*ptr*/ rcx)` in
+     `CompressToolsLib.dll` (bare name, correct arity), while the same decomp
+     without `--flirt` still shows `sub_18001d84c` — the difference is genuinely
+     the matcher. **Still ⬜: the signature *data*** — the CRT/STL/runtime pattern
+     corpus (from xwin MSVC static libs, a another tool `.fidb` conversion, or a
+     symbolized build) that makes it name real functions without a hand-authored
+     `.npat`. The engine is done; the library it consumes is the remaining work.
 9. ⬜ **Calling-convention & argument recovery — the prototype the whole render
    hangs on.** Classify the CC (fastcall / stdcall / vectorcall / `this` / custom)
    and recover argument count, types and variadicity from entry-liveness plus

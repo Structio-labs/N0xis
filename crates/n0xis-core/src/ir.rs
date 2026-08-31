@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use n0xis_arch::{DecodedInsn, FrameInfo, InsnKind};
-use n0xis_contracts::Va;
+use n0xis_contracts::{SymKind, Va};
 use serde::{Deserialize, Serialize};
 
 use crate::switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
@@ -192,7 +192,15 @@ fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
     ins.target
         .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
         .or_else(|| ins.rip_target.and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
-        .map(|sym| format!("{}!{}", sym.module, sym.name))
+        // A function *defined in this image* (a local name, or a statically-linked
+        // library function recovered by a signature match) is called by its bare
+        // name — `free`, not `CompressToolsLib.dll!free`. The `module!` prefix
+        // exists only to route a cross-module *import* through the demangler and
+        // keep its name identifier-safe, so it belongs to imports alone.
+        .map(|sym| match sym.kind {
+            SymKind::Function => sym.name,
+            _ => format!("{}!{}", sym.module, sym.name),
+        })
 }
 
 /// The memory slot a call/branch goes *through*, for the indirect-through-

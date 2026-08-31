@@ -2188,6 +2188,11 @@ struct IrArgs {
     /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
     #[arg(long)]
     remote_cmd: Option<String>,
+    /// FLIRT-class signature database (a `.npat` file) to name statically-linked
+    /// library functions (`free`, `memcpy`, …) that carry no symbol. Chained
+    /// below the real symbols, so a genuine name always wins.
+    #[arg(long)]
+    flirt: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -2676,6 +2681,7 @@ fn ir_args_json(a: &IrArgs) -> serde_json::Value {
         "bytes": a.bytes,
         "snapshot": a.snapshot,
         "remote_cmd": a.remote_cmd,
+        "flirt": a.flirt,
     })
 }
 

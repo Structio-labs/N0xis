@@ -258,14 +258,40 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     // section buffer once and indexes in memory, so it is cheap per invocation.
     let vtables = rtti_vtable_map(&resolved.src);
 
+    // FLIRT-class signature naming (Phase 10 priority 8): if a `flirt` database
+    // is supplied, statically-linked CRT/STL functions that carry no symbol get
+    // named by matching their bytes. Chained *below* the real symbol sources, so
+    // a genuine name always wins and FLIRT only fills the `sub_XXXX` gaps.
+    let flirt_db = args
+        .get("flirt")
+        .and_then(|v| v.as_str())
+        .and_then(|p| std::fs::read_to_string(p).ok().map(|t| (p.to_string(), t)))
+        .and_then(|(p, t)| n0xis_flirt::Db::load_npat(&t).ok().map(|db| (p, db)));
+
     let resp = match &resolved.src {
-        Src::Static(pe) => match managed {
-            Some(m) => {
-                let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+        Src::Static(pe) => {
+            let flirt = flirt_db
+                .as_ref()
+                .map(|(p, db)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, format!("flirt:{p}:{}", db.len())));
+            match (managed, flirt.as_ref()) {
+                (Some(m), Some(f)) => {
+                    let base = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                    let chain = n0xis_sources::ChainedSymbols::new(&base, f);
+                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                }
+                (Some(m), None) => {
+                    let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                }
+                (None, Some(f)) => {
+                    let chain = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
+                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                }
+                (None, None) => {
+                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                }
             }
-            None => work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label),
-        },
+        }
         Src::Live(l) => match managed {
             Some(m) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(m), input, &label),
             None => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), input, &label),

@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 n0xis-contracts = { workspace = true }
+n0xis-flirt = { workspace = true }
 n0xis-arch = { workspace = true }
 # The registry's built-in capabilities run real passes — this crate sits
 # *above* the core, never the other way round (scripts/check_boundary.sh

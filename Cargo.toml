@@ -59,6 +59,7 @@ png = "0.18"
 
 # --- internal crates (path deps; the workspace is the graph in CONCEPT §4) ---
 n0xis-contracts = { path = "crates/n0xis-contracts" }
+n0xis-flirt = { path = "crates/n0xis-flirt" }
 n0xis-arch = { path = "crates/n0xis-arch" }
 n0xis-sources = { path = "crates/n0xis-sources" }
 n0xis-core = { path = "crates/n0xis-core" }

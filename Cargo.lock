@@ -2242,6 +2242,7 @@ dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
  "n0xis-core",
+ "n0xis-flirt",
  "n0xis-il2cpp",
  "n0xis-pipeline",
  "n0xis-project",
