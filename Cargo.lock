@@ -2167,7 +2167,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-arch"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "disarm64",
  "disarm64_defn",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-bitsquid"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "miniz_oxide",
  "serde",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-cli"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "clap",
  "n0xis-arch",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-contracts"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-core"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "cpp_demangle",
  "msvc-demangler",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-frontend"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-hud"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-il2cpp"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "n0xis-contracts",
  "n0xis-sources",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-lua"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-luajit"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "n0xis-contracts",
  "n0xis-sources",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-mcp"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "n0xis-arch",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-pipeline"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-project"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-sources"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "goblin",
  "libc",
