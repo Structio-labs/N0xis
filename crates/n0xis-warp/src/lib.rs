@@ -12,10 +12,12 @@
 //!   basic-block GUIDs concatenated in address order (highest→lowest start).
 //!
 //! This crate implements exactly those two hashes — plus the SHA-1 and UUIDv5
-//! they stand on — with **no dependencies**, so it is a pure, auditable
-//! primitive with zero supply-chain surface (the same discipline as
-//! `n0xis-flirt`). It is byte-compatible with Vector 35's `warp` crate: the unit
-//! tests pin GUIDs produced by that reference implementation.
+//! they stand on — with **no dependencies**, so the identity math is a pure,
+//! auditable primitive with zero supply-chain surface (the same discipline as
+//! `n0xis-flirt`; depend with `default-features = false` for just this). It is
+//! byte-compatible with Vector 35's `warp` crate: the unit tests pin GUIDs
+//! produced by that reference implementation. The default `container` feature
+//! adds reading `.warp` files ([`read_warp`]), pulling in only `flate2`.
 //!
 //! What lives *here* is portable and verifiable. What does **not** yet live here
 //! is the disassembly→`normalized_bytes` step (which relocatable-instruction
@@ -33,6 +35,11 @@
 //! ```
 
 #![forbid(unsafe_code)]
+
+#[cfg(feature = "container")]
+mod container;
+#[cfg(feature = "container")]
+pub use container::{read_warp, WarpFunction};
 
 /// WARP's namespace for basic-block GUIDs (`0192a178-7a5f-7936-8653-3cbaa7d6afe7`).
 pub const NAMESPACE_BASIC_BLOCK: [u8; 16] =

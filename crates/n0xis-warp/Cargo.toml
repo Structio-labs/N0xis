@@ -9,6 +9,14 @@ keywords = ["warp", "reverse-engineering", "signature", "uuid", "decompiler"]
 categories = ["development-tools", "algorithms"]
 
 [dependencies]
-# Dependency-free by design, exactly like n0xis-flirt: the SHA-1 and UUIDv5 the
-# WARP GUID needs are implemented here, so this crate is a pure primitive with no
-# supply-chain surface — which matters for a commercial product.
+# The core GUID math is dependency-free by design, exactly like n0xis-flirt: the
+# SHA-1 and UUIDv5 it needs are implemented here. For that pure primitive with no
+# supply-chain surface, depend with `default-features = false`.
+#
+# The `container` feature (reading `.warp` files) is on by default and adds only
+# `flate2` — already in the workspace tree — for the zlib-compressed chunk payload.
+flate2 = { version = "1", optional = true }
+
+[features]
+default = ["container"]
+container = ["dep:flate2"]

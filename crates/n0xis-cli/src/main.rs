@@ -243,6 +243,10 @@ enum Command {
     /// deliberately-varied samples (Phase 8; RE_METHOD F3).
     #[command(subcommand)]
     Sig(SigCmd),
+    /// Interoperate with WARP, Vector 35's cross-tool signature format
+    /// (Apache-2.0): read a `.warp` file's function table (GUID + name).
+    #[command(subcommand)]
+    Warp(WarpCmd),
     /// Screen region -> memory addresses, by hit-testing a live target's own
     /// retained scene graph from outside (Phase 9). No graphics-API hooking,
     /// no frame capture, no pixels — see docs/PHASE9_UI_LOCATE_BRIEF.md.
@@ -777,6 +781,20 @@ struct SigValidateArgs {
     /// Independence bar (default 3).
     #[arg(long, default_value_t = 3)]
     min_independent: usize,
+}
+
+#[derive(Subcommand)]
+enum WarpCmd {
+    /// Read a `.warp` file and emit its function table — each function's
+    /// structural GUID and the symbol name to apply when that GUID matches.
+    Dump(WarpDumpArgs),
+}
+
+#[derive(Args)]
+struct WarpDumpArgs {
+    /// The `.warp` signature file to read.
+    #[arg(long)]
+    file: String,
 }
 
 #[derive(Args)]
@@ -2397,6 +2415,7 @@ fn main() {
         Command::Bindings(BindingsCmd::List(a)) => cmd_bindings_list(a, pretty),
         Command::Sig(SigCmd::Validate(a)) => cmd_sig_validate(a, pretty),
         Command::Sig(SigCmd::Gen(a)) => cmd_sig_gen(a, pretty),
+        Command::Warp(WarpCmd::Dump(a)) => cmd_warp_dump(a, pretty),
         Command::Ui(UiCmd::Locate(a)) => cmd_ui_locate(a, pretty),
         Command::Ui(UiCmd::Windows(a)) => cmd_ui_windows(a, pretty),
         Command::Ui(UiCmd::Screenshot(a)) => cmd_ui_screenshot(a, pretty),
@@ -5315,6 +5334,27 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
             }),
         )
         .with_source(img.module().name.clone()),
+        pretty,
+    )
+}
+
+fn cmd_warp_dump(a: WarpDumpArgs, pretty: bool) -> bool {
+    let bytes = match std::fs::read(&a.file) {
+        Ok(b) => b,
+        Err(e) => return emit(&Response::<serde_json::Value>::error("read-failed", e.to_string()), pretty),
+    };
+    let Some(funcs) = n0xis_warp::read_warp(&bytes) else {
+        return emit(&Response::<serde_json::Value>::error("bad-warp", format!("{} is not a readable WARP file", a.file)), pretty);
+    };
+    let list: Vec<serde_json::Value> = funcs
+        .iter()
+        .map(|f| json!({ "guid": f.guid, "name": f.name }))
+        .collect();
+    emit(
+        &Response::success(
+            schema::v1::WARP_DUMP,
+            json!({ "source": a.file, "count": list.len(), "functions": list }),
+        ),
         pretty,
     )
 }

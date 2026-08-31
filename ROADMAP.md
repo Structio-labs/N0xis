@@ -1532,11 +1532,16 @@ lift/SLEIGH-ingest per ISA.
        (`bb(90 90)=9f28527a…`, `fn[bb,bb]=382ab4b9…`) are pinned as unit tests, so
        ours is genuinely *interoperable*, not merely self-consistent; the SHA-1
        and UUIDv5 layers are pinned to the RFC 3174 / RFC 4122 vectors too.
-     - ⬜ **Rung 11b — WARP container read/write** (`.warp` = FlatBuffers
-       `File→Chunk→SignatureChunk→Function{guid,symbol.name,constraints}`,
-       flate2-compressed payload). No external blocker — verifiable against the
-       reference `warp` crate's `random.warp` fixture + `dumper`. Gives n0xis
-       import/export of real WARP databases (the GUID↔name table).
+     - ✅ **Rung 11b — WARP container reader.** Reads a real `.warp` file
+       (FlatBuffers `File→Chunk→SignatureChunk→Function{guid,symbol.name}`, with
+       the zlib-compressed chunk payload) into its `(GUID, name)` table, via a
+       hand-written, strictly bounds-checked FlatBuffers parser — so it pulls in
+       only `flate2` (already in the tree), no `flatbuffers`/codegen dependency.
+       **Verified byte-for-byte against Vector 35's reference:** reading their
+       `random.warp` fixture reproduces its `dumper` output for all 100 functions
+       exactly, and truncated inputs return `None` rather than panicking (the
+       OOM/untrusted-length rule). Exposed as `n0xis warp dump --file x.warp`.
+       (Writer + type chunks: later, when a producer needs them.)
      - ⬜ **Rung 11c — disassembly→normalized bytes** (which relocatable
        instruction bytes to zero, which NOPs/effective-NOPs to drop) feeding
        `basic_block_guid` over our CFG, so n0xis can *compute* a target's GUID and

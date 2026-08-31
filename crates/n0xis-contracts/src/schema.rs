@@ -143,6 +143,9 @@ pub mod v1 {
     /// (`sig gen`).
     pub const SIG_GEN: &str = "n0xis.sig.gen.v1";
 
+    /// WARP file function table — GUID + name per function (`warp dump`).
+    pub const WARP_DUMP: &str = "n0xis.warp.dump.v1";
+
     // --- Phase 9: UI-layer localization ---
     /// Structural-predicate scan: matches by relations between fields, not
     /// byte constants (the generalized primitive `ui locate` is built on).

@@ -2205,6 +2205,7 @@ dependencies = [
  "n0xis-pipeline",
  "n0xis-project",
  "n0xis-sources",
+ "n0xis-warp",
  "serde",
  "serde_json",
 ]
@@ -2363,6 +2364,9 @@ dependencies = [
 [[package]]
 name = "n0xis-warp"
 version = "0.2.1"
+dependencies = [
+ "flate2",
+]
 
 [[package]]
 name = "naga"

@@ -15,6 +15,8 @@ n0xis-contracts = { workspace = true }
 n0xis-arch = { workspace = true }
 # The FLIRT-class signature matcher — `sig gen` produces its `.npat` databases.
 n0xis-flirt = { workspace = true }
+# WARP interop — `warp dump` reads Vector 35's `.warp` signature files.
+n0xis-warp = { workspace = true, features = ["container"] }
 n0xis-core = { workspace = true }
 n0xis-pipeline = { workspace = true }
 # The shared frontend seam — source/arch resolution and argument parsing,
