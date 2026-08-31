@@ -1701,9 +1701,27 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `CompressToolsLib.dll` `GetBottomPixels` — `local_28`/`local_30`, used in
     `(local - x) >> 1` arithmetic shifts (`sar`, a signed midpoint), declare
     `int64_t` while the canary/saved-reg locals stay `uint64_t`.
+  - **3g — whole-program `this`-type propagation + C++ import naming
+    (readability).** ✅ *(2026-08-31, verified.)* Two wins from the another tool
+    review. **(a)** A value passed as arg 0 to a non-static C++ member
+    function *is* a pointer to that method's class — `param_ctype` now types such
+    a parameter as the class (`std::basic_ostream<char,…> *rcx`), other tools'
+    whole-program `this`-typing, ranked just below the constructor-vtable class.
+    Sound: membership is read from the demangler's access specifier (gated
+    against `static`), so a free function's or static member's arg 0 is never
+    mistyped. **(b)** A module-prefixed C++ import (`MSVCP140.dll!?sputc@…`) now
+    reaches the demangler (it split off the `module!` prefix, which hid the
+    leading `?`) and renders its qualified name only
+    (`std::basic_streambuf<…>::sputc`) via an MSVC `NAME_ONLY` demangle — not the
+    sanitized `MSVCP140_dll___sputc___…`. **Verified:** `sub_180002fa0` recovers
+    `std::basic_ostream<char,struct std::char_traits<char> > *rcx` and names
+    `flush`/`sputc`/`sputn`/`setstate` — matching another tool (in fact naming *more*
+    C++ methods than another tool on that function); CompressToolsLib 17 / kenshi_x64
+    19 of 200 functions get a class-typed param, 0 regressions. MSVC only for now
+    (the game corpus); Itanium/ELF `this`-typing is a follow-on.
   - Still ⬜ for this rung: **width/signedness for register variables** (the
-    same use-inference applied to coalesced `vN`, not only stack locals), and
-    **enums**.
+    same use-inference applied to coalesced `vN`, not only stack locals),
+    **enums**, and **Itanium (ELF) member-function `this`-typing**.
 
 - **Rung 4 — Calling convention & argument recovery.** 🚧 Classify the CC and
   recover arg count/types/variadicity by entry-liveness + call-site agreement.
@@ -1791,10 +1809,22 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     full register's zero-ness isn't the sub-register result's). **Verified on real
     MSVC x64** (`CompressToolsLib.dll`, 200 functions): **69 of 75 loop headers
     now carry a real condition** (was near-zero for arithmetic latches), e.g.
-    `while ((*(uint8_t*)(rdx.0 + rbx.3) != 0x0))` — a real string scan; the 6
-    still-opaque loops and the remaining `/*cond*/` placeholders are the genuinely
-    unreconstructable magnitude branches. Still ⬜ for this rung: signedness,
-    the rest of the idiom library, and SIMD/FP.
+    `while ((*(uint8_t*)(rdx.0 + rbx.3) != 0x0))` — a real string scan.
+  - **5a′ — the full jcc family after a logical op (readability finding).** ✅
+    *(2026-08-31, verified.)* A review with another tool showed the biggest
+    visible gap was N0xis's opaque `~/*cond(jle) after test*/` next to another tool's
+    clean conditions. A **logical** op (`test`/`and`/`or`/`xor`) clears OF and CF
+    to 0, so *every* signed and unsigned branch is a pure sign/zero test on the
+    value — not just `je`/`jne`. `CmpKind::Test` and a new `CmpKind::LogicalResult`
+    now reconstruct the whole family (`jl`/`jle`/`jg`/`jge` → `<`/`<=`/`>`/`>= 0`,
+    `ja`/`jbe` → `!=`/`== 0`, `jae`/`jb` → provable true/false since CF=0); the
+    arithmetic `Result` additionally recovers `js`/`jns` (SF is the stored
+    result's sign bit). **Verified:** `CompressToolsLib` `sub_180002fa0` reads
+    `while ((v8 > 0x0))` / `if ((rdi.1 <= 0x0) || …)` — matching another tool's
+    `for (; 0 < lVar7; …)` exactly, 0 opaque conditions in that function; corpus
+    opaque-cond lines collapse (kenshi_x64 200 fns to 31 — all `jo`/`jp` or
+    opaque-flag-source, sound to leave), 0 regressions, 9 unit tests. Still ⬜:
+    the idiom library and FP-compare conditions.
   - **5b — stack-canary recognition.** ✅ *(2026-08-30, verified.)* The compiler's
     stack protector littered every guarded MSVC function with opaque arithmetic on a
     mystery global: `rax.2 = (*(uint64_t*)(0x1421173c8) ^ rsp.1)` on entry (a load of
