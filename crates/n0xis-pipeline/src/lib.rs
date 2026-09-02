@@ -155,6 +155,82 @@ pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), Cor
     Ok((art, false))
 }
 
+/// Generation prefix for the reverse-xref index — the analyzer fingerprint, so a
+/// rebuilt decoder never reads a previous build's index (same discipline as
+/// [`cfg_cache_generation`]). Carried in the key so [`retain_prefix`] can sweep
+/// stale generations by name.
+fn xref_cache_generation() -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    analysis_fingerprint().hash(&mut h);
+    format!("xref-{:08x}-", h.finish() as u32)
+}
+
+fn sweep_stale_xref_once() {
+    static SWEPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    SWEPT.get_or_init(|| {
+        let _ = n0xis_project::xref_index::retain_prefix(&xref_cache_generation());
+    });
+}
+
+/// Process-wide memo of the last built/loaded index: `(source label, key, index)`.
+/// Reused only when the label matches — the frontend calls [`xref_index_for`]
+/// exclusively for *immutable* sources (static PE/ELF, snapshot), so a label
+/// uniquely identifies a fixed byte image for the life of the process and we can
+/// skip re-hashing the whole code section on every query.
+static XREF_MEMO: std::sync::Mutex<Option<(String, String, std::sync::Arc<n0xis_core::XrefIndex>)>> =
+    std::sync::Mutex::new(None);
+
+/// The reverse-xref index over `ranges`, memoized in-process and cached on disk
+/// under `.n0x/xref-index/`. The first call for a target builds it (one decode
+/// pass over all code — the cost `xref to` used to pay *every* time); every later
+/// call this session, and future sessions on unchanged bytes, is a map lookup.
+///
+/// Soundness follows the IR cache: the disk key hashes the analyzer generation
+/// **and the actual code bytes**, so changed bytes miss (never a stale hit). The
+/// caller must only pass *immutable* sources — the in-process memo keys on the
+/// source label alone, which is a fixed image only when the bytes cannot change
+/// under it (static/snapshot, not a live process).
+pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str) -> std::sync::Arc<n0xis_core::XrefIndex> {
+    if let Ok(memo) = XREF_MEMO.lock()
+        && let Some((l, _k, idx)) = memo.as_ref()
+        && l == label
+    {
+        return idx.clone();
+    }
+    // Sound key: analyzer generation + label + range shape + a hash of the actual
+    // code bytes (read once). Hashing the section is far cheaper than the decode
+    // pass a scan would do, and it's paid at most once per session (memo above).
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    "xref".hash(&mut h);
+    label.hash(&mut h);
+    for (start, size) in ranges {
+        start.0.hash(&mut h);
+        size.hash(&mut h);
+        if let Ok(bytes) = ctx.source.read(*start, *size as usize) {
+            bytes.hash(&mut h);
+        }
+    }
+    let key = format!("{}{:016x}", xref_cache_generation(), h.finish());
+    sweep_stale_xref_once();
+
+    let idx = if let Ok(Some(json)) = n0xis_project::xref_index::get(&key)
+        && let Ok(idx) = serde_json::from_str::<n0xis_core::XrefIndex>(&json)
+    {
+        idx
+    } else {
+        let built = n0xis_core::build_xref_index(ctx, ranges);
+        if let Ok(json) = serde_json::to_string(&built) {
+            let _ = n0xis_project::xref_index::put(&key, &json);
+        }
+        built
+    };
+    let arc = std::sync::Arc::new(idx);
+    if let Ok(mut memo) = XREF_MEMO.lock() {
+        *memo = Some((label.to_string(), key, arc.clone()));
+    }
+    arc
+}
+
 /// One registered plugin's response to an artifact, or why it didn't produce
 /// one. Fail-open-but-visible (`docs/COMMUNITY_ROADMAP.md`'s "Plugin
 /// system"): a crashing or timed-out plugin never blocks the underlying

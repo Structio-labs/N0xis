@@ -268,36 +268,52 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
         .and_then(|p| std::fs::read_to_string(p).ok().map(|t| (p.to_string(), t)))
         .and_then(|(p, t)| n0xis_flirt::Db::load_npat(&t).ok().map(|db| (p, db)));
 
+    // Project-local names (Phase — interactive annotations): the user's own
+    // renames (`.n0x/annotations.json`) plus the class names `analyze` recovered
+    // from RTTI (`.n0x/rtti-symbols.json`), chained as the **primary** provider so
+    // a rename wins over a recovered name wins over an export wins over `sub_…`.
+    // Owns its data, so it wraps whatever binary-derived chain the source yields
+    // as one unit — no 2^N match on which sources happen to be present.
+    let local = crate::annotation_syms::LocalNames::load();
+
     let resp = match &resolved.src {
         Src::Static(pe) => {
             let flirt = flirt_db
                 .as_ref()
                 .map(|(p, db)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, format!("flirt:{p}:{}", db.len())));
-            match (managed, flirt.as_ref()) {
+            // Build the binary-derived chain (managed index ▸ PE exports ▸ FLIRT)
+            // into holders that outlive the borrow, then wrap it with `local`.
+            let base_holder;
+            let chain_holder;
+            let fallback: &dyn n0xis_sources::SymbolProvider = match (managed, flirt.as_ref()) {
                 (Some(m), Some(f)) => {
-                    let base = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                    let chain = n0xis_sources::ChainedSymbols::new(&base, f);
-                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                    base_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                    chain_holder = n0xis_sources::ChainedSymbols::new(&base_holder, f);
+                    &chain_holder
                 }
                 (Some(m), None) => {
-                    let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                    chain_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                    &chain_holder
                 }
                 (None, Some(f)) => {
-                    let chain = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
-                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+                    chain_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
+                    &chain_holder
                 }
-                (None, None) => {
-                    work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
-                }
-            }
+                (None, None) => pe.as_ref(),
+            };
+            let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
+            work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
         }
-        Src::Live(l) => match managed {
-            Some(m) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(m), input, &label),
-            None => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), input, &label),
-        },
-        Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()), input, &label),
-        Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()), input, &label),
+        Src::Live(l) => {
+            let full;
+            let sym: &dyn n0xis_sources::SymbolProvider = match managed {
+                Some(m) => { full = n0xis_sources::ChainedSymbols::new(&local, m); &full }
+                None => &local,
+            };
+            work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(sym), input, &label)
+        }
+        Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(&local), input, &label),
+        Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local), input, &label),
     };
     attach.annotate(resp)
 }
@@ -352,26 +368,31 @@ fn with_src_ctx(
     let attach = crate::il2cpp_caps::attach_for(args, &src);
     let managed = attach.symbols();
 
+    // Project-local names as the primary provider, so `xref to/from` and call-graph
+    // traces render user renames and recovered RTTI class names too — the
+    // range-scoped twin of the wiring in `with_cfg_ctx`.
+    let local = crate::annotation_syms::LocalNames::load();
+
     let resp = match &src {
-        Src::Static(pe) => match managed {
-            Some(m) => {
-                let chain = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain), &src, region_len, &label)
-            }
-            None => work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()), &src, region_len, &label),
-        },
-        Src::Live(l) => match managed {
-            Some(m) => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(m), &src, region_len, &label),
-            None => work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()), &src, region_len, &label),
-        },
-        Src::Snap(s) => {
-            let ctx = n0xis_core::Ctx::new(s, arch.as_ref());
-            work(&ctx, &src, region_len, &label)
+        Src::Static(pe) => {
+            let base_holder;
+            let fallback: &dyn n0xis_sources::SymbolProvider = match managed {
+                Some(m) => { base_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref()); &base_holder }
+                None => pe.as_ref(),
+            };
+            let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
+            work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full), &src, region_len, &label)
         }
-        Src::Remote(r) => {
-            let ctx = n0xis_core::Ctx::new(r.as_ref(), arch.as_ref());
-            work(&ctx, &src, region_len, &label)
+        Src::Live(l) => {
+            let full;
+            let sym: &dyn n0xis_sources::SymbolProvider = match managed {
+                Some(m) => { full = n0xis_sources::ChainedSymbols::new(&local, m); &full }
+                None => &local,
+            };
+            work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(sym), &src, region_len, &label)
         }
+        Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(&local), &src, region_len, &label),
+        Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local), &src, region_len, &label),
     };
     attach.annotate(resp)
 }
@@ -691,12 +712,23 @@ impl Plugin for AnalysisPasses {
                 };
                 let explain = bool_arg(args, "explain");
                 with_cfg_ctx(args, |ctx, input, label| {
+                    let fn_start = input.start;
                     let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
                     };
                     match n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain, strip_block_labels: true }) {
-                        Ok(pf) => {
+                        Ok(mut pf) => {
+                            // Render the user's comment at the function start as a
+                            // header, so an `annotate comment` shows live in the
+                            // decompiler (its truth lives in `.n0x/annotations.json`).
+                            if let Ok(Some(rec)) = n0xis_project::annotate::get(fn_start)
+                                && let Some(text) = rec.comment.filter(|c| !c.trim().is_empty())
+                            {
+                                let mut lines: Vec<String> = text.lines().map(|l| format!("// {l}")).collect();
+                                lines.append(&mut pf.pseudo);
+                                pf.pseudo = lines;
+                            }
                             let resp = ok_json(n0xis_contracts::schema::v0::DECOMP_PSEUDO, pf, label);
                             // The optimizer delta used to ride along on `ssa`
                             // unconditionally; say where it went rather than
@@ -1189,6 +1221,51 @@ impl Plugin for AnalysisPasses {
                         && code_ranges.is_empty()
                     {
                         return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
+                    }
+                    // Fast path: whole-program reverse index for `xref to` over the
+                    // full code of an IMMUTABLE source (static PE/ELF, snapshot). The
+                    // index is built once and cached in `.n0x/xref-index/`, so this
+                    // and every future query is a map lookup instead of re-decoding
+                    // the whole code section (~seconds). Skipped when the caller
+                    // narrows the search (explicit start/size) or on a live target,
+                    // whose bytes can change under the memo (fall through to a scan).
+                    if dir == n0xis_core::XrefDir::To
+                        && explicit_start.is_none()
+                        && explicit_size.is_none()
+                        && !code_ranges.is_empty()
+                        && matches!(src, Src::Static(_) | Src::Snap(_))
+                    {
+                        let idx = n0xis_pipeline::xref_index_for(ctx, &code_ranges, label);
+                        // The queried target's own name (all rows here reference
+                        // `addr`), so the "referenced by" view can title itself with
+                        // a real name instead of a bare address.
+                        let to_sym = ctx.symbols.and_then(|s| s.symbol_at(addr)).filter(|sy| sy.va == addr).map(|sy| sy.name);
+                        let refs = idx
+                            .to(addr)
+                            .into_iter()
+                            .map(|from| {
+                                // The index stores only source addresses; re-derive the
+                                // reference kind and instruction text by decoding just
+                                // this one `from` instruction (aligned, so exact).
+                                let (kind, text) = ctx
+                                    .source
+                                    .read(from, 16)
+                                    .ok()
+                                    .and_then(|b| ctx.arch.decode_range(&b, from, b.len()).into_iter().next())
+                                    .map(|i| {
+                                        let kind = if i.rip_target == Some(addr) && i.target != Some(addr) {
+                                            "data".to_string()
+                                        } else {
+                                            n0xis_core::xref_kind(i.kind).to_string()
+                                        };
+                                        (kind, i.text)
+                                    })
+                                    .unwrap_or_else(|| ("branch".to_string(), String::new()));
+                                n0xis_core::XrefEntry { from, to: addr, kind, text, sym: to_sym.clone() }
+                            })
+                            .collect::<Vec<_>>();
+                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs };
+                        return ok_json(n0xis_contracts::schema::v1::XREF, art, label);
                     }
                     let windows =
                         crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_start, explicit_size, base);

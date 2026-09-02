@@ -101,7 +101,7 @@ pub use signatures::{known_signature, KnownParam, KnownSignature};
 pub use slice::{SliceArtifact, SliceNode, slice};
 pub use ssa::{Phi, PhiInput, SsaArtifact, SsaBlock, SsaPass, SsaStmt};
 pub use structure::{StructuredOutput, structure};
-pub use rtti::{demangle_rtti_name, scan_msvc_rtti, RttiVtable};
+pub use rtti::{demangle_rtti_name, rtti_symbol_map, scan_msvc_rtti, RttiVtable};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, TypeArtifact,
@@ -110,7 +110,7 @@ pub use typeinfer::{
 pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};
 pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};
-pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefInput, XrefPass};
+pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, build_xref_index, xref_kind};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
 use n0xis_arch::Arch;

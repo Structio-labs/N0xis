@@ -24,6 +24,7 @@
 //! JSON tool arguments, text vs structured output) — but never on what `--pid`
 //! *means*.
 
+pub mod annotation_syms;
 pub mod arch;
 pub mod flirt_syms;
 pub mod il2cpp_caps;

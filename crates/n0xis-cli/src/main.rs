@@ -147,6 +147,12 @@ enum Command {
     /// MSVC RTTI vtable → class-name recovery.
     #[command(subcommand)]
     Rtti(RttiCmd),
+    /// Whole-program analysis: discover functions, recover MSVC RTTI class
+    /// names, build the reverse-xref index, and warm the IR cache — materializing
+    /// the `.n0x/` summary layer once so later `xref`/`decomp` are fast. Streams
+    /// `[n0x]`-prefixed phase/progress JSON to stderr; resumable (content-
+    /// addressed work already done is skipped). Static x64 PE (`--file`).
+    Analyze(AnalyzeArgs),
     /// Raw memory access.
     #[command(subcommand)]
     Mem(MemCmd),
@@ -1716,6 +1722,31 @@ struct DiscoverArgs {
     pdata: bool,
 }
 
+#[derive(Args)]
+struct AnalyzeArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Cap the IR-cache warm-up to this many functions (`0` = every function).
+    /// Discovery, RTTI and the xref index always cover the whole image; this
+    /// only bounds how many functions get their CFG pre-decoded and cached.
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+    /// Skip the IR-cache warm-up phase entirely — only discover, recover RTTI
+    /// names, and build the xref index (much faster; decompilation still caches
+    /// lazily on first view).
+    #[arg(long)]
+    no_cfg: bool,
+}
+
 #[derive(Subcommand)]
 enum RttiCmd {
     /// Scan `.rdata` for MSVC RTTI vtables and recover each one's class name.
@@ -2357,7 +2388,7 @@ fn main() {
         cmd_serve(a);
         return;
     }
-    let ok = dispatch(cli.command, pretty);
+    let ok = dispatch(cli.command, pretty, cli.global.quiet);
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
         std::process::exit(2);
@@ -2367,8 +2398,9 @@ fn main() {
 /// Dispatch one parsed command to its handler, returning whether it succeeded.
 /// Factored out of `main` so the persistent `serve` loop can re-run commands
 /// against an already-loaded image (see `cmd_serve`).
-fn dispatch(command: Command, pretty: bool) -> bool {
+fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
     match command {
+        Command::Analyze(a) => cmd_analyze(a, pretty, quiet),
         Command::Doctor => cmd_doctor(pretty),
         Command::Profile(a) => cmd_profile(a, pretty),
         Command::Guide(a) => cmd_guide(a, pretty),
@@ -2489,7 +2521,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory (a memory scanner class)",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -3000,11 +3032,23 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
                     // did while silently ignoring `--limit`) is 17 MB of JSON
                     // that no caller asked for.
                     let total = all.len();
-                    let functions: Vec<_> = all
+                    let mut functions: Vec<_> = all
                         .into_iter()
                         .skip(a.offset)
                         .take(if a.limit == 0 { usize::MAX } else { a.limit })
                         .collect();
+                    // `.pdata` gives only addresses (`sub_…`). Name what the symbol
+                    // layer knows — recovered RTTI methods and user renames — so the
+                    // whole function list carries real names, not just the decompiler.
+                    if let Some(syms) = ctx.symbols {
+                        for f in functions.iter_mut() {
+                            if let Some(sym) = syms.symbol_at(f.va)
+                                && sym.va == f.va
+                            {
+                                f.name = sym.name;
+                            }
+                        }
+                    }
                     let returned = functions.len();
                     let art = n0xis_core::DiscoverArtifact {
                         start: base,
@@ -3023,11 +3067,17 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
                 Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
             }
         };
+        // Project-local names (recovered RTTI + user renames) as the primary
+        // provider, so the discovered list renders them over the PE's own names.
+        let local = n0xis_frontend::annotation_syms::LocalNames::load();
         return match &src {
-            Src::Static(pe) => run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
-            Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref())),
-            Src::Snap(s) => run_pdata(&Ctx::new(s, arch.as_ref())),
-            Src::Remote(r) => run_pdata(&Ctx::new(r.as_ref(), arch.as_ref())),
+            Src::Static(pe) => {
+                let chain = n0xis_sources::ChainedSymbols::new(&local, pe.as_ref());
+                run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain))
+            }
+            Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
+            Src::Snap(s) => run_pdata(&Ctx::new(s, arch.as_ref()).with_symbols(&local)),
+            Src::Remote(r) => run_pdata(&Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local)),
         };
     }
 
@@ -3082,6 +3132,102 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
         }),
         pretty,
     )
+}
+
+/// `analyze` — one whole-program pass that materializes the `.n0x/` summary
+/// layer with visible phases: discover functions (`.pdata`), recover MSVC RTTI
+/// class names, build the reverse-xref index, and warm the IR cache. Streams
+/// `[n0x] {phase,done,total}` JSON lines to stderr (silenced by `--quiet`); the
+/// content-addressed caches make a re-run skip work already done, so it resumes
+/// after the app is closed and reopened. Static x64 PE only — the phases that
+/// make it worthwhile (exact discovery, RTTI, a stable xref index) assume an
+/// immutable on-disk image.
+fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, a.snapshot.as_deref(), a.remote_cmd.as_deref(), Va(0)) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(a) => a,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
+    let Src::Static(pe) = &src else {
+        return ir_err("unsupported", "analyze needs a static PE image (--file)", pretty);
+    };
+    let Some(base) = module_base_of(&src) else {
+        return ir_err("no-module", "analyze needs a PE image with a module base", pretty);
+    };
+
+    let progress = |phase: &str, done: usize, total: usize| {
+        if !quiet {
+            eprintln!("[n0x] {}", json!({ "phase": phase, "done": done, "total": total }));
+        }
+    };
+    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref());
+
+    // Phase 1 — discover every function from the exception table (exact, no cap).
+    progress("discovering", 0, 0);
+    let funcs = n0xis_core::discover_pdata(ctx.source, base).unwrap_or_default();
+    let total = funcs.len();
+    progress("discovering", total, total);
+
+    // Phase 2 — recover MSVC RTTI class names (one `.rdata` scan) and PERSIST them
+    // as a symbol map (`.n0x/rtti-symbols.json`), so the decompiler/listing render
+    // `Class::vftable` and `Class::vfN` without re-scanning on every view. A method
+    // slot that the PE already exports keeps its real name (RTTI never overrides a
+    // genuine symbol); user renames later override these (they load atop this).
+    progress("scanning-rtti", 0, 0);
+    let classes = match src.section_range_in(None, ".rdata") {
+        Some(rd) => {
+            let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, rd, src.text_range());
+            let n = vts.len();
+            let (mut functions, data) = n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range());
+            functions.retain(|va, _| {
+                ctx.symbols.and_then(|s| s.symbol_at(Va(*va))).is_none_or(|sym| sym.va.0 != *va)
+            });
+            let generation = format!("rtti:{}:{}", n, functions.len() + data.len());
+            if let Err(e) = n0xis_project::rtti_syms::save(&n0xis_project::rtti_syms::from_maps(generation, functions, data)) {
+                eprintln!("[n0x] {}", json!({ "warn": format!("persist rtti-symbols: {e}") }));
+            }
+            n
+        }
+        None => 0,
+    };
+    progress("scanning-rtti", classes, classes);
+
+    // Phase 3 — build/persist the reverse-xref index (makes `xref to` instant).
+    progress("indexing-xrefs", 0, 0);
+    let code_ranges = src.code_ranges_of(None);
+    let idx = n0xis_pipeline::xref_index_for(&ctx, &code_ranges, &label);
+    let xref_targets = idx.edges.len();
+    progress("indexing-xrefs", xref_targets, xref_targets);
+
+    // Phase 4 — warm the IR cache per function (content-addressed; already-built
+    // functions are skipped, which is what makes the whole pass resumable).
+    let mut cached = 0usize;
+    if !a.no_cfg && total > 0 {
+        let cap = if a.limit == 0 { total } else { a.limit.min(total) };
+        progress("disassembling", 0, cap);
+        for (i, f) in funcs.iter().take(cap).enumerate() {
+            let span = f.end.map(|e| e.0.saturating_sub(f.va.0) as usize).unwrap_or(0x2000).clamp(0x40, 0x10000);
+            if cfg_cached(&ctx, CfgInput { start: f.va, max_bytes: span, auto_end: true }).is_ok() {
+                cached += 1;
+            }
+            if i % 64 == 0 {
+                progress("disassembling", i + 1, cap);
+            }
+        }
+        progress("disassembling", cap, cap);
+    }
+    progress("done", total, total);
+
+    let data = json!({
+        "functions": total,
+        "rtti_classes": classes,
+        "xref_targets": xref_targets,
+        "cached_functions": cached,
+    });
+    emit(&Response::success(schema::v1::ANALYZE, data).with_source(label), pretty)
 }
 
 fn cmd_rtti_scan(a: RttiScanArgs, pretty: bool) -> bool {
@@ -4174,8 +4320,9 @@ fn cmd_serve(a: &ServeArgs) {
                 // guard against re-entrancy / another server on the same channel
                 Command::Serve(_) | Command::RemoteServe(_) => emit_err("unsupported", "serve/remote-serve not allowed inside a session".into()),
                 cmd => {
-                    // force compact output so every response is exactly one line
-                    let _ = dispatch(cmd, false);
+                    // force compact output so every response is exactly one line;
+                    // suppress [n0x] progress so it can't interleave a session line
+                    let _ = dispatch(cmd, false, true);
                 }
             },
             Err(e) => emit_err("parse-error", e.to_string()),

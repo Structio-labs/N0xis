@@ -32,9 +32,11 @@ pub mod ir_cache;
 pub mod locator;
 pub mod patch;
 pub mod plugins;
+pub mod rtti_syms;
 pub mod selection;
 pub mod session;
 pub mod table;
+pub mod xref_index;
 
 /// Guards `std::env::set_current_dir` across every test in this crate.
 /// `resolve()` walks up from the process-wide cwd, so any test that pins cwd
@@ -93,6 +95,12 @@ impl ProjectRoot {
     }
     pub fn ir_cache_dir(&self) -> PathBuf {
         self.dir.join("ir-cache")
+    }
+
+    /// The reverse-xref index store (`xref to` acceleration). Kept separate from
+    /// `ir-cache/` so the CFG cache's generation sweep never touches it.
+    pub fn xref_index_dir(&self) -> PathBuf {
+        self.dir.join("xref-index")
     }
 
     /// Imported IL2CPP symbol indices (Phase 12), one JSON file per named

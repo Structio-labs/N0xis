@@ -1,0 +1,220 @@
+//! [`LocalNames`] — a [`SymbolProvider`] backed by the project's `.n0x/`: the
+//! **user's own truth** (renamed functions, kept in `annotations.json`) plus the
+//! **recovered class names** the `analyze` pass persisted (MSVC RTTI,
+//! `rtti-symbols.json`). Both are address→name maps loaded at `Ctx`-build time and
+//! shared cheaply via `Arc`, so this provider borrows nothing from the source and
+//! chains as ONE unit — unlike the per-source providers (`StaticPe`, FLIRT,
+//! IL2CPP) it sits above.
+//!
+//! Chained as the **primary** provider (see `registry`'s `with_cfg_ctx` /
+//! `with_src_ctx`), so a user rename wins over a recovered name, which wins over
+//! the binary's own exports, which win over `sub_XXXX`. Because every entry
+//! answers at exactly its own address, [`n0xis_sources::ChainedSymbols`]'s
+//! tighter-fit rule keeps the annotation over any spanning provider. A user name
+//! also wins over a recovered name **within** this provider: `symbol_at` consults
+//! the user map first.
+//!
+//! **Cache invalidation is load-bearing.** Analysis artifacts (CFG, decomp) embed
+//! *resolved* names, and `n0xis-pipeline`'s IR cache folds
+//! [`SymbolProvider::symbol_fingerprint`] into its key. So this provider returns a
+//! non-empty fingerprint that changes whenever either source file changes: rename
+//! a function and the next decompile recomputes instead of serving the old name —
+//! the exact bug the trait's doc-comment warns about ("changed nothing until
+//! `.n0x/ir-cache/` was deleted by hand").
+//!
+//! **The two sources are memoized SEPARATELY**, each keyed on its own file's
+//! (path, len, mtime). This matters for interactivity: the recovered-name file is
+//! large (tens of MB on a target with 57k classes) and changes only on a re-scan,
+//! while the user file is tiny and changes on every rename. Sharing one memo would
+//! re-parse the big file on every keystroke-rename; keeping them apart means a
+//! rename re-reads only the small file and reuses the big `Arc` untouched.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use n0xis_contracts::{SymKind, Symbol, Va};
+use n0xis_sources::SymbolProvider;
+
+/// An address→(name, kind) map, shared cheaply across the Ctxs built for one
+/// target within a process.
+type NameMap = BTreeMap<u64, (String, SymKind)>;
+
+/// Project-local names. A cheap-to-clone handle over two shared maps.
+pub struct LocalNames {
+    /// User truth (renames). Consulted first, so it wins over a recovered name.
+    user: Arc<NameMap>,
+    /// Recovered names (RTTI vtables + methods). Consulted when the user map has
+    /// nothing at the address.
+    rtti: Arc<NameMap>,
+    /// Content-change token for the IR cache — reflects both source files.
+    fingerprint: String,
+}
+
+/// Per-process memo for one source: `(signature, data)`. `signature` is a hash of
+/// the file's (path, len, mtime); a change misses and rebuilds. One process serves
+/// one target, so this never mixes projects.
+static USER_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
+static RTTI_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
+
+impl LocalNames {
+    /// Load every project-local name for the current `.n0x/` (resolved by walk-up
+    /// from the process cwd, the same door `annotate` writes through). Each source
+    /// is served from its memo when its file is unchanged since the last load.
+    pub fn load() -> Self {
+        let root = n0xis_project::resolve().ok();
+        let dir = root.as_ref().map(|r| r.dir.clone());
+
+        let user_sig = file_signature(dir.as_deref(), "annotations.json");
+        let rtti_sig = file_signature(dir.as_deref(), "rtti-symbols.json");
+
+        let user = memoized(&USER_MEMO, user_sig, build_user);
+        let rtti = memoized(&RTTI_MEMO, rtti_sig, build_rtti);
+
+        // The token varies with either file's (len, mtime); empty only when there
+        // are no local names at all, so it perturbs the cache key exactly when a
+        // name could differ.
+        let fingerprint = if user.is_empty() && rtti.is_empty() {
+            String::new()
+        } else {
+            format!("local:{user_sig:016x}:{}:{rtti_sig:016x}:{}", user.len(), rtti.len())
+        };
+
+        LocalNames { user, rtti, fingerprint }
+    }
+
+    /// No local names at all.
+    pub fn is_empty(&self) -> bool {
+        self.user.is_empty() && self.rtti.is_empty()
+    }
+}
+
+impl SymbolProvider for LocalNames {
+    fn symbol_at(&self, va: Va) -> Option<Symbol> {
+        // User truth first, then recovered names.
+        let (name, kind) = self.user.get(&va.0).or_else(|| self.rtti.get(&va.0))?;
+        Some(Symbol { va, module: String::new(), name: name.clone(), kind: *kind })
+    }
+
+    fn symbol_fingerprint(&self) -> String {
+        self.fingerprint.clone()
+    }
+}
+
+/// Serve a source from its memo, or (re)build and store it. The build closure is
+/// only called on a signature miss.
+fn memoized(memo: &Mutex<Option<(u64, Arc<NameMap>)>>, sig: u64, build: fn() -> NameMap) -> Arc<NameMap> {
+    {
+        let guard = memo.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_sig, data)) = guard.as_ref()
+            && *cached_sig == sig
+        {
+            return Arc::clone(data);
+        }
+    }
+    let data = Arc::new(build());
+    let mut guard = memo.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some((sig, Arc::clone(&data)));
+    data
+}
+
+/// User renames from `annotations.json`. Non-fatal: any failure yields no names.
+fn build_user() -> NameMap {
+    let mut map = NameMap::new();
+    if let Ok(records) = n0xis_project::annotate::list() {
+        for rec in records {
+            if let Some(name) = rec.name.filter(|n| !n.trim().is_empty()) {
+                map.insert(rec.va.0, (name, SymKind::Function));
+            }
+        }
+    }
+    map
+}
+
+/// Recovered RTTI names from `rtti-symbols.json`. Non-fatal.
+fn build_rtti() -> NameMap {
+    let mut map = NameMap::new();
+    for (va, name, kind) in n0xis_project::rtti_syms::load().unwrap_or_default() {
+        if !name.trim().is_empty() {
+            map.insert(va, (name, sym_kind(&kind)));
+        }
+    }
+    map
+}
+
+/// A cheap change-detector: FNV-1a of a file's path, length, and mtime-nanos. A
+/// rewrite (rename → `annotations.json`, re-`analyze` → `rtti-symbols.json`) bumps
+/// mtime/len and misses the memo. A missing project or file hashes to a stable
+/// value that still differs from a present one, so creating it later invalidates.
+fn file_signature(dir: Option<&std::path::Path>, name: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    match dir {
+        Some(dir) => {
+            let path = dir.join(name);
+            feed(path.to_string_lossy().as_bytes());
+            if let Ok(meta) = std::fs::metadata(&path) {
+                feed(&meta.len().to_le_bytes());
+                if let Ok(mtime) = meta.modified()
+                    && let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH)
+                {
+                    feed(&dur.as_nanos().to_le_bytes());
+                }
+            }
+        }
+        None => feed(name.as_bytes()),
+    }
+    hash
+}
+
+/// Map the persisted RTTI-symbol kind tag to a [`SymKind`]. `"data"` names a
+/// vtable/type-descriptor global (renders `&Class::vftable`); anything else is a
+/// function (a virtual method).
+fn sym_kind(tag: &str) -> SymKind {
+    match tag {
+        "data" => SymKind::Data,
+        _ => SymKind::Function,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(user: &[(u64, &str)], rtti: &[(u64, &str, SymKind)]) -> LocalNames {
+        let user: NameMap = user.iter().map(|(v, n)| (*v, (n.to_string(), SymKind::Function))).collect();
+        let rtti: NameMap = rtti.iter().map(|(v, n, k)| (*v, (n.to_string(), *k))).collect();
+        let fingerprint = if user.is_empty() && rtti.is_empty() {
+            String::new()
+        } else {
+            format!("local:{}:{}", user.len(), rtti.len())
+        };
+        LocalNames { user: Arc::new(user), rtti: Arc::new(rtti), fingerprint }
+    }
+
+    #[test]
+    fn names_exactly_at_the_address_and_user_wins_over_rtti() {
+        let p = provider(
+            &[(0x1000, "parse_header")],
+            &[(0x1000, "Foo::vf0", SymKind::Function), (0x2000, "Foo::vftable", SymKind::Data)],
+        );
+        // User name wins at 0x1000.
+        assert_eq!(p.symbol_at(Va(0x1000)).unwrap().name, "parse_header");
+        // Recovered name fills where the user asserted nothing.
+        let d = p.symbol_at(Va(0x2000)).unwrap();
+        assert_eq!(d.name, "Foo::vftable");
+        assert_eq!(d.kind, SymKind::Data);
+        assert!(p.symbol_at(Va(0x1004)).is_none(), "no span — only exact addresses");
+    }
+
+    #[test]
+    fn fingerprint_is_empty_only_when_empty() {
+        assert!(provider(&[], &[]).symbol_fingerprint().is_empty());
+        assert!(!provider(&[(0x1000, "a")], &[]).symbol_fingerprint().is_empty());
+        assert!(!provider(&[], &[(0x1000, "Foo::vf0", SymKind::Function)]).symbol_fingerprint().is_empty());
+    }
+}

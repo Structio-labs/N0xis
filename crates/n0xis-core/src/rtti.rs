@@ -141,6 +141,64 @@ pub fn scan_msvc_rtti(src: &dyn MemorySource, image_base: Va, rdata: (Va, u64), 
     out
 }
 
+/// Ceiling on vtable slots walked per class — a mis-read vtable can never drive
+/// an unbounded loop (the OOM lesson), and a real class rarely exceeds it.
+const MAX_SLOTS: usize = 4096;
+
+/// Turn recovered [`RttiVtable`]s into address→name maps for the symbol layer:
+///
+/// - **data**: each vtable address → `Class::vftable` (a secondary base under
+///   multiple inheritance gets `Class::vftable_offN`). This is **sound** — that
+///   address *is* that class's vtable — so it names every vtable constant the
+///   decompiler prints and every vtable address the listing/xref shows.
+/// - **functions**: each in-`.text` method slot → `Class::vfN`. A method inherited
+///   by several classes points to one function from many vtables; the first class
+///   to reach it keeps the name (iteration is `.rdata` order). This is a
+///   decompiler **aid, not ground truth** — a user rename overrides it — so it is
+///   deliberately first-writer-wins rather than guessing the defining class.
+///
+/// The walk of a vtable stops at the first slot that does not point into `.text`
+/// (past the last virtual method) or that coincides with another known vtable's
+/// start (the adjacent class), so one class never claims another's slots.
+pub fn rtti_symbol_map(
+    src: &dyn MemorySource,
+    vtables: &[RttiVtable],
+    text: Option<(Va, u64)>,
+) -> (std::collections::BTreeMap<u64, String>, std::collections::BTreeMap<u64, String>) {
+    use std::collections::{BTreeMap, BTreeSet};
+    let in_text = |va: u64| text.is_none_or(|(t, n)| va >= t.get() && va < t.get() + n);
+    let starts: BTreeSet<u64> = vtables.iter().map(|v| v.vtable.get()).collect();
+
+    let mut functions: BTreeMap<u64, String> = BTreeMap::new();
+    let mut data: BTreeMap<u64, String> = BTreeMap::new();
+    for v in vtables {
+        let vtable = v.vtable.get();
+        let label = if v.offset != 0 {
+            format!("{}::vftable_off{}", v.name, v.offset)
+        } else {
+            format!("{}::vftable", v.name)
+        };
+        data.entry(vtable).or_insert(label);
+
+        let mut i = 0usize;
+        while i < MAX_SLOTS {
+            let slot_addr = vtable + (i as u64) * 8;
+            // Don't run into the next class's vtable.
+            if i > 0 && starts.contains(&slot_addr) {
+                break;
+            }
+            let Ok(bytes) = src.read(Va(slot_addr), 8) else { break };
+            let Some(target) = u64_le(&bytes, 0) else { break };
+            if !in_text(target) {
+                break; // past the last virtual method
+            }
+            functions.entry(target).or_insert_with(|| format!("{}::vf{}", v.name, i));
+            i += 1;
+        }
+    }
+    (functions, data)
+}
+
 /// Walk an MSVC RTTI class-hierarchy descriptor to the class's base-class
 /// names. `pclass_rva` is the COL's `pClassDescriptor` RVA; the descriptor's
 /// base-class array holds, most-derived first, an entry per class in the
@@ -264,5 +322,33 @@ mod tests {
         assert_eq!(vts[0].name, "Derived");
         assert_eq!(vts[0].vtable, Va(rd_base + 0x308));
         assert_eq!(vts[0].bases, vec!["Base1".to_string(), "Base2".to_string()]);
+    }
+
+    #[test]
+    fn symbol_map_names_the_vtable_and_walks_method_slots() {
+        use n0xis_sources::Snapshot;
+        let text = (Va(0x140001000), 0x1000u64);
+        let vt = Va(0x140010000);
+        // Two in-`.text` method pointers, then a null (stops the walk).
+        let mut buf = vec![0u8; 0x20];
+        buf[0..8].copy_from_slice(&0x140001000u64.to_le_bytes()); // vf0
+        buf[8..16].copy_from_slice(&0x140001100u64.to_le_bytes()); // vf1
+        // buf[16..24] stays 0 → not in .text → walk stops after vf1.
+        let snap = Snapshot::builder().region(vt, buf).build();
+
+        let vts = vec![RttiVtable {
+            vtable: vt,
+            type_descriptor: Va(0),
+            mangled: ".?AVFoo@@".into(),
+            name: "Foo".into(),
+            offset: 0,
+            bases: vec![],
+        }];
+        let (functions, data) = rtti_symbol_map(&snap, &vts, Some(text));
+
+        assert_eq!(data.get(&vt.get()).map(String::as_str), Some("Foo::vftable"));
+        assert_eq!(functions.get(&0x140001000).map(String::as_str), Some("Foo::vf0"));
+        assert_eq!(functions.get(&0x140001100).map(String::as_str), Some("Foo::vf1"));
+        assert_eq!(functions.len(), 2, "the null slot must end the walk");
     }
 }
