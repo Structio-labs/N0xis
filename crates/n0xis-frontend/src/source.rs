@@ -31,7 +31,10 @@ fn err(code: &str, message: impl Into<String>) -> FrontendError {
 /// `match`.
 pub enum Src {
     Live(Box<dyn LiveTarget>),
-    Static(Box<StaticImage>),
+    // `Arc` (not `Box`) so a persistent `serve` process can keep the parsed image
+    // in memory and hand out cheap clones — re-loading a 233 MB PE per call is
+    // the ~90 ms click latency; the in-process cache in `resolve` removes it.
+    Static(std::sync::Arc<StaticImage>),
     Snap(Snapshot),
     Remote(Box<RemoteAgent>),
 }
@@ -250,6 +253,33 @@ pub fn load_snapshot(name: &str) -> Result<Snapshot, String> {
 /// `decomp pseudo` succeeded through an agent and failed at the terminal —
 /// with the docs claiming both behaved the same. One resolution path, one
 /// answer.
+/// A single-slot, mtime-validated cache of the last-loaded static image. In a
+/// one-shot CLI call it is harmless (one lock + Arc); in a persistent `serve`
+/// process it is the whole point — the 233 MB PE is parsed once and every later
+/// command reuses it, turning ~90 ms/call into a few ms.
+static LAST_IMAGE: std::sync::Mutex<Option<(std::path::PathBuf, u64, std::sync::Arc<StaticImage>)>> = std::sync::Mutex::new(None);
+
+fn file_mtime(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn load_image_cached(path: &std::path::Path) -> Result<std::sync::Arc<StaticImage>, FrontendError> {
+    let mtime = file_mtime(path);
+    let mut slot = LAST_IMAGE.lock().unwrap_or_else(|e| e.into_inner());
+    match slot.as_ref() {
+        Some((p, mt, arc)) if p == path && *mt == mtime => return Ok(arc.clone()),
+        _ => {} // slot empty or file changed → (re)load below
+    }
+    let img = std::sync::Arc::new(StaticImage::load(path).map_err(|e| err("load-failed", e.to_string()))?);
+    *slot = Some((path.to_path_buf(), mtime, img.clone()));
+    Ok(img)
+}
+
 pub fn resolve(spec: SourceSpec<'_>) -> Result<ResolvedSource, FrontendError> {
     let names_nothing =
         spec.pid.is_none() && spec.file.is_none() && spec.snapshot.is_none() && spec.remote_cmd.is_none() && spec.bytes.is_none();
@@ -268,9 +298,9 @@ pub fn resolve(spec: SourceSpec<'_>) -> Result<ResolvedSource, FrontendError> {
         return Ok(ResolvedSource { src: Src::Live(live), label, region_len: None });
     }
     if let Some(file) = file {
-        let pe = StaticImage::load(std::path::Path::new(file)).map_err(|e| err("load-failed", e.to_string()))?;
-        let label = pe.label();
-        return Ok(ResolvedSource { src: Src::Static(Box::new(pe)), label, region_len: None });
+        let arc = load_image_cached(std::path::Path::new(file))?;
+        let label = arc.label();
+        return Ok(ResolvedSource { src: Src::Static(arc), label, region_len: None });
     }
     if let Some(name) = spec.snapshot {
         let snap = load_snapshot(name).map_err(|e| err("snapshot-load-failed", e))?;

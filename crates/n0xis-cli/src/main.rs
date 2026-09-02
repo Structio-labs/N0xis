@@ -203,6 +203,13 @@ enum Command {
     /// SSH by the *other* machine, not run directly: e.g. locally, run
     /// `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...`.
     RemoteServe(RemoteServeArgs),
+    /// Persistent static session: load `--file` once, then read one command
+    /// line per line from stdin (e.g. `decomp pseudo --addr 0x…`) and write one
+    /// compact JSON envelope per line to stdout — the image is parsed once and
+    /// reused, so repeated decompile/disasm/xref calls avoid the per-call file
+    /// re-load. A GUI/agent front-end drives this instead of spawning the CLI
+    /// per click. Blank line or EOF exits.
+    Serve(ServeArgs),
     /// Structural diffing at the IR/pseudo level (Phase 7): agent-friendly
     /// change reports between two functions (e.g. two builds of a binary).
     #[command(subcommand)]
@@ -1287,6 +1294,13 @@ struct RemoteServeArgs {
 }
 
 #[derive(Args)]
+struct ServeArgs {
+    /// Static PE/ELF to load once and keep resident for the session.
+    #[arg(long)]
+    file: String,
+}
+
+#[derive(Args)]
 struct DebugAwaitHitArgs {
     #[arg(long)]
     pid: u32,
@@ -2339,7 +2353,22 @@ fn main() {
         cmd_remote_serve(a);
         return;
     }
-    let ok = match cli.command {
+    if let Command::Serve(a) = &cli.command {
+        cmd_serve(a);
+        return;
+    }
+    let ok = dispatch(cli.command, pretty);
+    // Non-zero exit when the response is a failure, so scripts can branch on it.
+    if !ok {
+        std::process::exit(2);
+    }
+}
+
+/// Dispatch one parsed command to its handler, returning whether it succeeded.
+/// Factored out of `main` so the persistent `serve` loop can re-run commands
+/// against an already-loaded image (see `cmd_serve`).
+fn dispatch(command: Command, pretty: bool) -> bool {
+    match command {
         Command::Doctor => cmd_doctor(pretty),
         Command::Profile(a) => cmd_profile(a, pretty),
         Command::Guide(a) => cmd_guide(a, pretty),
@@ -2426,10 +2455,7 @@ fn main() {
         Command::Il2cpp(Il2cppCmd::Icalls(a)) => cmd_il2cpp_icalls(a, pretty),
         Command::Il2cpp(Il2cppCmd::Obj(a)) => cmd_il2cpp_obj(a, pretty),
         Command::Il2cpp(Il2cppCmd::Classes(a)) => cmd_il2cpp_classes(a, pretty),
-    };
-    // Non-zero exit when the response is a failure, so scripts can branch on it.
-    if !ok {
-        std::process::exit(2);
+        Command::Serve(_) => unreachable!("handled before this dispatch, see main()"),
     }
 }
 
@@ -4108,6 +4134,56 @@ fn cmd_snapshot_list(pretty: bool) -> bool {
 /// the one it was written for: a Linux box can be the *target* an operator
 /// drives from elsewhere (`--remote-cmd "ssh box n0xis remote-serve --pid N"`),
 /// and the same path is how an Android device is reached over `adb`.
+/// Persistent static session (see `Command::Serve`). Loads `--file` once to prime
+/// the resident image cache, then reads one command line per stdin line and
+/// dispatches it — the image is reused, so repeated calls skip the file re-load.
+fn cmd_serve(a: &ServeArgs) {
+    use std::io::{BufRead, Write};
+    let spec = SourceSpec { file: Some(a.file.as_str()), ..Default::default() };
+    let ready = match n0xis_frontend::source::resolve(spec) {
+        Ok(r) => serde_json::json!({ "ok": true, "data": { "ready": true, "label": r.label } }),
+        Err(e) => serde_json::json!({ "ok": false, "error": { "code": e.0, "message": e.1 } }),
+    };
+    println!("{ready}");
+    let _ = std::io::stdout().flush();
+
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            break;
+        }
+        let emit_err = |code: &str, msg: String| {
+            println!("{}", serde_json::json!({ "ok": false, "error": { "code": code, "message": msg } }));
+            let _ = std::io::stdout().flush();
+        };
+        let tokens = match n0xis_sources::split_command_line(line) {
+            Ok(t) => t,
+            Err(e) => {
+                emit_err("bad-command", e);
+                continue;
+            }
+        };
+        let argv = std::iter::once("n0xis".to_string()).chain(tokens);
+        match Cli::try_parse_from(argv) {
+            Ok(cli) => match cli.command {
+                // guard against re-entrancy / another server on the same channel
+                Command::Serve(_) | Command::RemoteServe(_) => emit_err("unsupported", "serve/remote-serve not allowed inside a session".into()),
+                cmd => {
+                    // force compact output so every response is exactly one line
+                    let _ = dispatch(cmd, false);
+                }
+            },
+            Err(e) => emit_err("parse-error", e.to_string()),
+        }
+        let _ = std::io::stdout().flush();
+    }
+}
+
 fn cmd_remote_serve(a: &RemoteServeArgs) {
     let live = match n0xis_frontend::source::attach_live(a.pid) {
         Ok(l) => l,
