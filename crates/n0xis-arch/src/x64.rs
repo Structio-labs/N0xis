@@ -392,7 +392,18 @@ impl Arch for X64 {
     fn prologues(&self) -> &'static [&'static [u8]] {
         // Common Win64/MSVC & gnu x64 function entry idioms.
         &[
-            &[0x55, 0x48, 0x8B, 0xEC], // push rbp; mov rbp, rsp
+            &[0x55, 0x48, 0x8B, 0xEC], // push rbp; mov rbp, rsp  (MSVC encoding of the mov)
+            // The SAME instruction pair as GCC/Clang encode it: `mov r/m64, r64`
+            // (opcode 89) instead of MSVC's `mov r64, r/m64` (opcode 8B). Without
+            // this the scan is blind to every frame-pointer function in an ELF —
+            // the comment above claimed "gnu x64" while listing only the MSVC form.
+            &[0x55, 0x48, 0x89, 0xE5], // push rbp; mov rbp, rsp  (GNU encoding)
+            // `endbr64` — the CET landing pad modern GCC/Clang emit at the top of
+            // essentially every function (`/usr/bin/gcc`: 4526 of them for 4461
+            // functions). It also marks non-entry indirect-branch targets, so it is
+            // a candidate hint, not proof; callers that need certainty validate a
+            // candidate by building its CFG (see `provenance::find_function_containing`).
+            &[0xF3, 0x0F, 0x1E, 0xFA], // endbr64
             &[0x40, 0x53],             // push rbx (REX)
             &[0x48, 0x89, 0x5C, 0x24], // mov [rsp+x], rbx (home-save)
             &[0x48, 0x83, 0xEC],       // sub rsp, imm8

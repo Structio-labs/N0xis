@@ -233,6 +233,30 @@ pub fn profile_image(
 
     let exports = read_exports(source, arch, module_base, export_rva);
 
+    // `.pdata` entries are 12 bytes each; the count is exact, so report it
+    // rather than re-walking the table.
+    let pdata = (exception_rva != 0 && exception_size != 0).then_some((exception_size as usize) / 12);
+
+    Ok(assemble_profile(module_base, machine_name(machine), sections, exports, pdata, with_exports))
+}
+
+/// Assemble an [`ImageProfile`] from already-resolved parts.
+///
+/// Everything here is **format-agnostic** — export folding, distinct addresses,
+/// engine hints, image extent, detour detection — so the PE header walker and
+/// the ELF path share one implementation instead of each growing its own copy.
+///
+/// `pdata` is a PE-only concept (`IMAGE_DIRECTORY_ENTRY_EXCEPTION`): a format
+/// that has no equivalent passes `None`, which reports the table as absent
+/// rather than fabricating a zero-length one that was never looked for.
+pub fn assemble_profile(
+    module_base: Va,
+    machine: String,
+    sections: Vec<SectionInfo>,
+    exports: Vec<ExportInfo>,
+    pdata: Option<usize>,
+    with_exports: bool,
+) -> ImageProfile {
     let mut by_addr: HashMap<u64, Vec<String>> = HashMap::new();
     for e in &exports {
         by_addr.entry(e.va.get()).or_default().push(e.name.clone());
@@ -252,10 +276,8 @@ pub fn profile_image(
     let export_distinct_addresses = by_addr.len();
     let engine_hints = detect_engines(&exports);
 
-    // `.pdata` entries are 12 bytes each; the count is exact, so report it
-    // rather than re-walking the table.
-    let pdata_present = exception_rva != 0 && exception_size != 0;
-    let pdata_functions = if pdata_present { (exception_size as usize) / 12 } else { 0 };
+    let pdata_present = pdata.is_some();
+    let pdata_functions = pdata.unwrap_or(0);
 
     let image_end = sections
         .iter()
@@ -271,10 +293,10 @@ pub fn profile_image(
         .map(|e| e.name.clone())
         .collect();
 
-    Ok(ImageProfile {
+    ImageProfile {
         module_base,
         image_end,
-        machine: machine_name(machine),
+        machine,
         sections,
         export_count: exports.len(),
         export_distinct_addresses,
@@ -285,7 +307,7 @@ pub fn profile_image(
         pdata_present,
         pdata_functions,
         engine_hints,
-    })
+    }
 }
 
 /// Walk `IMAGE_EXPORT_DIRECTORY`, resolving each *named* export to its address

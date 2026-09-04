@@ -3111,6 +3111,49 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
     let metadata = image_path.as_deref().and_then(find_il2cpp_metadata);
     let metadata_version = metadata.as_deref().and_then(il2cpp_metadata_version);
 
+    // `profile_image` walks a PE header (DOS stub -> `PE\0\0` -> optional header
+    // -> section table). An ELF has none of that, so it used to fail at the very
+    // first read — `profile` is the command everyone runs first, which made the
+    // whole tool look ELF-incapable even though disasm/decomp/xref all work.
+    // Build the same profile from the ELF source's own parsed section table and
+    // symbols, and share the format-agnostic assembly with the PE path.
+    if let Src::Static(img) = &src
+        && let StaticImage::Elf(elf) = img.as_ref()
+    {
+        let sections: Vec<n0xis_core::SectionInfo> = elf
+            .sections_detailed()
+            .into_iter()
+            .map(|(name, va, size, executable)| n0xis_core::SectionInfo {
+                name,
+                va,
+                // An ELF section has one size; report it as both rather than
+                // inventing a distinct on-disk figure PE happens to carry.
+                virtual_size: size.min(u32::MAX as u64) as u32,
+                raw_size: size.min(u32::MAX as u64) as u32,
+                executable,
+            })
+            .collect();
+        // ELF defined function symbols are this format's answer to the PE export
+        // table. Thunk resolution is PE-specific (no equivalent walk here), so
+        // those fields stay `None` instead of being guessed.
+        let exports: Vec<n0xis_core::ExportInfo> = elf
+            .named_functions()
+            .into_iter()
+            .map(|(va, name)| n0xis_core::ExportInfo { name, va, thunk_target: None, thunk_kind: None })
+            .collect();
+        let profile = n0xis_core::assemble_profile(elf.image_base(), elf.machine(), sections, exports, None, a.exports);
+        let advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+        let data = json!({
+            "image": profile,
+            "il2cpp": metadata.as_ref().map(|p| json!({
+                "metadata_path": p,
+                "metadata_version": metadata_version,
+            })),
+            "advisories": advisories,
+        });
+        return emit(&Response::success(schema::v1::PROFILE, data).with_source(label.clone()), pretty);
+    }
+
     let run = |ctx: &Ctx| -> bool {
         match n0xis_core::profile_image(ctx.source, ctx.arch, base, a.exports) {
             Ok(profile) => {
@@ -4484,10 +4527,22 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
             WatchKindArg::Write => "write",
             WatchKindArg::ReadOrWrite => "read-or-write",
         };
-        let (code_scan_start, code_scan_size) = match insn_module.as_ref().and_then(|m| live.section_range_of(m.base, ".text")) {
-            Some((start, size)) => (Some(start), size as usize),
-            None => (None, 0),
-        };
+        // The code window the static half of provenance searches for the function
+        // containing the hit. `.text` from section headers is the precise answer,
+        // but it is not always reachable — a stripped ELF, or a module whose
+        // headers aren't mapped — and `section_range_of` has no fallback, so it
+        // returned `None` and the whole chain (containing function -> decompiled
+        // statement) was skipped, degrading the answer to a bare address. That is
+        // exactly the a memory scanner-level output this command exists to beat.
+        // `code_ranges_of` already falls back to the module's executable mappings,
+        // so use it and take the range that actually contains the instruction.
+        let code_ranges = insn_module.as_ref().map(|m| live.code_ranges_of(m.base)).unwrap_or_default();
+        let (code_scan_start, code_scan_size) = code_ranges
+            .iter()
+            .find(|(start, size)| hit.rip.get() >= start.get() && hit.rip.get() < start.get().saturating_add(*size))
+            .or_else(|| code_ranges.first())
+            .map(|(start, size)| (Some(*start), *size as usize))
+            .unwrap_or((None, 0));
         let graph = match ProvenancePass.run(
             &ctx,
             ProvenanceInput {

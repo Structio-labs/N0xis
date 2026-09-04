@@ -122,7 +122,7 @@ The same commands run on a live `--pid`, a static `--file`, a captured `--snapsh
 ## Build
 
 ```sh
-cargo build --workspace --release      # → n0x (n0xis), n0xis-mcp, n0xis-hud
+cargo build --workspace --release      # → n0x (n0xis), n0xis-mcp
 ```
 
 Builds on **Windows and Linux**. `rust-toolchain.toml` pins the Windows gnu host (`stable-x86_64-pc-windows-gnu` — no MSVC Build Tools needed); on Linux, build with your host `stable` toolchain (override the pin with `RUSTUP_TOOLCHAIN`/`+stable` if needed). Tests: `cargo test --workspace --features n0xis-pipeline/live` (some spawn real disposable processes; live debugging on Linux uses `ptrace`, so run them able to trace descendants). The analysis core is OS-free by construction — `cargo test -p n0xis-core` links zero OS crates.
@@ -140,7 +140,6 @@ n0xis-pipeline/    wires source + arch into the core; content-addressed artifact
 n0xis-frontend/    shared frontend seam: source/ISA resolution, argument parsing, capability registry
 n0xis-cli/         thin clap frontend (binary: n0xis, alias n0x)
 n0xis-mcp/         MCP server frontend (binary: n0xis-mcp)
-n0xis-hud/         N0xHUD companion-window frontend (binary: n0xis-hud)
 n0xis-il2cpp/     IL2CPP managed layer — symbol index pairing a Unity target's addresses with C# names
 n0xis-bitsquid/    Bitsquid/Stingray bundle format adapter (not depended on by core)
 n0xis-lua/         offline LuaJIT 2.0 bytecode disassembler/patcher (not depended on by core)
@@ -188,7 +187,6 @@ Full phase-by-phase history and the decompiler-depth plan (Phase 10): **[ROADMAP
 - **[CONCEPT.md](CONCEPT.md)** — the architecture: adapters, passes, seams, the dynamic-memory layer, and the *"one model, many projections"* north-star.
 - **[ROADMAP.md](ROADMAP.md)** — phased build history + the honest decompiler-parity gap (Phase 10).
 - **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** — what N0xis does that other tools don't, with the third party analysis and caveats behind each claim.
-- **[docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md)** — **N0xHUD**, the companion-window frontend (a window over the engine, not a GUI rewrite of it).
 - **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** · **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## License

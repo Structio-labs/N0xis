@@ -87,6 +87,40 @@ impl StaticElf {
     }
 
     /// Virtual address range of a named section `(start, size)`.
+    /// Every section with its `SHF_EXECINSTR` flag — the shape `profile` needs.
+    ///
+    /// Separate from [`Self::sections`] (which `find` uses to bound a byte
+    /// search and therefore wants only file-backed ranges) because a profile
+    /// must report the section table as it is, executability included: `.text`
+    /// is not always where the code lives.
+    pub fn sections_detailed(&self) -> Vec<(String, Va, u64, bool)> {
+        self.sections
+            .iter()
+            .map(|s| (s.name.clone(), Va(s.va_start), s.va_end.saturating_sub(s.va_start), s.executable))
+            .collect()
+    }
+
+    /// The ELF `e_machine`, mapped onto the same names the PE profile reports
+    /// (`x64`, `arm64`, …) so one consumer reads both formats. An unrecognized
+    /// or big-endian machine is returned as raw hex rather than guessed into a
+    /// wrong name.
+    pub fn machine(&self) -> String {
+        // e_ident[EI_DATA] = 1 little-endian, 2 big-endian; e_machine at 0x12.
+        let Some(raw) = self.bytes.get(0x12..0x14) else { return "unknown".to_string() };
+        let em = match self.bytes.get(5) {
+            Some(1) => u16::from_le_bytes([raw[0], raw[1]]),
+            Some(2) => u16::from_be_bytes([raw[0], raw[1]]),
+            _ => return "unknown".to_string(),
+        };
+        match em {
+            0x3E => "x64".to_string(),
+            0xB7 => "arm64".to_string(),
+            0x03 => "x86".to_string(),
+            0x28 => "arm".to_string(),
+            other => format!("0x{other:x}"),
+        }
+    }
+
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
         self.sections.iter().find(|s| s.name == name).map(|s| (Va(s.va_start), s.va_end - s.va_start))
     }
