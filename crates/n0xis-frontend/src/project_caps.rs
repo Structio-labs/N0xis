@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Project-database capabilities: annotations, selections, dumps and `.n0xt`
 //! tables.
 //!
@@ -91,6 +94,121 @@ impl Plugin for ProjectOps {
                     other => return err_pair("bad-field", format!("unknown field '{other}' (name|type|comment)")),
                 };
                 match result {
+                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                    Err(e) => err_pair("annotate-failed", e.to_string()),
+                }
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "annotate.var",
+            "Rename (or clear) one decompiled variable on the function at `addr`. `var` is the variable's current displayed name (`local_78`, `rcx`, `v3`); omit `value` to clear.",
+            Some(schema::v1::ANNOTATION),
+            Origin::Builtin,
+            Box::new(|args| {
+                let va = match addr_of(args, "addr") {
+                    Ok(v) => v,
+                    Err(e) => return to_env(e),
+                };
+                let Some(key) = args.get("var").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+                    return err_pair("bad-var", "`var` (the variable's displayed name) is required".to_string());
+                };
+                let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
+                match n0xis_project::annotate::set_var_name(va, key, value) {
+                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                    Err(e) => err_pair("annotate-failed", e.to_string()),
+                }
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "type.struct",
+            "Define (or replace) a named struct: `{name, size?, fields:[{offset,name,ctype?}]}`. The decompiler renders `p->name` for a pointer typed to it.",
+            Some(schema::v1::TYPES),
+            Origin::Builtin,
+            Box::new(|args| match serde_json::from_value::<n0xis_project::types_db::StructDef>(args.clone()) {
+                Ok(def) => match n0xis_project::types_db::put_struct(def) {
+                    Ok(()) => ok(schema::v1::TYPES, json!({ "ok": true })),
+                    Err(e) => err_pair("type-failed", e.to_string()),
+                },
+                Err(e) => err_pair("bad-struct", e.to_string()),
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "type.enum",
+            "Define (or replace) a named enum: `{name, members:[{name,value}]}`.",
+            Some(schema::v1::TYPES),
+            Origin::Builtin,
+            Box::new(|args| match serde_json::from_value::<n0xis_project::types_db::EnumDef>(args.clone()) {
+                Ok(def) => match n0xis_project::types_db::put_enum(def) {
+                    Ok(()) => ok(schema::v1::TYPES, json!({ "ok": true })),
+                    Err(e) => err_pair("type-failed", e.to_string()),
+                },
+                Err(e) => err_pair("bad-enum", e.to_string()),
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "type.list",
+            "Every defined struct and enum in the project.",
+            Some(schema::v1::TYPES),
+            Origin::Builtin,
+            Box::new(|_args| match n0xis_project::types_db::load() {
+                Ok(db) => ok(schema::v1::TYPES, json!({ "structs": db.structs, "enums": db.enums })),
+                Err(e) => err_pair("type-failed", e.to_string()),
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "type.rm",
+            "Remove a struct or enum by name.",
+            Some(schema::v1::TYPES),
+            Origin::Builtin,
+            Box::new(|args| {
+                let Some(name) = args.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+                    return err_pair("bad-name", "`name` is required".to_string());
+                };
+                match n0xis_project::types_db::remove(name) {
+                    Ok(removed) => ok(schema::v1::TYPES, json!({ "removed": removed })),
+                    Err(e) => err_pair("type-failed", e.to_string()),
+                }
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "annotate.vartype",
+            "Set (or clear) the C type of one variable/param/return on the function at `addr`. `var` is the displayed name or `@return`; omit `value` to clear. Applied in the decompiler's signature and declarations.",
+            Some(schema::v1::ANNOTATION),
+            Origin::Builtin,
+            Box::new(|args| {
+                let va = match addr_of(args, "addr") {
+                    Ok(v) => v,
+                    Err(e) => return to_env(e),
+                };
+                let Some(key) = args.get("var").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+                    return err_pair("bad-var", "`var` (the variable's displayed name, or @return) is required".to_string());
+                };
+                let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
+                match n0xis_project::annotate::set_var_type(va, key, value) {
+                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                    Err(e) => err_pair("annotate-failed", e.to_string()),
+                }
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "annotate.bookmark",
+            "Bookmark ('favorite') an address so it shows in the Bookmarks/Notes list. `on:false` removes it.",
+            Some(schema::v1::ANNOTATION),
+            Origin::Builtin,
+            Box::new(|args| {
+                let va = match addr_of(args, "addr") {
+                    Ok(v) => v,
+                    Err(e) => return to_env(e),
+                };
+                let on = args.get("on").and_then(|v| v.as_bool()).unwrap_or(true);
+                match n0xis_project::annotate::set_bookmark(va, on) {
                     Ok(rec) => ok(schema::v1::ANNOTATION, rec),
                     Err(e) => err_pair("annotate-failed", e.to_string()),
                 }

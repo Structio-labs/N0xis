@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-core — pure analysis
 //!
 //! The analysis brain: a set of [`Pass`]es over the [`Arch`](n0xis_arch::Arch)
@@ -150,7 +153,7 @@ pub struct Ctx<'a> {
     /// `*this = 0x180021548` reads `*this = &std::exception::vtable`, and the
     /// `this` pointer types to that class. `None` on a non-PE/non-MSVC target
     /// (ELF, live, stripped) — every such site renders exactly as before.
-    pub vtables: Option<&'a std::collections::HashMap<u64, String>>,
+    pub vtables: Option<&'a std::sync::Arc<std::collections::HashMap<u64, String>>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -178,7 +181,7 @@ impl<'a> Ctx<'a> {
         self
     }
     /// Attach the recovered vtable-address → class-name map (see the field docs).
-    pub fn with_vtables(mut self, vtables: &'a std::collections::HashMap<u64, String>) -> Self {
+    pub fn with_vtables(mut self, vtables: &'a std::sync::Arc<std::collections::HashMap<u64, String>>) -> Self {
         self.vtables = Some(vtables);
         self
     }

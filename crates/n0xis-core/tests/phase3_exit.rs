@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 3 exit test** (ROADMAP P3 / CONCEPT §8).
 //!
 //! ROADMAP's wording: on the v0 decompiler transcript — "no bare
@@ -28,7 +31,7 @@ fn decomp(code: Vec<u8>, style: DecompStyle) -> n0xis_core::PseudoFunction {
     let arch = X64::new();
     let ctx = Ctx::new(&snap, &arch);
     let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 256)).unwrap();
-    DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false }).unwrap()
+    DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
 }
 
 /// Every occurrence of `reg` in `text` is immediately followed by an SSA

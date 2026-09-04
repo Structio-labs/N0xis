@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`StaticImage`] — the unified static `--file` source: sniff the magic and
 //! parse the file as a PE ([`StaticPe`](crate::StaticPe)) or an ELF
 //! ([`StaticElf`](crate::StaticElf)), then present *one* type that delegates
@@ -73,6 +76,14 @@ impl StaticImage {
         match self {
             StaticImage::Pe(p) => p.section_range(name),
             StaticImage::Elf(e) => e.section_range(name),
+        }
+    }
+
+    /// File-backed section ranges `(name, va, size)` for a byte/string search.
+    pub fn sections(&self) -> Vec<(String, Va, u64)> {
+        match self {
+            StaticImage::Pe(p) => p.sections(),
+            StaticImage::Elf(e) => e.sections(),
         }
     }
 

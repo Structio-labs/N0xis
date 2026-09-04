@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`TypeInferPass`] — ROADMAP Phase 4: kill the blanket `uint64_t` /
 //! `local_XX` / fixed 4-arg `void sub_X(...)` signature.
 //!
@@ -55,7 +58,7 @@ impl CType {
     fn generic(bits: Bits, signed: bool) -> Self {
         CType { bits, signed, name: None }
     }
-    fn named(name: impl Into<String>) -> Self {
+    pub fn named(name: impl Into<String>) -> Self {
         CType { bits: 64, signed: false, name: Some(name.into()) }
     }
 }
@@ -67,6 +70,11 @@ pub struct LocalVar {
     pub size_bits: Bits,
     pub signed: bool,
     pub access_count: usize,
+    /// A user-asserted C type for this local (`annotate vartype`), rendered in the
+    /// declaration verbatim over the inferred width type. `None` = use the inferred
+    /// `c_type(size_bits, signed)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_override: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -347,6 +355,7 @@ fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>) -> Vec<Loc
             // evidence the load encoding alone misses.
             signed: signed || signed_use.contains(&offset),
             access_count: count,
+            type_override: None,
         })
         .collect()
 }
@@ -852,6 +861,68 @@ const CALLEE_SCAN_SIZE: usize = 16 * 1024;
 /// Recover a called function's parameter types by analyzing it *shallowly* (no
 /// further interprocedural recursion — one level deep). `None` if its bytes do
 /// not form an analyzable function at `va`.
+/// Process memo for [`callee_param_types`].
+///
+/// Decompiling ONE function analyses **every** callee — a full
+/// `Cfg→Ssa→Optimize→infer` each — and the de-dup cache in
+/// [`user_callee_arg_types`] is local to a single decompile. So browsing
+/// re-analysed the same callees (`malloc`, Qt/`rpl` helpers, …) over and over:
+/// profiling a warm session showed `user_callee_arg_types` plus instruction
+/// decoding dominating the per-view cost.
+///
+/// The result is a pure function of the callee address and the analysis context,
+/// so it is cached per `(context identity, va)`. The identity folds the source
+/// label, the symbol fingerprint (a rename can change a matched known signature)
+/// and the vtable-map size — exactly the inputs that can move a parameter type —
+/// so a stale entry can never outlive a change that would alter it. Same
+/// discipline as the IR cache and the vtable memo.
+type CalleeTypesMemo = Option<(String, std::collections::HashMap<u64, Option<Vec<CType>>>)>;
+static CALLEE_TYPES: std::sync::Mutex<CalleeTypesMemo> = std::sync::Mutex::new(None);
+/// Bound on memo entries — one per distinct callee. A ceiling keeps a
+/// pathological target from growing this without limit (the OOM discipline);
+/// past it we simply stop adding and keep serving what is already cached.
+const CALLEE_TYPES_MAX: usize = 200_000;
+
+/// The inputs that can change a callee's inferred parameter types.
+fn ctx_identity(ctx: &Ctx) -> String {
+    format!(
+        "{}|{}|{}",
+        ctx.source.label(),
+        ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
+        ctx.vtables.map_or(0, |v| v.len()),
+    )
+}
+
+/// [`callee_param_types`] served from the process memo (see [`CALLEE_TYPES`]).
+fn callee_param_types_memo(ctx: &Ctx, va: Va) -> Option<Vec<CType>> {
+    let id = ctx_identity(ctx);
+    if let Ok(memo) = CALLEE_TYPES.lock()
+        && let Some((cached_id, map)) = memo.as_ref()
+        && *cached_id == id
+        && let Some(hit) = map.get(&va.0)
+    {
+        return hit.clone();
+    }
+    let computed = callee_param_types(ctx, va);
+    if let Ok(mut memo) = CALLEE_TYPES.lock() {
+        match memo.as_mut() {
+            // Same context: extend, up to the ceiling.
+            Some((cached_id, map)) if *cached_id == id => {
+                if map.len() < CALLEE_TYPES_MAX {
+                    map.insert(va.0, computed.clone());
+                }
+            }
+            // Context changed (or first use): start a fresh table.
+            _ => {
+                let mut map = std::collections::HashMap::new();
+                map.insert(va.0, computed.clone());
+                *memo = Some((id, map));
+            }
+        }
+    }
+    computed
+}
+
 fn callee_param_types(ctx: &Ctx, va: Va) -> Option<Vec<CType>> {
     let cfg = CfgPass.run(ctx, CfgInput::new(va, CALLEE_SCAN_SIZE)).ok()?;
     if cfg.start != va {
@@ -885,7 +956,7 @@ fn user_callee_arg_types(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> B
         if *va == cfg.start || known_targets.contains(va) {
             return;
         }
-        let ptypes = cache.entry(*va).or_insert_with(|| callee_param_types(ctx, *va)).clone();
+        let ptypes = cache.entry(*va).or_insert_with(|| callee_param_types_memo(ctx, *va)).clone();
         let Some(ptypes) = ptypes else { return };
         for (i, a) in args.iter().enumerate() {
             if let (MicroExpr::Var(v), Some(cty)) = (a, ptypes.get(i))
@@ -981,7 +1052,7 @@ fn infer_with(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], deep: bool) -> 
             api_types.entry(var).or_insert(ty);
         }
     }
-    let ctor_classes = constructor_vtable_params(blocks, ctx.vtables);
+    let ctor_classes = constructor_vtable_params(blocks, ctx.vtables.map(|v| v.as_ref()));
     let method_classes = collect_method_this_types(cfg, blocks);
     let params = arg_regs[..arity]
         .iter()

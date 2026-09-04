@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Typed-expression → pseudo-C text. Shared by every `decomp pseudo` style
 //! (`goto` / `structured` / `ssa`) — they differ in *which* IR they render
 //! (raw lift, SSA, or SSA+optimized) and whether a structuring pass ran, not
@@ -29,7 +32,12 @@ pub struct RenderNames {
     /// variable holding its address.
     slot_names: HashMap<u64, String>,
     locals: HashMap<i64, String>,
-    structs: HashMap<String, ()>,
+    /// Base SSA var name → (field offset → field name). An empty inner map means a
+    /// recovered but un-named struct (renders `field_0x{off}`); a populated one
+    /// comes from a user/RTTI struct definition bound to this base (renders the
+    /// field's real name). Presence of the key is what marks a var as a struct
+    /// pointer at all.
+    structs: HashMap<String, std::collections::BTreeMap<i64, String>>,
     /// A recovered parameter's entry SSA version (`"rcx.0"`) → its parameter
     /// name (`"rcx"`). The `.0` version of a register is uniquely its incoming
     /// value — i.e. the parameter itself — so rendering it under the parameter
@@ -43,7 +51,7 @@ pub struct RenderNames {
     /// value an MSVC constructor stores into `*this` — so it renders
     /// `&Class::vtable` instead of an opaque `(void*)0x…`. Empty unless
     /// [`Self::with_vtables`] was given the RTTI scan's result.
-    vtables: HashMap<u64, String>,
+    vtables: std::sync::Arc<HashMap<u64, String>>,
     /// Address of a read-only C string → its already-escaped C literal
     /// (`"hello %s"`). A constant equal to a key is the address of that string —
     /// what a `lea`/`mov imm` into a format-string or message argument produces —
@@ -56,6 +64,13 @@ pub struct RenderNames {
     /// constant equal to a key is that symbol's address (`&crc_table`), rather
     /// than a bare number. Built from the symbol provider by [`crate::decomp`].
     data_refs: HashMap<u64, String>,
+    /// User renames of decompiled variables, keyed by the variable's **current
+    /// displayed** name (`local_78`, `rcx`, `v3`) → the chosen name. Consulted
+    /// last, after every other naming rule has produced a display string, so it
+    /// overrides whatever the synthesizer chose — the WYSIWYG contract: you rename
+    /// exactly what you see. Empty unless [`Self::with_user_names`] was given the
+    /// function's `annotate var` map.
+    user_names: HashMap<String, String>,
 }
 
 impl RenderNames {
@@ -75,18 +90,42 @@ impl RenderNames {
             structs: HashMap::new(),
             param_names: HashMap::new(),
             void_return: false,
-            vtables: HashMap::new(),
+            vtables: std::sync::Arc::new(HashMap::new()),
             strings: HashMap::new(),
             data_refs: HashMap::new(),
+            user_names: HashMap::new(),
         }
+    }
+
+    /// Attach the function's `annotate var` renames (displayed-name → user-name),
+    /// applied last at every variable render site.
+    pub fn with_user_names(mut self, user_names: HashMap<String, String>) -> Self {
+        self.user_names = user_names;
+        self
+    }
+
+    /// Apply a user rename to a just-computed display name, if one exists.
+    fn user_override(&self, display: String) -> String {
+        self.user_names.get(&display).cloned().unwrap_or(display)
     }
 
     /// Enrich with Phase 4's recovered locals/struct-fields/signature.
     pub fn with_types(mut self, types: &TypeArtifact) -> Self {
         self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
-        self.structs = types.structs.iter().map(|s| (s.base_var.clone(), ())).collect();
+        self.structs = types.structs.iter().map(|s| (s.base_var.clone(), std::collections::BTreeMap::new())).collect();
         self.param_names = types.signature.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
         self.void_return = types.signature.ret.is_none();
+        self
+    }
+
+    /// Bind field-name maps to specific base vars (from a user/RTTI struct
+    /// definition applied to a typed pointer), overriding the anonymous entries
+    /// [`Self::with_types`] set — so those bases render `p->count` instead of
+    /// `p->field_0x68`. A base not in `fields` keeps whatever it had.
+    pub fn with_struct_fields(mut self, fields: HashMap<String, std::collections::BTreeMap<i64, String>>) -> Self {
+        for (base, map) in fields {
+            self.structs.insert(base, map);
+        }
         self
     }
 
@@ -103,7 +142,7 @@ impl RenderNames {
     /// Attach the recovered vtable-address → class-name map so a vtable constant
     /// renders as `&Class::vtable` (ROADMAP Phase 10 item 7 — RTTI in the
     /// decompiler). See the [`RenderNames::vtables`] field.
-    pub fn with_vtables(mut self, vtables: HashMap<u64, String>) -> Self {
+    pub fn with_vtables(mut self, vtables: std::sync::Arc<HashMap<u64, String>>) -> Self {
         self.vtables = vtables;
         self
     }
@@ -154,7 +193,8 @@ impl RenderNames {
     /// unchanged. Single source of truth so every render site — bare `Var`,
     /// struct-field base, store target — agrees.
     fn display_var(&self, name: &str) -> String {
-        self.param_names.get(name).cloned().unwrap_or_else(|| name.to_string())
+        let display = self.param_names.get(name).cloned().unwrap_or_else(|| name.to_string());
+        self.user_override(display)
     }
 
     /// The known-API signature for a direct call target, if its resolved
@@ -277,18 +317,22 @@ fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> 
     let root = base.split('.').next().unwrap_or(base);
     if is_stack_root(root) {
         let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| format!("local_{:x}", offset.unsigned_abs()));
-        return Some(name);
+        return Some(names.user_override(name));
     }
-    if names.structs.contains_key(base) {
-        let base = names.display_var(base);
+    if let Some(fieldmap) = names.structs.get(base) {
+        let based = names.display_var(base);
+        // A user/RTTI struct definition supplies a real field name at this offset.
+        if let Some(fname) = fieldmap.get(&(offset as i64)) {
+            return Some(format!("{based}->{fname}"));
+        }
         // A negative offset accesses memory *before* the base (a header/cookie,
         // or a mid-object pointer) — render it signed as `field_neg_0x8`, not as
         // the two's-complement giant hex `field_0xfffff…f8` that `{:x}` on a
         // negative `i128` would produce.
         return Some(match offset {
-            0 => format!("*{base}"),
-            o if o < 0 => format!("{base}->field_neg_0x{:x}", o.unsigned_abs()),
-            o => format!("{base}->field_0x{o:x}"),
+            0 => format!("*{based}"),
+            o if o < 0 => format!("{based}->field_neg_0x{:x}", o.unsigned_abs()),
+            o => format!("{based}->field_0x{o:x}"),
         });
     }
     None
@@ -925,7 +969,7 @@ mod tests {
         // its class instead of reading as an opaque pointer.
         let mut vtables = HashMap::new();
         vtables.insert(0x180021548u64, "std::exception".to_string());
-        let names = RenderNames::new(&[]).with_vtables(vtables);
+        let names = RenderNames::new(&[]).with_vtables(std::sync::Arc::new(vtables));
         // Both the `lea`-shaped AddrOf(Const) and a bare Const of the same
         // address resolve to the class.
         assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "&std::exception::vtable");

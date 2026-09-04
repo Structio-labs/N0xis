@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The analysis DB (ROADMAP Phase 6): user/agent-asserted **names, type
 //! notes, and comments** at an address, kept as **versioned truth** — every
 //! change is appended to that address's `history` rather than silently
@@ -46,6 +49,23 @@ pub struct AnnotationRecord {
     pub type_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// Per-function local/parameter renames, keyed by the variable's **displayed**
+    /// name in the decompiler (`local_78`, `rcx`, `v3`) → the user's chosen name.
+    /// Lives on the function-start record (the `va` a decompile is addressed by),
+    /// so one record carries the whole function's variable renames.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub var_names: BTreeMap<String, String>,
+    /// Per-function C-type overrides, keyed by the variable's **synthesized**
+    /// displayed name (`local_78`, `rcx`, `v3`) → a C-type string, plus the
+    /// reserved key `"@return"` for the return type. Parallel to [`Self::var_names`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub var_types: BTreeMap<String, String>,
+    /// User bookmark ("favorite") on this address — so a Bookmarks/Notes panel can
+    /// list it even when nothing else is asserted here (a plain "remember this
+    /// line/function"). A function rename or a line comment is already navigable;
+    /// this flag is for addresses the user marks without renaming/commenting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bookmark: bool,
     #[serde(default)]
     pub history: Vec<AnnotationChange>,
 }
@@ -109,6 +129,72 @@ pub fn set_type(va: Va, type_note: Option<String>) -> Result<AnnotationRecord> {
 }
 pub fn set_comment(va: Va, comment: Option<String>) -> Result<AnnotationRecord> {
     set_field(va, "comment", comment)
+}
+
+/// Rename (or, with `value: None`, clear) one decompiled variable on the function
+/// whose start is `va`. `key` is the variable's current **displayed** name
+/// (`local_78`, `rcx`, `v3`). Appended to history as `var:<key>` so the rename is
+/// versioned truth like every other annotation.
+pub fn set_var_name(va: Va, key: &str, value: Option<String>) -> Result<AnnotationRecord> {
+    let mut all = load_all()?;
+    let record = all.entry(va.to_string()).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
+    let old = record.var_names.get(key).cloned();
+    if old != value {
+        record.history.push(AnnotationChange { field: format!("var:{key}"), old, new: value.clone(), unix: now_unix_secs() });
+        match value {
+            Some(v) if !v.trim().is_empty() => {
+                record.var_names.insert(key.to_string(), v);
+            }
+            _ => {
+                record.var_names.remove(key);
+            }
+        }
+    }
+    let result = record.clone();
+    save_all(&all)?;
+    Ok(result)
+}
+
+/// Set (or, with `value: None`/empty, clear) one variable's C type on the
+/// function at `va`. `key` is the variable's displayed name (`local_78`, `rcx`,
+/// `v3`) or the reserved `"@return"`. Appended to history as `vartype:<key>`.
+pub fn set_var_type(va: Va, key: &str, value: Option<String>) -> Result<AnnotationRecord> {
+    let mut all = load_all()?;
+    let record = all.entry(va.to_string()).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
+    let old = record.var_types.get(key).cloned();
+    if old != value {
+        record.history.push(AnnotationChange { field: format!("vartype:{key}"), old, new: value.clone(), unix: now_unix_secs() });
+        match value {
+            Some(v) if !v.trim().is_empty() => {
+                record.var_types.insert(key.to_string(), v);
+            }
+            _ => {
+                record.var_types.remove(key);
+            }
+        }
+    }
+    let result = record.clone();
+    save_all(&all)?;
+    Ok(result)
+}
+
+/// Set (or clear) the bookmark flag on `va`. Recorded in history like any other
+/// field so "when did we bookmark this" is answerable.
+pub fn set_bookmark(va: Va, on: bool) -> Result<AnnotationRecord> {
+    let mut all = load_all()?;
+    let record = all.entry(va.to_string()).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
+    if record.bookmark != on {
+        record.history.push(AnnotationChange {
+            field: "bookmark".to_string(),
+            old: Some(record.bookmark.to_string()),
+            new: Some(on.to_string()),
+            unix: now_unix_secs(),
+        });
+        record.bookmark = on;
+    }
+    let result = record.clone();
+    save_all(&all)?;
+    Ok(result)
 }
 
 /// The record at `va`, if anything has ever been asserted about it.

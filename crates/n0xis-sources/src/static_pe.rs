@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`StaticPe`] — a file-backed PE [`MemorySource`] (+ symbols + module).
 //!
 //! Loads a PE from disk and exposes it through the *same* seams a live process
@@ -64,6 +67,18 @@ impl StaticPe {
     /// function discovery / code scanning. See [`section_range`](Self::section_range).
     pub fn text_range(&self) -> Option<(Va, u64)> {
         self.section_range(".text")
+    }
+
+    /// Every section that carries on-disk bytes, as `(name, va, size)` — the
+    /// ranges a byte/string search (`find`) can actually read. Uninitialized
+    /// (`.bss`-style) sections that occupy virtual space but hold no file bytes
+    /// are skipped; the readable size is the on-disk size (padding excluded).
+    pub fn sections(&self) -> Vec<(String, Va, u64)> {
+        self.sections
+            .iter()
+            .filter(|s| s.file_size > 0)
+            .map(|s| (s.name.clone(), Va(s.va_start), s.file_size as u64))
+            .collect()
     }
 
     /// Virtual address range of a named section `(start, size)` — e.g.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`ProvenancePass`] — ROADMAP Phase 4c, the static⇄dynamic fusion
 //! (CONCEPT §11, KF-1): fuses the dynamic side (a hardware-watchpoint hit —
 //! "something at this address just read/wrote/executed this instruction",
@@ -111,7 +114,7 @@ fn explain_hit(ctx: &Ctx, hit: ProvenanceHit, module: Option<&Module>, scan_star
             .find(|b| b.start.get() <= hit.instruction_va.get() && hit.instruction_va.get() < b.end.get())
             .map(|b| b.id);
         if let Some(block_id) = block_id
-            && let Ok(pseudo) = DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false })
+            && let Ok(pseudo) = DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
         {
             decompiled_context = extract_block_context(&pseudo.pseudo, block_id);
         }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`LocalNames`] — a [`SymbolProvider`] backed by the project's `.n0x/`: the
 //! **user's own truth** (renamed functions, kept in `annotations.json`) plus the
 //! **recovered class names** the `analyze` pass persisted (MSVC RTTI,
@@ -86,6 +89,34 @@ impl LocalNames {
     pub fn is_empty(&self) -> bool {
         self.user.is_empty() && self.rtti.is_empty()
     }
+}
+
+/// The decompiler's vtable map (`vtable address → class name`), rebuilt from the
+/// RTTI symbols `analyze` already persisted instead of re-scanning `.rdata`.
+///
+/// **This is the single biggest cost in a cold decompile.** The `.rdata` scan runs
+/// ~2.6 s on a 57k-class target (measured on the Qt desktop PE) — against ~40 ms for the
+/// decompile itself, so ~98 % of a first view was rescanning. `rtti_symbol_map`
+/// persists exactly these pairs as `Class::vftable` **data** symbols, and they are
+/// already memoised above, so deriving the map here is effectively free.
+///
+/// Empty when nothing is persisted (no `analyze` yet) — the caller then falls back
+/// to the scan, so behaviour is unchanged, only the cost.
+pub fn persisted_vtable_map() -> std::collections::HashMap<u64, String> {
+    let root = n0xis_project::resolve().ok();
+    let dir = root.as_ref().map(|r| r.dir.clone());
+    let rtti = memoized(&RTTI_MEMO, file_signature(dir.as_deref(), "rtti-symbols.json"), build_rtti);
+    rtti.iter()
+        .filter(|(_, (_, kind))| matches!(kind, SymKind::Data))
+        .filter_map(|(va, (name, _))| vtable_class(name).map(|c| (*va, c.to_string())))
+        .collect()
+}
+
+/// `Foo::vftable` → `Foo`, `Foo::vftable_off8` → `Foo` (a secondary base under
+/// multiple inheritance). `None` for any other symbol — only vtables belong here.
+fn vtable_class(name: &str) -> Option<&str> {
+    let (class, tail) = name.rsplit_once("::vftable")?;
+    (tail.is_empty() || tail.starts_with("_off")).then_some(class)
 }
 
 impl SymbolProvider for LocalNames {

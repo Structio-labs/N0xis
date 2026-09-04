@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 4 exit test** (ROADMAP P4 / CONCEPT §6 steps 4-5).
 //!
 //! ROADMAP's wording: "recovered signatures + named fields on a labeled
@@ -19,7 +22,7 @@ fn decomp(code: Vec<u8>) -> n0xis_core::PseudoFunction {
     let arch = X64::new();
     let ctx = Ctx::new(&snap, &arch);
     let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 256)).unwrap();
-    DecompPass.run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true, strip_block_labels: false }).unwrap()
+    DecompPass.run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
 }
 
 /// Label: arity 0, `void` return — a function that touches no argument

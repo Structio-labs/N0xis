@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-pipeline — wiring the core to concrete inputs
 //!
 //! Binds a [`MemorySource`](n0xis_sources::MemorySource) and an
@@ -21,7 +24,7 @@ use std::hash::{Hash, Hasher};
 
 use n0xis_arch::Arch;
 use n0xis_contracts::Va;
-use n0xis_core::{CfgArtifact, CfgInput, CfgPass, Ctx, CoreError, DecodeInput, DecodeOutput, DecodePass, Pass};
+use n0xis_core::{CfgArtifact, CfgInput, CfgPass, Ctx, CoreError, DecodeInput, DecodeOutput, DecodePass, DecompInput, DecompPass, DecompStyle, Pass};
 use n0xis_sources::MemorySource;
 
 /// A ready-to-run analysis context over one source + arch.
@@ -153,6 +156,112 @@ pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), Cor
         let _ = n0xis_project::ir_cache::put(&key, &json);
     }
     Ok((art, false))
+}
+
+/// Key prefix shared by every decomp-cache entry this build may read. Its own
+/// generation (separate directory, separate sweep) so upgrading the renderer
+/// invalidates decomp results without touching the CFG cache and vice-versa.
+fn decomp_cache_generation() -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    analysis_fingerprint().hash(&mut h);
+    format!("decomp-{:08x}-", h.finish() as u32)
+}
+
+fn sweep_stale_decomp_once() {
+    static SWEPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    SWEPT.get_or_init(|| {
+        let _ = n0xis_project::decomp_cache::retain_prefix(&decomp_cache_generation());
+    });
+}
+
+/// The cache key for a decompiled function: the same content basis as
+/// [`cfg_cache_key`] (source scope incl. symbol fingerprint, input, the actual
+/// probed bytes) plus the render `style` and the user variable renames — the
+/// three things beyond the CFG that change the pseudo-C. Renames are folded in
+/// directly (not only via the symbol fingerprint) so the key is correct even for
+/// a source that carries no fingerprint.
+fn hash_map_sorted(h: &mut std::collections::hash_map::DefaultHasher, map: &std::collections::HashMap<String, String>) {
+    let mut pairs: Vec<(&String, &String)> = map.iter().collect();
+    pairs.sort();
+    for (k, v) in pairs {
+        k.hash(h);
+        v.hash(h);
+    }
+}
+
+fn decomp_cache_key(
+    scope: &str,
+    input: CfgInput,
+    probe: &[u8],
+    style: DecompStyle,
+    var_names: &std::collections::HashMap<String, String>,
+    var_types: &std::collections::HashMap<String, String>,
+    struct_defs: &std::collections::HashMap<String, std::collections::BTreeMap<i64, String>>,
+) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    "decomp".hash(&mut h);
+    scope.hash(&mut h);
+    input.start.0.hash(&mut h);
+    input.max_bytes.hash(&mut h);
+    input.auto_end.hash(&mut h);
+    probe.hash(&mut h);
+    let style_tag: u8 = match style {
+        DecompStyle::Goto => 0,
+        DecompStyle::Structured => 1,
+        DecompStyle::Ssa => 2,
+    };
+    style_tag.hash(&mut h);
+    hash_map_sorted(&mut h, var_names);
+    "types".hash(&mut h); // separator so {a:b}+{} differs from {}+{a:b}
+    hash_map_sorted(&mut h, var_types);
+    "structs".hash(&mut h);
+    let mut sd: Vec<(&String, &std::collections::BTreeMap<i64, String>)> = struct_defs.iter().collect();
+    sd.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, fields) in sd {
+        name.hash(&mut h);
+        for (off, fname) in fields {
+            off.hash(&mut h);
+            fname.hash(&mut h);
+        }
+    }
+    format!("{}{:016x}", decomp_cache_generation(), h.finish())
+}
+
+/// Decompile the function at `input.start` through the disk-backed
+/// `.n0x/decomp-cache/` — the display-shaped result (`explain=false`,
+/// `strip_block_labels=true`), returned as its JSON envelope-`data`. `(v, true)`
+/// on a cache hit, `(v, false)` on a miss (built via [`cfg_cached`] +
+/// [`DecompPass`], stored). Returns the artifact as a [`serde_json::Value`]
+/// because [`PseudoFunction`] holds `&'static str` fields it cannot deserialize
+/// into — and the caller only needs to read/adjust the JSON (e.g. prepend a
+/// comment header) before emitting it. Read/parse failure is a miss, never stale;
+/// no project → an uncached run. The `explain=true` delta path is intentionally
+/// not cached (rare, and its payload dwarfs the pseudo-C) — call the pass directly.
+pub fn decomp_cached(
+    ctx: &Ctx,
+    input: CfgInput,
+    style: DecompStyle,
+    var_names: &std::collections::HashMap<String, String>,
+    var_types: &std::collections::HashMap<String, String>,
+    struct_defs: &std::collections::HashMap<String, std::collections::BTreeMap<i64, String>>,
+) -> Result<(serde_json::Value, bool), CoreError> {
+    let probe = ctx.source.read(input.start, input.max_bytes).unwrap_or_default();
+    let fingerprint = ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default();
+    let scope = if fingerprint.is_empty() { ctx.source.label() } else { format!("{}|{fingerprint}", ctx.source.label()) };
+    let key = decomp_cache_key(&scope, input, &probe, style, var_names, var_types, struct_defs);
+    sweep_stale_decomp_once();
+
+    if let Ok(Some(json)) = n0xis_project::decomp_cache::get(&key)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&json)
+    {
+        return Ok((v, true));
+    }
+    let (cfg, _) = cfg_cached(ctx, input)?;
+    let pf = DecompPass.run(ctx, DecompInput { cfg, style, explain: false, strip_block_labels: true, var_names: var_names.clone(), var_types: var_types.clone(), struct_defs: struct_defs.clone() })?;
+    let json = serde_json::to_string(&pf).map_err(|e| CoreError::Other(e.to_string()))?;
+    let _ = n0xis_project::decomp_cache::put(&key, &json);
+    let v = serde_json::from_str(&json).map_err(|e| CoreError::Other(e.to_string()))?;
+    Ok((v, false))
 }
 
 /// Generation prefix for the reverse-xref index — the analyzer fingerprint, so a

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The capability registry — one contract for built-in and external
 //! functionality alike.
 //!
@@ -192,14 +195,47 @@ fn bool_arg(args: &Value, key: &str) -> bool {
 /// source). Keyed by the vtable's first-slot VA — the value an MSVC constructor
 /// stores into `*this`, so a pass can name that constant `&Class::vtable`
 /// (ROADMAP Phase 10 item 7). One `.rdata` scan; see [`n0xis_core::scan_msvc_rtti`].
-fn rtti_vtable_map(src: &Src) -> std::collections::HashMap<u64, String> {
-    let (Some(base), Some(rdata)) = (src.module_base(), src.section_range(".rdata")) else {
-        return std::collections::HashMap::new();
+/// Process memo of the last built vtable map: `(source label, map)`. The `.rdata`
+/// scan is ~0.8 s on a target with tens of thousands of classes, and
+/// [`with_cfg_ctx`] rebuilt it on **every** decompile — the real cost behind a
+/// slow re-view, dwarfing the decompile itself. Reused only for an **immutable**
+/// source (static PE/ELF, snapshot), whose `.rdata` cannot change under the label,
+/// so the label identifies a fixed image for the life of the process (same
+/// discipline as the xref-index memo).
+type VtableMemo = Option<(String, std::sync::Arc<std::collections::HashMap<u64, String>>)>;
+static VTABLE_MEMO: std::sync::Mutex<VtableMemo> = std::sync::Mutex::new(None);
+
+fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, String>> {
+    let immutable = matches!(src, Src::Static(_) | Src::Snap(_));
+    let label = src.as_mem().label();
+    if immutable
+        && let Ok(memo) = VTABLE_MEMO.lock()
+        && let Some((l, m)) = memo.as_ref()
+        && *l == label
+    {
+        return m.clone();
+    }
+    // Prefer the vtables `analyze` already persisted: the same pairs, already
+    // memoised as `Class::vftable` symbols, so no `.rdata` rescan. That scan is
+    // ~2.6 s on a 57k-class target and dwarfs the ~40 ms decompile it precedes.
+    // Falling back to the scan keeps behaviour identical before an `analyze`.
+    let persisted = crate::annotation_syms::persisted_vtable_map();
+    let map: std::collections::HashMap<u64, String> = if !persisted.is_empty() {
+        persisted
+    } else {
+        match (src.module_base(), src.section_range(".rdata")) {
+            (Some(base), Some(rdata)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, rdata, src.text_range())
+                .into_iter()
+                .map(|v| (v.vtable.get(), v.name))
+                .collect(),
+            _ => std::collections::HashMap::new(),
+        }
     };
-    n0xis_core::scan_msvc_rtti(src.as_mem(), base, rdata, src.text_range())
-        .into_iter()
-        .map(|v| (v.vtable.get(), v.name))
-        .collect()
+    let arc = std::sync::Arc::new(map);
+    if immutable && let Ok(mut memo) = VTABLE_MEMO.lock() {
+        *memo = Some((label, arc.clone()));
+    }
+    arc
 }
 
 fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str) -> Response<Value>) -> Response<Value> {
@@ -463,7 +499,7 @@ fn decompile_side(
     let input = n0xis_core::CfgInput { start: addr, max_bytes: size, auto_end: true };
     let run = |ctx: &n0xis_core::Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
-        let pf = n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: false, strip_block_labels: true })
+        let pf = n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: false, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
             .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
         Ok(pf.pseudo)
     };
@@ -713,33 +749,55 @@ impl Plugin for AnalysisPasses {
                 let explain = bool_arg(args, "explain");
                 with_cfg_ctx(args, |ctx, input, label| {
                     let fn_start = input.start;
-                    let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
-                        Ok((a, _)) => a,
-                        Err(e) => return Response::error("ir-failed", e.to_string()),
-                    };
-                    match n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain, strip_block_labels: true }) {
-                        Ok(mut pf) => {
-                            // Render the user's comment at the function start as a
-                            // header, so an `annotate comment` shows live in the
-                            // decompiler (its truth lives in `.n0x/annotations.json`).
-                            if let Ok(Some(rec)) = n0xis_project::annotate::get(fn_start)
-                                && let Some(text) = rec.comment.filter(|c| !c.trim().is_empty())
-                            {
-                                let mut lines: Vec<String> = text.lines().map(|l| format!("// {l}")).collect();
-                                lines.append(&mut pf.pseudo);
-                                pf.pseudo = lines;
-                            }
-                            let resp = ok_json(n0xis_contracts::schema::v0::DECOMP_PSEUDO, pf, label);
-                            // The optimizer delta used to ride along on `ssa`
-                            // unconditionally; say where it went rather than
-                            // letting a caller find it silently missing.
-                            if style == n0xis_core::DecompStyle::Ssa && !explain {
-                                resp.with_note("optimizer delta omitted (it measured larger than the pseudocode); pass explain:true, or use `ir.explain`")
-                            } else {
-                                resp
-                            }
+                    // The function's annotation record carries both its variable
+                    // renames (fed into the pass / cache key) and its comment
+                    // (rendered as a header after). Loaded once from `.n0x/`.
+                    let rec = n0xis_project::annotate::get(fn_start).ok().flatten();
+                    let var_names: std::collections::HashMap<String, String> =
+                        rec.as_ref().map(|r| r.var_names.clone().into_iter().collect()).unwrap_or_default();
+                    let var_types: std::collections::HashMap<String, String> =
+                        rec.as_ref().map(|r| r.var_types.clone().into_iter().collect()).unwrap_or_default();
+                    // The project's struct catalog (field names) — the decompiler
+                    // also synthesizes `vftable@0` for RTTI classes on its own.
+                    let struct_defs: std::collections::HashMap<String, std::collections::BTreeMap<i64, String>> =
+                        n0xis_project::types_db::field_maps().into_iter().collect();
+                    // The display case goes through the content-addressed decomp
+                    // cache (instant re-view). `explain` (the large opt-delta) is
+                    // rare and re-viewed rarely, so it runs uncached.
+                    let mut val = if explain {
+                        let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
+                            Ok((a, _)) => a,
+                            Err(e) => return Response::error("ir-failed", e.to_string()),
+                        };
+                        match n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: true, strip_block_labels: true, var_names, var_types, struct_defs: struct_defs.clone() }) {
+                            Ok(pf) => match serde_json::to_value(&pf) {
+                                Ok(v) => v,
+                                Err(e) => return Response::error("encode-failed", e.to_string()),
+                            },
+                            Err(e) => return Response::error("decomp-failed", e.to_string()),
                         }
-                        Err(e) => Response::error("decomp-failed", e.to_string()),
+                    } else {
+                        match n0xis_pipeline::decomp_cached(ctx, input, style, &var_names, &var_types, &struct_defs) {
+                            Ok((v, _cached)) => v,
+                            Err(e) => return Response::error("decomp-failed", e.to_string()),
+                        }
+                    };
+                    // Render the user's comment at the function start as a header,
+                    // so an `annotate comment` shows live in the decompiler. Done
+                    // on the JSON *after* the cache, so a comment edit re-injects
+                    // without a decompile.
+                    if let Some(text) = rec.and_then(|r| r.comment).filter(|c| !c.trim().is_empty())
+                        && let Some(arr) = val.get_mut("pseudo").and_then(|p| p.as_array_mut())
+                    {
+                        let mut lines: Vec<Value> = text.lines().map(|l| Value::from(format!("// {l}"))).collect();
+                        lines.append(arr);
+                        *arr = lines;
+                    }
+                    let resp = ok_json(n0xis_contracts::schema::v0::DECOMP_PSEUDO, val, label);
+                    if style == n0xis_core::DecompStyle::Ssa && !explain {
+                        resp.with_note("optimizer delta omitted (it measured larger than the pseudocode); pass explain:true, or use `ir.explain`")
+                    } else {
+                        resp
                     }
                 })
             }),

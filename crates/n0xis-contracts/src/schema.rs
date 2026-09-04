@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Schema identifiers — the versioned names that tag every `data` payload.
 //!
 //! Naming policy (CONCEPT §12): new v1 schemas are `n0xis.*.vN`; the archived
@@ -33,6 +36,8 @@ pub mod v1 {
     /// Whole-program analysis pass: discover → RTTI → xref index → IR cache,
     /// materializing the `.n0x/` summary layer with progress (`analyze`).
     pub const ANALYZE: &str = "n0xis.analyze.v1";
+    pub const FIND: &str = "n0xis.find.v1";
+    pub const TYPES: &str = "n0xis.types.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).
     pub const XREF: &str = "n0xis.xref.v1";
     /// String-literal search + referencing instructions (`xref string`).

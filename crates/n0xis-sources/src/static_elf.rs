@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`StaticElf`] — a file-backed ELF [`MemorySource`] (+ symbols + module),
 //! the ELF twin of [`StaticPe`](crate::StaticPe).
 //!
@@ -70,6 +73,17 @@ impl StaticElf {
     /// Virtual address range of the `.text` section `(start, size)`.
     pub fn text_range(&self) -> Option<(Va, u64)> {
         self.section_range(".text")
+    }
+
+    /// Every section that carries on-disk bytes, as `(name, va, size)` — the
+    /// ranges a byte/string search (`find`) can read. `SHT_NOBITS` (`.bss`) is
+    /// skipped (it has no file bytes); the readable size is the on-disk size.
+    pub fn sections(&self) -> Vec<(String, Va, u64)> {
+        self.sections
+            .iter()
+            .filter(|s| s.file_size > 0)
+            .map(|s| (s.name.clone(), Va(s.va_start), s.file_size as u64))
+            .collect()
     }
 
     /// Virtual address range of a named section `(start, size)`.

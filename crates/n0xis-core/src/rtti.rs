@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! MSVC RTTI / vtable class recovery — Rung 7's devirtualization down-payment.
 //!
 //! A C++ virtual call dispatches through a vtable slot, an edge the CFG can only
@@ -44,17 +47,30 @@ pub struct RttiVtable {
     pub bases: Vec<String>,
 }
 
-/// Turn an MSVC RTTI decorated type name into a readable one.
+/// Turn an MSVC RTTI decorated type name into a readable, **bounded** one.
 ///
-/// `.?AVFoo@@` → `Foo`, `.?AUData@Ns@@` → `Ns::Data` (the `@`-separated
-/// qualifiers are innermost-first, so they reverse into `outer::inner`). A name
-/// carrying template or other special mangling (`?$`, a bare `?`) is returned
-/// **verbatim** rather than mis-decoded — sound over pretty.
+/// `.?AVFoo@@` → `Foo`, `.?AUData@Ns@@` → `Ns::Data`. The full readable form
+/// ([`demangle_rtti_name_full`]) is then folded to a compact label
+/// ([`shorten_type_name`]): heavily-templated code (Telegram's `rpl`, the STL
+/// type-erasure helpers) demangles to multi-KiB type strings — correct but
+/// useless as a list/decompiler label — and the `<lambda>`-in-a-local-scope
+/// names the `msvc_demangler` cannot parse would otherwise render as the raw
+/// `.?A…` decorated string. Both are bounded here so nothing ever renders a
+/// 9 KiB identifier or a raw mangled blob.
 pub fn demangle_rtti_name(mangled: &str) -> String {
-    // Prefer the real MSVC demangler — it reads the templated names
-    // (`.?AV?$vector@H@std@@` → `std::vector<int>`) the hand-rolled `@`-splitter
-    // below deliberately refuses. The splitter stays as a fallback for a name
-    // the demangler declines, and verbatim is the final, always-sound floor.
+    shorten_type_name(demangle_rtti_name_full(mangled), mangled)
+}
+
+/// The best readable form of an RTTI decorated name, **unbounded**.
+///
+/// The real MSVC demangler first — it reads the templated names
+/// (`.?AV?$vector@H@std@@` → `std::vector<int>`) the hand-rolled `@`-splitter
+/// below deliberately refuses. The splitter stays as a fallback for a name the
+/// demangler declines, and the decorated string verbatim is the final,
+/// always-sound floor. A name carrying template or other special mangling
+/// (`?$`, a bare `?`) the splitter cannot safely decode is returned verbatim
+/// rather than mis-decoded — sound over pretty.
+fn demangle_rtti_name_full(mangled: &str) -> String {
     if let Some(full) = crate::demangle::demangle_rtti_type_descriptor(mangled) {
         return full;
     }
@@ -76,6 +92,53 @@ pub fn demangle_rtti_name(mangled: &str) -> String {
     parts.into_iter().rev().collect::<Vec<_>>().join("::")
 }
 
+/// Ceiling on a rendered class name. Past it a name is truncated on a `char`
+/// boundary with a stable hash suffix that keeps distinct types distinct — a
+/// bare prefix cut would collide the thousands of `rpl` types that share a long
+/// opening (`rpl::details::consumer_handlers<struct rpl::no_value, …`).
+const RENDER_NAME_MAX: usize = 160;
+
+/// A short, stable disambiguator derived from the full decorated name.
+fn type_name_hash(decorated: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    decorated.hash(&mut h);
+    format!("{:08x}", h.finish() as u32)
+}
+
+/// Fold a possibly-huge or still-decorated type name into a compact, bounded,
+/// collision-resistant label. `decorated` is the original `.?A…` form, used for
+/// the stable hash. A name the demanglers both declined (still `.?A…`) is
+/// reduced to its leading template/class identifier (`consumer_handlers<…>`)
+/// rather than shown as a raw mangled blob.
+fn shorten_type_name(name: String, decorated: &str) -> String {
+    let name = if let Some(rest) = name.strip_prefix(".?A") {
+        let body = rest.get(1..).unwrap_or(""); // drop the kind letter (V/U/W/…)
+        let (is_tmpl, base_src) = match body.strip_prefix("?$") {
+            Some(t) => (true, t),
+            None => (false, body),
+        };
+        let base = base_src.split('@').next().unwrap_or("");
+        if base.is_empty() || base.contains(['?', '$']) {
+            format!("type_{}", type_name_hash(decorated))
+        } else if is_tmpl {
+            format!("{base}<…>")
+        } else {
+            base.to_string()
+        }
+    } else {
+        name
+    };
+    if name.len() <= RENDER_NAME_MAX {
+        return name;
+    }
+    let mut cut = RENDER_NAME_MAX;
+    while cut > 0 && !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…#{}", &name[..cut], type_name_hash(decorated))
+}
+
 const COL_SIZE: usize = 24; // sig,u32 | offset,u32 | cdOffset,u32 | pTD,rva | pClass,rva | pSelf,rva
 const COL_PCLASS: usize = 16; // RVA of the RTTIClassHierarchyDescriptor
 // RTTIClassHierarchyDescriptor: signature,u32 | attributes,u32 | numBaseClasses,u32 | pBaseClassArray,rva
@@ -84,7 +147,19 @@ const CHD_BASE_ARRAY: usize = 12;
 /// Base-class count ceiling — bounds the walk so a mis-read descriptor can
 /// never drive an unbounded loop/allocation (the OOM lesson, again).
 const MAX_BASES: usize = 256;
-const MAX_NAME: usize = 512;
+/// Hard ceiling on a decorated type name — a mis-read pointer can never drive an
+/// unbounded read (the OOM lesson). Real MSVC names, even Telegram's deeply nested
+/// `rpl`/Qt template types, stay well under this; 512 was far too small and
+/// truncated ~half of the Qt desktop PE's names mid-symbol, which then could not demangle.
+const MAX_NAME: usize = 64 * 1024;
+/// First read size for [`read_cstr`], doubled on each miss. Most names are short
+/// and terminate inside this one small read; the long template names double their
+/// way out in a few steps. A large fixed chunk would copy (and allocate) kilobytes
+/// per name across tens of thousands of descriptors for no gain.
+const NAME_CHUNK: usize = 256;
+/// Ceiling on a single [`read_cstr`] read, so the doubling cannot request a huge
+/// buffer for one pathological name.
+const NAME_CHUNK_MAX: usize = 8192;
 /// A hard ceiling so a mis-identified `.rdata` size can never drive an
 /// unbounded allocation (the machine's OOM lesson, applied to a parsed length).
 const MAX_RDATA: usize = 64 * 1024 * 1024;
@@ -240,12 +315,32 @@ fn read_base_classes(buf: &[u8], rd_base: u64, image_base: u64, src: &dyn Memory
     bases
 }
 
-/// Read a NUL-terminated ASCII string (bounded), the shape a `TypeDescriptor`
-/// name has.
+/// Read a NUL-terminated ASCII string, the shape a `TypeDescriptor` name has.
+///
+/// Grows a chunk at a time until the terminator, capped by [`MAX_NAME`]. A single
+/// large read would truncate long names on a source that clamps to what a section
+/// physically holds ([`MemorySource::read`] returns a short/empty `Vec` at a
+/// boundary, never an error), and reading `MAX_NAME` up front for every descriptor
+/// would churn 64 KiB per name; growing keeps the common short name to one read
+/// while still reaching the multi-KiB template names that `rpl`/Qt produce.
 fn read_cstr(src: &dyn MemorySource, at: Va) -> Option<String> {
-    let bytes = src.read(at, MAX_NAME).ok()?;
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    (end > 0).then(|| String::from_utf8_lossy(&bytes[..end]).into_owned())
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut step = NAME_CHUNK;
+    while bytes.len() < MAX_NAME {
+        let want = step.min(MAX_NAME - bytes.len());
+        let chunk = src.read(Va(at.get() + bytes.len() as u64), want).ok()?;
+        if let Some(pos) = chunk.iter().position(|&b| b == 0) {
+            bytes.extend_from_slice(&chunk[..pos]);
+            break;
+        }
+        let short = chunk.len() < want; // clamped at the section boundary — no more to read
+        bytes.extend_from_slice(&chunk);
+        if short {
+            break;
+        }
+        step = (step * 2).min(NAME_CHUNK_MAX);
+    }
+    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]
@@ -280,6 +375,36 @@ mod tests {
     #[test]
     fn a_non_rtti_string_passes_through() {
         assert_eq!(demangle_rtti_name("not a name"), "not a name");
+    }
+
+    #[test]
+    fn a_declined_name_is_reduced_to_a_readable_label_never_a_raw_blob() {
+        // Both demanglers declined → the input is still the raw decorated string
+        // (the `<lambda>`-in-a-local-scope names `msvc_demangler` 0.11 cannot
+        // parse). It must not render as a `.?A…` blob: reduce to the leading
+        // template identifier so the listing stays readable.
+        let raw = ".?AV?$consumer_handlers@VQString@@Uno_error@rpl@@V<lambda_1>@?1??".to_string();
+        assert_eq!(shorten_type_name(raw.clone(), &raw), "consumer_handlers<…>");
+        // A plain (non-template) decorated name keeps its identifier, no `<…>`.
+        let plain = ".?AVWeird@@".to_string();
+        assert_eq!(shorten_type_name(plain.clone(), &plain), "Weird");
+    }
+
+    #[test]
+    fn a_giant_demangled_name_is_truncated_with_a_stable_disambiguator() {
+        // A demangled `rpl`/STL type-erasure name runs to multiple KiB — bound it.
+        let huge = format!("std::_Func_impl_no_alloc<{}>", "class rpl::details::x, ".repeat(200));
+        let a = shorten_type_name(huge.clone(), ".?AVdecorated_a@@");
+        assert!(a.len() <= RENDER_NAME_MAX + 12, "must be bounded, got {} bytes", a.len());
+        assert!(a.starts_with("std::_Func_impl_no_alloc<") && a.contains('…'));
+        // Two distinct types sharing that long opening must not collide.
+        let b = shorten_type_name(huge, ".?AVdecorated_b@@");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_short_name_is_untouched_by_the_bound() {
+        assert_eq!(shorten_type_name("Ns::Foo".to_string(), ".?AVFoo@Ns@@"), "Ns::Foo");
     }
 
     #[test]

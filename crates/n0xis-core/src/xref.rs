@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`XrefPass`] — cross-references to or from an address.
 //!
 //! Decodes a code range and finds references via the arch-provided fields on
@@ -59,6 +62,11 @@ pub struct XrefArtifact {
     pub refs: Vec<XrefEntry>,
 }
 
+/// Enough bytes to hold any single instruction on the supported ISAs — x86-64
+/// tops out at 15, AArch64 is a fixed 4. Used to bound the `From` read to the one
+/// instruction that direction can ever report.
+const MAX_INSN_BYTES: usize = 16;
+
 /// Cross-reference pass.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct XrefPass;
@@ -81,11 +89,30 @@ impl Pass for XrefPass {
     }
 
     fn run(&self, ctx: &Ctx, input: XrefInput) -> Result<XrefArtifact, CoreError> {
-        let bytes = ctx.source.read(input.scan_start, input.size)?;
+        // `From` reports ONLY the single instruction at `addr` — the match arm
+        // below skips every other `ins.va`. Decoding the caller's whole window to
+        // then discard all of it is pure waste, and for a whole-program query
+        // (the shape `xref from` gets from the frontend, which has no reverse-index
+        // fast path for this direction) that window is the entire `.text`:
+        // measured at **16 s and +2.8 GB per call** on the Qt desktop PE, for a 0.2 KB answer.
+        // Reading one instruction's worth instead is identical by construction —
+        // `XrefArtifact` exposes no scan range, so the narrowing is invisible.
+        //
+        // The window bound is still honoured: a caller that sweeps several code
+        // ranges must not get the same refs back once per range.
+        let (scan_start, size) = match input.dir {
+            XrefDir::From => {
+                let end = input.scan_start.get().saturating_add(input.size as u64);
+                if input.addr.get() < input.scan_start.get() || input.addr.get() >= end {
+                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new() });
+                }
+                (input.addr, MAX_INSN_BYTES)
+            }
+            XrefDir::To => (input.scan_start, input.size),
+        };
+        let bytes = ctx.source.read(scan_start, size)?;
         // Generous instruction cap: a full window can be large.
-        let insns = ctx
-            .arch
-            .decode_range(&bytes, input.scan_start, bytes.len());
+        let insns = ctx.arch.decode_range(&bytes, scan_start, bytes.len());
         let mut refs = Vec::new();
 
         // The `to` target's name, when the symbol layer has one at exactly that
@@ -241,6 +268,38 @@ mod tests {
     use super::*;
     use n0xis_arch::X64;
     use n0xis_sources::Snapshot;
+
+    #[test]
+    fn from_is_window_bounded_and_window_size_independent() {
+        // `From` reports only the instruction AT `addr`, so its result must not
+        // depend on how large a window the caller sweeps — the frontend passes the
+        // WHOLE program for this direction, which used to decode all of `.text`
+        // (16 s, +2.8 GB on a real target) to keep one instruction.
+        let code = vec![
+            0xE8, 0x03, 0x00, 0x00, 0x00, // 0x1000: call 0x1008
+            0x90, 0x90, 0x90, // padding
+            0xC3, // 0x1008: ret
+        ];
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let run = |scan_start, size| {
+            XrefPass.run(&ctx, XrefInput { scan_start, size, addr: Va(0x1000), dir: XrefDir::From }).unwrap()
+        };
+        let tight = run(Va(0x1000), 16);
+        let wide = run(Va(0x1000), 4096);
+        assert_eq!(tight.count, 1, "the call at 0x1000 references 0x1008");
+        assert_eq!(tight.refs[0].to, Va(0x1008));
+        // Same answer no matter how much the caller asked us to sweep.
+        assert_eq!(format!("{:?}", tight.refs), format!("{:?}", wide.refs));
+
+        // Still window-bounded: a caller sweeping several ranges must not get the
+        // same refs back once per range.
+        let outside = XrefPass
+            .run(&ctx, XrefInput { scan_start: Va(0x1008), size: 8, addr: Va(0x1000), dir: XrefDir::From })
+            .unwrap();
+        assert_eq!(outside.count, 0, "addr outside the window yields nothing");
+    }
 
     #[test]
     fn finds_call_xref_to_target() {

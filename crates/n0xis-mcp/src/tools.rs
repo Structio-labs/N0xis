@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The MCP tool set: one method per tool, registered via `#[tool_router]`.
 //! Every tool returns the serialized `n0xis_contracts::Response` envelope as
 //! a `String` — byte-for-byte the same shape `n0xis-cli`'s `emit()` prints —
@@ -749,7 +752,7 @@ impl N0xisServer {
         let out = with_ctx(&src, arch.as_ref(), |ctx| -> Result<_, String> {
             let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
             // This tool *is* the delta, so it always asks for it.
-            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true, strip_block_labels: true }).map_err(|e| e.to_string())
+            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).map_err(|e| e.to_string())
         });
         match out {
             Ok(pf) => emit(

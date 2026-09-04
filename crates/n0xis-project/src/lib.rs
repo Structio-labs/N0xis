@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-project — the `.n0x/` analysis database
 //!
 //! N0xis is a single global binary that operates on many projects. Each project
@@ -26,6 +29,7 @@
 //! ```
 
 pub mod annotate;
+pub mod decomp_cache;
 pub mod dump;
 pub mod ir_cache;
 #[cfg(feature = "live")]
@@ -36,6 +40,7 @@ pub mod rtti_syms;
 pub mod selection;
 pub mod session;
 pub mod table;
+pub mod types_db;
 pub mod xref_index;
 
 /// Guards `std::env::set_current_dir` across every test in this crate.
@@ -101,6 +106,12 @@ impl ProjectRoot {
     /// `ir-cache/` so the CFG cache's generation sweep never touches it.
     pub fn xref_index_dir(&self) -> PathBuf {
         self.dir.join("xref-index")
+    }
+
+    /// The decompilation-result cache (`decomp pseudo` acceleration). Kept
+    /// separate from `ir-cache/` so each store sweeps its own generation.
+    pub fn decomp_cache_dir(&self) -> PathBuf {
+        self.dir.join("decomp-cache")
     }
 
     /// Imported IL2CPP symbol indices (Phase 12), one JSON file per named

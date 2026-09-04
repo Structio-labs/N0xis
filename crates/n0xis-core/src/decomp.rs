@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`DecompPass`] — the top of the pipeline: wires lift → SSA → (optimize) →
 //! (structure) → render into the three `decomp pseudo` styles
 //! (`docs/CLI_COMMANDS.md`): `goto` (flat, labeled), `structured`
@@ -16,6 +19,38 @@ use serde::Serialize;
 use crate::ir::CfgArtifact;
 use crate::optimize::{OptDeltaEntry, OptimizePass};
 use crate::render::{c_type, render_condition, render_stmt, RenderNames};
+
+/// Process memo for "which class names did RTTI recover a vtable for" — the set
+/// consulted to synthesize a `vftable` field at offset 0.
+///
+/// Building it per decompile hashed **every** class name (57k on a Qt/MSVC
+/// target) to answer the 0–2 membership questions one function actually asks.
+/// Keyed by the source label plus the symbol fingerprint, so a re-`analyze` that
+/// changes the recovered classes invalidates it — the same discipline as the
+/// vtable map and callee-type memos.
+type VtableClassMemo = Option<(String, std::sync::Arc<std::collections::HashSet<String>>)>;
+static VTABLE_CLASSES: std::sync::Mutex<VtableClassMemo> = std::sync::Mutex::new(None);
+
+fn vtable_class_set(ctx: &Ctx) -> std::sync::Arc<std::collections::HashSet<String>> {
+    let id = format!(
+        "{}|{}|{}",
+        ctx.source.label(),
+        ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
+        ctx.vtables.map_or(0, |v| v.len()),
+    );
+    if let Ok(memo) = VTABLE_CLASSES.lock()
+        && let Some((cached, set)) = memo.as_ref()
+        && *cached == id
+    {
+        return std::sync::Arc::clone(set);
+    }
+    let set: std::collections::HashSet<String> = ctx.vtables.map(|m| m.values().cloned().collect()).unwrap_or_default();
+    let arc = std::sync::Arc::new(set);
+    if let Ok(mut memo) = VTABLE_CLASSES.lock() {
+        *memo = Some((id, std::sync::Arc::clone(&arc)));
+    }
+    arc
+}
 use crate::ssa::{SsaBlock, SsaPass};
 use crate::structure::structure;
 use crate::typeinfer::{RecoveredSignature, TypeArtifact, TypeInferInput, TypeInferPass};
@@ -62,6 +97,24 @@ pub struct DecompInput {
     /// back to an address — [`crate::ProvenancePass`] extracts a block's pseudo-C
     /// by that very comment — and **on** for display / agent-facing output.
     pub strip_block_labels: bool,
+    /// User renames of this function's variables, keyed by the variable's current
+    /// **displayed** name (`local_78`, `rcx`, `v3`) → the chosen name. Empty for
+    /// every internal caller; the frontend fills it from `.n0x/annotations.json`
+    /// so a rename reaches the signature, the local declarations, and the body
+    /// alike. Pure-core stays pure: the map is passed in, never read from disk here.
+    pub var_names: std::collections::HashMap<String, String>,
+    /// User C-type overrides for this function, keyed by the variable's
+    /// **synthesized** name (`local_78`, `rcx`, `v3`) → a C-type string, plus the
+    /// reserved key `"@return"` for the return type (`"void"`/empty → `void`).
+    /// Applied before the rename pass and rendered verbatim in the signature and
+    /// the local declarations. Same pure-core discipline as `var_names`.
+    pub var_types: std::collections::HashMap<String, String>,
+    /// The project's struct catalog: `struct name → (field offset → field name)`.
+    /// When a parameter is typed (by the user via `var_types`, or by RTTI
+    /// inference) as a pointer to one of these, its field accesses render the real
+    /// field name (`this->count`) instead of `this->field_0x68`. Empty for callers
+    /// with no defined types.
+    pub struct_defs: std::collections::HashMap<String, std::collections::BTreeMap<i64, String>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -104,13 +157,95 @@ impl Pass for DecompPass {
         // propagation/DCE resolve pointer origins that raw SSA leaves as
         // opaque — then applied to whichever style's own IR is rendered.
         let opt = OptimizePass.run(ctx, ssa.clone())?;
-        let types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone() })?;
+        let mut types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone() })?;
+        // Apply user C-type overrides FIRST (while names are still the synthesized
+        // keys the overrides are stored under): a local gets a `type_override`, a
+        // parameter's `ty` is replaced, and `"@return"` sets the signature return.
+        // Rendered verbatim in the decl block and the signature.
+        if !input.var_types.is_empty() {
+            for l in types.locals.iter_mut() {
+                if let Some(t) = input.var_types.get(&l.name).filter(|t| !t.trim().is_empty()) {
+                    l.type_override = Some(t.clone());
+                }
+            }
+            for p in types.signature.params.iter_mut() {
+                if let Some(t) = input.var_types.get(&p.name).filter(|t| !t.trim().is_empty()) {
+                    p.ty = crate::typeinfer::CType::named(t.clone());
+                }
+            }
+            if let Some(rt) = input.var_types.get("@return") {
+                types.signature.ret = match rt.trim() {
+                    "" | "void" => None,
+                    other => Some(crate::typeinfer::CType::named(other.to_string())),
+                };
+            }
+        }
+        // Apply user variable renames onto the recovered types up front, so the
+        // signature line and the typed-local declarations pick them up too (not
+        // just the body). Keyed by the default displayed name (`local_78`, the
+        // register for a parameter); the render-site overlay below then covers the
+        // coalesced `vN` / raw SSA names that never pass through `types`.
+        if !input.var_names.is_empty() {
+            for l in types.locals.iter_mut() {
+                if let Some(u) = input.var_names.get(&l.name) {
+                    l.name = u.clone();
+                }
+            }
+            for p in types.signature.params.iter_mut() {
+                if let Some(u) = input.var_names.get(&p.name) {
+                    p.name = u.clone();
+                }
+            }
+        }
         let mut names = RenderNames::new(&cfg.callsites).with_types(&types);
+        // Bind struct field names: for each recovered struct base var, if its ROOT
+        // register matches a parameter typed (by user or RTTI) as a pointer to a
+        // struct, attach that struct's field-name map — so `this->field_0x68`
+        // renders `this->count`. Field names come from the user's type catalog
+        // (`struct_defs`); additionally, a class that RTTI recovered a vtable for
+        // gets `vftable` synthesized at offset 0 (the vtable pointer a C++ object
+        // always carries there). Keyed by `p.reg`, stable across renames.
+        if !types.structs.is_empty() {
+            let param_ty: std::collections::HashMap<&str, &str> = types
+                .signature
+                .params
+                .iter()
+                .filter_map(|p| p.ty.name.as_deref().map(|n| (p.reg, n)))
+                .collect();
+            // Class names RTTI recovered a vtable for (for `vftable@0` synthesis).
+            let vtable_classes = vtable_class_set(ctx);
+            let mut binds: std::collections::HashMap<String, std::collections::BTreeMap<i64, String>> = std::collections::HashMap::new();
+            for rt in &types.structs {
+                let root = rt.base_var.split('.').next().unwrap_or(&rt.base_var);
+                // The base's type: a recovered parameter's type (inferred or user),
+                // OR a direct user `var_types` on the register/name — so a struct
+                // pointer that never became a formal parameter still binds.
+                let tystr = param_ty.get(root).map(|s| s.to_string()).or_else(|| input.var_types.get(root).cloned());
+                if let Some(tystr) = tystr {
+                    let sname = struct_name_of(&tystr);
+                    let mut fields = input.struct_defs.get(&sname).cloned().unwrap_or_default();
+                    if vtable_classes.contains(sname.as_str()) {
+                        fields.entry(0).or_insert_with(|| "vftable".to_string());
+                    }
+                    if !fields.is_empty() {
+                        binds.insert(rt.base_var.clone(), fields);
+                    }
+                }
+            }
+            if !binds.is_empty() {
+                names = names.with_struct_fields(binds);
+            }
+        }
+        if !input.var_names.is_empty() {
+            names = names.with_user_names(input.var_names.clone());
+        }
         // RTTI (ROADMAP Phase 10 item 7): if the frontend attached the recovered
-        // vtable map, a vtable constant renders as `&Class::vtable`. Cloned in
-        // (cheap — a handful of classes) so every render site shares it.
+        // vtable map, a vtable constant renders as `&Class::vtable`. Shared by
+        // `Arc` — a deep clone here cost 57k string allocations *per decompile*
+        // on a Qt/MSVC target (the map is one entry per class, not "a handful"),
+        // and freeing them showed up as the top destructor in a profile.
         if let Some(vtables) = ctx.vtables {
-            names = names.with_vtables(vtables.clone());
+            names = names.with_vtables(std::sync::Arc::clone(vtables));
         }
         // String-literal recovery: a constant that is the address of a printable
         // NUL-terminated string in the source renders as that C literal
@@ -278,11 +413,24 @@ fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> Str
 /// block honest: a local the optimizer removed (dead store, fully forwarded)
 /// leaves no reference to declare. The `local_XX` name matches the renderer's
 /// (both derive it from the offset — single source of truth).
+/// The struct name inside a pointer type string: `"Foo *"` → `"Foo"`,
+/// `"std::exception *"` → `"std::exception"`. Trailing `*` and whitespace only —
+/// a non-pointer type maps to itself (harmless; it just won't match a struct).
+fn struct_name_of(ty: &str) -> String {
+    ty.trim().trim_end_matches('*').trim().to_string()
+}
+
 fn local_decls(types: &TypeArtifact, body: &[String]) -> Vec<String> {
     let joined = body.join("\n");
     let mut locals: Vec<&crate::typeinfer::LocalVar> = types.locals.iter().filter(|l| joined.contains(&l.name)).collect();
     locals.sort_by_key(|l| l.offset);
-    locals.iter().map(|l| format!("    {} {};", c_type(l.size_bits, l.signed), l.name)).collect()
+    locals
+        .iter()
+        .map(|l| {
+            let ty = l.type_override.clone().unwrap_or_else(|| c_type(l.size_bits, l.signed).to_string());
+            format!("    {ty} {};", l.name)
+        })
+        .collect()
 }
 
 /// Drop the `// block_N: …` anchor comment from every block no `goto` jumps to
@@ -529,7 +677,7 @@ mod tests {
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
-        DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false }).unwrap()
+        DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
     }
 
     #[test]

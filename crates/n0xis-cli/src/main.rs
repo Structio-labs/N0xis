@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis — CLI frontend
 //!
 //! A thin clap frontend over `n0xis-pipeline`. It parses arguments, calls the
@@ -22,7 +25,7 @@ use n0xis_frontend::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_h
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::TableValueType;
 use n0xis_core::{
-    game_grep_rank, identify_f64, identify_u64, BindingsInput, BindingsPass,
+    game_grep_rank, identify_f64, identify_u64, parse_aob, AobByte, AobInput, AobScanPass, BindingsInput, BindingsPass,
     CfgInput, ConstMatch, Ctx, DecompInput, DecompPass, DecompStyle,
     DiscoverInput, DiscoverPass, Document,
     FilterCriterion,
@@ -153,6 +156,16 @@ enum Command {
     /// `[n0x]`-prefixed phase/progress JSON to stderr; resumable (content-
     /// addressed work already done is skipped). Static x64 PE (`--file`).
     Analyze(AnalyzeArgs),
+    /// Search the image for a byte pattern, a string, or an escaped string —
+    /// the "Find" a disassembler's Ctrl+F does. One of `--bytes` (scanner-style, with
+    /// `?`/`??` wildcards), `--string` (UTF-8; `--utf16` for wide), or `--escaped`
+    /// (`\xNN`, `\n`, `\t`, `\r`, `\0`, `\\`). Scans every file-backed section by
+    /// default; narrow with `--section`, or `--start`/`--size`.
+    Find(FindArgs),
+    /// Define named struct / enum types the decompiler uses to render struct
+    /// field names (`p->count` instead of `p->field_0x68`).
+    #[command(subcommand)]
+    Type(TypeCmd),
     /// Raw memory access.
     #[command(subcommand)]
     Mem(MemCmd),
@@ -1235,6 +1248,16 @@ enum AnnotateCmd {
     Type(AnnotateSetArgs),
     /// Assert (or clear) a free-text comment at an address.
     Comment(AnnotateSetArgs),
+    /// Rename (or clear) one decompiled variable on the function at `--addr`.
+    /// `--var` is the variable's current displayed name (`local_78`, `rcx`, `v3`).
+    Var(AnnotateVarArgs),
+    /// Set (or clear) the C type of one variable/param/return on the function at
+    /// `--addr`. `--var` is the variable's displayed name, or `@return` for the
+    /// return type; `--value` is a C-type string (e.g. `int`, `char *`, `Foo *`).
+    Vartype(AnnotateVarArgs),
+    /// Bookmark ("favorite") an address so it shows in the Bookmarks/Notes list.
+    /// `--off` removes the bookmark.
+    Bookmark(AnnotateBookmarkArgs),
     /// Show the current facts + full history for one address.
     Show(AnnotateShowArgs),
     /// List every annotated address.
@@ -1256,6 +1279,29 @@ struct AnnotateSetArgs {
 struct AnnotateShowArgs {
     #[arg(long)]
     addr: String,
+}
+
+#[derive(Args)]
+struct AnnotateBookmarkArgs {
+    #[arg(long)]
+    addr: String,
+    /// Remove the bookmark instead of setting it.
+    #[arg(long)]
+    off: bool,
+}
+
+#[derive(Args)]
+struct AnnotateVarArgs {
+    /// The function's start address (the address a decompile is addressed by).
+    #[arg(long)]
+    addr: String,
+    /// The variable's current displayed name in the decompiler (`local_78`,
+    /// `rcx`, `v3`).
+    #[arg(long)]
+    var: String,
+    /// New name; omit to clear the rename (revert to the synthesized name).
+    #[arg(long)]
+    value: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1745,6 +1791,87 @@ struct AnalyzeArgs {
     /// lazily on first view).
     #[arg(long)]
     no_cfg: bool,
+}
+
+#[derive(Args)]
+struct FindArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Instruction set (only affects the `Ctx`; the scan itself is arch-neutral).
+    #[arg(long)]
+    arch: Option<String>,
+    /// Byte pattern, a memory scanner style with `?`/`??` wildcards: `"48 8B ?? C3"`.
+    #[arg(long)]
+    bytes: Option<String>,
+    /// A literal string to find (UTF-8 by default; pass `--utf16` for wide).
+    #[arg(long)]
+    string: Option<String>,
+    /// An escaped string: `\xNN` hex, plus `\n \t \r \0 \\ \"`.
+    #[arg(long)]
+    escaped: Option<String>,
+    /// Interpret `--string` as UTF-16LE (wide) instead of UTF-8.
+    #[arg(long)]
+    utf16: bool,
+    /// Restrict the search to one named section (e.g. `.rdata`). Default: every
+    /// file-backed section of the image.
+    #[arg(long)]
+    section: Option<String>,
+    /// Explicit start VA (with `--size`) instead of scanning sections.
+    #[arg(long)]
+    start: Option<String>,
+    /// Byte count to scan from `--start`.
+    #[arg(long)]
+    size: Option<usize>,
+    /// Report only matches whose address is a multiple of this (default 1).
+    #[arg(long, default_value_t = 1)]
+    align: usize,
+    /// Cap the matches returned (0 = no cap).
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
+}
+
+#[derive(Subcommand)]
+enum TypeCmd {
+    /// Define (or replace) a struct. Repeat `--field "OFFSET:NAME[:CTYPE]"`
+    /// (offset hex `0x68` or decimal). e.g. `--field 0x0:vftable:void* --field 0x68:count:int`.
+    Struct(TypeStructArgs),
+    /// Define (or replace) an enum. Repeat `--member "NAME=VALUE"`.
+    Enum(TypeEnumArgs),
+    /// List every defined struct and enum.
+    List,
+    /// Remove a struct or enum by name.
+    Rm(TypeRmArgs),
+}
+
+#[derive(Args)]
+struct TypeStructArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long = "field")]
+    fields: Vec<String>,
+    /// Optional total size (hex or decimal).
+    #[arg(long)]
+    size: Option<String>,
+}
+
+#[derive(Args)]
+struct TypeEnumArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long = "member")]
+    members: Vec<String>,
+}
+
+#[derive(Args)]
+struct TypeRmArgs {
+    #[arg(long)]
+    name: String,
 }
 
 #[derive(Subcommand)]
@@ -2401,6 +2528,11 @@ fn main() {
 fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
     match command {
         Command::Analyze(a) => cmd_analyze(a, pretty, quiet),
+        Command::Find(a) => cmd_find(a, pretty),
+        Command::Type(TypeCmd::Struct(a)) => cmd_type_struct(a, pretty),
+        Command::Type(TypeCmd::Enum(a)) => cmd_type_enum(a, pretty),
+        Command::Type(TypeCmd::List) => run_capability("type.list", json!({}), pretty),
+        Command::Type(TypeCmd::Rm(a)) => run_capability("type.rm", json!({ "name": a.name }), pretty),
         Command::Doctor => cmd_doctor(pretty),
         Command::Profile(a) => cmd_profile(a, pretty),
         Command::Guide(a) => cmd_guide(a, pretty),
@@ -2452,6 +2584,9 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
         Command::Annotate(AnnotateCmd::Name(a)) => cmd_annotate_set("name", a, pretty),
         Command::Annotate(AnnotateCmd::Type(a)) => cmd_annotate_set("type", a, pretty),
         Command::Annotate(AnnotateCmd::Comment(a)) => cmd_annotate_set("comment", a, pretty),
+        Command::Annotate(AnnotateCmd::Var(a)) => cmd_annotate_var(a, pretty),
+        Command::Annotate(AnnotateCmd::Vartype(a)) => cmd_annotate_vartype(a, pretty),
+        Command::Annotate(AnnotateCmd::Bookmark(a)) => cmd_annotate_bookmark(a, pretty),
         Command::Annotate(AnnotateCmd::Show(a)) => cmd_annotate_show(a, pretty),
         Command::Annotate(AnnotateCmd::List) => cmd_annotate_list(pretty),
         Command::Annotate(AnnotateCmd::Rm(a)) => cmd_annotate_rm(a, pretty),
@@ -2521,7 +2656,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "type" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory (a memory scanner class)",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -3230,6 +3365,200 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     emit(&Response::success(schema::v1::ANALYZE, data).with_source(label), pretty)
 }
 
+/// Parse a BN-style escaped string into raw bytes: `\xNN` (two hex digits), plus
+/// `\n \t \r \0 \\ \"`. Any other `\X` keeps the backslash then `X` verbatim.
+fn parse_escaped(s: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut ch = s.chars().peekable();
+    while let Some(c) = ch.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match ch.next() {
+            Some('x') => {
+                let hex: String = (0..2).map_while(|_| ch.next()).collect();
+                if hex.len() != 2 {
+                    return Err("`\\x` needs two hex digits".to_string());
+                }
+                out.push(u8::from_str_radix(&hex, 16).map_err(|_| format!("bad hex escape \\x{hex}"))?);
+            }
+            Some('n') => out.push(b'\n'),
+            Some('t') => out.push(b'\t'),
+            Some('r') => out.push(b'\r'),
+            Some('0') => out.push(0),
+            Some('\\') => out.push(b'\\'),
+            Some('"') => out.push(b'"'),
+            Some(other) => {
+                out.push(b'\\');
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => return Err("trailing backslash".to_string()),
+        }
+    }
+    Ok(out)
+}
+
+/// Build the search pattern from exactly one of `--bytes` / `--string` /
+/// `--escaped`. A string/escaped search is an exact byte match; `--bytes` may
+/// carry `?`/`??` wildcards.
+fn build_find_pattern(a: &FindArgs) -> Result<Vec<AobByte>, (String, String)> {
+    let modes = [a.bytes.is_some(), a.string.is_some(), a.escaped.is_some()].iter().filter(|b| **b).count();
+    if modes == 0 {
+        return Err(("no-pattern".into(), "provide one of --bytes, --string, or --escaped".into()));
+    }
+    if modes > 1 {
+        return Err(("ambiguous-pattern".into(), "provide exactly one of --bytes / --string / --escaped".into()));
+    }
+    if let Some(b) = &a.bytes {
+        return parse_aob(b).map_err(|e| ("bad-bytes".into(), e));
+    }
+    let raw: Vec<u8> = if let Some(s) = &a.string {
+        if a.utf16 {
+            s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+        } else {
+            s.as_bytes().to_vec()
+        }
+    } else {
+        parse_escaped(a.escaped.as_deref().unwrap_or_default()).map_err(|e| ("bad-escaped".into(), e))?
+    };
+    Ok(raw.into_iter().map(AobByte::Exact).collect())
+}
+
+/// `find` — the disassembler's Ctrl+F: locate a byte pattern / string / escaped
+/// string across the image's file-backed sections (or a named section / explicit
+/// range). Built on the same [`AobScanPass`] the `aob` hooking scan uses — one
+/// byte-scan primitive, two front-ends.
+fn cmd_find(a: FindArgs, pretty: bool) -> bool {
+    let pattern = match build_find_pattern(&a) {
+        Ok(p) => p,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    if pattern.is_empty() {
+        return ir_err("empty-pattern", "the search pattern is empty", pretty);
+    }
+    let explicit_start = a.start.as_deref().and_then(|s| Va::parse(s).ok());
+    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, a.snapshot.as_deref(), a.remote_cmd.as_deref(), explicit_start.unwrap_or(Va(0))) {
+        Ok(x) => x,
+        Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let arch = match resolve_arch(a.arch.as_deref()) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
+
+    // The ranges to scan: an explicit `--start`/`--size`, one `--section`, or —
+    // by default — every file-backed section of a static image.
+    let ranges: Vec<(String, Va, u64)> = if let (Some(st), Some(sz)) = (explicit_start, a.size) {
+        vec![("range".to_string(), st, sz as u64)]
+    } else if let Some(sec) = a.section.as_deref() {
+        match &src {
+            Src::Static(pe) => match pe.section_range(sec) {
+                Some((s, z)) => vec![(sec.to_string(), s, z)],
+                None => return ir_err("no-section", &format!("no section named {sec:?} in the image"), pretty),
+            },
+            _ => return ir_err("no-section", "--section needs a static --file image", pretty),
+        }
+    } else {
+        match &src {
+            Src::Static(pe) => pe.sections(),
+            _ => return ir_err("no-range", "provide --start and --size (or --file for a whole-image search)", pretty),
+        }
+    };
+
+    let limit = if a.limit == 0 { usize::MAX } else { a.limit };
+    let align = a.align.max(1) as u64;
+    let scan = |ctx: &Ctx| -> (Vec<(Va, String)>, usize, bool) {
+        let mut matches: Vec<(Va, String)> = Vec::new();
+        let mut scanned = 0usize;
+        let mut truncated = false;
+        for (name, start, size) in &ranges {
+            if *size == 0 || matches.len() >= limit {
+                if matches.len() >= limit {
+                    truncated = true;
+                }
+                continue;
+            }
+            if let Ok(art) = AobScanPass.run(ctx, AobInput { start: *start, size: *size as usize, pattern: pattern.clone() }) {
+                scanned += art.bytes_scanned;
+                for m in art.matches {
+                    if align <= 1 || (m.0.wrapping_sub(start.0)) % align == 0 {
+                        matches.push((m, name.clone()));
+                        if matches.len() >= limit {
+                            truncated = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        (matches, scanned, truncated)
+    };
+
+    let (matches, scanned, truncated) = match &src {
+        Src::Static(pe) => scan(&Ctx::new(pe.as_ref(), arch.as_ref())),
+        Src::Live(l) => scan(&Ctx::new(l.as_ref(), arch.as_ref())),
+        Src::Snap(s) => scan(&Ctx::new(s, arch.as_ref())),
+        Src::Remote(r) => scan(&Ctx::new(r.as_ref(), arch.as_ref())),
+    };
+
+    let data = json!({
+        "count": matches.len(),
+        "bytes_scanned": scanned,
+        "pattern_len": pattern.len(),
+        "truncated": truncated,
+        "matches": matches.iter().map(|(va, sec)| json!({ "va": va.to_string(), "section": sec })).collect::<Vec<_>>(),
+    });
+    emit(&Response::success(schema::v1::FIND, data).with_source(label), pretty)
+}
+
+/// Parse a signed offset token — `0x68`, `104`, or `-0x8`.
+fn parse_offset(tok: &str) -> Result<i64, String> {
+    let t = tok.trim();
+    let (neg, body) = t.strip_prefix('-').map(|b| (true, b)).unwrap_or((false, t));
+    let v = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16)
+    } else {
+        body.parse::<i64>()
+    }
+    .map_err(|_| format!("bad offset {tok:?}"))?;
+    Ok(if neg { -v } else { v })
+}
+
+fn cmd_type_struct(a: TypeStructArgs, pretty: bool) -> bool {
+    let mut fields = Vec::new();
+    for f in &a.fields {
+        let parts: Vec<&str> = f.splitn(3, ':').collect();
+        if parts.len() < 2 {
+            return ir_err("bad-field", &format!("field {f:?} must be OFFSET:NAME[:CTYPE]"), pretty);
+        }
+        let offset = match parse_offset(parts[0]) {
+            Ok(o) => o,
+            Err(e) => return ir_err("bad-field", &e, pretty),
+        };
+        fields.push(json!({ "offset": offset, "name": parts[1], "ctype": parts.get(2).copied().unwrap_or("") }));
+    }
+    let size = a.size.as_deref().and_then(|s| parse_offset(s).ok()).filter(|v| *v >= 0).map(|v| v as u64);
+    run_capability("type.struct", json!({ "name": a.name, "size": size, "fields": fields }), pretty)
+}
+
+fn cmd_type_enum(a: TypeEnumArgs, pretty: bool) -> bool {
+    let mut members = Vec::new();
+    for m in &a.members {
+        let Some((name, val)) = m.split_once('=') else {
+            return ir_err("bad-member", &format!("member {m:?} must be NAME=VALUE"), pretty);
+        };
+        let value = match parse_offset(val) {
+            Ok(v) => v,
+            Err(e) => return ir_err("bad-member", &e, pretty),
+        };
+        members.push(json!({ "name": name.trim(), "value": value }));
+    }
+    run_capability("type.enum", json!({ "name": a.name, "members": members }), pretty)
+}
+
 fn cmd_rtti_scan(a: RttiScanArgs, pretty: bool) -> bool {
     run_capability(
         "rtti.scan",
@@ -3702,6 +4031,21 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
     run_disasm(&snap, start, a.count, arch.as_ref(), pretty)
 }
 
+/// The user's per-address comments (`.n0x/annotations.json`), as `va → text`.
+/// Empty (never an error) when there is no project or nothing is commented, so a
+/// listing over a bare `--bytes` source or outside a project simply carries none.
+fn annotate_comment_map() -> std::collections::BTreeMap<u64, String> {
+    let mut map = std::collections::BTreeMap::new();
+    if let Ok(records) = n0xis_project::annotate::list() {
+        for rec in records {
+            if let Some(c) = rec.comment.filter(|c| !c.trim().is_empty()) {
+                map.insert(rec.va.0, c);
+            }
+        }
+    }
+    map
+}
+
 /// Disassemble ~`count` instructions from `start` over any memory source and
 /// emit the `n0xis.decode.v1` envelope. The single place all `disasm` sources
 /// converge — proving the "one pipeline, any source" thesis at the frontend.
@@ -3709,10 +4053,31 @@ fn run_disasm(source: &dyn MemorySource, start: Va, count: usize, arch: &dyn Arc
     let label = source.label();
     let pipe = Pipeline::new(source, arch);
     match pipe.disassemble(start, count) {
-        Ok(out) => emit(
-            &Response::success(schema::v1::DECODE, out).with_source(label),
-            pretty,
-        ),
+        Ok(out) => {
+            // Attach the user's per-address comments to the rows that carry them,
+            // so an `annotate comment` shows inline in the listing (and the GUI's
+            // linear view, which fetches through this same path). The instruction
+            // text stays the raw decoded form; the comment rides in its own field.
+            let comments = annotate_comment_map();
+            let mut val = match serde_json::to_value(&out) {
+                Ok(v) => v,
+                Err(e) => return emit(&Response::<serde_json::Value>::error("encode-failed", e.to_string()), pretty),
+            };
+            if !comments.is_empty()
+                && let Some(insns) = val.get_mut("insns").and_then(|v| v.as_array_mut())
+            {
+                for insn in insns {
+                    let va = insn.get("va").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok());
+                    if let Some(va) = va
+                        && let Some(text) = comments.get(&va.0)
+                        && let Some(obj) = insn.as_object_mut()
+                    {
+                        obj.insert("comment".into(), json!(text));
+                    }
+                }
+            }
+            emit(&Response::success(schema::v1::DECODE, val).with_source(label), pretty)
+        }
         Err(e) => emit(
             &Response::<serde_json::Value>::error("decode-failed", e.to_string()),
             pretty,
@@ -4184,6 +4549,18 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
 
 fn cmd_annotate_set(field: &str, a: AnnotateSetArgs, pretty: bool) -> bool {
     run_capability("annotate.set", json!({ "field": field, "addr": a.addr, "value": a.value }), pretty)
+}
+
+fn cmd_annotate_var(a: AnnotateVarArgs, pretty: bool) -> bool {
+    run_capability("annotate.var", json!({ "addr": a.addr, "var": a.var, "value": a.value }), pretty)
+}
+
+fn cmd_annotate_vartype(a: AnnotateVarArgs, pretty: bool) -> bool {
+    run_capability("annotate.vartype", json!({ "addr": a.addr, "var": a.var, "value": a.value }), pretty)
+}
+
+fn cmd_annotate_bookmark(a: AnnotateBookmarkArgs, pretty: bool) -> bool {
+    run_capability("annotate.bookmark", json!({ "addr": a.addr, "on": !a.off }), pretty)
 }
 
 fn cmd_annotate_show(a: AnnotateShowArgs, pretty: bool) -> bool {
@@ -5286,7 +5663,7 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
         let pf = DecompPass
-            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto, explain: false, strip_block_labels: false })
+            .run(ctx, DecompInput { cfg, style: DecompStyle::Goto, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
             .map_err(|e| ("decomp-failed".to_string(), e.to_string()))?;
         Ok(pf.pseudo)
     };
