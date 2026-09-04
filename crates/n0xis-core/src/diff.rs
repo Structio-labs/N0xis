@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`DiffPass`] — line-level structural diffing (ROADMAP Phase 7: "Diffing
 //! two binaries/versions at the IR/pseudo level, agent-friendly change
 //! reports").

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`CfgPass`] — control-flow graph + block/def-use IR.
 //!
 //! The first real analysis pass. Over the [`Arch`](n0xis_arch::Arch) and source

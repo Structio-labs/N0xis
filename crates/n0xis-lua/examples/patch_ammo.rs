@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Ad hoc: patch the real firearm ammo component's `infinite_mags` check
 //! (proto#6, instr idx=129: `TGETS r9, r8, "infinite_mags"` -> `KPRI r9, true`)
 //! so the reload code always takes the "skip the num_mags decrement" branch.

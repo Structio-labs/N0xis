@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-contracts
 //!
 //! The **single source of truth** for everything that crosses a boundary in

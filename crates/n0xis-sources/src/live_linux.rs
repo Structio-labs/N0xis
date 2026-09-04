@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The Linux/Android side of the live-target seam — `/proc/<pid>/maps` for the
 //! address-space model, `process_vm_readv`/`writev` for the bytes.
 //!

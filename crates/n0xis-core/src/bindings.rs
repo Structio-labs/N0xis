@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `bindings list` — enumerate a script VM's native bindings by pairing each
 //! registration *name* string with the C function pointer registered under it
 //! (ROADMAP Phase 8, generalizes RE_METHOD W2).

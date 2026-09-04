@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Content-addressed reverse-xref index under `.n0x/xref-index/<key>.json` — the
 //! store that turns `xref to` from a full code-section re-scan into a map lookup.
 //! Same storage-only split as [`ir_cache`](crate::ir_cache): raw string in, raw

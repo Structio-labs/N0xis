@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Key sender backed by the [Interception](https://github.com/oblitum/Interception)
 //! kernel driver, dynamically loaded at runtime (no build-time link, no
 //! hardcoded install path — the anti-hardcode rule: the DLL path is a

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! LuaJIT object model — `TValue` decoding and `GCtab` (Lua table) traversal,
 //! parameterized by a [`LuaLayout`] so the same logic serves different builds.
 //!

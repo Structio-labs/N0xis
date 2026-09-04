@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`LiveProcess`] — a Win32-backed [`MemorySource`] over a running process.
 //!
 //! The **only** OS-linked adapter, gated behind the `live` feature so the

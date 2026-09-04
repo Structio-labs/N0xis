@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Background process watcher: detects the configured game launching (and
 //! relaunching) and drives each adapter plugin's auto-apply, writing straight
 //! into the shared [`Engine`] so state is current even when the UI isn't

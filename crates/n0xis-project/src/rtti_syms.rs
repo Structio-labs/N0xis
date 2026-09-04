@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Recovered-symbol store (`.n0x/rtti-symbols.json`) — the class names the
 //! `analyze` pass recovers from MSVC RTTI, persisted as an address→name map so
 //! the decompiler can render them without re-scanning `.rdata` on every view.

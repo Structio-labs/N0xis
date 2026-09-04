@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **Phase 6 exit test (RemoteAgent slice)**: `mem read --remote-cmd "<n0xis>
 //! remote-serve --pid <p>"` must return the exact same bytes as `mem read
 //! --pid <p>` directly — proving the whole remote transport (spawn the real

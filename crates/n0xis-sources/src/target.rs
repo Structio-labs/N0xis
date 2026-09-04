@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The **live-target seam** — what "a running process" means, with no OS in
 //! the signature.
 //!

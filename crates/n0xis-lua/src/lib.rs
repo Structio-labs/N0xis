@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-lua — Lua/LuaJIT bytecode disassembler
 //!
 //! Decodes a LuaJIT 2.0 bytecode dump (`\x1bLJ` + version `1` — the format

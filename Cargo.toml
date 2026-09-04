@@ -12,9 +12,9 @@ members = ["crates/*"]
 exclude = ["archive/n0x-cli-rs-v0", "crates/n0xis-net"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
-license = "AGPL-3.0-only"
+license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/LargoScript/n0xis"
 rust-version = "1.90"
 

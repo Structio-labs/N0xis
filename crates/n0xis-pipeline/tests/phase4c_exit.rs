@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 4c exit test** (ROADMAP P4c / CONCEPT §11): "agent goes
 //! 'find & freeze HP' → explained provenance + verified freeze entry in
 //! `.n0xt`, end-to-end, no human bridging static/dynamic."

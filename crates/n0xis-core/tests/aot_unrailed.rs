@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Live validation of the NativeAOT reader against the Unrailed 2 image.
 //! Skips cleanly when the game isn't installed on this machine.
 

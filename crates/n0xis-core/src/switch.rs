@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Memory-side jump-table resolution — the edge static tools lack.
 //!
 //! The arch recognizes the *shape* of a switch dispatch ([`SwitchDispatch`])

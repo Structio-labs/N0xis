@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`TracePass`] — breadth-first call-graph walk from a root (`function trace`).
 //!
 //! Starting at `root`, builds the CFG for each visited function (via

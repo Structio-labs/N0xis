@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! SSA-version coalescing (ROADMAP Rung 3b) — turn a register's phi-web of
 //! versions (`rcx.1`/`rcx.2`/`rcx.3`, the loop-carried counter) back into one
 //! named variable, the source-level readable-locals win:

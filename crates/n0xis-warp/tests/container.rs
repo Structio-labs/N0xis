@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Verifies the WARP container reader against Vector 35's reference `warp` crate.
 //!
 //! `fixtures/random.warp` is Vector 35's own fixture; `fixtures/random.expected.txt`

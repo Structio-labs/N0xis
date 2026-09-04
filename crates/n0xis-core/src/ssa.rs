@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`SsaPass`] — dominance-frontier phi insertion + renaming over
 //! [`LiftedFunction`](crate::LiftedFunction), producing `n0xis.ir.ssa.v1`.
 //!

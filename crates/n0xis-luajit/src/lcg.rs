@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Linear-congruential RNG model + a seed brute-forcer.
 //!
 //! Some engines (Bitsquid/Stingray's `Math.next_random` among them) derive a

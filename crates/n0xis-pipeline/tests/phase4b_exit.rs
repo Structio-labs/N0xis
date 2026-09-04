@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 4b exit test** (ROADMAP P4b / CONCEPT §9-10): "headless
 //! scan→filter→freeze loop on a live target, results saved to `.n0xt`."
 //!

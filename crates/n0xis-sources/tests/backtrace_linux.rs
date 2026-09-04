@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! End-to-end proof of the ELF/DWARF unwinder on a real live process.
 //!
 //! Runs only under `--features live` on Linux/Android. It spawns a child

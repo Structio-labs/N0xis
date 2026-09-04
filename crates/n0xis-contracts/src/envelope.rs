@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The universal output envelope: every command / MCP tool returns either
 //! `{ ok: true, data, meta }` or `{ ok: false, error }`. This is the stable
 //! contract agents parse; it is defined **once**, here.

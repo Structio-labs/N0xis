@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Win32 debug API: arm a software breakpoint (`int3`) and block until it
 //! fires — `debug await-hit`. The agent sets the breakpoint, something in the
 //! target triggers it (a human pressing a key in a game, another automated

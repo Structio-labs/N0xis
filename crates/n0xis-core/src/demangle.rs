@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Symbol demangling — Rust ([`rustc_demangle`]), MSVC ([`msvc_demangler`]),
 //! and Itanium C++ ([`cpp_demangle`]). A pure string transform (no OS/ISA
 //! knowledge), tried in that order; falls through to the original name

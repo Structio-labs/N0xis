@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Window enumeration, capture, and focus for the target process (ROADMAP
 //! Phase 9 — agent target-selection tooling). This is the read-side helper an
 //! AI agent uses to *see* the target and name a window before driving

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`FlirtSymbols`] — a [`SymbolProvider`] backed by an [`n0xis_flirt::Db`]:
 //! names a function by matching its **bytes** against a signature database, the
 //! way another tool FLIRT / another tool FunctionID name the statically-linked CRT/STL that a

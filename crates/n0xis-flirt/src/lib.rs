@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `n0xis-flirt` — a clean-room library-function **signature matcher** in the
 //! spirit of another tool's FLIRT and another tool's FunctionID: fingerprint the bytes of an
 //! unnamed function and recover its real name (`free`, `memcpy`,

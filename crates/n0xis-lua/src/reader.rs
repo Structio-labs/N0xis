@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! A bounds-checked byte reader with LuaJIT's two ULEB128 flavors. Every read
 //! returns `Result`, never panics on a short/malformed chunk — the same
 //! discipline as `n0xis-sources::unwind`'s `Cursor` and

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! AOB (array-of-bytes) signature scanning with wildcards (ROADMAP Phase 4b)
 //! — used for code-cave/anchor discovery and version-resilient hooking (an
 //! AOB signature survives a patch/recompile that a raw address wouldn't).

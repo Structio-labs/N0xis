@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The dump header — `header = ESC 'L' 'J' versionB flagsU [namelenU
 //! nameB*]` per `lj_bcdump.h`, read exactly as `lj_bcread.c: bcread_header`.
 

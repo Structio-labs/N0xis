@@ -193,4 +193,17 @@ Full phase-by-phase history and the decompiler-depth plan (Phase 10): **[ROADMAP
 
 ## License
 
-[**AGPL-3.0-only**](LICENSE). *Using* it is unrestricted — including commercial RE, with no obligation to share anything; the copyleft only binds *distribution* of a modified build. Copyright is held solely by the author, so a commercial license is available on request.
+N0xis is **source-available** software, developed under the Structio name.
+
+- **Free for noncommercial use** — personal projects, research, education,
+  CTFs, hobby reverse engineering, and use by noncommercial organizations,
+  under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+- **Commercial use requires a paid license.** If you use N0xis in a company,
+  as part of paid work, or in any activity intended for commercial advantage,
+  see [COMMERCIAL.md](COMMERCIAL.md).
+
+Versions up to and including 0.2.1 were released under AGPL-3.0 and remain
+available under those terms. This license applies to 0.3.0 and later.
+
+Not sure whether your use case is commercial? Open an issue or email
+<structio.dev@gmail.com> — I'd rather answer a question than chase a violation.

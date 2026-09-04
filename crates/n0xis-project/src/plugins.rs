@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Registered analysis plugins under `.n0x/plugins.json` — durable `name` →
 //! spawn command bindings an agent registers once
 //! (`docs/COMMUNITY_ROADMAP.md`'s "Plugin system"). Storage only: actually

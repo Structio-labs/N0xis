@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Backward register slice over a built CFG (`ir slice`).
 //!
 //! Given a query point and a register, walk the intra-block def-use chains

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `X64::lift` / `X64::branch_condition` — the x86-64 instruction → micro-IR
 //! lowering. Kept in its own file (rather than inline in `x64.rs`) purely for
 //! size; it is still x64-only ISA knowledge, so it stays behind the `Arch`

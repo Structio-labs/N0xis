@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The seed of the Linux debug adapter: capturing a thread's live register
 //! file via `ptrace` — the one OS-specific piece the portable stack unwinder
 //! ([`crate::unwind`]) needs but cannot provide itself.

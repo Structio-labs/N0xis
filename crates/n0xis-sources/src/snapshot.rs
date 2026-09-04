@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`Snapshot`] — an in-memory [`MemorySource`] / [`SymbolProvider`] /
 //! [`ModuleProvider`]. Zero OS dependencies: the test double the analysis core
 //! is validated against, **and** (ROADMAP Phase 6) the reproducible-offline

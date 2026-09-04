@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Generic periodic background poller for `[[adapters]]` bindings that
 //! declare a `poll_ms` interval (`docs/COMMUNITY_ROADMAP.md`'s "Plugin
 //! system"). The host only owns the cadence — each due binding gets a single

@@ -7,7 +7,7 @@ aliases: [Index, Project Map, Hub, MOC]
 
 Central navigation hub (map-of-content) for **N0xis** — a CLI-driven reverse-engineering + live-memory toolkit. Open this folder (`D:\Projects\N0x\`) as an **Obsidian vault** for backlinks, the graph view, and bidirectional navigation across every document below.
 
-N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a cheat/trainer maker. Status: **alpha**, AGPL-3.0-only, public at `github.com/LargoScript/n0xis`.
+N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a cheat/trainer maker. Status: **alpha**, PolyForm Noncommercial 1.0.0, public at `github.com/Structio-labs/N0xis`.
 
 > Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[CAPABILITIES]] · [[PRODUCT_POLICY]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `.n0xt` tables under `.n0x/tables/<name>.n0xt` (CONCEPT §10) — JSON-
 //! serialized `n0xis_contracts::Table`. Storage only, same split as
 //! [`crate::patch`]/[`crate::selection`]: resolving a locator to a live

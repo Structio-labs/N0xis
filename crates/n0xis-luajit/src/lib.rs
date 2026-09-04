@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-luajit — live LuaJIT VM introspection
 //!
 //! Finds LuaJIT GC objects directly in a running process's heap by decoding

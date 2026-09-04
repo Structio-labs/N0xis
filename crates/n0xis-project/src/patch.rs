@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Persisted patch journal under `.n0x/patches/` — the durable undo record.
 //!
 //! Each applied patch writes a `patch-<id>.json` capturing the before/after

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Graphviz DOT rendering of a built CFG (`ir dot`).
 //!
 //! A pure presentation over [`CfgArtifact`] — no source or arch needed, it just

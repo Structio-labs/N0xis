@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`OptimizePass`] — copy/const/expression propagation, constant folding,
 //! and DCE over [`SsaArtifact`], run to a (budgeted) fixpoint. Produces
 //! `n0xis.opt.delta.v1`: what each round of each sub-pass changed, so an

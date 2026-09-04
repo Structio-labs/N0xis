@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-bitsquid — the Bitsquid/Stingray bundle-format adapter
 //!
 //! Bitsquid/Stingray (the engine behind several shipped games) ships game

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Stack-frame prolog recognition — the ISA-specific shape of how a function
 //! sets up its frame. Purely structural (reads only the decoded instruction
 //! stream, never memory), so it lives here next to [`Arch::detect_switch`]

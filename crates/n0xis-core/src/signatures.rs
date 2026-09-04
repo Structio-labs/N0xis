@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! A known-API signature library (ROADMAP Phase 4) — real argument names and
 //! types for the Win32/CRT functions a game binary calls constantly, so a
 //! call site renders as `CreateFileW(/*lpFileName*/ rcx.0, /*dwDesiredAccess*/

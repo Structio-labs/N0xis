@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Generic plugin dispatch for `[[adapters]]` bindings
 //! (`docs/COMMUNITY_ROADMAP.md`'s "Plugin system"). `n0xis-hud` itself never
 //! compiles in game-specific logic: a binding's `command` spawns a

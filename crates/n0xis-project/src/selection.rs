@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Named memory-range selections under `.n0x/selections.json` — durable
 //! anchors an agent saves once (`name` → `[start, end)` + optional label) and
 //! refers back to instead of re-typing addresses across a session. Storage

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Well-known imports that never return control to their caller — used by
 //! [`crate::CfgPass`] to correctly end a basic block (instead of assuming
 //! normal fall-through) at a call to one of these, closing the gap ROADMAP

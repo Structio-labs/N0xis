@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `game grep <concept>` — rank a target's scripts/data/strings by how densely
 //! they cluster a concept's vocabulary (ROADMAP Phase 8, fixes RE_METHOD F2 —
 //! the campaign's root cause).

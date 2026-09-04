@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The currently-attached target under `.n0x/session.json` — lets one
 //! frontend's `attach` (typically `n0xis-mcp`, a long-lived server) set a
 //! default `pid`/`file` that other tool calls can omit, and lets the CLI and

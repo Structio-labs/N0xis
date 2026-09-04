@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **Phase 6 exit test (artifact caching slice)**: `cfg_cached` must (1) miss
 //! and populate the cache on the first call, (2) hit and return an identical
 //! artifact on a repeat call over unchanged bytes, and (3) miss again — never

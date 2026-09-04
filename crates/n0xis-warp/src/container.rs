@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Reading the WARP `.warp` container (feature `container`).
 //!
 //! A `.warp` file is a FlatBuffers `File → [Chunk]`; a signature chunk's payload

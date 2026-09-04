@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`RemoteAgent`] — a [`MemorySource`] that proxies to a **remote-serve**
 //! process over its stdin/stdout (ROADMAP Phase 6: "`RemoteAgent` source over
 //! SSH/Tailscale"). Deliberately generic over *how* that process is reached:

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`DecodePass`] — linear decode of a byte window into instructions. The first
 //! and simplest pass; it exercises the whole seam stack (source → arch) and is
 //! the foundation `disasm` and, later, CFG construction build on.

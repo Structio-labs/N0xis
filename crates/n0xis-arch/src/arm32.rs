@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `Arm32` — AArch32 / ARMv7 (A32 + Thumb), decode-only, via `yaxpeax-arm`.
 //!
 //! Our [`Arm64`](crate::Arm64) arch (disarm64) decodes **AArch64 only**; the

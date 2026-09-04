@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Runtime⇄static address reconciliation (ROADMAP Phase 4c) — the reusable
 //! service for converting an address computed against one module base (a
 //! live, ASLR-rebased process) into the equivalent address against another

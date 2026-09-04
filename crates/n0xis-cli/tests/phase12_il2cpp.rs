@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **Phase 12 exit test (item 0 — import an external managed index)**.
 //!
 //! The target is the test binary's own `n0xis.exe`: a real PE with a real

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-arch — the ISA seam
 //!
 //! Abstracts an instruction-set architecture behind [`Arch`]. The analysis in

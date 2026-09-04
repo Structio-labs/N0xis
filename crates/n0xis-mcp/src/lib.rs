@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-mcp — the agent-native frontend (Phase 5)
 //!
 //! An MCP (Model Context Protocol) server exposing the same

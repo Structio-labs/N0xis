@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `global-metadata.dat` — the managed half, read natively (Phase 12, item 1).
 //!
 //! ## Why this starts with a deliberately small slice

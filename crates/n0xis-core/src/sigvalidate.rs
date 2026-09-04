@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `sig validate` — refuse to bless a signature from fewer than 3 independent
 //! samples (ROADMAP Phase 8, fixes RE_METHOD F3).
 //!

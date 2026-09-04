@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Persistent artifact store under `.n0x/dumps/<kind>/<name>.<ext>` — where an
 //! agent parks IR/pseudo-C/hex/notes it wants to survive past the current
 //! session, addressable by name instead of a throwaway file path. Storage

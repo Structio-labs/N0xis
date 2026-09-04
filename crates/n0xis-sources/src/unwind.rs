@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Pure x64 (AMD64) stack unwinder — a from-scratch reimplementation of what
 //! `RtlVirtualUnwind` does, but **cross-process and dependency-free**.
 //!

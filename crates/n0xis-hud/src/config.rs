@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `.n0x/hud.toml` — the per-game HUD config (CONCEPT.md's "everything runs
 //! through `.n0x/`"). No key, cheat, or process name is ever hardcoded in the
 //! binary; it all comes from here.

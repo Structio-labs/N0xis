@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-sources — the source seam
 //!
 //! Replaces v0's `enum IrSource { Live, Static }` with traits. Whether bytes

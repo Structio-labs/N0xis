@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Stdout emission of the response envelope. The one place the CLI serializes.
 
 use n0xis_contracts::Response;

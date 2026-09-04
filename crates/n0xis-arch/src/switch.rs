@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Switch / jump-table *dispatch* description — the ISA-specific recognition of
 //! an indirect branch that implements a `switch`. Detection lives in the arch
 //! ([`Arch::detect_switch`](crate::Arch::detect_switch)); it yields this

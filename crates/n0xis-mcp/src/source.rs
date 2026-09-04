@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The MCP frontend's thin adaptation of the shared source seam.
 //!
 //! The resolution logic itself lives in [`n0xis_frontend::source`] — this file

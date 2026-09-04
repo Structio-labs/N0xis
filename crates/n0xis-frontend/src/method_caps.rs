@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Method-tooling capabilities: target inventory (`process.ps`,
 //! `module.list`) and the Phase 8 evidence tools (`sig.validate`).
 //!

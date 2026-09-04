@@ -420,9 +420,10 @@ Token policy (to keep brand consistent without breaking existing installs):
   The current command reference is [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md).
 - **Kept as-is for back-compat:** the project dir `.n0x/`, the `n0x.cmd` shim, and
   the `.n0xt` table extension (reads as "n0x table").
-- **License:** **AGPL-3.0-only**; the repo is public (a commercial license is
+- **License:** **PolyForm Noncommercial 1.0.0** — source-available, noncommercial
+  use only (not OSI open source); the repo is public (a commercial license is
   available on request).
 - **GitHub:** the public repo lives at
-  [`github.com/LargoScript/n0xis`](https://github.com/LargoScript/n0xis) (the bare
+  [`github.com/Structio-labs/N0xis`](https://github.com/Structio-labs/N0xis) (the bare
   `n0xis` username is a dormant squatter, so the project ships under the author's
   account rather than a dedicated org).

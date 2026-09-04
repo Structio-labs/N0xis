@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! A tiny bounds-checked byte-slice reader shared by [`crate::archive`] and
 //! [`crate::package`] — every read either returns exactly what was asked for
 //! or an error; nothing here ever panics or silently substitutes a placeholder

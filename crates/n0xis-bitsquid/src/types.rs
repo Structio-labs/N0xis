@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Known Bitsquid resource `type_hash` values. These are literal 64-bit
 //! constants baked into every bundle file — resolving what an entry's
 //! `type_hash` *means* is a table lookup, not a hash computation (unlike a

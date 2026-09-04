@@ -141,11 +141,16 @@ before you invest the implementation time.
 
 ## Licensing of contributions
 
-N0xis is [AGPL-3.0](LICENSE), and contributions are accepted under that same
-license — by opening a PR you're licensing your work to the project under it.
+N0xis is [PolyForm Noncommercial 1.0.0](LICENSE), and contributions are accepted
+under that same license — by opening a PR you're licensing your work to the
+project under it.
+
+By submitting a contribution, you grant Tymofii Kosovskyi a perpetual,
+worldwide, royalty-free license to use, modify, sublicense and distribute
+your contribution under any license, including commercial licenses.
 
 Copyright is currently held entirely by the author, which keeps a commercial
-license possible for users who can't take AGPL terms. To preserve that, a
+license possible for users who need commercial terms. To preserve that, a
 contributor licence agreement may be required before a non-trivial PR is
 merged. There's no CLA to sign yet — if that changes it'll be stated here and
 on the PR, never applied retroactively to work already merged.

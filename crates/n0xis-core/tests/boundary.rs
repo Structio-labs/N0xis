@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 1 exit test** (ROADMAP P1 / CONCEPT §4).
 //!
 //! Proves the seams hold: the analysis core decodes real instructions driven

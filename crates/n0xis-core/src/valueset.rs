@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`ValueSetPass`] — light value-set analysis over SSA (ROADMAP Phase 7:
 //! "Value-set / light alias analysis, better jump tables, pointer reasoning").
 //!

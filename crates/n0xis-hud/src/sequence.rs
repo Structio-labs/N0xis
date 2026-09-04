@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Variant A: replay a fixed direction combo by synthesizing key presses
 //! (`SendInput`), with a configurable per-step delay. The game's combo
 //! mini-game reads directional input each frame; we tap the mapped keys in

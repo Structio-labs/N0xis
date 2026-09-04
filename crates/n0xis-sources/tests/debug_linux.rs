@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! End-to-end proof of the Linux ptrace debug adapter on a real live child.
 //!
 //! Runs only under `--features live` on Linux/Android. Each test `fork()`s a

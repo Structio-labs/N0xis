@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Dominator-tree math shared by [`crate::SsaPass`] (dominance frontier → phi
 //! placement) and the control-structuring pass (natural loops, `if`/`else`
 //! merge points). One implementation so the two passes can never disagree on

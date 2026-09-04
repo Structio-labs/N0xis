@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Global low-level keyboard hook. It runs on its own thread and acts on key
 //! presses *directly* — toggling a cheat via the shared [`Engine`], or
 //! showing/hiding the N0xHUD window — so hotkeys work while the game is

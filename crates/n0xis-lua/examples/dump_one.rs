@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 use std::fs;
 fn main() {
     let args: Vec<String> = std::env::args().collect();

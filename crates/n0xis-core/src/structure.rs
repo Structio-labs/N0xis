@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Control structuring — dominators + natural-loop detection +
 //! `if`/`else`/`&&`/`||`/`for`/`while`/`do-while` reconstruction, ported from
 //! the archived v0 template renderer

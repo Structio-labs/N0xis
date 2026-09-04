@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `input probe` — verify the actuation (write) path before building on it
 //! (ROADMAP Phase 8, fixes RE_METHOD F4).
 //!

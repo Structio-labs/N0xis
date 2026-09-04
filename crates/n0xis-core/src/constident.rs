@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `const identify` — recognize canonical magic constants (ROADMAP Phase 8,
 //! automates RE_METHOD W3).
 //!

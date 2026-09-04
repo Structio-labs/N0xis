@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `ui locate` — screen-region → memory-address hit-testing over a target's
 //! own retained-scene-graph bounding boxes (ROADMAP Phase 9, item 2). Built
 //! entirely on [`StructuralScanPass`](crate::structural::StructuralScanPass):

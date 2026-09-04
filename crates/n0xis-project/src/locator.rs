@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Shared `.n0xt` locator resolution against a live process.
 //!
 //! Extracted from the CLI's `table freeze` handler so any frontend driving a

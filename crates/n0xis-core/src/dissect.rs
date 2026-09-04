@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Struct dissection (ROADMAP Phase 4b) — walk a live region and guess each
 //! field's type from its *runtime value's shape* (does it look like a
 //! pointer into mapped memory? a plausible float? just an integer?). This is

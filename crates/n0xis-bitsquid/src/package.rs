@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The exploded-package layout — the *decompressed* body of an
 //! [`crate::archive`] for an asset bundle: a flat entry list, each entry one
 //! or more variants of inline (+ optional external `.stream`) bytes. Format

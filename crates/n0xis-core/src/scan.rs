@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Typed value scanning + iterative narrowing (ROADMAP Phase 4b) — the
 //! value-scanning first-scan/rescan loop, done the way CE actually does it:
 //! **snapshot-backed narrowing, never a truncated address list**.

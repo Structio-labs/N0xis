@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The outer archive container: a 4- or 12-byte header, then a stream of
 //! 64 KiB chunks (each either stored raw or zlib-compressed) that concatenate
 //! to the decompressed payload — an [`crate::ExplodedPackage`] for an asset

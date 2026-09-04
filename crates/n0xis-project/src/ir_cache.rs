@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Content-addressed artifact cache under `.n0x/ir-cache/<key>.json` — the
 //! Phase 6 "don't rebuild IR on every call" store. Raw string in, raw string
 //! out: this module doesn't know what an artifact *is* (that would leak

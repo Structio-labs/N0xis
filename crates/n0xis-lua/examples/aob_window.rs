@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Ad hoc: print the raw byte window (as an AOB hex pattern) around a given
 //! instruction, for use as a live memory-scan pattern. Throwaway tool.
 use std::fs;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The OS-free vocabulary of a debug hit — shared by the Win32 ([`crate::debug`])
 //! and Linux ([`crate::dbg_linux`]) adapters so both emit the identical
 //! `n0xis.debug.watchpoint.v1` / `n0xis.debug.await_hit.v1` wire shape.

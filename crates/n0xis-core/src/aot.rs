@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # NativeAOT stack-trace metadata reader
 //!
 //! Universal `RVA ↔ method name` recovery for .NET **NativeAOT** images (ILC /

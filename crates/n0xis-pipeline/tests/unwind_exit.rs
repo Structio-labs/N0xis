@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **Stack-unwind exit test**: a hardware watchpoint hit must come back with a
 //! real *unwound* call stack (frame 0 = the hit site, then genuine callers
 //! recovered from the target's unwind data — PE `.pdata`/`.xdata` on Windows,

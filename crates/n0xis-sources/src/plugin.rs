@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Process-based plugin transport (`docs/COMMUNITY_ROADMAP.md`'s "Plugin
 //! system"): vendor/game-specific logic runs as a separate executable
 //! speaking JSON over stdio, instead of a Rust PR against this repo. Same

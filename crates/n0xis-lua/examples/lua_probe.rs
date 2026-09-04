@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Ad hoc probe: `cargo run -p n0xis-lua --example probe -- <dir-of-.luac-files>`
 //! Disassembles every file, reports parse success/failure counts, and prints
 //! the first N instructions of a handful of chunks for manual sanity-checking.

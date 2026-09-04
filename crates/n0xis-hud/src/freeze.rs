@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The "run until toggled off" freeze lifecycle. The CLI's `table freeze` is
 //! a bounded-duration loop that returns when its timer expires (see
 //! `n0xis-cli`'s `cmd_table_freeze`) — a menu checkbox needs the opposite: a

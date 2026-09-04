@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-frontend — the shared frontend seam
 //!
 //! Everything a frontend must do *before* it can call a pass: turn

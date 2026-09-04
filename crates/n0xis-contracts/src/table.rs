@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The `.n0xt` table entry format (CONCEPT §10) — a superset of Cheat
 //! Engine's `.CT`. Lives here (not `n0xis-project`) because it's a shared
 //! wire contract like every other schema'd type: `n0xis-core`'s scan passes

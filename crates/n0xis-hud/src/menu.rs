@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Rendering of the cheat list over the shared [`Engine`]. Pure UI: it reads
 //! engine state to draw checkboxes/labels and calls back into the engine to
 //! toggle or rebind. All logic and state live in `engine.rs`.

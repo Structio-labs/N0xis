@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Writing a modified variant back into a bundle file — the inverse of
 //! [`crate::open_bundle`]. Scoped narrowly to the one edit this project
 //! actually needs: **replace one variant's inline bytes with a same-length

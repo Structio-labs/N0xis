@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The micro-IR — [`Arch::lift`](crate::Arch::lift)'s typed output.
 //!
 //! Replaces the Phase 1 placeholder (`MicroStmt::Unlifted` only) with a real

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! IL2CPP managed-layer capabilities (Phase 12, item 0): `il2cpp.import` and
 //! `il2cpp.symbols`.
 //!

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The shared cheat state + toggle logic, behind one `Arc<Mutex<Engine>>` so
 //! the UI thread, the global-hotkey hook thread, and the process watcher all
 //! act on the same source of truth. Putting the logic here (not in the egui

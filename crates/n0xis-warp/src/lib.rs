@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `n0xis-warp` — the **WARP function-identity primitive**, clean-room.
 //!
 //! [WARP](https://github.com/Vector35/warp) is Vector 35's Apache-2.0 format for

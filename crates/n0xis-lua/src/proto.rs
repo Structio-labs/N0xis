@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Prototype (function) parsing — the `pdata`/`phead` shape from
 //! `lj_bcdump.h`, read exactly as `lj_bcread.c: bcread_proto` reads it (field
 //! order and constant encoding cross-checked against that function directly,

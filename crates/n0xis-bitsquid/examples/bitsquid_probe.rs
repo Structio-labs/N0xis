@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Ad hoc probe: `cargo run -p n0xis-bitsquid --example probe -- <bundle-file> [<bundle-file>.stream]`
 //! Prints entry/type/variant summary. Throwaway verification tool, not part of the public API.
 use std::env;

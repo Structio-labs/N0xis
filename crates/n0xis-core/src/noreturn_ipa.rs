@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Whole-program noreturn propagation — the CFG-fidelity follow-on ROADMAP
 //! Phase 10 (priority 0) left open.
 //!

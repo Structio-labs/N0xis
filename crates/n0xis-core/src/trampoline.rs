@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Detour/trampoline hook math (ROADMAP Phase 4b) — pure byte/offset
 //! computation, no OS access. The actual allocation
 //! (`LiveProcess::alloc_code_cave`) and the journaled writes

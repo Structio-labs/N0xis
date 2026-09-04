@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Structural-predicate scanning (ROADMAP Phase 9, item 3) — matches memory
 //! by *relations between fields*, not by fixed byte constants. `scan aob` can
 //! answer "is this exact byte sequence here"; it cannot answer "are these six

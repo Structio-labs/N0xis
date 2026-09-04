@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! ISA selection — the frontend half of the `Arch` seam.
 
 use n0xis_arch::{Arch, Arm32, Arm64, X64};

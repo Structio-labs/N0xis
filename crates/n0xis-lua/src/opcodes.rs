@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! The LuaJIT 2.0 opcode table — a plain data transcription of the `BCDEF`
 //! macro list in LuaJIT's `lj_bc.h` (a format specification, not executable
 //! logic copied from it): 92 opcodes, each with how its `A`/`B`/`C-or-D`

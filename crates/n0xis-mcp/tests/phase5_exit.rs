@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 5 exit test** (ROADMAP): "an agent drives attach → discover →
 //! decompile → explain end-to-end through MCP only."
 //!

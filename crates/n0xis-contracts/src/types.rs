@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Shared value types that cross every boundary: [`Va`], [`Reg`], [`Symbol`],
 //! [`Module`]. These are pure data — no behavior tied to an OS or an ISA.
 

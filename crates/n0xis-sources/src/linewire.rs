@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Shared low-level plumbing for every "spawn a process, speak newline-JSON
 //! over its stdio" protocol in this workspace — one JSON object per line,
 //! deliberately not a versioned `n0xis.*` schema (an internal transport

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Argument parsing every frontend needs: addresses, sizes, and hex byte
 //! strings. Acceptance is defined here once, so `--size 0x1000` on the CLI and
 //! `"size": "0x1000"` through MCP can never disagree about what they take.

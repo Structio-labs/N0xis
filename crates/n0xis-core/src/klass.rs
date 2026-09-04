@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `il2cpp klass` / `il2cpp obj` — read the **runtime** type system of a running
 //! IL2CPP game, with no metadata parser and no external dumper
 //! (ROADMAP Phase 12, item 4 — the live klass route).

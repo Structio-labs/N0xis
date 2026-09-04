@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `X64` — the x86-64 implementation of [`Arch`], backed by `iced-x86`.
 //!
 //! Everything x64-specific lives in this file: the register table, the Win64

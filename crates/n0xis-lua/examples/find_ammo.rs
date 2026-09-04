@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 use std::fs;
 fn main() {
     let dir = std::env::temp_dir().join("hd1_lua");

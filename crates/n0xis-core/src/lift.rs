@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! [`LiftPass`] — turns a built [`CfgArtifact`] into per-block micro-IR.
 //!
 //! Re-decodes each already-known instruction (`ctx.source.read` +

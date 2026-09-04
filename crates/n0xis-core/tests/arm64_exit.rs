@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! **The Phase 7 exit test (multi-arch slice)**: ROADMAP Phase 7's "Multi-arch
 //! via `trait Arch` (ARM64 first candidate)" — proves the ISA seam built in
 //! Phase 1 for exactly this purpose actually holds: a second, real

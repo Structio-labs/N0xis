@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `il2cpp icalls` — recover Unity's engine internal-call table from the code
 //! that resolves it (ROADMAP Phase 12, item 4).
 //!

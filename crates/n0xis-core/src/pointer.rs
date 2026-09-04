@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Pointer-path scanning (ROADMAP Phase 4b) — find stable multi-level
 //! pointer chains (`[[base+a]+b]+c`) that resolve to a target address,
 //! anchored in caller-supplied "static" root regions (a module's `.data`

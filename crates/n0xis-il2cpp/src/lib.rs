@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! # n0xis-il2cpp — the managed layer (Phase 12, item 0)
 //!
 //! An IL2CPP target is native-speed code carrying a complete symbol table that

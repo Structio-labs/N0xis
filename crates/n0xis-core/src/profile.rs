@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Target profiling — "what am I even looking at?", answered before the first
 //! real analysis command instead of by a sequence of failures.
 //!

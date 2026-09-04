@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! `Arm64` — the AArch64 implementation of [`Arch`], backed by `disarm64` (a
 //! pure-Rust, no-`unsafe`, no-allocation decoder generated from the ARM
 //! instruction spec — the same "reuse a mature decoder, don't reinvent one"
