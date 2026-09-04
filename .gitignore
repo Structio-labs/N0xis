@@ -38,3 +38,7 @@ memory.json
 # The network/protocol layer is a separate private repo (developed as a plugin).
 # It may be checked out here for local work but must never enter this repo.
 /crates/n0xis-net/
+
+# Private working notes — never publish (also in .git/info/exclude, but that is
+# local-only: a fresh clone of this public repo would not inherit it).
+private/
