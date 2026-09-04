@@ -87,6 +87,13 @@ impl StaticElf {
     }
 
     /// Virtual address range of a named section `(start, size)`.
+    /// Defined data/object symbols (`STT_OBJECT`) — where an ELF keeps its C++
+    /// vtables (`_ZTV…`) and type-info objects (`_ZTI…`). [`Self::named_functions`]
+    /// deliberately excludes these; Itanium RTTI recovery needs exactly them.
+    pub fn data_symbols(&self) -> Vec<(Va, String)> {
+        self.symbols.values().filter(|s| s.kind == SymKind::Data).map(|s| (s.va, s.name.clone())).collect()
+    }
+
     /// Every section with its `SHF_EXECINSTR` flag — the shape `profile` needs.
     ///
     /// Separate from [`Self::sections`] (which `find` uses to bound a byte

@@ -609,14 +609,23 @@ impl Plugin for AnalysisPasses {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
                 };
-                let Some(image_base) = resolved.src.module_base() else {
-                    return Response::error("no-image-base", "RTTI scan needs a static PE image base".to_string());
-                };
-                let Some(rdata) = resolved.src.section_range(".rdata") else {
-                    return Response::error("no-rdata", "no .rdata section — MSVC RTTI lives there".to_string());
-                };
                 let text = resolved.src.text_range();
-                let vtables = n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, rdata, text);
+                // Two ABIs, one output shape. An ELF's classes come from Itanium
+                // RTTI (`_ZTV…`), not from `.rdata` COL chains, so dispatch on the
+                // image rather than failing every ELF with "no .rdata".
+                let vtables = if let Src::Static(img) = &resolved.src
+                    && let n0xis_sources::StaticImage::Elf(elf) = img.as_ref()
+                {
+                    n0xis_core::scan_itanium_rtti(resolved.src.as_mem(), &elf.data_symbols(), text)
+                } else {
+                    let Some(image_base) = resolved.src.module_base() else {
+                        return Response::error("no-image-base", "RTTI scan needs a static PE image base".to_string());
+                    };
+                    let Some(rdata) = resolved.src.section_range(".rdata") else {
+                        return Response::error("no-rdata", "no .rdata section — MSVC RTTI lives there".to_string());
+                    };
+                    n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, rdata, text)
+                };
                 let payload = json!({ "count": vtables.len(), "vtables": vtables });
                 ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
             }),

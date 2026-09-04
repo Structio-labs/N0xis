@@ -104,7 +104,7 @@ pub use signatures::{known_signature, KnownParam, KnownSignature};
 pub use slice::{SliceArtifact, SliceNode, slice};
 pub use ssa::{Phi, PhiInput, SsaArtifact, SsaBlock, SsaPass, SsaStmt};
 pub use structure::{StructuredOutput, structure};
-pub use rtti::{demangle_rtti_name, rtti_symbol_map, scan_msvc_rtti, RttiVtable};
+pub use rtti::{demangle_rtti_name, rtti_symbol_map, scan_itanium_rtti, scan_msvc_rtti, RttiVtable};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, TypeArtifact,

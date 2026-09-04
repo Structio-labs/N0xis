@@ -139,6 +139,100 @@ fn shorten_type_name(name: String, decorated: &str) -> String {
     format!("{}…#{}", &name[..cut], type_name_hash(decorated))
 }
 
+/// The class named by a `_ZTV…` symbol, as a readable, bounded name.
+///
+/// Demanglers do not agree on how to render a vtable symbol: `cpp_demangle`
+/// produces `{vtable(std::lock_error)}` while others emit `vtable for
+/// std::lock_error`. Both wrappers are peeled here; if neither matches, the
+/// mangled type is demangled on its own by re-forming it as a `_ZTS` (type
+/// string) symbol, which every demangler renders as a plain type name.
+fn itanium_class_name(ztv_symbol: &str) -> String {
+    let demangled = crate::demangle::demangle(ztv_symbol);
+    let peeled = demangled
+        .strip_prefix("vtable for ")
+        .map(str::to_string)
+        .or_else(|| {
+            demangled.strip_prefix("{vtable(").and_then(|r| r.strip_suffix(")}")).map(str::to_string)
+        })
+        .or_else(|| {
+            // Fall back to demangling the bare type: `_ZTVFoo` -> `_ZTSFoo`.
+            let ty = ztv_symbol.strip_prefix("_ZTV")?;
+            let as_type = crate::demangle::demangle(&format!("_ZTS{ty}"));
+            let cleaned = as_type
+                .strip_prefix("typeinfo name for ")
+                .map(str::to_string)
+                .or_else(|| as_type.strip_prefix("{typeinfo name(").and_then(|r| r.strip_suffix(")}")).map(str::to_string));
+            cleaned.filter(|c| c != ty)
+        })
+        .unwrap_or(demangled);
+    shorten_type_name(peeled, ztv_symbol)
+}
+
+/// Recover C++ classes from **Itanium ABI** RTTI (GCC/Clang, i.e. ELF), the
+/// counterpart to [`scan_msvc_rtti`]. Returns the same [`RttiVtable`] shape, so
+/// everything downstream — `rtti_symbol_map`, `Class::vfN` naming, the
+/// decompiler's `this`-typing — works unchanged across both formats.
+///
+/// **Driven by symbols, not by a structural scan, and that is deliberate.** In an
+/// ELF shared object the vtable's type-info slot is *empty in the file*: it is
+/// supplied at load time by a relocation against the `_ZTI…` symbol (measured on
+/// `libstdc++.so.6` — the slot reads as zeroes and carries an `R_X86_64_64`
+/// against `_ZTISt10lock_error`). A byte-level walk therefore recovers almost
+/// nothing without also resolving relocations: a prototype of that approach found
+/// 11 of 179 vtables. The `_ZTV…` symbol names the class outright, which is both
+/// exact and what other tools consult first.
+///
+/// A fully stripped ELF has no such symbols and yields nothing here — honest, and
+/// the documented follow-on (structural scan + `.rela` resolution).
+///
+/// `vtable` is the address an object actually stores: the `_ZTV` object begins
+/// with `offset_to_top` and the type-info pointer, so the first method slot — and
+/// thus the stored vptr — sits 16 bytes in.
+pub fn scan_itanium_rtti(src: &dyn MemorySource, data_symbols: &[(Va, String)], text: Option<(Va, u64)>) -> Vec<RttiVtable> {
+    /// `offset_to_top` (8) + `typeinfo` pointer (8).
+    const VTABLE_HEADER: u64 = 16;
+    let in_text = |va: u64| text.is_none_or(|(t, n)| va >= t.get() && va < t.get() + n);
+
+    let mut out = Vec::new();
+    for (va, sym) in data_symbols {
+        // Strip an ELF symbol-version suffix (`_ZTVFoo@@GLIBCXX_3.4`) before it
+        // reaches the demangler, which would otherwise decline the whole name.
+        let bare = sym.split('@').next().unwrap_or(sym);
+        let Some(rest) = bare.strip_prefix("_ZTV") else { continue };
+        if rest.is_empty() {
+            continue;
+        }
+        let vtable = va.get().saturating_add(VTABLE_HEADER);
+        // Soundness gate on the first method slot. A **zero** slot is accepted:
+        // in a shared object the method pointers are supplied by relocations and
+        // read as zeroes from the file (`libstdc++.so.6` uses symbolic
+        // `R_X86_64_64` and has no `R_X86_64_RELATIVE` at all), so requiring a
+        // resolved code pointer here rejected 178 of its 179 vtables. The `_ZTV`
+        // symbol is itself authoritative — it *is* the vtable, by definition —
+        // so only a slot that resolves to something demonstrably NOT code is
+        // treated as disqualifying.
+        let first_slot = src.read(Va(vtable), 8).ok().and_then(|b| u64_le(&b, 0));
+        match first_slot {
+            Some(0) | None => {}                       // relocation-supplied / unreadable
+            Some(target) if in_text(target) => {}      // resolved and points at code
+            Some(_) => continue,                       // resolved to non-code — not a vtable we trust
+        }
+        let name = itanium_class_name(bare);
+        out.push(RttiVtable {
+            vtable: Va(vtable),
+            type_descriptor: Va(va.get().saturating_add(8)),
+            mangled: bare.to_string(),
+            name,
+            offset: 0,
+            // Base classes live in the `_ZTI` object, which needs relocation
+            // resolution to read; left empty rather than guessed (CONCEPT §3 rule 6).
+            bases: Vec::new(),
+        });
+    }
+    out.sort_by_key(|v| v.vtable.get());
+    out
+}
+
 const COL_SIZE: usize = 24; // sig,u32 | offset,u32 | cdOffset,u32 | pTD,rva | pClass,rva | pSelf,rva
 const COL_PCLASS: usize = 16; // RVA of the RTTIClassHierarchyDescriptor
 // RTTIClassHierarchyDescriptor: signature,u32 | attributes,u32 | numBaseClasses,u32 | pBaseClassArray,rva
@@ -370,6 +464,43 @@ mod tests {
             demangle_rtti_name(".?AV?$basic_ios@EU?$char_traits@E@std@@@std@@"),
             "std::basic_ios<unsigned char, struct std::char_traits<unsigned char> >",
         );
+    }
+
+    #[test]
+    fn itanium_vtable_symbol_names_its_class() {
+        use n0xis_sources::Snapshot;
+        // A `_ZTV` object is [offset_to_top][typeinfo][fn0…]; the pointer an
+        // object stores is +16, and the ELF symbol-version suffix must not reach
+        // the demangler.
+        let mut vt = vec![0u8; 32];
+        vt[16..24].copy_from_slice(&0x1000u64.to_le_bytes());
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0xC3]).region(Va(0x2000), vt).build();
+        let syms = [(Va(0x2000), "_ZTVSt10lock_error@@GLIBCXX_3.4.11".to_string())];
+        let vts = scan_itanium_rtti(&snap, &syms, Some((Va(0x1000), 0x100)));
+        assert_eq!(vts.len(), 1);
+        assert_eq!(vts[0].vtable, Va(0x2010), "the stored vptr is 16 bytes into the _ZTV object");
+        assert_eq!(vts[0].name, "std::lock_error");
+    }
+
+    #[test]
+    fn a_relocation_supplied_slot_does_not_disqualify_a_vtable() {
+        use n0xis_sources::Snapshot;
+        // In a shared object the method slots are filled by the loader and read
+        // as zero from the file. Requiring a resolved code pointer here rejected
+        // 178 of libstdc++'s 179 vtables; the `_ZTV` symbol is authoritative.
+        let snap = Snapshot::builder().region(Va(0x2000), vec![0u8; 32]).build();
+        let syms = [(Va(0x2000), "_ZTV3Foo".to_string())];
+        assert_eq!(scan_itanium_rtti(&snap, &syms, Some((Va(0x1000), 0x100))).len(), 1);
+    }
+
+    #[test]
+    fn a_slot_resolving_outside_code_is_rejected() {
+        use n0xis_sources::Snapshot;
+        let mut vt = vec![0u8; 32];
+        vt[16..24].copy_from_slice(&0xDEAD_0000u64.to_le_bytes()); // not in .text
+        let snap = Snapshot::builder().region(Va(0x2000), vt).build();
+        let syms = [(Va(0x2000), "_ZTV3Foo".to_string())];
+        assert!(scan_itanium_rtti(&snap, &syms, Some((Va(0x1000), 0x100))).is_empty());
     }
 
     #[test]
