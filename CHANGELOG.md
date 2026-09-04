@@ -3,6 +3,33 @@
 All notable changes to N0xis are recorded here. Versions follow
 [Semantic Versioning](https://semver.org); dates are ISO-8601.
 
+## [Unreleased]
+
+### ELF import resolution — the seam every callee-name analysis reads
+
+- **GOT slots now resolve to import names.** `StaticElf::iat_slot` was a stub
+  returning `None`, so on Linux targets every import call decompiled as
+  `(**(uint64_t*)(0x6e1a78))(…)` — and, less visibly, the known-API signature
+  table, thunk/tail-call recognition and noreturn CFG closure *never fired at
+  all*, because each is keyed on a resolved callee name. Built from the dynamic
+  relocations (`GLOB_DAT` + `JUMP_SLOT`, x86-64/i386/AArch64/ARM), with the
+  provider library taken from `.gnu.version_r` (`getenv@GLIBC_2.2.5` →
+  `libc.so.6`) and an honest `extern` when a binary carries none.
+- **PLT stubs are named after the import they jump to**, so lazy-bound and
+  `-fno-plt` binaries behave the same — the shape that matters on a *stripped*
+  executable, where the call is a direct `call` to a stub. Covers `.plt`,
+  `.plt.got` and `.plt.sec` (CET `endbr64`) without assuming an entry size.
+- **The noreturn table learned the glibc/Itanium names** it needed to be useful
+  on ELF: `__stack_chk_fail`, `__assert_fail`, `_Unwind_Resume`, `__cxa_throw`,
+  `_ZSt9terminatev`, `pthread_exit`, `exit`, and the `std::__throw_*` family
+  matched by mangled shape. `error(3)` is excluded on purpose — it returns when
+  `status == 0`.
+- **Effect, against ELF `.symtab` sizes as ground truth** (`libQt6Core.so.6`,
+  309 functions with a true size): exact function boundaries **76.4% → 87.7%**,
+  over-extended functions **62 → 9**, total overshoot **20 356 B → 1 771 B**.
+  `_Z9qBadAllocv` had measured 1 139 B against a true 55 B, swallowing ~20
+  neighbours. Zero PE regression.
+
 ## [0.2.1] — 2026-08-31
 
 The decompiler jump: from a Memory-SSA foundation to **source-level

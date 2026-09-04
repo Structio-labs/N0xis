@@ -35,6 +35,32 @@ const STT_OBJECT: u8 = 1;
 /// `PT_LOAD` — a loadable segment; the minimum `p_vaddr` is the preferred base.
 const PT_LOAD: u32 = 1;
 
+/// The two dynamic-relocation types that bind a **GOT slot** to an imported
+/// symbol, per architecture: `(GLOB_DAT, JUMP_SLOT)`.
+///
+/// `JUMP_SLOT` is the classic lazily-bound PLT entry; `GLOB_DAT` is the slot
+/// `-fno-plt` / `-z now` code calls through *directly*
+/// (`call qword ptr [rip+disp]`) — the dominant shape in modern distro builds
+/// (`libQt6Core.so.6` has no `.plt` at all), so recognizing only `JUMP_SLOT`
+/// would miss the majority of real import calls. Everything else in
+/// `.rela.dyn` (`RELATIVE`, `64`, `COPY`, `IRELATIVE`, TLS) either has no
+/// symbol or does not name a callable slot.
+fn got_reloc_types(e_machine: u16) -> Option<(u32, u32)> {
+    match e_machine {
+        // x86-64 and i386 share the numbering: GLOB_DAT 6, JUMP_SLOT 7.
+        0x3E | 0x03 => Some((6, 7)),
+        0xB7 => Some((1025, 1026)), // AArch64
+        0x28 => Some((21, 22)),     // ARM (32-bit)
+        _ => None,
+    }
+}
+
+/// Module name recorded for an import whose provider library cannot be
+/// determined (the binary carries no `.gnu.version_r` entry for it). ELF
+/// resolution is a *flat* namespace, so an unversioned import genuinely has no
+/// named provider — this says so instead of guessing one from `DT_NEEDED`.
+const UNKNOWN_PROVIDER: &str = "extern";
+
 #[derive(Debug, Clone)]
 struct SectionRange {
     name: String,
@@ -55,6 +81,10 @@ pub struct StaticElf {
     sections: Vec<SectionRange>,
     /// Defined function symbols, keyed by virtual address.
     symbols: BTreeMap<u64, Symbol>,
+    /// Imported symbols keyed by the **GOT slot** that holds them — the ELF
+    /// twin of the PE IAT map. This is what a `call qword ptr [rip+disp]`
+    /// points at, so it is the map [`SymbolProvider::iat_slot`] answers from.
+    got: BTreeMap<u64, Symbol>,
 }
 
 impl StaticElf {
@@ -201,6 +231,129 @@ impl StaticElf {
         collect(&elf.syms, &elf.strtab);
         collect(&elf.dynsyms, &elf.dynstrtab);
 
+        // --- Imports: GOT slot -> imported symbol (the ELF twin of the PE IAT) ---
+        //
+        // A dynamic relocation of type GLOB_DAT/JUMP_SLOT stores "the address of
+        // symbol S" into the slot at `r_offset`; the loader fills it. So the
+        // slot address is exactly what an indirect call goes *through*, and the
+        // relocation's symbol is the callee's name. Without this map every
+        // import call decompiled as `(**(uint64_t*)(0x6e1a78))(…)` — and, worse,
+        // silently defeated everything keyed on a callee *name*: the known-API
+        // signature table, thunk/tail-call recognition, and noreturn CFG
+        // closure. (The same class of bug the PE side hit in 2026-08 by keying
+        // its IAT map on the wrong RVA.)
+        let mut got: BTreeMap<u64, Symbol> = BTreeMap::new();
+        if let Some((glob_dat, jump_slot)) = got_reloc_types(elf.header.e_machine) {
+            // Symbol-version index -> the library that is expected to provide it
+            // (`.gnu.version_r`: `getenv@GLIBC_2.2.5` -> `libc.so.6`). This is the
+            // only per-symbol provider attribution an ELF carries; binding is
+            // flat at run time, so it is informative, not authoritative.
+            let mut provider: BTreeMap<u16, String> = BTreeMap::new();
+            if let Some(verneed) = elf.verneed.as_ref() {
+                for need in verneed.iter() {
+                    let Some(file) = elf.dynstrtab.get_at(need.vn_file) else { continue };
+                    for aux in need.iter() {
+                        provider.insert(aux.vna_other, file.to_string());
+                    }
+                }
+            }
+
+            let mut add = |reloc: &goblin::elf::Reloc| {
+                if reloc.r_type != glob_dat && reloc.r_type != jump_slot {
+                    return;
+                }
+                let Some(sym) = elf.dynsyms.get(reloc.r_sym) else { return };
+                // `st_shndx == SHN_UNDEF` is what makes it an *import*. A
+                // GLOB_DAT against a symbol this image defines itself is the
+                // linker routing an internal reference through the GOT (PIE
+                // interposition) — naming it `extern!foo` would be a lie, and
+                // `symbol_at` already names it correctly at its real address.
+                if sym.st_shndx != 0 {
+                    return;
+                }
+                let Some(name) = elf.dynstrtab.get_at(sym.st_name) else { return };
+                if name.is_empty() {
+                    return;
+                }
+                let module = elf
+                    .versym
+                    .as_ref()
+                    .and_then(|vs| vs.get_at(reloc.r_sym))
+                    .and_then(|v| provider.get(&v.version()).cloned())
+                    .unwrap_or_else(|| UNKNOWN_PROVIDER.to_string());
+                let slot = Va(reloc.r_offset);
+                got.insert(reloc.r_offset, Symbol { va: slot, module, name: name.to_string(), kind: SymKind::Import });
+            };
+            for r in elf.pltrelocs.iter() {
+                add(&r);
+            }
+            for r in elf.dynrelas.iter() {
+                add(&r);
+            }
+            for r in elf.dynrels.iter() {
+                add(&r);
+            }
+        }
+
+        // --- PLT stubs: name the *stub* after the import it jumps to ---
+        //
+        // With lazy binding (the default, and what a stripped ELF executable
+        // almost always uses) a call to an import is a **direct** `call` to a
+        // PLT stub, not an indirect call through the GOT — so `iat_slot` above
+        // never sees it and the callee stays `sub_1030`. other tools name the
+        // stub after its import for exactly this reason; so do we, which makes
+        // one entry in `symbols` serve every consumer at once (discovery list,
+        // xref, decompiler) instead of each re-deriving the thunk.
+        //
+        // Every x86-64 PLT variant contains exactly one `jmp qword ptr
+        // [rip+disp]` (`FF 25`) whose target is the import's GOT slot, so the
+        // stub is identified by that instruction rather than by assuming an
+        // entry size: `.plt` entries are 16 bytes, `.plt.got` are 8, and
+        // `.plt.sec` prefixes an `endbr64`. **The match is self-validating** —
+        // the slot must already be in the import map built above, which is what
+        // keeps `.plt`'s resolver stub (PLT0, whose `jmp` goes through
+        // `GOT+0x10`, not a symbol) and any non-PLT `FF 25` out.
+        if elf.header.e_machine == 0x3E {
+            for sec in sections.iter().filter(|s| s.executable && s.name.starts_with(".plt") && s.file_size > 0) {
+                let bytes = &bytes[sec.file_offset..(sec.file_offset + sec.file_size).min(bytes.len())];
+                let mut i = 0usize;
+                while i + 6 <= bytes.len() {
+                    if bytes[i] != 0xFF || bytes[i + 1] != 0x25 {
+                        i += 1;
+                        continue;
+                    }
+                    let disp = i32::from_le_bytes([bytes[i + 2], bytes[i + 3], bytes[i + 4], bytes[i + 5]]);
+                    // RIP is the address of the *next* instruction (`FF 25` + rel32 = 6 bytes).
+                    let jmp_va = sec.va_start + i as u64;
+                    let slot = jmp_va.wrapping_add(6).wrapping_add(disp as i64 as u64);
+                    let Some(sym) = got.get(&slot) else {
+                        i += 1;
+                        continue;
+                    };
+                    // Back up over the prefixes the IBT/MPX variants put in
+                    // front of the jump, so the recorded address is the one a
+                    // `call` actually targets — the entry's first byte.
+                    let mut start = i;
+                    if start > 0 && bytes[start - 1] == 0xF2 {
+                        start -= 1; // `bnd` prefix (`-z now` + `.plt.sec`)
+                    }
+                    if start >= 4 && bytes[start - 4..start] == [0xF3, 0x0F, 0x1E, 0xFA] {
+                        start -= 4; // `endbr64` (CET)
+                    }
+                    let stub_va = sec.va_start + start as u64;
+                    // A real symbol for this address (an unstripped `foo@plt`)
+                    // always wins; this only fills a hole.
+                    symbols.entry(stub_va).or_insert_with(|| Symbol {
+                        va: Va(stub_va),
+                        module: sym.module.clone(),
+                        name: sym.name.clone(),
+                        kind: SymKind::Import,
+                    });
+                    i += 6;
+                }
+            }
+        }
+
         // Image size: span from the base to the end of the last loadable segment.
         let size = elf
             .program_headers
@@ -213,7 +366,7 @@ impl StaticElf {
 
         let modules = vec![Module { name: module_name.clone(), base: Va(image_base), size, path: Some(path.to_string_lossy().to_string()) }];
 
-        Ok(StaticElf { bytes, image_base, module_name, modules, sections, symbols })
+        Ok(StaticElf { bytes, image_base, module_name, modules, sections, symbols, got })
     }
 
     fn section_for(&self, va: u64) -> Option<&SectionRange> {
@@ -277,10 +430,12 @@ impl SymbolProvider for StaticElf {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         self.symbols.get(&va.0).cloned()
     }
-    fn iat_slot(&self, _va: Va) -> Option<Symbol> {
-        // ELF import resolution goes through the PLT/GOT; not yet mapped here
-        // (a documented follow-on, like DWARF). No slot naming for now.
-        None
+    /// The imported symbol a GOT slot resolves to. Named `iat_slot` for the PE
+    /// term the trait was born with; on ELF the same seam is the GOT, and the
+    /// consumers (`ir::resolved_target_name`, thunk recognition, the known-API
+    /// and noreturn tables) are format-neutral.
+    fn iat_slot(&self, va: Va) -> Option<Symbol> {
+        self.got.get(&va.0).cloned()
     }
 }
 

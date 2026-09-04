@@ -1118,7 +1118,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Alias analysis | 🚧 **intraprocedural points-to** — escape analysis (2a), global distinct-constant (2b) and **heap-allocation** (2c) disambiguation; `Top` on loads through unknown pointers. Whole-program/distinct-parameter points-to still missing |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
 | noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** — `call`- *and* `jmp`(tail-call)-to-noreturn — verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 10 functions incl. a `jmp TerminateProcess`, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) fired in 0/14 real DLLs, unit-tested only, pending a real-corpus positive |
-| Import-name resolution | ✅ 2026-08-06 — direct, IAT-slot and thunk callees resolve to `module!name`; imports render by name and reach the known-API signature table |
+| Import-name resolution | ✅ **both formats** — PE 2026-08-06 (direct, IAT-slot and thunk callees), **ELF 2026-09-05** (GOT slot via `.rela.*` `GLOB_DAT`/`JUMP_SLOT` + PLT stubs named after their import, provider library from `.gnu.version_r`); imports render by name and reach the known-API signature table |
 | Compiler-idiom recovery | 🚧 growing — `const identify`, junk, opaque predicates, **stack-canary, `min`/`max`, magic-division, rotates, `cmov`→`?:`, full intrinsic layer (SSE/bit-scan/FP), BMI/BMI2** (Rung 5b–5i) |
 | Memory SSA | ✅ Rung 1 — intra- and cross-block store-to-load forwarding + dead-store elimination, on escape analysis; verified on real Win64/MSVC and Linux/GCC |
 | Interprocedural propagation | 🚧 partial — whole-program noreturn IPA + call-site name/ABI resolution; **whole-program type propagation still missing** (the core remaining gap) |
@@ -1347,6 +1347,81 @@ lift/SLEIGH-ingest per ISA.
      step stays ⏳ until a genuine instance is confirmed on a real binary.
      **Still open in priority 0**: exception-edge recovery (`.xdata` EH handlers
      → try/catch/finally edges).
+   - ✅ *(2026-09-05, verified)* **The whole of priority 0 was dead on ELF —
+     because no ELF callee had a name.** Everything above is keyed on a resolved
+     callee *name*, and `StaticElf::iat_slot` was a stub returning `None`: on
+     Linux targets every import call decompiled as `(**(uint64_t*)(0x6e1a78))(…)`
+     and the noreturn table, the known-API signature table and thunk recognition
+     never fired at all. Measured on `libQt6Core.so.6` (150 functions sampled
+     across the image): **236 unresolved import calls in 65 of 150 functions**.
+     Three landings:
+     1. **GOT → import name.** `StaticElf` now builds the ELF twin of the PE IAT
+        map from the dynamic relocations: `R_X86_64_GLOB_DAT` (`.rela.dyn`) and
+        `R_X86_64_JUMP_SLOT` (`.rela.plt`), plus the i386/AArch64/ARM numbering.
+        **`GLOB_DAT` is the one that matters** — modern distro builds are
+        `-fno-plt`/`-z now` and call straight through the GOT (`libQt6Core.so.6`
+        has no `.plt` *at all*), so recognizing only the classic lazy `JUMP_SLOT`
+        would have missed the majority of real calls. The provider library comes
+        from `.gnu.version_r` (`getenv@GLIBC_2.2.5` → `libc.so.6`), which is the
+        only per-symbol attribution an ELF carries; an unversioned import is
+        honestly `extern`, never guessed from `DT_NEEDED`. Sound: a `GLOB_DAT`
+        against a symbol *this image defines* (PIE self-interposition) is not an
+        import and is skipped.
+     2. **PLT stubs named after their import.** With lazy binding — the default,
+        and what a stripped ELF executable almost always uses — the call is a
+        *direct* `call` to a stub, which the GOT map never sees. Every x86-64 PLT
+        variant contains exactly one `jmp qword ptr [rip+disp]` (`FF 25`), so the
+        stub is found by that instruction rather than by assuming an entry size
+        (`.plt` 16 B, `.plt.got` 8 B, `.plt.sec` prefixes `endbr64`), backing up
+        over the `endbr64`/`bnd` prefixes to the address a `call` actually
+        targets. Self-validating: the slot must already be a known import, which
+        is what keeps PLT0 (the lazy resolver, jumping through `GOT+0x10`) out.
+     3. **The noreturn table was Win32/CRT-only**, so even a *named* ELF callee
+        matched nothing. Added the glibc/Itanium set — `__stack_chk_fail` (by far
+        the most frequent noreturn callee in any hardened ELF), `__assert_fail`,
+        `_Unwind_Resume`, `__cxa_throw`, `_ZSt9terminatev`, `pthread_exit`,
+        `exit`, … — plus the `std::__throw_*` family matched **by mangled shape**
+        (`_ZSt` + length + `__throw_`), since that set grows with every libstdc++
+        release and an exact-name list would silently miss new members.
+        `error(3)` is deliberately *excluded*: it returns when `status == 0`, so
+        flagging it would prune a live path.
+     **Verified against ground truth, not by eyeballing.** ELF `.symtab` carries
+     each function's true `st_size`, which makes it an exact oracle for function
+     boundaries. On `libQt6Core.so.6` (309 of the first 2 000 discovered
+     functions have a ground-truth size):
+
+     | | exact boundary | over-extended | total overshoot |
+     |---|---|---|---|
+     | before | 236 / 309 (76.4%) | 62 | 20 356 B |
+     | after | **271 / 309 (87.7%)** | **9** | **1 771 B** |
+
+     The mechanism: a function whose CFG ran on past `call __stack_chk_fail`
+     swallowed its neighbours whole — `_Z9qBadAllocv` measured **1 139 B against
+     a true 55 B**, absorbing ~20 following functions. 927 functions shrank, 0
+     grew. Two *apparent* regressions are the same effect read backwards and are
+     recorded here so they are not "fixed" later: `has-switch` 7 → 2 and `tail`
+     1 262 → 715 are switches and tail-jumps that had been **misattributed to a
+     swallowed neighbour** (`0xe3df0`: 2 685 B → 587 B, exactly its `st_size`),
+     and the average `quality` score falls 0.609 → 0.583 because the heuristic
+     scores a short, *correct* function lower than a long, wrong one.
+     **The one real cost**: under-shoot 11 → 29 functions, each 12–17 B, all the
+     same shape — an EH **landing pad** (`endbr64; …; jmp cleanup`) placed after
+     the `call __stack_chk_fail`, reachable only through the unwinder. Our CFG is
+     right (no edge reaches it); the reported `end` is short of `st_size`. That
+     is precisely this priority's remaining ❌ (exception-edge recovery), now
+     with a measured cost attached to it.
+     Zero PE regression (Updater 400 fns avg q 0.9250, the Qt desktop PE 0.9159 — flags
+     identical before/after). 5 new tests, **519 → 524**, clippy clean on both
+     targets. The two integration tests deliberately link **real compiler
+     output** in both shapes (`-fno-plt` and lazy `-Wl,-z,lazy` + `strip`) rather
+     than using a synthetic fixture, and both were mutation-checked to fail
+     without the fix — this exact map was keyed wrong on the PE side for months
+     while its synthetic unit tests passed.
+     **Follow-on this measurement makes obvious**: ELF `.symtab` `st_size` is an
+     authoritative function size for every named function, and the discovery path
+     still ignores it in favour of the `truncate_to_function` heuristic. Using it
+     would take the remaining 38 non-exact boundaries to 0 on any non-stripped
+     ELF, for very little code.
 1. 🚧 **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.
