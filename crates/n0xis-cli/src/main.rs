@@ -3282,11 +3282,20 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
             Err(e) => ir_err("discover-failed", &e.to_string(), pretty),
         }
     };
+    // Same symbol chain the `.pdata` path builds: project-local names (recovered
+    // RTTI, user renames) take precedence over the image's own. Without this the
+    // prologue-scan path saw only the image's symbols, so a function `analyze` had
+    // already named `QFSFileEngine::vf31` still listed as `sub_1166A0` — the
+    // recovered classes never reached the list on any target discovered this way.
+    let local = n0xis_frontend::annotation_syms::LocalNames::load();
     match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
-        Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
+        Src::Static(pe) => {
+            let chain = n0xis_sources::ChainedSymbols::new(&local, pe.as_ref());
+            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain))
+        }
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
+        Src::Snap(s) => run(&Ctx::new(s, arch.as_ref()).with_symbols(&local)),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local)),
     }
 }
 
@@ -3343,9 +3352,26 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     };
     let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref());
 
-    // Phase 1 — discover every function from the exception table (exact, no cap).
+    // Phase 1 — discover every function. `.pdata` is exact and free when present,
+    // but it is a PE construct: on an ELF it yields nothing, which used to leave
+    // `analyze` reporting zero functions on any Linux target. Fall back to the
+    // prologue scan over the image's executable ranges.
     progress("discovering", 0, 0);
-    let funcs = n0xis_core::discover_pdata(ctx.source, base).unwrap_or_default();
+    let code_ranges = src.code_ranges_of(None);
+    let mut funcs = n0xis_core::discover_pdata(ctx.source, base).unwrap_or_default();
+    if funcs.is_empty() {
+        for (start, size) in &code_ranges {
+            if let Ok(art) = n0xis_core::Pass::run(
+                &n0xis_core::DiscoverPass,
+                &ctx,
+                n0xis_core::DiscoverInput { start: *start, size: *size as usize, limit: 0, offset: 0 },
+            ) {
+                funcs.extend(art.functions);
+            }
+        }
+        funcs.sort_by_key(|f| f.va.0);
+        funcs.dedup_by_key(|f| f.va.0);
+    }
     let total = funcs.len();
     progress("discovering", total, total);
 
@@ -3355,8 +3381,32 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // slot that the PE already exports keeps its real name (RTTI never overrides a
     // genuine symbol); user renames later override these (they load atop this).
     progress("scanning-rtti", 0, 0);
-    let classes = match src.section_range_in(None, ".rdata") {
-        Some(rd) => {
+    // Two ABIs: MSVC RTTI lives in `.rdata`; an ELF's classes come from Itanium
+    // `_ZTV…` symbols. Without this branch every Linux C++ target reported zero
+    // classes and persisted no symbol map, so the decompiler never saw them.
+    let itanium: Option<Vec<n0xis_core::RttiVtable>> = match &src {
+        Src::Static(img) => match img.as_ref() {
+            n0xis_sources::StaticImage::Elf(elf) => {
+                Some(n0xis_core::scan_itanium_rtti(src.as_mem(), &elf.data_symbols(), src.text_range()))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let classes = match (itanium, src.section_range_in(None, ".rdata")) {
+        (Some(vts), _) => {
+            let n = vts.len();
+            let (mut functions, data) = n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range());
+            functions.retain(|va, _| {
+                ctx.symbols.and_then(|s| s.symbol_at(Va(*va))).is_none_or(|sym| sym.va.0 != *va)
+            });
+            let generation = format!("rtti:{}:{}", n, functions.len() + data.len());
+            if let Err(e) = n0xis_project::rtti_syms::save(&n0xis_project::rtti_syms::from_maps(generation, functions, data)) {
+                eprintln!("[n0x] {}", json!({ "warn": format!("persist rtti-symbols: {e}") }));
+            }
+            n
+        }
+        (None, Some(rd)) => {
             let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, rd, src.text_range());
             let n = vts.len();
             let (mut functions, data) = n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range());
@@ -3369,13 +3419,12 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
             }
             n
         }
-        None => 0,
+        (None, None) => 0,
     };
     progress("scanning-rtti", classes, classes);
 
     // Phase 3 — build/persist the reverse-xref index (makes `xref to` instant).
     progress("indexing-xrefs", 0, 0);
-    let code_ranges = src.code_ranges_of(None);
     let idx = n0xis_pipeline::xref_index_for(&ctx, &code_ranges, &label);
     let xref_targets = idx.edges.len();
     progress("indexing-xrefs", xref_targets, xref_targets);
