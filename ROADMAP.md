@@ -1211,7 +1211,7 @@ lift/SLEIGH-ingest per ISA.
 | Memory SSA | SSA over memory (versioned store/load) | ❌ SSA over registers/flags only — **why** expr-prop is conservative |
 | Interprocedural propagation | types / values / CC across the call graph | ❌ intraprocedural; only the ~30-entry API table crosses a call |
 | Compiler idioms | magic-division, `rep`-string→`mem*`, stack canary, strlen-inlining, cmov→min/max, SSE idioms, … | 🚧 a handful (`const identify`, junk, opaque predicates) |
-| C++ RTTI / vtables | parse MSVC (`RTTICompleteObjectLocator`, `type_info`) and Itanium RTTI → class names, base-class graph, vtable→method typing; feed devirtualization | ❌ none — the single biggest lever for a C++ game corpus (another tool "class informer", another tool RTTI analyzer) |
+| C++ RTTI / vtables | parse MSVC (`RTTICompleteObjectLocator`, `type_info`) and Itanium RTTI → class names, base-class graph, vtable→method typing; feed devirtualization | 🟡 **both ABIs recover class names** — MSVC via `.rdata` COL chains, Itanium via `_ZTV…` symbols (2026-09-04); base-class graph MSVC-only, devirtualization still ⬜ |
 | Library-function ID | a signature DB (another tool FLIRT / another tool Function-ID) that names statically-linked CRT/STL/runtime code instead of decompiling it | ❌ `sig validate` supplies the invariance primitive; no shipped library, no auto-apply pass |
 | Calling convention | classify the CC and recover arg count/types by entry-liveness + call-site agreement; detect variadic and `this` | 🚧 arity + return only; CC assumed, so an un-prototyped function renders guessed arguments |
 | Stack frame | SP-delta tracking across the function, FPO-function handling, stack arrays/spills surfaced as typed locals | 🚧 locals only; no frame reconstruction, no FPO |
@@ -1443,8 +1443,25 @@ lift/SLEIGH-ingest per ISA.
      therefore needs precise `this`-type flow across *all* methods — call-site
      class propagation / points-to (**Rung 2**), not a local pattern — so it is
      correctly gated on that, not a quick win. Also open: feeding the recovered
-     **bases into the decompiler** (type a `this` as the `Derived : Base` chain),
-     and **Itanium RTTI** for ELF/GCC targets.
+     **bases into the decompiler** (type a `this` as the `Derived : Base` chain).
+   - ✅ *(2026-09-04)* **Itanium RTTI for ELF/GCC targets.** `scan_itanium_rtti`
+     returns the same `RttiVtable` as the MSVC scan, so `Class::vfN` naming,
+     `rtti_symbol_map` and the decompiler's `this`-typing all work on ELF with no
+     further change. Driven by `_ZTV…` symbols, not a structural walk, and that is
+     measured rather than assumed: a byte-level prototype recovered **11 of
+     libstdc++'s 179** vtables, because in a shared object the type-info slot is
+     empty in the file and supplied at load time by a relocation against `_ZTI…`
+     (libstdc++ has zero `R_X86_64_RELATIVE` — its slots are symbolic
+     `R_X86_64_64`). Verified against `nm`: libstdc++ **179/179**, libQt6Core
+     **110/110**. Getting there also required fixing three breaks that stopped the
+     result from reaching anything: `analyze` discovered no functions on ELF
+     (`.pdata`-only, now falls back to the prologue scan — 0 → 24,922), recovered
+     no classes (`.rdata`-only, now dispatches on format), and the function list
+     ignored persisted names (the prologue-scan path did not chain `LocalNames`).
+     **Still open:** base classes (needs `.rela` resolution to read the `_ZTI`
+     object), and a structural scan for **stripped** ELFs, which today yield an
+     honest `count: 0`. Only 28 of libQt6Core's method slots resolve — same
+     relocation cause; the vtable entries themselves are complete.
 8. 🟡 **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
