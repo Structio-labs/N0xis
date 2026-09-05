@@ -1625,11 +1625,14 @@ lift/SLEIGH-ingest per ISA.
         a constructor proves an embedded sub-object in a function that never
         loads or stores it; keying the field set on accesses alone dropped
         exactly the offsets this pass is best at.
-     **What is still not caught, stated rather than hidden.** A **static member
-     function** has no `this` and nothing local distinguishes it — that is both
-     remaining over-report, and in both the false field carried `methods: 1`–`4`
-     against `methods: 66` for the real ones. The per-field `methods` count is
-     the confidence signal and is reported for exactly this reason.
+     **What is still not caught, stated rather than hidden.** Attributed here at
+     first to **static member functions** — plausible, since Itanium mangling
+     does not encode staticness. The follow-on measurement (2026-09-06, below)
+     says that was wrong: every over-report was a by-value return whose result
+     buffer reached `rax` by a route the `sret` marker did not follow. The
+     per-field `methods` count is the confidence signal and is reported for
+     exactly this reason: in every false field it was `methods: 1`–`4` against
+     `methods: 66` for the real ones.
      **A stale context inside `analyze` was hiding most of this, and it was
      hiding it from `--typeflow` too.** `analyze` built one `Ctx` at the start
      and kept using it, so the whole-program phases read the binary as if the
@@ -1705,6 +1708,49 @@ lift/SLEIGH-ingest per ISA.
      parameter, a local), which needs field typing. **Field-layout unification
      across all users of a struct (3b's remaining ⬜) is the same missing piece,
      and it is now the single highest-leverage item left in this phase.**
+   - ✅ *(2026-09-06, verified)* **The `this` seed reads the symbol table Linux
+     actually has.** `typeinfer::own_this_class` read the **raw** symbol and
+     understood only MSVC's mangling: `crate::demangle::member_function_class`
+     bails on anything not starting with `?`, and the fallback split on `::`,
+     which `_ZNK7QPixmap6isNullEv` does not contain. On ELF the seed therefore
+     fired only on names N0xis's own vtable walk had synthesized — **69** of them
+     on `libQt6Gui.so.6`, against **9 782** mangled method symbols unread in the
+     same table. It now runs the demangle the layout pass already did, and both
+     share one implementation (`classlayout::this_class_of`), so the class a
+     signature claims and the class a layout files fields under cannot disagree.
+     **Measured, same binary and build** (`libQt6Gui.so.6`, 22 413 functions):
+     whole-program propagated parameters **13 → 100**; layout **2 682 → 3 331
+     methods**, **353 → 369 classes**, **2 036 → 2 084 fields**, **85 → 88
+     typed**.
+     **Const-qualification is proof of non-staticness.** A static member function
+     has no `this` to qualify, so an Itanium `_ZNK…`/`_ZNV…` *cannot* be one.
+     That is the first positive evidence of member-ness available on ELF, and it
+     is what lets a class with no vtable of its own contribute ordinary methods
+     rather than only constructors. The converse is deliberately not claimed: a
+     plain `_ZN…` may be a static, and stays refused unless RTTI recovered a
+     vtable for the class.
+     **The `sret` refusal was matching the wrong thing, and the oracle said so.**
+     It compared the returned value by SSA identity, which real code defeats two
+     ways. `QScreen::manufacturer() const` spills the `QString` buffer across a
+     virtual call and reloads it; `QAction::toolTip() const` hands it back
+     through a **phi** of `this` and a stack reload. Both filed `QString`'s
+     `+0x10` under a 16-byte class. Matching the first-argument **register** and
+     following phis fixes both, and the refusal moved into `typeinfer` as well —
+     the signature was typing that buffer `QTextDocument *`. Against `sizeof`
+     from the real Qt headers over 21 public classes: **14 → 17 layouts inside
+     the true object size**. All 4 remaining over-reports are one field
+     contributed by one method (`methods: 1`, against 9–70 for the real fields).
+     **The earlier attribution of those over-reports to static member functions
+     was wrong**, and measurement — not reasoning — is what said so.
+     **Devirtualization through a field, re-measured on the same 1 460 methods**
+     (only `.n0x/class-layout.json` present or absent, counting dispatches still
+     rendered `(*x->field_0xNN)(…)`): **283 → 277**. The same A/B on the previous
+     build moved **310 → 310**.
+     **One thing tried and left out.** Raising the own-class rule *above* the
+     "passed as arg 0 to `Class::method`" rule in `param_ctype`, on the
+     base-vs-derived argument, changed nothing it was supposed to:
+     `QRasterPlatformPixmap`'s methods already type `this` as the derived class
+     either way. Not shipped.
 4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
    decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
    it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few

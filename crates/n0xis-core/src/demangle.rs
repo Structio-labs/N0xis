@@ -58,6 +58,9 @@ pub fn demangle_msvc_name_only(name: &str) -> Option<String> {
 /// access specifier (`public:`/`private:`/`protected:`), which only a member
 /// carries, gated against `static`.
 pub fn member_function_class(name: &str) -> Option<String> {
+    if let Some(class) = itanium_cv_member_class(name) {
+        return Some(class);
+    }
     if !name.starts_with('?') {
         return None;
     }
@@ -72,6 +75,74 @@ pub fn member_function_class(name: &str) -> Option<String> {
     let qualified = demangle_msvc_name_only(name)?;
     let class = qualified.rsplit_once("::")?.0;
     (!class.is_empty()).then(|| class.to_string())
+}
+
+/// The class of an Itanium **cv-qualified** member function — `_ZNK…`,
+/// `_ZNV…` — read off the mangling alone.
+///
+/// This is the Itanium half of [`member_function_class`], and it rests on one
+/// rule of the language rather than on a naming convention: **a static member
+/// function can never be const- or volatile-qualified**, because it has no
+/// `this` to qualify. So a `K` or `V` in the nested-name's CV slot is a *proof*
+/// that argument 0 is a real `this` pointer to the enclosing class — the first
+/// positive evidence of non-staticness that exists on ELF, where nothing else
+/// in a symbol distinguishes `QPixmap::isNull() const` from a free function.
+///
+/// The converse is not true and is not claimed: an unqualified `_ZN…` may be
+/// either a static or an ordinary mutating method, and this returns `None` for
+/// both.
+pub fn itanium_cv_member_class(name: &str) -> Option<String> {
+    if !itanium_cv_qualified(name) {
+        return None;
+    }
+    let full = demangle_itanium(name)?;
+    let qualified = full.split('(').next()?.trim();
+    let (class, _) = last_scope(qualified)?;
+    (!class.is_empty()).then(|| class.to_string())
+}
+
+/// Does an Itanium symbol's nested-name carry a **cv-qualifier**?
+///
+/// `<nested-name> ::= N [<CV-qualifiers>] [<ref-qualifier>] <prefix> …` and
+/// `<CV-qualifiers> ::= [r] [V] [K]`, so the qualifiers are exactly the leading
+/// run of `r`/`V`/`K` after the `N`. Nothing else can appear there: a `<prefix>`
+/// starts with a digit, `S`, `T`, `D` or `L`, never one of those three letters.
+fn itanium_cv_qualified(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("_ZN").or_else(|| name.strip_prefix("__ZN")) else {
+        return false;
+    };
+    rest.bytes()
+        .take_while(|c| matches!(c, b'r' | b'V' | b'K'))
+        .any(|c| matches!(c, b'V' | b'K'))
+}
+
+/// Split a demangled qualified name at its **last top-level `::`**:
+/// `QPixmap::isNull` → `("QPixmap", "isNull")`.
+///
+/// Bracket-aware, which a plain `rsplit_once("::")` is not. A member function
+/// template names a type in its own template arguments — `Foo::bar<ns::Baz>` —
+/// and splitting on the textually last `::` there yields the nonsense class
+/// `Foo::bar<ns`. Depth is clamped at zero so an unbalanced `>` from an
+/// `operator<`/`operator>` tail cannot drag the scan negative.
+pub fn last_scope(qualified: &str) -> Option<(&str, &str)> {
+    let b = qualified.as_bytes();
+    let (mut depth, mut cut) = (0usize, None);
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'<' | b'(' | b'[' => depth += 1,
+            b'>' | b')' | b']' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 && b.get(i + 1) == Some(&b':') => {
+                cut = Some(i);
+                i += 2;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let cut = cut?;
+    Some((&qualified[..cut], &qualified[cut + 2..]))
 }
 
 /// Fully demangle an MSVC RTTI **TypeDescriptor** decorated name (`.?AVFoo@@`,
@@ -140,6 +211,35 @@ mod tests {
         assert_eq!(member_function_class("?max@?$numeric_limits@H@std@@SAHXZ"), None);
         // Not an MSVC symbol at all.
         assert_eq!(member_function_class("CreateFileW"), None);
+    }
+
+    #[test]
+    fn an_itanium_const_member_proves_its_own_class() {
+        // `QPixmap::isNull() const` — const-qualified, so never a static.
+        assert_eq!(member_function_class("_ZNK7QPixmap6isNullEv").as_deref(), Some("QPixmap"));
+        // Volatile counts for the same reason.
+        assert!(itanium_cv_qualified("_ZNV3Foo3barEv"));
+        // A plain `_ZN…` says nothing: it may be a static member.
+        assert_eq!(member_function_class("_ZN15QGuiApplication7paletteEv"), None);
+        assert!(!itanium_cv_qualified("_ZN7QPixmapC1Ev"));
+        // A free function is not a member however it is spelled.
+        assert_eq!(member_function_class("_Z8helper_fv"), None);
+        // Nested classes keep their full scope.
+        assert_eq!(
+            member_function_class("_ZNK2ns3Out2In3getEv").as_deref(),
+            Some("ns::Out::In")
+        );
+    }
+
+    #[test]
+    fn last_scope_splits_on_the_last_top_level_separator() {
+        assert_eq!(last_scope("QPixmap::isNull"), Some(("QPixmap", "isNull")));
+        assert_eq!(last_scope("Foo<ns::Bar>::get"), Some(("Foo<ns::Bar>", "get")));
+        // The trap a plain rsplit_once falls into: a member function template
+        // whose own template argument is scope-qualified.
+        assert_eq!(last_scope("Foo::bar<ns::Baz>"), Some(("Foo", "bar<ns::Baz>")));
+        assert_eq!(last_scope("QTextStream::operator<<"), Some(("QTextStream", "operator<<")));
+        assert_eq!(last_scope("free_function"), None);
     }
 
     #[test]

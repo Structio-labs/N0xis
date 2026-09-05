@@ -42,3 +42,6 @@ memory.json
 # Private working notes — never publish (also in .git/info/exclude, but that is
 # local-only: a fresh clone of this public repo would not inherit it).
 private/
+
+# Local verification scratch (oracle programs, A/B harnesses, project dirs)
+scratchpad/

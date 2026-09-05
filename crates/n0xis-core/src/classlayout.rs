@@ -248,18 +248,24 @@ fn ctor_class_of(qualified: &str) -> Option<&str> {
     (!own.is_empty() && own == m).then_some(class)
 }
 
-/// The class a direct callee's **first argument** is a `this` pointer for.
+/// The class the function at `va` has a `this` pointer **to**, read off its own
+/// symbol — for a direct callee's first argument, and equally for the function
+/// under analysis ([`crate::typeinfer::own_this_class`]).
 ///
 /// Three grounds, every one of them ground truth rather than inference:
 ///
 /// - the symbol is a **constructor or destructor**, where the ABI settles it;
-/// - MSVC's mangling **states** the function is a non-static member
-///   ([`crate::demangle::member_function_class`]);
+/// - the mangling **states** the function is a non-static member — MSVC's
+///   access specifier, or an Itanium cv-qualifier, which a static member can
+///   never carry ([`crate::demangle::member_function_class`]);
 /// - the qualified name is `Class::method` and RTTI recovered a **vtable** for
 ///   `Class`. The vtable requirement is what keeps a namespaced free function
-///   (`Ui::doSomething`) out — the same bar
-///   [`crate::typeinfer::own_this_class`] holds itself to.
-fn callee_this_class(ctx: &Ctx, va: Va) -> Option<String> {
+///   (`Ui::doSomething`) out where the mangling says nothing.
+///
+/// Only the first two survive a stripped-of-RTTI binary, and only the second
+/// distinguishes a static member from an instance one — which is why the
+/// vtable-keyed third ground stays last.
+pub(crate) fn this_class_of(ctx: &Ctx, va: Va) -> Option<String> {
     if let Some(c) = ctor_class(ctx, va) {
         return Some(c);
     }
@@ -306,7 +312,7 @@ fn as_base_offset(addr: &MicroExpr) -> Option<(&str, i64)> {
 /// Every SSA name that holds the same pointer `this` does — `this` itself plus
 /// whatever a plain copy carried it into. Without this the pass sees only the
 /// accesses the optimizer happened to leave keyed on `rdi.0`.
-fn alias_set(blocks: &[SsaBlock], this: &str) -> BTreeSet<String> {
+pub(crate) fn alias_set(blocks: &[SsaBlock], this: &str) -> BTreeSet<String> {
     let mut set: BTreeSet<String> = [this.to_string()].into_iter().collect();
     for _ in 0..MAX_ALIAS_ROUNDS {
         let mut changed = false;
@@ -343,11 +349,56 @@ fn alias_set(blocks: &[SsaBlock], this: &str) -> BTreeSet<String> {
 /// It also refuses the handful of methods that genuinely return `*this`
 /// (`operator=` and friends). That is a refusal, not a wrong answer, and it is
 /// the trade this codebase makes everywhere else.
-fn returns_first_arg(blocks: &[SsaBlock], aliases: &BTreeSet<String>) -> bool {
+///
+/// The match is on the returned value's **root register**, not on SSA identity,
+/// and that is not laxity — it is what makes the test work at all on real code.
+/// `QScreen::manufacturer() const` spills the buffer to the stack across a
+/// virtual call and reloads it, so the value it returns is a join of `rdi.0` and
+/// a stack reload; no copy chain connects the two, and matching SSA names alone
+/// let a `QString` buffer through as a `QScreen *`. A returned value living in
+/// the *first argument register* is the ABI marker regardless of how many
+/// versions of that register the function went through.
+pub(crate) fn returns_first_arg(blocks: &[SsaBlock], aliases: &BTreeSet<String>, this: &str) -> bool {
+    let reg = root_reg(this);
+    // A closure wider than `alias_set`'s, and deliberately so: this one also
+    // crosses **phis**, because the buffer is routinely returned out of a join.
+    // `QAction::toolTip() const` sets the result register from `this` on one arm
+    // and from a stack reload on the other, so the value it returns is a phi
+    // that no copy chain reaches. Widening here is safe in a way that widening
+    // `alias_set` would not be: a false positive costs one refused method,
+    // while the same looseness in the field-observation set would file a field
+    // under a class that has none.
+    let mut reach: BTreeSet<&str> = aliases.iter().map(String::as_str).collect();
+    let known = |set: &BTreeSet<&str>, v: &str| set.contains(v) || root_reg(v) == reg;
+    for _ in 0..MAX_ALIAS_ROUNDS {
+        let mut changed = false;
+        for b in blocks {
+            for phi in &b.phis {
+                if phi.inputs.iter().any(|i| known(&reach, &i.value)) && reach.insert(phi.dst.as_str()) {
+                    changed = true;
+                }
+            }
+            for s in &b.stmts {
+                let MicroStmt::Assign { dst, value } = &s.stmt else { continue };
+                let MicroExpr::Var(src) = peel(value) else { continue };
+                if known(&reach, src) && reach.insert(dst.as_str()) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     blocks.iter().flat_map(|b| b.stmts.iter()).any(|s| match &s.stmt {
-        MicroStmt::Return(Some(e)) => matches!(peel(e), MicroExpr::Var(v) if aliases.contains(v.as_str())),
+        MicroStmt::Return(Some(e)) => matches!(peel(e), MicroExpr::Var(v) if known(&reach, v)),
         _ => false,
     })
+}
+
+/// The machine register an SSA name versions: `rdi.0`, `rdi.7`, `rdi` → `rdi`.
+fn root_reg(name: &str) -> &str {
+    name.split_once('.').map(|(r, _)| r).unwrap_or(name)
 }
 
 /// What one method contributes: `offset → (bits, signed, count)` plus the types
@@ -395,10 +446,10 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
     // failure mode that looks exactly like a result. A symbol says which class
     // the code was *written in*; nothing else does, and where there is no symbol
     // the honest answer is that base and derived cannot be told apart.
-    let class = callee_this_class(ctx, va)?;
+    let class = this_class_of(ctx, va)?;
 
     let aliases = alias_set(&opt.blocks, &this);
-    if returns_first_arg(&opt.blocks, &aliases) {
+    if returns_first_arg(&opt.blocks, &aliases, &this) {
         return None;
     }
 
@@ -587,7 +638,7 @@ fn field_types<'a>(
                             claim(off, c);
                         }
                     } else if let Some(off) = loaded_field(arg0)
-                        && let Some(c) = callee_this_class(ctx, *va)
+                        && let Some(c) = this_class_of(ctx, *va)
                     {
                         claim(off, format!("{c} *"));
                     }
@@ -759,11 +810,37 @@ mod tests {
         // An sret function hands the caller's buffer back — that is the ABI, and
         // it is the only thing that separates it from an ordinary method.
         b.stmts.push(crate::ssa::SsaStmt { va: Va(0x1010), stmt: MicroStmt::Return(Some(var("rax.3"))) });
-        assert!(returns_first_arg(&[b], &aliases));
+        assert!(returns_first_arg(&[b], &aliases, "rdi.0"));
 
         let mut c = block(vec![("rax.3", var("rsi.0"))]);
         c.stmts.push(crate::ssa::SsaStmt { va: Va(0x1010), stmt: MicroStmt::Return(Some(var("rax.3"))) });
-        assert!(!returns_first_arg(&[c], &BTreeSet::from(["rdi.0".to_string()])), "returning something else is an ordinary method");
+        assert!(
+            !returns_first_arg(&[c], &BTreeSet::from(["rdi.0".to_string()]), "rdi.0"),
+            "returning something else is an ordinary method"
+        );
+
+        // The shape that actually occurs: the buffer is spilled across a call
+        // and reloaded, so the returned name shares no copy chain with `rdi.0` —
+        // only the register. `QScreen::manufacturer() const` is exactly this,
+        // and matching SSA names alone filed `QString`'s `+0x10` under `QScreen`.
+        let mut d = block(vec![("rax.3", var("rsi.0"))]);
+        d.stmts.push(crate::ssa::SsaStmt { va: Va(0x1010), stmt: MicroStmt::Return(Some(var("rdi.9"))) });
+        assert!(returns_first_arg(&[d], &BTreeSet::from(["rdi.0".to_string()]), "rdi.0"));
+
+        // …and the shape after that: the buffer reaches the result register
+        // through a **join**, so only following phis connects the two.
+        // `QAction::toolTip() const`, exactly.
+        let mut e = block(vec![("rdx.4", var("rdi.0"))]);
+        e.phis.push(crate::ssa::Phi {
+            var: "rdx".to_string(),
+            dst: "rdx.6".to_string(),
+            inputs: vec![
+                crate::ssa::PhiInput { from_block: 0, value: "rdx.4".to_string() },
+                crate::ssa::PhiInput { from_block: 1, value: "rdx.5".to_string() },
+            ],
+        });
+        e.stmts.push(crate::ssa::SsaStmt { va: Va(0x1010), stmt: MicroStmt::Return(Some(var("rdx.6"))) });
+        assert!(returns_first_arg(&[e], &BTreeSet::from(["rdi.0".to_string(), "rdx.4".to_string()]), "rdi.0"));
     }
 
     /// The three field-typing rules, on the exact statement shapes real code

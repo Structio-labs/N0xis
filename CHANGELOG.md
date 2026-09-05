@@ -5,6 +5,48 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### The `this` seed reads the symbol table Linux actually has (Phase 10 / 3b)
+
+- **`own_this_class` demangles.** The seed that types a method's `this` read the
+  **raw** symbol, and the only mangling it understood was MSVC's. An ELF symbol
+  table hands out `_ZNK7QPixmap6isNullEv`, in which no `Class::method` test
+  matches anything, so on Linux the seed fired only on the names N0xis's own
+  vtable walk had synthesized — **69** of them on `libQt6Gui.so.6`, against
+  **9 782** mangled method symbols sitting unread in the same table. It now runs
+  the same demangle the layout pass already did, and shares one implementation
+  with it, so the class a signature claims and the class a layout files fields
+  under cannot disagree. Whole-program **propagated parameters 13 → 100**;
+  layout **2 682 → 3 331 methods**, **353 → 369 classes**, **2 036 → 2 084
+  fields**, **85 → 88 typed**.
+- **A const-qualified Itanium symbol proves non-staticness.** A static member
+  function has no `this` to qualify, so `_ZNK…` (or `_ZNV…`) *cannot* be a
+  static — the first positive evidence of member-ness that exists on ELF, where
+  nothing else in a symbol distinguishes `QPixmap::isNull() const` from a free
+  function. It is what lets a class with no vtable of its own contribute
+  ordinary methods, not just constructors. The converse is not claimed: a plain
+  `_ZN…` may be either, and stays refused unless RTTI recovered a vtable for the
+  class.
+- **The hidden return slot is caught where it actually occurs.** The `sret`
+  refusal matched the returned value by SSA identity, which real code defeats
+  two different ways: `QScreen::manufacturer() const` spills the `QString`
+  buffer across a virtual call and reloads it, and `QAction::toolTip() const`
+  hands it back through a **phi** of `this` and a stack reload. Both filed
+  `QString`'s `+0x10` under a 16-byte class. The refusal now matches on the
+  first-argument **register** and follows phis, and it moved into `typeinfer`
+  too — the signature was typing that buffer `QTextDocument *`. Against `sizeof`
+  from the real Qt headers, over 21 public classes: **14 → 17 layouts inside the
+  true object size**; every one of the 4 remaining over-reports is a single
+  field contributed by a single method (`methods: 1`, against 9–70 for the real
+  fields).
+- **The over-reports were not what the previous pass said they were.** They were
+  attributed to static member functions; the measurement says otherwise — each
+  one is a by-value return whose buffer reached `rax` by a route the marker did
+  not follow. Two of the three fixed here were found that way, not by argument.
+- **Devirtualization through a field, re-measured.** A/B over 1 460 `libQt6Gui`
+  methods, the same binary and build, only `.n0x/class-layout.json` present or
+  absent, counting dispatches still rendered `(*x->field_0xNN)(…)`:
+  **283 → 277**. On the previous build the same A/B moved **310 → 310**.
+
 ### A class has one field layout, not one per method (Phase 10, 3b's last ⬜)
 
 - **`function layout` / `analyze --layout`.** Field recovery was per function and
