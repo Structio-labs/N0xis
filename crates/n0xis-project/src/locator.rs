@@ -10,10 +10,15 @@
 use n0xis_arch::X64;
 use n0xis_contracts::{TableLocator, Va};
 use n0xis_core::{parse_aob, resolve_pointer_path, AobInput, AobScanPass, Ctx, Pass, PointerPath, PointerRoot};
-use n0xis_sources::{LiveProcess, ModuleProvider};
+use n0xis_sources::LiveTarget;
 
 /// Resolve a `TableLocator` to a concrete address in `live`.
-pub fn resolve_table_locator(live: &LiveProcess, locator: &TableLocator) -> Result<Va, String> {
+///
+/// Generic over [`LiveTarget`] (not the Win32-only `LiveProcess`) so it resolves
+/// against a live process on every platform — `LinuxProcess` included — mirroring
+/// `patch::apply`'s `&dyn MemorySource`. This is what lets a Linux/Proton frontend
+/// (n0xis-hud, or an external plugin) use it at all.
+pub fn resolve_table_locator(live: &impl LiveTarget, locator: &TableLocator) -> Result<Va, String> {
     match locator {
         TableLocator::Address { va } => Ok(*va),
         TableLocator::PointerPath { module, root_offset, offsets } => {

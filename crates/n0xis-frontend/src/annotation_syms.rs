@@ -200,6 +200,13 @@ fn build_flirt() -> NameMap {
     map
 }
 
+/// The change-detector for one `.n0x/` file, for callers outside this module
+/// that memoize a project artifact the same way (see `PersistedTypeFlow`).
+pub fn project_file_signature(name: &str) -> u64 {
+    let root = n0xis_project::resolve().ok();
+    file_signature(root.as_ref().map(|r| r.dir.as_path()), name)
+}
+
 /// A cheap change-detector: FNV-1a of a file's path, length, and mtime-nanos. A
 /// rewrite (rename → `annotations.json`, re-`analyze` → `rtti-symbols.json`) bumps
 /// mtime/len and misses the memo. A missing project or file hashes to a stable

@@ -144,7 +144,7 @@ impl Pass for TypeInferPass {
 /// `"win64"` for PE, `"sysv"` for ELF), so an ELF's parameters recover from
 /// `rdi`/`rsi`/… instead of the Win64 `rcx`/`rdx`/…. Falls back to the arch's
 /// first convention if the ABI name isn't found (e.g. AArch64 has only its own).
-fn abi_arg_regs(ctx: &Ctx) -> Vec<&'static str> {
+pub(crate) fn abi_arg_regs(ctx: &Ctx) -> Vec<&'static str> {
     let ccs = ctx.arch.calling_conventions();
     let cc = ccs.iter().find(|c| c.name == ctx.source.abi_name()).or_else(|| ccs.first());
     match cc {
@@ -834,6 +834,7 @@ fn param_ctype(
     ptr_bases: &BTreeSet<&str>,
     struct_map: &BTreeMap<&str, &str>,
     api: &BTreeMap<String, String>,
+    flow: &BTreeMap<String, String>,
 ) -> CType {
     if let Some(class) = ctor_classes.get(pname) {
         return CType::named(format!("{class} *"));
@@ -845,6 +846,14 @@ fn param_ctype(
         return CType::named(format!("{sty} *"));
     }
     if let Some(t) = api.get(pname) {
+        return CType::named(t.clone());
+    }
+    // 4. A type the WHOLE-PROGRAM pass propagated into this parameter. Ranked
+    //    here on purpose: every source above is something *this* function
+    //    proved about itself, and local proof outranks inference from callers.
+    //    Ranked above `void *` because "a `Ui::RpWidget *`" is strictly more
+    //    than "a pointer".
+    if let Some(t) = flow.get(pname) {
         return CType::named(t.clone());
     }
     if ptr_bases.contains(pname) {
@@ -1054,11 +1063,26 @@ fn infer_with(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], deep: bool) -> 
     }
     let ctor_classes = constructor_vtable_params(blocks, ctx.vtables.map(|v| v.as_ref()));
     let method_classes = collect_method_this_types(cfg, blocks);
+    // Whole-program propagated types for THIS function's parameters, keyed the
+    // same way local evidence is (`rcx.0`), so `param_ctype` reads one shape.
+    let flow_types: BTreeMap<String, String> = match ctx.type_flow {
+        Some(f) => (0..arity)
+            .filter_map(|i| {
+                let reg = arg_regs.get(i)?;
+                f.param(cfg.start.0, i).map(|t| (format!("{reg}.0"), t.to_string()))
+            })
+            .collect(),
+        None => BTreeMap::new(),
+    };
     let params = arg_regs[..arity]
         .iter()
         .map(|&reg| {
             let pname = format!("{reg}.0");
-            ParamInfo { reg, name: reg.to_string(), ty: param_ctype(&pname, &ctor_classes, &method_classes, &ptr_bases, &struct_map, &api_types) }
+            ParamInfo {
+                reg,
+                name: reg.to_string(),
+                ty: param_ctype(&pname, &ctor_classes, &method_classes, &ptr_bases, &struct_map, &api_types, &flow_types),
+            }
         })
         .collect();
 
@@ -1178,7 +1202,7 @@ mod tests {
         assert_eq!(m.get("rdx.0").map(String::as_str), Some("icu_64::GregorianCalendar"));
         // Precedence: the ctor class beats a recovered `struct_rcx_0`.
         let struct_map: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
-        let ty = param_ctype("rcx.0", &m, &BTreeMap::new(), &BTreeSet::new(), &struct_map, &BTreeMap::new());
+        let ty = param_ctype("rcx.0", &m, &BTreeMap::new(), &BTreeSet::new(), &struct_map, &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(ty.name.as_deref(), Some("std::exception *"));
     }
 
@@ -1325,25 +1349,36 @@ mod tests {
     }
 
     #[test]
-    fn param_type_precedence_prefers_struct_then_api_then_void_pointer() {
+    fn param_type_precedence_prefers_struct_then_api_then_flow_then_void_pointer() {
         // Unit-level check of the evidence precedence in `param_ctype`, so the
         // known-API-argument path (which needs a real import table to fire
         // end-to-end, hence not exercised by the byte-level tests above) is
-        // still covered: struct evidence > known-API type > bare `void *`
-        // dereference > generic `uint64_t`.
+        // still covered: struct evidence > known-API type > a WHOLE-PROGRAM
+        // propagated type > bare `void *` dereference > generic `uint64_t`.
+        //
+        // The propagated type sits below every local source deliberately: those
+        // are things this function proved about *itself*, while a propagated
+        // type is inferred from its callers.
         let structs: BTreeMap<&str, &str> = [("rcx.0", "struct_rcx_0")].into_iter().collect();
         let api: BTreeMap<String, String> = [("rdx.0".to_string(), "HANDLE".to_string()), ("rcx.0".to_string(), "LPVOID".to_string())].into_iter().collect();
+        let flow: BTreeMap<String, String> =
+            [("rcx.0".to_string(), "Widget *".to_string()), ("rdx.0".to_string(), "Button *".to_string()), ("r8.0".to_string(), "QImage *".to_string())]
+                .into_iter()
+                .collect();
         let ptr: BTreeSet<&str> = ["rcx.0", "r8.0"].into_iter().collect();
         let no_ctor = BTreeMap::new();
         let no_method = BTreeMap::new();
-        // rcx: deref'd struct *and* an API hit -> struct wins.
-        assert_eq!(param_ctype("rcx.0", &no_ctor, &no_method, &ptr, &structs, &api).name.as_deref(), Some("struct_rcx_0 *"));
-        // rdx: only an API hit -> the named API type.
-        assert_eq!(param_ctype("rdx.0", &no_ctor, &no_method, &ptr, &structs, &api).name.as_deref(), Some("HANDLE"));
-        // r8: dereferenced but no struct/API -> void *.
-        assert_eq!(param_ctype("r8.0", &no_ctor, &no_method, &ptr, &structs, &api).name.as_deref(), Some("void *"));
+        // rcx: deref'd struct *and* an API hit *and* a propagated type -> struct wins.
+        assert_eq!(param_ctype("rcx.0", &no_ctor, &no_method, &ptr, &structs, &api, &flow).name.as_deref(), Some("struct_rcx_0 *"));
+        // rdx: an API hit outranks a propagated type.
+        assert_eq!(param_ctype("rdx.0", &no_ctor, &no_method, &ptr, &structs, &api, &flow).name.as_deref(), Some("HANDLE"));
+        // r8: dereferenced, no local name — the propagated class beats `void *`,
+        // because "a QImage *" is strictly more than "a pointer".
+        assert_eq!(param_ctype("r8.0", &no_ctor, &no_method, &ptr, &structs, &api, &flow).name.as_deref(), Some("QImage *"));
+        // …and with nothing propagated it is still `void *`.
+        assert_eq!(param_ctype("r8.0", &no_ctor, &no_method, &ptr, &structs, &api, &BTreeMap::new()).name.as_deref(), Some("void *"));
         // r9: no evidence at all -> generic (name None, renders uint64_t).
-        assert_eq!(param_ctype("r9.0", &no_ctor, &no_method, &ptr, &structs, &api).name, None);
+        assert_eq!(param_ctype("r9.0", &no_ctor, &no_method, &ptr, &structs, &api, &flow).name, None);
     }
 
     #[test]

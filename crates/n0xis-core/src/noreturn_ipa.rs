@@ -101,6 +101,7 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
             noreturn: Some(&frozen),
             vtables: ctx.vtables,
             eh: ctx.eh,
+            type_flow: ctx.type_flow,
         };
 
         let mut newly: Vec<Va> = Vec::new();

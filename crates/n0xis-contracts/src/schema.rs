@@ -37,6 +37,8 @@ pub mod v1 {
     pub const FUNCTION_EH: &str = "n0xis.function.eh.v1";
     /// Per-function interprocedural summary (returns/params/clobbers/callees).
     pub const FUNCTION_SUMMARY: &str = "n0xis.function.summary.v1";
+    /// Whole-program type propagation over the call graph.
+    pub const FUNCTION_TYPEFLOW: &str = "n0xis.function.typeflow.v1";
     /// Whole-program analysis pass: discover → RTTI → xref index → IR cache,
     /// materializing the `.n0x/` summary layer with progress (`analyze`).
     pub const ANALYZE: &str = "n0xis.analyze.v1";

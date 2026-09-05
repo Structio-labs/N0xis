@@ -1640,6 +1640,11 @@ enum FunctionCmd {
     /// return, what types are its parameters and result, which volatile
     /// registers does it clobber (and is that set complete), whom does it call.
     Summary(FunctionSummaryArgs),
+    /// Whole-program type propagation: flow recovered types along the call graph
+    /// to a fixpoint, so a class recovered in one function (from RTTI, or from
+    /// concrete field accesses) reaches every function that touches the same
+    /// object — the layer other tools keep as a persistent type database.
+    Typeflow(FunctionTypeflowArgs),
     /// Exception edges: the protected ranges and landing pads an unwinder uses.
     /// A `try`/`catch` landing pad has NO incoming branch, so it is invisible to
     /// a CFG built from instructions alone — this is where that control flow is
@@ -1671,6 +1676,30 @@ struct FunctionSummaryArgs {
     module: Option<String>,
     /// Cap on functions summarized; `0` = every discovered function.
     #[arg(long, default_value_t = 200)]
+    limit: usize,
+    /// Byte window analyzed per function.
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
+    max_bytes: usize,
+}
+
+#[derive(Args)]
+struct FunctionTypeflowArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Restrict discovery to this module, by case-insensitive name substring.
+    #[arg(long)]
+    module: Option<String>,
+    /// Cap on functions in the program considered; `0` = every function.
+    #[arg(long, default_value_t = 400)]
     limit: usize,
     /// Byte window analyzed per function.
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
@@ -1865,6 +1894,12 @@ struct AnalyzeArgs {
     /// decompiler and the GUI all render them with no flag of their own.
     #[arg(long = "flirt")]
     flirt: Vec<String>,
+    /// Also run whole-program type propagation and persist it into
+    /// `.n0x/type-flow.json`, so the decompiler renders a class recovered in one
+    /// function wherever the same object is used. The most expensive phase (it
+    /// analyzes every function once), so it is opt-in.
+    #[arg(long)]
+    typeflow: bool,
 }
 
 #[derive(Args)]
@@ -2642,6 +2677,15 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
                 "pid": a.pid, "file": a.file, "arch": a.arch, "snapshot": a.snapshot,
                 "remote_cmd": a.remote_cmd, "addr": a.addr, "module": a.module,
                 "limit": a.limit, "max_bytes": a.max_bytes,
+            }),
+            pretty,
+        ),
+        Command::Function(FunctionCmd::Typeflow(a)) => run_capability(
+            "function.typeflow",
+            json!({
+                "pid": a.pid, "file": a.file, "arch": a.arch, "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd, "module": a.module, "limit": a.limit,
+                "max_bytes": a.max_bytes,
             }),
             pretty,
         ),
@@ -3607,6 +3651,30 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         progress("matching-signatures", total, total);
     }
 
+    // Phase 2c — whole-program type propagation, PERSISTED (priority 3b).
+    //
+    // Opt-in because it analyzes every function once; the pass itself then runs
+    // to a fixpoint over the extracted constraint graph, which is cheap. Same
+    // shape as the phases above: run once, persist, and every later view reads
+    // it through `.n0x/` with no flag of its own.
+    let mut typeflow_params = 0usize;
+    if a.typeflow && total > 0 {
+        progress("propagating-types", 0, total);
+        let vas: Vec<Va> = funcs.iter().map(|f| f.va).collect();
+        match n0xis_core::Pass::run(&n0xis_core::TypePropagatePass, &ctx, n0xis_core::TypePropInput { functions: vas, max_bytes: 4096 }) {
+            Ok(store) => {
+                typeflow_params = store.propagated_params;
+                let generation = format!("flow:{}:{}:{}", total, store.propagated_params, store.propagated_rets);
+                let flow = n0xis_project::type_flow::from_maps(generation, store.params.clone(), store.rets.clone());
+                if let Err(e) = n0xis_project::type_flow::save(&flow) {
+                    eprintln!("[n0x] {}", json!({ "warn": format!("persist type-flow: {e}") }));
+                }
+            }
+            Err(e) => eprintln!("[n0x] {}", json!({ "warn": format!("type propagation: {e}") })),
+        }
+        progress("propagating-types", total, total);
+    }
+
     // Phase 3 — build/persist the reverse-xref index (makes `xref to` instant).
     progress("indexing-xrefs", 0, 0);
     let idx = n0xis_pipeline::xref_index_for(&ctx, &code_ranges, &label);
@@ -3636,6 +3704,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         "functions": total,
         "rtti_classes": classes,
         "flirt_named": flirt_named,
+        "typeflow_propagated_params": typeflow_params,
         "xref_targets": xref_targets,
         "cached_functions": cached,
     });

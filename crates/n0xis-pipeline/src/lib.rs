@@ -246,7 +246,15 @@ pub fn decomp_cached(
     struct_defs: &std::collections::HashMap<String, std::collections::BTreeMap<i64, String>>,
 ) -> Result<(serde_json::Value, bool), CoreError> {
     let probe = ctx.source.read(input.start, input.max_bytes).unwrap_or_default();
-    let fingerprint = ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default();
+    let mut fingerprint = ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default();
+    // Whole-program types change the *rendering*, not the CFG, so only this
+    // cache needs to know about them — but it definitely does: a decompile
+    // cached before `analyze --typeflow` embeds the untyped signature.
+    let flow = ctx.type_flow.map(|f| f.type_flow_fingerprint()).unwrap_or_default();
+    if !flow.is_empty() {
+        fingerprint.push('+');
+        fingerprint.push_str(&flow);
+    }
     let scope = if fingerprint.is_empty() { ctx.source.label() } else { format!("{}|{fingerprint}", ctx.source.label()) };
     let key = decomp_cache_key(&scope, input, &probe, style, var_names, var_types, struct_defs);
     sweep_stale_decomp_once();

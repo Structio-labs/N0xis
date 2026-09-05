@@ -46,6 +46,7 @@ mod render;
 mod scan;
 mod signatures;
 mod summary;
+mod typeprop;
 mod slice;
 mod ssa;
 mod structural;
@@ -85,6 +86,7 @@ pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, 
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};
 pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
 pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
+pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};
 pub use eh::{landing_pads, scan_eh_frame, EhFunction, EhRegion};
 pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
@@ -167,6 +169,31 @@ pub struct Ctx<'a> {
     /// successor. `None` = exactly the previous behaviour, so a PE, a stripped
     /// image or a target with no `.eh_frame` is unaffected.
     pub eh: Option<&'a [crate::EhRegion]>,
+    /// Whole-program propagated types ([`TypePropagatePass`]), as
+    /// `(function VA, parameter index) → type name` and `VA → return type`.
+    /// Consulted **only where local inference found nothing better** — a type a
+    /// function proved about itself always wins over one inferred from its
+    /// callers. `None` = per-function typing exactly as before.
+    pub type_flow: Option<&'a dyn crate::TypeFlowLookup>,
+}
+
+/// The whole-program type store, as the decompiler consumes it. A trait so the
+/// core never depends on where the store came from (a live pass, or the JSON
+/// `analyze` persisted) — the same Code-seam discipline as `SymbolProvider`.
+pub trait TypeFlowLookup {
+    /// Propagated type of parameter `index` of the function at `va`.
+    fn param(&self, va: u64, index: usize) -> Option<&str>;
+    /// Propagated return type of the function at `va`.
+    fn ret(&self, va: u64) -> Option<&str>;
+
+    /// A token identifying **which types this store will give**, folded into the
+    /// decompile-cache key. Load-bearing for the same reason
+    /// [`SymbolProvider::symbol_fingerprint`](n0xis_sources::SymbolProvider::symbol_fingerprint)
+    /// is: a decompile cached before `analyze --typeflow` ran embeds the old,
+    /// untyped rendering, and without this it would keep being served.
+    fn type_flow_fingerprint(&self) -> String {
+        String::new()
+    }
 }
 
 impl<'a> Ctx<'a> {
@@ -179,6 +206,7 @@ impl<'a> Ctx<'a> {
             noreturn: None,
             vtables: None,
             eh: None,
+            type_flow: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -202,6 +230,11 @@ impl<'a> Ctx<'a> {
     /// Attach this function's exception regions (see the field docs).
     pub fn with_eh(mut self, eh: &'a [crate::EhRegion]) -> Self {
         self.eh = Some(eh);
+        self
+    }
+    /// Attach the whole-program type store (see the field docs).
+    pub fn with_type_flow(mut self, flow: &'a dyn crate::TypeFlowLookup) -> Self {
+        self.type_flow = Some(flow);
         self
     }
 }

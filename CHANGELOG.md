@@ -5,6 +5,32 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Interprocedural analysis (Phase 10 priority 3)
+
+- **Function summaries** (`function summary`) — the substrate the whole-program
+  passes read instead of re-analyzing a callee once per question: does it return,
+  what types are its parameters and result, which volatile registers it clobbers
+  (and whether that set is complete), whom it calls, and what about it is unknown.
+  Using the noreturn fixpoint's own predicate for `returns` — rather than a second
+  implementation of it — immediately produced the **real-corpus proof that
+  whole-program noreturn propagation fires**, which had been open since August:
+  on `libQt6Core.so.6`, `qt_assert` and `qt_assert_x` are flagged only because
+  `QMessageLogger::fatal` was proven first, and all three are `Q_NORETURN` in Qt's
+  own headers.
+- **Whole-program type propagation** (`function typeflow`, persisted by
+  `analyze --typeflow`) — a class recovered in one function now reaches the
+  functions that touch the same object, along the call graph, to a fixpoint. Only
+  *portable* type names travel: a recovered struct's name is per-function
+  (`struct_rdi_0`), and letting it cross would make two unrelated callers compare
+  **equal** and merge two different objects. A locally proven type is never
+  overwritten by a caller's claim; two propagated claims that disagree leave the
+  slot unknown. Verified end to end: with the store, `sub_140016054` in
+  `Updater.exe` renders `DWORD r9` where without it the same function renders
+  `uint64_t r9`. The yield is currently bounded by how many parameters carry a
+  portable type at all (457 across 8 000 the Qt desktop PE functions), so the next lever is
+  richer type seeds rather than more propagation.
+
+
 ### CFG fidelity: exact function extents and exception edges (Phase 10 priority 0)
 
 - **ELF function extents are facts now, not heuristics.** `Elf64_Sym.st_size` is the

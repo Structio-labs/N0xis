@@ -1529,16 +1529,66 @@ lift/SLEIGH-ingest per ISA.
      agree **by construction rather than by review** — which is what turned the
      comparison into the real-corpus proof of noreturn propagation recorded in
      priority 0. Cost: 400 functions of `libQt6Core.so.6` summarized in 1.2 s.
-   - ⬜ **3b — whole-program type propagation.** The layer above: a persistent,
-     call-graph-wide type store. Half of it already exists and is easy to miss —
+   - 🟡 *(2026-09-05, built and verified end to end — yield is seed-bound)*
+     **3b — whole-program type propagation.** `TypePropagatePass` /
+     `function typeflow`, persisted by `analyze --typeflow` into
+     `.n0x/type-flow.json` and read by the decompiler with no flag, folded into
+     the decompile-cache key so a view cached before the run cannot keep serving
+     the untyped signature.
+     Half of this already existed and is easy to miss:
      `typeinfer::user_callee_arg_types` flows a **callee's parameter types into
-     its caller's arguments**, one level, lazily, memoized. What is missing is
-     the other three directions: caller arguments back-propagated into a
-     callee's parameters (the direction that carries an RTTI-recovered class
-     into every helper the constructor hands `this` to), return types into their
-     consumers, and field layouts unified across all users of one struct — all
-     run to a fixpoint over the summaries above, with a conflict between two
-     callers resolved as *unknown* rather than a guess.
+     its caller's arguments**, one level, lazily. Added here: **caller arguments
+     back-propagated into a callee's parameters** (the direction that carries an
+     RTTI-recovered class into every helper a constructor hands `this` to),
+     **return types into their consumers**, and a **fixpoint** so a type crosses
+     a chain of functions rather than one call. Structure is extract-once /
+     iterate-cheap: each function is analyzed once into its constraint-graph
+     facts (parameter names, locally-proven types, call sites as
+     `(callee, argument variables, result variable)`, copy chains), and the
+     rounds walk only that graph.
+     **Three soundness rules, each found by measuring rather than by design:**
+     1. Only a **portable** type name propagates. A recovered struct is named
+        after the register its base arrived in (`struct_rdi_0`), so the name is
+        per-function and arbitrary — and the ambiguity check compares *names*, so
+        two unrelated callers each holding their own `struct_rdi_0` would compare
+        **equal** and silently merge two different objects into one type. That is
+        a wrong answer wearing the shape of agreement. `void *` is excluded for a
+        different reason: it would take a slot first and then *conflict* with the
+        real class arriving later, poisoning a slot about to be answered right.
+     2. A **locally proven** type is never overwritten or poisoned by a caller's
+        claim: a base-class pointer passed to a derived-class method is a
+        hierarchy, not an ambiguity.
+     3. Two *propagated* claims that disagree mark the slot ambiguous and it is
+        never assigned again.
+     **The bug that made the whole pass a no-op, and how it surfaced.** A first
+     run propagated 749 parameters, which looked like success and was not: almost
+     all of it was synthetic `struct_*` names travelling. With rule 1 in place the
+     figure collapsed to **26**, and on the Qt desktop PE to **1** — so the diagnostic
+     counters were added (`call_edges`, `var_arguments`, `typed_arguments`, and
+     the three skip reasons) rather than the number being accepted. They said it
+     immediately: of **5 722** typed arguments, **5 708** were refused as
+     non-portable. The cause was an ordering mistake in `type_of` — a variable is
+     very often *both* a recovered struct base and a class-typed parameter
+     (`rcx.0` is `struct_rcx_0` because we saw field accesses through it, **and**
+     `Ui::RpWidget *` because RTTI said so), and checking the struct first
+     returned the synthetic name, which rule 1 then correctly refused. The class
+     never got a chance. Consulting the program-wide sources first took the Qt desktop PE
+     from 1 → **7** propagated parameters and 32 → **399** propagated returns.
+     **Verified end to end, not just as an artifact:** on `Updater.exe`, with the
+     store present `sub_140016054` renders `DWORD r9` where without it the same
+     function renders `uint64_t r9` — pass → persist → load → infer → render,
+     with cache invalidation.
+     **The honest state.** The mechanism is correct and sound; the *yield* is
+     bounded by the seeds, not by the propagation. Across 8 000 the Qt desktop PE functions
+     only 457 parameters carry a portable type at all — those are what RTTI's
+     constructor idiom, member-`this` typing and the ~30-entry known-API table
+     produce — so only a few dozen call sites can move one. **The next lever is
+     more seeds, not more propagation**: richer RTTI `this`-typing (Itanium
+     recovers only 28 of 110 method slots on Qt), a larger API signature table,
+     and the FLIRT corpus naming library functions whose prototypes are known.
+     **Still ⬜ in 3b**: field layouts unified across all users of one struct —
+     the direction that would turn a per-function `struct_rcx_0` into one program
+     -wide aggregate, and the reason `struct_*` cannot travel today.
 4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
    decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
    it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few

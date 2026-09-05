@@ -326,6 +326,10 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     // landing pad has no incoming branch, so without this it is an unreachable
     // island the structurer cannot place. Empty for a PE, a stripped image, or
     // any target with no `.eh_frame` — behaviour then is exactly as before.
+    // Whole-program types `analyze --typeflow` persisted. Empty until it has
+    // run, and always outranked by what a function proves about itself.
+    let flow = crate::PersistedTypeFlow::load();
+
     let eh_all = eh_map(&resolved.src);
     let eh_regions: &[n0xis_core::EhRegion] = eh_all
         .iter()
@@ -382,7 +386,8 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
                     .with_symbols(&full)
                     .with_modules(pe.as_ref())
                     .with_vtables(&vtables)
-                    .with_eh(eh_regions),
+                    .with_eh(eh_regions)
+                    .with_type_flow(&flow),
                 input,
                 &label,
             )
@@ -463,6 +468,12 @@ fn with_src_ctx(
     // reached, which is why the matcher looked like a decompiler-only feature.
     let flirt_db = crate::flirt_syms::load_chain(&crate::flirt_syms::paths_from_arg(args.get("flirt"))).0;
 
+    // The recovered vtable → class map. `with_cfg_ctx` has always attached it;
+    // this builder did not, so a *range-scoped* pass — including whole-program
+    // type propagation, whose entire point is to move RTTI class names — ran
+    // with `ctx.vtables == None` and therefore saw no classes at all.
+    let vtables = rtti_vtable_map(&src);
+
     let resp = match &src {
         Src::Static(pe) => {
             let flirt = flirt_db
@@ -487,7 +498,12 @@ fn with_src_ctx(
                 (None, None) => pe.as_ref(),
             };
             let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
-            work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full), &src, region_len, &label)
+            work(
+                &n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_vtables(&vtables),
+                &src,
+                region_len,
+                &label,
+            )
         }
         Src::Live(l) => {
             let full;
@@ -762,28 +778,7 @@ impl Plugin for AnalysisPasses {
                     // whole discovered set up to `limit`.
                     let functions: Vec<Va> = match explicit {
                         Some(a) => vec![a],
-                        None => {
-                            let base = src.module_base();
-                            let mut all: Vec<Va> = base
-                                .and_then(|b| n0xis_core::discover_pdata(ctx.source, b).ok())
-                                .map(|f| f.into_iter().map(|c| c.va).collect())
-                                .unwrap_or_default();
-                            if all.is_empty() {
-                                for (start, size) in src.code_ranges_of(module.as_deref()) {
-                                    if let Ok(art) = n0xis_core::Pass::run(
-                                        &n0xis_core::DiscoverPass,
-                                        ctx,
-                                        n0xis_core::DiscoverInput { start, size: size as usize, limit: 0, offset: 0 },
-                                    ) {
-                                        all.extend(art.functions.into_iter().map(|c| c.va));
-                                    }
-                                }
-                                all.sort_by_key(|v| v.get());
-                                all.dedup();
-                            }
-                            all.truncate(if limit == 0 { usize::MAX } else { limit });
-                            all
-                        }
+                        None => crate::discovered_functions(ctx, src, module.as_deref(), limit),
                     };
                     let total = functions.len();
                     match n0xis_core::Pass::run(&n0xis_core::SummaryPass, ctx, n0xis_core::SummaryInput { functions, max_bytes }) {
@@ -793,6 +788,37 @@ impl Plugin for AnalysisPasses {
                             label,
                         ),
                         Err(e) => Response::error("summary-failed", e.to_string()),
+                    }
+                })
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "function.typeflow",
+            "Whole-program type propagation: flow recovered types along the call graph to a fixpoint, so a class recovered in one function reaches every function that touches the same object.",
+            Some(n0xis_contracts::schema::v1::FUNCTION_TYPEFLOW),
+            Origin::Builtin,
+            Box::new(|args| {
+                let limit = usize_arg(args, "limit", 400);
+                let max_bytes = usize_arg(args, "max_bytes", 4096);
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
+                with_src_ctx(args, Va(0), move |ctx, src, _region_len, label| {
+                    let functions = crate::discovered_functions(ctx, src, module.as_deref(), limit);
+                    if functions.is_empty() {
+                        return Response::error("no-functions", "no functions discovered to propagate types over".to_string());
+                    }
+                    let total = functions.len();
+                    match n0xis_core::Pass::run(
+                        &n0xis_core::TypePropagatePass,
+                        ctx,
+                        n0xis_core::TypePropInput { functions, max_bytes },
+                    ) {
+                        Ok(store) => ok_json(
+                            n0xis_contracts::schema::v1::FUNCTION_TYPEFLOW,
+                            json!({ "considered": total, "store": store }),
+                            label,
+                        ),
+                        Err(e) => Response::error("typeflow-failed", e.to_string()),
                     }
                 })
             }),

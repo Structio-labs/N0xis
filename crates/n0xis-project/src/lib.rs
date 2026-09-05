@@ -41,6 +41,7 @@ pub mod rtti_syms;
 pub mod selection;
 pub mod session;
 pub mod table;
+pub mod type_flow;
 pub mod types_db;
 pub mod xref_index;
 
