@@ -5,6 +5,31 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Signature naming reaches the whole product (Phase 10 item 8)
+
+- **`analyze --flirt <db.npat>…` persists its matches** into `.n0x/flirt-symbols.json`, so
+  the function list, `xref`, the decompiler and the GUI all render library names with **no
+  flag of their own**. Until now `--flirt` existed only on `decomp pseudo`, one function at
+  a time, so the matcher looked like a decompiler option instead of the triage tool it is.
+  The stakes, measured: a *five-line* C program linked statically and stripped discovers
+  **1 436 functions, exactly one of which is the author's**.
+- **Corpora chain.** `--flirt` is repeatable and merges; two corpora that disagree about
+  the same bytes leave the function anonymous rather than guessing. `--flirt` also reached
+  `function discover` and `ir manifest` for one-shot use without a project.
+- **`sig gen` self-validates the corpus it emits** — it builds the database it would ship,
+  replays the matcher against every function of the reference, and drops any signature that
+  would name a different one. This closed a real false-name bug found by a ground-truth exit
+  test: glibc's `__chk_fail` and `__stack_chk_fail` differ only in wildcarded displacements,
+  and an alias on the glue list removed one side, so every `__stack_chk_fail` in every
+  target was named `__chk_fail`. Cost of the fix on glibc: 1 signature of 1 070.
+- **PLT stubs are no longer signed** (a regression from this release's ELF import work):
+  a stub's bytes embed its PLT relocation index, which is specific to one binary's link
+  order. The shipped zlib corpus regenerates byte-identical.
+- **Verified against ground truth**: signatures learned from one statically-linked
+  symbolized program, applied to a *different* stripped one — **639 of 1 438 functions
+  named, all 639 correct, 0 wrong**, checked against the linker's own symbol table.
+
+
 ### ELF import resolution — the seam every callee-name analysis reads
 
 - **GOT slots now resolve to import names.** `StaticElf::iat_slot` was a stub

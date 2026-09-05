@@ -31,6 +31,7 @@
 pub mod annotate;
 pub mod decomp_cache;
 pub mod dump;
+pub mod flirt_syms;
 pub mod ir_cache;
 #[cfg(feature = "live")]
 pub mod locator;

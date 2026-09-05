@@ -1766,6 +1766,14 @@ struct DiscoverArgs {
     /// `--limit`/`--offset`; `meta.total` reports the true table size.
     #[arg(long)]
     pdata: bool,
+    /// FLIRT-class signature database(s) (`.npat`) to name statically-linked
+    /// library functions (`memcpy`, `crc32`, …) that carry no symbol. Repeatable:
+    /// the corpora merge into one lookup, and two that disagree about the same
+    /// bytes leave the function anonymous rather than guessing. Chained below the
+    /// real symbols, so a genuine name always wins. For a durable, project-wide
+    /// result use `analyze --flirt`, which persists the matches instead.
+    #[arg(long = "flirt")]
+    flirt: Vec<String>,
 }
 
 #[derive(Args)]
@@ -1791,6 +1799,14 @@ struct AnalyzeArgs {
     /// lazily on first view).
     #[arg(long)]
     no_cfg: bool,
+    /// FLIRT-class signature database(s) (`.npat`) to name statically-linked
+    /// library functions with. Repeatable — the corpora are merged into one
+    /// lookup, and two that disagree about the same bytes leave the function
+    /// anonymous rather than guessing. The matches are **persisted** into
+    /// `.n0x/flirt-symbols.json`, so afterwards the function list, xref, the
+    /// decompiler and the GUI all render them with no flag of their own.
+    #[arg(long = "flirt")]
+    flirt: Vec<String>,
 }
 
 #[derive(Args)]
@@ -2041,6 +2057,14 @@ struct ManifestArgs {
     /// Instruction set to decode: `x64` (default) or `arm64`.
     #[arg(long)]
     arch: Option<String>,
+    /// FLIRT-class signature database(s) (`.npat`) to name statically-linked
+    /// library functions (`memcpy`, `crc32`, …) that carry no symbol. Repeatable:
+    /// the corpora merge into one lookup, and two that disagree about the same
+    /// bytes leave the function anonymous rather than guessing. Chained below the
+    /// real symbols, so a genuine name always wins. For a durable, project-wide
+    /// result use `analyze --flirt`, which persists the matches instead.
+    #[arg(long = "flirt")]
+    flirt: Vec<String>,
 }
 
 #[derive(Args)]
@@ -2424,11 +2448,14 @@ struct IrArgs {
     /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
     #[arg(long)]
     remote_cmd: Option<String>,
-    /// FLIRT-class signature database (a `.npat` file) to name statically-linked
-    /// library functions (`free`, `memcpy`, …) that carry no symbol. Chained
-    /// below the real symbols, so a genuine name always wins.
-    #[arg(long)]
-    flirt: Option<String>,
+    /// FLIRT-class signature database(s) (`.npat`) to name statically-linked
+    /// library functions (`free`, `memcpy`, …) that carry no symbol. Repeatable:
+    /// the corpora merge into one lookup, and two that disagree about the same
+    /// bytes leave the function anonymous rather than guessing. Chained below the
+    /// real symbols, so a genuine name always wins. For a durable, project-wide
+    /// result use `analyze --flirt`, which persists the matches instead.
+    #[arg(long = "flirt")]
+    flirt: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -3194,6 +3221,16 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
+    // An ad-hoc signature corpus, if one was named. The function LIST is where
+    // signature naming is worth the most — a stripped static binary is almost
+    // entirely library code, so without this the list is a wall of `sub_XXXX`
+    // with the one interesting function hidden in it. Chained *below* the
+    // image's own symbols, so a real name always wins.
+    let (flirt_db, flirt_warns) = n0xis_frontend::flirt_syms::load_chain(&a.flirt);
+    for w in &flirt_warns {
+        eprintln!("[n0x] {}", json!({ "warn": format!("flirt corpus: {w}") }));
+    }
+
     // `.pdata` discovery reads the whole module (headers + exception table), not
     // a `.text` byte window — resolve the module base and dispatch before the
     // range logic the prologue scan needs.
@@ -3250,8 +3287,19 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         let local = n0xis_frontend::annotation_syms::LocalNames::load();
         return match &src {
             Src::Static(pe) => {
-                let chain = n0xis_sources::ChainedSymbols::new(&local, pe.as_ref());
-                run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain))
+                let flirt = flirt_db
+                    .as_ref()
+                    .map(|(db, fp)| n0xis_frontend::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
+                let base_holder;
+                let chain: &dyn n0xis_sources::SymbolProvider = match flirt.as_ref() {
+                    Some(f) => {
+                        base_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
+                        &base_holder
+                    }
+                    None => pe.as_ref(),
+                };
+                let full = n0xis_sources::ChainedSymbols::new(&local, chain);
+                run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full))
             }
             Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
             Src::Snap(s) => run_pdata(&Ctx::new(s, arch.as_ref()).with_symbols(&local)),
@@ -3290,8 +3338,19 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     let local = n0xis_frontend::annotation_syms::LocalNames::load();
     match &src {
         Src::Static(pe) => {
-            let chain = n0xis_sources::ChainedSymbols::new(&local, pe.as_ref());
-            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&chain))
+            let flirt = flirt_db
+                .as_ref()
+                .map(|(db, fp)| n0xis_frontend::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
+            let base_holder;
+            let chain: &dyn n0xis_sources::SymbolProvider = match flirt.as_ref() {
+                Some(f) => {
+                    base_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
+                    &base_holder
+                }
+                None => pe.as_ref(),
+            };
+            let full = n0xis_sources::ChainedSymbols::new(&local, chain);
+            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full))
         }
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref()).with_symbols(&local)),
@@ -3316,6 +3375,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
             "bytes": a.bytes,
             "snapshot": a.snapshot,
             "remote_cmd": a.remote_cmd,
+            "flirt": a.flirt,
         }),
         pretty,
     )
@@ -3423,6 +3483,58 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     };
     progress("scanning-rtti", classes, classes);
 
+    // Phase 2b — FLIRT-class signature naming, PERSISTED (ROADMAP Phase 10 item 8).
+    //
+    // This is the step that turns the matcher into a product feature. A stripped
+    // static binary is overwhelmingly *library* code — a five-line C program
+    // linked statically discovers **1 436 functions, of which one is the
+    // author's** — so triage is not "read the decompiler output", it is "find
+    // the 1 of 1 436". Matching is cheap; the reason it never paid off before is
+    // that `--flirt` lived only on `decomp pseudo`, one function at a time, so
+    // the names never reached the function list, xref, or the GUI. Persisting
+    // them into `.n0x/` (exactly as the RTTI phase above does) makes every
+    // consumer see them through `LocalNames`, with no flag of its own.
+    //
+    // Skipped entirely when no corpus is given, so `analyze` is unchanged.
+    let mut flirt_named = 0usize;
+    if !a.flirt.is_empty() {
+        progress("matching-signatures", 0, total);
+        let (loaded, warns) = n0xis_frontend::flirt_syms::load_chain(&a.flirt);
+        for w in &warns {
+            eprintln!("[n0x] {}", json!({ "warn": format!("flirt corpus: {w}") }));
+        }
+        match loaded {
+            None => eprintln!("[n0x] {}", json!({ "warn": "no signature corpus loaded; skipping" })),
+            Some((db, fingerprint)) => {
+                // The window must cover the longest pattern any corpus holds;
+                // `sig gen` defaults to 32 bytes and this leaves generous room.
+                const WINDOW: usize = 128;
+                let mut names: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+                for (i, f) in funcs.iter().enumerate() {
+                    // A function the image itself names needs no guess — and a
+                    // signature must never displace a real symbol.
+                    if ctx.symbols.and_then(|s| s.symbol_at(f.va)).is_some_and(|sym| sym.va == f.va) {
+                        continue;
+                    }
+                    let Ok(bytes) = ctx.source.read(f.va, WINDOW) else { continue };
+                    if let Some(name) = db.lookup(&bytes) {
+                        names.insert(f.va.0, name.to_string());
+                    }
+                    if i % 512 == 0 {
+                        progress("matching-signatures", i + 1, total);
+                    }
+                }
+                flirt_named = names.len();
+                if let Err(e) =
+                    n0xis_project::flirt_syms::save(&n0xis_project::flirt_syms::from_map(fingerprint, names))
+                {
+                    eprintln!("[n0x] {}", json!({ "warn": format!("persist flirt-symbols: {e}") }));
+                }
+            }
+        }
+        progress("matching-signatures", total, total);
+    }
+
     // Phase 3 — build/persist the reverse-xref index (makes `xref to` instant).
     progress("indexing-xrefs", 0, 0);
     let idx = n0xis_pipeline::xref_index_for(&ctx, &code_ranges, &label);
@@ -3451,6 +3563,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     let data = json!({
         "functions": total,
         "rtti_classes": classes,
+        "flirt_named": flirt_named,
         "xref_targets": xref_targets,
         "cached_functions": cached,
     });
@@ -5988,11 +6101,11 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
     let mut skipped_short = 0usize;
     let mut skipped_unreadable = 0usize;
     let mut skipped_glue = 0usize;
+
+    // Pass 1 — fingerprint every named function, filtering nothing yet. The
+    // window bytes are kept: pass 2 replays the matcher against them.
+    let mut built: Vec<(Va, &String, String, usize, Vec<u8>)> = Vec::new();
     for (va, name) in &funcs {
-        if !a.include_glue && is_toolchain_glue(name) {
-            skipped_glue += 1;
-            continue;
-        }
         let window = match img.read(*va, a.window) {
             Ok(b) if !b.is_empty() => b,
             _ => {
@@ -6004,8 +6117,91 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
             skipped_unreadable += 1;
             continue;
         };
-        if fixed < a.min_fixed {
-            skipped_short += 1;
+        built.push((*va, name, pattern, fixed, window));
+    }
+
+    // Pass 2 — SELF-VALIDATE THE CORPUS, then drop every signature that fails.
+    //
+    // The invariant a signature database must hold is not "no two patterns are
+    // equal"; it is: **looking up any function of the reference must never
+    // return another function's name.** Nothing weaker is sound, and this is
+    // checkable here because the reference is fully symbolized — it is `sig
+    // validate`'s invariance idea applied to the corpus as a whole.
+    //
+    // Both halves of this were found by an exit test against ground truth, and
+    // both are instructive:
+    //
+    // 1. glibc's `__chk_fail` and `__stack_chk_fail` differ *only* in the
+    //    RIP-relative message pointer and the relative `call __fortify_fail`,
+    //    both correctly wildcarded as linker-varying — identical patterns. The
+    //    matcher's own ambiguity rule could not save us: it refuses only when
+    //    both are in the database, and `__stack_chk_fail` shares its address
+    //    with the alias `__stack_chk_fail_local`, which the glue filter removes.
+    //    So `__chk_fail` was left alone holding a pattern matching both, and
+    //    every `__stack_chk_fail` in every target was named `__chk_fail`.
+    //
+    // 2. Dropping merely-equal patterns then made things *worse*. The ifunc
+    //    variants `__strcasecmp_l_avx2` and `__strcasecmp_l_avx2_rtm` have equal
+    //    patterns and were dropped — but `__strcasecmp_l_evex`, whose pattern
+    //    `generate_pattern` had TRUNCATED to 23 bytes (its next instruction ran
+    //    past the window), is a strict *prefix* of theirs and survived. Removing
+    //    the specific signatures handed the match to the over-broad one.
+    //
+    // Hence: replay the real matcher. Build a database from the candidates, look
+    // each reference function up by its own bytes, and drop whichever signature
+    // answered with the wrong name — the one making the false claim, not its
+    // victim. Dropping can expose a next-best, so iterate to a fixpoint; the set
+    // only ever shrinks, so it terminates.
+    // The set that would ship, before validation: everything the ordinary
+    // filters keep. Validation runs over THIS set (a signature the glue filter
+    // removed cannot shadow anything) but is checked against EVERY reference
+    // function, filtered-out ones included — their bytes are ground truth
+    // regardless of whether they earn a signature. That asymmetry is the whole
+    // point: it is exactly the `__chk_fail` hole, where the shadowed function
+    // was the one the filter removed.
+    let mut alive: Vec<bool> = Vec::with_capacity(built.len());
+    for (_, name, _, fixed, _) in &built {
+        let ship = !(!a.include_glue && is_toolchain_glue(name)) && *fixed >= a.min_fixed;
+        if !ship {
+            if !a.include_glue && is_toolchain_glue(name) {
+                skipped_glue += 1;
+            } else {
+                skipped_short += 1;
+            }
+        }
+        alive.push(ship);
+    }
+
+    let mut skipped_ambiguous = 0usize;
+    loop {
+        let mut db = n0xis_flirt::Db::new();
+        for (i, (_, name, pattern, _, _)) in built.iter().enumerate() {
+            if alive[i] {
+                let _ = db.add_pat(pattern, name);
+            }
+        }
+        // Every name the shipping database would claim wrongly this round.
+        let mut guilty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (_, name, _, _, window) in built.iter() {
+            if let Some(got) = db.lookup(window)
+                && got != name.as_str()
+            {
+                guilty.insert(got);
+            }
+        }
+        if guilty.is_empty() {
+            break;
+        }
+        for (i, (_, name, _, _, _)) in built.iter().enumerate() {
+            if alive[i] && guilty.contains(name.as_str()) {
+                alive[i] = false;
+                skipped_ambiguous += 1;
+            }
+        }
+    }
+
+    for (i, (va, name, pattern, fixed, _)) in built.iter().enumerate() {
+        if !alive[i] {
             continue;
         }
         lines.push(format!("{pattern} {name}"));
@@ -6029,6 +6225,11 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
                 "functions_total": funcs.len(),
                 "emitted": lines.len(),
                 "skipped_below_min_fixed": skipped_short,
+                // Patterns that two differently-named functions of the reference
+                // share: dropped, because such a pattern names neither.
+                // Signatures the corpus self-check proved would name the
+                // wrong function. Dropped: a wrong name is worse than none.
+                "skipped_ambiguous": skipped_ambiguous,
                 "skipped_unreadable": skipped_unreadable,
                 "skipped_toolchain_glue": skipped_glue,
                 "window": a.window,

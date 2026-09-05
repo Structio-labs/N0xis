@@ -54,3 +54,85 @@ impl SymbolProvider for FlirtSymbols<'_> {
         self.fingerprint.clone()
     }
 }
+
+/// Load and merge a **chain of corpora** into one lookup, returning the database
+/// and a fingerprint identifying it (so a cached artifact does not serve names
+/// from a database that has since changed).
+///
+/// A path that cannot be read or parsed is skipped and named in the returned
+/// warning list rather than failing the whole run: a triage pass over four
+/// corpora should not abort because one is missing. `None` when nothing loaded.
+///
+/// Merging is sound without ordering rules — [`Db::lookup`] refuses a name when
+/// two equally-specific signatures disagree, so a conflict between corpora
+/// yields no name instead of whichever loaded first.
+pub fn load_chain(paths: &[String]) -> (Option<(Db, String)>, Vec<String>) {
+    let mut db = Db::new();
+    let mut warnings = Vec::new();
+    let mut loaded: Vec<String> = Vec::new();
+    for path in paths {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match db.extend_npat(&text) {
+                Ok(()) => loaded.push(path.clone()),
+                Err(e) => warnings.push(format!("parse {path}: {e}")),
+            },
+            Err(e) => warnings.push(format!("read {path}: {e}")),
+        }
+    }
+    if loaded.is_empty() {
+        return (None, warnings);
+    }
+    let fingerprint = format!("flirt:{}:{}", loaded.join(","), db.len());
+    (Some((db, fingerprint)), warnings)
+}
+
+/// The paths a `flirt` argument names. Accepts a JSON array of strings, or a
+/// single string holding one path — the CLI's repeatable `--flirt` becomes the
+/// array form, while a hand-written capability call may pass just one.
+pub fn paths_from_arg(v: Option<&serde_json::Value>) -> Vec<String> {
+    match v {
+        Some(serde_json::Value::Array(items)) => {
+            items.iter().filter_map(|i| i.as_str()).map(str::to_string).collect()
+        }
+        Some(serde_json::Value::String(s)) if !s.is_empty() => vec![s.clone()],
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_corpus_warns_instead_of_failing_the_chain() {
+        let dir = std::env::temp_dir().join(format!("n0xis-flirt-chain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.npat");
+        std::fs::write(&good, "55 48 89 E5 41 57 zlib_deflate\n").unwrap();
+        let missing = dir.join("nope.npat");
+
+        let (db, warns) = load_chain(&[good.to_string_lossy().into(), missing.to_string_lossy().into()]);
+        let (db, fp) = db.expect("the readable corpus still loads");
+        assert_eq!(db.len(), 1);
+        assert!(fp.contains("good.npat") && !fp.contains("nope.npat"), "fingerprint names only what loaded: {fp}");
+        assert_eq!(warns.len(), 1, "the unreadable one is reported: {warns:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nothing_loadable_yields_no_database() {
+        let (db, warns) = load_chain(&["/nonexistent/a.npat".to_string()]);
+        assert!(db.is_none());
+        assert_eq!(warns.len(), 1);
+        assert!(load_chain(&[]).0.is_none());
+    }
+
+    #[test]
+    fn arg_accepts_both_a_list_and_a_lone_string() {
+        use serde_json::json;
+        assert_eq!(paths_from_arg(Some(&json!(["a.npat", "b.npat"]))), vec!["a.npat", "b.npat"]);
+        assert_eq!(paths_from_arg(Some(&json!("a.npat"))), vec!["a.npat"]);
+        assert!(paths_from_arg(Some(&json!(""))).is_empty());
+        assert!(paths_from_arg(None).is_empty());
+    }
+}

@@ -165,3 +165,25 @@ fn plt_stubs_are_named_after_the_import_they_jump_to() {
         elf.sections().iter().any(|(nm, v, _)| nm.starts_with(".plt") && v.get() >= s.get() && v.get() < end)
     }));
 }
+
+/// A PLT stub is named after its import (above) — but it must NOT be offered as
+/// one of the image's own defined functions. `named_functions()` feeds `sig gen`
+/// and `profile --exports`; a stub is a thunk into another library, and signing
+/// one is actively harmful: every lazy x86-64 PLT entry embeds its own
+/// relocation index (`push <n>`), which is specific to this binary's link order.
+#[test]
+fn plt_stubs_are_not_reported_as_defined_functions() {
+    let dir = std::env::temp_dir().join(format!("n0xis-elf-plt-defined-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    let _scratch = Scratch(dir.clone());
+
+    let Some(path) = build_so(&dir, "lazydef.so", &["-Wl,-z,lazy"]) else {
+        eprintln!("skipping: no C compiler on PATH");
+        return;
+    };
+    let elf = StaticElf::load(&path).expect("load the shared object");
+    let defined: Vec<String> = elf.named_functions().into_iter().map(|(_, n)| n).collect();
+
+    assert!(defined.iter().any(|n| n == "n0x_entry"), "its own functions are still there: {defined:?}");
+    assert!(!defined.iter().any(|n| n == "getenv"), "an imported PLT stub must not be listed: {defined:?}");
+}

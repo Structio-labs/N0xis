@@ -2,20 +2,25 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! [`LocalNames`] — a [`SymbolProvider`] backed by the project's `.n0x/`: the
-//! **user's own truth** (renamed functions, kept in `annotations.json`) plus the
-//! **recovered class names** the `analyze` pass persisted (MSVC RTTI,
-//! `rtti-symbols.json`). Both are address→name maps loaded at `Ctx`-build time and
-//! shared cheaply via `Arc`, so this provider borrows nothing from the source and
-//! chains as ONE unit — unlike the per-source providers (`StaticPe`, FLIRT,
-//! IL2CPP) it sits above.
+//! **user's own truth** (renamed functions, kept in `annotations.json`), the
+//! **recovered class names** the `analyze` pass persisted (RTTI,
+//! `rtti-symbols.json`), and the **signature-matched library names** it
+//! persisted alongside them (`flirt-symbols.json`). All three are address→name
+//! maps loaded at `Ctx`-build time and shared cheaply via `Arc`, so this provider
+//! borrows nothing from the source and chains as ONE unit — unlike the per-source
+//! providers (`StaticPe`, ad-hoc FLIRT, IL2CPP) it sits above.
 //!
 //! Chained as the **primary** provider (see `registry`'s `with_cfg_ctx` /
 //! `with_src_ctx`), so a user rename wins over a recovered name, which wins over
 //! the binary's own exports, which win over `sub_XXXX`. Because every entry
 //! answers at exactly its own address, [`n0xis_sources::ChainedSymbols`]'s
-//! tighter-fit rule keeps the annotation over any spanning provider. A user name
-//! also wins over a recovered name **within** this provider: `symbol_at` consults
-//! the user map first.
+//! tighter-fit rule keeps the annotation over any spanning provider.
+//!
+//! **Precedence within this provider is user ▸ RTTI ▸ signature**, and the order
+//! is not arbitrary: a rename is the user's assertion, an RTTI name is read out
+//! of a structure the compiler emitted, and a signature match is a *heuristic
+//! over bytes*. So a byte match never displaces a name the binary itself
+//! carried the evidence for.
 //!
 //! **Cache invalidation is load-bearing.** Analysis artifacts (CFG, decomp) embed
 //! *resolved* names, and `n0xis-pipeline`'s IR cache folds
@@ -25,12 +30,13 @@
 //! the exact bug the trait's doc-comment warns about ("changed nothing until
 //! `.n0x/ir-cache/` was deleted by hand").
 //!
-//! **The two sources are memoized SEPARATELY**, each keyed on its own file's
-//! (path, len, mtime). This matters for interactivity: the recovered-name file is
-//! large (tens of MB on a target with 57k classes) and changes only on a re-scan,
-//! while the user file is tiny and changes on every rename. Sharing one memo would
-//! re-parse the big file on every keystroke-rename; keeping them apart means a
-//! rename re-reads only the small file and reuses the big `Arc` untouched.
+//! **The three sources are memoized SEPARATELY**, each keyed on its own file's
+//! (path, len, mtime). This matters for interactivity: the recovered-name files
+//! are large (tens of MB on a target with 57k classes; a signature run over a
+//! static binary names thousands) and change only on a re-scan, while the user
+//! file is tiny and changes on every rename. Sharing one memo would re-parse the
+//! big files on every keystroke-rename; keeping them apart means a rename
+//! re-reads only the small file and reuses the big `Arc`s untouched.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -49,7 +55,10 @@ pub struct LocalNames {
     /// Recovered names (RTTI vtables + methods). Consulted when the user map has
     /// nothing at the address.
     rtti: Arc<NameMap>,
-    /// Content-change token for the IR cache — reflects both source files.
+    /// Signature-matched library names (`analyze --flirt`). Consulted last, so a
+    /// byte-pattern guess never displaces user truth or a structural RTTI name.
+    flirt: Arc<NameMap>,
+    /// Content-change token for the IR cache — reflects all three source files.
     fingerprint: String,
 }
 
@@ -58,6 +67,7 @@ pub struct LocalNames {
 /// one target, so this never mixes projects.
 static USER_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
 static RTTI_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
+static FLIRT_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
 
 impl LocalNames {
     /// Load every project-local name for the current `.n0x/` (resolved by walk-up
@@ -69,25 +79,32 @@ impl LocalNames {
 
         let user_sig = file_signature(dir.as_deref(), "annotations.json");
         let rtti_sig = file_signature(dir.as_deref(), "rtti-symbols.json");
+        let flirt_sig = file_signature(dir.as_deref(), "flirt-symbols.json");
 
         let user = memoized(&USER_MEMO, user_sig, build_user);
         let rtti = memoized(&RTTI_MEMO, rtti_sig, build_rtti);
+        let flirt = memoized(&FLIRT_MEMO, flirt_sig, build_flirt);
 
-        // The token varies with either file's (len, mtime); empty only when there
+        // The token varies with any file's (len, mtime); empty only when there
         // are no local names at all, so it perturbs the cache key exactly when a
         // name could differ.
-        let fingerprint = if user.is_empty() && rtti.is_empty() {
+        let fingerprint = if user.is_empty() && rtti.is_empty() && flirt.is_empty() {
             String::new()
         } else {
-            format!("local:{user_sig:016x}:{}:{rtti_sig:016x}:{}", user.len(), rtti.len())
+            format!(
+                "local:{user_sig:016x}:{}:{rtti_sig:016x}:{}:{flirt_sig:016x}:{}",
+                user.len(),
+                rtti.len(),
+                flirt.len()
+            )
         };
 
-        LocalNames { user, rtti, fingerprint }
+        LocalNames { user, rtti, flirt, fingerprint }
     }
 
     /// No local names at all.
     pub fn is_empty(&self) -> bool {
-        self.user.is_empty() && self.rtti.is_empty()
+        self.user.is_empty() && self.rtti.is_empty() && self.flirt.is_empty()
     }
 }
 
@@ -121,8 +138,8 @@ fn vtable_class(name: &str) -> Option<&str> {
 
 impl SymbolProvider for LocalNames {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
-        // User truth first, then recovered names.
-        let (name, kind) = self.user.get(&va.0).or_else(|| self.rtti.get(&va.0))?;
+        // User truth first, then structural (RTTI), then heuristic (signature).
+        let (name, kind) = self.user.get(&va.0).or_else(|| self.rtti.get(&va.0)).or_else(|| self.flirt.get(&va.0))?;
         Some(Symbol { va, module: String::new(), name: name.clone(), kind: *kind })
     }
 
@@ -167,6 +184,17 @@ fn build_rtti() -> NameMap {
     for (va, name, kind) in n0xis_project::rtti_syms::load().unwrap_or_default() {
         if !name.trim().is_empty() {
             map.insert(va, (name, sym_kind(&kind)));
+        }
+    }
+    map
+}
+
+/// Signature-matched library names from `flirt-symbols.json`. Non-fatal.
+fn build_flirt() -> NameMap {
+    let mut map = NameMap::new();
+    for (va, name) in n0xis_project::flirt_syms::load().unwrap_or_default() {
+        if !name.trim().is_empty() {
+            map.insert(va, (name, SymKind::Function));
         }
     }
     map
@@ -217,14 +245,19 @@ mod tests {
     use super::*;
 
     fn provider(user: &[(u64, &str)], rtti: &[(u64, &str, SymKind)]) -> LocalNames {
+        provider3(user, rtti, &[])
+    }
+
+    fn provider3(user: &[(u64, &str)], rtti: &[(u64, &str, SymKind)], flirt: &[(u64, &str)]) -> LocalNames {
         let user: NameMap = user.iter().map(|(v, n)| (*v, (n.to_string(), SymKind::Function))).collect();
         let rtti: NameMap = rtti.iter().map(|(v, n, k)| (*v, (n.to_string(), *k))).collect();
-        let fingerprint = if user.is_empty() && rtti.is_empty() {
+        let flirt: NameMap = flirt.iter().map(|(v, n)| (*v, (n.to_string(), SymKind::Function))).collect();
+        let fingerprint = if user.is_empty() && rtti.is_empty() && flirt.is_empty() {
             String::new()
         } else {
-            format!("local:{}:{}", user.len(), rtti.len())
+            format!("local:{}:{}:{}", user.len(), rtti.len(), flirt.len())
         };
-        LocalNames { user: Arc::new(user), rtti: Arc::new(rtti), fingerprint }
+        LocalNames { user: Arc::new(user), rtti: Arc::new(rtti), flirt: Arc::new(flirt), fingerprint }
     }
 
     #[test]
@@ -247,5 +280,23 @@ mod tests {
         assert!(provider(&[], &[]).symbol_fingerprint().is_empty());
         assert!(!provider(&[(0x1000, "a")], &[]).symbol_fingerprint().is_empty());
         assert!(!provider(&[], &[(0x1000, "Foo::vf0", SymKind::Function)]).symbol_fingerprint().is_empty());
+        // A signature-only project must still perturb the IR-cache key, or a
+        // decompile cached before `analyze --flirt` keeps serving `sub_XXXX`.
+        assert!(!provider3(&[], &[], &[(0x1000, "memcpy")]).symbol_fingerprint().is_empty());
+    }
+
+    /// The precedence that makes the three layers safe to stack: a heuristic
+    /// byte match never displaces the user's own name or a structural RTTI one,
+    /// but does fill an address neither of them claims.
+    #[test]
+    fn signature_names_rank_below_user_and_rtti_but_fill_the_gaps() {
+        let p = provider3(
+            &[(0x1000, "parse_header")],
+            &[(0x1000, "Foo::vf0", SymKind::Function), (0x2000, "Foo::vf1", SymKind::Function)],
+            &[(0x1000, "memcpy"), (0x2000, "memset"), (0x3000, "crc32")],
+        );
+        assert_eq!(p.symbol_at(Va(0x1000)).unwrap().name, "parse_header", "user wins over both");
+        assert_eq!(p.symbol_at(Va(0x2000)).unwrap().name, "Foo::vf1", "RTTI wins over a byte match");
+        assert_eq!(p.symbol_at(Va(0x3000)).unwrap().name, "crc32", "signature fills what nothing else claims");
     }
 }

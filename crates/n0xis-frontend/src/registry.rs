@@ -298,11 +298,11 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     // is supplied, statically-linked CRT/STL functions that carry no symbol get
     // named by matching their bytes. Chained *below* the real symbol sources, so
     // a genuine name always wins and FLIRT only fills the `sub_XXXX` gaps.
-    let flirt_db = args
-        .get("flirt")
-        .and_then(|v| v.as_str())
-        .and_then(|p| std::fs::read_to_string(p).ok().map(|t| (p.to_string(), t)))
-        .and_then(|(p, t)| n0xis_flirt::Db::load_npat(&t).ok().map(|db| (p, db)));
+    //
+    // This is the *ad-hoc* path — one command, no project. The durable one is
+    // `analyze --flirt`, which persists its matches into `.n0x/` so every
+    // consumer sees them through `LocalNames` without a flag.
+    let flirt_db = crate::flirt_syms::load_chain(&crate::flirt_syms::paths_from_arg(args.get("flirt"))).0;
 
     // Project-local names (Phase — interactive annotations): the user's own
     // renames (`.n0x/annotations.json`) plus the class names `analyze` recovered
@@ -316,7 +316,7 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
         Src::Static(pe) => {
             let flirt = flirt_db
                 .as_ref()
-                .map(|(p, db)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, format!("flirt:{p}:{}", db.len())));
+                .map(|(db, fp)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
             // Build the binary-derived chain (managed index ▸ PE exports ▸ FLIRT)
             // into holders that outlive the borrow, then wrap it with `local`.
             let base_holder;
@@ -409,12 +409,35 @@ fn with_src_ctx(
     // range-scoped twin of the wiring in `with_cfg_ctx`.
     let local = crate::annotation_syms::LocalNames::load();
 
+    // …and the same for an ad-hoc signature corpus. `ir manifest` is the triage
+    // surface — a per-function index over the *whole* image — so it is exactly
+    // where naming the statically-linked library instead of listing 1 400
+    // `sub_XXXX` entries pays off; it was the one ctx builder FLIRT never
+    // reached, which is why the matcher looked like a decompiler-only feature.
+    let flirt_db = crate::flirt_syms::load_chain(&crate::flirt_syms::paths_from_arg(args.get("flirt"))).0;
+
     let resp = match &src {
         Src::Static(pe) => {
+            let flirt = flirt_db
+                .as_ref()
+                .map(|(db, fp)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
             let base_holder;
-            let fallback: &dyn n0xis_sources::SymbolProvider = match managed {
-                Some(m) => { base_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref()); &base_holder }
-                None => pe.as_ref(),
+            let chain_holder;
+            let fallback: &dyn n0xis_sources::SymbolProvider = match (managed, flirt.as_ref()) {
+                (Some(m), Some(f)) => {
+                    base_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                    chain_holder = n0xis_sources::ChainedSymbols::new(&base_holder, f);
+                    &chain_holder
+                }
+                (Some(m), None) => {
+                    chain_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
+                    &chain_holder
+                }
+                (None, Some(f)) => {
+                    chain_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
+                    &chain_holder
+                }
+                (None, None) => pe.as_ref(),
             };
             let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
             work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full), &src, region_len, &label)

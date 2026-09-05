@@ -373,11 +373,19 @@ impl StaticElf {
         self.sections.iter().find(|s| va >= s.va_start && va < s.va_end)
     }
 
-    /// The defined function symbols (`.symtab`/`.dynsym`), address-ordered — the
-    /// `(va, name)` list a signature generator fingerprints. Empty on a stripped
+    /// The **defined** function symbols (`.symtab`/`.dynsym`), address-ordered —
+    /// the `(va, name)` list a signature generator fingerprints and `profile`
+    /// reports as this format's answer to a PE export table. Empty on a stripped
     /// binary, which is exactly why signatures are needed in the first place.
+    ///
+    /// Excludes the **PLT stubs** named after their imports: a stub is a thunk
+    /// into another library, not code this image defines. Signing one is both
+    /// useless and unsafe — every x86-64 lazy PLT entry embeds its own
+    /// relocation index (`push <n>`), a value specific to *this* binary's link
+    /// order, so the pattern either matches nothing elsewhere or matches an
+    /// unrelated stub that happens to share the index.
     pub fn named_functions(&self) -> Vec<(Va, String)> {
-        self.symbols.values().filter(|s| s.kind != SymKind::Data).map(|s| (s.va, s.name.clone())).collect()
+        self.symbols.values().filter(|s| s.kind == SymKind::Export).map(|s| (s.va, s.name.clone())).collect()
     }
 }
 

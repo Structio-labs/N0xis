@@ -233,15 +233,27 @@ impl Db {
     /// everything before it). Blank lines and comments are skipped.
     pub fn load_npat(text: &str) -> Result<Db, ParseError> {
         let mut db = Db::new();
+        db.extend_npat(text)?;
+        Ok(db)
+    }
+
+    /// Merge another `.npat` database into this one — how a *chain of corpora*
+    /// (zlib + OpenSSL + a locally generated CRT) becomes one lookup.
+    ///
+    /// Merging is sound for free: [`Self::lookup`] already refuses a name when
+    /// two equally-specific signatures disagree, so two corpora that both claim
+    /// the same bytes under different names yield `None` rather than whichever
+    /// happened to load first. Order therefore does not change the answer.
+    pub fn extend_npat(&mut self, text: &str) -> Result<(), ParseError> {
         for (lineno, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let (pat, name) = line.rsplit_once(char::is_whitespace).ok_or(ParseError::NoName(lineno + 1))?;
-            db.add_pat(pat.trim(), name.trim())?;
+            self.add_pat(pat.trim(), name.trim())?;
         }
-        Ok(db)
+        Ok(())
     }
 }
 
@@ -270,6 +282,7 @@ impl std::error::Error for ParseError {}
 
 #[cfg(test)]
 mod tests {
+    // (chaining tests are at the end of this module)
     use super::*;
 
     #[test]
@@ -353,5 +366,45 @@ mod tests {
         let window = [0x48, 0x83, 0xec, 0x28, 0xe9, 0x11, 0x22, 0x33, 0x44];
         let pat = Pattern::from_window(&window, &[(5, 4)]);
         assert_eq!(pat.to_npat(), "48 83 ec 28 e9");
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    /// Two corpora merge into one lookup, and each keeps naming its own
+    /// functions — the "chain of corpora" case (zlib + a locally generated CRT).
+    #[test]
+    fn two_corpora_merge_and_both_still_match() {
+        let mut db = Db::load_npat("55 48 89 E5 41 57 zlib_deflate\n").unwrap();
+        db.extend_npat("48 83 EC 28 33 C0 crt_memset\n").unwrap();
+        assert_eq!(db.len(), 2);
+        assert_eq!(db.lookup(&[0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x90]), Some("zlib_deflate"));
+        assert_eq!(db.lookup(&[0x48, 0x83, 0xEC, 0x28, 0x33, 0xC0, 0x90]), Some("crt_memset"));
+    }
+
+    /// Merging must not make the result order-dependent: two corpora claiming the
+    /// same bytes under different names are ambiguous, so neither name is served.
+    /// A wrong name is worse than none (CONCEPT §3 rule 6).
+    #[test]
+    fn corpora_that_disagree_stay_anonymous_either_way() {
+        let pat = "55 48 89 E5 41 57";
+        let mut ab = Db::load_npat(&format!("{pat} from_a\n")).unwrap();
+        ab.extend_npat(&format!("{pat} from_b\n")).unwrap();
+        let mut ba = Db::load_npat(&format!("{pat} from_b\n")).unwrap();
+        ba.extend_npat(&format!("{pat} from_a\n")).unwrap();
+        let code = [0x55, 0x48, 0x89, 0xE5, 0x41, 0x57];
+        assert_eq!(ab.lookup(&code), None);
+        assert_eq!(ba.lookup(&code), None);
+    }
+
+    /// A more specific signature in the *second* corpus still wins — merging
+    /// keeps most-specific-wins, it does not degrade to first-loaded-wins.
+    #[test]
+    fn a_more_specific_signature_from_the_second_corpus_wins() {
+        let mut db = Db::load_npat("55 48 ?? ?? generic\n").unwrap();
+        db.extend_npat("55 48 89 E5 41 57 specific\n").unwrap();
+        assert_eq!(db.lookup(&[0x55, 0x48, 0x89, 0xE5, 0x41, 0x57]), Some("specific"));
     }
 }

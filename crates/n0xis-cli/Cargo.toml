@@ -48,3 +48,8 @@ n0xis-project = { workspace = true, features = ["live"] }
 
 [target.'cfg(not(windows))'.dependencies]
 n0xis-project = { workspace = true }
+
+[dev-dependencies]
+# Ground truth for the FLIRT exit test: read the unstripped twin's symbol table
+# directly, so a matched name is checked against the linker's own answer.
+goblin = { workspace = true }

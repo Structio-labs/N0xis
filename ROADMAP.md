@@ -1127,7 +1127,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | SIMD / FP lift | ✅ Rung 5c/5h — SSE data moves as 128-bit ops + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); FP *compares* left opaque |
 | PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
 | C++ RTTI / vtable / class recovery | ✅ Rung 7a — MSVC RTTI scan, vtable naming, `this`-typing, **full template demangling, base-class inheritance graph** (Kenshi 3055 / STALKER 2 561 vtables). Whole-program class-graph propagation into every method still ⬜ |
-| Library-function identification (FLIRT-class) | ❌ missing — statically-linked CRT/STL/runtime code is decompiled by hand; `sig validate` is the primitive, but there is no shipped signature library or auto-apply |
+| Library-function identification (FLIRT-class) | ✅ **matcher + generator + auto-apply** — `n0xis-flirt` matches, `sig gen` learns a corpus from any symbolized image (self-validating), `analyze --flirt` **persists** matches into `.n0x/` so the function list, xref, decompiler and GUI all render them with no flag; corpora chain. Shipped OSS corpus: zlib. Breadth of the shipped library is the remaining gap, not the mechanism |
 | Calling-convention & argument recovery | 🚧 early — arity + return only; CC is *assumed* x64-fastcall, no `this`call/vectorcall/variadic detection |
 | Stack-frame reconstruction (SP-delta, FPO) | 🚧 partial — locals recovered, but no explicit frame model, no frame-pointer-omission handling, no stack arrays/spills as typed variables |
 | Output readability (goto-elim, `&&`/`\|\|`, `?:`, loop forms) | ✅ Rung 6 — `switch`, `&&`/`\|\|`, `?:`, `if`/`else if`, `for`/`while`/`do-while`, tail-duplication (residual gotos ~halved). Residual shared-body gotos on irreducible merges remain |
@@ -1212,7 +1212,7 @@ lift/SLEIGH-ingest per ISA.
 | Interprocedural propagation | types / values / CC across the call graph | ❌ intraprocedural; only the ~30-entry API table crosses a call |
 | Compiler idioms | magic-division, `rep`-string→`mem*`, stack canary, strlen-inlining, cmov→min/max, SSE idioms, … | 🚧 a handful (`const identify`, junk, opaque predicates) |
 | C++ RTTI / vtables | parse MSVC (`RTTICompleteObjectLocator`, `type_info`) and Itanium RTTI → class names, base-class graph, vtable→method typing; feed devirtualization | 🟡 **both ABIs recover class names** — MSVC via `.rdata` COL chains, Itanium via `_ZTV…` symbols (2026-09-04); base-class graph MSVC-only, devirtualization still ⬜ |
-| Library-function ID | a signature DB (another tool FLIRT / another tool Function-ID) that names statically-linked CRT/STL/runtime code instead of decompiling it | ❌ `sig validate` supplies the invariance primitive; no shipped library, no auto-apply pass |
+| Library-function ID | a signature DB (another tool FLIRT / another tool Function-ID) that names statically-linked CRT/STL/runtime code instead of decompiling it | ✅ end to end *(2026-09-05)* — learn (`sig gen`), match (`n0xis-flirt`), apply project-wide (`analyze --flirt` → `.n0x/flirt-symbols.json`). Verified against a linker symbol table: 639 matched, 639 correct, 0 wrong |
 | Calling convention | classify the CC and recover arg count/types by entry-liveness + call-site agreement; detect variadic and `this` | 🚧 arity + return only; CC assumed, so an un-prototyped function renders guessed arguments |
 | Stack frame | SP-delta tracking across the function, FPO-function handling, stack arrays/spills surfaced as typed locals | 🚧 locals only; no frame reconstruction, no FPO |
 | Readability | eliminate gotos, recover `&&`/`\|\|` from short-circuit CFG diamonds, `?:`, and `for`/`while`/`do` + `break`/`continue` | 🚧 structures reducible CFGs; the readability passes other tools polished for a decade are not built |
@@ -1537,8 +1537,8 @@ lift/SLEIGH-ingest per ISA.
      object), and a structural scan for **stripped** ELFs, which today yield an
      honest `count: 0`. Only 28 of libQt6Core's method slots resolve — same
      relocation cause; the vtable entries themselves are complete.
-8. 🟡 **Library-function identification (FLIRT-class signatures) — the biggest
-   time-lever.** A release build is a large fraction *known* code: the CRT, the
+8. ✅ **Library-function identification (FLIRT-class signatures) — the biggest
+   time-lever.** *(mechanism complete 2026-09-05; corpus breadth is the open follow-on)* A release build is a large fraction *known* code: the CRT, the
    STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
    Function-ID) names `memcpy`, `std::_Tree::_Insert`, `operator new` instead of
    decompiling them by hand — the single change that most shrinks what a human must
@@ -1599,6 +1599,65 @@ lift/SLEIGH-ingest per ISA.
      `generate.sh` (reproduces the sample from the pinned upstream tag). OpenSSL
      libcrypto 3.6.4 also generates cleanly (5888 signatures) but is left
      generate-locally rather than committed as a machine-specific blob.
+   - ✅ *(2026-09-05, verified)* **Rung 10d — auto-apply, corpus chaining, and the
+     soundness hole the exit test found.** 10a–10c built the matcher, the generator and a
+     shipped corpus, and then the lever sat unused: **`--flirt` existed only on
+     `decomp pseudo`**, one function at a time, so signature names never reached the
+     function list, `xref`, or the GUI. The measurement that makes the stakes concrete: a
+     *five-line* C program, statically linked and stripped, discovers **1 436 functions,
+     exactly one of which is the author's**. Triage is not "read the decompiler output",
+     it is "find the 1 of 1 436" — and that is what this rung delivers.
+     1. **`analyze --flirt <db.npat>…` persists.** A new phase matches every discovered
+        function and writes `.n0x/flirt-symbols.json`, exactly as the RTTI phase writes
+        `rtti-symbols.json`. `LocalNames` gained it as a **third** source, ranked
+        **user rename ▸ RTTI ▸ signature** — a byte heuristic must never displace a name
+        the binary carried structural evidence for — memoized on its own file so a rename
+        still re-reads only the tiny annotations file, and folded into the
+        `symbol_fingerprint` so a decompile cached before the run cannot serve `sub_XXXX`.
+        Afterwards **every consumer renders the names with no flag of its own**.
+     2. **Corpora chain.** `--flirt` is repeatable and merges (`Db::extend_npat`); order
+        cannot change the answer, because `lookup` already refuses two equally-specific
+        signatures that disagree. `--flirt` also reached `function discover` and
+        `ir manifest` (the triage surface, and the one ctx builder FLIRT never touched) for
+        one-shot use without a project.
+     3. **`sig gen` now self-validates its own corpus — and it had to.** The exit test
+        checks every matched name against the target's *unstripped* symbol table, and it
+        caught a real false name: glibc's `__chk_fail` and `__stack_chk_fail` differ **only**
+        in a RIP-relative message pointer and a relative `call __fortify_fail`, both
+        correctly wildcarded as linker-varying, so their patterns are identical. The
+        matcher's ambiguity rule could not save us — it refuses only when *both* are in the
+        database, and `__stack_chk_fail` shares its address with the alias
+        `__stack_chk_fail_local`, which the glue filter removes. `__chk_fail` was left
+        holding a pattern matching both, and named every `__stack_chk_fail` in every target.
+        **The first fix made it worse**, which is the instructive half: dropping merely
+        *equal* patterns removed the ifunc variants `__strcasecmp_l_avx2`/`_avx2_rtm` and
+        left `__strcasecmp_l_evex`, whose pattern `generate_pattern` had truncated to 23
+        bytes and which is a strict *prefix* of theirs — handing the match to the
+        over-broad signature. The invariant is therefore not "no two patterns are equal"
+        but **"looking up any function of the reference must never return another
+        function's name"**: `sig gen` builds the database it would ship, replays the real
+        matcher against every reference function (including ones the filters excluded —
+        their bytes are still ground truth), drops whichever signature answered wrongly,
+        and iterates to a fixpoint. Cost on glibc: **1 signature of 1 070**.
+     4. **PLT stubs must not be signed** — a regression from the 2026-09-05 ELF import work,
+        caught by the same regeneration. Naming a stub after its import (correct for
+        reading code) put it in `named_functions()`, so `sig gen` began fingerprinting
+        `malloc`/`free`/`memcpy` **thunks**, whose bytes embed the PLT relocation index
+        (`push <n>`) — a value specific to that binary's link order. `named_functions()`
+        now returns defined functions only; the shipped zlib corpus regenerates
+        **byte-identical** to the committed one, which is the proof the fix is a no-op for
+        real code.
+     **Verified against ground truth on a real binary.** Signatures learned from one
+     statically-linked, symbolized program and applied to a *different*, stripped one:
+     **639 of 1 438 functions named, all 639 correct, 0 wrong** (checked against the
+     linker's own symbol table). The corpus matters more than the count suggests: the
+     system's *shared* `libc.so.6` named **12.7 %**, another *static* binary of the same
+     toolchain **44 %** — PIC vs non-PIC — which is exactly why chaining exists. Cost is
+     negligible: `analyze --flirt` over `libQt6Core.so.6` (24 922 functions, RTTI + xref
+     index included) runs in **1.0 s**. 15 new tests, **524 → 534**, clippy clean on both
+     targets, PE untouched.
+   - ⬜ **Extend the shipped OSS corpus** (OpenSSL/Qt/libstdc++) via `signatures/generate.sh`.
+     Now the only thing between a user and a named CRT — the mechanism is done.
    - **Licensing model (researched, sourced — commercial).** What we *redistribute*
      is the constraint, not the engine. Safe to ship: OSS-generated corpora
      (zlib/OpenSSL/Qt), WARP-format reuse (Vector 35, Apache-2.0), another tool `.fidb`
@@ -1650,7 +1709,6 @@ lift/SLEIGH-ingest per ISA.
        (read a `.warp` someone hands us); we do not chase byte-compat on compute.
        The live `warp.binary.ninja` API (no-auth query-by-GUID; sources Vector 35 /
        Golang / LINUX / .NET AOT) is recorded for reference, not as a dependency.
-   - ⬜ **Extend the OSS corpus** (OpenSSL/Qt/libstdc++) via `signatures/generate.sh`.
 9. ⬜ **Calling-convention & argument recovery — the prototype the whole render
    hangs on.** Classify the CC (fastcall / stdcall / vectorcall / `this` / custom)
    and recover argument count, types and variadicity from entry-liveness plus
