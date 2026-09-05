@@ -112,7 +112,7 @@ impl LocalNames {
 /// RTTI symbols `analyze` already persisted instead of re-scanning `.rdata`.
 ///
 /// **This is the single biggest cost in a cold decompile.** The `.rdata` scan runs
-/// ~2.6 s on a 57k-class target (measured on the Qt desktop PE) — against ~40 ms for the
+/// ~2.6 s on a 57k-class target (measured on a stripped Qt desktop PE) — against ~40 ms for the
 /// decompile itself, so ~98 % of a first view was rescanning. `rtti_symbol_map`
 /// persists exactly these pairs as `Class::vftable` **data** symbols, and they are
 /// already memoised above, so deriving the map here is effectively free.

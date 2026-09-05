@@ -1425,8 +1425,8 @@ lift/SLEIGH-ingest per ISA.
      right (no edge reaches it); the reported `end` is short of `st_size`. That
      is precisely this priority's remaining ❌ (exception-edge recovery), now
      with a measured cost attached to it.
-     Zero PE regression (Updater 400 fns avg q 0.9250, the Qt desktop PE 0.9159 — flags
-     identical before/after). 5 new tests, **519 → 524**, clippy clean on both
+     Zero PE regression (both PE regression targets, 400 functions each: avg
+     quality 0.9250 and 0.9159, flags identical before/after). 5 new tests, **519 → 524**, clippy clean on both
      targets. The two integration tests deliberately link **real compiler
      output** in both shapes (`-fno-plt` and lazy `-Wl,-z,lazy` + `strip`) rather
      than using a synthetic fixture, and both were mutation-checked to fail
@@ -1572,14 +1572,14 @@ lift/SLEIGH-ingest per ISA.
      (`rcx.0` is `struct_rcx_0` because we saw field accesses through it, **and**
      `Ui::RpWidget *` because RTTI said so), and checking the struct first
      returned the synthetic name, which rule 1 then correctly refused. The class
-     never got a chance. Consulting the program-wide sources first took the Qt desktop PE
+     never got a chance. Consulting the program-wide sources first took that binary
      from 1 → **7** propagated parameters and 32 → **399** propagated returns.
      **Verified end to end, not just as an artifact:** on `Updater.exe`, with the
      store present `sub_140016054` renders `DWORD r9` where without it the same
      function renders `uint64_t r9` — pass → persist → load → infer → render,
      with cache invalidation.
      **The honest state.** The mechanism is correct and sound; the *yield* is
-     bounded by the seeds, not by the propagation. Across 8 000 the Qt desktop PE functions
+     bounded by the seeds, not by the propagation. Across 8 000 functions of the Qt desktop PE
      only 457 parameters carry a portable type at all — those are what RTTI's
      constructor idiom, member-`this` typing and the ~30-entry known-API table
      produce — so only a few dozen call sites can move one. **The next lever is

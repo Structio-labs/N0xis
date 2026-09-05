@@ -85,7 +85,7 @@ const MAX_DEF_DEPTH: usize = 8;
 /// the pass fire on real code at all**: the optimizer does not fold the two
 /// loads of a virtual dispatch into one expression, it leaves
 /// `v3 = *this; call *(v3 + 0x40)`, so matching only the fully-nested shape
-/// found nothing on a real binary (measured: 0 of 399 the Qt desktop PE functions).
+/// found nothing on a real binary (measured: 0 of 399 functions of the Qt desktop PE).
 fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> &'a MicroExpr {
     let mut cur = e;
     for _ in 0..MAX_DEF_DEPTH {
@@ -342,7 +342,7 @@ mod tests {
     /// The shape real code has: the optimizer leaves `v3 = *this` as its own
     /// assignment, so the dispatch is only recognizable by following `v3` back
     /// to its definition. Matching only the fully-nested form found **0** virtual
-    /// calls across 399 real the Qt desktop PE functions.
+    /// calls across 399 real functions of the Qt desktop PE.
     #[test]
     fn follows_the_vptr_through_the_assignment_the_optimizer_leaves() {
         let vptr_def = MicroExpr::load(MicroExpr::Var("rcx.0".into()), 64 as Bits, false);

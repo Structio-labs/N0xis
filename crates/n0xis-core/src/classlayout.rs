@@ -83,7 +83,7 @@
 //!
 //! A field with a known class type is a `this` for the object it points at, so
 //! `this->impl->method()` — a dispatch on a **field** rather than on `this` —
-//! becomes resolvable. That is the shape 33 of 199 sampled the Qt desktop PE methods were
+//! becomes resolvable. That is the shape 33 of 199 sampled methods of the Qt desktop PE were
 //! left holding after devirtualization landed.
 
 use std::collections::{BTreeMap, BTreeSet};

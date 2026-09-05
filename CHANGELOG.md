@@ -104,7 +104,7 @@ All notable changes to N0xis are recorded here. Versions follow
 - **`this` is now typed in ordinary methods, not only constructors.** A function
   whose own recovered name is `Class::…`, where `Class` is one RTTI found a vtable
   for, gets parameter 0 typed `Class *`. This was the missing seed: without it,
-  **0 of 199** sampled the Qt desktop PE methods had a class-typed parameter, so
+  **0 of 199** sampled methods of the Qt desktop PE had a class-typed parameter, so
   devirtualization had nothing to look a vtable up by. With it, 86 of 199 — and
   portable typed parameters across 8 000 functions went 457 → 1 365, doing more
   for type propagation than propagation itself.
@@ -136,7 +136,7 @@ All notable changes to N0xis are recorded here. Versions follow
   slot unknown. Verified end to end: with the store, `sub_140016054` in
   `Updater.exe` renders `DWORD r9` where without it the same function renders
   `uint64_t r9`. The yield is currently bounded by how many parameters carry a
-  portable type at all (457 across 8 000 the Qt desktop PE functions), so the next lever is
+  portable type at all (457 across 8 000 functions of the Qt desktop PE), so the next lever is
   richer type seeds rather than more propagation.
 
 
