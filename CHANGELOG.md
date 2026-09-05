@@ -5,6 +5,23 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### CFG fidelity: exact function extents and exception edges (Phase 10 priority 0)
+
+- **ELF function extents are facts now, not heuristics.** `Elf64_Sym.st_size` is the
+  linker's own answer and the analysis was re-deriving it. New
+  `SymbolProvider::symbol_size` (PE keeps the `None` default) makes `CfgPass` cut exactly
+  there and `DiscoverPass` report it. Measured on `libQt6Core.so.6` against `st_size` as
+  the oracle: exact boundaries **87.7% → 100.0%**, over-extended **9 → 0**, short **29 → 0**.
+- **Exception edges** — priority 0's last missing piece, closed for ELF. A landing pad has
+  no incoming branch (the unwinder enters it), so it was an unreachable island. `function eh`
+  recovers `(try range → landing pad)` from `.eh_frame` FDEs and `.gcc_except_table` LSDAs;
+  the CFG makes each pad a block leader and gives every block overlapping a protected range
+  an `eh` successor; the renderer labels it. FDE count verified **identical to
+  `readelf --debug-dump=frames`** (14 355), with 8 394 protected regions and 3 093 functions
+  carrying pads. Unmodeled pointer encodings yield no region rather than a wrong address.
+  PE `.xdata` scope tables are the sibling follow-on.
+
+
 ### Signature naming reaches the whole product (Phase 10 item 8)
 
 - **`analyze --flirt <db.npat>…` persists its matches** into `.n0x/flirt-symbols.json`, so

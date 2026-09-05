@@ -33,6 +33,8 @@ pub mod v1 {
     /// Whole-program noreturn set: functions proven never to return, via the
     /// call-graph fixpoint (`function noreturn`, ROADMAP Phase 10 priority 0).
     pub const FUNCTION_NORETURN: &str = "n0xis.function.noreturn.v1";
+    /// Exception edges: protected ranges and the landing pads they unwind to.
+    pub const FUNCTION_EH: &str = "n0xis.function.eh.v1";
     /// Whole-program analysis pass: discover → RTTI → xref index → IR cache,
     /// materializing the `.n0x/` summary layer with progress (`analyze`).
     pub const ANALYZE: &str = "n0xis.analyze.v1";

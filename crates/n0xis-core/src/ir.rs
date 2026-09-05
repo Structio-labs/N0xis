@@ -174,10 +174,22 @@ impl Pass for CfgPass {
         let all = ctx
             .arch
             .decode_stream(&bytes, input.start, DEFAULT_MAX_INSNS);
-        let instrs = if input.auto_end {
-            truncate_to_function(&all, input.start.0, end_cap, |ins| is_noreturn_call(ctx, ins))
-        } else {
-            all
+        // An authoritative extent beats the heuristic outright. On a symbolized
+        // ELF the linker states each function's length (`st_size`), so there is
+        // nothing to infer: cut exactly there. This is what fixes BOTH failure
+        // directions the heuristic has — over-extending past a `call
+        // __stack_chk_fail` into the next function, and stopping short of an
+        // exception landing pad that no control-flow edge reaches. `None`
+        // (every PE, every stripped image) keeps the heuristic unchanged.
+        let stated_end = ctx
+            .symbols
+            .and_then(|s| s.symbol_size(input.start))
+            .and_then(|n| input.start.0.checked_add(n))
+            .filter(|e| *e > input.start.0 && *e <= end_cap);
+        let instrs = match (input.auto_end, stated_end) {
+            (true, Some(end)) => all.into_iter().take_while(|i| i.va.0 < end).collect(),
+            (true, None) => truncate_to_function(&all, input.start.0, end_cap, |ins| is_noreturn_call(ctx, ins)),
+            (false, _) => all,
         };
 
         build(ctx, &instrs, input.start)
@@ -326,7 +338,16 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
         .map(|i| i.va.0 + i.len as u64)
         .unwrap_or(start.0);
     let valid: BTreeSet<u64> = instrs.iter().map(|i| i.va.0).collect();
-    let leaders = compute_leaders(instrs, &valid);
+    let mut leaders = compute_leaders(instrs, &valid);
+    // A landing pad is entered by the unwinder, never by a branch, so nothing in
+    // `compute_leaders` would ever start a block there — it would be swallowed
+    // into whatever block precedes it (ROADMAP Phase 10, priority 0).
+    let eh_regions: &[crate::EhRegion] = ctx.eh.unwrap_or(&[]);
+    for r in eh_regions {
+        if valid.contains(&r.landing_pad.0) {
+            leaders.insert(r.landing_pad.0);
+        }
+    }
     let mut block_id_by_ip: BTreeMap<u64, usize> = BTreeMap::new();
     for (id, ip) in leaders.iter().enumerate() {
         block_id_by_ip.insert(*ip, id);
@@ -516,6 +537,18 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
             .last()
             .map(|x| x.va.0 + x.len as u64)
             .unwrap_or(block_start_ip);
+        // Exception edges. An exception raised anywhere inside a protected range
+        // transfers to that range's landing pad, so every block overlapping the
+        // range gains the edge — not just the one holding `try_start`. Confidence
+        // is below a decoded branch's on purpose: the transfer is real but
+        // conditional on a throw, which no instruction here expresses.
+        for r in eh_regions {
+            let overlaps = block_start_ip < r.try_end.0 && block_end_ip > r.try_start.0;
+            let pad = r.landing_pad.0;
+            if overlaps && pad != block_start_ip && !successors.iter().any(|s| s.to.0 == pad) {
+                successors.push(Successor { to: Va(pad), kind: "eh".into(), confidence: edge_confidence("eh") });
+            }
+        }
         blocks.push(CfgBlock {
             id: block_id,
             start: Va(block_start_ip),

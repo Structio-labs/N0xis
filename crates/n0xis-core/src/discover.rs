@@ -171,7 +171,16 @@ impl Pass for DiscoverPass {
                         break;
                     }
                     let va = Va(input.start.0 + i as u64);
-                    functions.push(FunctionCandidate { name: name_at(ctx, va), va, end: None });
+                    // A stated size (ELF `st_size`) makes `end` a fact here, the
+                    // way `.pdata` does on PE — so a prologue-scanned ELF gets
+                    // exact extents instead of leaving every consumer to infer
+                    // one. `None` everywhere else, exactly as before.
+                    let end = ctx
+                        .symbols
+                        .and_then(|s| s.symbol_size(va))
+                        .and_then(|n| va.0.checked_add(n))
+                        .map(Va);
+                    functions.push(FunctionCandidate { name: name_at(ctx, va), va, end });
                 }
                 seen += 1;
                 // Skip ahead so overlapping patterns in one prologue count once.

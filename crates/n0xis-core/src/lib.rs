@@ -28,6 +28,7 @@ mod discover;
 mod dissect;
 mod dom;
 mod dot;
+mod eh;
 mod gamegrep;
 mod icalls;
 mod coalesce;
@@ -82,6 +83,7 @@ pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, KlassArtifact, KlassField, KlassInput, KlassPass, LayoutEvidence};
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};
 pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
+pub use eh::{landing_pads, scan_eh_frame, EhFunction, EhRegion};
 pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
 pub use dot::{DotArtifact, dot};
@@ -154,6 +156,15 @@ pub struct Ctx<'a> {
     /// `this` pointer types to that class. `None` on a non-PE/non-MSVC target
     /// (ELF, live, stripped) — every such site renders exactly as before.
     pub vtables: Option<&'a std::sync::Arc<std::collections::HashMap<u64, String>>>,
+    /// Exception edges for the function under analysis: protected ranges and the
+    /// landing pads they unwind to ([`scan_eh_frame`]). A landing pad has **no
+    /// incoming branch** — the personality routine enters it during unwinding —
+    /// so without this it is an unreachable island in the CFG, or (before the
+    /// extent was known) not decoded at all. With it, the pad becomes a block
+    /// leader and every block overlapping a protected range gains an `eh`
+    /// successor. `None` = exactly the previous behaviour, so a PE, a stripped
+    /// image or a target with no `.eh_frame` is unaffected.
+    pub eh: Option<&'a [crate::EhRegion]>,
 }
 
 impl<'a> Ctx<'a> {
@@ -165,6 +176,7 @@ impl<'a> Ctx<'a> {
             modules: None,
             noreturn: None,
             vtables: None,
+            eh: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -183,6 +195,11 @@ impl<'a> Ctx<'a> {
     /// Attach the recovered vtable-address → class-name map (see the field docs).
     pub fn with_vtables(mut self, vtables: &'a std::sync::Arc<std::collections::HashMap<u64, String>>) -> Self {
         self.vtables = Some(vtables);
+        self
+    }
+    /// Attach this function's exception regions (see the field docs).
+    pub fn with_eh(mut self, eh: &'a [crate::EhRegion]) -> Self {
+        self.eh = Some(eh);
         self
     }
 }

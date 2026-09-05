@@ -85,6 +85,10 @@ pub struct StaticElf {
     /// twin of the PE IAT map. This is what a `call qword ptr [rip+disp]`
     /// points at, so it is the map [`SymbolProvider::iat_slot`] answers from.
     got: BTreeMap<u64, Symbol>,
+    /// `Elf64_Sym.st_size` for every defined function that declares one — the
+    /// linker's own answer to "where does this function end", which beats any
+    /// end-of-function heuristic outright.
+    sizes: BTreeMap<u64, u64>,
 }
 
 impl StaticElf {
@@ -202,6 +206,7 @@ impl StaticElf {
         // A symbol with `st_value == 0` or `st_shndx == SHN_UNDEF` is an import
         // reference, not a definition — skip it.
         let mut symbols: BTreeMap<u64, Symbol> = BTreeMap::new();
+        let mut sizes: BTreeMap<u64, u64> = BTreeMap::new();
         let mut collect = |syms: &goblin::elf::Symtab, strtab: &goblin::strtab::Strtab| {
             for sym in syms.iter() {
                 // Functions become named code targets; data objects (globals /
@@ -219,6 +224,11 @@ impl StaticElf {
                 let Some(name) = strtab.get_at(sym.st_name) else { continue };
                 if name.is_empty() {
                     continue;
+                }
+                if kind == SymKind::Export && sym.st_size > 0 {
+                    // Aliases at one address agree on the size; `or_insert` keeps
+                    // the first, and disagreement would mean a malformed table.
+                    sizes.entry(sym.st_value).or_insert(sym.st_size);
                 }
                 symbols.entry(sym.st_value).or_insert_with(|| Symbol {
                     va: Va(sym.st_value),
@@ -366,7 +376,7 @@ impl StaticElf {
 
         let modules = vec![Module { name: module_name.clone(), base: Va(image_base), size, path: Some(path.to_string_lossy().to_string()) }];
 
-        Ok(StaticElf { bytes, image_base, module_name, modules, sections, symbols, got })
+        Ok(StaticElf { bytes, image_base, module_name, modules, sections, symbols, got, sizes })
     }
 
     fn section_for(&self, va: u64) -> Option<&SectionRange> {
@@ -444,6 +454,13 @@ impl SymbolProvider for StaticElf {
     /// and noreturn tables) are format-neutral.
     fn iat_slot(&self, va: Va) -> Option<Symbol> {
         self.got.get(&va.0).cloned()
+    }
+
+    /// `st_size` — the linker's own extent for this function. Only for a symbol
+    /// this image *defines* (a PLT stub is a thunk, and carries the size of the
+    /// stub, not of the function it reaches).
+    fn symbol_size(&self, va: Va) -> Option<u64> {
+        self.sizes.get(&va.0).copied()
     }
 }
 

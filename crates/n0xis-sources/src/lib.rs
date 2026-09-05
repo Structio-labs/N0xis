@@ -211,6 +211,22 @@ pub trait SymbolProvider {
         None
     }
 
+    /// The **authoritative** byte length of the function starting at `va`, when
+    /// the format states it rather than leaving it to be inferred.
+    ///
+    /// ELF is the case that matters: `Elf64_Sym.st_size` is the linker's own
+    /// answer, so on a symbolized ELF a function's extent is a *fact*, not the
+    /// output of the end-of-function heuristic. PE carries no equivalent (an
+    /// export is an address; `.pdata` gives ranges only for functions with
+    /// unwind info), so the default is `None` and every consumer must keep
+    /// working without it.
+    ///
+    /// Contract: `Some(n)` means "this function is exactly `n` bytes", `n > 0`.
+    /// Never a guess — a provider that is unsure returns `None`.
+    fn symbol_size(&self, _va: Va) -> Option<u64> {
+        None
+    }
+
     /// A stable token identifying **which names this provider will give**.
     ///
     /// Cached analysis artifacts embed *resolved* names, so a cache key built
@@ -257,6 +273,12 @@ impl SymbolProvider for ChainedSymbols<'_> {
 
     fn iat_slot(&self, va: Va) -> Option<Symbol> {
         self.primary.iat_slot(va).or_else(|| self.fallback.iat_slot(va))
+    }
+
+    /// A recovered-name layer (`LocalNames`) knows names, not extents, so it
+    /// answers `None` and the image's own symbol table is what speaks here.
+    fn symbol_size(&self, va: Va) -> Option<u64> {
+        self.primary.symbol_size(va).or_else(|| self.fallback.symbol_size(va))
     }
 
     fn symbol_fingerprint(&self) -> String {

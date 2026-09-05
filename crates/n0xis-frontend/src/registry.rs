@@ -238,6 +238,34 @@ fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, S
     arc
 }
 
+/// Whole-image exception map, memoized per immutable image exactly like the
+/// vtable map above. `.eh_frame` is walked once (14 355 FDEs on `libQt6Core.so.6`)
+/// and every later function looks its regions up by address, so attaching
+/// exception edges costs one scan per process rather than one per decompile.
+type EhMemo = Option<(String, std::sync::Arc<Vec<n0xis_core::EhFunction>>)>;
+static EH_MEMO: std::sync::Mutex<EhMemo> = std::sync::Mutex::new(None);
+
+fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
+    let immutable = matches!(src, Src::Static(_) | Src::Snap(_));
+    let label = src.as_mem().label();
+    if immutable
+        && let Ok(memo) = EH_MEMO.lock()
+        && let Some((l, m)) = memo.as_ref()
+        && *l == label
+    {
+        return m.clone();
+    }
+    let map = match src.section_range(".eh_frame") {
+        Some(eh) => n0xis_core::scan_eh_frame(src.as_mem(), eh),
+        None => Vec::new(),
+    };
+    let arc = std::sync::Arc::new(map);
+    if immutable && let Ok(mut memo) = EH_MEMO.lock() {
+        *memo = Some((label, arc.clone()));
+    }
+    arc
+}
+
 fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str) -> Response<Value>) -> Response<Value> {
     let addr = match required_addr(args, "addr") {
         Ok(v) => v,
@@ -294,6 +322,17 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     // section buffer once and indexes in memory, so it is cheap per invocation.
     let vtables = rtti_vtable_map(&resolved.src);
 
+    // Exception edges for THIS function (ROADMAP Phase 10, priority 0). A
+    // landing pad has no incoming branch, so without this it is an unreachable
+    // island the structurer cannot place. Empty for a PE, a stripped image, or
+    // any target with no `.eh_frame` — behaviour then is exactly as before.
+    let eh_all = eh_map(&resolved.src);
+    let eh_regions: &[n0xis_core::EhRegion] = eh_all
+        .iter()
+        .find(|f| start.get() >= f.start.get() && start.get() < f.end.get())
+        .map(|f| f.regions.as_slice())
+        .unwrap_or(&[]);
+
     // FLIRT-class signature naming (Phase 10 priority 8): if a `flirt` database
     // is supplied, statically-linked CRT/STL functions that carry no symbol get
     // named by matching their bytes. Chained *below* the real symbol sources, so
@@ -338,7 +377,15 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
                 (None, None) => pe.as_ref(),
             };
             let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
-            work(&n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_vtables(&vtables), input, &label)
+            work(
+                &n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
+                    .with_symbols(&full)
+                    .with_modules(pe.as_ref())
+                    .with_vtables(&vtables)
+                    .with_eh(eh_regions),
+                input,
+                &label,
+            )
         }
         Src::Live(l) => {
             let full;
@@ -651,6 +698,49 @@ impl Plugin for AnalysisPasses {
                 };
                 let payload = json!({ "count": vtables.len(), "vtables": vtables });
                 ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "function.eh",
+            "Exception edges: each function's protected ranges and the landing pads they unwind to, from ELF `.eh_frame` + `.gcc_except_table`.",
+            Some(n0xis_contracts::schema::v1::FUNCTION_EH),
+            Origin::Builtin,
+            Box::new(|args| {
+                let resolved = match resolve(spec_of(args)) {
+                    Ok(r) => r,
+                    Err((c, m)) => return Response::error(&c, m),
+                };
+                let Some(eh) = resolved.src.section_range(".eh_frame") else {
+                    return Response::error(
+                        "no-eh-frame",
+                        "no `.eh_frame` section — DWARF exception tables live there (PE `.xdata` scope tables are a follow-on)".to_string(),
+                    );
+                };
+                let all = n0xis_core::scan_eh_frame(resolved.src.as_mem(), eh);
+                // `addr` narrows to the one function that contains it, which is
+                // what a per-function question ("does this have a try block?")
+                // wants; without it the whole-image map is returned.
+                let filtered: Vec<_> = match opt_addr_arg(args, "addr") {
+                    Ok(Some(a)) => all.into_iter().filter(|f| a.get() >= f.start.get() && a.get() < f.end.get()).collect(),
+                    Ok(None) => all,
+                    Err((c, m)) => return Response::error(c, m),
+                };
+                let regions: usize = filtered.iter().map(|f| f.regions.len()).sum();
+                let payload = json!({
+                    "count": filtered.len(),
+                    "regions": regions,
+                    "functions": filtered.iter().map(|f| json!({
+                        "va": format!("{}", f.start),
+                        "end": format!("{}", f.end),
+                        "regions": f.regions.iter().map(|r| json!({
+                            "try_start": format!("{}", r.try_start),
+                            "try_end": format!("{}", r.try_end),
+                            "landing_pad": format!("{}", r.landing_pad),
+                        })).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                });
+                ok_json(n0xis_contracts::schema::v1::FUNCTION_EH, payload, &resolved.label)
             }),
         ));
 

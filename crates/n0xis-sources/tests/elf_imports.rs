@@ -187,3 +187,33 @@ fn plt_stubs_are_not_reported_as_defined_functions() {
     assert!(defined.iter().any(|n| n == "n0x_entry"), "its own functions are still there: {defined:?}");
     assert!(!defined.iter().any(|n| n == "getenv"), "an imported PLT stub must not be listed: {defined:?}");
 }
+
+/// `Elf64_Sym.st_size` is the linker's own statement of a function's extent, so
+/// it must reach the analysis as a *fact* rather than something the
+/// end-of-function heuristic re-derives. This is the seam
+/// ([`SymbolProvider::symbol_size`]) the CFG and discovery read it through.
+#[test]
+fn defined_functions_report_their_stated_size_and_nothing_else_does() {
+    let dir = std::env::temp_dir().join(format!("n0xis-elf-size-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    let _scratch = Scratch(dir.clone());
+
+    let Some(path) = build_so(&dir, "sized.so", &[]) else {
+        eprintln!("skipping: no C compiler on PATH");
+        return;
+    };
+    let elf = StaticElf::load(&path).expect("load the shared object");
+
+    // Its own functions state a size, and it agrees with the next symbol's start
+    // being at least that far away (a size that overlapped would be malformed).
+    let mut defined: Vec<(Va, String)> = elf.named_functions();
+    defined.sort_by_key(|(va, _)| va.get());
+    let entry = defined.iter().find(|(_, n)| n == "n0x_entry").expect("its own function");
+    let size = elf.symbol_size(entry.0).expect("a defined function states st_size");
+    assert!(size > 0 && size < 4096, "implausible st_size {size}");
+
+    // An address that is not a function start states nothing — the contract is
+    // "exactly this function is n bytes", never an interpolation.
+    assert_eq!(elf.symbol_size(Va(entry.0.get() + 1)), None, "no size for an interior address");
+    assert_eq!(elf.symbol_size(Va(0xdead_beef)), None, "no size for an unmapped address");
+}

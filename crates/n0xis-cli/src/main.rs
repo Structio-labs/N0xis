@@ -1635,6 +1635,29 @@ enum FunctionCmd {
     /// call-graph fixpoint that proves which never return — including a game's
     /// own `FatalError`/`Assert` wrappers, not just named imports.
     Noreturn(FunctionNoreturnArgs),
+    /// Exception edges: the protected ranges and landing pads an unwinder uses.
+    /// A `try`/`catch` landing pad has NO incoming branch, so it is invisible to
+    /// a CFG built from instructions alone — this is where that control flow is
+    /// actually written down. ELF (`.eh_frame` + `.gcc_except_table`) today.
+    Eh(FunctionEhArgs),
+}
+
+#[derive(Args)]
+struct FunctionEhArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Narrow to the function containing this address (hex `0x…`). Without it
+    /// the whole image's exception map is returned.
+    #[arg(long)]
+    addr: Option<String>,
 }
 
 #[derive(Args)]
@@ -2578,6 +2601,11 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Function(FunctionCmd::Trace(a)) => cmd_function_trace(a, pretty),
         Command::Function(FunctionCmd::Noreturn(a)) => cmd_function_noreturn(a, pretty),
+        Command::Function(FunctionCmd::Eh(a)) => run_capability(
+            "function.eh",
+            json!({ "pid": a.pid, "file": a.file, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd, "addr": a.addr }),
+            pretty,
+        ),
         Command::Decomp(DecompCmd::Pseudo(a)) => cmd_decomp(a, pretty),
         Command::Xref(XrefCmd::To(a)) => cmd_xref(a, XrefDir::To, pretty),
         Command::Xref(XrefCmd::From(a)) => cmd_xref(a, XrefDir::From, pretty),

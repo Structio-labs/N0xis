@@ -1122,7 +1122,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Compiler-idiom recovery | 🚧 growing — `const identify`, junk, opaque predicates, **stack-canary, `min`/`max`, magic-division, rotates, `cmov`→`?:`, full intrinsic layer (SSE/bit-scan/FP), BMI/BMI2** (Rung 5b–5i) |
 | Memory SSA | ✅ Rung 1 — intra- and cross-block store-to-load forwarding + dead-store elimination, on escape analysis; verified on real Win64/MSVC and Linux/GCC |
 | Interprocedural propagation | 🚧 partial — whole-program noreturn IPA + call-site name/ABI resolution; **whole-program type propagation still missing** (the core remaining gap) |
-| Exception-edge recovery | ❌ missing — `.xdata` parsed for unwinding only |
+| Exception-edge recovery | 🟡 **ELF done, PE next** *(2026-09-05)* — `.eh_frame` FDE + `.gcc_except_table` LSDA → protected ranges and landing pads (`function eh`), fed into the CFG as `eh` edges so a pad is a reachable, labelled block instead of an unreachable island. FDE count verified **identical to `readelf`** (14 355 on `libQt6Core.so.6`). PE `.xdata` scope tables are the sibling follow-on |
 | Indirect / virtual call resolution | 🚧 partial — RTTI vtable constants **named** (`&Class::vtable`), `this` typed to its class; last-hop **devirtualization** (slot→method) still ⬜ (needs whole-program `this`-type flow) |
 | SIMD / FP lift | ✅ Rung 5c/5h — SSE data moves as 128-bit ops + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); FP *compares* left opaque |
 | PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
@@ -1201,7 +1201,7 @@ lift/SLEIGH-ingest per ISA.
 
 | Analysis | What real parity needs | N0xis today |
 |---|---|---|
-| Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | ❌ `.pdata`/`.xdata` read for **unwinding only**; no EH edges in the graph |
+| Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | 🟡 *(2026-09-05)* ELF: `.eh_frame`→LSDA gives (try range → landing pad); pads become block leaders and every block overlapping a protected range gains an `eh` successor. **Where** control goes is recovered; **what** is caught (ttype tables) is a readability follow-on, as is PE `.xdata` |
 | Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | ✅ *(2026-08-06)* both shapes — a direct `jmp` out of the function **and** an import thunk's `jmp qword ptr [__imp_X]` (previously mis-classified `ijmp`, "indirect jump (unrecovered)") — terminate as `tail-call` and lower to `call`+`return` via the new `Arch::lift_tail_call` seam, so every style renders `return f(...)`. Verified on real PEs (`version.dll` thunk → `return …GetFileVersionInfoSizeW(…)`; 15/400 notepad, 52/400 dxgi functions carry the `tail` flag) |
 | noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). ⏳ *(2026-08-29)* **whole-program propagation** — the `NoReturnPropagatePass` call-graph fixpoint (`function noreturn`) is built and feeds `Ctx::with_noreturn` back into CFG fall-through pruning; sound-over-complete. **Detection** is verified on a real binary (`CompressToolsLib.dll`: 9 functions, cross-checked via `ir build`); the **propagation** step itself is unit-tested only and awaits a real-corpus positive before ✅. **Still open**: a *tail-call* to a proven-noreturn function (read conservatively as returning today). |
 | Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
@@ -1346,7 +1346,7 @@ lift/SLEIGH-ingest per ISA.
      Per the project rule — ✅ only on a real-data *positive* — the propagation
      step stays ⏳ until a genuine instance is confirmed on a real binary.
      **Still open in priority 0**: exception-edge recovery (`.xdata` EH handlers
-     → try/catch/finally edges).
+     → try/catch/finally edges) — closed for ELF below, PE still open.
    - ✅ *(2026-09-05, verified)* **The whole of priority 0 was dead on ELF —
      because no ELF callee had a name.** Everything above is keyed on a resolved
      callee *name*, and `StaticElf::iat_slot` was a stub returning `None`: on
@@ -1422,6 +1422,53 @@ lift/SLEIGH-ingest per ISA.
      still ignores it in favour of the `truncate_to_function` heuristic. Using it
      would take the remaining 38 non-exact boundaries to 0 on any non-stripped
      ELF, for very little code.
+   - ✅ *(2026-09-05, verified)* **Function extents are now facts on ELF, not
+     heuristics.** `Elf64_Sym.st_size` is the linker's own statement of a
+     function's length, and the analysis was re-deriving it. New
+     `SymbolProvider::symbol_size` (default `None`, so PE is untouched — an export
+     is an address and `.pdata` covers only functions with unwind info); `CfgPass`
+     cuts exactly there when it is stated, and `DiscoverPass` reports it as `end`
+     the way `.pdata` does on PE. This fixes **both** failure directions of the
+     end-of-function heuristic at once — over-extending past a
+     `call __stack_chk_fail` into the next function, and stopping short of a tail
+     no edge reaches. Measured against `st_size` as the oracle on
+     `libQt6Core.so.6` (309 functions with a stated size): exact boundaries
+     **87.7% → 100.0%**, over-extended **9 → 0**, under **29 → 0**.
+   - ✅ *(2026-09-05, verified)* **Exception edges — priority 0's last ❌, closed
+     for ELF.** A `try`/`catch` landing pad has **no incoming branch**: the
+     personality routine enters it while unwinding. To a CFG built from decoded
+     instructions it is an unreachable island, and to the end-of-function
+     heuristic it was invisible — the shape measured above, 29 functions whose
+     extent fell 12–17 bytes short, every one ending
+     `call __stack_chk_fail; endbr64; …; jmp <cleanup>`.
+     New `crate::eh` walks `.eh_frame` linearly (CIE augmentation → FDE
+     `pc_begin`/`pc_range`/LSDA pointer) and parses each `.gcc_except_table` LSDA's
+     call-site table into `(try_start, try_end, landing_pad)` triples. Exposed as
+     `function eh` (CLI + MCP + capability `n0xis.function.eh.v1`), and threaded
+     onto `Ctx` so `CfgPass` makes each pad a **block leader** and gives every
+     block overlapping a protected range an `eh` successor (confidence 0.8 — the
+     transfer is real but conditional on a throw, which no instruction expresses).
+     The renderer labels the block, so a pad reads as
+     `// ^ exception landing pad — entered by the unwinder, not by a branch`
+     instead of unexplained code hanging off the end.
+     **Verified against an independent oracle, not self-consistency**: the FDE
+     count matches `readelf --debug-dump=frames` **exactly** (14 355 on
+     `libQt6Core.so.6`; 8 394 protected regions, 3 093 functions with pads), and
+     the function measured by hand earlier comes back exactly right — `0xef190`,
+     extent `[0xef190, 0xef234)` (= its `st_size` 164), protected range
+     `[0xef1e7, 0xef1ec)` (precisely the call that can throw) → pad `0xef223`
+     (precisely the `endbr64` found in the disassembly).
+     **The honest cost, A/B on 199 pad-bearing functions:** gotos **1 260 →
+     1 467** and `asm` nodes **2 671 → 3 236**. That is not worse lifting — it is
+     *more code shown*: an unreachable pad used to be dropped by the structurer,
+     so its instructions never rendered at all. Hiding real, reachable code is a
+     lie by omission; the label is what keeps the extra noise legible.
+     **Sound over complete throughout**: an unmodeled pointer encoding
+     (`datarel`/`aligned`/`indirect`) yields *no* region rather than a plausible
+     wrong address, a `cs_lp == 0` entry is not an edge to address zero, and a
+     truncated table stops. **Still open in priority 0**: PE `.xdata` scope tables
+     (`__C_specific_handler`) and `FuncInfo` (`__CxxFrameHandler`), and the
+     `ttype` tables that would name *which* exception a pad catches.
 1. 🚧 **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.

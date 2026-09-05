@@ -675,6 +675,19 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
         loop_exit.insert(h, chosen);
     }
 
+    // Blocks reached only by an `eh` edge are exception **landing pads**: the
+    // unwinder enters them, no instruction branches to them. Without saying so,
+    // a pad reads as unexplained code hanging off the end of the function — the
+    // recovered fact is present but illegible. The CFG already carries it, so
+    // read it back from the edges rather than threading another parameter.
+    let eh_targets: std::collections::BTreeSet<u64> = cfg
+        .blocks
+        .iter()
+        .flat_map(|b| b.successors.iter())
+        .filter(|s| s.kind == "eh")
+        .map(|s| s.to.0)
+        .collect();
+
     let body_lines: Vec<Vec<String>> = blocks
         .iter()
         .map(|b| {
@@ -684,6 +697,9 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
                 format!("// block_{}: {}", b.id, b.start)
             };
             let mut lines = vec![header];
+            if eh_targets.contains(&b.start.0) {
+                lines.push("// ^ exception landing pad — entered by the unwinder, not by a branch".to_string());
+            }
             lines.extend(b.stmts.iter().filter_map(|s| render_stmt(&s.stmt, names)));
             lines
         })

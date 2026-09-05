@@ -157,6 +157,14 @@ impl SymbolProvider for StaticImage {
             StaticImage::Elf(e) => e.iat_slot(va),
         }
     }
+    /// Only ELF states a function's size (`st_size`); a PE does not, and
+    /// `StaticPe` correctly keeps the trait default.
+    fn symbol_size(&self, va: Va) -> Option<u64> {
+        match self {
+            StaticImage::Pe(p) => p.symbol_size(va),
+            StaticImage::Elf(e) => e.symbol_size(va),
+        }
+    }
 }
 
 impl ModuleProvider for StaticImage {
