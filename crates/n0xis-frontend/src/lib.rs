@@ -111,6 +111,91 @@ impl PersistedTypeFlow {
     }
 }
 
+/// The persisted class-layout store, adapted to the core's
+/// [`ClassLayoutLookup`](n0xis_core::ClassLayoutLookup) seam and memoized per
+/// process — same reasoning as [`PersistedTypeFlow`]: it is rewritten only by
+/// `analyze --layout`, and re-parsing it on every decompile would undo the point
+/// of persisting it.
+pub struct PersistedLayout(std::sync::Arc<n0xis_project::class_layout::ClassLayouts>);
+
+static LAYOUT_MEMO: std::sync::Mutex<Option<(u64, std::sync::Arc<n0xis_project::class_layout::ClassLayouts>)>> =
+    std::sync::Mutex::new(None);
+
+impl PersistedLayout {
+    /// Load (or reuse) the project's store. Empty when `analyze --layout` has
+    /// not run, in which case a field dispatch stays indirect exactly as before.
+    pub fn load() -> Self {
+        let sig = annotation_syms::project_file_signature("class-layout.json");
+        if let Ok(memo) = LAYOUT_MEMO.lock()
+            && let Some((cached, data)) = memo.as_ref()
+            && *cached == sig
+        {
+            return PersistedLayout(std::sync::Arc::clone(data));
+        }
+        let data = std::sync::Arc::new(n0xis_project::class_layout::load().unwrap_or_default());
+        if let Ok(mut memo) = LAYOUT_MEMO.lock() {
+            *memo = Some((sig, std::sync::Arc::clone(&data)));
+        }
+        PersistedLayout(data)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl n0xis_core::ClassLayoutLookup for PersistedLayout {
+    fn field_type(&self, class: &str, offset: i64) -> Option<&str> {
+        self.0.field_type(class, offset)
+    }
+    /// Varies with the run that produced the store and with how much of it
+    /// actually carries a type — so the decompile cache is perturbed exactly
+    /// when a rendered dispatch could differ.
+    fn layout_fingerprint(&self) -> String {
+        if self.0.is_empty() {
+            String::new()
+        } else {
+            format!("layout:{}:{}:{}", self.0.generation, self.0.classes.len(), self.0.typed_fields())
+        }
+    }
+}
+
+/// Convert the core pass's store into the persisted shape, keeping only what is
+/// worth writing: a class with no fields describes nothing.
+pub fn layout_to_persisted(
+    generation: impl Into<String>,
+    store: &n0xis_core::LayoutStore,
+) -> n0xis_project::class_layout::ClassLayouts {
+    n0xis_project::class_layout::ClassLayouts {
+        generation: generation.into(),
+        classes: store
+            .classes
+            .iter()
+            .filter(|(_, c)| !c.fields.is_empty())
+            .map(|(name, c)| {
+                let fields = c
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.offset.to_string(),
+                            n0xis_project::class_layout::Field {
+                                size_bits: f.size_bits,
+                                signed: f.signed,
+                                access_count: f.access_count,
+                                methods: f.methods,
+                                // An ambiguous field is persisted *without* a
+                                // type: the disagreement is the answer.
+                                ty: if f.ty_ambiguous { None } else { f.ty.clone() },
+                            },
+                        )
+                    })
+                    .collect();
+                (name.clone(), n0xis_project::class_layout::Class { methods: c.methods, extent: c.extent, fields })
+            })
+            .collect(),
+    }
+}
+
 impl n0xis_core::TypeFlowLookup for PersistedTypeFlow {
     fn param(&self, va: u64, index: usize) -> Option<&str> {
         self.0.param(va, index)

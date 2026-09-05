@@ -39,6 +39,8 @@ pub mod v1 {
     pub const FUNCTION_SUMMARY: &str = "n0xis.function.summary.v1";
     /// Whole-program type propagation over the call graph.
     pub const FUNCTION_TYPEFLOW: &str = "n0xis.function.typeflow.v1";
+    /// Program-wide per-class field layout, unified over every method.
+    pub const FUNCTION_LAYOUT: &str = "n0xis.function.layout.v1";
     /// Whole-program analysis pass: discover → RTTI → xref index → IR cache,
     /// materializing the `.n0x/` summary layer with progress (`analyze`).
     pub const ANALYZE: &str = "n0xis.analyze.v1";

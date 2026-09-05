@@ -283,7 +283,7 @@ fn harvest_stack_loads(e: &MicroExpr, out: &mut BTreeSet<i64>) {
 }
 
 /// The immediate sub-expressions of `e`, for a generic recursive walk.
-fn expr_children(e: &MicroExpr) -> Vec<&MicroExpr> {
+pub(crate) fn expr_children(e: &MicroExpr) -> Vec<&MicroExpr> {
     match e {
         MicroExpr::Load { addr, .. } => vec![addr],
         MicroExpr::Unary(_, v) | MicroExpr::Cast { expr: v, .. } | MicroExpr::AddrOf(v) => vec![v],
@@ -835,7 +835,7 @@ fn propagate_pointerness(blocks: &[SsaBlock], ptrs: &mut BTreeSet<String>) {
 ///    method of that class by construction. Requiring the prefix to be a known
 ///    vtable class is what keeps a namespace-qualified free function
 ///    (`Ui::doSomething`) out.
-fn own_this_class(ctx: &Ctx, start: Va) -> Option<String> {
+pub(crate) fn own_this_class(ctx: &Ctx, start: Va) -> Option<String> {
     let sym = ctx.symbols?.symbol_at(start).filter(|s| s.va == start)?;
     let bare = sym.name.rsplit('!').next().unwrap_or(&sym.name).to_string();
     if let Some(class) = crate::demangle::member_function_class(&bare) {

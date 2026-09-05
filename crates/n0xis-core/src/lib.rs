@@ -46,6 +46,7 @@ mod provenance;
 mod render;
 mod scan;
 mod signatures;
+mod classlayout;
 mod summary;
 mod typeprop;
 mod slice;
@@ -89,6 +90,7 @@ pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass
 pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
 pub use devirt::{devirtualize, Devirtualized};
 pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};
+pub use classlayout::{ClassLayout, ClassLayoutInput, ClassLayoutPass, FieldObs, LayoutStore};
 pub use eh::{landing_pads, scan_eh_frame, EhFunction, EhRegion};
 pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
@@ -142,6 +144,11 @@ pub enum CoreError {
 /// nothing else. A pass reads bytes through [`source`](Ctx::source), decodes
 /// through [`arch`](Ctx::arch), and optionally resolves names/modules — it can
 /// never reach past these to an OS call.
+///
+/// `Copy`, because every field is a shared reference: a pass that needs the same
+/// context with one more seam attached (`ctx.with_type_flow(&store)`) should not
+/// have to rebuild it from parts and risk dropping one.
+#[derive(Clone, Copy)]
 pub struct Ctx<'a> {
     pub source: &'a dyn MemorySource,
     pub arch: &'a dyn Arch,
@@ -177,6 +184,15 @@ pub struct Ctx<'a> {
     /// function proved about itself always wins over one inferred from its
     /// callers. `None` = per-function typing exactly as before.
     pub type_flow: Option<&'a dyn crate::TypeFlowLookup>,
+    /// The program-wide field layout of every class RTTI named
+    /// ([`ClassLayoutPass`]), as `(class, field offset) → type name`.
+    ///
+    /// What it buys is one thing per-function recovery structurally cannot
+    /// have: an aggregate with a **program-wide identity**. A field typed by the
+    /// constructor that fills it is typed in every method that reads it — which
+    /// is what lets a dispatch through `this->impl` resolve at all. `None` =
+    /// per-function layout exactly as before.
+    pub layout: Option<&'a dyn crate::ClassLayoutLookup>,
 }
 
 /// The whole-program type store, as the decompiler consumes it. A trait so the
@@ -198,6 +214,23 @@ pub trait TypeFlowLookup {
     }
 }
 
+/// The unified per-class field layout, as the decompiler consumes it. A trait
+/// for the same reason [`TypeFlowLookup`] is one: the core never learns whether
+/// the store came from a live pass or from the JSON `analyze --layout`
+/// persisted.
+pub trait ClassLayoutLookup {
+    /// The proven type of `class`'s field at `offset`. `None` when nothing
+    /// proved one, or when two methods disagreed.
+    fn field_type(&self, class: &str, offset: i64) -> Option<&str>;
+
+    /// A token identifying **which layouts this store will give**, folded into
+    /// the decompile-cache key — a decompile rendered before the layout existed
+    /// embeds the unresolved dispatch and must not keep being served.
+    fn layout_fingerprint(&self) -> String {
+        String::new()
+    }
+}
+
 impl<'a> Ctx<'a> {
     pub fn new(source: &'a dyn MemorySource, arch: &'a dyn Arch) -> Self {
         Ctx {
@@ -209,6 +242,7 @@ impl<'a> Ctx<'a> {
             vtables: None,
             eh: None,
             type_flow: None,
+            layout: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -237,6 +271,11 @@ impl<'a> Ctx<'a> {
     /// Attach the whole-program type store (see the field docs).
     pub fn with_type_flow(mut self, flow: &'a dyn crate::TypeFlowLookup) -> Self {
         self.type_flow = Some(flow);
+        self
+    }
+    /// Attach the program-wide class-layout store (see the field docs).
+    pub fn with_layout(mut self, layout: &'a dyn crate::ClassLayoutLookup) -> Self {
+        self.layout = Some(layout);
         self
     }
 }

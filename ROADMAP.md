@@ -1586,9 +1586,78 @@ lift/SLEIGH-ingest per ISA.
      more seeds, not more propagation**: richer RTTI `this`-typing (Itanium
      recovers only 28 of 110 method slots on Qt), a larger API signature table,
      and the FLIRT corpus naming library functions whose prototypes are known.
-     **Still ⬜ in 3b**: field layouts unified across all users of one struct —
-     the direction that would turn a per-function `struct_rcx_0` into one program
-     -wide aggregate, and the reason `struct_*` cannot travel today.
+   - ✅ *(2026-09-05, verified)* **Field-layout unification across every user of
+     a class — 3b's last ⬜.** `crate::classlayout` / `function layout` /
+     `analyze --layout`, persisted to `.n0x/class-layout.json`.
+     Per-function recovery describes a class by as many disjoint half-layouts as
+     it has methods, each named after the register its pointer arrived in. Keyed
+     on the **class** instead, every method's observations merge into one field
+     set, and a field is typed from three kinds of evidence: an embedded
+     sub-object (`&this->f` handed to a constructor), a pointer field (`this->f`
+     handed to a member function as its `this`), and a class-typed value stored
+     in. Measured on `libQt6Gui.so.6` (22 413 functions): **2 682 methods → 353
+     classes, 2 036 fields, 85 typed**, in ~100 s.
+     **Verified against an independent oracle, not self-consistency.** 21 public
+     Qt classes were checked against `sizeof` compiled from the real headers:
+     **19 layouts came out inside the true object size**, 2 exceeded it by one
+     field each. `QImage+0x10 : QImageData *` (from 104 methods),
+     `QFont+0x0 : QFontPrivate *`, `QWindow+0x8 : QWindowPrivate *`,
+     `QTextLayout+0x0 : QTextEngine *` and the embedded
+     `QFontIconEngine+0x30 : QPixmap` are all exactly what the headers say.
+     **Three wrong answers found by that oracle and fixed, not argued away:**
+     1. **The class must come from the function's own symbol, never from its
+        first parameter's type.** A derived class's method has a `this` that
+        legitimately *is* a base-class pointer, and a derived constructor
+        legitimately stores the base's vtable first — so reading the parameter
+        files every derived field under the base. It put a `QImage` at `+0x30` of
+        a `QPlatformPixmap` the header says is `0x28` bytes, and inflated the
+        `0x20`-byte `QRhiResource` to an extent of **`0x1e20` across 145
+        "methods"** (the QRhi backends export no vtable of their own). Keyed on
+        the symbol, `QRhiResource` is `0x30` across 7.
+     2. **The hidden return slot.** Nothing in an Itanium symbol says a function
+        returns a large object by value — and such a function gets the caller's
+        result buffer in the first argument register, not `this`.
+        `QTextDocument::toPlainText() const` filed `QString`'s three fields under
+        `QTextDocument`. The ABI gives an exact marker (such a function must hand
+        that buffer back in `rax`), so a function returning its own first
+        argument is refused.
+     3. **A field known only by its type is still a field.** `&this->f` passed to
+        a constructor proves an embedded sub-object in a function that never
+        loads or stores it; keying the field set on accesses alone dropped
+        exactly the offsets this pass is best at.
+     **What is still not caught, stated rather than hidden.** A **static member
+     function** has no `this` and nothing local distinguishes it — that is both
+     remaining over-report, and in both the false field carried `methods: 1`–`4`
+     against `methods: 66` for the real ones. The per-field `methods` count is
+     the confidence signal and is reported for exactly this reason.
+     **A stale context inside `analyze` was hiding most of this, and it was
+     hiding it from `--typeflow` too.** `analyze` built one `Ctx` at the start
+     and kept using it, so the whole-program phases read the binary as if the
+     RTTI and FLIRT phases — which had just written `Class::vfN` and library
+     names into `.n0x/` — had not run. Rebuilding the context after those phases:
+     layout methods **960 → 2 682**, propagated parameters **3 → 13**.
+   - ✅ *(2026-09-05, verified)* **Devirtualization through a field —
+     `this->impl->method()`.** The shape 33 of 199 sampled methods were left
+     holding after devirtualization landed: the class of `impl` is stated nowhere
+     in the calling function, so nothing local could resolve it. With the layout
+     store it is one lookup. A/B over 1 156 `libQt6Gui` methods, the same binary
+     and the same build, only `.n0x/class-layout.json` present or absent:
+     **0 → 4 resolved virtual calls**, every one of them through a field.
+     **The binary itself confirms one of them.** `QAction::~QAction` dispatches
+     slot `0x20` of its `QActionPrivate *` d-pointer, and N0xis resolves it to
+     `0x1e9da0`, reported as `QActionPrivate::vf4` with `implementation:
+     QPlatformOpenGLContext::endFrame` (identical-code folding — both are empty
+     virtuals). Two lines earlier in the same function the *compiler's own*
+     devirtualization guard loads `&QPlatformOpenGLContext::endFrame` and
+     compares the slot against it: the code under analysis states the same
+     address we derived, independently.
+     An **embedded** sub-object is deliberately refused as a dispatch base — its
+     first word is its own vptr, so treating `Widget` and `Widget *` alike would
+     resolve a slot of the wrong table with full confidence.
+     **Honest bound.** 85 of 2 036 fields carry a type, and only 27 of those
+     point at a class RTTI recovered a vtable for — which is the ceiling on this
+     path, not the mechanism. More typed fields is the next lever, exactly as
+     more seeds was for propagation.
    - ✅ *(2026-09-05, verified)* **Devirtualization — the last ❌ of this phase.**
      A virtual call is three facts the analysis already held in three places and
      never joined: the object's **class**, that class's **vtable address**, and

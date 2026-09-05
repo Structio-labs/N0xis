@@ -329,6 +329,9 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     // Whole-program types `analyze --typeflow` persisted. Empty until it has
     // run, and always outranked by what a function proves about itself.
     let flow = crate::PersistedTypeFlow::load();
+    // Program-wide class layouts `analyze --layout` unified. Empty until it has
+    // run; a dispatch through a field then stays indirect exactly as before.
+    let layout = crate::PersistedLayout::load();
 
     let eh_all = eh_map(&resolved.src);
     let eh_regions: &[n0xis_core::EhRegion] = eh_all
@@ -387,7 +390,8 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
                     .with_modules(pe.as_ref())
                     .with_vtables(&vtables)
                     .with_eh(eh_regions)
-                    .with_type_flow(&flow),
+                    .with_type_flow(&flow)
+                    .with_layout(&layout),
                 input,
                 &label,
             )
@@ -819,6 +823,53 @@ impl Plugin for AnalysisPasses {
                             label,
                         ),
                         Err(e) => Response::error("typeflow-failed", e.to_string()),
+                    }
+                })
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "function.layout",
+            "Program-wide class layouts: unify per-function field recovery into one field set per RTTI class, and type each field from what is stored into it.",
+            Some(n0xis_contracts::schema::v1::FUNCTION_LAYOUT),
+            Origin::Builtin,
+            Box::new(|args| {
+                let limit = usize_arg(args, "limit", 400);
+                let max_bytes = usize_arg(args, "max_bytes", 4096);
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
+                let only = args.get("class").and_then(Value::as_str).map(str::to_string);
+                let explicit = match opt_addr_arg(args, "addr") {
+                    Ok(v) => v,
+                    Err((c, m)) => return Response::error(c, m),
+                };
+                with_src_ctx(args, Va(0), move |ctx, src, _region_len, label| {
+                    // One address reports what that single function contributes —
+                    // the audit answer to "why does this class have that field?",
+                    // which a merged store deliberately cannot give.
+                    let functions: Vec<Va> = match explicit {
+                        Some(a) => vec![a],
+                        None => crate::discovered_functions(ctx, src, module.as_deref(), limit),
+                    };
+                    if functions.is_empty() {
+                        return Response::error("no-functions", "no functions discovered to unify layouts over".to_string());
+                    }
+                    let total = functions.len();
+                    match n0xis_core::Pass::run(
+                        &n0xis_core::ClassLayoutPass,
+                        ctx,
+                        n0xis_core::ClassLayoutInput { functions, max_bytes },
+                    ) {
+                        Ok(mut store) => {
+                            if let Some(c) = &only {
+                                store.classes.retain(|name, _| name == c);
+                            }
+                            ok_json(
+                                n0xis_contracts::schema::v1::FUNCTION_LAYOUT,
+                                json!({ "considered": total, "store": store }),
+                                label,
+                            )
+                        }
+                        Err(e) => Response::error("layout-failed", e.to_string()),
                     }
                 })
             }),

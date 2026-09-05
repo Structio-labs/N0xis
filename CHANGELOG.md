@@ -5,6 +5,52 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### A class has one field layout, not one per method (Phase 10, 3b's last ⬜)
+
+- **`function layout` / `analyze --layout`.** Field recovery was per function and
+  named after the register a pointer arrived in (`struct_rdi_0`), so a class was
+  described by as many disjoint half-layouts as it had methods and nothing it
+  learned survived leaving the function. Keyed on the **class** instead, every
+  method's observations merge into one field set, persisted to
+  `.n0x/class-layout.json`. On `libQt6Gui.so.6`: 22 413 functions → **2 682
+  methods, 353 classes, 2 036 fields**.
+- **Fields get types, from three kinds of evidence.** An embedded sub-object
+  (`&this->f` handed to a constructor), a pointer field (`this->f` handed to a
+  member function as its `this`), and a class-typed value stored in. Verified
+  against `sizeof` compiled from the real Qt headers: of 21 public classes,
+  **19 layouts came out inside the true object size**; `QImage+0x10` is a
+  `QImageData *` (agreed by 104 methods), `QWindow+0x8` a `QWindowPrivate *`,
+  `QFontIconEngine+0x30` an embedded `QPixmap` — all exactly as the headers say.
+- **A dispatch through a field resolves.** `this->impl->method()` — the shape
+  that survived the first devirtualization pass unresolved, because the class of
+  `impl` is stated nowhere in the calling function — now devirtualizes, using a
+  pointer field's type from the layout. A/B over 1 156 `libQt6Gui` methods, same
+  binary and build, only `.n0x/class-layout.json` present or absent: **0 → 4
+  resolved virtual calls**. `QAction::~QAction` dispatches slot `0x20` of its
+  `QActionPrivate *` d-pointer, and two lines earlier the compiler's *own*
+  devirtualization guard loads the very address we resolve to — the code under
+  analysis independently states the answer. An *embedded* sub-object is
+  deliberately refused there: its first word is its own vptr, so treating
+  `Widget` and `Widget *` alike would resolve a slot of the wrong table with
+  full confidence.
+- **`analyze` no longer analyzes with a stale context.** It built one `Ctx` up
+  front and kept using it, so the whole-program phases read the binary as if the
+  RTTI and signature phases — which had just written names into `.n0x/` — had not
+  run. Rebuilding it after those phases: layout methods **960 → 2 682**,
+  propagated parameters **3 → 13**, on the same target.
+- **The class comes from the function's own symbol and never from its first
+  parameter's type.** A derived class's method has a `this` that legitimately
+  *is* a base-class pointer, so reading the parameter files every derived field
+  under the base: it put a `QImage` at `+0x30` of a `QPlatformPixmap` the header
+  says is `0x28` bytes, and inflated the `0x20`-byte `QRhiResource` to an extent
+  of `0x1e20` across 145 "methods". Keyed on the symbol: `0x30` across 7.
+- **The x64 hidden return slot is refused.** A function returning a large object
+  by value receives the caller's result buffer in the first argument register,
+  not `this`, and no Itanium symbol says so — `QTextDocument::toPlainText() const`
+  filed `QString`'s fields under `QTextDocument`. The ABI requires such a
+  function to hand that buffer back in `rax`, so returning your own first
+  argument is now a refusal.
+
 ### Virtual calls resolve to a method (Phase 10's last ❌)
 
 - **Devirtualization.** `(*rax.1->field_0x8)(rcx, …)` now renders

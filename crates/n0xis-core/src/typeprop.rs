@@ -242,7 +242,7 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize, known: &BTreeSet<u64>) -> Option
 ///
 /// Both remain perfectly good **local** types; they simply carry no
 /// interprocedural information.
-fn is_portable_type(name: &str) -> bool {
+pub(crate) fn is_portable_type(name: &str) -> bool {
     !name.starts_with("struct_") && name.trim_end_matches([' ', '*']) != "void"
 }
 

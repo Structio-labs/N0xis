@@ -255,6 +255,14 @@ pub fn decomp_cached(
         fingerprint.push('+');
         fingerprint.push_str(&flow);
     }
+    // Class layouts change the rendering the same way, and for a sharper reason:
+    // a decompile cached before `analyze --layout` embeds the *unresolved*
+    // `(*rax->field_0x30)(…)` that the layout would now devirtualize.
+    let layout = ctx.layout.map(|l| l.layout_fingerprint()).unwrap_or_default();
+    if !layout.is_empty() {
+        fingerprint.push('+');
+        fingerprint.push_str(&layout);
+    }
     let scope = if fingerprint.is_empty() { ctx.source.label() } else { format!("{}|{fingerprint}", ctx.source.label()) };
     let key = decomp_cache_key(&scope, input, &probe, style, var_names, var_types, struct_defs);
     sweep_stale_decomp_once();

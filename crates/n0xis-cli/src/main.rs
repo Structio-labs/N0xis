@@ -1645,6 +1645,12 @@ enum FunctionCmd {
     /// concrete field accesses) reaches every function that touches the same
     /// object — the layer other tools keep as a persistent type database.
     Typeflow(FunctionTypeflowArgs),
+    /// Program-wide class layouts: unify per-function field recovery into ONE
+    /// field set per RTTI class. Each method sees its own slice of the object
+    /// and names it after a register (`struct_rdi_0`), so nothing it learns
+    /// survives leaving the function; keyed on the class instead, every method's
+    /// observations merge, and a field is typed from what is stored into it.
+    Layout(FunctionLayoutArgs),
     /// Exception edges: the protected ranges and landing pads an unwinder uses.
     /// A `try`/`catch` landing pad has NO incoming branch, so it is invisible to
     /// a CFG built from instructions alone — this is where that control flow is
@@ -1698,6 +1704,38 @@ struct FunctionTypeflowArgs {
     /// Restrict discovery to this module, by case-insensitive name substring.
     #[arg(long)]
     module: Option<String>,
+    /// Cap on functions in the program considered; `0` = every function.
+    #[arg(long, default_value_t = 400)]
+    limit: usize,
+    /// Byte window analyzed per function.
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
+    max_bytes: usize,
+}
+
+#[derive(Args)]
+struct FunctionLayoutArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Restrict discovery to this module, by case-insensitive name substring.
+    #[arg(long)]
+    module: Option<String>,
+    /// Report only this class.
+    #[arg(long)]
+    class: Option<String>,
+    /// Report what the single function at this address (hex `0x…`) contributes,
+    /// instead of the whole program — the audit answer to "which method put that
+    /// field there?".
+    #[arg(long)]
+    addr: Option<String>,
     /// Cap on functions in the program considered; `0` = every function.
     #[arg(long, default_value_t = 400)]
     limit: usize,
@@ -1900,6 +1938,13 @@ struct AnalyzeArgs {
     /// analyzes every function once), so it is opt-in.
     #[arg(long)]
     typeflow: bool,
+    /// Also unify class field layouts across every method and persist them into
+    /// `.n0x/class-layout.json`, so a field typed by the constructor that fills
+    /// it is typed in every method that reads it — which is what lets a dispatch
+    /// through `this->impl` resolve. Implies `--typeflow`, whose propagated
+    /// return types are one of the two sources a field type comes from.
+    #[arg(long)]
+    layout: bool,
 }
 
 #[derive(Args)]
@@ -2686,6 +2731,15 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
                 "pid": a.pid, "file": a.file, "arch": a.arch, "snapshot": a.snapshot,
                 "remote_cmd": a.remote_cmd, "module": a.module, "limit": a.limit,
                 "max_bytes": a.max_bytes,
+            }),
+            pretty,
+        ),
+        Command::Function(FunctionCmd::Layout(a)) => run_capability(
+            "function.layout",
+            json!({
+                "pid": a.pid, "file": a.file, "arch": a.arch, "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd, "module": a.module, "class": a.class,
+                "addr": a.addr, "limit": a.limit, "max_bytes": a.max_bytes,
             }),
             pretty,
         ),
@@ -3651,6 +3705,21 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         progress("matching-signatures", total, total);
     }
 
+    // Everything from here on runs on an **enriched** context.
+    //
+    // The `ctx` above carries only what the image itself names. The RTTI phase
+    // has since written `Class::vfN` for every vtable slot, and the FLIRT phase
+    // names for statically-linked library code — but a `Ctx` built before them
+    // cannot see either, so the whole-program passes below were reading the
+    // binary as if `analyze` had not just run. Measured on `libQt6Gui.so.6`: the
+    // layout pass matched **960** methods on the stale context and **2 682** on
+    // one that sees the names, because a method's class is read off its own
+    // symbol and most of those symbols are the ones RTTI had just persisted.
+    let local = n0xis_frontend::annotation_syms::LocalNames::load();
+    let named = n0xis_sources::ChainedSymbols::new(&local, pe.as_ref());
+    let vtables = std::sync::Arc::new(n0xis_frontend::annotation_syms::persisted_vtable_map());
+    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables);
+
     // Phase 2c — whole-program type propagation, PERSISTED (priority 3b).
     //
     // Opt-in because it analyzes every function once; the pass itself then runs
@@ -3658,7 +3727,12 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // shape as the phases above: run once, persist, and every later view reads
     // it through `.n0x/` with no flag of its own.
     let mut typeflow_params = 0usize;
-    if a.typeflow && total > 0 {
+    // `--layout` reads propagated return types, so it needs the flow store to
+    // exist. Implying it is honest about the dependency rather than silently
+    // producing a weaker layout.
+    let want_typeflow = a.typeflow || a.layout;
+    let mut flow_store = None;
+    if want_typeflow && total > 0 {
         progress("propagating-types", 0, total);
         let vas: Vec<Va> = funcs.iter().map(|f| f.va).collect();
         match n0xis_core::Pass::run(&n0xis_core::TypePropagatePass, &ctx, n0xis_core::TypePropInput { functions: vas, max_bytes: 4096 }) {
@@ -3669,10 +3743,39 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
                 if let Err(e) = n0xis_project::type_flow::save(&flow) {
                     eprintln!("[n0x] {}", json!({ "warn": format!("persist type-flow: {e}") }));
                 }
+                flow_store = Some(store);
             }
             Err(e) => eprintln!("[n0x] {}", json!({ "warn": format!("type propagation: {e}") })),
         }
         progress("propagating-types", total, total);
+    }
+
+    // Phase 2d — unify class field layouts across every method (priority 3b's
+    // remaining item). Runs on a `Ctx` carrying the flow store just produced, so
+    // a field filled with the result of a call is typed by that call's
+    // propagated return type rather than by nothing.
+    let (mut layout_classes, mut layout_typed_fields) = (0usize, 0usize);
+    if a.layout && total > 0 {
+        progress("unifying-layouts", 0, total);
+        let vas: Vec<Va> = funcs.iter().map(|f| f.va).collect();
+        let flow_ref = flow_store.as_ref();
+        let lctx = match flow_ref {
+            Some(f) => ctx.with_type_flow(f),
+            None => ctx,
+        };
+        match n0xis_core::Pass::run(&n0xis_core::ClassLayoutPass, &lctx, n0xis_core::ClassLayoutInput { functions: vas, max_bytes: 4096 }) {
+            Ok(store) => {
+                layout_classes = store.classes.len();
+                let generation = format!("layout:{}:{}:{}", total, store.methods_matched, store.typed_fields);
+                let persisted = n0xis_frontend::layout_to_persisted(generation, &store);
+                layout_typed_fields = persisted.typed_fields();
+                if let Err(e) = n0xis_project::class_layout::save(&persisted) {
+                    eprintln!("[n0x] {}", json!({ "warn": format!("persist class-layout: {e}") }));
+                }
+            }
+            Err(e) => eprintln!("[n0x] {}", json!({ "warn": format!("class layout: {e}") })),
+        }
+        progress("unifying-layouts", total, total);
     }
 
     // Phase 3 — build/persist the reverse-xref index (makes `xref to` instant).
@@ -3705,6 +3808,8 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         "rtti_classes": classes,
         "flirt_named": flirt_named,
         "typeflow_propagated_params": typeflow_params,
+        "layout_classes": layout_classes,
+        "layout_typed_fields": layout_typed_fields,
         "xref_targets": xref_targets,
         "cached_functions": cached,
     });

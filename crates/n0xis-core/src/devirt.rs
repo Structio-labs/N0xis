@@ -98,11 +98,37 @@ fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> 
     cur
 }
 
-/// Recognize the C++ virtual-dispatch address: `*( *this + off )`, i.e. load the
+/// Which object a dispatch goes through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Object<'a> {
+    /// A variable holding the object — `this`, or anything typed like it.
+    Var(&'a str),
+    /// A **field** of another object: `this->impl->method()`. Resolving these is
+    /// what program-wide class layouts bought — the class of `impl` is not
+    /// anywhere in this function, it is a property of `this`'s class that some
+    /// *other* function proved.
+    Field { base: &'a str, offset: i64 },
+}
+
+/// Split `Var ± Const` (either operand order) or a bare `Var`, resolving each
+/// half through the assignments the optimizer left behind.
+fn base_offset<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> Option<(&'a str, i64)> {
+    match resolve(e, defs) {
+        MicroExpr::Var(name) => Some((name.as_str(), 0)),
+        MicroExpr::Binary(n0xis_arch::BinOp::Add, l, r) => match (resolve(l, defs), resolve(r, defs)) {
+            (MicroExpr::Var(n), MicroExpr::Const { value, .. }) => Some((n.as_str(), *value as i64)),
+            (MicroExpr::Const { value, .. }, MicroExpr::Var(n)) => Some((n.as_str(), *value as i64)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Recognize the C++ virtual-dispatch address: `*( *obj + off )`, i.e. load the
 /// vtable pointer out of the object, then load a slot out of the vtable —
 /// through however many intermediate assignments the optimizer left behind.
-/// Returns `(this-variable, slot offset)`.
-fn as_vtable_dispatch<'a>(expr: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> Option<(&'a str, u64)> {
+/// Returns `(the object, slot offset)`.
+fn as_vtable_dispatch<'a>(expr: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> Option<(Object<'a>, u64)> {
     // The outer load is the slot read.
     let MicroExpr::Load { addr, .. } = resolve(expr, defs) else { return None };
     let (inner, off) = match resolve(addr, defs) {
@@ -118,7 +144,13 @@ fn as_vtable_dispatch<'a>(expr: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a M
     // The inner load is the vtable pointer, read from the object itself.
     let MicroExpr::Load { addr: obj, .. } = inner else { return None };
     match resolve(obj, defs) {
-        MicroExpr::Var(name) => Some((name.as_str(), off)),
+        MicroExpr::Var(name) => Some((Object::Var(name.as_str()), off)),
+        // One more load: the object itself came out of a field of something we
+        // do have a type for.
+        MicroExpr::Load { addr: field, .. } => {
+            let (base, offset) = base_offset(field, defs)?;
+            Some((Object::Field { base, offset }, off))
+        }
         _ => None,
     }
 }
@@ -191,9 +223,30 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
     let mut plan: Vec<(usize, usize, Devirtualized)> = Vec::new();
     let mut consider = |bi: usize, si: usize, target: &CallTarget| {
         let CallTarget::Indirect(expr) = target else { return };
-        let Some((this_var, slot)) = as_vtable_dispatch(expr, &defs) else { return };
-        let Some(class) = var_class.get(this_var) else { return };
-        let Some(&(vtable, vtable_end)) = by_class.get(*class) else { return };
+        let Some((object, slot)) = as_vtable_dispatch(expr, &defs) else { return };
+        let class: &str = match object {
+            Object::Var(v) => match var_class.get(v) {
+                Some(c) => c,
+                None => return,
+            },
+            // A dispatch on a field needs the field's type, which only the
+            // program-wide layout holds — and it must be a **pointer** type: an
+            // embedded sub-object's first word is its own vptr, so treating
+            // `Widget` and `Widget *` alike here would resolve a slot of the
+            // wrong table with full confidence.
+            Object::Field { base, offset } => {
+                let Some(owner) = var_class.get(base) else { return };
+                let Some(ty) = ctx.layout.and_then(|l| l.field_type(owner, offset)) else { return };
+                if !ty.trim_end().ends_with('*') {
+                    return;
+                }
+                match class_of(ty) {
+                    Some(c) => c,
+                    None => return,
+                }
+            }
+        };
+        let Some(&(vtable, vtable_end)) = by_class.get(class) else { return };
         let Some(addr) = vtable.checked_add(slot) else { return };
         // The slot must be inside THIS class's table, or we would read the next
         // class's and report its method with full confidence.
@@ -226,7 +279,7 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
             Some(sym) => (owned, Some(sym)),
             None => (owned, None),
         };
-        plan.push((bi, si, Devirtualized { class: (*class).to_string(), slot, method: Va(method), name, implementation }));
+        plan.push((bi, si, Devirtualized { class: class.to_string(), slot, method: Va(method), name, implementation }));
     };
 
     for (bi, block) in blocks.iter().enumerate() {
@@ -272,8 +325,8 @@ mod tests {
     #[test]
     fn recognizes_the_dispatch_shape_and_its_slot() {
         let no_defs = BTreeMap::new();
-        assert_eq!(as_vtable_dispatch(&dispatch("rcx.0", 0x40), &no_defs), Some(("rcx.0", 0x40)));
-        assert_eq!(as_vtable_dispatch(&dispatch("rcx.0", 0), &no_defs), Some(("rcx.0", 0)));
+        assert_eq!(as_vtable_dispatch(&dispatch("rcx.0", 0x40), &no_defs), Some((Object::Var("rcx.0"), 0x40)));
+        assert_eq!(as_vtable_dispatch(&dispatch("rcx.0", 0), &no_defs), Some((Object::Var("rcx.0"), 0)));
         // A single load is a plain function-pointer call, not a vtable dispatch.
         let single = MicroExpr::load(MicroExpr::Var("rcx.0".into()), 64 as Bits, false);
         assert_eq!(as_vtable_dispatch(&single, &no_defs), None);
@@ -303,7 +356,52 @@ mod tests {
             64 as Bits,
             false,
         );
-        assert_eq!(as_vtable_dispatch(&split, &defs), Some(("rcx.0", 0x40)));
+        assert_eq!(as_vtable_dispatch(&split, &defs), Some((Object::Var("rcx.0"), 0x40)));
+    }
+
+    /// `this->impl->method()` — the dispatch that survived the first
+    /// devirtualization pass unresolved, because the class of `impl` is not
+    /// stated anywhere in this function. It is a property of `this`'s class that
+    /// some *other* function proved, which is exactly what the program-wide
+    /// layout carries.
+    #[test]
+    fn recognizes_a_dispatch_through_a_field_of_the_object() {
+        // v1 = *(this + 0x30)   — the field holding the sub-object
+        // v2 = *v1              — its vtable pointer
+        //      call *(v2 + 0x18)
+        let field = MicroExpr::load(
+            MicroExpr::Binary(
+                n0xis_arch::BinOp::Add,
+                Box::new(MicroExpr::Var("rcx.0".into())),
+                Box::new(MicroExpr::constant(0x30, 64)),
+            ),
+            64 as Bits,
+            false,
+        );
+        let vptr = MicroExpr::load(MicroExpr::Var("v1".into()), 64 as Bits, false);
+        let defs: BTreeMap<&str, &MicroExpr> = [("v1", &field), ("v2", &vptr)].into_iter().collect();
+        let call = MicroExpr::load(
+            MicroExpr::Binary(
+                n0xis_arch::BinOp::Add,
+                Box::new(MicroExpr::Var("v2".into())),
+                Box::new(MicroExpr::constant(0x18, 64)),
+            ),
+            64 as Bits,
+            false,
+        );
+        assert_eq!(as_vtable_dispatch(&call, &defs), Some((Object::Field { base: "rcx.0", offset: 0x30 }, 0x18)));
+    }
+
+    /// A field at offset 0 is still a field — `this->first->method()` is as real
+    /// a dispatch as one at `+0x30`, and the bare-`Var` address shape is what it
+    /// lowers to.
+    #[test]
+    fn a_field_at_offset_zero_is_still_a_field() {
+        let field = MicroExpr::load(MicroExpr::Var("rcx.0".into()), 64 as Bits, false);
+        let vptr = MicroExpr::load(MicroExpr::Var("v1".into()), 64 as Bits, false);
+        let defs: BTreeMap<&str, &MicroExpr> = [("v1", &field), ("v2", &vptr)].into_iter().collect();
+        let call = MicroExpr::load(MicroExpr::Var("v2".into()), 64 as Bits, false);
+        assert_eq!(as_vtable_dispatch(&call, &defs), Some((Object::Field { base: "rcx.0", offset: 0 }, 0)));
     }
 
     /// A cyclic definition must terminate rather than spin.
