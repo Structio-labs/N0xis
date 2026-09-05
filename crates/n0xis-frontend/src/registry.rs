@@ -744,6 +744,60 @@ impl Plugin for AnalysisPasses {
             }),
         ));
 
+        reg.add(Capability::new(
+            "function.summary",
+            "Per-function interprocedural summary: does it return, what types are its parameters and result, which volatile registers does it clobber, and whom does it call.",
+            Some(n0xis_contracts::schema::v1::FUNCTION_SUMMARY),
+            Origin::Builtin,
+            Box::new(|args| {
+                let limit = usize_arg(args, "limit", 200);
+                let max_bytes = usize_arg(args, "max_bytes", 4096);
+                let explicit = match opt_addr_arg(args, "addr") {
+                    Ok(v) => v,
+                    Err((c, m)) => return Response::error(c, m),
+                };
+                let module = args.get("module").and_then(Value::as_str).map(str::to_string);
+                with_src_ctx(args, Va(0), move |ctx, src, _region_len, label| {
+                    // One address summarizes just that function; without it the
+                    // whole discovered set up to `limit`.
+                    let functions: Vec<Va> = match explicit {
+                        Some(a) => vec![a],
+                        None => {
+                            let base = src.module_base();
+                            let mut all: Vec<Va> = base
+                                .and_then(|b| n0xis_core::discover_pdata(ctx.source, b).ok())
+                                .map(|f| f.into_iter().map(|c| c.va).collect())
+                                .unwrap_or_default();
+                            if all.is_empty() {
+                                for (start, size) in src.code_ranges_of(module.as_deref()) {
+                                    if let Ok(art) = n0xis_core::Pass::run(
+                                        &n0xis_core::DiscoverPass,
+                                        ctx,
+                                        n0xis_core::DiscoverInput { start, size: size as usize, limit: 0, offset: 0 },
+                                    ) {
+                                        all.extend(art.functions.into_iter().map(|c| c.va));
+                                    }
+                                }
+                                all.sort_by_key(|v| v.get());
+                                all.dedup();
+                            }
+                            all.truncate(if limit == 0 { usize::MAX } else { limit });
+                            all
+                        }
+                    };
+                    let total = functions.len();
+                    match n0xis_core::Pass::run(&n0xis_core::SummaryPass, ctx, n0xis_core::SummaryInput { functions, max_bytes }) {
+                        Ok(sums) => ok_json(
+                            n0xis_contracts::schema::v1::FUNCTION_SUMMARY,
+                            json!({ "count": sums.len(), "requested": total, "summaries": sums }),
+                            label,
+                        ),
+                        Err(e) => Response::error("summary-failed", e.to_string()),
+                    }
+                })
+            }),
+        ));
+
         // --- function-scoped analysis, all sharing `with_cfg_ctx` ---
 
         reg.add(Capability::new(

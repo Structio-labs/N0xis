@@ -35,6 +35,8 @@ pub mod v1 {
     pub const FUNCTION_NORETURN: &str = "n0xis.function.noreturn.v1";
     /// Exception edges: protected ranges and the landing pads they unwind to.
     pub const FUNCTION_EH: &str = "n0xis.function.eh.v1";
+    /// Per-function interprocedural summary (returns/params/clobbers/callees).
+    pub const FUNCTION_SUMMARY: &str = "n0xis.function.summary.v1";
     /// Whole-program analysis pass: discover → RTTI → xref index → IR cache,
     /// materializing the `.n0x/` summary layer with progress (`analyze`).
     pub const ANALYZE: &str = "n0xis.analyze.v1";

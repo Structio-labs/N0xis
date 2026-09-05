@@ -1345,6 +1345,21 @@ lift/SLEIGH-ingest per ISA.
      rarely emit a function whose only exit is a call to another noreturn helper.
      Per the project rule — ✅ only on a real-data *positive* — the propagation
      step stays ⏳ until a genuine instance is confirmed on a real binary.
+     - ✅ **CONFIRMED 2026-09-05 on `libQt6Core.so.6`.** The corpus was the
+       reason, not the pass: the 14 DLLs were Windows/MSVC game code, where the
+       noreturn helpers really are leaves. On Qt, `QMessageLogger::fatal` is a
+       `Q_NORETURN` **wrapper** — a `sub_XXXX` to us, not a named import — and
+       propagation flags its callers through it. Of the first 400 functions, the
+       per-function rule proves **233** non-returning and the fixpoint **239**;
+       the difference is exactly the propagation step, and every one of the six
+       is traceable: `qt_assert(char const*, char const*, int)` and
+       `qt_assert_x(…)` each have a **single** callee and no unknown call, so
+       they are flagged *only* because `QMessageLogger::fatal` was proven first.
+       Both are declared `Q_NORETURN` in Qt's own headers, so the result checks
+       out against the library's source, not just against itself. Zero
+       disagreements in the unsound direction (the per-function set is a strict
+       subset of the fixpoint's) — the cross-check that came for free once
+       [`SummaryPass`](#) started using the fixpoint's own predicate.
      **Still open in priority 0**: exception-edge recovery (`.xdata` EH handlers
      → try/catch/finally edges) — closed for ELF below, PE still open.
    - ✅ *(2026-09-05, verified)* **The whole of priority 0 was dead on ELF —
@@ -1478,10 +1493,10 @@ lift/SLEIGH-ingest per ISA.
 2. ⬜ **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
    recovery — chicken-and-egg: alias precision needs types, type recovery needs
    alias. Climb 1–2 together; neither is precise alone.
-3. ⬜ **Function-summary IPA + whole-program type propagation — now the #1 core
-   gap vs other tools.** Two layers. (a) **Summaries**: per-function returns /
-   `noreturn` / clobber set / arg & return types / side effects — composes with
-   the existing `ManifestPass`, an extension not a new subsystem. (b) **Whole-program
+3. 🚧 **Function-summary IPA + whole-program type propagation — now the #1 core
+   gap vs other tools.** Two layers. (a) ✅ *(2026-09-05)* **Summaries**: per-function
+   returns / `noreturn` / clobber set / arg & return types / side effects —
+   composes with the existing `ManifestPass`, an extension not a new subsystem. (b) **Whole-program
    type propagation** (the layer other tools lead on): a persistent, call-graph-wide
    type store so a `struct` recovered in one function — or a class recovered from
    RTTI — is *flowed to every function that touches the same object* (callee arg
@@ -1492,6 +1507,38 @@ lift/SLEIGH-ingest per ISA.
    RTTI class graph (Rung 7a) + the summary layer here; it is the single remaining
    *core-decompilation* gap (everything else other tools lead on is breadth/GUI/
    maturity — see "Where other tools still lead" above), so it ranks first.
+   - ✅ *(2026-09-05, verified)* **3a — `SummaryPass` / `function summary`.** Every
+     interprocedural question was being answered by re-analyzing the callee at
+     the moment it was asked, once per asker. A summary answers it once: one run
+     of the existing chain (`CfgPass` → `SsaPass` → `OptimizePass` →
+     `TypeInferPass`, plus the call-graph edges the CFG already carries) yields
+     `returns`, recovered `params`/`ret`, the volatile registers the function
+     writes, whom it calls, and whether anything about it is *unknown*.
+     Sound-over-complete is explicit in the shape rather than implied:
+     `clobbers_complete` is `false` for any function that calls something (a
+     caller must then assume the ABI's full volatile set until the whole-program
+     pass composes its callees in), `has_unknown_call` marks an indirect or
+     slot-reached callee, and an address that does not decode is **absent** from
+     the batch rather than a zeroed entry claiming facts.
+     One design correction worth keeping: the first draft re-derived the
+     "does it return" predicate, and quietly disagreed with the fixpoint — it
+     scanned *every* block, while `function_returns` walks only blocks reachable
+     from the entry, so an unreachable ambiguous exit made a genuinely
+     non-returning function look like it returns (60 false "may return"s on
+     400 real functions). It now calls the fixpoint's own predicate, so the two
+     agree **by construction rather than by review** — which is what turned the
+     comparison into the real-corpus proof of noreturn propagation recorded in
+     priority 0. Cost: 400 functions of `libQt6Core.so.6` summarized in 1.2 s.
+   - ⬜ **3b — whole-program type propagation.** The layer above: a persistent,
+     call-graph-wide type store. Half of it already exists and is easy to miss —
+     `typeinfer::user_callee_arg_types` flows a **callee's parameter types into
+     its caller's arguments**, one level, lazily, memoized. What is missing is
+     the other three directions: caller arguments back-propagated into a
+     callee's parameters (the direction that carries an RTTI-recovered class
+     into every helper the constructor hands `this` to), return types into their
+     consumers, and field layouts unified across all users of one struct — all
+     run to a fixpoint over the summaries above, with a conflict between two
+     callers resolved as *unknown* rather than a guess.
 4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
    decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
    it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few

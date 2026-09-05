@@ -150,7 +150,7 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
 /// wrapper as a tail-call to the noreturn helper, so a tail-call to a known
 /// noreturn — by import name or by a proven address — is a non-returning exit,
 /// not a return.
-fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> bool {
+pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> bool {
     if cfg.blocks.is_empty() {
         return true; // no evidence → assume it returns
     }

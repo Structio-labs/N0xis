@@ -1635,11 +1635,46 @@ enum FunctionCmd {
     /// call-graph fixpoint that proves which never return — including a game's
     /// own `FatalError`/`Assert` wrappers, not just named imports.
     Noreturn(FunctionNoreturnArgs),
+    /// Per-function interprocedural summary — the substrate the whole-program
+    /// passes read instead of re-analyzing a callee once per question: does it
+    /// return, what types are its parameters and result, which volatile
+    /// registers does it clobber (and is that set complete), whom does it call.
+    Summary(FunctionSummaryArgs),
     /// Exception edges: the protected ranges and landing pads an unwinder uses.
     /// A `try`/`catch` landing pad has NO incoming branch, so it is invisible to
     /// a CFG built from instructions alone — this is where that control flow is
     /// actually written down. ELF (`.eh_frame` + `.gcc_except_table`) today.
     Eh(FunctionEhArgs),
+}
+
+#[derive(Args)]
+struct FunctionSummaryArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    /// Instruction set to decode: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Summarize just the function at this address (hex `0x…`). Without it the
+    /// whole discovered set, capped by `--limit`.
+    #[arg(long)]
+    addr: Option<String>,
+    /// Restrict discovery to this module, by case-insensitive name substring.
+    #[arg(long)]
+    module: Option<String>,
+    /// Cap on functions summarized; `0` = every discovered function.
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
+    /// Byte window analyzed per function.
+    #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
+    max_bytes: usize,
 }
 
 #[derive(Args)]
@@ -2601,6 +2636,15 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
         Command::Function(FunctionCmd::Discover(a)) => cmd_discover(a, pretty),
         Command::Function(FunctionCmd::Trace(a)) => cmd_function_trace(a, pretty),
         Command::Function(FunctionCmd::Noreturn(a)) => cmd_function_noreturn(a, pretty),
+        Command::Function(FunctionCmd::Summary(a)) => run_capability(
+            "function.summary",
+            json!({
+                "pid": a.pid, "file": a.file, "arch": a.arch, "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd, "addr": a.addr, "module": a.module,
+                "limit": a.limit, "max_bytes": a.max_bytes,
+            }),
+            pretty,
+        ),
         Command::Function(FunctionCmd::Eh(a)) => run_capability(
             "function.eh",
             json!({ "pid": a.pid, "file": a.file, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd, "addr": a.addr }),
