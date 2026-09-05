@@ -181,6 +181,16 @@ impl RenderNames {
         self.data_refs.get(&va).cloned()
     }
 
+    /// Add names for callees the CFG never saw as direct targets — today, the
+    /// methods [`crate::devirtualize`] resolved out of a vtable. Existing names
+    /// win: a name the CFG established came from a real branch operand.
+    pub fn with_extra_callees(mut self, extra: HashMap<u64, String>) -> Self {
+        for (va, name) in extra {
+            self.callee_names.entry(va).or_insert(name);
+        }
+        self
+    }
+
     fn callee(&self, va: Va) -> String {
         match self.callee_names.get(&va.get()) {
             Some(name) => render_callee_name(name),

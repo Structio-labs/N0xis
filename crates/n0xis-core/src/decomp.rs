@@ -134,6 +134,12 @@ pub struct PseudoFunction {
     /// [`DecompInput::explain`] — see that field for why it is not free.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub delta: Vec<OptDeltaEntry>,
+    /// Virtual calls resolved to a concrete method by
+    /// [`crate::devirtualize`] — reported rather than only rendered, because
+    /// "this `call [rax+0x40]` is `Widget::paint`" is a *finding* an agent may
+    /// want to act on, not just prettier text.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub devirtualized: Vec<crate::Devirtualized>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -150,13 +156,13 @@ impl Pass for DecompPass {
     fn run(&self, ctx: &Ctx, input: DecompInput) -> Result<PseudoFunction, CoreError> {
         let cfg = input.cfg;
 
-        let ssa = SsaPass.run(ctx, cfg.clone())?;
+        let mut ssa = SsaPass.run(ctx, cfg.clone())?;
         let unlifted = count_unlifted(&ssa.blocks);
         // Recovered locals/struct-fields/signature (ROADMAP Phase 4) are
         // always computed from the *optimized* form for analysis quality —
         // propagation/DCE resolve pointer origins that raw SSA leaves as
         // opaque — then applied to whichever style's own IR is rendered.
-        let opt = OptimizePass.run(ctx, ssa.clone())?;
+        let mut opt = OptimizePass.run(ctx, ssa.clone())?;
         let mut types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone() })?;
         // Apply user C-type overrides FIRST (while names are still the synthesized
         // keys the overrides are stored under): a local gets a `type_override`, a
@@ -197,7 +203,35 @@ impl Pass for DecompPass {
                 }
             }
         }
+        // Devirtualization (ROADMAP Phase 10 — the ❌ "indirect / virtual call
+        // resolution"). Runs *after* type inference because it needs the `this`
+        // type, and *before* the renderer because it rewrites the call target.
+        // Both the raw and the optimized IR are rewritten so every style shows
+        // the same resolved callee.
+        // It runs on the **raw** SSA, not the optimized form, and that ordering
+        // is the difference between working and not: expression propagation
+        // rewrites the vptr's defining assignment, so in `opt.blocks` the
+        // dispatch is no longer the recognizable `*( *this + off )` — measured,
+        // the `goto` style resolved three calls in this very function while the
+        // `ssa` style still rendered `(*rax.1->field_0x8)(…)`. Re-optimizing
+        // afterwards carries the now-`Direct` targets through every style, and
+        // only costs a second optimizer run when something was actually
+        // resolved.
+        let mut devirtualized = crate::devirt::devirtualize(ctx, &mut ssa.blocks, &types);
+        if !devirtualized.is_empty() {
+            // The same dispatch appears at several sites; report each once.
+            devirtualized.sort_by(|a, b| (a.method.0, a.slot).cmp(&(b.method.0, b.slot)).then_with(|| a.class.cmp(&b.class)));
+            devirtualized.dedup_by(|a, b| a.method == b.method && a.slot == b.slot && a.class == b.class);
+            opt = OptimizePass.run(ctx, ssa.clone())?;
+        }
+
         let mut names = RenderNames::new(&cfg.callsites).with_types(&types);
+        // A devirtualized callee is not in `cfg.callsites` (the CFG saw an
+        // indirect branch), so its name has to be injected here or the call
+        // would render `sub_XXXX` despite having just been resolved.
+        if !devirtualized.is_empty() {
+            names = names.with_extra_callees(devirtualized.iter().map(|d| (d.method.get(), d.name.clone())).collect());
+        }
         // Bind struct field names: for each recovered struct base var, if its ROOT
         // register matches a parameter typed (by user or RTTI) as a pointer to a
         // struct, attach that struct's field-name map — so `this->field_0x68`
@@ -357,6 +391,7 @@ impl Pass for DecompPass {
             flags,
             instruction_count: cfg.insn_count,
             delta,
+            devirtualized,
         })
     }
 }

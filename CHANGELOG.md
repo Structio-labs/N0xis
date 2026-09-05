@@ -5,6 +5,27 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Virtual calls resolve to a method (Phase 10's last ❌)
+
+- **Devirtualization.** `(*rax.1->field_0x8)(rcx, …)` now renders
+  `webrtc__rtcp__Tmmbn__vf1(rcx, …)` on a real binary: the object's class × that
+  class's RTTI vtable × the slot, read out of the image and rewritten to a direct
+  call, and reported in the artifact as `data.devirtualized`. Runs on the **raw**
+  SSA — expression propagation destroys the recognizable dispatch shape — and
+  re-optimizes afterwards so every style shows it.
+- **`this` is now typed in ordinary methods, not only constructors.** A function
+  whose own recovered name is `Class::…`, where `Class` is one RTTI found a vtable
+  for, gets parameter 0 typed `Class *`. This was the missing seed: without it,
+  **0 of 199** sampled the Qt desktop PE methods had a class-typed parameter, so
+  devirtualization had nothing to look a vtable up by. With it, 86 of 199 — and
+  portable typed parameters across 8 000 functions went 457 → 1 365, doing more
+  for type propagation than propagation itself.
+- **Two wrong answers found by reading the output.** A slot past a class's last
+  method silently read the **next class's vtable** (now bounded by the next known
+  vtable's start), and identical-code folding meant one implementation carried
+  another class's name (a dispatch is now named by the class it goes *through*,
+  with the folded symbol kept as `implementation`).
+
 ### Interprocedural analysis (Phase 10 priority 3)
 
 - **Function summaries** (`function summary`) — the substrate the whole-program

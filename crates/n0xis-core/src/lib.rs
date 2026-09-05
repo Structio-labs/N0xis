@@ -24,6 +24,7 @@ mod decomp;
 mod deobfuscate;
 mod demangle;
 mod diff;
+mod devirt;
 mod discover;
 mod dissect;
 mod dom;
@@ -86,6 +87,7 @@ pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, 
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};
 pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
 pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
+pub use devirt::{devirtualize, Devirtualized};
 pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};
 pub use eh::{landing_pads, scan_eh_frame, EhFunction, EhRegion};
 pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};

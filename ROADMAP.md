@@ -1123,7 +1123,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Memory SSA | ✅ Rung 1 — intra- and cross-block store-to-load forwarding + dead-store elimination, on escape analysis; verified on real Win64/MSVC and Linux/GCC |
 | Interprocedural propagation | 🚧 partial — whole-program noreturn IPA + call-site name/ABI resolution; **whole-program type propagation still missing** (the core remaining gap) |
 | Exception-edge recovery | 🟡 **ELF done, PE next** *(2026-09-05)* — `.eh_frame` FDE + `.gcc_except_table` LSDA → protected ranges and landing pads (`function eh`), fed into the CFG as `eh` edges so a pad is a reachable, labelled block instead of an unreachable island. FDE count verified **identical to `readelf`** (14 355 on `libQt6Core.so.6`). PE `.xdata` scope tables are the sibling follow-on |
-| Indirect / virtual call resolution | 🚧 partial — RTTI vtable constants **named** (`&Class::vtable`), `this` typed to its class; last-hop **devirtualization** (slot→method) still ⬜ (needs whole-program `this`-type flow) |
+| Indirect / virtual call resolution | ✅ *(2026-09-05)* — `call qword ptr [rax+0x40]` resolves to the method: `this`-class × RTTI vtable × slot, read out of the image and rewritten to a direct call. Bounded by the next vtable (an out-of-range slot reads the next class's table) and named by the class it dispatches through (ICF folds one implementation under several class names). Yield is seed-bound: a dispatch on an object other than `this` needs field typing |
 | SIMD / FP lift | ✅ Rung 5c/5h — SSE data moves as 128-bit ops + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); FP *compares* left opaque |
 | PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
 | C++ RTTI / vtable / class recovery | ✅ Rung 7a — MSVC RTTI scan, vtable naming, `this`-typing, **full template demangling, base-class inheritance graph** (Kenshi 3055 / STALKER 2 561 vtables). Whole-program class-graph propagation into every method still ⬜ |
@@ -1204,7 +1204,7 @@ lift/SLEIGH-ingest per ISA.
 | Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | 🟡 *(2026-09-05)* ELF: `.eh_frame`→LSDA gives (try range → landing pad); pads become block leaders and every block overlapping a protected range gains an `eh` successor. **Where** control goes is recovered; **what** is caught (ttype tables) is a readability follow-on, as is PE `.xdata` |
 | Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | ✅ *(2026-08-06)* both shapes — a direct `jmp` out of the function **and** an import thunk's `jmp qword ptr [__imp_X]` (previously mis-classified `ijmp`, "indirect jump (unrecovered)") — terminate as `tail-call` and lower to `call`+`return` via the new `Arch::lift_tail_call` seam, so every style renders `return f(...)`. Verified on real PEs (`version.dll` thunk → `return …GetFileVersionInfoSizeW(…)`; 15/400 notepad, 52/400 dxgi functions carry the `tail` flag) |
 | noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). ⏳ *(2026-08-29)* **whole-program propagation** — the `NoReturnPropagatePass` call-graph fixpoint (`function noreturn`) is built and feeds `Ctx::with_noreturn` back into CFG fall-through pruning; sound-over-complete. **Detection** is verified on a real binary (`CompressToolsLib.dll`: 9 functions, cross-checked via `ir build`); the **propagation** step itself is unit-tested only and awaits a real-corpus positive before ✅. **Still open**: a *tail-call* to a proven-noreturn function (read conservatively as returning today). |
-| Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ❌ only IAT/direct resolved; value-set gives `Top` on loads |
+| Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ✅ *(2026-09-05)* `crate::devirt` — joins the three facts the analysis already held apart (the object's class, that class's vtable, the slot). The value-set pass could never reach this: the vtable pointer is written by a constructor that may be in another function entirely |
 | Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
 | Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
 | Alias analysis | a real memory-alias oracle | 🚧 light/bounded (`ValueSetPass::alias`, `Var±Const` only, `Top` on load) |
@@ -1589,6 +1589,53 @@ lift/SLEIGH-ingest per ISA.
      **Still ⬜ in 3b**: field layouts unified across all users of one struct —
      the direction that would turn a per-function `struct_rcx_0` into one program
      -wide aggregate, and the reason `struct_*` cannot travel today.
+   - ✅ *(2026-09-05, verified)* **Devirtualization — the last ❌ of this phase.**
+     A virtual call is three facts the analysis already held in three places and
+     never joined: the object's **class**, that class's **vtable address**, and
+     the **slot** the site indexes. `crate::devirt` joins them, reads the slot out
+     of the image, and rewrites the call target — so
+     `(*rax.1->field_0x8)(rcx, …)` becomes
+     `webrtc__rtcp__Tmmbn__vf1(rcx, …)` on a real binary. Reported in the
+     artifact as well as rendered, because "this `call [rax+0x40]` is
+     `Widget::paint`" is a finding, not only prettier text.
+     **What made it work, and what it took to make it right:**
+     1. **Order.** It runs on the **raw** SSA, not the optimized form:
+        expression propagation rewrites the vptr's defining assignment, so in
+        `opt.blocks` the dispatch is no longer the recognizable
+        `*( *this + off )`. Measured mid-flight — the `goto` style resolved three
+        calls in a function where the `ssa` style still rendered
+        `(*rax.1->field_0x8)(…)`. Re-optimizing after the rewrite carries the
+        now-direct targets through every style, and only costs a second
+        optimizer run when something was actually resolved.
+     2. **The `this` type had to come from somewhere.** This is the seed the
+        whole class model was missing, and it is why the first attempt resolved
+        **0** of 399 real functions: a `this` was typed only in a *constructor*
+        (which stores a vtable into it) or where a callee's name identified it —
+        never in an ordinary method, which is exactly where virtual calls are
+        made. New `own_this_class`: if the function's own name is
+        `Class::something` **and `Class` is one RTTI recovered a vtable for**,
+        parameter 0 is `Class *`. Requiring the prefix to be a known vtable class
+        is what keeps a namespace-qualified free function (`Ui::doSomething`)
+        out. Effect on the Qt desktop PE's RTTI-named methods: `this` typed as a class
+        **0 → 86 of 199**, and portable typed parameters across 8 000 functions
+        **457 → 1 365** — so this seed also did more for priority 3b than
+        propagation itself.
+     3. **Two wrong answers found by looking at the output, not by reasoning.**
+        A `QPlatformPixmap` dispatch at slot `0x88` resolved into an
+        `rpl::details::type_erased_handlers<…>` method. Two distinct causes, both
+        fixed: vtables sit end to end, so a slot past a class's last method reads
+        the **next class's table** (now bounded by the next known vtable's
+        start); and under **identical-code folding** one implementation is shared
+        by unrelated classes and carries whichever name claimed it first, so a
+        dispatch is now named by the class and slot it goes *through*
+        (`QPlatformPixmap::vf17`), with the folded symbol kept alongside as
+        `implementation` rather than presented as the name.
+     **Honest yield.** 2 of 199 sampled RTTI-named methods resolve a virtual
+     call; 33 still carry an unresolved indirect call. That is not the mechanism
+     failing — those dispatch on an object *other than* `this` (a field, a
+     parameter, a local), which needs field typing. **Field-layout unification
+     across all users of a struct (3b's remaining ⬜) is the same missing piece,
+     and it is now the single highest-leverage item left in this phase.**
 4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
    decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
    it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few
