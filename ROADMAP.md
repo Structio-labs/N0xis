@@ -1124,7 +1124,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Interprocedural propagation | 🚧 partial — whole-program noreturn IPA + call-site name/ABI resolution; **whole-program type propagation still missing** (the core remaining gap) |
 | Exception-edge recovery | 🟡 **ELF done, PE next** *(2026-09-05)* — `.eh_frame` FDE + `.gcc_except_table` LSDA → protected ranges and landing pads (`function eh`), fed into the CFG as `eh` edges so a pad is a reachable, labelled block instead of an unreachable island. FDE count verified **identical to `readelf`** (14 355 on `libQt6Core.so.6`). PE `.xdata` scope tables are the sibling follow-on |
 | Indirect / virtual call resolution | ✅ *(2026-09-05)* — `call qword ptr [rax+0x40]` resolves to the method: `this`-class × RTTI vtable × slot, read out of the image and rewritten to a direct call. Bounded by the next vtable (an out-of-range slot reads the next class's table) and named by the class it dispatches through (ICF folds one implementation under several class names). Yield is seed-bound: a dispatch on an object other than `this` needs field typing |
-| SIMD / FP lift | ✅ Rung 5c/5h — SSE data moves as 128-bit ops + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); FP *compares* left opaque |
+| SIMD / FP lift | ✅ Rung 5c/5h — SSE **and AVX** data moves as 128/256-bit ops (`vmovdqa`/`vmovq`/…; `endbr64`/`vzeroupper` as no-ops; masked EVEX refused) + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); packed *arithmetic* in the VEX spelling and FP *compares* left opaque |
 | PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
 | C++ RTTI / vtable / class recovery | ✅ Rung 7a — MSVC RTTI scan, vtable naming, `this`-typing, **full template demangling, base-class inheritance graph** (Kenshi 3055 / STALKER 2 561 vtables). Whole-program class-graph propagation into every method still ⬜ |
 | Library-function identification (FLIRT-class) | ✅ **matcher + generator + auto-apply** — `n0xis-flirt` matches, `sig gen` learns a corpus from any symbolized image (self-validating), `analyze --flirt` **persists** matches into `.n0x/` so the function list, xref, decompiler and GUI all render them with no flag; corpora chain. Shipped OSS corpus: zlib. Breadth of the shipped library is the remaining gap, not the mechanism |
@@ -1751,11 +1751,44 @@ lift/SLEIGH-ingest per ISA.
      base-vs-derived argument, changed nothing it was supposed to:
      `QRasterPlatformPixmap`'s methods already type `this` as the derived class
      either way. Not shipped.
-4. ⬜ **SIMD / FP lift — a floor-fixer for *this* corpus.** For a *general*
-   decompiler this is mere coverage (rank low). For N0xis's corpus (game engines)
-   it is a floor problem: `movaps`/`mulps`/`addps`/`sqrtss`/`movss` appear every few
-   lines, and today those functions decompile half to `asm` nodes. Ranked up
-   accordingly.
+4. 🚧 **SIMD / FP lift — a floor-fixer, and not only for *this* corpus.** For a
+   *general* decompiler this looks like mere coverage (rank low). For N0xis's
+   corpus (game engines) it is a floor problem: `movaps`/`mulps`/`addps`/
+   `sqrtss`/`movss` appear every few lines. Measurement on ordinary C++ says the
+   framing was too narrow — see below.
+   - ✅ *(2026-09-06, verified)* **AVX data movement.** The legacy SSE moves had
+     been lowered to load/store/copy for a while; their VEX/EVEX spellings had
+     not, so on anything a modern compiler emits they came out as `// asm:`
+     nodes — holes the SSA cannot see through, and a 16-byte
+     `vmovdqu [rdi], xmm0` is a *field write* that no layout pass could see.
+     Added `vmovdqa`/`vmovdqu` (with the AVX-512 element-size spellings),
+     `vmovaps`/`vmovapd`/`vmovups`/`vmovupd`, the non-temporal `movntdq` family,
+     and the cross-domain scalars `vmovq`/`vmovd`/`vmovsd`/`vmovss`; width comes
+     from the register operand, so a 256-bit `vmovdqa ymm0, [rax]` is a 256-bit
+     load. `endbr64` (a CET landing pad) and `vzeroupper` (it clears lanes above
+     128 bits, which this model has no representation for) lower to nothing.
+     A **masked** EVEX move stays opaque on purpose: with a `{k}` operand the
+     move is conditional per element, and an unconditional lift would state
+     which bytes changed when the mask decides that at run time.
+     **Measured over 1 460 methods of a Qt shared library:** `// asm:` nodes
+     **14 268 → 6 655**; functions carrying any at all **1 460 → 646**, so 814 of
+     them now lift end to end. Recovered class fields **2 084 → 2 363**;
+     parameters carrying a type at all **21 193 → 22 103**.
+     **`typeflow_propagated_params` reads 100 → 84 and that is the metric, not a
+     regression**: it is `now_typed − locally_typed`, and 910 more parameters are
+     typed *locally* than before, so fewer need propagation to fill in. The
+     absolute count is the one to read.
+     **What it did not buy.** The unlifted AVX was the leading suspect for the
+     virtual dispatches that stay unresolved *even where the class and its vtable
+     are both known*. It was not the cause: over the same 1 460 methods,
+     unresolved dispatches through a field are **277 before and 277 after**. The
+     layout oracle is unchanged at 17 of 21 Qt classes inside the true object
+     size, with one honest movement — `QTextDocument`'s extent grows `0x18` →
+     `0x20` because the by-value return buffer it already mis-attributed at
+     `+0x10` is now seen at its real 16-byte width.
+   - ⬜ Still open: packed and scalar FP **arithmetic** in the VEX spelling
+     (`vpxor`, `vpcmpeqd`, `vpaddb`, `vpextrb`, `vpinsrq`, `vmulsd`, … — 6 655
+     nodes remain, now dominated by these), and FP **compares**.
 5. ⬜ **PDB / type ingestion — corpus-dependent rank.** High value for
    system/Microsoft binaries (public symbol servers short-circuit type recovery with
    ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL

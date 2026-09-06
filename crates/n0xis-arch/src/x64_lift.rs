@@ -482,6 +482,37 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             let v = read_operand(&instr, 1);
             write_operand(&instr, 0, v, &mut out);
         }
+        // The same packed data move in its VEX/EVEX spelling, plus the
+        // non-temporal variants — all of them still pure movement, and together
+        // the largest single block of `// asm:` fallout left on an AVX build
+        // (`vmovdqa`/`vmovdqu` alone were 3 687 of 14 268 nodes over 1 460 Qt
+        // methods). A **masked** EVEX form is deliberately excluded below: with
+        // a `{k}` operand the move is conditional per element, and modelling it
+        // as an unconditional one would be a confident lie about which bytes
+        // changed.
+        Mnemonic::Vmovups
+        | Mnemonic::Vmovupd
+        | Mnemonic::Vmovaps
+        | Mnemonic::Vmovapd
+        | Mnemonic::Vmovdqu
+        | Mnemonic::Vmovdqa
+        | Mnemonic::Vmovdqa32
+        | Mnemonic::Vmovdqa64
+        | Mnemonic::Vmovdqu8
+        | Mnemonic::Vmovdqu16
+        | Mnemonic::Vmovdqu32
+        | Mnemonic::Vmovdqu64
+        | Mnemonic::Vmovntdq
+        | Mnemonic::Vmovntdqa
+        | Mnemonic::Vmovntps
+        | Mnemonic::Vmovntpd
+        | Mnemonic::Movntdq
+        | Mnemonic::Movntdqa
+        | Mnemonic::Movntps
+            if instr.op_mask() == Register::None =>
+        {
+            lift_vector_move(&instr, &mut out);
+        }
         Mnemonic::Movups | Mnemonic::Movupd | Mnemonic::Movaps | Mnemonic::Movapd | Mnemonic::Movdqu | Mnemonic::Movdqa => {
             lift_vector_move(&instr, &mut out);
         }
@@ -742,15 +773,44 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         // when a vector register is actually involved — that disambiguates the
         // SSE scalar `movsd` from the string `movsd`, which has no xmm operand
         // and must stay opaque.
-        Mnemonic::Movss | Mnemonic::Movsd | Mnemonic::Movd | Mnemonic::Movq => {
+        Mnemonic::Movss
+        | Mnemonic::Movsd
+        | Mnemonic::Movd
+        | Mnemonic::Movq
+        | Mnemonic::Vmovss
+        | Mnemonic::Vmovsd
+        | Mnemonic::Vmovd
+        | Mnemonic::Vmovq
+            if instr.op_mask() == Register::None =>
+        {
             let vector = (0..instr.op_count())
                 .any(|i| instr.op_kind(i) == OpKind::Register && is_vector_reg(instr.op_register(i)));
-            if vector {
+            if !vector {
+                // The string `movsd` — no xmm operand, entirely different
+                // instruction — must stay opaque.
+                lift_opaque(arch, insn, mn, &mut out);
+            } else if instr.op_count() == 3 {
+                // The VEX *merge* form `vmovsd xmm0, xmm1, xmm2`: the result is
+                // the scalar from `op2` over the upper lanes of `op1`. This model
+                // gives a vector register one name and no lanes, so it cannot
+                // express that merge — an intrinsic states the dependency on both
+                // sources without claiming the value is either one of them.
+                let hi = smart_read(&instr, 1);
+                let lo = smart_read(&instr, 2);
+                smart_write(&instr, 0, MicroExpr::intrinsic(mnemonic_intrinsic(mn), vec![hi, lo]), &mut out);
+            } else {
                 let src = smart_read(&instr, 1);
                 smart_write(&instr, 0, src, &mut out);
-            } else {
-                lift_opaque(arch, insn, mn, &mut out);
             }
+        }
+        // Instructions with no effect this model can observe. `endbr64` is a CET
+        // landing pad — architecturally a `nop`. `vzeroupper`/`vzeroall` clear
+        // the lanes *above* 128 bits, which this model does not represent at all
+        // (a vector register is one SSA name, no lanes), so there is nothing for
+        // them to clear here. Together they were 2 101 of 14 268 `// asm:` nodes
+        // over 1 460 Qt methods — pure noise in the output, hiding the rest.
+        Mnemonic::Endbr64 | Mnemonic::Endbr32 | Mnemonic::Vzeroupper | Mnemonic::Vzeroall => {
+            out.push(MicroStmt::Nop);
         }
         // A trap: it produces no value and does not return. Emit a no-result
         // intrinsic call so it reads as `__ud2();` instead of a raw `// asm:`.
@@ -1003,6 +1063,72 @@ mod tests {
                 value: MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x70, 64)), 128, false),
             }],
         );
+    }
+
+    #[test]
+    fn the_vex_spelling_of_a_packed_move_lifts_the_same_as_the_legacy_one() {
+        // vmovdqu [rdi], xmm0  = C5 FA 7F 07
+        assert_eq!(
+            lift_one(&[0xC5, 0xFA, 0x7F, 0x07]),
+            vec![MicroStmt::Store { addr: MicroExpr::var("rdi"), value: MicroExpr::var("xmm0"), bits: 128 }]
+        );
+        // vmovdqa ymm0, [rax]  = C5 FD 6F 00 — 256 bits, taken from the operand.
+        assert_eq!(
+            lift_one(&[0xC5, 0xFD, 0x6F, 0x00]),
+            vec![MicroStmt::Assign { dst: "xmm0".into(), value: MicroExpr::load(MicroExpr::var("rax"), 256, false) }],
+            "the width comes from the ymm operand; the name stays the one SSA name this model gives a vector register"
+        );
+    }
+
+    #[test]
+    fn a_cross_domain_vex_move_is_the_copy_that_joins_the_two_register_files() {
+        // vmovq rax, xmm0  = C4 E1 F9 7E C0. Unlifted, this is where a copy
+        // chain through a vector register dies — measured in `QAction::toolTip`.
+        assert_eq!(
+            lift_one(&[0xC4, 0xE1, 0xF9, 0x7E, 0xC0]),
+            vec![MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::var("xmm0") }]
+        );
+        // vmovd xmm3, esi  = C5 F9 6E DE — the other direction. The GPR reads as
+        // `rsi`: SSA normalizes a sub-register to its full register everywhere.
+        assert_eq!(
+            lift_one(&[0xC5, 0xF9, 0x6E, 0xDE]),
+            vec![MicroStmt::Assign { dst: "xmm3".into(), value: MicroExpr::var("rsi") }]
+        );
+    }
+
+    #[test]
+    fn the_vex_merge_form_states_both_sources_rather_than_claiming_either() {
+        // vmovsd xmm0, xmm1, xmm2  = C5 F3 10 C2. The result is xmm2's scalar
+        // over xmm1's upper lanes; this model has no lanes, so neither operand
+        // alone is the answer.
+        assert_eq!(
+            lift_one(&[0xC5, 0xF3, 0x10, 0xC2]),
+            vec![MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::intrinsic("__vmovsd", vec![MicroExpr::var("xmm1"), MicroExpr::var("xmm2")]),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_masked_evex_move_is_refused_because_it_is_conditional() {
+        // vmovdqu32 zmm0{k1}, [rax]  = 62 F1 7E 49 6F 00. Per-element predicated:
+        // lifting it as an unconditional move would state which bytes changed
+        // when the mask decides that at run time.
+        let stmts = lift_one(&[0x62, 0xF1, 0x7E, 0x49, 0x6F, 0x00]);
+        assert!(
+            matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })),
+            "a masked move must stay opaque, got {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn architectural_no_ops_lift_to_nothing_instead_of_asm_noise() {
+        // endbr64 = F3 0F 1E FA — a CET landing pad.
+        assert_eq!(lift_one(&[0xF3, 0x0F, 0x1E, 0xFA]), vec![MicroStmt::Nop]);
+        // vzeroupper = C5 F8 77 — clears lanes above 128, which this model has
+        // no representation for.
+        assert_eq!(lift_one(&[0xC5, 0xF8, 0x77]), vec![MicroStmt::Nop]);
     }
 
     #[test]

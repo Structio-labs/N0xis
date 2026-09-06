@@ -5,6 +5,42 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### AVX data movement is lifted, not printed as assembly (Phase 10, item 4)
+
+- **The VEX/EVEX spelling of a move now lifts like the legacy one.** `movups`,
+  `movdqa` and friends had been lowered to load/store/copy for a while; their
+  `v`-prefixed forms had not, so on any binary a modern compiler emits they came
+  out as `// asm:` nodes — holes the SSA cannot see through. Added `vmovdqa`,
+  `vmovdqu` (and the AVX-512 `32`/`64`/`8`/`16` element-size spellings),
+  `vmovaps`, `vmovapd`, `vmovups`, `vmovupd`, the non-temporal `movntdq` family,
+  and the cross-domain scalars `vmovq`/`vmovd`/`vmovsd`/`vmovss`. Width comes
+  from the register operand, so a 256-bit `vmovdqa ymm0, [rax]` is a 256-bit
+  load rather than a guess.
+- **`endbr64` and `vzeroupper` lower to nothing.** The first is a CET landing
+  pad — architecturally a `nop`. The second clears the lanes above 128 bits,
+  which this model does not represent at all (a vector register is one SSA name,
+  no lanes), so there is nothing here for it to clear.
+- **A masked EVEX move is deliberately refused.** With a `{k}` operand the move
+  is conditional per element; lifting it as an unconditional one would state
+  which bytes changed when the mask decides that at run time.
+- **Measured over 1 460 methods of a Qt shared library:** `// asm:` nodes
+  **14 268 → 6 655**, and the functions carrying any at all **1 460 → 646** — 814
+  of them are now lifted end to end. Recovered class fields **2 084 → 2 363**: a
+  16-byte `vmovdqu [rdi], xmm0` is a field write, and every one of them used to
+  be invisible. Parameters carrying a type at all **21 193 → 22 103**.
+- **`typeflow_propagated_params` reads 100 → 84, and that is the metric being a
+  delta, not a regression.** It is `now_typed − locally_typed`: 910 more
+  parameters are typed *locally* than before, so fewer of them need propagation
+  to fill in. The absolute count is reported above for exactly this reason.
+- **What it did not buy, stated rather than omitted.** The unlifted AVX was the
+  leading suspect for the virtual dispatches that stay unresolved even where the
+  class and its vtable are both known. It was not the cause: over the same 1 460
+  methods, unresolved dispatches through a field are **277 before and 277
+  after**. The class layout oracle is likewise unchanged at 17 of 21 Qt classes
+  inside the true object size — with one honest movement, `QTextDocument`'s
+  extent growing `0x18` → `0x20` because the by-value return buffer it already
+  mis-attributed at `+0x10` is now seen at its real 16-byte width.
+
 ### The `this` seed reads the symbol table Linux actually has (Phase 10 / 3b)
 
 - **`own_this_class` demangles.** The seed that types a method's `this` read the
