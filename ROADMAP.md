@@ -1751,6 +1751,33 @@ lift/SLEIGH-ingest per ISA.
      base-vs-derived argument, changed nothing it was supposed to:
      `QRasterPlatformPixmap`'s methods already type `this` as the derived class
      either way. Not shipped.
+   - ✅ *(2026-09-06, verified)* **A virtual call's own target was being deleted
+     as dead code.** `optimize::stmt_read_exprs` yielded a `Call` statement's
+     arguments but never its **indirect target**, so use-counting saw zero uses
+     of the variable a virtual dispatch loads the vptr into — its only consumer
+     *is* the target — and DCE deleted the load. Three things went with it: the
+     argument register it came from dropped out of the recovered arity, the class
+     that register identified was lost, and the dispatch could not resolve. This
+     was **232 of 274** unresolved dispatches on the Qt sample, and it is the
+     answer to the question the previous entry left open — the unlifted AVX was
+     not the cause, this was.
+     **`this` is argument *one* in a member function that returns by value.** The
+     ABI puts the caller's result buffer in the first argument register and
+     shifts `this` to the second. That was already detected and used only to
+     *refuse* the function — throwing the class away for everything it did.
+     Read as the shift it is, `QFontIconEngine::pixmap()` recovers
+     `(QPixmap *ret, QFontIconEngine *this, …)`. Every by-value getter is this
+     shape, so it is a population, not a handful.
+     **Devirtualization sees through a phi whose inputs agree**, which is the
+     shape the compiler's own devirtualization guard produces; a phi whose inputs
+     disagree is left alone.
+     **Measured over 1 460 methods, same binary and build:** resolved virtual
+     calls **65 → 83** in **55 → 68** functions; unresolved field dispatches
+     **277 → 266**; layouts **373 → 382** classes, **3 360 → 3 943** methods,
+     **2 363 → 2 467** fields; propagated parameters **84 → 105**. The `sizeof`
+     oracle holds at **17 of 21** — the shift's known false positive is
+     `operator=`, which genuinely returns `*this`, and the oracle is the thing
+     that would have caught it.
 4. 🚧 **SIMD / FP lift — a floor-fixer, and not only for *this* corpus.** For a
    *general* decompiler this looks like mere coverage (rank low). For N0xis's
    corpus (game engines) it is a floor problem: `movaps`/`mulps`/`addps`/

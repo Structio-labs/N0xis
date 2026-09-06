@@ -835,17 +835,21 @@ fn propagate_pointerness(blocks: &[SsaBlock], ptrs: &mut BTreeSet<String>) {
 /// 69 of them on `libQt6Gui.so.6`, against 9 782 mangled method symbols sitting
 /// unread in the same table.
 ///
-/// On top of the name, one **ABI** test that a name cannot give: a function
-/// returning a large object by value gets the caller's result buffer in the
-/// first argument register, not `this`, and the x64 ABI requires it to hand that
-/// buffer back in `rax`. `QTextDocument::toPlainText() const` is spelled exactly
-/// like an ordinary const method, so without
-/// [`crate::classlayout::returns_first_arg`] its `QString` buffer is typed
-/// `QTextDocument *` — the wrong class on the wrong pointer, in a signature.
-pub(crate) fn own_this_class(ctx: &Ctx, start: Va, blocks: &[SsaBlock], this: &str) -> Option<String> {
+/// On top of the name, one **ABI** fact that a name cannot give, and which
+/// decides *which argument* is `this`: a function returning a large object by
+/// value gets the caller's result buffer in the first argument register, and
+/// `this` moves to the second. `QTextDocument::toPlainText() const` is spelled
+/// exactly like an ordinary const method. So the answer is a class **and an
+/// argument index** — 0 normally, 1 when the x64 ABI's marker for that hidden
+/// return slot is present ([`crate::classlayout::returns_first_arg`]).
+///
+/// Naming the shifted argument rather than giving up is worth a population, not
+/// a handful: every by-value getter — `pixmap()`, `toImage()`, `text()` — is
+/// this shape, and refusing them threw the class away for the whole function,
+/// including for the virtual calls it makes on `this`.
+pub(crate) fn own_this_class(ctx: &Ctx, start: Va, blocks: &[SsaBlock], arg_regs: &[&str]) -> Option<(String, usize)> {
     let class = crate::classlayout::this_class_of(ctx, start)?;
-    let aliases = crate::classlayout::alias_set(blocks, this);
-    (!crate::classlayout::returns_first_arg(blocks, &aliases, this)).then_some(class)
+    Some((class, crate::classlayout::this_arg_index(blocks, arg_regs)))
 }
 
 /// Every source of evidence about a parameter's type, gathered once per
@@ -1132,10 +1136,12 @@ fn infer_with(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], deep: bool) -> 
             .collect(),
         None => BTreeMap::new(),
     };
-    // `this` is the first ABI argument register; a member function's own class
+    // `this` is an ABI argument register — the first one, or the second when the
+    // function returns a large object by value; a member function's own class
     // types that parameter and no other.
-    let this_param = arg_regs.first().map(|r| format!("{r}.0")).unwrap_or_default();
-    let own_class = own_this_class(ctx, cfg.start, blocks, &this_param);
+    let own = own_this_class(ctx, cfg.start, blocks, &arg_regs);
+    let this_param = arg_regs.get(own.as_ref().map_or(0, |(_, i)| *i)).map(|r| format!("{r}.0")).unwrap_or_default();
+    let own_class = own.map(|(c, _)| c);
     let evidence = ParamEvidence {
         ctor_classes: &ctor_classes,
         method_classes: &method_classes,

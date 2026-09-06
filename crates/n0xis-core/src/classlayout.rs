@@ -401,6 +401,30 @@ fn root_reg(name: &str) -> &str {
     name.split_once('.').map(|(r, _)| r).unwrap_or(name)
 }
 
+/// **Which** argument register holds `this`: `0` normally, `1` when the function
+/// returns a large object by value.
+///
+/// The x64 ABI puts the caller's result buffer in the first argument register
+/// and shifts `this` to the second, and requires the buffer to be handed back in
+/// `rax` — [`returns_first_arg`] is that marker. Reading it as a *shift* rather
+/// than as a reason to give up is what lets a by-value getter contribute at all:
+/// `QFontIconEngine::pixmap()` is `pixmap(QPixmap *ret, QFontIconEngine *this,
+/// …)`, and treating it as unanalyzable lost the class for every virtual call
+/// the function makes on that `this`.
+///
+/// The known false positive is `operator=` and friends, which genuinely return
+/// `*this`; there `this` really is argument 0 and argument 1 is a parameter. The
+/// layout oracle is what keeps that honest — a class credited with a field it
+/// does not have shows up as an extent past its true `sizeof`.
+pub(crate) fn this_arg_index(blocks: &[SsaBlock], arg_regs: &[&str]) -> usize {
+    let Some(arg0) = arg_regs.first().map(|r| format!("{r}.0")) else { return 0 };
+    if arg_regs.len() < 2 {
+        return 0;
+    }
+    let aliases = alias_set(blocks, &arg0);
+    usize::from(returns_first_arg(blocks, &aliases, &arg0))
+}
+
 /// What one method contributes: `offset → (bits, signed, count)` plus the types
 /// it proved for individual offsets.
 struct MethodFacts {
@@ -423,7 +447,7 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
     // `this` is the first ABI argument register, and it is a class only when
     // RTTI knows that class — the whole soundness bar, in one line.
     let arg_regs = crate::typeinfer::abi_arg_regs(ctx);
-    let this = format!("{}.0", arg_regs.first()?);
+    let this = format!("{}.0", arg_regs.get(this_arg_index(&opt.blocks, &arg_regs))?);
     // Which class's layout does this function describe? **Only** what the
     // function's own symbol says — never the recovered type of its first
     // parameter.
@@ -449,9 +473,6 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
     let class = this_class_of(ctx, va)?;
 
     let aliases = alias_set(&opt.blocks, &this);
-    if returns_first_arg(&opt.blocks, &aliases, &this) {
-        return None;
-    }
 
     // Field observations: exactly the recovered aggregates whose base is `this`.
     let mut fields: BTreeMap<i64, (Bits, bool, usize)> = BTreeMap::new();

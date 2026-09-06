@@ -452,7 +452,21 @@ fn stmt_read_exprs(stmt: &MicroStmt) -> Vec<&MicroExpr> {
     match stmt {
         MicroStmt::Assign { value, .. } => vec![value],
         MicroStmt::Store { addr, value, .. } => vec![addr, value],
-        MicroStmt::Call { args, .. } => args.iter().collect(),
+        // An indirect call **reads its target**, and leaving it out of this list
+        // was a silent correctness bug with a very specific victim: a C++ virtual
+        // dispatch loads the vptr into a variable whose only consumer is the call
+        // target, so use-counting saw zero uses and DCE deleted the load — after
+        // which the surviving call referenced a variable nothing defined, and
+        // both the parameter it came from and the class it identified were gone.
+        // Measured on a Qt shared library: 232 of 274 unresolved virtual
+        // dispatches were exactly this.
+        MicroStmt::Call { target, args, .. } => {
+            let mut reads: Vec<&MicroExpr> = args.iter().collect();
+            if let CallTarget::Indirect(t) = target {
+                reads.push(t);
+            }
+            reads
+        }
         MicroStmt::Return(Some(e)) => vec![e],
         MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => vec![],
     }

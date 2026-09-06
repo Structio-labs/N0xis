@@ -5,6 +5,38 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### A virtual call's own target was being deleted as dead code (Phase 10)
+
+- **`stmt_read_exprs` never yielded an indirect call's target.** Use-counting
+  therefore saw zero uses of the variable a C++ virtual dispatch loads the vptr
+  into — its only consumer *is* the call target — and dead-code elimination
+  deleted the load. What survived was a call through a variable nothing defined,
+  which cost three things at once: the argument register it came from dropped out
+  of the recovered arity, the class that register identified was lost, and the
+  dispatch could not be resolved. Measured on a Qt shared library: **232 of 274**
+  unresolved virtual dispatches were exactly this.
+- **`this` is argument *one* in a member function that returns by value.** The
+  x64 ABI puts the caller's result buffer in the first argument register and
+  shifts `this` to the second. That was already detected — and used only to
+  *refuse* the function, which threw the class away for everything it did,
+  including the virtual calls it makes on `this`. It is now read as what it is: a
+  shift. `QFontIconEngine::pixmap()` recovers `(QPixmap *ret, QFontIconEngine
+  *this, …)` and its dispatch resolves. Every by-value getter — `pixmap()`,
+  `toImage()`, `text()` — is this shape.
+- **Devirtualization sees through a phi whose inputs agree.** The compiler's own
+  devirtualization guard (`if (slot != &known) call *slot; else call known;`)
+  puts the vptr in a phi, and the definition map was built from assignments only,
+  so the walk stopped at the join. A phi is now folded when **every** incoming
+  value has a defining expression and they are all structurally equal — a phi
+  whose inputs disagree is left alone.
+- **Measured, same binary and build, over 1 460 methods:** resolved virtual calls
+  **65 → 83**, in **55 → 68** functions; dispatches still rendered
+  `(*x->field_0xNN)(…)` **277 → 266**. Class layouts: **373 → 382** classes,
+  **3 360 → 3 943** methods, **2 363 → 2 467** fields; whole-program propagated
+  parameters **84 → 105**. The `sizeof` oracle over 21 public Qt classes is
+  **unchanged at 17 of 21** — the shift's known false positive is `operator=`,
+  which genuinely returns `*this`, and the oracle is what would have caught it.
+
 ### AVX data movement is lifted, not printed as assembly (Phase 10, item 4)
 
 - **The VEX/EVEX spelling of a move now lifts like the legacy one.** `movups`,

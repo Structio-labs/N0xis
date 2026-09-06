@@ -98,6 +98,43 @@ fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> 
     cur
 }
 
+/// Teach the definition map to see through a **phi** whose incoming values all
+/// say the same thing.
+///
+/// A virtual dispatch is `*( *obj + slot )`, and the optimizer leaves the vptr
+/// load in a variable. When the same call is reached from two paths — the shape
+/// the compiler's *own* devirtualization guard produces, `if (slot != &known)
+/// call *slot; else call known;` — that variable is a phi, and `defs`, built
+/// only from `Assign`, cannot follow it. Measured on a Qt shared library: this
+/// is why 191 dispatches stayed unresolved in functions where the class *and*
+/// its vtable were both already known — the inputs were missing nothing, the
+/// walk simply stopped at the join.
+///
+/// The fold is only taken when **every** incoming value has a defining
+/// expression and they are all structurally equal — "whichever path was taken,
+/// this variable was defined the same way". A phi whose inputs disagree is left
+/// alone, so nothing is claimed about a value that genuinely differs per path.
+fn fold_phis<'a>(blocks: &'a [SsaBlock], defs: &mut BTreeMap<&'a str, &'a MicroExpr>) {
+    // A phi may feed another phi, so run to a fixpoint under the same bound the
+    // definition walk uses.
+    for _ in 0..MAX_DEF_DEPTH {
+        let mut changed = false;
+        for phi in blocks.iter().flat_map(|b| b.phis.iter()) {
+            if defs.contains_key(phi.dst.as_str()) {
+                continue;
+            }
+            let Some(first) = phi.inputs.first().and_then(|i| defs.get(i.value.as_str()).copied()) else { continue };
+            if phi.inputs.iter().all(|i| defs.get(i.value.as_str()).is_some_and(|e| *e == first)) {
+                defs.insert(phi.dst.as_str(), first);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 /// Which object a dispatch goes through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Object<'a> {
@@ -210,7 +247,7 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
     // Every variable's defining expression, so the two halves of a dispatch can
     // be rejoined however the optimizer split them. Built before the rewrite so
     // it borrows nothing that is about to change.
-    let defs: BTreeMap<&str, &MicroExpr> = blocks
+    let mut defs: BTreeMap<&str, &MicroExpr> = blocks
         .iter()
         .flat_map(|b| b.stmts.iter())
         .filter_map(|s| match &s.stmt {
@@ -218,6 +255,8 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
             _ => None,
         })
         .collect();
+    fold_phis(blocks, &mut defs);
+    let defs = defs;
 
     let mut out = Vec::new();
     let mut plan: Vec<(usize, usize, Devirtualized)> = Vec::new();
