@@ -1165,8 +1165,86 @@ with the measurement that established it. Nothing here is a comparison.
   type-library yet.
 
 Everything above is breadth/scale/surface **except** whole-program type
-propagation, which is the single remaining *core* decompilation gap — so it
-ranks first among the additions.
+propagation, which is now shipped — so what ranks first is the *input* it lacks
+(item 1 below), not the mechanism.
+
+### The gap-closing plan (2026-09-07) — ranked by lever, each with a definition of done
+
+The list above says what is missing. This says **in what order it gets built and
+how each item is known to be finished.** Ranking is by measured lever, not by
+size: three sessions of measurement established that the core pipeline is not
+the constraint — the *facts it has to work with* are. Every number below is from
+`libQt6Gui.so.6` (22 415 functions) or the neutral PE set, measured this week.
+
+**A note on how progress here is checked.** Where a check needs a second opinion,
+the project uses **independent oracles**, and adds one: an independent decompiler
+run headless over the same functions, as a *differential* oracle. What gets
+recorded from it is what the difference exposed about N0xis, in absolute numbers
+— never a standing, never a scoreboard. That is the same discipline as the
+`sizeof` oracle from real headers and the unwind-table cross-check: something
+outside this codebase that can prove it wrong.
+
+1. ⬜ **Library type information — PDB, DWARF, and header-derived types.** *The
+   biggest lever, and it is not a hard problem — it is an unbuilt reader.*
+   Whole-program propagation and program-wide class layouts both work; what they
+   lack is input. Measured: **99 of 2 505** recovered fields carry a type (4%),
+   and **343 of 22 413** functions have a recovered return type (1.5%) — and the
+   return half was shown to be unrecoverable from inside a function at all
+   (nothing distinguishes a returned pointer from a scratch value in the return
+   register). A binary with DWARF or a PDB *states* both, and every downstream
+   pass — devirtualization, field typing, readable locals — is starved without
+   them.
+   **Done when:** on a binary with debug info, recovered field types and return
+   types are checked against the debug info itself for **agreement, not
+   coverage** (a wrong type is worse than none); and on a *stripped* binary of
+   the same program, the types recovered without the debug info are scored
+   against it as ground truth.
+2. ⬜ **Points-to / alias precision.** Ranked by a chain traced end to end this
+   week: of the unresolved indirect calls, the largest bucket dispatches on a
+   field of another object; 80 of those need **11 `(class, offset)` pairs**, and
+   **51 need one field**, which is filled by one call whose return type cannot be
+   settled because its two return paths — a freshly constructed object and the
+   cached pointer read back from the cell the first path stored it into — can
+   only be unified by forwarding a store to a load **through a memory cell across
+   a call**. First increment already landed (the frame window a call clobbers now
+   follows the ABI rather than assuming Win64).
+   **Done when:** that specific field types, and the dispatch count moves with it.
+3. ⬜ **Architecture breadth via SLEIGH ingest.** x64 is mature; AArch64 is
+   implemented and self-tested but **not verified on a real target**; MIPS,
+   PowerPC, RISC-V and SPARC are absent. Decode is cheap (a crate per ISA behind
+   `trait Arch`); the lift is the real cost, and one `SleighArch` backend reading
+   `.sla` specifications pays it once for ~40 ISAs.
+   **Done when:** a non-x86 binary decompiles end to end and its lift is checked
+   against emulation of the real bytes.
+4. ⬜ **Calling conventions and an explicit stack-frame model.** Today: arity and
+   return only, the convention *assumed* from the ABI. No `thiscall`,
+   `vectorcall` or variadic detection; no frame model, no frame-pointer-omission
+   handling, no stack arrays or spills as typed variables. Readability sits on
+   this.
+   **Done when:** a function with a non-default convention recovers its real
+   prototype, and stack arrays render as arrays.
+5. ⬜ **File-format breadth.** PE and ELF only. No Mach-O, no firmware loaders.
+   A format seam closes it the way `trait Arch` closed the ISA one.
+6. ⬜ **The compiler-idiom library.** Continuous, never "done" — each idiom is
+   independent and individually cheap. The differential oracle is the natural
+   source of candidates: an idiom this decompiler leaves as raw arithmetic and
+   another recovers is a concrete, reproducible item, not a guess about what to
+   build next.
+7. ⬜ **Signature corpus breadth.** The mechanism ships (`sig gen`, FLIRT-class
+   matching, WARP interop); exactly one corpus ships with it. This is filling,
+   not building — and it is bounded by what may be redistributed (see the
+   signature licensing entry): corpora are generated locally from libraries the
+   project may lawfully fingerprint, never derived from another tool's database.
+8. ⬜ **Maturity on adversarial code** — packers, obfuscation, VM protectors.
+   Phase 15, almost entirely unbuilt.
+9. ⬜ **GUI and a plugin ecosystem.** Deliberately deferred, not ruled out; the
+   JSON/MCP surface is the seam it would be built over.
+
+**The one thing to hold on to while working through this list:** items 1, 3, 6
+and 7 are *acquisition* — a reader, a specification set, a rule at a time, a
+corpus. They are long, not hard. Items 2 and 4 are real analysis work. Nothing
+here requires rebuilding the pipeline, which is the part that was measured and
+holds.
 
 ### Overcoming the architecture-breadth limit — the seam strategy
 
