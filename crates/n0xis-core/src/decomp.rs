@@ -311,6 +311,19 @@ impl Pass for DecompPass {
             .and_then(|s| s.symbol_at(cfg.start))
             .filter(|sym| sym.va == cfg.start)
             .map(|sym| crate::render::render_callee_name(&sym.name));
+        // A constructor or destructor has no source-level return value, however
+        // the ABI uses the return register. Read off the function's own name,
+        // the same evidence the class-layout pass uses.
+        // `ctor_class_of` wants the *qualified name*, not a whole prototype:
+        // the demangled form carries its argument list, and `Class::Class(…)`
+        // never matches `Class` until the list is cut off.
+        names = names.as_ctor_or_dtor(
+            own_name
+                .as_deref()
+                .map(|n| n.split('(').next().unwrap_or(n).trim())
+                .and_then(crate::classlayout::ctor_class_of)
+                .is_some(),
+        );
         let signature = format_signature(cfg.start, &types.signature, own_name.as_deref());
 
         let (pseudo, has_loop, fallback_count, delta) = match input.style {

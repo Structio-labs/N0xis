@@ -46,6 +46,12 @@ pub struct RenderNames {
     /// there is never a bare `rcx` for this to collide with.
     param_names: HashMap<String, String>,
     void_return: bool,
+    /// This function is a **constructor or destructor**, so it has no return
+    /// value at source level whatever the ABI leaves in the return register.
+    /// Without this the last call's result is printed as `return rax.5;` in a
+    /// constructor — a value the source never produced. Found by differential
+    /// review on `QFontIconEngine::QFontIconEngine`.
+    ctor_or_dtor: bool,
     /// Recovered C++ vtable address → class name (ROADMAP Phase 10 item 7). A
     /// constant equal to a key is the address of that class's vtable — the
     /// value an MSVC constructor stores into `*this` — so it renders
@@ -90,6 +96,7 @@ impl RenderNames {
             structs: HashMap::new(),
             param_names: HashMap::new(),
             void_return: false,
+            ctor_or_dtor: false,
             vtables: std::sync::Arc::new(HashMap::new()),
             strings: HashMap::new(),
             data_refs: HashMap::new(),
@@ -142,6 +149,13 @@ impl RenderNames {
     /// Attach the recovered vtable-address → class-name map so a vtable constant
     /// renders as `&Class::vtable` (ROADMAP Phase 10 item 7 — RTTI in the
     /// decompiler). See the [`RenderNames::vtables`] field.
+    /// Mark this function a constructor or destructor — see
+    /// [`RenderNames::ctor_or_dtor`].
+    pub fn as_ctor_or_dtor(mut self, yes: bool) -> Self {
+        self.ctor_or_dtor = yes;
+        self
+    }
+
     pub fn with_vtables(mut self, vtables: std::sync::Arc<HashMap<u64, String>>) -> Self {
         self.vtables = vtables;
         self
@@ -551,6 +565,47 @@ fn is_padding_arg(a: &MicroExpr, names: &RenderNames) -> bool {
     matches!(a, MicroExpr::Var(n) if n.ends_with(".0") && !names.param_names.contains_key(n))
 }
 
+/// How many arguments a **constructor or destructor** really takes, read off its
+/// own demangled name: one `this`, plus the parameters the name lists.
+///
+/// The lift passes every argument register at every call because it cannot know
+/// the callee's arity, and the trailing-padding trim only drops bare *entry*
+/// values — so a call inside a function that has real parameters of its own
+/// keeps them all: `QPixmap::QPixmap()(rdi.1, rsi, rdx, rcx.2)`, three of those
+/// four being the caller's own arguments, not the callee's.
+///
+/// Restricted to constructors and destructors **on purpose**. A demangled name
+/// states the parameter list but not the return type, so for an ordinary
+/// function returning a large object by value the ABI's hidden result-buffer
+/// argument is invisible here and trusting the count would drop a real
+/// argument. A constructor cannot return by value, so for that slice the count
+/// is exact. Variadic names are refused outright.
+fn ctor_arity(callee: &str) -> Option<usize> {
+    let open = callee.find('(')?;
+    let (qualified, rest) = callee.split_at(open);
+    let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
+    crate::classlayout::ctor_class_of(qualified.trim())?;
+    if inner.contains("...") {
+        return None;
+    }
+    let list = inner.trim();
+    if list.is_empty() || list == "void" {
+        return Some(1);
+    }
+    // Top-level commas only — a template argument list or a nested function
+    // pointer type carries its own.
+    let (mut depth, mut params) = (0i32, 1usize);
+    for c in list.chars() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => params += 1,
+            _ => {}
+        }
+    }
+    Some(params + 1)
+}
+
 fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> String {
     // An intrinsic prints its own name over its exact operands — no symbol
     // resolution, no known-signature lookup, and no padding trim (its arguments
@@ -597,7 +652,12 @@ fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> 
             // argument (it's the uninitialized incoming register). Only trailing
             // padding is dropped, and only bare non-parameter entry values, so a
             // genuine forwarded value or any computed argument is always kept.
-            let keep = args.iter().rposition(|a| !is_padding_arg(a, names)).map_or(0, |i| i + 1);
+            let mut keep = args.iter().rposition(|a| !is_padding_arg(a, names)).map_or(0, |i| i + 1);
+            // A constructor or destructor states its own arity in its name; see
+            // [`ctor_arity`]. Nothing else does, so nothing else is trimmed here.
+            if let Some(n) = ctor_arity(callee.as_str()) {
+                keep = keep.min(n);
+            }
             args[..keep].iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", ")
         }
     };
@@ -658,7 +718,13 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
             // otherwise defined, that's the *untouched entry value*, not a
             // real return value: `TypeInferPass` marks the signature `void`
             // in exactly that case, so drop the meaningless `return rax.0;`.
-            if names.void_return && matches!(e, MicroExpr::Var(n) if n == "rax.0") {
+            // A constructor or destructor returns nothing at source level; the
+            // ABI's leftover in the return register is not a value the program
+            // produced. Only a **plain variable** is dropped — a folded call
+            // still has to execute, so it is kept rather than silently deleted.
+            let bare_var = matches!(e, MicroExpr::Var(_));
+            let untouched_entry = matches!(e, MicroExpr::Var(n) if n == "rax.0");
+            if (names.ctor_or_dtor && bare_var) || (names.void_return && untouched_entry) {
                 "return;".to_string()
             } else {
                 format!("return {};", render_expr(e, names))
@@ -721,6 +787,22 @@ mod tests {
         let names = RenderNames::new(&[]);
         let expr = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)), 64, false);
         assert_eq!(render_expr(&expr, &names), "local_20");
+    }
+
+    /// The lift sprays every argument register at every call. Inside a function
+    /// that has real parameters of its own, the trailing-padding trim keeps them
+    /// all — `QPixmap::QPixmap()(rdi.1, rsi, rdx, rcx.2)`, three of which belong
+    /// to the caller. A constructor's own name states its arity, so it is used.
+    #[test]
+    fn a_constructor_call_is_trimmed_to_the_arity_its_name_states() {
+        assert_eq!(ctor_arity("QPixmap::QPixmap()"), Some(1), "this only");
+        assert_eq!(ctor_arity("QFont::QFont(QString const&, int)"), Some(3), "this + 2");
+        assert_eq!(ctor_arity("QList<QPair<int, int> >::QList(int, int)"), Some(3),
+                   "a template argument's comma is not a parameter separator");
+        assert_eq!(ctor_arity("QPixmap::~QPixmap()"), Some(1), "a destructor too");
+        assert_eq!(ctor_arity("QPixmap::isNull()"), None, "an ordinary method states no arity here");
+        assert_eq!(ctor_arity("printf(char const*, ...)"), None, "variadic is refused");
+        assert_eq!(ctor_arity("sub_1400"), None, "an unnamed callee has nothing to read");
     }
 
     #[test]

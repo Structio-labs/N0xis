@@ -548,6 +548,23 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
     let mut out: Vec<MicroStmt> = Vec::new();
     let mn = instr.mnemonic();
 
+    // A `lock` prefix is not decoration, and dropping it is not a readability
+    // choice — it changes what the instruction *means*. `lock inc [rax]` on a
+    // shared reference count is an atomic increment; lifting the bare mnemonic
+    // renders it as `*rax = *rax + 1`, which is a different program. Found by
+    // differential review on `QFontIconEngine::QFontIconEngine`, where exactly
+    // that turned two atomic refcount bumps into ordinary additions.
+    //
+    // The value effect is kept — the destination is still written from the same
+    // inputs — but it goes through an intrinsic that says what it is, so nothing
+    // downstream can treat it as a plain arithmetic store. A locked form this
+    // does not model falls through to the opaque path rather than being lifted
+    // as if the prefix were absent.
+    if instr.has_lock_prefix() {
+        lift_locked(arch, insn, &instr, mn, &mut out);
+        return out;
+    }
+
     match mn {
         Mnemonic::Mov => {
             let v = read_operand(&instr, 1);
@@ -1409,6 +1426,34 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
     out
 }
 
+/// A `lock`-prefixed read-modify-write. The destination is written from the
+/// same operands as the unlocked form, but through `__atomic_<mnemonic>`, so the
+/// atomicity is stated rather than silently dropped. Flags stay opaque — the
+/// manual's flag effects are the same, and nothing here needs them precise.
+///
+/// `xchg` is the one form that is atomic *without* a prefix and is handled by
+/// its own arm; `cmpxchg` and `xadd` read and write more state than this shape
+/// models, so they take the opaque path where they would otherwise lie.
+fn lift_locked(arch: &crate::X64, insn: &DecodedInsn, instr: &Instruction, mn: Mnemonic, out: &mut Vec<MicroStmt>) {
+    let name = format!("__atomic_{}", format!("{mn:?}").to_lowercase());
+    let modelled = matches!(
+        mn,
+        Mnemonic::Inc | Mnemonic::Dec | Mnemonic::Add | Mnemonic::Sub | Mnemonic::Adc | Mnemonic::Sbb
+            | Mnemonic::And | Mnemonic::Or | Mnemonic::Xor | Mnemonic::Neg | Mnemonic::Not
+            | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc
+    );
+    if !modelled || instr.op_count() == 0 {
+        lift_opaque(arch, insn, mn, out);
+        return;
+    }
+    let mut args = vec![read_operand(instr, 0)];
+    if instr.op_count() > 1 {
+        args.push(read_operand(instr, 1));
+    }
+    write_operand(instr, 0, MicroExpr::intrinsic(name, args), out);
+    out.push(opaque_flags(mn));
+}
+
 /// Unrecognized (or deliberately unmodelled) instruction: preserve it verbatim
 /// (never silently drop semantics — CONCEPT §3 rule 6), *and* soundly
 /// invalidate everything it might have written, using the arch's own
@@ -1805,6 +1850,29 @@ mod tests {
                 if args.len() == 3 && args[0] == MicroExpr::var("rdx") && args[1] == MicroExpr::var("rax"))
         };
         assert!(reads_pair(&stmts[0]) && reads_pair(&stmts[1]), "both halves read rdx:rax: {stmts:?}");
+    }
+
+    /// `lock incl (%rax)` = F0 FF 00 — an atomic reference-count bump. Lifting
+    /// the bare mnemonic rendered it `*rax = *rax + 1`, which is a different
+    /// program; the prefix has to reach the output.
+    #[test]
+    fn a_lock_prefix_is_not_dropped() {
+        let stmts = lift_one(&[0xF0, 0xFF, 0x00]);
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Store { value: MicroExpr::Call { target: CallTarget::Intrinsic(n), .. }, .. }
+                if n == "__atomic_inc")),
+            "the atomicity must be stated, not silently dropped: {stmts:?}",
+        );
+        assert!(
+            !stmts.iter().any(|s| matches!(s, MicroStmt::Store { value: MicroExpr::Binary(BinOp::Add, ..), .. })),
+            "and it must not also read as a plain addition: {stmts:?}",
+        );
+        // Without the prefix the same bytes stay an ordinary increment.
+        let plain = lift_one(&[0xFF, 0x00]);
+        assert!(
+            plain.iter().any(|s| matches!(s, MicroStmt::Store { value: MicroExpr::Binary(BinOp::Add, ..), .. })),
+            "an unlocked inc is still a plain addition: {plain:?}",
+        );
     }
 
     #[test]

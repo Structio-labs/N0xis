@@ -245,7 +245,7 @@ pub(crate) fn ctor_class(ctx: &Ctx, va: Va) -> Option<String> {
 
 /// The name half of [`ctor_class`], split out so the rule is testable without a
 /// binary: is `qualified` the name of a constructor or destructor, and of what?
-fn ctor_class_of(qualified: &str) -> Option<&str> {
+pub(crate) fn ctor_class_of(qualified: &str) -> Option<&str> {
     let (class, method) = qualified.rsplit_once("::")?;
     if class.is_empty() {
         return None;
