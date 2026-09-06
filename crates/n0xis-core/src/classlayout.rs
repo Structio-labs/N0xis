@@ -158,6 +158,13 @@ pub struct LayoutStore {
     pub typed_fields: usize,
     /// Fields two methods disagreed about.
     pub ambiguous_fields: usize,
+    /// Field types that only the fixpoint could answer: the callee's return type
+    /// was itself recovered from a field.
+    pub fields_typed_by_fixpoint: usize,
+    /// Per-method claims only source 4 could make — the value class closure,
+    /// which sees an agreeing phi, a stack spill and a stored vtable that the
+    /// plain copy walk does not.
+    pub claims_by_value_closure: usize,
 }
 
 impl LayoutStore {
@@ -232,7 +239,7 @@ fn stem(name: &str) -> &str {
 ///
 /// Template arguments are stripped on both sides before comparing, so
 /// `QList<int>::QList` is recognized as readily as `QPixmap::QPixmap`.
-fn ctor_class(ctx: &Ctx, va: Va) -> Option<String> {
+pub(crate) fn ctor_class(ctx: &Ctx, va: Va) -> Option<String> {
     Some(ctor_class_of(&qualified_name(ctx, va)?)?.to_string())
 }
 
@@ -455,6 +462,23 @@ struct MethodFacts {
     class: String,
     fields: BTreeMap<i64, (Bits, bool, usize)>,
     types: BTreeMap<i64, String>,
+    /// `this->f = callee(...)` where the callee's return type was not known at
+    /// the time. Kept so the fixpoint in [`unify`] can answer it once a return
+    /// type is recovered — the field and the return type feed each other, and
+    /// resolving them together costs one pass over facts rather than a second
+    /// pass over code.
+    pending: Vec<(i64, u64)>,
+    /// Claims only the value class closure could make — see [`FieldFacts`].
+    closure_typed: usize,
+}
+
+/// What one method says about the fields of its own object.
+struct FieldFacts {
+    types: BTreeMap<i64, String>,
+    pending: Vec<(i64, u64)>,
+    /// Claims only source 4 (the value class closure) could make — reported so
+    /// each source's yield can be read separately rather than assumed.
+    closure_typed: usize,
 }
 
 /// Analyze one function and, if it is a method of a known class, reduce it to
@@ -514,7 +538,8 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
             e.2 += f.access_count;
         }
     }
-    let types_by_offset = field_types(ctx, &opt.blocks, &types, &aliases, &arg_regs);
+    let FieldFacts { types: types_by_offset, pending, closure_typed } =
+        field_types(ctx, &opt.blocks, &types, &aliases, &arg_regs);
     // A field known only by its type is still a field — and a stronger sighting
     // than a bare access. `&this->f` handed to `QPixmap::QPixmap` proves an
     // embedded `QPixmap` at `f` in a function that never loads or stores it, so
@@ -526,7 +551,7 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
     if fields.is_empty() {
         return None;
     }
-    Some(MethodFacts { class, fields, types: types_by_offset })
+    Some(MethodFacts { class, fields, types: types_by_offset, pending, closure_typed })
 }
 
 /// Type each field of the object this method operates on.
@@ -544,15 +569,37 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
 ///    shape that survived the first devirtualization pass unresolved.
 /// 3. **A stored typed value.** A class-typed parameter, or the result of a call
 ///    whose return type whole-program propagation settled, written into `this->f`.
+/// 4. **A stored value whose class the *value* closure knows.** Source 3 follows
+///    plain copies back to a parameter or a call; [`crate::devirt::class_closure`]
+///    already carries a class along strictly more edges — an agreeing phi, a
+///    stack spill and reload, and a known **vtable written into an object**,
+///    which is the constructor idiom and needs no other type to exist first.
+///    Reusing it here rather than restating it is the point: one definition of
+///    "what class does this value hold", read by both the dispatch resolver and
+///    the field typer.
 ///
 /// A generic width type says nothing about the object and is never recorded.
+///
+/// Two things this also collects, both **structural** — they are facts about
+/// shape that only the *unified* layout can turn into types, so they are handed
+/// back for [`unify`] to settle:
+///
+/// - `return this->f`, the offset a method hands back. Measured on a Qt shared
+///   library over a 1 460-method sample: **82** methods return a field of their
+///   own object, **33** of them a field the layout had already typed — and a
+///   recovered return type is the scarcer half of the seed problem (315 of
+///   22 413 functions had one, against 90 of 2 468 typed fields).
+/// - `this->f = callee(...)` where the callee's return type is not known *yet*.
+///   The two feed each other: a return type recovered from a field types another
+///   field, whose type gives another return type. Kept as a fact and resolved in
+///   a fixpoint over facts, which costs nothing next to a second pass over code.
 fn field_types<'a>(
     ctx: &Ctx,
     blocks: &'a [SsaBlock],
     types: &crate::typeinfer::TypeArtifact,
     aliases: &BTreeSet<String>,
     arg_regs: &[&'static str],
-) -> BTreeMap<i64, String> {
+) -> FieldFacts {
     // Parameter types, keyed the way SSA names them.
     let param_ty: BTreeMap<String, String> = types
         .signature
@@ -579,17 +626,20 @@ fn field_types<'a>(
     }
     let ret_type = |callee: u64| -> Option<String> { ctx.type_flow?.ret(callee).map(str::to_string) };
 
-    // The best portable type of a stored value, following plain copies back.
-    let value_type = |e: &MicroExpr| -> Option<String> {
+    // Where a stored value's type comes from: a name we already have, or a
+    // callee whose return type may or may not be settled yet. Splitting the two
+    // is what lets an unanswered call become a *pending* claim instead of
+    // nothing at all.
+    let value_src = |e: &MicroExpr| -> Option<ValueSrc> {
         let mut cur = e;
         for _ in 0..MAX_COPY_DEPTH {
             match peel(cur) {
                 MicroExpr::Var(name) => {
                     if let Some(t) = param_ty.get(name.as_str()) {
-                        return Some(t.clone());
+                        return Some(ValueSrc::Named(t.clone()));
                     }
-                    if let Some(t) = call_ret.get(name.as_str()).copied().and_then(ret_type) {
-                        return Some(t);
+                    if let Some(callee) = call_ret.get(name.as_str()).copied() {
+                        return Some(ValueSrc::Callee(callee));
                     }
                     match copy_of.get(name.as_str()) {
                         // A definition that is the variable itself would loop.
@@ -598,12 +648,13 @@ fn field_types<'a>(
                     }
                 }
                 // The optimizer inlines a single-use call straight into the store.
-                MicroExpr::Call { target: CallTarget::Direct { va }, .. } => return ret_type(va.0),
+                MicroExpr::Call { target: CallTarget::Direct { va }, .. } => return Some(ValueSrc::Callee(va.0)),
                 _ => return None,
             }
         }
         None
     };
+
 
     let mut out: BTreeMap<i64, String> = BTreeMap::new();
     let mut poisoned: BTreeSet<i64> = BTreeSet::new();
@@ -661,17 +712,35 @@ fn field_types<'a>(
         aliases.contains(base).then_some(off)
     };
 
+    let mut pending: Vec<(i64, u64)> = Vec::new();
+    let mut unresolved: Vec<(i64, &MicroExpr)> = Vec::new();
+    let mut closure_typed = 0usize;
     for b in blocks {
         for s in &b.stmts {
             match &s.stmt {
                 MicroStmt::Store { addr, value, .. } => {
-                    // Source 3.
+                    // Sources 3 and 4.
                     let Some((base, offset)) = as_base_offset(addr) else { continue };
                     if !aliases.contains(base) {
                         continue;
                     }
-                    let Some(ty) = value_type(value).filter(|t| crate::typeprop::is_portable_type(t)) else { continue };
-                    claim(offset, ty);
+                    let portable = |t: String| Some(t).filter(|t| crate::typeprop::is_portable_type(t));
+                    match value_src(value) {
+                        Some(ValueSrc::Named(t)) => {
+                            if let Some(t) = portable(t) {
+                                claim(offset, t);
+                            }
+                        }
+                        Some(ValueSrc::Callee(callee)) => match ret_type(callee).and_then(portable) {
+                            Some(t) => claim(offset, t),
+                            // Not known *yet* — the fixpoint in `unify` gets a
+                            // second chance at it once return types are in.
+                            None => pending.push((offset, callee)),
+                        },
+                        // Source 4 — deferred, so the closure is only built for
+                        // a function that has a store nothing else could type.
+                        None => unresolved.push((offset, value)),
+                    }
                 }
                 // Sources 1 and 2, both keyed on the callee's own `this`. A call
                 // reaches here in either of the two shapes the pipeline emits —
@@ -698,10 +767,44 @@ fn field_types<'a>(
             }
         }
     }
+    // Source 4 — the same class closure the dispatch resolver runs on, over its
+    // own definition map (this one sees through an agreeing phi, which the plain
+    // copy map above deliberately does not). Built only when there is a store it
+    // could answer: it is a fixpoint over every block, and most methods store
+    // nothing into their object that the three sources above cannot already
+    // account for.
+    if !unresolved.is_empty() {
+        let mut defs = copy_of.clone();
+        crate::devirt::fold_phis(blocks, &mut defs);
+        let var_class = crate::devirt::class_closure(ctx, blocks, types, &defs);
+        for (offset, value) in unresolved {
+            let MicroExpr::Var(v) = crate::devirt::resolve(value, &defs) else { continue };
+            // A class the closure holds is the class of an object *pointer* —
+            // that is what every one of its seeds is — so the field it lands in
+            // is a pointer field. Spelling it `C` instead would claim an
+            // embedded sub-object, the one confusion this pass cannot afford.
+            let Some(c) = var_class.get(v.as_str()) else { continue };
+            let ty = format!("{c} *");
+            if crate::typeprop::is_portable_type(&ty) {
+                claim(offset, ty);
+                closure_typed += 1;
+            }
+        }
+    }
+
     // A field this method could not make up its own mind about contributes
     // nothing rather than a coin flip.
     out.retain(|off, _| !poisoned.contains(off));
-    out
+    pending.retain(|(off, _)| !poisoned.contains(off) && !out.contains_key(off));
+    FieldFacts { types: out, pending, closure_typed }
+}
+
+/// Where a stored value's type is to be found.
+enum ValueSrc {
+    /// A type name already in hand.
+    Named(String),
+    /// The direct callee whose return type it is — which may not be known yet.
+    Callee(u64),
 }
 
 /// What one class accumulates while every method that touches it is folded in:
@@ -715,10 +818,30 @@ struct Accum {
     types: BTreeMap<i64, Option<String>>,
 }
 
+/// Fold one method's type claim into a class, poisoning the offset when a second
+/// method disagrees. The poisoning is never undone: "two methods disagree" is a
+/// stronger fact than either claim.
+fn merge_type(entry: &mut Accum, off: i64, ty: String) {
+    match entry.types.get(&off) {
+        // Already poisoned, or a second method disagrees: stay unknown.
+        Some(None) => {}
+        Some(Some(prev)) if *prev != ty => {
+            entry.types.insert(off, None);
+        }
+        Some(Some(_)) => {}
+        None => {
+            entry.types.insert(off, Some(ty));
+        }
+    }
+}
+
 /// Merge every method's view into one layout per class.
 fn unify(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> LayoutStore {
     let mut store = LayoutStore::default();
     let mut acc: BTreeMap<String, Accum> = BTreeMap::new();
+    // The structural facts the fixpoint below settles, kept per method so no
+    // function has to be analyzed twice.
+    let mut pending: Vec<(String, i64, u64)> = Vec::new();
 
     for &va in functions {
         let Some(facts) = extract(ctx, va, max_bytes) else {
@@ -727,6 +850,9 @@ fn unify(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> LayoutStore {
         };
         store.functions_analyzed += 1;
         store.methods_matched += 1;
+
+        pending.extend(facts.pending.into_iter().map(|(off, callee)| (facts.class.clone(), off, callee)));
+        store.claims_by_value_closure += facts.closure_typed;
 
         let entry = acc.entry(facts.class).or_default();
         entry.methods += 1;
@@ -739,20 +865,42 @@ fn unify(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> LayoutStore {
             store.observations += 1;
         }
         for (off, ty) in facts.types {
-            match entry.types.get(&off) {
-                // Already poisoned, or a second method disagrees: stay unknown.
-                Some(None) => {}
-                Some(Some(prev)) if *prev != ty => {
-                    entry.types.insert(off, None);
-                }
-                Some(Some(_)) => {}
-                None => {
-                    entry.types.insert(off, Some(ty));
-                }
-            }
+            merge_type(entry, off, ty);
         }
     }
 
+    // The seed fixpoint. A method that returns a typed field of its own object
+    // has that field's type as its **return type**; a field filled with such a
+    // method's result has that type. Each answers the other, so they are run
+    // together until nothing new appears.
+    //
+    // A field type is only carried out as a return type when it is a **pointer**
+    // — an embedded sub-object's first word is its own vptr, and `return this->f`
+    // on an embedded `QPixmap` hands back that word, not a `QPixmap`. The same
+    // distinction devirtualization makes, for the same reason.
+    // The field/return fixpoint that used to sit here is gone, and the
+    // measurement that removed it is worth more than the code was.
+    //
+    // A method's `pending` claims — `this->f = callee(...)` where the callee's
+    // return type is not known yet — were to be answered by return types
+    // recovered from `return this->f`. Two independent checks killed that:
+    //
+    // 1. **The Qt headers.** Of 118 return types so recovered, **55 were on
+    //    functions that return `void` or a struct by value** — `QWindow::opacity`
+    //    returns a `qreal` in `xmm0` and merely leaves `d` in `rax`;
+    //    `QPixmap::rect` returns a `QRect` in `rax:rdx`. Nothing *inside* a
+    //    function distinguishes a returned pointer from a scratch value the ABI
+    //    leaves in the return register.
+    // 2. **Caller-side evidence.** Gating the claim on some caller actually
+    //    dereferencing the result — the only local proof there was a value —
+    //    admitted **0 of 118**: the accessors this can read (`d_func` and its
+    //    kind) are `inline` in the headers, so the out-of-line copies exist as
+    //    weak symbols that nothing calls.
+    //
+    // Wrong where it fires, unused where it is right. `pending` is kept because
+    // it costs one `Vec` and states the shape honestly; it resolved **0** fields
+    // on the target either way.
+    let _ = &pending;
     for (class, Accum { fields: merged, methods, types: tys }) in acc {
         let mut extent = 0u64;
         let fields: Vec<FieldObs> = merged
@@ -948,6 +1096,11 @@ mod tests {
         b.stmts.push(stmt(MicroStmt::Store { addr: plus(this, 0x60), value: var("rsi.0"), bits: 64 as Bits }));
         // A value nothing types, stored into a field: stays unknown.
         b.stmts.push(stmt(MicroStmt::Store { addr: plus(this, 0x68), value: cnst(7), bits: 64 as Bits }));
+        // Source 4: `v4` is named by the constructor it is handed to — no copy
+        // chain, no parameter, no propagated return type reaches it — and
+        // storing it into a field types that field.
+        b.stmts.push(stmt(call(0x2000, var("v4"))));
+        b.stmts.push(stmt(MicroStmt::Store { addr: plus(this, 0x70), value: var("v4"), bits: 64 as Bits }));
 
         let types = crate::typeinfer::TypeArtifact {
             locals: vec![],
@@ -964,11 +1117,16 @@ mod tests {
         let aliases = alias_set(&blocks, this);
         let got = field_types(&ctx, &blocks, &types, &aliases, &["rdi", "rsi"]);
 
-        assert_eq!(got.get(&0x30).map(String::as_str), Some("QPixmap"), "an interior pointer into a constructor is an embedded sub-object");
-        assert_eq!(got.get(&0x40).map(String::as_str), Some("Widget *"), "a loaded field used as a `this` is a pointer field");
-        assert_eq!(got.get(&0x50), None, "a free function's argument proves nothing");
-        assert_eq!(got.get(&0x60).map(String::as_str), Some("QFont *"), "a class-typed parameter stored in types the field");
-        assert_eq!(got.get(&0x68), None, "a constant carries no type to move");
+        assert_eq!(got.types.get(&0x30).map(String::as_str), Some("QPixmap"), "an interior pointer into a constructor is an embedded sub-object");
+        assert_eq!(got.types.get(&0x40).map(String::as_str), Some("Widget *"), "a loaded field used as a `this` is a pointer field");
+        assert_eq!(got.types.get(&0x50), None, "a free function's argument proves nothing");
+        assert_eq!(got.types.get(&0x60).map(String::as_str), Some("QFont *"), "a class-typed parameter stored in types the field");
+        assert_eq!(got.types.get(&0x68), None, "a constant carries no type to move");
+        assert_eq!(
+            got.types.get(&0x70).map(String::as_str),
+            Some("QPixmap *"),
+            "a value the class closure names by the constructor it was handed to types the field"
+        );
     }
 
     #[test]

@@ -3755,25 +3755,30 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // a field filled with the result of a call is typed by that call's
     // propagated return type rather than by nothing.
     let (mut layout_classes, mut layout_typed_fields) = (0usize, 0usize);
+    let (mut layout_by_closure, mut layout_by_fixpoint) = (0usize, 0usize);
     if a.layout && total > 0 {
         progress("unifying-layouts", 0, total);
         let vas: Vec<Va> = funcs.iter().map(|f| f.va).collect();
-        let flow_ref = flow_store.as_ref();
-        let lctx = match flow_ref {
-            Some(f) => ctx.with_type_flow(f),
-            None => ctx,
-        };
-        match n0xis_core::Pass::run(&n0xis_core::ClassLayoutPass, &lctx, n0xis_core::ClassLayoutInput { functions: vas, max_bytes: 4096 }) {
-            Ok(store) => {
-                layout_classes = store.classes.len();
-                let generation = format!("layout:{}:{}:{}", total, store.methods_matched, store.typed_fields);
-                let persisted = n0xis_frontend::layout_to_persisted(generation, &store);
-                layout_typed_fields = persisted.typed_fields();
-                if let Err(e) = n0xis_project::class_layout::save(&persisted) {
-                    eprintln!("[n0x] {}", json!({ "warn": format!("persist class-layout: {e}") }));
+        {
+            let flow_ref = flow_store.as_ref();
+            let lctx = match flow_ref {
+                Some(f) => ctx.with_type_flow(f),
+                None => ctx,
+            };
+            match n0xis_core::Pass::run(&n0xis_core::ClassLayoutPass, &lctx, n0xis_core::ClassLayoutInput { functions: vas, max_bytes: 4096 }) {
+                Ok(store) => {
+                    layout_classes = store.classes.len();
+                    let generation = format!("layout:{}:{}:{}", total, store.methods_matched, store.typed_fields);
+                    let persisted = n0xis_frontend::layout_to_persisted(generation, &store);
+                    layout_typed_fields = persisted.typed_fields();
+                    if let Err(e) = n0xis_project::class_layout::save(&persisted) {
+                        eprintln!("[n0x] {}", json!({ "warn": format!("persist class-layout: {e}") }));
+                    }
+                    layout_by_closure = store.claims_by_value_closure;
+                    layout_by_fixpoint = store.fields_typed_by_fixpoint;
                 }
+                Err(e) => eprintln!("[n0x] {}", json!({ "warn": format!("class layout: {e}") })),
             }
-            Err(e) => eprintln!("[n0x] {}", json!({ "warn": format!("class layout: {e}") })),
         }
         progress("unifying-layouts", total, total);
     }
@@ -3810,6 +3815,8 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         "typeflow_propagated_params": typeflow_params,
         "layout_classes": layout_classes,
         "layout_typed_fields": layout_typed_fields,
+        "layout_claims_by_value_closure": layout_by_closure,
+        "layout_fields_by_fixpoint": layout_by_fixpoint,
         "xref_targets": xref_targets,
         "cached_functions": cached,
     });

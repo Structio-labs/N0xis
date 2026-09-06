@@ -86,7 +86,7 @@ const MAX_DEF_DEPTH: usize = 8;
 /// loads of a virtual dispatch into one expression, it leaves
 /// `v3 = *this; call *(v3 + 0x40)`, so matching only the fully-nested shape
 /// found nothing on a real binary (measured: 0 of 399 functions of the Qt desktop PE).
-fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> &'a MicroExpr {
+pub(crate) fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> &'a MicroExpr {
     let mut cur = e;
     for _ in 0..MAX_DEF_DEPTH {
         let MicroExpr::Var(name) = cur else { return cur };
@@ -114,7 +114,7 @@ fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> 
 /// expression and they are all structurally equal — "whichever path was taken,
 /// this variable was defined the same way". A phi whose inputs disagree is left
 /// alone, so nothing is claimed about a value that genuinely differs per path.
-fn fold_phis<'a>(blocks: &'a [SsaBlock], defs: &mut BTreeMap<&'a str, &'a MicroExpr>) {
+pub(crate) fn fold_phis<'a>(blocks: &'a [SsaBlock], defs: &mut BTreeMap<&'a str, &'a MicroExpr>) {
     // A phi may feed another phi, so run to a fixpoint under the same bound the
     // definition walk uses.
     for _ in 0..MAX_DEF_DEPTH {
@@ -217,18 +217,46 @@ const MAX_CLOSURE_ROUNDS: usize = 8;
 ///   word is its own vptr and treating `Widget` and `Widget *` alike would
 ///   resolve a slot of the wrong table with full confidence;
 /// - a **direct call's return value**, when whole-program propagation proved the
-///   callee's return type.
+///   callee's return type;
+/// - a variable handed to a **constructor of `C`** as its `this` — the ABI
+///   settles that argument 0 of a constructor is the object being built, so
+///   `d = operator new(...); C::C(d, …)` names `d` with no type needed
+///   anywhere first. This is the one seed that reaches a *freshly allocated*
+///   object, which the class layout's own rule 1 already relies on for an
+///   embedded sub-object and which nothing carried to a plain local.
+///
+/// Construction order settles the one ambiguity that seed has: a derived
+/// constructor runs its base's first, so when both are inlined into the same
+/// function the **later** call is the more derived one and it wins. A stored
+/// vtable is stronger still and overrides both — it is the dynamic type as the
+/// hardware sees it.
 ///
 /// Every one of those is a fact some other pass already established. Nothing
 /// here infers a class; it moves one that was proven elsewhere to the place the
 /// dispatch actually reads.
-fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact, defs: &BTreeMap<&str, &MicroExpr>) -> BTreeMap<String, String> {
+pub(crate) fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact, defs: &BTreeMap<&str, &MicroExpr>) -> BTreeMap<String, String> {
     let mut cls: BTreeMap<String, String> = types
         .signature
         .params
         .iter()
         .filter_map(|p| Some((format!("{}.0", p.reg), class_of(p.ty.name.as_deref()?)?.to_string())))
         .collect();
+    // Constructors first, in program order, so the most derived one wins — see
+    // the note on construction order above. Done before the fixpoint rather than
+    // inside it because the fixpoint deliberately never overwrites a class it
+    // already has.
+    for s in blocks.iter().flat_map(|b| b.stmts.iter()) {
+        let (MicroStmt::Call { target: CallTarget::Direct { va }, args, .. }
+        | MicroStmt::Assign { value: MicroExpr::Call { target: CallTarget::Direct { va }, args }, .. }) = &s.stmt
+        else {
+            continue;
+        };
+        let Some(arg0) = args.first() else { continue };
+        let MicroExpr::Var(v) = resolve(arg0, defs) else { continue };
+        if let Some(c) = crate::classlayout::ctor_class(ctx, *va) {
+            cls.insert(v.clone(), c);
+        }
+    }
     // Stack slots a classed pointer was spilled into, by address expression.
     let mut slots: Vec<(&MicroExpr, String)> = Vec::new();
     let ret_class = |va: u64| ctx.type_flow.and_then(|f| f.ret(va)).and_then(class_of).map(str::to_string);

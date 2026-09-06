@@ -5,6 +5,51 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Field types from the value class closure — and a return-type rule the oracle killed
+
+- **One definition of "what class does this value hold", read by two passes.**
+  The class-layout pass typed a stored value by following plain copies back to a
+  parameter or a call; `devirt::class_closure` already carried a class along
+  strictly more edges. It is now the layout pass's fourth field-typing source,
+  reused rather than restated — an agreeing phi, a stack spill and reload, a
+  typed field load, a direct call's return type, and a known vtable written into
+  an object all reach field typing now. Built lazily, only for a method that has
+  a store the three older sources could not answer.
+- **A new class seed both passes get: the constructor.** A variable handed to a
+  constructor of `C` as argument 0 **is** a `C *` — the ABI settles that, and it
+  is the one seed that reaches a *freshly allocated* object, which is how a
+  d-pointer is born (`d = operator new(…); C::C(d, …); this->d_ptr = d`).
+  Construction order settles the base-vs-derived ambiguity: a derived
+  constructor runs its base's first, so the later call wins, and a stored vtable
+  overrides both.
+- **Measured as a clean A/B on a Qt shared library, 22 415 functions.** Typed
+  fields **90 → 98**, every new one a d-pointer with 2–41 contributing methods
+  (`QRasterPaintEngine+0x18 = QPaintEngineExPrivate *`, `QPainterPathStroker+0 =
+  QStroker *`, …); no field lost a type and none changed. Classes **383**,
+  methods **3 943**, fields **2 485** and typed parameters **22 756 → 22 760** —
+  none worse. Over a 1 539-method sample, resolved virtual calls **125 → 126**
+  and unresolved indirect calls **671 → 670** — a single call, because six of the
+  eight new types are `…Private *` pointers to classes that have no vtable to
+  dispatch through. The `sizeof` oracle against the real Qt headers holds at
+  **18 of 21** with the same three over-reports at the same offsets, and the
+  layout phase's wall clock is unchanged.
+- **A return-type rule was built, measured wrong, and removed.** `return this->f`
+  with `f` typed, and `return v` with the closure naming `v`'s class, recovered
+  **118** return types — and the Qt headers falsified **55** of them outright:
+  they are on functions that return `void` or a struct **by value**.
+  `QWindow::opacity` returns a `qreal` in `xmm0` and merely leaves `d` in `rax`;
+  `QPixmap::rect` returns a `QRect` in `rax:rdx` and its early-out is a zero.
+  **Nothing inside a function distinguishes a returned pointer from a scratch
+  value the ABI leaves in the return register.** Gating the claim on the only
+  local proof — some caller dereferencing the result — admitted **0 of 118**,
+  because the accessors this rule can read are `inline` in the headers and their
+  out-of-line copies are weak symbols nothing calls. Wrong where it fires, unused
+  where it is right; both halves are removed and the finding is recorded in
+  `ROADMAP.md` instead of the code.
+- **Two counters added to `analyze --layout`**: `layout_claims_by_value_closure`
+  and `layout_fields_by_fixpoint`, so each source's yield is readable rather than
+  assumed. On this target: **15** and **0**.
+
 ### MSVC C++ `try`/`catch` edges — and a correction to the previous entry
 
 - **The handler data was being read in place when it is an RVA.** For MSVC C++

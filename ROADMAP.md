@@ -1876,6 +1876,68 @@ lift/SLEIGH-ingest per ISA.
      oracle holds at **17 of 21** — the shift's known false positive is
      `operator=`, which genuinely returns `*this`, and the oracle is the thing
      that would have caught it.
+   - ✅ *(2026-09-06, verified)* **The field typer and the dispatch resolver now
+     share one notion of "what class does this value hold".** The layout pass's
+     third source followed plain copies back to a parameter or a call;
+     `devirt::class_closure` already carried a class along strictly more edges,
+     so it is reused as a fourth source rather than restated — an agreeing phi, a
+     stack spill and reload, a typed field load, a direct call's return type, and
+     a known vtable written into an object. Built lazily, only for a method with
+     a store the older sources could not answer, so the layout phase's wall clock
+     is unchanged (2:26 over 22 415 functions).
+     **One genuinely new seed, and it feeds both passes: the constructor.** A
+     variable handed to a constructor of `C` as argument 0 **is** a `C *` — the
+     ABI settles it, and it is the only seed that reaches a *freshly allocated*
+     object, which is how a d-pointer is born (`d = operator new(…); C::C(d, …);
+     this->d_ptr = d`). Construction order settles base-vs-derived: a derived
+     constructor runs its base's first, so the later call wins, and a stored
+     vtable overrides both.
+     **Measured as a clean A/B** — both arms built from the same tree, run over
+     the same freshly-rebuilt `.n0x`, on the same 22 415-function image (the
+     distribution's Qt package was upgraded mid-session, which shifted every
+     earlier baseline; the numbers here are re-measured against a baseline built
+     after it, not carried over). Typed fields **90 → 98**, every new one a
+     d-pointer with 2–41 contributing methods; no field lost a type and none
+     changed. Classes **383**, methods **3 943**, fields **2 485**, typed
+     parameters **22 756 → 22 760** — none worse. `sizeof` oracle **18 of 21**,
+     same three over-reports at the same offsets. Over a 1 539-method sample:
+     resolved virtual calls **125 → 126** in 83 → 84 functions, unresolved
+     indirect calls **671 → 670**.
+     **The dispatch yield is one call, and that is the point worth recording.**
+     Six of the eight new field types are `…Private *` — d-pointers to classes
+     with no vtable of their own — so nothing can dispatch through them however
+     well they are typed. Typing fields and resolving dispatches are not the same
+     problem, and this measures the gap between them.
+     **A return-type rule was built, measured wrong by an independent oracle, and
+     removed.** `return this->f` with `f` typed, and `return v` with the closure
+     naming `v`'s class, recovered **118** return types (315 → 433). Checked
+     against the real Qt headers, **55 of 118 were falsified outright**: they sit
+     on functions that return `void` or a struct **by value**. `QWindow::opacity`
+     returns a `qreal` in `xmm0` and merely leaves `d` in `rax`; `QPixmap::rect`
+     returns a `QRect` in `rax:rdx` and its early-out is a zero, which the
+     "a null is compatible with a pointer" concession let through.
+     **The fact this establishes: nothing inside a function distinguishes a
+     returned pointer from a scratch value the ABI leaves in the return
+     register.** Itanium mangling does not encode a return type, and
+     `recover_return_type` only rules out an untouched `rax.0`. The one local
+     proof available — some caller dereferencing the result — was implemented and
+     admitted **0 of 118**, because the accessors this rule can read (`d_func`
+     and its kind) are `inline` in the headers and their out-of-line copies are
+     weak symbols nothing calls. Wrong where it fires, unused where it is right.
+     It is recorded here instead of shipped, and **should not be retried in this
+     shape**: a recovered return type needs caller-side evidence that the pass
+     which produces it does not have.
+     **The field↔return fixpoint that rule was to feed resolved 0 fields**, for
+     the same reason.
+     **What the remaining 657 unresolved indirect calls actually need**, measured
+     rather than assumed: **285** dispatch on an object that is a *field of
+     another object* (needs that field's type), **67** on a bare variable, **42**
+     on the result of a named call, **40** on the value of one global static data
+     member, **29** on the result of an unnamed `sub_…`, **41** are not a slot
+     read at all, and **7** read a slot out of a vtable *constant* the compiler
+     already resolved. The first bucket is the same seed-density ceiling, one
+     level down: it needs field types on the specific classes those dispatches go
+     through, and 98 of 2 485 fields carry one.
 4. 🚧 **SIMD / FP lift — a floor-fixer, and not only for *this* corpus.** For a
    *general* decompiler this looks like mere coverage (rank low). For N0xis's
    corpus (game engines) it is a floor problem: `movaps`/`mulps`/`addps`/
