@@ -3283,6 +3283,57 @@ third-party format). Each increment is verified on a real binary before ✅.
 - **Cross-arch corpus** — beyond games: MIPS/PPC/RISC-V/ARM samples, malware,
   embedded firmware.
 
+#### The differential verification plan (2026-09-07)
+
+Alongside the oracles that are already mechanical (`sizeof` from real headers,
+unwind-entry counts from an independent reader, the containment properties), a
+second full decompiler is run **headless over the same functions of the same
+binary**, and the two outputs are diffed. The harness lives outside this
+repository, with the tool it drives.
+
+**The one rule that makes this sound, and it is easy to get wrong: a second
+opinion is not ground truth.** Tuning N0xis to agree with another implementation
+would import its wrong answers as fast as its right ones, and the agreement would
+look like progress. So a disagreement is a **question**, never an instruction,
+and it is answered by a *third*, objective source wherever one exists. Nothing
+changes on the strength of "the other one does it differently".
+
+Four tiers, by how objectively a disagreement can be settled:
+
+- **A — settled outright, no opinion involved.** Function counts against the
+  symbol table and the unwind tables; `sizeof` from real headers; every recovered
+  protected range inside its own function; every landing pad the start of a real
+  unwind entry. These already run and the second decompiler adds nothing to them.
+- **B — structural disagreement with a checkable answer.** Function boundaries,
+  switch-case counts, tail calls, no-return classification, call targets. Where
+  the two differ, the bytes settle it — by disassembly, or by emulating the
+  function against the real hardware semantics. This is where the harness is
+  most valuable and least arguable.
+- **C — semantic disagreement.** Recovered types, class layouts, devirtualized
+  targets, calling conventions. The third source here is **debug information**,
+  which is why item 1 of the gap-closing plan pays twice: a DWARF/PDB reader is
+  both the missing feature *and* the instrument that settles this tier. Until it
+  exists, tier C is triaged by hand against the real headers, and disagreements
+  are recorded as open questions rather than resolved by preference.
+- **D — readability.** Lines, residual gotos, opaque conditions, unnamed callees.
+  **Never a correctness signal**, and never a target to match. It is a work queue
+  for the compiler-idiom library: an idiom left as raw arithmetic here and
+  recovered elsewhere is a concrete, reproducible item instead of a guess about
+  what to build next — which is exactly what the backlog has been short of.
+
+**Mechanics, so it can actually run in parallel with development.** The analysis
+pass is the expensive half and is per *binary*, not per function: analyse each
+neutral target once, keep the project on disk, and drive later dumps against the
+stored project rather than re-importing. Analysis runs as a background job under
+a memory cap (this machine OOM-kills rather than swapping); the N0xis side of the
+same function set takes seconds, so the loop is: analyse once, diff often.
+
+**What gets recorded.** Absolute numbers for **N0xis**, keyed by commit, so a
+release is comparable to its own past. The other side's numbers are context in
+the working notes and do not enter this repository — see the verification
+discipline above. Every change made because of a disagreement records *the
+independent reason* it was made, not "to match".
+
 ### Cross-cutting
 
 - **Cross-compilation / remote** for ARM devices: build n0xis for armv7/aarch64
