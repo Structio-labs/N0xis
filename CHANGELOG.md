@@ -5,6 +5,47 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### The lift tail is closed — 45 `// asm:` nodes left, each for a stated reason
+
+- **Integer division.** `div`/`idiv` read as two intrinsics over the real
+  128-bit dividend (`__udiv`/`__urem`, `__idiv`/`__irem` over `rdx`, `rax`,
+  `src`). The quotient is parked in a temporary and moved in last: both halves
+  read the *pre*-division `rdx:rax`, so writing either register first would feed
+  the other its own result. Division by zero traps on the hardware and nothing is
+  invented to model it; the flags stay opaque, as the manual leaves them.
+  Only the 32/64-bit forms — the narrow ones write `ax`/`ah` sub-registers this
+  model would have to guess at.
+- **Bit tests, exactly.** `bt` writes **only** flags, so the lift is that write
+  alone rather than a preserved instruction that invalidates registers it never
+  touches. `bts`/`btr`/`btc` with a *register* index are exact — the hardware
+  masks the index to the operand width — while the memory-destination form stays
+  opaque, because there the index also displaces the address.
+- **`movbe`** is a move through `__bswap`; **`rorx`** is two shifts and an or
+  with no flag write; **BMI1 `andn`** is `~a & b`.
+- **A `CL`-count rotate is no longer an unknown instruction.** It cannot be
+  written as two shifts without modelling x86's count masking, but it is a named
+  operation on two values — so it reads as `__rol(x, n)` and keeps its dataflow
+  instead of going through the opaque path.
+- **Half-precision conversions, packed absolute value, lane insert and partial
+  moves, variable blends, rounding, the FMA family and the predicate-carrying
+  compares** each lower to one named intrinsic. FMA accumulates into its
+  destination, so it keeps operand 0 as an input — which the non-destructive VEX
+  rule deliberately does not assume. FMA and `vcmp*` are matched by mnemonic
+  name: 48 spellings of one operation say nothing a list of them would add.
+- **Measured over a 1 539-method sample of a Qt shared library:** `// asm:`
+  nodes **304 → 45**, functions carrying any at all **107 → 31**. As a side
+  effect of code that now lifts end to end: classes **383 → 384**, fields
+  **2 485 → 2 493**, methods **3 943 → 3 948**, parameters carrying a type
+  **22 760 → 22 823**. Typed fields (98), resolved virtual calls (126),
+  unresolved indirect calls (670) and the `sizeof` oracle (18 of 21) are all
+  unchanged.
+- **What is left, and why it is left.** 18 genuinely undecodable bytes; 10
+  `lock`-prefixed instructions and 8 `xchg`, whose *values* are expressible but
+  whose whole meaning is atomicity — rendering them as ordinary arithmetic would
+  mislead a reader of a lock; 5 `rep` string ops, whose implicit loop this IR has
+  no shape for; and 4 `vpmaskmovd`, a conditional memory access per lane, which
+  is the refusal masked EVEX already gets.
+
 ### Field types from the value class closure — and a return-type rule the oracle killed
 
 - **One definition of "what class does this value hold", read by two passes.**

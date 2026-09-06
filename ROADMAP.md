@@ -1994,6 +1994,44 @@ lift/SLEIGH-ingest per ISA.
      integer division, a different class of change), `movbe` (40),
      `vcvtph2ps`/`vcvtps2ph` (51, half-float), `vpabsb` (29), `bt` (26), and 18
      genuinely undecodable bytes that must stay `(bad)`.
+   - ✅ *(2026-09-06, verified)* **The tail is closed, and what is left is left
+     for a stated reason.** Integer division reads as two intrinsics over the
+     real 128-bit dividend, with the quotient parked in a temporary because both
+     halves read the pre-division `rdx:rax` and writing either register first
+     would feed the other its own result; `movbe` is a move through `__bswap`;
+     `bt` writes **only** flags, so the lift is that write alone; `bts`/`btr`/
+     `btc` with a *register* index are exact (the hardware masks the index to the
+     operand width) while the memory-destination form stays opaque, because there
+     the index also displaces the address; `rorx`, half-precision conversions,
+     packed absolute value, lane insert/partial moves, variable blends, rounding,
+     the FMA family and the predicate-carrying compares are each one named
+     operation. The two families are matched **by mnemonic name** — 48 spellings
+     of FMA and every `vcmp*` predicate say nothing a list of them would add.
+     A `CL`-count rotate no longer goes through the opaque path: it cannot be
+     written as two shifts without modelling x86's count masking, but it is a
+     named operation on two values, so it reads as `__rol(x, n)` and keeps its
+     dataflow instead of invalidating the register.
+     **Measured over the same 1 539-method sample:** `// asm:` nodes
+     **304 → 45**; functions carrying any at all **107 → 31**. As a side effect
+     of code that now lifts end to end, recovered classes **383 → 384** (a
+     `QVector3D` that only existed once its FP arithmetic was visible), fields
+     **2 485 → 2 493**, methods **3 943 → 3 948**, parameters carrying a type
+     **22 760 → 22 823**; typed fields, resolved dispatches (126) and unresolved
+     indirect calls (670) all unchanged, and the `sizeof` oracle holds at 18 of
+     21.
+     **The 45 that remain are four honest categories, not a backlog.** 18
+     genuinely undecodable bytes (`(bad)`); 10 `lock`-prefixed and 8 `xchg` —
+     the *values* are expressible as a swap or a read-modify-write, but
+     atomicity is the whole meaning of those instructions and rendering them as
+     ordinary arithmetic would mislead a reader of a lock; 5 `rep` string ops,
+     whose implicit loop over `rcx`/`rsi`/`rdi` this IR has no shape for; and 4
+     `vpmaskmovd`, a **conditional** memory access per lane, which is the same
+     refusal masked EVEX already gets.
+     **Regression gates unchanged** on the neutral PE targets: `ir manifest
+     --limit 400` averages **0.924375** and **0.969625**, same flag sets. The
+     third gate reads **0.920875**, not the 0.918875 recorded earlier, because
+     the distribution upgraded that package mid-session — re-measured with the
+     pre-change binary it is 0.920875 too, so the change itself moves nothing.
 5. ⬜ **PDB / type ingestion — corpus-dependent rank.** High value for
    system/Microsoft binaries (public symbol servers short-circuit type recovery with
    ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL

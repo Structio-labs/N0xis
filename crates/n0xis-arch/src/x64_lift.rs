@@ -252,6 +252,33 @@ fn vec_intr_unary(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
     smart_write(instr, 0, MicroExpr::intrinsic(name, vec![src]), out);
 }
 
+/// `dst = name(op0, op1, …)` — an intrinsic whose **destination is also an
+/// input**, which `vec_sources` deliberately does not assume for a VEX form.
+/// FMA is the family that needs it: `vfmadd231sd xmm0, xmm1, xmm2` is
+/// `xmm0 = xmm1*xmm2 + xmm0`, so dropping operand 0 would lose an input the
+/// instruction really reads.
+fn vec_intr_accum(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
+    let args: Vec<MicroExpr> = (0..instr.op_count()).map(|i| smart_read(instr, i)).collect();
+    smart_write(instr, 0, MicroExpr::intrinsic(name, args), out);
+}
+
+/// A fused multiply-add of any of its 48 spellings (`vfmadd132ps`,
+/// `vfnmsub231sd`, …). Matched by name because enumerating the family would be
+/// a page of mnemonics that says nothing the name does not.
+fn is_fma(mn: Mnemonic) -> bool {
+    let name = format!("{mn:?}");
+    ["Vfmadd", "Vfmsub", "Vfnmadd", "Vfnmsub", "Vfmaddsub", "Vfmsubadd"].iter().any(|p| name.starts_with(p))
+}
+
+/// A packed/scalar compare carrying its predicate in the mnemonic
+/// (`vcmpnlesd`, `vcmpordps`, …) — iced spells each predicate as its own
+/// mnemonic, so the family is matched by name for the same reason as
+/// [`is_fma`]. The result is a lane mask, which this IR has no type for.
+fn is_vcmp(mn: Mnemonic) -> bool {
+    let name = format!("{mn:?}");
+    name.starts_with("Vcmp") && ["sd", "ss", "pd", "ps"].iter().any(|suffix| name.ends_with(suffix))
+}
+
 /// An exact bit-operation over the source operands, in either encoding.
 fn vec_binop(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
     let args = vec_sources(instr);
@@ -286,6 +313,11 @@ fn write_operand(instr: &Instruction, idx: u32, value: MicroExpr, out: &mut Vec<
         _ => {}
     }
 }
+
+/// The one synthetic name this lifter introduces: a divide's quotient, parked
+/// while the remainder still needs the pre-division `rdx:rax`. Not a register,
+/// so it can never collide with one; SSA versions it like anything else.
+const DIV_TEMP: &str = "divt";
 
 fn opaque_flags(mnemonic: Mnemonic) -> MicroStmt {
     MicroStmt::Assign {
@@ -926,6 +958,24 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Pextrw
         | Mnemonic::Pextrd
         | Mnemonic::Pextrq
+        // Lane insert/partial move. These write only *part* of the destination,
+        // so the destination is genuinely one of the inputs and the intrinsic
+        // keeps every source it reads — which is what `vec_intr` does in either
+        // encoding.
+        | Mnemonic::Insertps
+        | Mnemonic::Vinsertps
+        | Mnemonic::Movlps
+        | Mnemonic::Movhps
+        | Mnemonic::Movlpd
+        | Mnemonic::Movhpd
+        | Mnemonic::Vmovlps
+        | Mnemonic::Vmovhps
+        | Mnemonic::Vmovlpd
+        | Mnemonic::Vmovhpd
+        | Mnemonic::Movlhps
+        | Mnemonic::Movhlps
+        | Mnemonic::Vmovlhps
+        | Mnemonic::Vmovhlps
             if instr.op_mask() == Register::None =>
         {
             vec_intr(&instr, &mnemonic_intrinsic(mn), &mut out)
@@ -946,6 +996,36 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Vinsertf128
         | Mnemonic::Vpblendw
         | Mnemonic::Vpblendd
+        | Mnemonic::Vpermilpd
+        | Mnemonic::Vpermilps
+        | Mnemonic::Vpsubusb
+        | Mnemonic::Vpsubusw
+        | Mnemonic::Vpaddusb
+        | Mnemonic::Vpaddusw
+        | Mnemonic::Vpsubsb
+        | Mnemonic::Vpsubsw
+        | Mnemonic::Vpaddsb
+        | Mnemonic::Vpaddsw
+        | Mnemonic::Vpmuldq
+        | Mnemonic::Vpmuludq
+        | Mnemonic::Vpmulhw
+        | Mnemonic::Vpmulhuw
+        | Mnemonic::Vpavgb
+        | Mnemonic::Vpavgw
+        | Mnemonic::Vblendvps
+        | Mnemonic::Vblendvpd
+        | Mnemonic::Vpblendvb
+        | Mnemonic::Blendvps
+        | Mnemonic::Blendvpd
+        | Mnemonic::Pblendvb
+        | Mnemonic::Vroundsd
+        | Mnemonic::Vroundss
+        | Mnemonic::Vroundpd
+        | Mnemonic::Vroundps
+        | Mnemonic::Roundsd
+        | Mnemonic::Roundss
+        | Mnemonic::Roundpd
+        | Mnemonic::Roundps
         | Mnemonic::Vblendps
         | Mnemonic::Vblendpd
         | Mnemonic::Vpblendvb
@@ -1068,7 +1148,10 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Cvttps2dq
         | Mnemonic::Cvtdq2pd
         | Mnemonic::Cvtpd2dq
-        | Mnemonic::Cvttpd2dq => intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        | Mnemonic::Cvttpd2dq
+        | Mnemonic::Pabsb
+        | Mnemonic::Pabsw
+        | Mnemonic::Pabsd => intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out),
         // …and their VEX/EVEX spellings, where the extra operand is only the
         // merge source for the lanes the conversion does not write.
         Mnemonic::Vcvtsi2sd
@@ -1085,6 +1168,18 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Vcvtdq2pd
         | Mnemonic::Vcvtpd2dq
         | Mnemonic::Vcvttpd2dq
+        // Half-precision conversions. `vcvtps2ph` also takes a rounding-control
+        // immediate, which `vec_intr_unary` drops on purpose — the *value* is
+        // the vector, and the rounding mode is not modelled anywhere in this IR.
+        | Mnemonic::Vcvtph2ps
+        | Mnemonic::Vcvtps2ph
+        // Packed absolute value, both encodings' VEX spelling.
+        | Mnemonic::Vpabsb
+        | Mnemonic::Vpabsw
+        | Mnemonic::Vpabsd
+        | Mnemonic::Vpabsq
+        | Mnemonic::Vcvtpd2ps
+        | Mnemonic::Vcvtps2pd
             if instr.op_mask() == Register::None =>
         {
             vec_intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out)
@@ -1148,6 +1243,54 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             out.push(MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::binary(BinOp::Mul, rax, src) });
             out.push(opaque_flags(mn));
         }
+        // 1-operand divide: `rax = rdx:rax / src`, `rdx = rdx:rax % src`. The
+        // dividend is 128 bits wide and this IR has no 128-bit value, so both
+        // halves are intrinsics over the three real inputs — sound and exact
+        // about *what is read*, vague only about the arithmetic itself.
+        //
+        // **Order matters and needs one temporary.** Both results read the
+        // *pre*-division `rdx` **and** `rax`, so writing either register first
+        // would clobber the other's input; the quotient is parked, the remainder
+        // written while both inputs are still live, and the quotient moved in
+        // last. Division by zero traps on the hardware and nothing is invented
+        // here to model that: the flags are left opaque, exactly as the manual
+        // leaves them undefined.
+        //
+        // Only the 32/64-bit forms are lifted — the 8- and 16-bit ones write
+        // `ax`/`ah` sub-registers this model would have to guess at.
+        Mnemonic::Div | Mnemonic::Idiv if op_bits(&instr, 0) >= 32 => {
+            let signed = mn == Mnemonic::Idiv;
+            let (quot, rem) = if signed { ("__idiv", "__irem") } else { ("__udiv", "__urem") };
+            let src = read_operand(&instr, 0);
+            let args = || vec![MicroExpr::var("rdx"), MicroExpr::var("rax"), src.clone()];
+            out.push(MicroStmt::Assign { dst: DIV_TEMP.into(), value: MicroExpr::intrinsic(quot, args()) });
+            out.push(MicroStmt::Assign { dst: "rdx".into(), value: MicroExpr::intrinsic(rem, args()) });
+            out.push(MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::var(DIV_TEMP) });
+            out.push(opaque_flags(mn));
+        }
+        // `movbe` — a load or store that swaps byte order on the way. Exactly a
+        // move through `__bswap`, and the same intrinsic `bswap` itself uses.
+        Mnemonic::Movbe => {
+            let src = read_operand(&instr, 1);
+            write_operand(&instr, 0, MicroExpr::intrinsic("__bswap", vec![src]), &mut out);
+        }
+        // BMI2 `rorx dst, src, imm8` — rotate right, **no flags**, which is the
+        // whole reason the encoding exists. Exact as two shifts and an or.
+        Mnemonic::Rorx if instr.op_count() == 3 => {
+            let width = op_bits(&instr, 0);
+            let n = (instr.immediate8() as u32) & width.saturating_sub(1);
+            if n == 0 {
+                write_operand(&instr, 0, read_operand(&instr, 1), &mut out);
+            } else {
+                let shift = |op, amount: u32| MicroExpr::binary(op, read_operand(&instr, 1), MicroExpr::constant(amount as i128, width));
+                let value = MicroExpr::binary(BinOp::Or, shift(BinOp::Shr, n), shift(BinOp::Shl, width - n));
+                write_operand(&instr, 0, value, &mut out);
+            }
+        }
+        // `bt` reads a bit into CF and writes **nothing else** — so the honest
+        // lift is the flag write alone. Going through the opaque path instead
+        // would preserve the text and invalidate registers it never touches.
+        Mnemonic::Bt => out.push(opaque_flags(mn)),
         // Sign-extend the accumulator in place (`cbw`/`cwde`/`cdqe`): the low
         // `from` bits, sign-extended to `to`. Reads as `(int64_t)(int32_t)rax`.
         Mnemonic::Cbw => sext_acc(8, 16, &mut out),
@@ -1164,6 +1307,12 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Sarx => bmi_shift(&instr, BinOp::Sar, &mut out),
         // BMI2 `bzhi dst, src, index` — zero `src`'s bits from `index` up. The
         // mask is index-dependent, so it reads as an intrinsic; sets flags.
+        // BMI1 `andn dst, src1, src2` — `dst = ~src1 & src2`, exactly; sets flags.
+        Mnemonic::Andn if instr.op_count() == 3 => {
+            let value = MicroExpr::binary(BinOp::And, MicroExpr::unary(UnOp::Not, read_operand(&instr, 1)), read_operand(&instr, 2));
+            write_operand(&instr, 0, value, &mut out);
+            out.push(opaque_flags(mn));
+        }
         Mnemonic::Bzhi => {
             let src = read_operand(&instr, 1);
             let index = read_operand(&instr, 2);
@@ -1182,6 +1331,26 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         // Bit test-and-reset/set/complement, immediate index: the value change is
         // exact (`dst &= ~(1<<n)` / `|=` / `^=`); the CF it also sets (the old
         // bit) stays opaque. A register index falls through to the opaque path.
+        // A **register** bit index, register destination: the index is masked to
+        // the operand width by the hardware, so the mask is `1 << (src & (w-1))`
+        // — still exact. A *memory* destination is deliberately excluded: there
+        // the index is a signed bit offset that also displaces the address, and
+        // modelling only the mask would be quietly wrong.
+        Mnemonic::Btr | Mnemonic::Bts | Mnemonic::Btc
+            if instr.op0_kind() == OpKind::Register && instr.op1_kind() == OpKind::Register =>
+        {
+            let bits = op_bits(&instr, 0);
+            let index = MicroExpr::binary(BinOp::And, read_operand(&instr, 1), MicroExpr::constant((bits.saturating_sub(1)) as i128, bits));
+            let mask = MicroExpr::binary(BinOp::Shl, MicroExpr::constant(1, bits), index);
+            let dst = read_operand(&instr, 0);
+            let value = match mn {
+                Mnemonic::Btr => MicroExpr::binary(BinOp::And, dst, MicroExpr::unary(UnOp::Not, mask)),
+                Mnemonic::Bts => MicroExpr::binary(BinOp::Or, dst, mask),
+                _ => MicroExpr::binary(BinOp::Xor, dst, mask),
+            };
+            write_operand(&instr, 0, value, &mut out);
+            out.push(opaque_flags(mn));
+        }
         Mnemonic::Btr | Mnemonic::Bts | Mnemonic::Btc if instr.op1_kind() == OpKind::Immediate8 => {
             let bits = op_bits(&instr, 0);
             let n = (instr.immediate8() as u32) & bits.saturating_sub(1);
@@ -1216,9 +1385,24 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
                 write_operand(&instr, 0, value, &mut out);
                 out.push(opaque_flags(mn));
             } else {
-                lift_opaque(arch, insn, mn, &mut out);
+                // A `CL`-count rotate, or a narrow one, cannot be written as two
+                // shifts without modelling x86's count masking — including the
+                // masked-to-zero case, where a shift by the full width is not
+                // what this IR's `Shr` means. It is a *named operation on two
+                // values* rather than an unknown instruction, so it reads as an
+                // intrinsic and keeps its dataflow instead of invalidating the
+                // register through the opaque path.
+                let value = MicroExpr::intrinsic(mnemonic_intrinsic(mn), vec![read_operand(&instr, 0), read_operand(&instr, 1)]);
+                write_operand(&instr, 0, value, &mut out);
+                out.push(opaque_flags(mn));
             }
         }
+        // FMA and the predicate-carrying compares, matched by name — see
+        // [`is_fma`] and [`is_vcmp`]. Both are ALU-shaped and both keep every
+        // operand they read: an FMA accumulates into its destination, a compare
+        // does not.
+        _ if is_fma(mn) && instr.op_mask() == Register::None => vec_intr_accum(&instr, &mnemonic_intrinsic(mn), &mut out),
+        _ if is_vcmp(mn) && instr.op_mask() == Register::None => vec_intr(&instr, &mnemonic_intrinsic(mn), &mut out),
         _ => lift_opaque(arch, insn, mn, &mut out),
     }
 
@@ -1583,14 +1767,53 @@ mod tests {
     }
 
     #[test]
-    fn a_register_count_rotate_stays_opaque_rather_than_guess_the_mask() {
+    fn a_register_count_rotate_is_an_intrinsic_rather_than_a_guessed_mask() {
         // rol eax, cl  = D3 C0 — a CL-count rotate needs x86 count-masking to be
-        // sound, so it is preserved verbatim, not lifted to an unmasked shift.
+        // sound, so it is NOT lowered to two unmasked shifts. It is still a named
+        // operation on two values, so it reads as `__rol(rax, rcx)` and keeps its
+        // dataflow, rather than going through the opaque path and invalidating
+        // the register.
         let stmts = lift_one(&[0xD3, 0xC0]);
         assert!(
-            stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { .. })),
-            "a variable-count rotate must stay opaque: {stmts:?}",
+            !stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { .. })),
+            "a variable-count rotate is named, not unknown: {stmts:?}",
         );
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Assign { value: MicroExpr::Call { target: CallTarget::Intrinsic(n), args }, .. }
+                if n == "__rol" && args.len() == 2)),
+            "and it must not invent an unmasked shift: {stmts:?}",
+        );
+    }
+
+    #[test]
+    fn a_divide_reads_the_whole_dividend_before_writing_either_half() {
+        // idiv rcx  = 48 F7 F9 — `rax = rdx:rax / rcx`, `rdx = rdx:rax % rcx`.
+        // Both halves read the pre-division pair, so the quotient is parked in a
+        // temporary and moved in last; writing `rax` first would feed the
+        // remainder its own result.
+        let stmts = lift_one(&[0x48, 0xF7, 0xF9]);
+        let dsts: Vec<&str> = stmts
+            .iter()
+            .filter_map(|s| match s {
+                MicroStmt::Assign { dst, .. } => Some(dst.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dsts, vec![DIV_TEMP, "rdx", "rax", "flags"], "{stmts:?}");
+        let reads_pair = |s: &MicroStmt| {
+            matches!(s, MicroStmt::Assign { value: MicroExpr::Call { args, .. }, .. }
+                if args.len() == 3 && args[0] == MicroExpr::var("rdx") && args[1] == MicroExpr::var("rax"))
+        };
+        assert!(reads_pair(&stmts[0]) && reads_pair(&stmts[1]), "both halves read rdx:rax: {stmts:?}");
+    }
+
+    #[test]
+    fn a_bit_test_writes_only_flags() {
+        // bt eax, ecx  = 0F A3 C8 — reads a bit into CF and changes no register,
+        // so the honest lift is the flag write alone, with no asm node.
+        let stmts = lift_one(&[0x0F, 0xA3, 0xC8]);
+        assert_eq!(stmts.len(), 1, "{stmts:?}");
+        assert!(matches!(&stmts[0], MicroStmt::Assign { dst, value: MicroExpr::OpaqueFlags { .. } } if dst == "flags"));
     }
 
     #[test]
