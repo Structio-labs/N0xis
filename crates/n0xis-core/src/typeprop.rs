@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! **Whole-program type propagation** (ROADMAP Phase 10, priority 3b) — the one
-//! remaining *core-decompilation* gap against another tool / another tool.
+//! remaining *core-decompilation* gap: types stop at the function boundary.
 //!
 //! N0xis recovers types **per function**. A `struct` recovered in one function,
 //! or a class recovered from RTTI, does not reach the other functions that
 //! touch the same object — so a constructor knows its argument is `Widget *`
-//! while every helper it hands `this` to sees `uint64_t`. other tools keep a
+//! while every helper it hands `this` to sees `uint64_t`. Closing that needs a
 //! persistent, call-graph-wide type database that binds hundreds of functions
 //! into one model; this is that layer.
 //!
@@ -445,7 +445,7 @@ mod tests {
         CallFact { callee, args: args.into_iter().map(|a| a.map(str::to_string)).collect(), ret: None }
     }
 
-    /// The main case: a constructor knows its `this` is `Widget *` from
+    /// The motivating case: a constructor knows its `this` is `Widget *` from
     /// RTTI; the helper it hands `this` to knew nothing. After propagation the
     /// helper's parameter is typed — and so is the helper's own helper, which is
     /// what makes this a *fixpoint* and not a one-level lookup.

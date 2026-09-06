@@ -8,9 +8,9 @@
 //! decompiler, Phase 3) into one typed, agent-readable explanation of what a
 //! runtime value *means*.
 //!
-//! No other does this in one step: a memory scanner's "find what accesses
-//! this address" stops at a raw disassembly line; any other reverse-engineering tool's
-//! decompilers don't know about a live watchpoint hit at all. This pass is
+//! Nothing joins the two sides in one step: a "find what accesses this address"
+//! scan stops at a raw disassembly line, and a decompiler has no knowledge of a
+//! live watchpoint hit at all. This pass is
 //! the seam that turns "value at 0x7ff6...1862 changed" into "written by
 //! `sub_140001063`, in the statement `*rax.1 = 0x0;`" — pure analysis: the
 //! *live* half (arming the watchpoint) stays in `n0xis-cli`/`n0xis-sources`,

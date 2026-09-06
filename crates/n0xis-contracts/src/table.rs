@@ -16,8 +16,8 @@
 //! automatically yet — the fields exist so the format doesn't need a
 //! breaking change once the provenance graph lands.
 //!
-//! Deliberately **not** included: a memory scanner's Lua-scriptable "enable/
-//! disable" scripts. That's real functionality this format's `groups` /
+//! Deliberately **not** included: scriptable "enable/disable" hooks on an
+//! entry. That's real functionality this format's `groups` /
 //! `hotkey` fields leave room to grow toward later, but a script is
 //! arbitrary code execution in the target process — out of scope for a
 //! first cut, and not required by ROADMAP Phase 4b's own bullet list.

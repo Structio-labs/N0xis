@@ -243,7 +243,7 @@ Goal: kill blanket `uint64_t` / `local_XX` / fixed 4-arg `void` signatures.
   TypeInferPass → DecompPass` pipeline. All pass; zero regressions across the 56 tests in
   `n0xis-core` (up from Phase 3's 49) and zero warnings workspace-wide.
 
-## Phase 4b — Dynamic memory layer (a memory scanner class) 🎯 ✅
+## Phase 4b — Dynamic memory layer 🎯 ✅
 Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9).
 - ✅ **Typed value scanning + iterative filtering** — `n0xis-core::ScanPass`/`FilterPass`
   (`scan.rs`): exact/in-range/unknown first scan, then increased/decreased/changed/
@@ -290,7 +290,7 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   superset (`Provenance`, `VerificationState` — both optional, unpopulated until
   Phase 4c). Persistence in `n0xis-project::table` (`.n0x/tables/<name>.n0xt`, JSON),
   mirroring the existing `selection`/`patch` storage-only split. Deliberately
-  **excludes** a memory scanner's scriptable enable/disable (arbitrary code execution in
+  **excludes** scriptable enable/disable hooks (arbitrary code execution in
   the target — out of scope, `groups`/`hotkey` leave room to grow toward it later).
 - ✅ **Freeze + code caves + detour/trampoline hooks** — `table freeze` is a bounded
   write-loop over the already-proven `LiveProcess::write`. Hooking is built to bound
@@ -356,7 +356,7 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   `debug watch` caught a real hardware trap.
 
 ## Phase 4c — Provenance-Driven Memory Intelligence 🎯 ✅
-Goal: fuse the two worlds (CONCEPT §11) — the core capability.
+Goal: fuse the two worlds (CONCEPT §11).
 - ✅ **Value → meaning** — `n0xis-core::ProvenancePass` (`provenance.rs`): given one or
   more `(instruction_va, access_kind)` hits (typically from Phase 4b's `debug watch`),
   resolves each to `module+rva` (`Module::rva`), then walks discovered function
@@ -366,10 +366,10 @@ Goal: fuse the two worlds (CONCEPT §11) — the core capability.
   extracts exactly the rendered block containing the hit (structure.rs already tags
   every block with a `// block_N: 0xADDR` header; this greps between that marker and
   the next one) — the typed `n0xis.provenance.v1` graph. Every field is `Option`/empty
-  rather than a guess when a step doesn't resolve (CONCEPT §3 rule 6). **No other
-  does this**: confirmed via the earlier fact-check research — a memory scanner's
-  "find what accesses this address" stops at a raw disassembly line; other tools'
-  decompilers have no live-watchpoint integration at all.
+  rather than a guess when a step doesn't resolve (CONCEPT §3 rule 6). **Nothing
+  joins the two sides in one step**: a "find what accesses this address" scan
+  stops at a raw disassembly line, and a decompiler has no live-watchpoint input
+  at all.
 - ✅ **Intent → verified change** — not a new NLP engine (the "intent" side is the
   agent driving existing CLI verbs); what Phase 4c adds is the missing link: `.n0xt`'s
   `Provenance`/`VerificationState` fields (defined in Phase 4b but always empty until
@@ -436,7 +436,7 @@ Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powe
   that, `explain_opt_delta` runs the same pipeline and returns *only* `n0xis.opt.delta.v1`
   (each entry: pass name, address, summary of what changed — copy/const/expr
   propagation, DCE) — a dedicated "why" tool distinct from getting the full pseudo-C.
-  `provenance_trace` is the principal explain tool (Phase 4c's fusion, now reachable over
+  `provenance_trace` is the explain tool (Phase 4c's fusion, now reachable over
   MCP): arms a real hardware watchpoint and returns the exact decompiled statement
   responsible for a live memory access.
 - ✅ **Session/attach state shared with CLI via `n0xis-project`**: new `n0xis-project::
@@ -643,7 +643,7 @@ verified. Don't repeat that mistake when reading this phase as "done."
   matching every function across two whole binaries (name matching where
   symbols exist, structural-similarity matching where they don't) is a
   substantially larger problem of its own (an entire category of dedicated
-  tools — a structural diff tool, a structural diff tool — exists just for this), not attempted here.
+  well-studied problem class of its own), not attempted here.
 
 ## Phase 8 — Method tooling: spec-first RE 🎯 ⏳ (merged to main `a0a9168` — all 6 named commands + the hex-everywhere audit done; still ⏳ solely for the one ⬜ item, region caching as a built-in scan option)
 Goal: turn a real RE campaign's post-mortem into tools. That campaign
@@ -1088,13 +1088,12 @@ names a missing tool.
 
 ---
 
-## Phase 10 — Decompiler analysis depth (true x64 parity with other tools) 🎯 ⬜
+## Phase 10 — Decompiler analysis depth on x64 🎯 ⬜
 
-The honest reframing this phase exists to encode: **parity with another tool /
-another tool is not the presence of components — it is analysis quality.** N0xis already
-has the full *plumbing* (decode → CFG → dominance → SSA → optimize → structure →
-render), and on that plumbing it holds x64 parity. But a real decompiler is the
-*90%* that comes after: the long tail of interprocedural analysis, memory
+The honest reframing this phase exists to encode: **a decompiler's worth is
+analysis quality, not the presence of components.** N0xis already has the full
+*plumbing* (decode → CFG → dominance → SSA → optimize → structure → render). But
+a real decompiler is the *90%* that comes after: the long tail of interprocedural analysis, memory
 modeling, and compiler-idiom coverage that turns "we built SSA" into "we chewed
 ten years of edge cases." On *that* axis N0xis is early even restricted to x64.
 This phase is that work. It is deliberately **not** one sprint; sequence by
@@ -1113,7 +1112,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Control structuring | ✅ production |
 | Optimizer (copy/const/expr-prop, DCE) | ✅ production |
 | Renderer (pseudo-C) | ✅ production |
-| Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (narrower idiom set than other tools) |
+| Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (a narrow idiom set) |
 | Type recovery | ✅ **per-function *and* whole-program** — typed locals block, phi-web coalescing, struct-field/arity/return + ~30 API sigs + **C++ class from RTTI**, plus `TypePropagatePass` (a recovered type flowed along the call graph to a fixpoint) and program-wide **class layouts** unified across every method. The remaining gap is **seed density**, not plumbing: 98 of 2 485 recovered fields carry a type. Recovered *return* types are the weak half and are gated on caller-side evidence no single-function pass has — see the falsified rule below |
 | Alias analysis | 🚧 **intraprocedural points-to** — escape analysis (2a), global distinct-constant (2b) and **heap-allocation** (2c) disambiguation; `Top` on loads through unknown pointers. Whole-program/distinct-parameter points-to still missing |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
@@ -1134,43 +1133,36 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Signedness recovery | 🚧 Rung 3f/5 — signed vs unsigned comparisons render distinctly; stack-local signedness inferred from use. Register-variable signedness still ⬜ |
 | Global / data-segment typing | 🚧 early — `xref`/`xref string` exist, but globals are untyped and data-flow does not reach the decompiler |
 
-### Where other tools still lead — the honest gap map (2026-08-31, revised 2026-09-06)
+### What this project does not have yet — the honest gap list (2026-08-31, revised 2026-09-06)
 
-**A caveat this section needs and did not have.** The sentence that used to open
-it — "the local decompilation quality is measured on neutral targets and reported in absolute terms
-is an **unmeasured claim**. No review has been run: not on the same
-binaries, not on the same functions, not against any published metric. By this
-project's own rule that is exactly the kind of assertion that does not earn a ✅,
-and it should not have been stated as fact. What *is* measured is our own side of
-it, on neutral targets, and it is quoted throughout this phase. A real comparison
-would need the same corpus decompiled by each tool and a stated criterion —
-worth doing, not yet done.
-
-What another tool, another tool and another tool lead on is breadth, scale, and surface:
+**This project does not measure itself against other tools, and does not claim a
+standing relative to any.** An earlier version of this section did, on nothing
+but judgement, and the claim has been removed. What is stated here is what N0xis
+lacks, in its own terms; what is stated elsewhere in this phase is what it does,
+with the measurement that established it. Nothing here is a comparison.
 
 - ~~**Whole-program type propagation — the one *core-decompilation* gap.**~~
   **Closed (2026-09-05/06).** `TypePropagatePass` flows a recovered type along
   the call graph to a fixpoint and persists it; `ClassLayoutPass` unifies one
   field set per RTTI class across every method that touches it. What remains is
   not the mechanism but the **density of facts** to flow: 99 of 2 505 recovered
-  fields carry a type, and recovered *return* types are the weaker half. other tools
-  still lead here in practice because their type databases are seeded by
-  **library type information** (PDB, DWARF, GDT, shipped headers) that N0xis does
-  not ingest at all — so the gap moved from "no propagation" to "nothing to
-  propagate", which is priority 5, not priority 3.
+  fields carry a type, and recovered *return* types are the weaker half. The
+  missing input is **library type information** — PDB, DWARF and shipped headers,
+  which N0xis does not ingest at all — so the gap moved from "no propagation" to
+  "nothing to propagate", which is priority 5, not priority 3.
 - **GUI — "eyes and hands."** Graph view, click-to-rename, an interactive type
   manager, xref navigation, instant re-analysis, undo. N0xis is headless
   (CLI/MCP) by design; a GUI is deferred, not ruled out, and can be built over
   the JSON/MCP surface.
 - **Architecture breadth.** N0xis: x64 (mature), i386, AArch64 (early), AArch32
-  (new). another tool (~40 ISAs via SLEIGH) and BN cover MIPS/PPC/RISC-V/SPARC and the
-  long tail. See the strategy below — this is a *seam* question, not a rewrite.
+  (new). MIPS, PowerPC, RISC-V, SPARC and the long tail are absent. See the
+  strategy below — this is a *seam* question, not a rewrite.
 - **File formats.** PE + ELF today; no Mach-O, no firmware loaders. A format
   seam (Phase 15 debt) closes this the same way `trait Arch` closed the ISA one.
-- **Maturity on adversarial / varied code** and a plugin/type-library ecosystem
-  (another tool GDT, FunctionID/FLIRT, OOAnalyzer; the reference implementation's Python object model). N0xis is
-  young; `sound over complete` keeps it honest, but idiom/edge-case coverage is
-  narrower and there is no shipped signature/type-library yet.
+- **Maturity on adversarial / varied code**, and the absence of a
+  plugin/type-library ecosystem. N0xis is young; `sound over complete` keeps it
+  honest, but idiom/edge-case coverage is thin and there is no shipped
+  type-library yet.
 
 Everything above is breadth/scale/surface **except** whole-program type
 propagation, which is the single remaining *core* decompilation gap — so it
@@ -1190,7 +1182,7 @@ Two ways to pay it, and they compose:
 1. **Hand-lift the few high-value ISAs** (current path) — premium, sound,
    `O(arch)` effort. Worth it for RISC-V (small, clean, rising) and MIPS
    (consoles/embedded); each is far smaller than x64.
-2. **Ingest another tool SLEIGH → P-code → MicroIR — the breadth multiplier.** SLEIGH
+2. **Ingest SLEIGH ISA specifications → P-code → MicroIR — the breadth multiplier.** SLEIGH
    is a declarative ISA-semantics language with **~40 shipped specs**; one
    `SleighArch` backend behind `trait Arch` that loads a `.sla` and lowers P-code
    to MicroIR unlocks the whole matrix at "sound-but-generic" quality, while the
@@ -1217,16 +1209,16 @@ lift/SLEIGH-ingest per ISA.
 | noreturn analysis | detect + **interprocedurally** prune fall-through in callers | 🚧 ✅ *(2026-07-22)* a call to a well-known noreturn import (`ExitProcess`/`abort`/`TerminateProcess`/`_CxxThrowException`/`__fastfail`/…, `n0xis-core::noreturn`) now ends its block like a `ret` (`terminator: "call-noreturn"`, zero successors) — closes the CFG so `ir manifest`'s pre-existing `no-return` flag becomes accurate for free on this case. ✅ *(2026-08-06)* `truncate_to_function` (the whole-function-end heuristic) now knows about calls too, so a function no longer over-extends past a noreturn call — and the whole mechanism fires on real binaries for the first time (it needed the IAT-keying fix; `vcruntime140.dll` 0 → 33 functions flagged `calls-noreturn`). ⏳ *(2026-08-29)* **whole-program propagation** — the `NoReturnPropagatePass` call-graph fixpoint (`function noreturn`) is built and feeds `Ctx::with_noreturn` back into CFG fall-through pruning; sound-over-complete. **Detection** is verified on a real binary (`CompressToolsLib.dll`: 9 functions, cross-checked via `ir build`); the **propagation** step itself is unit-tested only and awaits a real-corpus positive before ✅. **Still open**: a *tail-call* to a proven-noreturn function (read conservatively as returning today). |
 | Indirect call resolution | devirtualize `call [reg+off]` via vtable/type analysis | ✅ *(2026-09-05)* `crate::devirt` — joins the three facts the analysis already held apart (the object's class, that class's vtable, the slot). The value-set pass could never reach this: the vtable pointer is written by a constructor that may be in another function entirely |
 | Switch recovery | many idioms (dense / sparse / multi-level / bounds-checked) | ✅ 2 x64 idioms, memory-resolved, `code_range`-gated |
-| Jump-table recovery | + relocation-aware | ✅ same 2 idioms; narrower than other tools |
+| Jump-table recovery | + relocation-aware | ✅ same 2 idioms; a narrow set |
 | Alias analysis | a real memory-alias oracle | 🚧 light/bounded (`ValueSetPass::alias`, `Var±Const` only, `Top` on load) |
 | Memory SSA | SSA over memory (versioned store/load) | ❌ SSA over registers/flags only — **why** expr-prop is conservative |
 | Interprocedural propagation | types / values / CC across the call graph | ❌ intraprocedural; only the ~30-entry API table crosses a call |
 | Compiler idioms | magic-division, `rep`-string→`mem*`, stack canary, strlen-inlining, cmov→min/max, SSE idioms, … | 🚧 a handful (`const identify`, junk, opaque predicates) |
 | C++ RTTI / vtables | parse MSVC (`RTTICompleteObjectLocator`, `type_info`) and Itanium RTTI → class names, base-class graph, vtable→method typing; feed devirtualization | 🟡 **both ABIs recover class names** — MSVC via `.rdata` COL chains, Itanium via `_ZTV…` symbols (2026-09-04); base-class graph MSVC-only, devirtualization still ⬜ |
-| Library-function ID | a signature DB (another tool FLIRT / another tool Function-ID) that names statically-linked CRT/STL/runtime code instead of decompiling it | ✅ end to end *(2026-09-05)* — learn (`sig gen`), match (`n0xis-flirt`), apply project-wide (`analyze --flirt` → `.n0x/flirt-symbols.json`). Verified against a linker symbol table: 639 matched, 639 correct, 0 wrong |
+| Library-function ID | a signature DB (FLIRT-class) that names statically-linked CRT/STL/runtime code instead of decompiling it | ✅ end to end *(2026-09-05)* — learn (`sig gen`), match (`n0xis-flirt`), apply project-wide (`analyze --flirt` → `.n0x/flirt-symbols.json`). Verified against a linker symbol table: 639 matched, 639 correct, 0 wrong |
 | Calling convention | classify the CC and recover arg count/types by entry-liveness + call-site agreement; detect variadic and `this` | 🚧 arity + return only; CC assumed, so an un-prototyped function renders guessed arguments |
 | Stack frame | SP-delta tracking across the function, FPO-function handling, stack arrays/spills surfaced as typed locals | 🚧 locals only; no frame reconstruction, no FPO |
-| Readability | eliminate gotos, recover `&&`/`\|\|` from short-circuit CFG diamonds, `?:`, and `for`/`while`/`do` + `break`/`continue` | 🚧 structures reducible CFGs; the readability passes other tools polished for a decade are not built |
+| Readability | eliminate gotos, recover `&&`/`\|\|` from short-circuit CFG diamonds, `?:`, and `for`/`while`/`do` + `break`/`continue` | 🚧 structures reducible CFGs; the readability passes that take a decade to polish anywhere are not built |
 | Signedness | infer signed/unsigned from flag use and operation shape; render the right operators and casts | ❌ none |
 
 ### Prioritized plan (ordered by leverage × cost, not size)
@@ -1644,19 +1636,19 @@ lift/SLEIGH-ingest per ISA.
    recovery — chicken-and-egg: alias precision needs types, type recovery needs
    alias. Climb 1–2 together; neither is precise alone.
 3. ✅ **Function-summary IPA + whole-program type propagation — was the #1 core
-   gap vs other tools; it is shipped, and the gap moved to seed density.** Two layers. (a) ✅ *(2026-09-05)* **Summaries**: per-function
+   gap; it is shipped, and the gap moved to seed density.** Two layers. (a) ✅ *(2026-09-05)* **Summaries**: per-function
    returns / `noreturn` / clobber set / arg & return types / side effects —
    composes with the existing `ManifestPass`, an extension not a new subsystem. (b) **Whole-program
-   type propagation** (the layer other tools lead on): a persistent, call-graph-wide
+   type propagation**: a persistent, call-graph-wide
    type store so a `struct` recovered in one function — or a class recovered from
    RTTI — is *flowed to every function that touches the same object* (callee arg
    types ⇄ caller arg values, return types ⇄ consumers, field layouts unified
    across all users). This is what turns N0xis's *per-function* type recovery
    (Rung 3, verified) into the one class model over hundreds of functions that
-   other tools build — the honest reason "massive C++" still favours them. Builds on the
+   a persistent type database gives. Builds on the
    RTTI class graph (Rung 7a) + the summary layer here; it is the single remaining
-   *core-decompilation* gap (everything else other tools lead on is breadth/GUI/
-   maturity — see "Where other tools still lead" above), so it ranks first.
+   *core-decompilation* gap — everything else missing is breadth, GUI or
+   maturity (see the gap list above) — so it ranks first.
    - ✅ *(2026-09-05, verified)* **3a — `SummaryPass` / `function summary`.** Every
      interprocedural question was being answered by re-analyzing the callee at
      the moment it was asked, once per asker. A summary answers it once: one run
@@ -2133,7 +2125,7 @@ lift/SLEIGH-ingest per ISA.
    ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL
    work, below it for game work.
 6. ⬜ **Compiler-idiom library — the endless backlog.** The "hundreds of idioms"
-   that are 20 years of a source-level decompiler/another tool rules. Each idiom is independent and
+   that two decades of decompiler work accumulate. Each idiom is independent and
    individually cheap; grow the library continuously. Never "done."
 7. 🚧 **C++ RTTI / vtable / class recovery — the highest-leverage addition for
    *this* corpus.** Game engines are deep-hierarchy C++ with pervasive virtual
@@ -2143,7 +2135,7 @@ lift/SLEIGH-ingest per ISA.
    each vtable slot to its method, and — composed with priorities 0–1 — turns
    `call qword ptr [rax+0x40]` into a *resolved* virtual call, closing the ❌
    "indirect / virtual call resolution" gap the value-set pass cannot. It is both a
-   substantial feature (another tool's class informer, another tool's RTTI analyzer) and a
+   substantial feature and a
    floor-raiser specific to the corpus, so it ranks at the top of the additions.
    - ✅ *(2026-08-30, verified)* **RTTI scan → decompiler composition.** The
      `rtti scan` COL→TypeDescriptor walk is now threaded onto `Ctx` as a
@@ -2166,7 +2158,7 @@ lift/SLEIGH-ingest per ISA.
      TypeDescriptor name for a template is wrapped back into its `??_R0<type>@8`
      symbol and run through the real MSVC demangler, so `.?AV?$vector@H@std@@`
      reads `std::vector<int>` instead of the verbatim decorated form — the case
-     Gemini flagged as where other tools win. **Verified corpus-wide:**
+     an external review flagged as the weakest point. **Verified corpus-wide:**
      CompressToolsLib 30/30 demangled, STALKER 2 561/561, `kenshi_x64` 2989/3055
      (the 66 the MSVC demangler itself declines fall back to verbatim — sound);
      `sub_180003f70` decompiles
@@ -2236,7 +2228,7 @@ lift/SLEIGH-ingest per ISA.
      relocation cause; the vtable entries themselves are complete.
 8. ✅ **Library-function identification (FLIRT-class signatures) — the biggest
    time-lever.** *(mechanism complete 2026-09-05; corpus breadth is the open follow-on)* A release build is a large fraction *known* code: the CRT, the
-   STL, the runtime, statically linked in. Fingerprinting it (another tool FLIRT / another tool
+   STL, the runtime, statically linked in. Fingerprinting it (FLIRT-class /
    Function-ID) names `memcpy`, `std::_Tree::_Insert`, `operator new` instead of
    decompiling them by hand — the single change that most shrinks what a human must
    read. N0xis already ships the invariance primitive (`sig validate`, refusing
@@ -2291,7 +2283,7 @@ lift/SLEIGH-ingest per ISA.
      stripped decomp without `--flirt` shows only `sub_XXXX`. Soundness re-proven:
      `uncompress` stayed anonymous when the reference did not contain it. Shipped:
      `signatures/samples/zlib-1.3.1-x86_64.npat` + `NOTICE` (zlib license) +
-     `README.md` (provenance, the capa "not derived from any other reverse-engineering tool sigs"
+     `README.md` (provenance, the capa "not derived from another tool's sigs"
      disclaimer, and the generate-locally model for proprietary libs) +
      `generate.sh` (reproduces the sample from the pinned upstream tag). OpenSSL
      libcrypto 3.6.4 also generates cleanly (5888 signatures) but is left
@@ -2357,10 +2349,10 @@ lift/SLEIGH-ingest per ISA.
      Now the only thing between a user and a named CRT — the mechanism is done.
    - **Licensing model (researched, sourced — commercial).** What we *redistribute*
      is the constraint, not the engine. Safe to ship: OSS-generated corpora
-     (zlib/OpenSSL/Qt), WARP-format reuse (Vector 35, Apache-2.0), another tool `.fidb`
+     (zlib/OpenSSL/Qt), WARP-format reuse (Vector 35, Apache-2.0), `.fidb`
      under Apache-2.0 with attribution, and readers for user-supplied sig files.
      Kept generate-locally (user runs `sig gen` on their own licensed toolchain,
-     we ship nothing derived): **MSVC CRT/STL**. Never shipped: another tool's bundled
+     we ship nothing derived): **MSVC CRT/STL**. Never shipped: any other tool's bundled
      `.sig`. FLIRT-signature copyright is genuinely unsettled (no case law); a
      lawyer should read the FLAIR toolkit license and the exact VS License Terms
      before any proprietary-derived corpus is distributed.
@@ -2416,14 +2408,14 @@ lift/SLEIGH-ingest per ISA.
     the stack-pointer delta across the function, handle frame-pointer-omitted (FPO)
     functions, and surface stack arrays and spilled locals as *typed* variables
     rather than raw `[rsp+N]`. Feeds type recovery and alias, and is a prerequisite
-    for other tools' readable-locals output.
-11. ⬜ **Output-readability structuring — the "reads like a source-level decompiler" axis.** Distinct
+    for readable-locals output.
+11. ⬜ **Output-readability structuring — the "reads like source" axis.** Distinct
     from CFG *correctness* (priority 0), this is what a user sees first: aggressive
     goto elimination, recovering `&&` / `||` from short-circuit CFG diamonds,
     ternary `?:`, precise loop forms (`for` / `while` / `do-while` with
     `break` / `continue`), rendering a jump table as a `switch` rather than an
     `if`-chain, and **signedness inference** so operators and casts are correct.
-    The other tools have a decade of polish here; it is a continuous dimension, not a
+    This dimension takes a decade of polish anywhere; it is continuous, not a
     single fix.
 12. ⬜ **Depth-limited symbolic / concolic execution — the engine the hard cases
     need.** The passes above are all *static abstract* interpretation:
@@ -2552,7 +2544,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
   - **2c — heap-allocation disambiguation.** ✅ *(2026-08-31, sound;*
     *unit-verified.)* Two distinct heap allocations never overlap, so a store
     through one no longer clobbers a value available at the other — the
-    points-to slice the BN comparison names. Allocation bases are the SSA `ret`s
+    points-to slice this needs. Allocation bases are the SSA `ret`s
     of `Call` sites whose resolved callee is a **curated allocator** (malloc/
     calloc/aligned_alloc, OpenSSL `CRYPTO_*alloc`, glib, Win32 `HeapAlloc`/…, C++
     `operator new` — Itanium `_Znwm`/`_Znam`, MSVC `??2`/`??_U`); `realloc` and
@@ -2568,7 +2560,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     across `ls`/`openssl`/`libcrypto`/`sqlite`/`libc`. The last Rung 2 piece is
     distinct-*parameter* aliasing, which needs a `restrict`-class proof.
 
-- **Rung 3 — Variable & type recovery (the a source-level decompiler readable-locals win).** 🚧
+- **Rung 3 — Variable & type recovery (readable locals).** 🚧
   Coalesce SSA versions back into named, **typed** variables; infer types from use
   (access widths, pointer arithmetic, known-API signatures), recover struct/field
   layout and enums. *Output:* `player->health -= dmg;` instead of
@@ -2604,7 +2596,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `(struct_rcx_0 *rcx, uint64_t rdx)` — no `.0` noise on parameters.
   - **3c — SSA-version coalescing (phi-webs → named variables).** ✅ *(2026-08-30,*
     *verified.)* A register's phi-web of versions (`rcx.1`/`rcx.2`/`rcx.3`, the
-    loop-carried counter) collapses to one named variable — the a source-level decompiler
+    loop-carried counter) collapses to one named variable — the
     readable-locals win: a `dec`/`jne` counter now reads
     `v1 = 3; while (v1 != 0) { v1 = v1 - 1; }` and a scan reads
     `while (*(uint8_t*)(rdx + v1) != 0x0) { v1 = v1 + 1; }`. This is SSA
@@ -2636,7 +2628,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     Synthetic split-block addresses are non-canonical and render as
     `// block_N: (edge split)`.
   - **3e — typed-locals declaration block.** ✅ *(2026-08-30, verified.)* The
-    recovered stack locals now render as a source-style typed declaration
+    recovered stack locals now render as a typed declaration
     block at the top of the function (`uint64_t local_18; __m128 local_20; …`)
     before the body, for the `structured`/`ssa` styles (`goto` stays flat). Only
     locals that actually appear in the body are declared (an optimizer-removed
@@ -2653,12 +2645,11 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `CompressToolsLib.dll` `GetBottomPixels` — `local_28`/`local_30`, used in
     `(local - x) >> 1` arithmetic shifts (`sar`, a signed midpoint), declare
     `int64_t` while the canary/saved-reg locals stay `uint64_t`.
-  - **3g — whole-program `this`-type propagation + C++ import naming
-    (readability).** ✅ *(2026-08-31, verified.)* Two wins from the another tool
-    review. **(a)** A value passed as arg 0 to a non-static C++ member
+  - **3g — whole-program `this`-type propagation + C++ import naming.** ✅
+    *(2026-08-31, verified.)* Two changes. **(a)** A value passed as arg 0 to a non-static C++ member
     function *is* a pointer to that method's class — `param_ctype` now types such
-    a parameter as the class (`std::basic_ostream<char,…> *rcx`), other tools'
-    whole-program `this`-typing, ranked just below the constructor-vtable class.
+    a parameter as the class (`std::basic_ostream<char,…> *rcx`), ranked just
+    below the constructor-vtable class.
     Sound: membership is read from the demangler's access specifier (gated
     against `static`), so a free function's or static member's arg 0 is never
     mistyped. **(b)** A module-prefixed C++ import (`MSVCP140.dll!?sputc@…`) now
@@ -2667,10 +2658,9 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     (`std::basic_streambuf<…>::sputc`) via an MSVC `NAME_ONLY` demangle — not the
     sanitized `MSVCP140_dll___sputc___…`. **Verified:** `sub_180002fa0` recovers
     `std::basic_ostream<char,struct std::char_traits<char> > *rcx` and names
-    `flush`/`sputc`/`sputn`/`setstate` — matching another tool (in fact naming *more*
-    C++ methods than another tool on that function); CompressToolsLib 17 / kenshi_x64
-    19 of 200 functions get a class-typed param, 0 regressions. MSVC only for now
-    (the game corpus); Itanium/ELF `this`-typing is a follow-on.
+    `flush`/`sputc`/`sputn`/`setstate`; across two real x64 PEs, 17 and 19 of
+    200 functions get a class-typed param, 0 regressions. MSVC only for now;
+    Itanium/ELF `this`-typing is a follow-on.
   - Still ⬜ for this rung: **width/signedness for register variables** (the
     same use-inference applied to coalesced `vN`, not only stack locals),
     **enums**, and **Itanium (ELF) member-function `this`-typing**.
@@ -2762,18 +2752,17 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     MSVC x64** (`CompressToolsLib.dll`, 200 functions): **69 of 75 loop headers
     now carry a real condition** (was near-zero for arithmetic latches), e.g.
     `while ((*(uint8_t*)(rdx.0 + rbx.3) != 0x0))` — a real string scan.
-  - **5a′ — the full jcc family after a logical op (readability finding).** ✅
-    *(2026-08-31, verified.)* A review with another tool showed the biggest
-    visible gap was N0xis's opaque `~/*cond(jle) after test*/` next to another tool's
-    clean conditions. A **logical** op (`test`/`and`/`or`/`xor`) clears OF and CF
+  - **5a′ — the full jcc family after a logical op.** ✅
+    *(2026-08-31, verified.)* The most visible readability defect was an opaque
+    `~/*cond(jle) after test*/` where a plain comparison belongs. A **logical** op (`test`/`and`/`or`/`xor`) clears OF and CF
     to 0, so *every* signed and unsigned branch is a pure sign/zero test on the
     value — not just `je`/`jne`. `CmpKind::Test` and a new `CmpKind::LogicalResult`
     now reconstruct the whole family (`jl`/`jle`/`jg`/`jge` → `<`/`<=`/`>`/`>= 0`,
     `ja`/`jbe` → `!=`/`== 0`, `jae`/`jb` → provable true/false since CF=0); the
     arithmetic `Result` additionally recovers `js`/`jns` (SF is the stored
     result's sign bit). **Verified:** `CompressToolsLib` `sub_180002fa0` reads
-    `while ((v8 > 0x0))` / `if ((rdi.1 <= 0x0) || …)` — matching another tool's
-    `for (; 0 < lVar7; …)` exactly, 0 opaque conditions in that function; corpus
+    `while ((v8 > 0x0))` / `if ((rdi.1 <= 0x0) || …)`, 0 opaque conditions in
+    that function; corpus
     opaque-cond lines collapse (kenshi_x64 200 fns to 31 — all `jo`/`jp` or
     opaque-flag-source, sound to leave), 0 regressions, 9 unit tests. Still ⬜:
     the idiom library and FP-compare conditions.
@@ -2948,8 +2937,8 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     instead when it is a small **tail region** — a `jmp`/`fall` chain, or a small
     `if`/`else` whose both arms are themselves tail regions, ending at function
     exits (`ret`/`tail-call`) with a ≤8-line body and no loop header. Sound (no
-    successors past the exit, no back-edge, SSA reads stay valid inlined) — the
-    other tools' tail duplication, bounded so a large shared body stays a single
+    successors past the exit, no back-edge, SSA reads stay valid inlined) — tail
+    duplication, bounded so a large shared body stays a single
     `goto` not bloat. **Verified:** `CompressToolsLib` `sub_1800021e0` 2 gotos →
     0; corpus residual-goto lines ~halved (`CompressToolsLib` 246→112, `Factorio`
     156→74, `kenshi_x64` 82→46), STALKER 2 200 fns 0 errors. The remaining gotos
@@ -2997,40 +2986,38 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     Corpus: 33 for-loops (`CompressToolsLib` 10, STALKER 2 23), 0 opaque, 0
     brace-unbalanced, 0 errors; the once-mis-scoped `sub_180002fa0` is now
     brace-balanced with one clean `for`.
-  - **6h — no-return paths excluded from post-dominance (readability).** ✅
-    *(2026-08-31, verified.)* A another tool review found N0xis emitting a
-    branch-arm + `goto` where another tool inverts the condition and flows a shared
-    tail as fall-through. Root cause: `dominators_rev` connected *any*
+  - **6h — no-return paths excluded from post-dominance.** ✅
+    *(2026-08-31, verified.)* N0xis was emitting a branch-arm + `goto` where the
+    shared tail should invert the condition and fall through. Root cause: `dominators_rev` connected *any*
     successor-less block to the virtual exit, so a `call-noreturn`/`int` abort
     counted as normal completion and broke the post-dominance of a shared tail
     every *returning* path converges on. It now takes `is_abort` and connects a
-    dead-end to the exit only when it is not an abort — what other tools do (drop
-    no-return paths for structuring). **Verified:** `CompressToolsLib`
-    `sub_180002780` 2 gotos → 0, structuring the shared assignment tail once as
-    fall-through with an inverted condition, *identical* to another tool; corpus
-    residual gotos drop on CRT-heavy code (`CompressToolsLib` 117 → 72).
+    dead-end to the exit only when it is not an abort — a no-return path is not
+    a completion, so it must not carry post-dominance. **Verified:** on a real
+    MSVC C++ PE, `sub_180002780` 2 gotos → 0, structuring the shared assignment
+    tail once as fall-through with an inverted condition; residual gotos drop on
+    CRT-heavy code (117 → 72).
   - **6i — strip unreferenced block-label anchors from display.** ✅
-    *(2026-08-31, verified.)* The `// block_N: <addr>` anchor emitted on every
-    block made N0xis ~30% more verbose than another tool, which labels only jump
-    targets. `DecompInput::strip_block_labels` drops the anchor from any block no
-    `goto` targets on the display/agent paths, while `ProvenancePass` keeps them
-    (its line→address map needs them). **Verified:** over 40 functions the line
-    count fell 1779 → 1257 vs another tool's 1212 — **within 4%** (from 47% more).
+    *(2026-08-31, verified.)* The `// block_N: <addr>` anchor was emitted on
+    *every* block, including the ones nothing jumps to, which is pure noise.
+    `DecompInput::strip_block_labels` drops the anchor from any block no `goto`
+    targets on the display/agent paths, while `ProvenancePass` keeps them (its
+    line→address map needs them). **Verified:** over 40 functions the line count
+    fell **1 779 → 1 257**.
   - Remaining ⬜: the residual shared-body gotos (large shared merges — real C
     keeps these) and the switch `default`/unresolved-case distinction.
-  - **another tool review standing (2026-08-31, CompressToolsLib, 40 fns).** After
-    this session, N0xis is at another tool's structural/readability quality on the MSVC
-    C++ corpus and *ahead* on C++ class typing: total lines 1257 vs 1212 (within
-    4%), gotos 17 vs 11, opaque conditions ~0 vs 0, C++ method names matched or
-    better. The **one systematic remaining gap is library-function naming** —
-    statically-linked CRT/STL functions (`free`, `memcpy`, `_Throw_C_error`) that
-    another tool names via FunctionID/FLIRT and N0xis leaves `sub_XXXX` (108 vs 70
-    unnamed). Closing it is the **FLIRT-class signature library** (Phase 10
-    priority 8), which needs a reference-library corpus to bootstrap the
-    signatures — the honest blocker, not a small fix.
+  - **Where readability stood after this session (2026-08-31, a real MSVC C++
+    PE, 40 functions).** Total lines **1 257**, residual gotos **17**, opaque
+    conditions **~0**, C++ method names recovered from RTTI. The one systematic
+    remaining gap is **library-function naming**: statically-linked CRT/STL
+    functions (`free`, `memcpy`, `_Throw_C_error`) still render as `sub_XXXX`
+    (108 of them unnamed). Closing it is the **FLIRT-class signature library**
+    (Phase 10 priority 8), which needs a reference-library corpus to bootstrap
+    the signatures — the honest blocker, not a small fix.
 
-- **Rung 7 — Structural advantages this design gets for free.** 🚧 The capabilities the
-  other tools structurally lack. Two are already present by construction: every pass
+- **Rung 7 — Structural advantages this design gets for free.** 🚧 Capabilities
+  that fall out of the architecture rather than being bolted on. Two are already
+  present by construction: every pass
   emits an **inspectable delta** (KF-5), and the **provenance ⇄ decompile** join (a
   live watchpoint → the exact decompiled statement, KF-1, shipped in Phase 4c).
   - **7a — MSVC RTTI / vtable class recovery.** ✅ *(2026-08-30, verified.)* A C++
@@ -3110,7 +3097,7 @@ they work the seam. Each entry says how it is pulled in: a **crate** (a
 
 | Tool | Why | Half | Pull-in |
 |---|---|---|---|
-| **SLEIGH ingest** (`.sla` → P-code → MicroIR) | One `SleighArch` backend behind `trait Arch` unlocks another tool's ~40 ISAs; the arch-breadth lever | static | crate/port + another tool specs |
+| **SLEIGH ingest** (`.sla` → P-code → MicroIR) | One `SleighArch` backend behind `trait Arch` unlocks the ~40 ISAs those specifications cover; the arch-breadth lever | static | crate/port + SLEIGH specs |
 | **yaxpeax-{mips,ppc,riscv}** / **Capstone** | Cheap per-ISA decoders (decode ≠ semantics); Capstone as a broad fallback | static | crates |
 | **goblin/object** (Mach-O) + a **format seam** | Close Mach-O and firmware loaders (the Phase-15 format-seam debt) | static | crate (have goblin) |
 | **gimli** (DWARF) + **pdb** | Type/symbol ingest — the base for whole-program types and the PDB item | static | crates |
@@ -3125,7 +3112,7 @@ deobfuscation and dynamic target recovery.
 ### Level 1 — static-output quality (our own way, verified on real targets)
 
 The depth where a decompiler is judged, done as our own passes (not by imitating a
-third party's format). Each increment is verified on a real binary before ✅.
+third-party format). Each increment is verified on a real binary before ✅.
 
 - ✅ **Bare local names.** A function defined in the analyzed image renders by its
   plain name (`crc32_z`, not `libz.so!crc32_z` / `image__name`); the `module!`
@@ -3210,10 +3197,8 @@ third party's format). Each increment is verified on a real binary before ✅.
 
 - **Ground-truth compilers** (gcc/clang/rustc/MSVC-cross) — already used
   (for-loops); formalize as a corpus generator.
-- **Differential oracles**: (a) **Unicorn** — execute a lifted function vs. the
-  real bytes, diff the semantics; (b) **other tools headless**
-  (`analyzeHeadless` / the reference API) — benchmark output quality against other tools on
-  the same binary.
+- **Differential oracle**: **Unicorn** — execute a lifted function against the
+  real bytes and diff the semantics. The oracle is the hardware.
 - **Fuzzing** (`cargo-fuzz`/libFuzzer) of the format/ISA parsers — mandatory,
   since they parse untrusted bytes (the OOM lesson: never `with_capacity` on a
   parsed length).
@@ -3241,7 +3226,7 @@ third party's format). Each increment is verified on a real binary before ✅.
 5. **eBPF/uprobes + gdbstub client** → dynamic breadth and no-patch provenance.
 
 **`Unicorn` and `Z3` serve static *and* dynamic at once — one investment, both
-halves — so they rank first.** Standalone tooling (another tool for its SLEIGH specs +
+halves — so they rank first.** The SLEIGH ISA specifications are downloaded
 the headless oracle, and a matching JDK) is downloaded to the shared tools
 directory on the Opus partition; crates are added to `Cargo.toml` at integration
 time, and system packages (`unicorn`, `z3`, `qemu-user`, `rr`) via the distro.
@@ -3383,7 +3368,7 @@ these are the places the output was quietly hostile to its primary consumer.
 ⬜ **Open follow-ons.** ICF folding means one address can carry many unrelated names
 (measured: 23 on one address) — `profile` reports the groups, but the decompiler's
 renderer does not yet know to refuse to pick one. And MCP still exposes 23 of the CLI's
-85 commands, omitting the entire live-memory half that is the project's capability.
+85 commands, omitting the entire live-memory half.
 
 ---
 
@@ -3523,7 +3508,7 @@ no managed debugger. Generic-shared frames disambiguate through the hidden `Meth
 argument, which is *in a register at the moment the watchpoint fires* — a fact only a live
 tool can use, and the exact place a static dumper cannot follow.
 
-Nothing in the ecosystem does this. Il2CppDumper is static; a memory scanner cannot name IL2CPP
+Nothing in the ecosystem does this. Static dumpers do not see the running process; a memory scanner cannot name IL2CPP
 frames; a MelonLoader/HarmonyX mod can hook a method it already knows but cannot start from
 an address and ask *who touched it*. **Sequence the phase so this lands as early as the
 dependencies allow** — it is the point of the phase, not step 4 of a list.
@@ -4478,7 +4463,7 @@ wanted, which is the whole argument for writing them down before that day.
 - **Phase 3 is the first user-visible payoff** and the original motivation; prioritize
   it immediately after parity.
 - **MCP (Phase 5)** can start as soon as the core API stabilizes (after Phase 3) — it's
-  a thin frontend, and it's the biggest capability, so don't defer it to the end.
+  a thin frontend, and it is the capability the phase exists for, so don't defer it to the end.
 - The ISA seam (`trait Arch`) is built in Phase 1 **even with one implementation**, so
   x64 knowledge never leaks back into the passes (the mistake that sank v0).
 - **Phase 8 is different in kind from 0–7.** Those phases built *capabilities*
@@ -4497,8 +4482,8 @@ wanted, which is the whole argument for writing them down before that day.
   a game corpus, 12 outranks 10 on payoff per unit of work. Within 12, ship item 0 (import
   an external dump) immediately: it is a day's work, it is reversible, and it tells you
   what the rest of the phase is actually worth before you write a metadata parser. Then
-  drive to item 3 (managed provenance) — that is the point of the phase, and it is the item a
-  third party cannot copy without also owning a watchpoint engine and an unwinder.
+  drive to item 3 (managed provenance) — it is the item the phase exists for, and
+  it needs both a watchpoint engine and an unwinder to work at all.
 - **The architectural debts are not a work item — they are triggers.** Do not schedule a
   "seams sprint". Each one names the change that should force it: the format seam lands as
   the *first commit of the second container format*, the VM seam as the first commit of the

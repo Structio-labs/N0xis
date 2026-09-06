@@ -24,8 +24,8 @@
 //!
 //! What lives *here* is portable and verifiable. What does **not** yet live here
 //! is the disassembly→`normalized_bytes` step (which relocatable-instruction
-//! bytes to zero, which NOPs to drop) — that must match another tool's WARP
-//! plugin byte-for-byte to interoperate, and validating it needs a another tool
+//! bytes to zero, which NOPs to drop) — that must match the format's reference
+//! normalizer byte-for-byte to interoperate, and validating it needs that
 //! reference. Until then this crate supplies the identity math; the normalizer
 //! that feeds it is a separate, reference-validated step.
 //!

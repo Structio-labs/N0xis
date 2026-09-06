@@ -2,7 +2,7 @@
 
 **From a hardware watchpoint in a live process to the exact decompiled statement that changed the value.**
 
-a memory scanner finds the *address*. other tools decompile the *code*. **N0xis connects them.**
+Memory scanners find the *address*. Decompilers explain the *code*. **N0xis connects them.**
 
 <!-- ▶ HERO GIF GOES HERE — record `provenance trace` running live and drop it at docs/assets/provenance.gif, then:  ![demo](docs/assets/provenance.gif) -->
 
@@ -20,9 +20,10 @@ $ n0x provenance trace --pid 9348 --addr 0x7ff68bef3010 --kind write
 That is the source's `hp -= 1;`, recovered from a running process — the watched address
 appears in the statement. Verified on Windows **and** Linux.
 
-No other does this: a memory scanner's "find what accesses this" stops at a raw disassembly
-line; other tools' decompilers have no live-watchpoint integration at all.
-*(Fact-checked against current another tool / another tool / another tool / a memory scanner.)*
+A "find what accesses this" scan normally stops at a raw disassembly line, and a
+decompiler normally has no live-watchpoint input at all. This is the two halves
+joined: the watchpoint hit is resolved through the same SSA pipeline that
+decompiles the file.
 
 ## Install
 
@@ -67,7 +68,7 @@ command. `n0x guide` lists all 110 commands, generated from the binary so it nev
   complete SSA destruction, exact branch conditions) where **every pass emits an inspectable
   delta** (`--explain`), not a black-box answer.
 - **Scan live memory** — value/pointer/AOB scanning with snapshot-backed narrowing, freeze,
-  code-cave hooks. a memory scanner class.
+  code-cave hooks. the full scan → narrow → freeze → patch loop.
 - **Watch & explain** — software / hardware / conditional breakpoints and a real cross-process
   unwound call stack; the raw material provenance is built on.
 - **Recover names** — C++ classes from RTTI on both ABIs (MSVC `.rdata` chains and Itanium
@@ -96,10 +97,9 @@ are not the same claim:
 ## Docs
 
 - **[docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md)** — every command, args, sources, schema id.
-- **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** — how it compares to other tools,
   decompiler output samples, and the caveats behind each claim.
 - **[CONCEPT.md](CONCEPT.md)** — architecture: adapters, passes, seams.
-- **[ROADMAP.md](ROADMAP.md)** — build history and the honest decompiler-parity gap.
+- **[ROADMAP.md](ROADMAP.md)** — build history and the analysis capabilities still missing.
 - **[MAP.md](MAP.md)** — the 16-crate workspace layout.
 - **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
   **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**

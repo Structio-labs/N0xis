@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! `n0xis-flirt` — a clean-room library-function **signature matcher** in the
-//! spirit of another tool's FLIRT and another tool's FunctionID: fingerprint the bytes of an
+//! byte-pattern tradition: fingerprint the bytes of an
 //! unnamed function and recover its real name (`free`, `memcpy`,
 //! `std::_Throw_C_error`, …) from a pattern database.
 //!
@@ -22,8 +22,8 @@
 //!   returns `None` — a decompiler must never show a *wrong* name. A longer
 //!   (more specific) pattern beats a shorter one; a genuine tie is refused.
 //! - **Dependency-free and format-agnostic.** The engine is a pure primitive;
-//!   populating the database (from another tool FunctionID, MSVC static-CRT `.lib`s,
-//!   another tool `.pat`/`.sig`, or bytes learned from a symbolized build) is a separate
+//!   populating the database (from MSVC static-CRT `.lib`s, third-party
+//!   `.pat`/`.sig` pattern files, or bytes learned from a symbolized build) is a separate
 //!   concern layered on top.
 //!
 //! ```

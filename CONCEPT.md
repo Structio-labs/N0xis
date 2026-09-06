@@ -28,28 +28,27 @@ a claim that the tool is meant for bots.
 
 It is a **synthesis of two worlds that today live apart**:
 
-1. The **other tools** — another tool / another tool-a source-level decompiler / another tool: static analysis,
+1. **Static analysis tooling** — disassembly, an optimizing decompiler,
    optimizing decompiler, types, xrefs.
-2. **a memory scanner and its kin** — full *dynamic* memory work: value scanning,
+2. **Live-memory tooling** — full *dynamic* memory work: value scanning,
    pointer-path scanning, AOB scanning, struct dissection, code injection,
    freeze/write, hooks, and a persistent *cheat table*.
 
-No other does both well: CE finds runtime *values* but can't explain the
-*code*; the RE tools explain code but treat the running process as a second-class
-afterthought. N0xis fuses them, and does it **contract-first (CLI + MCP first)** —
+The two are normally separate programs: a memory scanner finds runtime *values*
+without explaining the *code*, and a static analyzer explains code while treating
+the running process as a secondary input. N0xis fuses them, and does it **contract-first (CLI + MCP first)** —
 a GUI is **deferred, not forbidden** (see §2).
 
 > **One deterministic, inspectable analysis engine for a whole binary — on disk or
 > running — with every capability reachable from a shell script as directly as
 > from a program.** Contract-first, equally at home on a live process and a static
-> file, aiming to match every other feature and beat it on the
-> static⇄dynamic seam.
+> file, with the static⇄dynamic seam as the capability it is designed around.
 
-## 2. The one-line thesis (and where it differs from other tools)
+## 2. The one-line thesis (and the design choice behind it)
 
-What exists elsewhere are **GUI-first**; scripting/automation is bolted on top of an
-interactive core. Their decompiler microcode is a black box: you see the final C,
-not the reasoning. N0xis inverts this:
+A GUI-first design puts scripting and automation on top of an interactive core,
+and an optimizing decompiler normally exposes only its final C, not the
+reasoning. N0xis is built the other way round:
 
 - **Contract-first (GUI deferred, not forbidden).** Every capability is a CLI verb
   + MCP tool that returns a versioned JSON artifact (`ok/data/meta`). A person reads
@@ -65,7 +64,7 @@ not the reasoning. N0xis inverts this:
   artifact: raw IR, SSA form, the propagation/DCE delta, recovered types, the
   structured control tree. You can ask "why is this condition `x > 4`?" or
   "what did DCE remove?" — from a prompt, a script, or an agent, and impossible to
-  ask a source-level decompiler at all.
+  ask of a finished C listing.
 - **One pipeline, live + static.** Runtime and file analysis differ only in which
   *adapter* supplies bytes/symbols. The SSA→opt→types→render pipeline is byte-for-byte
   the same. (v0 already proved this with `IrSource`; v1 makes it a first-class seam.)
@@ -99,9 +98,9 @@ The direction — and why the analysis-depth work in [`ROADMAP.md`](ROADMAP.md)
 (Phase 10: Memory SSA, interprocedural summaries) matters *beyond* decompiler
 prettiness — is to **let `.n0x/` accumulate a derived, invalidatable summary layer
 that *is* the model**, while keeping every artifact content-addressed and
-recomputable. That is the deliberate fork away from other tools: another tool / another tool /
-another tool carry a *mutable* analysis database and inherit its signature failure
-— the database drifting out of sync with reality. N0xis holds **sound over
+recomputable. That is a deliberate design choice: a *mutable* analysis database
+inherits one signature failure mode — drifting out of sync with the bytes it
+describes. N0xis holds **sound over
 complete**: the model is a *cache of summaries over a deterministic pipeline*,
 never a mutable source of truth that can silently go stale — you can always
 recompute and verify.
@@ -255,7 +254,7 @@ decode ─▶ cfg ─▶ lift(micro-IR) ─▶ ssa-construct ─▶ propagate/fo
 
 Each pass emits a schema'd artifact the frontends can request individually.
 
-## 6. The decompiler pipeline (the main capability)
+## 6. The decompiler pipeline
 
 This is where v0 was weakest (a linear instruction transliterator: `mov`→`dst=src`,
 registers printed as `rax`/`rcx` verbatim, conditions from a fragile "last cmp"
@@ -285,9 +284,9 @@ heuristic). v1 makes the optimizing IR the core, structured as real passes:
 Because the source is an adapter, this whole chain runs identically on a **live
 process** and a **static file** — satisfying "works at runtime too" by construction.
 
-## 7. Capabilities vs another tool / another tool / another tool
+## 7. Design choices behind this shape
 
-| Axis | What exists elsewhere | N0xis |
+| Axis | Common alternative design | N0xis |
 |---|---|---|
 | Primary interface | GUI; scripting bolted on | CLI + MCP contract (GUI deferred, not never) |
 | Decompiler internals | black-box microcode | every pass emits inspectable JSON |
@@ -296,9 +295,9 @@ process** and a **static file** — satisfying "works at runtime too" by constru
 | Automation ergonomics | plugin-in-GUI | stable JSON schemas, CLI + MCP |
 | Extensibility | plugin API | swappable adapters (source/arch/pass) |
 
-We do **not** try to out-a source-level decompiler a source-level decompiler on raw decompiler maturity (20 yrs of
-microcode opts). We win where they're structurally weak: scriptable, inspectable,
-unified live/static, reproducible. If a GUI ever lands, it rides on top of these same
+Raw decompiler maturity is a decades-long body of work and is not what this
+project is built around. Its focus is elsewhere: scriptable, inspectable, unified
+live/static, reproducible. If a GUI ever lands, it rides on top of these same
 artifacts (N0xHUD is the existing proof) rather than displacing the contract.
 
 ## 8. Expectations / definition of done (per capability)
@@ -320,14 +319,14 @@ artifacts (N0xHUD is the existing proof) rather than displacing the contract.
 
 ---
 
-## 9. Dynamic memory layer (a memory scanner class) — a first-class peer
+## 9. Dynamic memory layer — a first-class peer
 
 Dynamic memory work is **not a side feature** — it is a peer of static analysis and
 shares the same adapter + pass + contract model. It lives mostly in `n0xis-core`
 (scan/diff algorithms are pure) over the `MemorySource` adapter, with the live
 Win32 bits in `n0xis-sources`.
 
-Feature parity target (match CE, then beat it):
+The capability set this layer is built to cover:
 
 - **Value scanning** — exact / unknown-initial / increased / decreased / changed /
   unchanged / range, over typed views (i8..i64, f32/f64, string, AOB). Iterative
@@ -337,7 +336,7 @@ Feature parity target (match CE, then beat it):
 - **AOB (array-of-bytes) scanning** — signature scan with wildcards; used for
   code-cave/anchor discovery and version-resilient hooking.
 - **Struct dissection** — walk a region as a struct, infer field sizes/types
-  (fused with static type recovery — see the point of the phase registry).
+  (fused with static type recovery).
 - **Write / freeze** — one-shot write, continuous freeze, and script-driven writes.
 - **Code injection / patching** — the existing `patch` surface + code caves +
   detour/trampoline hooks, all with persisted undo.
@@ -349,10 +348,11 @@ shell script (or an agent) can drive a full scan→filter→freeze loop headless
 interactive, always-on-top face on the same write/freeze/watch machinery for
 in-the-moment runtime instrumentation.
 
-## 10. Own table format — `.n0xt` (a superset of CE `.CT`)
+## 10. Own table format — `.n0xt`
 
-The persistent artifact of a session, stored in `.n0x/tables/`. It is CE's cheat
-table plus everything the RE side knows:
+The persistent artifact of a session, stored in `.n0x/tables/`. It is a
+cheat-table-shaped entry list — address, pointer path, AOB, type, description,
+hotkeys, groups — plus everything the static side knows:
 
 - Entries: address / typed pointer-path / AOB signature, value type, description,
   hotkeys, groups.
@@ -363,25 +363,23 @@ table plus everything the RE side knows:
 - Deterministic, diffable, hand- and machine-authorable text format (TOML/JSON core, not opaque
   binary), versioned like every other contract in `n0xis-contracts`.
 
-## 11. Capabilities — a registry + a standing review loop
+## 11. Capability registry + a standing review loop
 
 Rather than one main feature, the project keeps a **registry of the things it
-does that other tools don't**, and a **standing review process** that keeps that
+sit on the static⇄dynamic seam**, and a **standing review process** that keeps that
 registry honest as both sides change:
 
-> **The review loop:** for each capability area, (a) map what other tools do
-> (BN / another tool / another tool / a memory scanner / others), (b) map what we do, (c) find the gap
-> no other fills — usually on the static⇄dynamic seam, (d) decide whether it is
-> worth filling, and (e) record it, its rationale, and its status. Re-run it as the
-> project — and other tools — change.
+> **The review loop:** for each capability area, (a) map what the established
+> static and live-memory workflows already cover, (b) map what we do, (c) find the
+> gap that is not well covered anywhere — usually on the static⇄dynamic seam,
+> (d) decide whether it is worth filling, and (e) record it, its rationale, and
+> its status. Re-run it as the field and the project change.
 
-The living registry of these features (with the per-capability third party analysis)
-is **[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)**. CONCEPT names only the
-first entry.
+The registry itself is kept outside the public repository.
 
 ### #1: Provenance-Driven Memory Intelligence
 
-The one thing no other can do, because none spans both worlds:
+The capability that requires spanning both worlds:
 
 > **Any runtime value auto-resolves to its meaning, and any intent auto-resolves to
 > a verified change — by fusing dynamic scanning with the SSA decompiler.**

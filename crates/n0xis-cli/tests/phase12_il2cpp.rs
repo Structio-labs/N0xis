@@ -8,7 +8,7 @@
 //! against a genuine image rather than a mock. Synthetic dumps are then written
 //! in each of the two conventions dumper versions disagree about, and the point
 //! of the test is that the tool **measures** which one fits instead of encoding
-//! a guess that silently breaks on the next Il2CppDumper release.
+//! a guess that silently breaks on the next dumper release.
 //!
 //! The two refusals matter as much as the success: a Unity WebGL index must
 //! never bind to a native image, and a dump from a different build must be

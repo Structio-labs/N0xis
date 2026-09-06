@@ -5,7 +5,7 @@
 //! (structure) → render into the three `decomp pseudo` styles
 //! (`docs/CLI_COMMANDS.md`): `goto` (flat, labeled), `structured`
 //! (`if`/`while`/…, unoptimized), `ssa` (structured *and* optimized — the
-//! ROADMAP Phase 3 target style). All three already get **exact** branch
+//! ROADMAP Phase 3's target style). All three already get **exact** branch
 //! conditions from [`crate::SsaPass`] — that correctness fix isn't gated
 //! behind `--style ssa`, only the expression-collapsing prettification is.
 //!
@@ -91,7 +91,7 @@ pub struct DecompInput {
     /// (`ir explain`).
     pub explain: bool,
     /// Drop the `// block_N: <addr>` anchor comment from every block that no
-    /// `goto` targets — other tools show a label only at a jump target, and these
+    /// `goto` targets — a label is only meaningful at a jump target, and these
     /// anchors are otherwise ~a third of the lines and pure noise to a reader (or
     /// an LLM). Left **off** for a consumer that needs the anchor to map a line
     /// back to an address — [`crate::ProvenancePass`] extracts a block's pseudo-C
@@ -359,7 +359,7 @@ impl Pass for DecompPass {
             flags.push("low-coverage");
         }
 
-        // source-style typed-locals declaration block (Rung 3): the recovered
+        // Typed-locals declaration block (Rung 3): the recovered
         // stack locals, declared with their inferred C type at the top of the
         // function before the body — only for the C-like styles, and only those
         // that actually appear in the rendered body (so a local dead-eliminated
@@ -407,8 +407,8 @@ impl Pass for DecompPass {
 fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> String {
     // A *demangled* name is already a complete C++ prototype — return type,
     // qualified name, and its own (real, source-level) parameter list, e.g.
-    // `unsigned short __cdecl CompressToolsLib::ReadHeightValue(struct … *,
-    // unsigned int, unsigned int)`. It is authoritative: prepending our
+    // `unsigned short __cdecl SomeLib::SomeMethod(struct … *, unsigned int,
+    // unsigned int)`. It is authoritative: prepending our
     // recovered `ret` and appending our register-name `(params)` produced the
     // garbled `uint32_t <full-prototype>(uint64_t rcx, …)` seen on real MSVC
     // exports. When the name carries its own arg list, use it verbatim.
@@ -469,7 +469,7 @@ fn local_decls(types: &TypeArtifact, body: &[String]) -> Vec<String> {
 }
 
 /// Drop the `// block_N: …` anchor comment from every block no `goto` jumps to
-/// — other tools show a label only at a jump target, so on straight-line code
+/// — a label is only meaningful at a jump target, so on straight-line code
 /// these anchors are pure noise (and ~a third of the lines). A goto-targeted
 /// block keeps its comment as the label the `goto block_N` reads. Pure display
 /// transform; the un-stripped form stays available to
@@ -833,7 +833,7 @@ mod tests {
         // wrapping it produced the garbled
         // `uint32_t <full-prototype>(uint64_t rcx, …)` seen on MSVC exports.
         let sig = RecoveredSignature { params: vec![], ret: None };
-        let name = "unsigned short __cdecl CompressToolsLib::ReadHeightValue(struct CompressToolsLib::CompressedImageFile *, unsigned int, unsigned int)";
+        let name = "unsigned short __cdecl SomeLib::ReadValue(struct SomeLib::SomeFile *, unsigned int, unsigned int)";
         assert_eq!(format_signature(Va(0x1940), &sig, Some(name)), name);
     }
 

@@ -6,7 +6,8 @@ open-source libraries listed below, each built from its own published source.
 The signatures are functional fingerprints (leading bytes with relocated bytes
 wildcarded) used only to identify a function by name; each corpus is provided
 under, and subject to, its upstream library's license, reproduced/attributed
-here. They are NOT derived from the signature databases shipped with any other reverse-engineering tool.
+here. They are NOT derived from the signature database shipped with any other
+reverse-engineering tool, commercial or open-source.
 
 --------------------------------------------------------------------------------
 zlib — samples/zlib-1.3.1-x86_64.npat

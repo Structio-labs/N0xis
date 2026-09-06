@@ -218,7 +218,7 @@ Walk the call graph from a root function.
 ### `decomp pseudo --addr <hex> [--style goto|structured|ssa]`
 Pseudo-C for one function.
 - `--style` — `goto` (flat + labels), `structured` (if/while, unoptimized), or **`ssa`**
-  (structured *and* optimized — the Phase 3 main; **default**).
+  (structured *and* optimized — the full Phase 3 pipeline; **default**).
 - Plus all `IrArgs` (`--addr`, `--arch`, `--size`, `--no-auto-end`) and the same five sources.
 - Schema: **`n0x.decomp.pseudo.v1`** (archived v0 id, kept for back-compat — the only current
   command that still emits a `n0x.*` schema).
@@ -259,7 +259,7 @@ registered surface, where a game's own gameplay methods live); each symbol is ta
 
 ---
 
-## Live memory (a memory scanner class)
+## Live memory
 
 ### `mem read --addr <hex>`
 Read bytes (live process, static PE, or inline).

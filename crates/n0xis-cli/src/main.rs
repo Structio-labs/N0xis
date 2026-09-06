@@ -269,7 +269,7 @@ enum Command {
     /// deliberately-varied samples (Phase 8; RE_METHOD F3).
     #[command(subcommand)]
     Sig(SigCmd),
-    /// Interoperate with WARP, Vector 35's cross-tool signature format
+    /// Interoperate with WARP, an Apache-2.0 cross-tool signature format
     /// (Apache-2.0): read a `.warp` file's function table (GUID + name).
     #[command(subcommand)]
     Warp(WarpCmd),
@@ -279,7 +279,7 @@ enum Command {
     #[command(subcommand)]
     Ui(UiCmd),
     /// IL2CPP managed layer (Phase 12): the C# names behind a Unity target's
-    /// addresses. Item 0 imports an index another tool produced (Il2CppDumper)
+    /// addresses. Item 0 imports an index another tool produced
     /// and serves it through the same symbol seam the PE exports use, so
     /// `decomp pseudo`, `xref` and friends start naming with no changes of
     /// their own. Windows and Unity WebGL dumps are both importable — and an
@@ -319,7 +319,7 @@ enum Il2cppCmd {
 
 #[derive(Args)]
 struct Il2cppImportArgs {
-    /// Path to an Il2CppDumper `script.json`.
+    /// Path to a `script.json` symbol dump.
     #[arg(long = "script-json")]
     script_json: String,
     /// Name to store the index under (default `default`).
@@ -1643,7 +1643,7 @@ enum FunctionCmd {
     /// Whole-program type propagation: flow recovered types along the call graph
     /// to a fixpoint, so a class recovered in one function (from RTTI, or from
     /// concrete field accesses) reaches every function that touches the same
-    /// object — the layer other tools keep as a persistent type database.
+    /// object — a persistent, call-graph-wide type database.
     Typeflow(FunctionTypeflowArgs),
     /// Program-wide class layouts: unify per-function field recovery into ONE
     /// field set per RTTI class. Each method sees its own slice of the object
@@ -2228,7 +2228,7 @@ struct DecompArgs {
     #[command(flatten)]
     ir: IrArgs,
     /// `goto` (flat + labels), `structured` (if/while, unoptimized), or
-    /// `ssa` (structured *and* optimized — the ROADMAP Phase 3 target style).
+    /// `ssa` (structured *and* optimized — the default).
     #[arg(long, value_enum, default_value_t = PseudoStyle::Ssa)]
     style: PseudoStyle,
     /// Also return the per-round optimization delta (`--style ssa` only):
@@ -2936,7 +2936,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
             "steps": [
                 "bundle list --file <archive>            # is there a script layer? extract it",
                 "bundle extract --file <archive> --type lua --out ./scripts",
-                "game grep \"combo,interact,stratagem\" --dir ./scripts   # find the feature's vocabulary cluster",
+                "game grep \"combo,interact,ability\" --dir ./scripts   # find the feature's vocabulary cluster",
                 "lua disasm --file ./scripts/<hit>.luac  # read the algorithm out of the script",
                 "const identify --lua ./scripts/<hit>.luac  # recognize the RNG/hash by its constants",
                 "bindings list --file <game.exe> --name next_random   # only now go native, and only for what scripts call",
@@ -2957,7 +2957,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
         json!({
             "name": "explain a runtime value (what code wrote it)",
             "when": "you have an address and want the source-level statement responsible — the fusion of live watchpoint + decompiler.",
-            "maps_to": "Phase 4c principal; RE_METHOD F1 (stop chasing view/cache indirection).",
+            "maps_to": "Phase 4c; RE_METHOD F1 (stop chasing view/cache indirection).",
             "steps": [
                 "debug watch --pid <p> --addr <hex> --kind write   # catch the writing instruction + caller chain",
                 "provenance trace --pid <p> --addr <hex> --kind write   # decompile the exact writing statement"
@@ -3823,7 +3823,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     emit(&Response::success(schema::v1::ANALYZE, data).with_source(label), pretty)
 }
 
-/// Parse a BN-style escaped string into raw bytes: `\xNN` (two hex digits), plus
+/// Parse an escaped byte string into raw bytes: `\xNN` (two hex digits), plus
 /// `\n \t \r \0 \\ \"`. Any other `\X` keeps the backslash then `X` verbatim.
 fn parse_escaped(s: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
@@ -4877,7 +4877,7 @@ fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
     )
 }
 
-/// The principal ROADMAP Phase 4c loop, in one command: arm a hardware
+/// The ROADMAP Phase 4c loop, in one command: arm a hardware
 /// watchpoint on a value's address (Phase 4b), and on a hit, explain it —
 /// resolved module/function, decompiled statement (Phase 3's SSA
 /// decompiler) — then optionally record that explanation onto a `.n0xt`

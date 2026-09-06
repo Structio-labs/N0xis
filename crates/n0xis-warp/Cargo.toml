@@ -1,6 +1,6 @@
 [package]
 name = "n0xis-warp"
-description = "Clean-room implementation of WARP function/basic-block GUIDs (Vector 35's cross-tool signature identity): UUIDv5 over normalized code, dependency-free. The interoperability primitive n0xis shares with another tool's WARP format."
+description = "Clean-room implementation of WARP function/basic-block GUIDs (Vector 35's Apache-2.0 cross-tool signature identity): UUIDv5 over normalized code, dependency-free. The interoperability primitive n0xis shares with the WARP format."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

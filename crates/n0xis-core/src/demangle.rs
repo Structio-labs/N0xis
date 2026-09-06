@@ -39,7 +39,7 @@ fn demangle_msvc(name: &str) -> Option<String> {
 
 /// Demangle an MSVC C++ symbol to its **qualified name only** — no return type,
 /// parameter list, or access/calling-convention keywords — the form a *call
-/// site* wants (`std::basic_streambuf<…>::sputc`, as other tools show), rather
+/// site* wants (`std::basic_streambuf<…>::sputc`), rather
 /// than [`demangle`]'s full prototype. `None` if `name` is not an MSVC symbol.
 pub fn demangle_msvc_name_only(name: &str) -> Option<String> {
     if !name.starts_with('?') {
@@ -51,7 +51,7 @@ pub fn demangle_msvc_name_only(name: &str) -> Option<String> {
 
 /// If `name` is a **non-static C++ member function**, the class it belongs to —
 /// the type of its implicit `this` (the first argument under the x64 ABI). This
-/// is the seam for whole-program `this`-type propagation (matching other tools):
+/// is the seam for whole-program `this`-type propagation:
 /// a value passed as arg 0 to `Class::method` is a `Class *`. `None` for a free
 /// function, a static member, or a non-C++ symbol — those have no `this`, so
 /// their arg 0 must not be mistyped. Membership is read from the demangler's

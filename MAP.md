@@ -9,7 +9,7 @@ Central navigation hub (map-of-content) for **N0xis** — a CLI-driven reverse-e
 
 N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a cheat/trainer maker. Status: **alpha**, PolyForm Noncommercial 1.0.0, public at `github.com/Structio-labs/N0xis`.
 
-> Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[CAPABILITIES]] · [[PRODUCT_POLICY]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
+> Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[PRODUCT_POLICY]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
 
 ---
 
@@ -53,7 +53,7 @@ Analysis commands take **exactly one** target source, or fall back to the `.n0x/
 | `n0xis-il2cpp` | IL2CPP managed layer (Phase 12): imported managed symbol indices served through `SymbolProvider`, plus a native `global-metadata.dat` reader and live runtime-type discovery (`il2cpp metadata` / `icalls` / `classes` / `obj`). Address spaces are explicit, so a Unity WebGL dump can never bind to a native PE. | **No** |
 
 ### Status at a glance (verify against [[ROADMAP]] before quoting)
-- **Phases 1–7: done.** Phase 3 optimizing SSA decompiler; 4b live memory (scanner-class); 4c provenance; 5 MCP; 6 persistence/caching/snapshot/remote/perf; 7 ARM64 + value-set + deobfuscation + diffing.
+- **Phases 1–7: done.** Phase 3 optimizing SSA decompiler; 4b live memory (value/pointer/AOB scanning, freeze, patching); 4c provenance; 5 MCP; 6 persistence/caching/snapshot/remote/perf; 7 ARM64 + value-set + deobfuscation + diffing.
 - ⚠️ **ARM64 caveat (standing):** implemented and self-tested, **not** verified to x64's standard. Say "implemented and self-tested," never "working/verified."
 - **Phase 8 (spec-first method tooling):** 6/7 named commands landed + hex-everywhere audit closed (merged into `main`). ⬜ **Region caching as a built-in scan option is the single open item.**
 - **Phase 9 (UI-layer localization):** `ui locate`, the structural-predicate scan primitive, and `debug watch --when` are committed, and **still pending live-target validation.** Unit-tested on synthetic buffers; the decisive live appearance-correlation test has **not** run. Say "implemented, pending live validation," never "verified." See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].
@@ -75,7 +75,6 @@ Of those 91, **45 are backed by the capability registry** (`n0xis-frontend::regi
 | [CONCEPT.md](CONCEPT.md) — [[CONCEPT]] | Vision & design philosophy (positioning, contract-first stance, GUI stance) | dev, reviewer, agent |
 | [ROADMAP.md](ROADMAP.md) — [[ROADMAP]] | Phase-by-phase plan + live status (legend 🎯✅⏳⬜⚠️) | dev, agent |
 | [docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md) — [[CLI_COMMANDS]] | **Current** command reference — every leaf command, args, schemas | agent, dev, user |
-| [docs/CAPABILITIES.md](docs/CAPABILITIES.md) — [[CAPABILITIES]] | What N0xis does that any other reverse-engineering tool/CE don't, with caveats per entry | evaluator, agent |
 | [docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md) — [[PRODUCT_POLICY]] | Positioning, scope, and ethics — RE/dynamic-analysis, single-player | contributor, user |
 | [docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md) — [[COMMUNITY_ROADMAP]] | Community/backlog items and how contributions slot in | contributor |
 | [docs/PHASE9_UI_LOCATE_BRIEF.md](docs/PHASE9_UI_LOCATE_BRIEF.md) — [[docs/PHASE9_UI_LOCATE_BRIEF\|Phase 9 brief]] | Phase 9 design + definition-of-done (incl. the live §9.3 test still owed) | dev, agent |
@@ -90,19 +89,19 @@ Of those 91, **45 are backed by the capability registry** (`n0xis-frontend::regi
 ## By topic
 
 ### Static analysis & the decompiler
-The Phase 3 optimizing SSA decompiler is the main. Build IR, decompile to pseudo-C, slice, xref, discover/trace functions, diff.
+The Phase 3 optimizing SSA decompiler is the largest subsystem here. Build IR, decompile to pseudo-C, slice, xref, discover/trace functions, diff.
 - Commands: `ir {build,explain,dot,slice,manifest,value-set,deobfuscate}`, `decomp pseudo --style goto|structured|ssa`, `function {discover,trace}`, `xref {to,from,string}`, `diff functions`. Full detail in [[CLI_COMMANDS]].
 - ISA support: x64 (full) and ARM64 (⚠️ implemented and self-tested; SSA-opt & flag-precise conditions x64-only) — [[ROADMAP]] Phase 7.
 - Where it lives: `n0xis-arch` (decode) + `n0xis-core` (passes).
 
-### Dynamic memory / live analysis (a memory scanner class)
+### Dynamic memory / live analysis
 Value scanning with true snapshot-backed narrowing, AOB, pointer paths, region dissect, patches with an undo journal, tables, breakpoints/watchpoints.
 - Commands: `scan {value,filter,aob,pointer-path,dissect}`, `mem {read,write,map}`, `patch {dry-run,apply,list,show,undo,detour}`, `table {add,list,show,rm,freeze}`, `debug {await-hit,watch,attach}`. See [[CLI_COMMANDS]].
 - ⬜ Region caching as a built-in scan option is the one open Phase 8 item ([[ROADMAP]]).
 
 ### Provenance (Phase 4c)
 Watchpoint × decompiler: arm a hardware watchpoint on a value, wait for one real hit, and explain the exact decompiled statement responsible — with a true cross-process x64 caller chain from `.pdata`/`.xdata`.
-- Command: `provenance trace` (also exposed over MCP). See [[CLI_COMMANDS]] and [[CAPABILITIES]].
+- Command: `provenance trace` (also exposed over MCP). See [[CLI_COMMANDS]].
 
 ### Game-engine assets & LuaJIT
 Bitsquid/Stingray bundles + offline and live LuaJIT introspection.
@@ -129,7 +128,7 @@ Every command emits exactly one JSON object: `{"ok":true,"data":{…},"meta":{"s
 |---|---|---|
 | First run — understand & try it | [[README]] | [[CLI_COMMANDS]] → run `n0x guide` |
 | Continue implementation | [[ROADMAP]] | [[CLI_COMMANDS]] → the relevant crate under `crates/` |
-| Drive it from an agent (CLI or MCP) | [[CLI_COMMANDS]] (envelope + schemas) | `n0x guide` (auto-generated catalog) → [[CAPABILITIES]] |
+| Drive it from an agent (CLI or MCP) | [[CLI_COMMANDS]] (envelope + schemas) | `n0x guide` (auto-generated catalog) |
 | Onboard into the project | [[MAP]] (this file) | [[CONCEPT]] → [[ROADMAP]] → [[CONTRIBUTING]] |
 | Contribute / open a PR | [[CONTRIBUTING]] | [[PRODUCT_POLICY]] → [[COMMUNITY_ROADMAP]] |
 | Work on N0xHUD | [[docs/n0xhud/CONCEPT\|N0xHUD concept]] | [[docs/n0xhud/ROADMAP\|N0xHUD roadmap]] → `crates/n0xis-hud/src/` |

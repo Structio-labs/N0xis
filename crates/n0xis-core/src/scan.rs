@@ -218,7 +218,7 @@ pub struct ScanInput {
     pub regions: Vec<(Va, usize)>,
     pub value_type: ValueType,
     pub criterion: ScanCriterion,
-    /// Byte stride between candidate addresses ("fast scan" in a memory scanner
+    /// Byte stride between candidate addresses (an aligned "fast scan");
     /// terms); `1` checks every byte offset, `value_type.size()` is the
     /// natural-alignment default.
     pub align: usize,

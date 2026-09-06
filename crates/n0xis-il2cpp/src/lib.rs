@@ -10,7 +10,7 @@
 //! start of the other half.
 //!
 //! **Item 0 first, on purpose**: import an index someone else already produced
-//! (Il2CppDumper, Il2CppInspector, Cpp2IL) and serve it through the existing
+//! (any of the established IL2CPP dumpers) and serve it through the existing
 //! [`SymbolProvider`] seam. Named decompilation before a single byte of
 //! metadata parser exists — and it is not scaffolding, it stays as the fallback
 //! for versions and obfuscations a native parser will refuse.

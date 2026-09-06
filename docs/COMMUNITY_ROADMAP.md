@@ -72,7 +72,7 @@ write-up) that the passing unit tests + a passing exit test had missed.
 larger real ARM64 binaries (more cross-compiled Rust/C programs, a real
 ARM64 Windows PE if you have access to one) and file/fix whatever else turns
 up — this doesn't need new features, just more real bytes thrown at what
-already exists. This is *the* main open item for the ARM64 track: until
+already exists. This is the top-priority open item for the ARM64 track: until
 it's done, the whole ARM64 path stays "implemented and self-tested," never
 "verified." `A-Arch` / `D-Straightforward` / `S-Ready-For-Implementation`.
 Status: Open.
@@ -171,8 +171,8 @@ tools today — the read-oriented static/dynamic workflow plus the working-tree
 
 - **Auto-match every function across two whole binaries** — `diff functions`
   today compares one already-identified pair; automatically matching by name
-  (where symbols exist) and by structural similarity (where they don't, a
-  whole category structural diff tools exist for) is a substantially larger,
+  (where symbols exist) and by structural similarity (where they don't — a
+  well-studied problem class of its own) is a substantially larger,
   separate problem. `A-Diffing` / `D-Complex`. Status: Open.
 
 ## Deobfuscation extensions
@@ -240,10 +240,11 @@ tools today — the read-oriented static/dynamic workflow plus the working-tree
 
 - **CI** (GitHub Actions: build + test matrix on every push/PR). No workflow
   exists yet. `A-Infra` / `D-Trivial`. Status: Open.
-- **Comparative benchmarks vs. another tool** on identical binaries — deliberately
-  **not** another tool/another tool for now (commercial EULAs often restrict publishing
-  benchmark comparisons; check before doing this against either). `A-Infra` /
-  `D-Modest`. Status: Open.
+- **A decompilation-quality benchmark harness** — run the pipeline over a fixed
+  public-binary corpus and publish *absolute* per-function metrics (coverage,
+  error rate, quality score) so releases are comparable **to each other** over
+  time. This project does not publish comparisons against other tools.
+  `A-Infra` / `D-Modest`. Status: Open.
 
 ## GUI
 

@@ -61,13 +61,6 @@ PAGES: tuple[Page, ...] = (
         "Linux: one analysis pipeline over static PE/ELF files and live processes.",
     ),
     Page(
-        "docs/CAPABILITIES.md",
-        "capabilities",
-        "What N0xis does that others don't",
-        "Where N0xis differs from another tool, another tool, another tool and a memory scanner, "
-        "with the third party analysis and honest caveats behind each claim.",
-    ),
-    Page(
         "docs/CLI_COMMANDS.md",
         "cli-reference",
         "CLI Reference",
@@ -93,7 +86,7 @@ PAGES: tuple[Page, ...] = (
         "roadmap",
         "Roadmap & build history",
         "Phase-by-phase history of how N0xis was built, what is verified against "
-        "real targets, and the decompiler-parity gap that remains.",
+        "real targets, and the analysis capabilities that remain unbuilt.",
     ),
     Page(
         "CHANGELOG.md",
@@ -134,7 +127,6 @@ WIKI_TARGETS = {
     "CONCEPT": "architecture",
     "ROADMAP": "roadmap",
     "CLI_COMMANDS": "cli-reference",
-    "CAPABILITIES": "capabilities",
     "PRODUCT_POLICY": "product-policy",
     "COMMUNITY_ROADMAP": "community",
     "CONTRIBUTING": "contributing",

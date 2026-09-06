@@ -237,7 +237,7 @@ pub(crate) fn render_callee_name(name: &str) -> String {
     // Split off a `module!` prefix so a C++-mangled *import*
     // (`MSVCP140.dll!?sputc@…`) reaches the demangler — whose MSVC/Itanium paths
     // require the bare `?`/`_Z` symbol, which the module prefix otherwise hides.
-    // A successful demangle drops the module, matching other tools
+    // A successful demangle drops the module
     // (`std::basic_streambuf<…>::sputc`, not `MSVCP140_dll__…`); a plain C import
     // (`kernel32!CreateFileW`) doesn't demangle and keeps its `module__name` form.
     let bare = name.rsplit('!').next().unwrap_or(name);

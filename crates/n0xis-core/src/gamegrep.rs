@@ -5,7 +5,7 @@
 //! they cluster a concept's vocabulary (ROADMAP Phase 8, fixes RE_METHOD F2 —
 //! the campaign's root cause).
 //!
-//! One grep for `combo|interact|stratagem` found the component, the algorithm
+//! One grep for a concept's three or four synonyms found the component, the algorithm
 //! module, the RNG class, and every data template in ~30 minutes — after weeks
 //! of native RE had found none of it. That grep was hand-rolled in throwaway
 //! Python; this is the first-class version.

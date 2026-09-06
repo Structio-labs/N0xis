@@ -377,7 +377,7 @@ pub fn module_base_of(src: &Src) -> Option<Va> {
 /// single `ReadProcessMemory` across a gap fails *wholesale* — silently
 /// yielding zero hits. Intersecting with the region map turns one doomed read
 /// into per-block reads that actually land. With no window, it is every
-/// committed writable region: a memory scanner's default scan set.
+/// committed writable region — the conventional default scan set.
 pub fn live_scan_regions(live: &dyn LiveTarget, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;

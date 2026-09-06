@@ -393,9 +393,8 @@ fn recover_structs(accesses: &[MemAccess]) -> Vec<RecoveredType> {
 /// arguments at *every* call, regardless of the callee's real arity — it can't
 /// know the callee takes fewer. So a register that appears *only* as a bare
 /// `Var` call argument is indistinguishable from that injected noise, and
-/// counting it would peg every calling function at arity 4 (measured on
-/// `CompressToolsLib.dll`: nearly every function reported 4 args, real arity
-/// 1–2). Such a register is therefore left out of the arity signal — the same
+/// counting it would peg every calling function at arity 4 (measured on a real
+/// x64 PE: nearly every function reported 4 args, real arity 1–2). Such a register is therefore left out of the arity signal — the same
 /// trimming the renderer already applies to the call *display*
 /// (`render.rs::render_call`). A register used even once in a non-argument
 /// position (an address base, arithmetic, a branch condition, a return, a
@@ -659,7 +658,7 @@ fn param_api_types(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> BTreeMap<String, &
 }
 
 /// Map an SSA var passed as **arg 0 to a C++ member function** to that method's
-/// class-pointer type — whole-program `this`-type propagation (other tools' win):
+/// class-pointer type — whole-program `this`-type propagation:
 /// a value handed to `Class::method` *is* a `Class *`. Only non-static members
 /// contribute (a free function's or static member's arg 0 is not a `this`), and
 /// the callee name is resolved through the same call-site table the renderer
@@ -937,7 +936,7 @@ const CALLEE_SCAN_SIZE: usize = 16 * 1024;
 /// Decompiling ONE function analyses **every** callee — a full
 /// `Cfg→Ssa→Optimize→infer` each — and the de-dup cache in
 /// [`user_callee_arg_types`] is local to a single decompile. So browsing
-/// re-analysed the same callees (`malloc`, Qt/`rpl` helpers, …) over and over:
+/// re-analysed the same callees (`malloc`, Qt template helpers, …) over and over:
 /// profiling a warm session showed `user_callee_arg_types` plus instruction
 /// decoding dominating the per-view cost.
 ///

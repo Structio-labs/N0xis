@@ -51,7 +51,7 @@ pub struct RttiVtable {
 ///
 /// `.?AVFoo@@` → `Foo`, `.?AUData@Ns@@` → `Ns::Data`. The full readable form
 /// ([`demangle_rtti_name_full`]) is then folded to a compact label
-/// ([`shorten_type_name`]): heavily-templated code (Telegram's `rpl`, the STL
+/// ([`shorten_type_name`]): heavily-templated code (reactive-stream template libraries, the STL
 /// type-erasure helpers) demangles to multi-KiB type strings — correct but
 /// useless as a list/decompiler label — and the `<lambda>`-in-a-local-scope
 /// names the `msvc_demangler` cannot parse would otherwise render as the raw
@@ -94,7 +94,7 @@ fn demangle_rtti_name_full(mangled: &str) -> String {
 
 /// Ceiling on a rendered class name. Past it a name is truncated on a `char`
 /// boundary with a stable hash suffix that keeps distinct types distinct — a
-/// bare prefix cut would collide the thousands of `rpl` types that share a long
+/// bare prefix cut would collide the thousands of template types that share a long
 /// opening (`rpl::details::consumer_handlers<struct rpl::no_value, …`).
 const RENDER_NAME_MAX: usize = 160;
 
@@ -180,7 +180,7 @@ fn itanium_class_name(ztv_symbol: &str) -> String {
 /// against `_ZTISt10lock_error`). A byte-level walk therefore recovers almost
 /// nothing without also resolving relocations: a prototype of that approach found
 /// 11 of 179 vtables. The `_ZTV…` symbol names the class outright, which is both
-/// exact and what other tools consult first.
+/// exact and the cheapest source to consult first.
 ///
 /// A fully stripped ELF has no such symbols and yields nothing here — honest, and
 /// the documented follow-on (structural scan + `.rela` resolution).
@@ -242,8 +242,8 @@ const CHD_BASE_ARRAY: usize = 12;
 /// never drive an unbounded loop/allocation (the OOM lesson, again).
 const MAX_BASES: usize = 256;
 /// Hard ceiling on a decorated type name — a mis-read pointer can never drive an
-/// unbounded read (the OOM lesson). Real MSVC names, even Telegram's deeply nested
-/// `rpl`/Qt template types, stay well under this; 512 was far too small and
+/// unbounded read (the OOM lesson). Real MSVC names, even deeply nested
+/// template types, stay well under this; 512 was far too small and
 /// truncated ~half of the Qt desktop PE's names mid-symbol, which then could not demangle.
 const MAX_NAME: usize = 64 * 1024;
 /// First read size for [`read_cstr`], doubled on each miss. Most names are short
@@ -416,7 +416,7 @@ fn read_base_classes(buf: &[u8], rd_base: u64, image_base: u64, src: &dyn Memory
 /// physically holds ([`MemorySource::read`] returns a short/empty `Vec` at a
 /// boundary, never an error), and reading `MAX_NAME` up front for every descriptor
 /// would churn 64 KiB per name; growing keeps the common short name to one read
-/// while still reaching the multi-KiB template names that `rpl`/Qt produce.
+/// while still reaching the multi-KiB template names heavy C++ template code produces.
 fn read_cstr(src: &dyn MemorySource, at: Va) -> Option<String> {
     let mut bytes: Vec<u8> = Vec::new();
     let mut step = NAME_CHUNK;
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn a_giant_demangled_name_is_truncated_with_a_stable_disambiguator() {
-        // A demangled `rpl`/STL type-erasure name runs to multiple KiB — bound it.
+        // A demangled STL type-erasure name runs to multiple KiB — bound it.
         let huge = format!("std::_Func_impl_no_alloc<{}>", "class rpl::details::x, ".repeat(200));
         let a = shorten_type_name(huge.clone(), ".?AVdecorated_a@@");
         assert!(a.len() <= RENDER_NAME_MAX + 12, "must be bounded, got {} bytes", a.len());

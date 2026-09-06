@@ -16,8 +16,8 @@
 //!   1. scan for the target's counter (a real value in real memory),
 //!   2. arm a hardware watchpoint on it and catch a real write,
 //!   3. **fuse that hit with the SSA decompiler** (`ProvenancePass`) to get
-//!      back the exact source-level statement that wrote it — the principal
-//!      capability, verified against real compiled code, not a mock,
+//!      back the exact source-level statement that wrote it — verified against
+//!      real compiled code, not a mock,
 //!   4. freeze the value and record the explanation onto a real `.n0xt`
 //!      table entry,
 //!   5. reload the table from disk and confirm the provenance + verification
@@ -131,7 +131,7 @@ fn agent_finds_and_freezes_hp_with_explained_provenance() {
         .expect("watch succeeds");
     let hit = outcome.hit.expect("the target's own loop writes within the timeout");
 
-    // Step 3 — fuse the hit with the SSA decompiler: the principal fusion.
+    // Step 3 — fuse the hit with the SSA decompiler.
     let live = LiveAdapter::attach(pid).expect("re-attach");
     let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
     let (code_start, code_size) = insn_module

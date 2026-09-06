@@ -10,7 +10,7 @@
 //! (at the image's preferred base), and defined function symbols from
 //! `.symtab`/`.dynsym` are surfaced through [`SymbolProvider`]. So the whole
 //! "one pipeline, live + static" property extends to Linux-native binaries —
-//! Bevy/Rust, GCC/System V, Godot — not just PE.
+//! Rust and GCC/System V C++ alike — not just PE.
 //!
 //! Scope: static code + symbols. DWARF type/line recovery (`.debug_info`) is a
 //! documented follow-on; a not-stripped ELF still yields real function names
@@ -310,7 +310,7 @@ impl StaticElf {
         // With lazy binding (the default, and what a stripped ELF executable
         // almost always uses) a call to an import is a **direct** `call` to a
         // PLT stub, not an indirect call through the GOT — so `iat_slot` above
-        // never sees it and the callee stays `sub_1030`. other tools name the
+        // never sees it and the callee stays `sub_1030`. Naming the
         // stub after its import for exactly this reason; so do we, which makes
         // one entry in `symbols` serve every consumer at once (discovery list,
         // xref, decompiler) instead of each re-deriving the thunk.

@@ -166,7 +166,7 @@ fn emit_node(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     if ctx.visited[n] {
         // A small, successor-free tail block (a shared `return`/epilogue reached
         // from several paths) is **tail-duplicated** inline instead of jumped to
-        // — the transform other tools use to erase the most common residual goto.
+        // — the standard transform for erasing the most common residual goto.
         // Sound: the block has no successors (nothing downstream to re-run or
         // re-enter), its body is straight-line, and every SSA value it reads was
         // valid at the original join, so it is equally valid inlined at this
@@ -299,7 +299,7 @@ fn emit_if_else(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     }
 
     // Emit both arms into buffers first, so an *empty* arm can be cleaned up the
-    // way other tools do: an empty then-arm inverts the condition
+    // usual way: an empty then-arm inverts the condition
     // (`if (c) {} else { B }` → `if (!c) { B }`), and an empty else-arm is simply
     // dropped. Both are pure readability rewrites — the guarded body and the
     // condition's truth value are unchanged.
@@ -324,7 +324,7 @@ fn emit_if_else(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         ctx.out.push(format!("{pad0}if ({cond}) {{"));
         ctx.out.extend(then_lines);
         // `else { if (…) … }` collapses to `else if (…)` when the else arm is
-        // exactly one `if` spanning the whole block — other tools' else-if chain.
+        // exactly one `if` spanning the whole block — the conventional else-if chain.
         if let Some(collapsed) = try_else_if(&else_lines, ctx.indent) {
             ctx.out.extend(collapsed);
         } else {
@@ -633,7 +633,7 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
     // *returning* path reaches it, but the abort path does not). Excluding them
     // lets a block that all returning paths converge on become the merge and
     // structure as a clean fall-through instead of a `goto`, exactly as the
-    // other tools do (they drop no-return paths from the CFG for structuring too).
+    // standard treatment (no-return paths are dropped from the CFG for structuring).
     let is_exit: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "ret" | "tail-call")).collect();
     let mut is_abort: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "call-noreturn" | "int")).collect();
     // A function with no normal return (every path aborts) — let the aborts act

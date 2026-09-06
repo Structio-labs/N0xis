@@ -108,7 +108,7 @@ pub mod v1 {
     /// per module — the same schema whether the target is native or under Wine.
     pub const STACK_BACKTRACE: &str = "n0xis.stack.backtrace.v1";
 
-    /// Provenance graph — the principal (Phase 4c, KF-1).
+    /// Provenance graph (Phase 4c, KF-1).
     pub const PROVENANCE: &str = "n0xis.provenance.v1";
     /// One address's asserted name/type/comment + history (`annotate *`, Phase 6).
     pub const ANNOTATION: &str = "n0xis.annotation.v1";

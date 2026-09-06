@@ -20,7 +20,7 @@
 //! - [`Arch::lift`] and [`Arch::branch_condition`] are **not** overridden —
 //!   they keep the trait's sound defaults (`Unlifted` / a placeholder
 //!   condition). SSA-level optimization and flag-precise condition recovery
-//!   (Phase 3's `--style ssa` main) are an X64-only capability today;
+//!   (Phase 3's `--style ssa` path) are an X64-only capability today;
 //!   ARM64 still gets accurate CFG, discovery, xrefs, and `goto`/`structured`
 //!   decompilation, just not the optimized SSA pass. A documented follow-on,
 //!   not a silent gap — flags work (NZCV) is a comparable-sized effort to

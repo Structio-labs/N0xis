@@ -30,7 +30,8 @@ have the right to redistribute, and it carries its upstream attribution in
 
 **Disclaimer (the capa model).** These signatures are produced by `n0xis sig gen`
 from open-source libraries built from their own published source. They are **not**
-derived from, and do not contain, the signature databases shipped with any other reverse-engineering tool. (Cf. Mandiant capa's
+derived from, and do not contain, the signature database shipped with any other
+reverse-engineering tool, commercial or open-source. (Cf. Mandiant capa's
 [`sigs/README.md`](https://github.com/mandiant/capa/blob/master/sigs/README.md).)
 
 **What may go in this tree:** signatures generated from OSS libraries under a
@@ -43,8 +44,7 @@ with the upstream license honored in `NOTICE`.
   `libvcruntime.lib`, `libcpmt.lib`). Those are handled **generate-locally**
   (below): the user runs `sig gen` against *their own* licensed toolchain, and we
   never ship the derived data.
-- Anyone else's *shipped* signature files (any other reverse-engineering tool databases), converted or
-  not.
+- Anyone else's *shipped* signature database files, converted or not.
 
 See [`../ROADMAP.md`](../ROADMAP.md) (Phase 10, FLIRT) and the project's licensing
 notes for the full reasoning.
@@ -74,8 +74,9 @@ them line by line and the matcher refuses same-specificity ties.
 **Match fidelity is build-specific.** A signature captures the bytes a *specific*
 compiler produced for a *specific* library version at a *specific* PIC/optimization
 setting. A corpus generated from zlib 1.3.1 (PIC) names zlib 1.3.1 (PIC) code; a
-different version, compiler, or PIE/PIC setting may not match — exactly as another tool and
-another tool ship many per-version, per-configuration variants. Generate against a
+different version, compiler, or PIE/PIC setting may not match — which is why
+signature libraries are conventionally shipped as many per-version,
+per-configuration variants. Generate against a
 reference built the way your target was.
 
 ## Reproduce the samples

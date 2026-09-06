@@ -627,8 +627,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [0.2.1] — 2026-08-31
 
-The decompiler jump: from a Memory-SSA foundation to **source-level
-readable pseudocode with C++ class recovery**, verified rung by rung on
+The decompiler jump: from a Memory-SSA foundation to **readable, source-level
+pseudocode with C++ class recovery**, verified rung by rung on
 real AAA game binaries **and** system libraries (see `ROADMAP.md`). Every
 item below was confirmed on a real target under the verify-before-✅ rule —
 no ML nondeterminism, sound over complete throughout. 56 commits.
@@ -649,7 +649,7 @@ no ML nondeterminism, sound over complete throughout. 56 commits.
   overlap, so a store through one does not clobber a value available at the
   other. Allocation bases are the results of curated allocator calls (malloc/
   calloc/`operator new`/`HeapAlloc`/OpenSSL `CRYPTO_*alloc`/…; `realloc`/`free`
-  excluded). The points-to gap other tools were ahead on — closed.
+  excluded). This closes the last of the three points-to gaps listed for Rung 2.
 
 ### C++ RTTI / class recovery (Rung 7a)
 
@@ -668,12 +668,12 @@ no ML nondeterminism, sound over complete throughout. 56 commits.
 
 - **3b — parameters named in the body** (`rcx.0` → `rcx`).
 - **3c — SSA-version coalescing**: a register's phi-web collapses to one named
-  variable (the a source-level decompiler readable-locals win); guarded by liveness +
+  variable (the readable-locals win — one name per phi-web instead of one per
+  SSA version); guarded by liveness +
   interference so the lost-copy / swap / pre-update hazards are refused.
 - **3d — complete SSA destruction** via edge copies (critical edges split), so
   no phi destination renders undefined.
-- **3e — a source-style typed-locals declaration block** at the top of the
-  function.
+- **3e — a typed-locals declaration block** at the top of the function, C-style.
 - **3f — signedness inference from use** (a value compared with `jl`/divided
   with `idiv`/arithmetic-shifted is signed).
 

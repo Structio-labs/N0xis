@@ -225,7 +225,7 @@ pub struct DecompRequest {
     pub size: usize,
     #[serde(default)]
     pub no_auto_end: bool,
-    /// One of `"goto"`, `"structured"`, `"ssa"` (default: `"ssa"`, the optimized + structured style).
+    /// One of `"goto"`, `"structured"`, `"ssa"` (default: `"ssa"` — optimized + structured).
     #[serde(default = "default_style")]
     pub style: String,
     /// Also return the per-round optimization delta (`ssa` style only). Off by

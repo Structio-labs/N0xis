@@ -505,7 +505,7 @@ fn expr_contains_var(e: &MicroExpr, name: &str) -> bool {
 // a `Load` from an address a *dominating, un-clobbered* `Store` wrote is
 // replaced by the stored value, so a spill/reload or a struct-field write
 // then read reads as the value, not `*(rbp - 8)`. This is what makes the
-// register SSA reach *through* memory — other tools' readable-locals win.
+// register SSA reach *through* memory — the readable-locals win.
 //
 // **Sound over complete (CONCEPT §3 rule 6), and honest about what it is:**
 // intra-block only (no cross-block memory phi yet), and it forwards only
@@ -1401,7 +1401,7 @@ mod tests {
         // call rel32 (+0) -> rax ; mov rdx, [rax+0x68] ; mov rax, rdx ; ret
         // The extra `mov rax, rdx` keeps the loaded value observable (via
         // the final ret) instead of being dead-code-eliminated outright —
-        // this is the principal Decompile.txt shape: `rax = f(); x = *(rax+0x68);`
+        // this is the motivating CONCEPT §6.3 shape: `rax = f(); x = *(rax+0x68);`
         // collapsing to `x = *(f()+0x68);` (CONCEPT §6.3).
         let code = vec![
             0xE8, 0x00, 0x00, 0x00, 0x00, // call +0 (direct)

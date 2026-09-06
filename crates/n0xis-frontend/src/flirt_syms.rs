@@ -3,7 +3,7 @@
 
 //! [`FlirtSymbols`] — a [`SymbolProvider`] backed by an [`n0xis_flirt::Db`]:
 //! names a function by matching its **bytes** against a signature database, the
-//! way another tool FLIRT / another tool FunctionID name the statically-linked CRT/STL that a
+//! way byte-signature matching names the statically-linked CRT/STL that a
 //! stripped release build otherwise leaves `sub_XXXX`.
 //!
 //! It reads a small window at the queried address and looks it up; a hit is a

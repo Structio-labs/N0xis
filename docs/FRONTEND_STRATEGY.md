@@ -11,12 +11,13 @@
    then the CLI, MCP, and every future frontend get it for free. This is the
    project's process seam ([`n0xis-frontend`](../crates/n0xis-frontend)) and the
    `one model, many projections` rule.
-2. **Beginner-friendly is the point of the phase, not a coat of paint.** The whole
-   reason this tool exists is that another tool/other tools are hostile to newcomers. Every
-   decision is judged against: *would a motivated beginner get unstuck here?*
+2. **Beginner-friendly is a design requirement, not a coat of paint.** RE
+   tooling has a steep entry curve, and lowering it is part of why this project
+   exists. Every decision is judged against: *would a motivated beginner get
+   unstuck here?*
    Power stays available; it never blocks the newcomer.
-3. **Static and dynamic are one session, not two apps.** Unlike a pure
-   decompiler (other tools) or a pure live tool (a memory scanner), N0xis binds a
+3. **Static and dynamic are one session, not two apps.** Rather than being a
+   pure decompiler or a pure live-memory tool, N0xis binds a
    **static image** and an **optional live process** into a single target. The UI
    never makes the user "switch modes"; the dynamic panels light up when a
    process is attached, joined to the static analysis (KF-1: watchpoint →
@@ -88,7 +89,7 @@ zoom change never breaks a layout.
     Details ▸ Output.
   - **`Graph`** — CFG/Call-graph center ▸ Decomp side ▸ Details.
   - **`Dynamic / Debug`** — Process/Modules ▸ Registers + Stack ▸ Memory Scanner +
-    Watchlist ▸ Live Memory/Hex ▸ Decomp (joined). a memory scanner-shaped.
+    Watchlist ▸ Live Memory/Hex ▸ Decomp (joined). Scanner-shaped.
   - **`Reverse` (everything)** — the dense pro layout.
   - **`Minimal`** — just Decomp + Copilot.
 - **Custom workspaces**: user rearranges → **Save workspace as…** (named, JSON on
@@ -130,7 +131,7 @@ So the three entry points are just *which halves are bound*:
 | --- | --- | --- | --- |
 | Analyze a file | ✓ | — | pure decompilation / RE |
 | Attach to a process | (optional, auto-resolve) | ✓ | inspect a running game |
-| Launch & attach | ✓ | ✓ (spawned) | full static⇄dynamic, the principal |
+| Launch & attach | ✓ | ✓ (spawned) | full static⇄dynamic |
 
 The UI **never says "static mode / dynamic mode."** Dynamic panels are simply
 enabled once a process is bound; the target badge shows `static` or `● live`. A
@@ -173,7 +174,7 @@ the same session.
 | Process / Modules | `process ps`, `module list` |
 | Registers | live register file |
 | Stack / Threads | thread list, stack walk |
-| **Memory Scanner** (scanner-style) | value scan / refine (`scan`) → watchlist |
+| **Memory Scanner** | value scan / refine (`scan`) → watchlist |
 | **Watchlist / Watchpoints** | HW watchpoints, **"find what accesses" hit counter**, freeze value |
 | Breakpoints | execute/read/write BPs, on-hit → caller |
 | Live Memory / Hex | live read, edit |
@@ -197,7 +198,7 @@ Set execute breakpoint · Apply / generate signature · Bookmark · Ask Copilot
 about this.
 
 **On a code line / instruction**: Copy address · Show in disasm / hex · Follow
-jump/call · Set watchpoint (R/W/X) · **Find what accesses this** (scanner-style) ·
+jump/call · Set watchpoint (R/W/X) · **Find what accesses this** ·
 Provenance — what wrote this · Patch instruction (NOP / edit) · Add comment · Ask
 Copilot to explain this line.
 
@@ -234,8 +235,8 @@ Categorized (left nav), searchable:
   undo-journal retention.
 - **AI Copilot** — model/endpoint, context level (selection / function /
   program), auto-explain on select, **privacy: what is sent** (explicit).
-- **Keybindings** — fully rebindable; **presets: another tool-like / another tool-like /
-  a memory scanner-like / N0xis default**.
+- **Keybindings** — fully rebindable, with importable keymap presets for users
+  migrating from other tools; the N0xis default ships out of the box.
 - **Onboarding / Guides** — tooltips on/off, beginner hints, glossary,
   link-outs to the web docs.
 - **Advanced** — MCP/command-server port, logging level, **telemetry off by
@@ -263,7 +264,7 @@ Long sessions need palette variety — a first-class feature, not an afterthough
 - Every command shows its shortcut + a one-line description (from the guide),
   which doubles as onboarding.
 
-## 11. AI Copilot integration (the point of the phase)
+## 11. AI Copilot integration
 
 - **Context-aware**: knows the current target, function, selection, and last
   command results.
@@ -303,13 +304,13 @@ Long sessions need palette variety — a first-class feature, not an afterthough
 1. **Shell + session**: frameless window, welcome/launcher, target binding,
    Output panel, command palette (guide-driven), global zoom, one theme.
 2. **MVP workspace** (`Decompile`): Functions list + Decompilation (Monaco) + AI
-   Copilot + selection bus. Already friendlier than BN.
+   Copilot + selection bus. Usable end-to-end for a first decompile.
 3. **Static depth**: Disassembly (synced) + Xrefs + Details/provenance + Hex.
 4. **Docking + workspaces**: Dockview, presets, save/reset, beginner/pro.
 5. **Themes**: palette presets + custom editor + syntax themes.
 6. **Graph**: CFG + call graph (pan/zoom).
 7. **Dynamic**: Process/Modules → attach → Registers/Stack → Memory Scanner +
-   Watchlist (CE hit counter) → Live Memory → Patch journal.
+   Watchlist (access hit counter) → Live Memory → Patch journal.
 8. **Settings** grows alongside each area; keybinding presets last.
 
 ## 15. Workflow note
