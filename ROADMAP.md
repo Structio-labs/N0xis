@@ -1484,6 +1484,33 @@ lift/SLEIGH-ingest per ISA.
      truncated table stops. **Still open in priority 0**: PE `.xdata` scope tables
      (`__C_specific_handler`) and `FuncInfo` (`__CxxFrameHandler`), and the
      `ttype` tables that would name *which* exception a pad catches.
+   - ✅ *(2026-09-06, verified)* **PE exception edges — `.pdata` + `.xdata`.**
+     `crate::eh::scan_pdata`, behind the same `function eh` command and the same
+     artifact shape as the ELF half. Every `RUNTIME_FUNCTION` yields an
+     **authoritative `[begin, end)`** — the ground truth the end-of-function
+     heuristic lacks — and a validated `__C_specific_handler` `SCOPE_TABLE`
+     yields the `__try`/`__except`/`__finally` edges.
+     **The handler data is accepted on evidence, not on a name**: nothing in the
+     format says which handler an `UNWIND_INFO`'s private data belongs to (the
+     handler field is an RVA into a statically-linked CRT with no symbol), so the
+     bytes are parsed as a scope table and accepted only if *every* entry
+     validates — sane count, `begin < end`, every address zero, the reserved `1`,
+     or inside an executable section. One bad entry rejects the whole table.
+     **Verified two ways**: function counts match `llvm-readobj --unwind`
+     **exactly** on both PE targets (467 and 371 250), and every recovered range
+     lies strictly inside its own function — 52 of 52 and 136 of 136, none
+     outside.
+     **The cost, measured**: over the 41 functions of the smaller target that
+     carry a protected range, gotos **54 → 155** and pseudo lines
+     **2 073 → 2 709**, `// asm:` nodes unchanged. That is +636 lines of code the
+     structurer used to discard — an `__except` block has no incoming branch —
+     not worse lifting. The standing PE quality gate is unchanged.
+     **Still open, and it is the larger half of a modern C++ image**:
+     `__CxxFrameHandler4`'s compressed, undocumented payload — **89 790** of the
+     371 250-function target's handlers — is refused rather than guessed at. The
+     classic `FuncInfo` (magic `0x19930520`–`0x19930522`) is recognized so it can
+     never be misread as a scope count, but neither target here contains one, so
+     nothing about that path is claimed as verified.
 1. 🚧 **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.

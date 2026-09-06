@@ -245,6 +245,19 @@ fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, S
 type EhMemo = Option<(String, std::sync::Arc<Vec<n0xis_core::EhFunction>>)>;
 static EH_MEMO: std::sync::Mutex<EhMemo> = std::sync::Mutex::new(None);
 
+/// A PE's preferred image base — `.pdata` and `.xdata` are written entirely in
+/// RVAs, so nothing in them can be read without it. `None` for anything that is
+/// not a statically loaded PE.
+fn pe_image_base(src: &Src) -> Option<n0xis_contracts::Va> {
+    match src {
+        Src::Static(img) => match &**img {
+            n0xis_sources::StaticImage::Pe(pe) => Some(pe.image_base()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
     let immutable = matches!(src, Src::Static(_) | Src::Snap(_));
     let label = src.as_mem().label();
@@ -257,7 +270,13 @@ fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
     }
     let map = match src.section_range(".eh_frame") {
         Some(eh) => n0xis_core::scan_eh_frame(src.as_mem(), eh),
-        None => Vec::new(),
+        // PE: `.pdata` + `.xdata`. It carries an authoritative extent for every
+        // function whether or not that function has a handler, so it is worth
+        // reading on an image with no `__try` in it at all.
+        None => match (src.section_range(".pdata"), pe_image_base(src)) {
+            (Some(pdata), Some(base)) => n0xis_core::scan_pdata(src.as_mem(), base, pdata),
+            _ => Vec::new(),
+        },
     };
     let arc = std::sync::Arc::new(map);
     if immutable && let Ok(mut memo) = EH_MEMO.lock() {
@@ -723,7 +742,7 @@ impl Plugin for AnalysisPasses {
 
         reg.add(Capability::new(
             "function.eh",
-            "Exception edges: each function's protected ranges and the landing pads they unwind to, from ELF `.eh_frame` + `.gcc_except_table`.",
+            "Exception edges: each function's protected ranges and the landing pads they unwind to — ELF `.eh_frame` + `.gcc_except_table`, or PE `.pdata` + `.xdata` scope tables (which also give an authoritative extent for every function).",
             Some(n0xis_contracts::schema::v1::FUNCTION_EH),
             Origin::Builtin,
             Box::new(|args| {
@@ -731,13 +750,18 @@ impl Plugin for AnalysisPasses {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
                 };
-                let Some(eh) = resolved.src.section_range(".eh_frame") else {
-                    return Response::error(
-                        "no-eh-frame",
-                        "no `.eh_frame` section — DWARF exception tables live there (PE `.xdata` scope tables are a follow-on)".to_string(),
-                    );
+                let all = match resolved.src.section_range(".eh_frame") {
+                    Some(eh) => n0xis_core::scan_eh_frame(resolved.src.as_mem(), eh),
+                    None => match (resolved.src.section_range(".pdata"), pe_image_base(&resolved.src)) {
+                        (Some(pdata), Some(base)) => n0xis_core::scan_pdata(resolved.src.as_mem(), base, pdata),
+                        _ => {
+                            return Response::error(
+                                "no-exception-table",
+                                "neither `.eh_frame` (ELF DWARF CFI) nor `.pdata` (PE unwind) is present in this image".to_string(),
+                            );
+                        }
+                    },
                 };
-                let all = n0xis_core::scan_eh_frame(resolved.src.as_mem(), eh);
                 // `addr` narrows to the one function that contains it, which is
                 // what a per-function question ("does this have a try block?")
                 // wants; without it the whole-image map is returned.

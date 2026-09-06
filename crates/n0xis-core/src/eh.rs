@@ -358,6 +358,136 @@ pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64)) -> Vec<EhFunct
 
 /// Every landing-pad address in `functions`, as a flat sorted set — the shape
 /// the CFG builder wants when it needs to know "is this block an EH entry?".
+/// `UNW_FLAG_EHANDLER` — the unwind info is followed by an exception handler.
+const UNW_FLAG_EHANDLER: u8 = 0x1;
+/// `UNW_FLAG_UHANDLER` — …a termination handler. Either one means handler data
+/// follows the unwind codes.
+const UNW_FLAG_UHANDLER: u8 = 0x2;
+/// `UNW_FLAG_CHAININFO` — the "handler" slot is another `RUNTIME_FUNCTION`
+/// instead, so this entry carries no handler data of its own.
+const UNW_FLAG_CHAININFO: u8 = 0x4;
+/// Bound on `SCOPE_TABLE.Count`. A real `__try` nest is a handful; anything
+/// larger is the surest sign this handler's data is not a scope table at all.
+const MAX_SCOPES: u64 = 512;
+
+/// **PE exception edges** — `.pdata` (`RUNTIME_FUNCTION`) + `.xdata`
+/// (`UNWIND_INFO`), the Windows sibling of [`scan_eh_frame`].
+///
+/// Two things come out of it, and the first is worth having on its own: every
+/// entry gives an **authoritative `[begin, end)`** for a function, the same kind
+/// of ground truth ELF `st_size` and a DWARF FDE's `pc_range` give and the
+/// end-of-function heuristic does not.
+///
+/// The second is the `__try`/`__except`/`__finally` edges. When `UNWIND_INFO`
+/// carries a handler, the bytes after the unwind codes are handler-specific, and
+/// **nothing in the format says which handler they belong to** — the handler
+/// field is an RVA into a statically-linked CRT with no symbol on it. So the
+/// data is not trusted on the strength of a name; it is *parsed as* a
+/// `__C_specific_handler` `SCOPE_TABLE` and accepted only if **every** entry
+/// validates: a sane count, `begin < end`, and each of the addresses either
+/// zero, the reserved `1`, or inside an executable section. One bad entry
+/// rejects the whole table. That is the same sound-over-complete rule the DWARF
+/// side follows, applied where the format itself gives no discriminator.
+///
+/// SEH semantics decide which address is the edge: a `__try`/`__except` records
+/// its filter in `HandlerAddress` and the `__except` body in `JumpTarget`, while
+/// a `__finally` has no jump target and its routine *is* `HandlerAddress`.
+///
+/// **Not covered, and it is the larger half of a modern C++ image.** MSVC's
+/// `__CxxFrameHandler4` stores a *compressed*, undocumented blob rather than the
+/// classic `FuncInfo`; on a 371 250-function C++ target 89 790 handler payloads
+/// are that format and are refused here rather than guessed at. The classic
+/// `FuncInfo` (magic `0x19930520`–`0x19930522`) is recognized so it is never
+/// mistaken for a scope table — its try-block map is a follow-on.
+pub fn scan_pdata(src: &dyn MemorySource, image_base: Va, pdata: (Va, u64)) -> Vec<EhFunction> {
+    let (base, size) = (pdata.0.get(), pdata.1.min(MAX_EH_FRAME as u64) as usize);
+    let Ok(table) = src.read(Va(base), size) else { return Vec::new() };
+    let code = src.code_ranges();
+    let is_code = |va: u64| code.iter().any(|(s, n)| va >= s.get() && va < s.get().saturating_add(*n));
+    let va = |rva: u64| image_base.get().saturating_add(rva);
+
+    let mut out = Vec::new();
+    let mut cur = Cur::new(&table);
+    let mut records = 0usize;
+    while records < MAX_RECORDS {
+        records += 1;
+        let (Some(begin), Some(end), Some(unwind)) = (cur.u32(), cur.u32(), cur.u32()) else { break };
+        if begin == 0 && end == 0 && unwind == 0 {
+            break;
+        }
+        if end <= begin {
+            continue;
+        }
+        out.push(EhFunction { start: Va(va(begin)), end: Va(va(end)), regions: pe_regions(src, image_base, unwind, &is_code) });
+    }
+    out
+}
+
+/// The protected ranges one `UNWIND_INFO` describes, or none.
+fn pe_regions(src: &dyn MemorySource, image_base: Va, unwind_rva: u64, is_code: &impl Fn(u64) -> bool) -> Vec<EhRegion> {
+    let va = |rva: u64| image_base.get().saturating_add(rva);
+    let Ok(head) = src.read(Va(va(unwind_rva)), 4) else { return Vec::new() };
+    let mut h = Cur::new(&head);
+    let (Some(ver_flags), Some(_prolog), Some(count), Some(_frame)) = (h.u8(), h.u8(), h.u8(), h.u8()) else {
+        return Vec::new();
+    };
+    // Version 1 and 2 share this layout; anything else is not a shape we know.
+    if !matches!(ver_flags & 7, 1 | 2) {
+        return Vec::new();
+    }
+    let flags = ver_flags >> 3;
+    if flags & UNW_FLAG_CHAININFO != 0 || flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) == 0 {
+        return Vec::new();
+    }
+    // Unwind codes are 2 bytes each and padded to an even count; the handler
+    // RVA and then its private data follow.
+    let codes = 2 * ((count as u64 + 1) & !1);
+    let data_rva = unwind_rva.saturating_add(4).saturating_add(codes);
+    let Ok(head2) = src.read(Va(va(data_rva)), 8) else { return Vec::new() };
+    let mut d = Cur::new(&head2);
+    let (Some(_handler), Some(first)) = (d.u32(), d.u32()) else { return Vec::new() };
+    // The classic C++ `FuncInfo`, recognized only so it is never read as a count.
+    if matches!(first, 0x1993_0520..=0x1993_0522) {
+        return Vec::new();
+    }
+    if first == 0 || first > MAX_SCOPES {
+        return Vec::new();
+    }
+    let n = first as usize;
+    let Ok(body) = src.read(Va(va(data_rva.saturating_add(8))), n * 16) else { return Vec::new() };
+    if body.len() < n * 16 {
+        return Vec::new();
+    }
+    let mut c = Cur::new(&body);
+    let mut regions = Vec::with_capacity(n.min(MAX_CALLSITES));
+    for _ in 0..n {
+        let (Some(b), Some(e), Some(handler), Some(jump)) = (c.u32(), c.u32(), c.u32(), c.u32()) else {
+            return Vec::new();
+        };
+        if b >= e || !is_code(va(b)) || !is_code(va(e).saturating_sub(1)) {
+            return Vec::new();
+        }
+        // `HandlerAddress` is a filter RVA, or the reserved 0/1 (`__finally`
+        // and "continue search"); `JumpTarget` is 0 for a `__finally`.
+        if handler > 1 && !is_code(va(handler)) {
+            return Vec::new();
+        }
+        if jump != 0 && !is_code(va(jump)) {
+            return Vec::new();
+        }
+        // The edge: the `__except` body, or the `__finally` routine.
+        let pad = if jump != 0 {
+            jump
+        } else if handler > 1 {
+            handler
+        } else {
+            continue;
+        };
+        regions.push(EhRegion { try_start: Va(va(b)), try_end: Va(va(e)), landing_pad: Va(va(pad)) });
+    }
+    regions
+}
+
 pub fn landing_pads(functions: &[EhFunction]) -> std::collections::BTreeSet<u64> {
     functions.iter().flat_map(|f| f.regions.iter()).map(|r| r.landing_pad.get()).collect()
 }
@@ -385,6 +515,98 @@ mod tests {
         fn label(&self) -> String {
             "flat".into()
         }
+    }
+
+    /// A `Flat` that also answers `code_ranges`, which the PE scan needs: every
+    /// address a scope table names must land in executable memory, and that test
+    /// is the only thing standing between a scope table and a lookalike.
+    struct FlatCode {
+        base: u64,
+        bytes: Vec<u8>,
+        code: (u64, u64),
+    }
+    impl MemorySource for FlatCode {
+        fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, n0xis_sources::SourceError> {
+            let off = va.get().checked_sub(self.base).ok_or(n0xis_sources::SourceError::Unmapped(va))? as usize;
+            if off > self.bytes.len() {
+                return Err(n0xis_sources::SourceError::Unmapped(va));
+            }
+            Ok(self.bytes[off..(off + len).min(self.bytes.len())].to_vec())
+        }
+        fn contains(&self, va: Va) -> bool {
+            va.get() >= self.base && va.get() < self.base + self.bytes.len() as u64
+        }
+        fn code_ranges(&self) -> Vec<(Va, u64)> {
+            vec![(Va(self.code.0), self.code.1)]
+        }
+        fn label(&self) -> String {
+            "flat-code".into()
+        }
+    }
+
+    /// Lay out a PE-shaped image at base `0x1000`: `.text` at +0x100, a
+    /// `.pdata` entry at +0x00 and an `UNWIND_INFO` at +0x40.
+    ///
+    /// `handler_first` is the first `u32` of the handler's private data — a
+    /// scope count for `__C_specific_handler`, or a `FuncInfo` magic.
+    fn pe_image(handler_first: u32, scopes: &[(u32, u32, u32, u32)]) -> FlatCode {
+        const BASE: u64 = 0x1000;
+        let mut b = vec![0u8; 0x400];
+        let put = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        // RUNTIME_FUNCTION { begin, end, unwind } — all RVAs.
+        put(&mut b, 0x00, 0x100);
+        put(&mut b, 0x04, 0x180);
+        put(&mut b, 0x08, 0x40);
+        // UNWIND_INFO: version 1, UNW_FLAG_EHANDLER, 2 unwind codes.
+        b[0x40] = 1 | (UNW_FLAG_EHANDLER << 3);
+        b[0x41] = 0x08;
+        b[0x42] = 2;
+        b[0x43] = 0;
+        // …4 bytes of codes, then the handler RVA and its private data.
+        put(&mut b, 0x48, 0x300);
+        put(&mut b, 0x4c, handler_first);
+        for (i, (sb, se, h, j)) in scopes.iter().enumerate() {
+            let o = 0x50 + 16 * i;
+            put(&mut b, o, *sb);
+            put(&mut b, o + 4, *se);
+            put(&mut b, o + 8, *h);
+            put(&mut b, o + 12, *j);
+        }
+        FlatCode { base: BASE, bytes: b, code: (BASE + 0x100, 0x300) }
+    }
+
+    #[test]
+    fn a_pe_scope_table_becomes_protected_ranges_and_their_pads() {
+        // One `__try`/`__except` (a filter plus a jump target) and one
+        // `__finally` (no jump target — the routine itself is the pad).
+        let img = pe_image(2, &[(0x110, 0x140, 0x200, 0x150), (0x150, 0x160, 0x220, 0)]);
+        let fns = scan_pdata(&img, Va(0x1000), (Va(0x1000), 12));
+        assert_eq!(fns.len(), 1);
+        assert_eq!((fns[0].start, fns[0].end), (Va(0x1100), Va(0x1180)), "`.pdata` gives an authoritative extent");
+        assert_eq!(
+            fns[0].regions,
+            vec![
+                EhRegion { try_start: Va(0x1110), try_end: Va(0x1140), landing_pad: Va(0x1150) },
+                EhRegion { try_start: Va(0x1150), try_end: Va(0x1160), landing_pad: Va(0x1220) },
+            ]
+        );
+    }
+
+    #[test]
+    fn handler_data_that_is_not_a_scope_table_yields_nothing() {
+        // The classic C++ `FuncInfo` magic sits exactly where a scope count
+        // would: reading it as one would invent 0x19930520 regions.
+        let img = pe_image(0x1993_0520, &[]);
+        assert!(scan_pdata(&img, Va(0x1000), (Va(0x1000), 12))[0].regions.is_empty());
+
+        // One entry pointing outside executable memory rejects the whole table,
+        // rather than reporting the entries that happened to look right.
+        let img = pe_image(2, &[(0x110, 0x140, 0x200, 0x150), (0x150, 0x160, 0x220, 0xdead)]);
+        assert!(scan_pdata(&img, Va(0x1000), (Va(0x1000), 12))[0].regions.is_empty());
+
+        // A count no real `__try` nest reaches is refused before it is walked.
+        let img = pe_image(9999, &[]);
+        assert!(scan_pdata(&img, Va(0x1000), (Va(0x1000), 12))[0].regions.is_empty());
     }
 
     fn uleb(v: u64) -> Vec<u8> {

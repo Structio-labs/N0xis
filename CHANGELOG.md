@@ -5,6 +5,43 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### PE exception edges — `.pdata` + `.xdata` scope tables (Phase 10, priority 0)
+
+- **`function eh` now answers on a PE.** The ELF half (`.eh_frame` +
+  `.gcc_except_table`) shipped earlier; this is its Windows sibling,
+  `scan_pdata`, behind the same command and the same artifact shape.
+- **Every `RUNTIME_FUNCTION` gives an authoritative `[begin, end)`** — the same
+  ground truth ELF `st_size` and a DWARF FDE's `pc_range` give, and the
+  end-of-function heuristic does not. That is worth having on an image with no
+  `__try` in it at all.
+- **The handler data is accepted on evidence, not on a name.** Nothing in the
+  format says which handler an `UNWIND_INFO`'s private data belongs to — the
+  handler field is an RVA into a statically-linked CRT with no symbol on it. So
+  the bytes are *parsed as* a `__C_specific_handler` `SCOPE_TABLE` and accepted
+  only if **every** entry validates: a sane count, `begin < end`, and each
+  address either zero, the reserved `1`, or inside an executable section. One
+  bad entry rejects the whole table. SEH semantics pick the edge: a
+  `__try`/`__except` jumps to `JumpTarget`, a `__finally`'s routine *is*
+  `HandlerAddress`.
+- **Verified against an independent tool and a falsifiable property.** Function
+  counts match `llvm-readobj --unwind` **exactly** on both PE targets (467 and
+  371 250). Every recovered protected range lies strictly inside its own
+  function's `[begin, end)` — 52 of 52 and 136 of 136, none outside.
+- **The cost, measured and not hidden.** Over the 41 functions of the smaller
+  target that carry a protected range: gotos **54 → 155**, pseudo lines
+  **2 073 → 2 709**, `// asm:` nodes unchanged at 15. That is not worse lifting —
+  it is +636 lines of code that used to be dropped: an `__except` block has no
+  incoming branch, so the structurer discarded it and its instructions never
+  rendered at all. The standing PE quality gate is unchanged (0.925000 /
+  0.915875, identical flag counts).
+- **Not covered, and it is the larger half of a modern C++ image.** MSVC's
+  `__CxxFrameHandler4` stores a compressed, undocumented blob rather than the
+  classic `FuncInfo`; on the 371 250-function target **89 790** handler payloads
+  are that format and are refused rather than guessed at. The classic `FuncInfo`
+  (magic `0x19930520`–`0x19930522`) is recognized so it can never be misread as a
+  scope count — its try-block map is a follow-on. Neither target in this corpus
+  contains one, so nothing about that path is claimed as verified.
+
 ### The hidden return slot survives a stack spill (Phase 10)
 
 - **A large-object getter parks its result buffer on the stack.** The x64 ABI

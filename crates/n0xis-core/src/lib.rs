@@ -91,7 +91,7 @@ pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
 pub use devirt::{devirtualize, Devirtualized};
 pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};
 pub use classlayout::{ClassLayout, ClassLayoutInput, ClassLayoutPass, FieldObs, LayoutStore};
-pub use eh::{landing_pads, scan_eh_frame, EhFunction, EhRegion};
+pub use eh::{landing_pads, scan_eh_frame, scan_pdata, EhFunction, EhRegion};
 pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
 pub use dot::{DotArtifact, dot};
