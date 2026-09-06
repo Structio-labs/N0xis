@@ -5,6 +5,43 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### MSVC C++ `try`/`catch` edges — and a correction to the previous entry
+
+- **The handler data was being read in place when it is an RVA.** For MSVC C++
+  exception handling on x64, `UNWIND_INFO`'s handler-specific dword is not data:
+  it is a **pointer to a `FuncInfo`**. The previous entry read it inline, found
+  no magic, and concluded the classic format was absent from these binaries.
+  Dereferenced, it is there in the hundreds: **659** in one neutral C++ runtime
+  DLL, **127** in another. That claim is corrected here rather than left
+  standing.
+- **`FuncInfo` (magic `0x19930520`–`0x19930522`) is parsed.** Unlike the SEH
+  scope table this format identifies itself, so nothing rests on guessing which
+  handler the data belongs to. Its shape is indirect: a `TryBlockMapEntry`
+  carries a **state range**, not addresses, and the bytes those states cover live
+  in a separate IP-to-state map — so the protected range is reconstructed by
+  walking that map in address order, keeping the runs inside the block, and
+  pairing each with every `catch` entry the block declares.
+- **A `catch` is a funclet, and that had to be handled or the result was wrong.**
+  MSVC compiles each `catch` into a separate function with its own `.pdata`
+  entry, and every one of them points back at the *parent's* `FuncInfo` — so the
+  parent's try ranges were reported again under each funclet, where they do not
+  lie. Caught by the containment property, not by reading: **199 of 360** ranges
+  on one DLL were outside the entry that named them. A range is now attributed to
+  the function whose bytes it covers.
+- **Verified three ways on neutral, universally-known binaries.** Function counts
+  match `llvm-readobj --unwind` exactly (1 398 / 2 512 / 1 930); every recovered
+  range lies inside its own function (161/161, 224/224, 162/162); and — the check
+  that could have failed and did not — **158 of 161, 204 of 224 and 150 of 162
+  recovered landing pads are themselves the start of a `RUNTIME_FUNCTION`**,
+  which is exactly what an MSVC catch funclet is, cross-checked against
+  `llvm-readobj`'s own function list. Regions on one runtime DLL: **186 → 224**.
+- **`__CxxFrameHandler4` is stated as blocked, with the evidence.** On a large
+  modern C++ PE, **88 555** handler-data RVAs point at a payload with **no
+  magic** whose header byte is `0x28` in 81 572 cases — the compressed
+  `FuncInfo`, which is undocumented and MSVC-version-dependent. It is refused
+  rather than guessed at, and no neutral target on hand contains it, so it cannot
+  be verified here even if it were parsed.
+
 ### Packed and scalar vector arithmetic is lifted (Phase 10, item 4 finished)
 
 - **The VEX/EVEX half of the whole vector layer.** Bitwise ops (`vpxor`,

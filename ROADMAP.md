@@ -1484,6 +1484,31 @@ lift/SLEIGH-ingest per ISA.
      truncated table stops. **Still open in priority 0**: PE `.xdata` scope tables
      (`__C_specific_handler`) and `FuncInfo` (`__CxxFrameHandler`), and the
      `ttype` tables that would name *which* exception a pad catches.
+   - ✅ *(2026-09-06, verified)* **MSVC C++ `try`/`catch` edges — `FuncInfo`.**
+     For x64 C++ EH the handler-specific dword is a **pointer to a `FuncInfo`**,
+     not data; reading it in place is why the entry below concluded the classic
+     format was absent from binaries full of it. Dereferenced: **659** in one
+     neutral C++ runtime DLL, **127** in another.
+     The format identifies itself by magic, so nothing rests on guessing the
+     handler. Its shape is indirect — a `TryBlockMapEntry` carries a **state
+     range**, not addresses — so the protected bytes are reconstructed from the
+     IP-to-state map and paired with every `catch` entry the block declares.
+     **A `catch` is a funclet**, with its own `.pdata` entry pointing back at the
+     parent's `FuncInfo`; without attributing a range to the function whose bytes
+     it covers, the parent's ranges were reported again under each funclet.
+     Caught by the containment property, not by reading: **199 of 360** ranges
+     were outside the entry that named them.
+     **Verified three ways on neutral targets**: function counts match
+     `llvm-readobj --unwind` exactly (1 398 / 2 512 / 1 930); every range lies
+     inside its own function (161/161, 224/224, 162/162); and **158 of 161,
+     204 of 224, 150 of 162 landing pads are themselves the start of a
+     `RUNTIME_FUNCTION`** — what an MSVC catch funclet is — cross-checked against
+     `llvm-readobj`'s function list. Regions on one runtime DLL **186 → 224**.
+     **`__CxxFrameHandler4` is blocked, with the evidence**: on a large modern
+     C++ PE **88 555** handler RVAs point at a payload with **no magic**, header
+     byte `0x28` in 81 572 of them — the compressed `FuncInfo`, undocumented and
+     MSVC-version-dependent. No neutral target on hand contains it, so it could
+     not be verified here even if it were parsed. Refused, not guessed.
    - ✅ *(2026-09-06, verified)* **PE exception edges — `.pdata` + `.xdata`.**
      `crate::eh::scan_pdata`, behind the same `function eh` command and the same
      artifact shape as the ELF half. Every `RUNTIME_FUNCTION` yields an
@@ -1510,12 +1535,9 @@ lift/SLEIGH-ingest per ISA.
      **2 073 → 2 709**, `// asm:` nodes unchanged. That is +636 lines of code the
      structurer used to discard — an `__except` block has no incoming branch —
      not worse lifting. The standing PE quality gate is unchanged.
-     **Still open, and it is the larger half of a modern C++ image**:
-     `__CxxFrameHandler4`'s compressed, undocumented payload — **89 790** of the
-     371 250-function target's handlers — is refused rather than guessed at. The
-     classic `FuncInfo` (magic `0x19930520`–`0x19930522`) is recognized so it can
-     never be misread as a scope count, but neither target here contains one, so
-     nothing about that path is claimed as verified.
+     **The claim that neither target contained a classic `FuncInfo` was wrong**
+     and is corrected in the entry below: the handler dword is an *RVA* to the
+     `FuncInfo`, and it was being read in place.
 1. 🚧 **Memory SSA — the representation that lifts the stop-crank.** Expression
    propagation is conservative *today only because* nothing can prove a load/call
    safe to move past a store. Memory SSA is what unblocks everything downstream.

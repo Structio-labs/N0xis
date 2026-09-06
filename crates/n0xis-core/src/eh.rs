@@ -418,7 +418,15 @@ pub fn scan_pdata(src: &dyn MemorySource, image_base: Va, pdata: (Va, u64)) -> V
         if end <= begin {
             continue;
         }
-        out.push(EhFunction { start: Va(va(begin)), end: Va(va(end)), regions: pe_regions(src, image_base, unwind, &is_code) });
+        let mut regions = pe_regions(src, image_base, unwind, &is_code);
+        // Attribute a protected range to the function whose bytes it covers.
+        // MSVC compiles each `catch` into a **funclet** with its own `.pdata`
+        // entry, and every one of them points at the *parent's* `FuncInfo` — so
+        // without this filter the parent's try ranges are reported again under
+        // each funclet, where they do not lie. Measured on a neutral C++ runtime
+        // DLL: 199 of 360 ranges were outside the entry that named them.
+        regions.retain(|r| r.try_start.get() >= va(begin) && r.try_end.get() <= va(end));
+        out.push(EhFunction { start: Va(va(begin)), end: Va(va(end)), regions });
     }
     out
 }
@@ -446,9 +454,14 @@ fn pe_regions(src: &dyn MemorySource, image_base: Va, unwind_rva: u64, is_code: 
     let Ok(head2) = src.read(Va(va(data_rva)), 8) else { return Vec::new() };
     let mut d = Cur::new(&head2);
     let (Some(_handler), Some(first)) = (d.u32(), d.u32()) else { return Vec::new() };
-    // The classic C++ `FuncInfo`, recognized only so it is never read as a count.
-    if matches!(first, 0x1993_0520..=0x1993_0522) {
-        return Vec::new();
+    // For MSVC C++ EH the dword is not data — it is an **RVA to a `FuncInfo`**,
+    // and reading it in place is how this first concluded the format was absent
+    // from binaries full of it. Dereference before deciding.
+    if let Ok(head) = src.read(Va(va(first)), 4)
+        && head.len() == 4
+        && matches!(u32::from_le_bytes(head[..4].try_into().unwrap()), 0x1993_0520..=0x1993_0522)
+    {
+        return cxx_regions(src, image_base, first, is_code);
     }
     if first == 0 || first > MAX_SCOPES {
         return Vec::new();
@@ -486,6 +499,122 @@ fn pe_regions(src: &dyn MemorySource, image_base: Va, unwind_rva: u64, is_code: 
         regions.push(EhRegion { try_start: Va(va(b)), try_end: Va(va(e)), landing_pad: Va(va(pad)) });
     }
     regions
+}
+
+/// Bounds on a `FuncInfo`'s tables. A real function has a handful of try
+/// blocks; the IP-to-state map is one entry per state transition.
+const MAX_TRY_BLOCKS: u64 = 4096;
+const MAX_CATCHES: u64 = 1024;
+const MAX_IP_STATES: u64 = 200_000;
+
+/// The `try` ranges and `catch` entry points of an MSVC **C++** frame, from the
+/// classic `FuncInfo` (magic `0x19930520`–`0x19930522`).
+///
+/// Unlike the SEH scope table, this format identifies itself: the magic is the
+/// discriminator, so nothing here rests on guessing which handler the data
+/// belongs to.
+///
+/// The shape is indirect in a way the SEH one is not. A `TryBlockMapEntry` does
+/// not carry addresses — it carries a **state range** (`tryLow..=tryHigh`), and
+/// the bytes those states cover are in a separate IP-to-state map. So the
+/// protected range is reconstructed: walk the map in address order, keep the
+/// runs whose state falls inside the try block, and pair each run with every
+/// catch handler that block declares. Every address is required to be inside an
+/// executable section, and any table that does not validate yields nothing.
+fn cxx_regions(src: &dyn MemorySource, image_base: Va, info_rva: u64, is_code: &impl Fn(u64) -> bool) -> Vec<EhRegion> {
+    let va = |rva: u64| image_base.get().saturating_add(rva);
+    let Ok(head) = src.read(Va(va(info_rva)), 28) else { return Vec::new() };
+    if head.len() < 28 {
+        return Vec::new();
+    }
+    let mut h = Cur::new(&head);
+    // magic, maxState, pUnwindMap, nTryBlocks, pTryBlockMap, nIPMapEntries,
+    // pIPtoStateMap — the prefix is the same for all three magics; the fields
+    // that differ between them come after and are not read.
+    let (Some(_magic), Some(_max_state), Some(_unwind), Some(n_try), Some(try_map), Some(n_ip), Some(ip_map)) =
+        (h.u32(), h.u32(), h.u32(), h.u32(), h.u32(), h.u32(), h.u32())
+    else {
+        return Vec::new();
+    };
+    if n_try == 0 || n_try > MAX_TRY_BLOCKS || n_ip == 0 || n_ip > MAX_IP_STATES {
+        return Vec::new();
+    }
+
+    // The IP-to-state map, in address order: entry `i` covers `[ip_i, ip_i+1)`.
+    let Ok(ips) = src.read(Va(va(ip_map)), (n_ip as usize) * 8) else { return Vec::new() };
+    if ips.len() < (n_ip as usize) * 8 {
+        return Vec::new();
+    }
+    let mut c = Cur::new(&ips);
+    let mut states: Vec<(u64, i32)> = Vec::with_capacity(n_ip as usize);
+    for _ in 0..n_ip {
+        let (Some(ip), Some(st)) = (c.u32(), c.u32()) else { return Vec::new() };
+        if !is_code(va(ip)) {
+            return Vec::new();
+        }
+        states.push((ip, st as i32));
+    }
+    states.sort_by_key(|(ip, _)| *ip);
+
+    let Ok(blocks) = src.read(Va(va(try_map)), (n_try as usize) * 20) else { return Vec::new() };
+    if blocks.len() < (n_try as usize) * 20 {
+        return Vec::new();
+    }
+    let mut t = Cur::new(&blocks);
+    let mut out = Vec::new();
+    for _ in 0..n_try {
+        let (Some(low), Some(high), Some(_catch_high), Some(n_catch), Some(handlers)) =
+            (t.u32(), t.u32(), t.u32(), t.u32(), t.u32())
+        else {
+            return Vec::new();
+        };
+        let (low, high) = (low as i32, high as i32);
+        if low > high || n_catch == 0 || n_catch > MAX_CATCHES {
+            return Vec::new();
+        }
+        // The catch entry points this block declares.
+        let Ok(hs) = src.read(Va(va(handlers)), (n_catch as usize) * 20) else { return Vec::new() };
+        if hs.len() < (n_catch as usize) * 20 {
+            return Vec::new();
+        }
+        let mut hc = Cur::new(&hs);
+        let mut pads = Vec::new();
+        for _ in 0..n_catch {
+            let (Some(_adj), Some(_ty), Some(_disp), Some(addr), Some(_frame)) = (hc.u32(), hc.u32(), hc.u32(), hc.u32(), hc.u32())
+            else {
+                return Vec::new();
+            };
+            if addr == 0 || !is_code(va(addr)) {
+                return Vec::new();
+            }
+            pads.push(addr);
+        }
+        // The bytes those states cover, merged into contiguous runs.
+        for (start, end) in state_runs(&states, low, high) {
+            for &pad in &pads {
+                out.push(EhRegion { try_start: Va(va(start)), try_end: Va(va(end)), landing_pad: Va(va(pad)) });
+            }
+        }
+    }
+    out
+}
+
+/// The contiguous address runs whose IP-to-state entry falls inside
+/// `low..=high`. `states` is sorted by address; entry `i` covers up to entry
+/// `i+1`, and the last one is dropped rather than extended to a guessed end.
+fn state_runs(states: &[(u64, i32)], low: i32, high: i32) -> Vec<(u64, u64)> {
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for w in states.windows(2) {
+        let ((ip, st), (next, _)) = (w[0], w[1]);
+        if st < low || st > high || next <= ip {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(last) if last.1 == ip => last.1 = next,
+            _ => runs.push((ip, next)),
+        }
+    }
+    runs
 }
 
 pub fn landing_pads(functions: &[EhFunction]) -> std::collections::BTreeSet<u64> {
@@ -589,6 +718,64 @@ mod tests {
                 EhRegion { try_start: Va(0x1110), try_end: Va(0x1140), landing_pad: Va(0x1150) },
                 EhRegion { try_start: Va(0x1150), try_end: Va(0x1160), landing_pad: Va(0x1220) },
             ]
+        );
+    }
+
+    /// A PE-shaped image whose one function carries an MSVC C++ `FuncInfo`:
+    /// handler data at +0x4c is an **RVA** to the `FuncInfo` at +0x100, one try
+    /// block over states 0..=1 with one catch handler.
+    fn pe_cxx_image() -> FlatCode {
+        const BASE: u64 = 0x1000;
+        let mut b = vec![0u8; 0x400];
+        let put = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut b, 0x00, 0x200); // RUNTIME_FUNCTION.begin
+        put(&mut b, 0x04, 0x280); // .end
+        put(&mut b, 0x08, 0x40); // .unwind
+        b[0x40] = 1 | (UNW_FLAG_EHANDLER << 3);
+        b[0x42] = 2; // two unwind codes
+        put(&mut b, 0x48, 0x300); // handler RVA
+        put(&mut b, 0x4c, 0x100); // handler data: an RVA to the FuncInfo
+        // FuncInfo @0x100: magic, maxState, pUnwindMap, nTryBlocks,
+        // pTryBlockMap, nIPMapEntries, pIPtoStateMap.
+        put(&mut b, 0x100, 0x1993_0522);
+        put(&mut b, 0x104, 2);
+        put(&mut b, 0x108, 0);
+        put(&mut b, 0x10c, 1);
+        put(&mut b, 0x110, 0x140); // pTryBlockMap
+        put(&mut b, 0x114, 3);
+        put(&mut b, 0x118, 0x180); // pIPtoStateMap
+        // TryBlockMapEntry @0x140: tryLow 0, tryHigh 1, catchHigh 2, 1 catch.
+        put(&mut b, 0x140, 0);
+        put(&mut b, 0x144, 1);
+        put(&mut b, 0x148, 2);
+        put(&mut b, 0x14c, 1);
+        put(&mut b, 0x150, 0x160); // pHandlerArray
+        // HandlerType @0x160: adjectives, pType, dispCatchObj, handler, dispFrame.
+        put(&mut b, 0x160, 0);
+        put(&mut b, 0x164, 0);
+        put(&mut b, 0x168, 0);
+        put(&mut b, 0x16c, 0x260); // the catch entry point
+        put(&mut b, 0x170, 0);
+        // IPtoStateMap @0x180: 0x210→state 0, 0x230→state 1, 0x250→state -1.
+        put(&mut b, 0x180, 0x210);
+        put(&mut b, 0x184, 0);
+        put(&mut b, 0x188, 0x230);
+        put(&mut b, 0x18c, 1);
+        put(&mut b, 0x190, 0x250);
+        put(&mut b, 0x194, u32::MAX); // state -1 — outside the try block
+        FlatCode { base: BASE, bytes: b, code: (BASE + 0x200, 0x100) }
+    }
+
+    #[test]
+    fn an_msvc_cxx_funcinfo_yields_the_try_range_and_its_catch_entry() {
+        let fns = scan_pdata(&pe_cxx_image(), Va(0x1000), (Va(0x1000), 12));
+        assert_eq!(fns.len(), 1);
+        // States 0 and 1 are adjacent and both inside the block, so they merge
+        // into one run [0x210, 0x250); state -1 ends it.
+        assert_eq!(
+            fns[0].regions,
+            vec![EhRegion { try_start: Va(0x1210), try_end: Va(0x1250), landing_pad: Va(0x1260) }],
+            "the protected bytes come from the IP-to-state map, not from the try block itself"
         );
     }
 
