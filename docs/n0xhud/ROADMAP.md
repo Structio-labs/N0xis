@@ -26,7 +26,7 @@ phases below assume.** The original plan below was written around an *in-game
 overlay* (an injected surface + a graphics-API present-hook, tracking the target
 window's rect). That is **not** what shipped. The shipped binary is a plain,
 always-on-top **companion window** (`eframe`/`egui`, titled "N0xHUD",
-360×520) — the a separate always-on-top window model — that deliberately does **not** draw inside
+360×520) — a separate window beside the game — that deliberately does **not** draw inside
 the target. Its own module doc (`crates/n0xis-hud/src/main.rs`) states this
 outright and claims it works reliably today including for fullscreen games; that
 last claim is the binary's own and is flagged below as claim-to-verify (§Phase 6).

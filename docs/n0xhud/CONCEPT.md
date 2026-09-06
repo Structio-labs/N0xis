@@ -22,7 +22,7 @@ input-actuation path for games that gate on where keystrokes come from.
 
 The single most important correction to the original concept: **N0xHUD is a
 normal, separate, always-on-top OS window — it deliberately does *not* draw
-inside the game.** This is the a separate always-on-top window model.
+inside the game.** A separate always-on-top window, not an overlay.
 
 - A plain `eframe` / `egui` native window titled **"N0xHUD"**, `always_on_top`,
   360×520 (min 300×300). There is **no** transparency, no click-through, no

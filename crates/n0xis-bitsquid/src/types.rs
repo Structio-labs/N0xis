@@ -8,7 +8,7 @@
 //! a human name — not implemented here; out of scope for type-based
 //! extraction, which only needs `type_hash` equality). Table transcribed from
 //! the `file_type_t` enum shared by community `archive.hexpat`/
-//! `exploded_package.hexpat` hex-pattern patterns for this bundle format, a plain
+//! `exploded_package` hex-pattern definitions for this bundle format, a plain
 //! constant table, not executable logic.
 
 /// The `type_hash` for a Lua script resource — the one this crate's `bundle

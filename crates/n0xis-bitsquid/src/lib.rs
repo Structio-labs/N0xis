@@ -20,7 +20,7 @@
 //! a filesystem or process itself.
 //!
 //! Format cross-validated from two independent, non-code sources: community
-//! hex-pattern patterns for this bundle format (`archive.hexpat`/
+//! hex-pattern definitions for this bundle format (`archive`/
 //! `exploded_package.hexpat`) and the decompiled `bsunp` tool in
 //! [xyx0826/Bitsquid-Toolchain](https://github.com/xyx0826/Bitsquid-Toolchain)
 //! (itself a recompile of a much older `zenhax` tool) — both describe the same

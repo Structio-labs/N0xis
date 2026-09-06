@@ -181,7 +181,7 @@ Goal: the reason for the rewrite. Pseudo-C that reads like C. All as `n0xis-core
   goto|structured|ssa` on `n0xis-cli` (the command didn't exist in v1 yet — added
   here): `goto` = flat labeled blocks over SSA (no structuring/optimization); `structured`
   = control-structured over SSA (no optimization); `ssa` = structured + optimized (the
-  main). All three already get exact per-branch conditions — that correctness fix
+  phase). All three already get exact per-branch conditions — that correctness fix
   isn't gated behind `--style ssa`, only the expression-collapsing prettification is.
   Reuses the v0 schema `n0x.decomp.pseudo.v1` (additive style, not a new capability).
 - ✅ **Exit test** — [`crates/n0xis-core/tests/phase3_exit.rs`](crates/n0xis-core/tests/phase3_exit.rs).
@@ -1200,9 +1200,9 @@ answer to "expand via VMs?" is: **yes for the dynamic and verification sides, no
 for the static decompiler** — the static path still needs a decoder + a
 lift/SLEIGH-ingest per ISA.
 
-### The gap in detail (what parity actually requires)
+### The gap in detail (what each dimension actually requires)
 
-| Analysis | What real parity needs | N0xis today |
+| Analysis | What the dimension actually requires | N0xis today |
 |---|---|---|
 | Exception edges | parse `.xdata` EH handlers → try/catch/finally edges in the CFG | 🟡 *(2026-09-05)* ELF: `.eh_frame`→LSDA gives (try range → landing pad); pads become block leaders and every block overlapping a protected range gains an `eh` successor. **Where** control goes is recovered; **what** is caught (ttype tables) is a readability follow-on, as is PE `.xdata` |
 | Tail-call detection | recognize `jmp func` as call+return, resolve callee, render `return f(...)` | ✅ *(2026-08-06)* both shapes — a direct `jmp` out of the function **and** an import thunk's `jmp qword ptr [__imp_X]` (previously mis-classified `ijmp`, "indirect jump (unrecovered)") — terminate as `tail-call` and lower to `call`+`return` via the new `Arch::lift_tail_call` seam, so every style renders `return f(...)`. Verified on real PEs (`version.dll` thunk → `return …GetFileVersionInfoSizeW(…)`; 15/400 notepad, 52/400 dxgi functions carry the `tail` flag) |
@@ -3075,7 +3075,7 @@ compounds with everything and needs Memory SSA (Rung 1) underneath.
 
 N0xis is **not** a static-only tool: the live-memory engine, hardware-watchpoint
 provenance, hooks and managed-runtime recovery are a first-class half, and the
-seam between them (`watchpoint → decompiled statement`) is the main. So the
+seam between them (`watchpoint → decompiled statement`) is the point. So the
 external tooling is planned across **three consumers** — *static*, *dynamic*, and
 **both** — and the highest-value tools are the ones that serve *both*, because
 they work the seam. Each entry says how it is pulled in: a **crate** (a
@@ -3246,7 +3246,7 @@ workspace from Phase 1's 8 crates to **12** today.)
 - ✅ **N0xHUD — a third frontend** (`crates/n0xis-hud`, binary `n0xis-hud`). A
   config-driven **companion window**, *not* an in-game overlay: a plain
   always-on-top `eframe`/`egui` window that does **not** draw inside the target
-  (the a separate always-on-top window model), launched from a game's `.n0x/` project and driven by
+  (a separate always-on-top window beside the game), launched from a game's `.n0x/` project and driven by
   `.n0x/hud.toml`. One shared `Engine` behind three background threads — a global
   low-level keyboard hook (hotkeys), a process watcher that auto-applies adapter
   plugins when the target appears, and a generic periodic plugin poller
@@ -3494,7 +3494,7 @@ Measured 2026-07-30, n0xis 0.1.0, Unity 2022.3 x64, `GameAssembly.dll` 94 MB.
 `profile` already detects the target and says so in `advisories` (Phase 11). This phase is
 what turns those advisories from *"this will not work here"* into *"run `il2cpp index`"*.
 
-### Managed provenance (the item that justifies the phase)
+### Managed provenance — the item that justifies the phase
 
 N0xis already has the three pieces this needs: **hardware watchpoints × a real
 cross-process x64 unwinder × a decompiler** (Phases 4b/4c). On an IL2CPP target that
@@ -4538,7 +4538,7 @@ Tiers, ordered by ROI (not size):
   host and is detectable — so 15b is strictly better for hostile samples; keep 15c
   for the easy class.
 - **15d — Anti-anti-debug (per-version).** ⬜ Hide the debugger (PEB `BeingDebugged`,
-  `NtGlobalFlag`, DR registers, timing — hiding the debugger). Brittle, version-locked,
+  `NtGlobalFlag`, DR registers, timing). Brittle, version-locked,
   a race Themida updates to win — do only for versions actually needed. 15b sidesteps
   most of this by not being a debugger at all.
 - **15e — VM devirtualization (research, human-in-loop).** ⬜ Lift a protector VM

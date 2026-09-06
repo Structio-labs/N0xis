@@ -157,7 +157,7 @@ enum Command {
     /// addressed work already done is skipped). Static x64 PE (`--file`).
     Analyze(AnalyzeArgs),
     /// Search the image for a byte pattern, a string, or an escaped string —
-    /// the "Find" a disassembler's Ctrl+F does. One of `--bytes` (scanner-style, with
+    /// the "Find" a disassembler's Ctrl+F does. One of `--bytes` (with
     /// `?`/`??` wildcards), `--string` (UTF-8; `--utf16` for wide), or `--escaped`
     /// (`\xNN`, `\n`, `\t`, `\r`, `\0`, `\\`). Scans every file-backed section by
     /// default; narrow with `--section`, or `--start`/`--size`.

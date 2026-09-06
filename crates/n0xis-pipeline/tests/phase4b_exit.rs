@@ -142,7 +142,7 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
         "the increased value must survive the filter"
     );
 
-    // --- The CE "value too common" flow, live: an `unknown` first scan
+    // --- The "value too common" flow, live: an `unknown` first scan
     // (snapshot-backed / dense — no address list materialized up front),
     // narrowed by what *changed*. Proves the snapshot-narrow path against a
     // real process, not just a mock. Bounded to a small window so the dense

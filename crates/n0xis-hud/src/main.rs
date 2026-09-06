@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! N0xHUD — a config-driven cheat companion for the n0xis engine, in the
-//! a separate always-on-top window mold: a normal always-visible window listing the connected
+//! A normal always-visible window beside the game, listing the connected
 //! target(s) and their cheats, toggled by mouse *or* by global hotkeys that
 //! fire while the game is focused (no alt-tab needed), with the window
 //! itself hidden/shown by its own hotkey. It deliberately does **not** draw

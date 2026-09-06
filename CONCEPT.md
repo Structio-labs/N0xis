@@ -309,8 +309,8 @@ artifacts (N0xHUD is the existing proof) rather than displacing the contract.
 - **The CLI surface is documented in [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md)**
   — the current, living command reference (not a frozen v0 snapshot). The ported v0
   commands live on inside that same reference, and new capabilities are additive.
-- **Parity gate:** the rewrite is not "done" until `ir build`, `disasm`,
-  `function discover`, `xref`, switch resolution and `decomp pseudo` match or beat
+- **Regression gate:** the rewrite is not "done" until `ir build`, `disasm`,
+  `function discover`, `xref`, switch resolution and `decomp pseudo` equal or improve on
   v0 output on a fixed corpus of test functions (captured from the archived binary).
 - **Quality bar for pseudo-C:** on the motivating example
   (a captured v0 decompiler transcript) no bare
@@ -365,7 +365,7 @@ hotkeys, groups — plus everything the static side knows:
 
 ## 11. Capability registry + a standing review loop
 
-Rather than one main feature, the project keeps a **registry of the things it
+Rather than one summary claim, the project keeps a **registry of the things it
 sit on the static⇄dynamic seam**, and a **standing review process** that keeps that
 registry honest as both sides change:
 
@@ -387,11 +387,9 @@ The capability that requires spanning both worlds:
 - **Value → meaning (provenance).** Scan for a value; N0xis runs *find-what-accesses*
   (HW breakpoints), resolves each `VA → module+RVA → recovered function`, decompiles
   it, and returns a **provenance graph**: *"this is `hp`, field `+0x68` of `Player`,
-  written by `sub_X` as `max_hp - damage`, from the combat tick."* CE gives an
-  address; RE tools give code; N0xis gives the explained, typed causal chain — as JSON.
-- **Intent → verified change.** NL intent ("freeze HP", "one-hit kill") → locate
-  value/code via the fused model → synthesize patch/table entry → apply → **verify
-  live** → record in `.n0xt` with provenance.
+  written by `sub_X` as `max_hp - damage`, from the combat tick."* The output is the
+explained, typed causal chain — as JSON — not an address on its own and not code
+on its own.
 
 Why it matters: it collapses the manual static⇄dynamic bridge into one automated,
 explainable, scriptable operation — the reason the two worlds must share one core.

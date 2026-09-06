@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Typed value scanning + iterative narrowing (ROADMAP Phase 4b) — the
-//! value-scanning first-scan/rescan loop, done the way CE actually does it:
+//! First-scan/rescan value-scanning loop, done the way a scanner actually does it:
 //! **snapshot-backed narrowing, never a truncated address list**.
 //!
 //! ## Why snapshot-backed
@@ -15,7 +15,7 @@
 //! That violated the sound-over-complete rule (a partial, order-dependent
 //! working set returned as if usable). See `docs/PRODUCT_POLICY.md` §5.
 //!
-//! the scanning model, reproduced here:
+//! The model, reproduced here:
 //!
 //! - The **first scan never truncates**. An `exact`/`in-range` scan records the
 //!   matching offsets ([`RegionData::Sparse`]); an `unknown` scan records the
@@ -24,7 +24,7 @@
 //! - A **rescan** ([`FilterPass`]) re-reads each region from the source, compares
 //!   old-vs-current per candidate (`changed`/`unchanged`/`increased`/…),
 //!   narrows the survivor set, and stores their latest values (compare against
-//!   the last scan, scanner-style).
+//!   the last scan).
 //! - Addresses are **materialized only when asked** ([`ScanState::materialize`]),
 //!   bounded by a display budget — the full working set is persisted compactly
 //!   (see [`ScanState::encode`]), not dumped as fat JSON.

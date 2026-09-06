@@ -724,7 +724,7 @@ impl N0xisServer {
     }
 
     #[tool(
-        description = "Decompile a function to pseudo-C. style=ssa (default) is the main \
+        description = "Decompile a function to pseudo-C. style=ssa (default) is the full \
                         path: optimized + structured, and its response includes `delta` — the \
                         per-pass optimization log (also available standalone via explain_opt_delta)."
     )]
