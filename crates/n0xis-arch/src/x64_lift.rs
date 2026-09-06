@@ -13,7 +13,7 @@
 //! [`FLAGS_VAR`], which is what makes SSA construction able to detect a stale
 //! compare instead of silently reusing one (see `microir.rs` module docs).
 
-use iced_x86::{Decoder, DecoderOptions, Instruction, MemorySize, Mnemonic, OpKind, Register};
+use iced_x86::{Decoder, DecoderOptions, EncodingKind, Instruction, MemorySize, Mnemonic, OpKind, Register};
 
 use crate::insn::DecodedInsn;
 use crate::microir::{BinOp, Bits, CallTarget, CmpKind, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
@@ -222,10 +222,49 @@ fn bmi_shift(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
 /// `dst @= src` for an SSE *bitwise* op — bitwise operations don't cross lanes,
 /// so a packed `pxor`/`por`/`pand` is exactly a 128-bit scalar bit-op and needs
 /// no intrinsic. Sound and precise.
-fn sse_binop(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
-    let dst = smart_read(instr, 0);
-    let src = smart_read(instr, 1);
-    smart_write(instr, 0, MicroExpr::binary(op, dst, src), out);
+/// The **source** operands of an ALU-shaped vector instruction, in whichever
+/// encoding it came in.
+///
+/// The legacy SSE form is read-modify-write — `addsd xmm0, xmm1` means
+/// `xmm0 = xmm0 + xmm1`, so operand 0 is a source too. The VEX/EVEX form is
+/// non-destructive — `vaddsd xmm0, xmm1, xmm2` means `xmm0 = xmm1 + xmm2`, and
+/// counting operand 0 as a source would invent a dependency on whatever the
+/// destination register held before. `EncodingKind` says which, exactly, rather
+/// than guessing from the operand count (`pinsrq` is legacy and takes three).
+fn vec_sources(instr: &Instruction) -> Vec<MicroExpr> {
+    let first = u32::from(instr.encoding() != EncodingKind::Legacy);
+    (first..instr.op_count()).map(|i| smart_read(instr, i)).collect()
+}
+
+/// `dst = name(sources…)` for an ALU-shaped vector instruction.
+fn vec_intr(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
+    let args = vec_sources(instr);
+    smart_write(instr, 0, MicroExpr::intrinsic(name, args), out);
+}
+
+/// `dst = name(src)` where the meaningful input is the **last** operand — the
+/// shape of a conversion or a square root. In the VEX form the middle operand is
+/// only the merge source for the lanes the instruction does not write, which
+/// this model has no representation for.
+fn vec_intr_unary(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
+    let last = instr.op_count().saturating_sub(1);
+    let src = smart_read(instr, last);
+    smart_write(instr, 0, MicroExpr::intrinsic(name, vec![src]), out);
+}
+
+/// An exact bit-operation over the source operands, in either encoding.
+fn vec_binop(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
+    let args = vec_sources(instr);
+    let Some((first, rest)) = args.split_first() else { return };
+    let value = rest.iter().fold(first.clone(), |acc, a| MicroExpr::binary(op, acc, a.clone()));
+    smart_write(instr, 0, value, out);
+}
+
+/// `dst = (~a) & b` — `pandn`/`vpandn` and their float-typed spellings.
+fn vec_andn(instr: &Instruction, out: &mut Vec<MicroStmt>) {
+    let args = vec_sources(instr);
+    let (Some(a), Some(b)) = (args.first(), args.get(1)) else { return };
+    smart_write(instr, 0, MicroExpr::binary(BinOp::And, MicroExpr::unary(UnOp::Not, a.clone()), b.clone()), out);
 }
 
 fn op_bits(instr: &Instruction, idx: u32) -> Bits {
@@ -688,26 +727,91 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             let src = smart_read(&instr, 0);
             smart_write(&instr, 0, MicroExpr::intrinsic("__bswap", vec![src]), &mut out);
         }
-        // SSE *bitwise* ops are exact 128-bit bit-operations (no intrinsic).
-        Mnemonic::Pxor | Mnemonic::Xorps | Mnemonic::Xorpd => sse_binop(&instr, BinOp::Xor, &mut out),
-        Mnemonic::Por | Mnemonic::Orps | Mnemonic::Orpd => sse_binop(&instr, BinOp::Or, &mut out),
-        Mnemonic::Pand | Mnemonic::Andps | Mnemonic::Andpd => sse_binop(&instr, BinOp::And, &mut out),
-        Mnemonic::Pandn | Mnemonic::Andnps | Mnemonic::Andnpd => {
-            // `pandn dst, src` = (~dst) & src (same for the float-typed forms —
-            // bitwise is bitwise regardless of the lane type).
-            let dst = smart_read(&instr, 0);
-            let src = smart_read(&instr, 1);
-            smart_write(&instr, 0, MicroExpr::binary(BinOp::And, MicroExpr::unary(UnOp::Not, dst), src), &mut out);
+        // Vector *bitwise* ops are exact bit-operations (no intrinsic), in both
+        // the legacy and the VEX/EVEX spelling. A **masked** EVEX form is
+        // excluded throughout this group: with a `{k}` operand the operation is
+        // conditional per element, and an unconditional lift would state which
+        // lanes changed when the mask decides that at run time.
+        Mnemonic::Pxor
+        | Mnemonic::Xorps
+        | Mnemonic::Xorpd
+        | Mnemonic::Vpxor
+        | Mnemonic::Vpxord
+        | Mnemonic::Vpxorq
+        | Mnemonic::Vxorps
+        | Mnemonic::Vxorpd
+            if instr.op_mask() == Register::None =>
+        {
+            vec_binop(&instr, BinOp::Xor, &mut out)
         }
-        // SSE packed compare (produces a mask) and the byte-mask extract — the
-        // core of the SSE2 string-scan idioms — as named intrinsics.
+        Mnemonic::Por
+        | Mnemonic::Orps
+        | Mnemonic::Orpd
+        | Mnemonic::Vpor
+        | Mnemonic::Vpord
+        | Mnemonic::Vporq
+        | Mnemonic::Vorps
+        | Mnemonic::Vorpd
+            if instr.op_mask() == Register::None =>
+        {
+            vec_binop(&instr, BinOp::Or, &mut out)
+        }
+        Mnemonic::Pand
+        | Mnemonic::Andps
+        | Mnemonic::Andpd
+        | Mnemonic::Vpand
+        | Mnemonic::Vpandd
+        | Mnemonic::Vpandq
+        | Mnemonic::Vandps
+        | Mnemonic::Vandpd
+            if instr.op_mask() == Register::None =>
+        {
+            vec_binop(&instr, BinOp::And, &mut out)
+        }
+        // `pandn dst, src` = (~dst) & src (same for the float-typed forms —
+        // bitwise is bitwise regardless of the lane type).
+        Mnemonic::Pandn
+        | Mnemonic::Andnps
+        | Mnemonic::Andnpd
+        | Mnemonic::Vpandn
+        | Mnemonic::Vpandnd
+        | Mnemonic::Vpandnq
+        | Mnemonic::Vandnps
+        | Mnemonic::Vandnpd
+            if instr.op_mask() == Register::None =>
+        {
+            vec_andn(&instr, &mut out)
+        }
+        // Packed compare (produces a mask) and the mask extracts — the core of
+        // the SSE2/AVX2 string-scan idioms — as named intrinsics.
         Mnemonic::Pmovmskb => intr_unary(&instr, "__pmovmskb", &mut out),
+        Mnemonic::Vpmovmskb | Mnemonic::Vmovmskps | Mnemonic::Vmovmskpd | Mnemonic::Movmskps | Mnemonic::Movmskpd => {
+            vec_intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
         Mnemonic::Pcmpeqb
         | Mnemonic::Pcmpgtb
         | Mnemonic::Pcmpeqw
         | Mnemonic::Pcmpgtw
         | Mnemonic::Pcmpeqd
-        | Mnemonic::Pcmpgtd => intr_binary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        | Mnemonic::Pcmpgtd
+        | Mnemonic::Vpcmpeqb
+        | Mnemonic::Vpcmpgtb
+        | Mnemonic::Vpcmpeqw
+        | Mnemonic::Vpcmpgtw
+        | Mnemonic::Vpcmpeqd
+        | Mnemonic::Vpcmpgtd
+        | Mnemonic::Vpcmpeqq
+        | Mnemonic::Vpcmpgtq
+            if instr.op_mask() == Register::None =>
+        {
+            vec_intr(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
+        // Scalar FP compares write only flags; the comparison itself is a float
+        // relation this integer IR cannot state, so the flags stay opaque and
+        // the operands are not claimed to have been combined into a value.
+        Mnemonic::Ucomisd | Mnemonic::Ucomiss | Mnemonic::Comisd | Mnemonic::Comiss | Mnemonic::Vucomisd | Mnemonic::Vucomiss | Mnemonic::Vcomisd | Mnemonic::Vcomiss => {
+            out.push(opaque_flags(mn));
+        }
         // Scalar/packed FP arithmetic — the IR has no float type, so these read
         // as named intrinsics over their operands (`__addsd(x, y)`), which is
         // honest and keeps the dataflow intact.
@@ -751,6 +855,202 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Unpckhps
         | Mnemonic::Shufps
         | Mnemonic::Shufpd => intr_binary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        // The same arithmetic, shuffles, packed integer adds and lane
+        // insert/extract in the VEX/EVEX spelling — three-operand and
+        // non-destructive, which `vec_sources` is what accounts for.
+        Mnemonic::Vaddsd
+        | Mnemonic::Vsubsd
+        | Mnemonic::Vmulsd
+        | Mnemonic::Vdivsd
+        | Mnemonic::Vminsd
+        | Mnemonic::Vmaxsd
+        | Mnemonic::Vaddss
+        | Mnemonic::Vsubss
+        | Mnemonic::Vmulss
+        | Mnemonic::Vdivss
+        | Mnemonic::Vminss
+        | Mnemonic::Vmaxss
+        | Mnemonic::Vaddpd
+        | Mnemonic::Vsubpd
+        | Mnemonic::Vmulpd
+        | Mnemonic::Vdivpd
+        | Mnemonic::Vminpd
+        | Mnemonic::Vmaxpd
+        | Mnemonic::Vaddps
+        | Mnemonic::Vsubps
+        | Mnemonic::Vmulps
+        | Mnemonic::Vdivps
+        | Mnemonic::Vminps
+        | Mnemonic::Vmaxps
+        | Mnemonic::Paddb
+        | Mnemonic::Paddw
+        | Mnemonic::Paddd
+        | Mnemonic::Paddq
+        | Mnemonic::Psubb
+        | Mnemonic::Psubw
+        | Mnemonic::Psubd
+        | Mnemonic::Psubq
+        | Mnemonic::Vpaddb
+        | Mnemonic::Vpaddw
+        | Mnemonic::Vpaddd
+        | Mnemonic::Vpaddq
+        | Mnemonic::Vpsubb
+        | Mnemonic::Vpsubw
+        | Mnemonic::Vpsubd
+        | Mnemonic::Vpsubq
+        | Mnemonic::Vpunpcklqdq
+        | Mnemonic::Vpunpckhqdq
+        | Mnemonic::Vpunpckldq
+        | Mnemonic::Vpunpckhdq
+        | Mnemonic::Vpunpcklbw
+        | Mnemonic::Vpunpcklwd
+        | Mnemonic::Vunpcklpd
+        | Mnemonic::Vunpckhpd
+        | Mnemonic::Vunpcklps
+        | Mnemonic::Vunpckhps
+        | Mnemonic::Vshufps
+        | Mnemonic::Vshufpd
+        | Mnemonic::Vpshufd
+        | Mnemonic::Vpshufb
+        | Mnemonic::Pshufd
+        | Mnemonic::Pshufb
+        | Mnemonic::Vpextrb
+        | Mnemonic::Vpextrw
+        | Mnemonic::Vpextrd
+        | Mnemonic::Vpextrq
+        | Mnemonic::Vpinsrb
+        | Mnemonic::Vpinsrw
+        | Mnemonic::Vpinsrd
+        | Mnemonic::Vpinsrq
+        | Mnemonic::Pextrb
+        | Mnemonic::Pextrw
+        | Mnemonic::Pextrd
+        | Mnemonic::Pextrq
+            if instr.op_mask() == Register::None =>
+        {
+            vec_intr(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
+        // Permutes, blends, packs, shifts and lane-widening — everything whose
+        // result is a rearrangement of its sources rather than a value this IR
+        // can state. One intrinsic per instruction keeps the dataflow exact
+        // while claiming nothing about the lane arithmetic.
+        Mnemonic::Vperm2i128
+        | Mnemonic::Vperm2f128
+        | Mnemonic::Vpermq
+        | Mnemonic::Vpermd
+        | Mnemonic::Vpermpd
+        | Mnemonic::Vpermps
+        | Mnemonic::Vextracti128
+        | Mnemonic::Vextractf128
+        | Mnemonic::Vinserti128
+        | Mnemonic::Vinsertf128
+        | Mnemonic::Vpblendw
+        | Mnemonic::Vpblendd
+        | Mnemonic::Vblendps
+        | Mnemonic::Vblendpd
+        | Mnemonic::Vpblendvb
+        | Mnemonic::Vpalignr
+        | Mnemonic::Vpackuswb
+        | Mnemonic::Vpackusdw
+        | Mnemonic::Vpacksswb
+        | Mnemonic::Vpackssdw
+        | Mnemonic::Vpshufhw
+        | Mnemonic::Vpshuflw
+        | Mnemonic::Vpsrld
+        | Mnemonic::Vpsrlq
+        | Mnemonic::Vpsrlw
+        | Mnemonic::Vpslld
+        | Mnemonic::Vpsllq
+        | Mnemonic::Vpsllw
+        | Mnemonic::Vpsrad
+        | Mnemonic::Vpsraw
+        | Mnemonic::Vpsrldq
+        | Mnemonic::Vpslldq
+        | Mnemonic::Psrld
+        | Mnemonic::Psrlq
+        | Mnemonic::Psrlw
+        | Mnemonic::Pslld
+        | Mnemonic::Psllq
+        | Mnemonic::Psllw
+        | Mnemonic::Psrad
+        | Mnemonic::Psraw
+        | Mnemonic::Psrldq
+        | Mnemonic::Pslldq
+        | Mnemonic::Vpmulld
+        | Mnemonic::Vpmullw
+        | Mnemonic::Vpmuludq
+        | Mnemonic::Vpmaddwd
+        | Mnemonic::Vpavgb
+        | Mnemonic::Vpavgw
+        | Mnemonic::Vpsadbw
+        | Mnemonic::Vpminub
+        | Mnemonic::Vpmaxub
+        | Mnemonic::Vpminsb
+        | Mnemonic::Vpmaxsb
+        | Mnemonic::Vpminuw
+        | Mnemonic::Vpmaxuw
+        | Mnemonic::Vpminsw
+        | Mnemonic::Vpmaxsw
+        | Mnemonic::Vpminud
+        | Mnemonic::Vpmaxud
+        | Mnemonic::Vpminsd
+        | Mnemonic::Vpmaxsd
+            if instr.op_mask() == Register::None =>
+        {
+            vec_intr(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
+        // Lane-widening and duplicating reads: one source.
+        Mnemonic::Vpmovzxbw
+        | Mnemonic::Vpmovzxwd
+        | Mnemonic::Vpmovzxdq
+        | Mnemonic::Vpmovzxbd
+        | Mnemonic::Vpmovsxbw
+        | Mnemonic::Vpmovsxwd
+        | Mnemonic::Vpmovsxdq
+        | Mnemonic::Vpmovsxbd
+        | Mnemonic::Vmovddup
+        | Mnemonic::Vmovshdup
+        | Mnemonic::Vmovsldup
+        | Mnemonic::Pmovzxbw
+        | Mnemonic::Pmovzxwd
+        | Mnemonic::Pmovzxdq
+        | Mnemonic::Pmovsxbw
+        | Mnemonic::Pmovsxwd
+        | Mnemonic::Pmovsxdq
+        | Mnemonic::Movddup
+            if instr.op_mask() == Register::None =>
+        {
+            vec_intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
+        // `ptest`/`vptest` write only flags.
+        Mnemonic::Ptest | Mnemonic::Vptest => out.push(opaque_flags(mn)),
+        // `leave` = `mov rsp, rbp; pop rbp` — exact, not an intrinsic. The order
+        // matters and is the whole trap: after the first statement `rsp` *is*
+        // the old frame pointer, so the load and the adjust both read `rsp`.
+        // Reading `rbp` in the last one would read the value just popped into it.
+        Mnemonic::Leave => {
+            out.push(MicroStmt::Assign { dst: "rsp".into(), value: MicroExpr::var("rbp") });
+            out.push(MicroStmt::Assign { dst: "rbp".into(), value: MicroExpr::load(MicroExpr::var("rsp"), 64, false) });
+            out.push(MicroStmt::Assign {
+                dst: "rsp".into(),
+                value: MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(8, 64)),
+            });
+        }
+        // A broadcast and a square root read one source and splat/compute it.
+        Mnemonic::Vpbroadcastb
+        | Mnemonic::Vpbroadcastw
+        | Mnemonic::Vpbroadcastd
+        | Mnemonic::Vpbroadcastq
+        | Mnemonic::Vbroadcastss
+        | Mnemonic::Vbroadcastsd
+        | Mnemonic::Vsqrtsd
+        | Mnemonic::Vsqrtss
+        | Mnemonic::Vsqrtpd
+        | Mnemonic::Vsqrtps
+            if instr.op_mask() == Register::None =>
+        {
+            vec_intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
         Mnemonic::Sqrtsd | Mnemonic::Sqrtss => intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out),
         // Int↔FP conversions (scalar and packed): `dst = __cvt*(src)`.
         Mnemonic::Cvtsi2sd
@@ -769,6 +1069,26 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Cvtdq2pd
         | Mnemonic::Cvtpd2dq
         | Mnemonic::Cvttpd2dq => intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out),
+        // …and their VEX/EVEX spellings, where the extra operand is only the
+        // merge source for the lanes the conversion does not write.
+        Mnemonic::Vcvtsi2sd
+        | Mnemonic::Vcvtsi2ss
+        | Mnemonic::Vcvtsd2si
+        | Mnemonic::Vcvtss2si
+        | Mnemonic::Vcvttsd2si
+        | Mnemonic::Vcvttss2si
+        | Mnemonic::Vcvtsd2ss
+        | Mnemonic::Vcvtss2sd
+        | Mnemonic::Vcvtdq2ps
+        | Mnemonic::Vcvtps2dq
+        | Mnemonic::Vcvttps2dq
+        | Mnemonic::Vcvtdq2pd
+        | Mnemonic::Vcvtpd2dq
+        | Mnemonic::Vcvttpd2dq
+            if instr.op_mask() == Register::None =>
+        {
+            vec_intr_unary(&instr, &mnemonic_intrinsic(mn), &mut out)
+        }
         // Scalar / cross-domain moves (`movss`/`movsd`/`movd`/`movq`). Only lift
         // when a vector register is actually involved — that disambiguates the
         // SSE scalar `movsd` from the string `movsd`, which has no xmm operand
@@ -1120,6 +1440,96 @@ mod tests {
             matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })),
             "a masked move must stay opaque, got {stmts:?}"
         );
+    }
+
+    #[test]
+    fn a_vex_alu_op_reads_its_two_source_operands_not_its_destination() {
+        // vpxor xmm0, xmm1, xmm2  = C5 F1 EF C2 — non-destructive: xmm0 is
+        // written only. Counting it as a source would invent a dependency on
+        // whatever it held before.
+        assert_eq!(
+            lift_one(&[0xC5, 0xF1, 0xEF, 0xC2]),
+            vec![MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::binary(BinOp::Xor, MicroExpr::var("xmm1"), MicroExpr::var("xmm2")),
+            }]
+        );
+        // pxor xmm0, xmm1 = 66 0F EF C1 — the legacy form is read-modify-write
+        // and must be unchanged by the shared path.
+        assert_eq!(
+            lift_one(&[0x66, 0x0F, 0xEF, 0xC1]),
+            vec![MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::binary(BinOp::Xor, MicroExpr::var("xmm0"), MicroExpr::var("xmm1")),
+            }]
+        );
+        // vandnpd xmm1, xmm3, xmm2 = C5 E1 55 CA  →  (~xmm3) & xmm2
+        assert_eq!(
+            lift_one(&[0xC5, 0xE1, 0x55, 0xCA]),
+            vec![MicroStmt::Assign {
+                dst: "xmm1".into(),
+                value: MicroExpr::binary(
+                    BinOp::And,
+                    MicroExpr::unary(UnOp::Not, MicroExpr::var("xmm3")),
+                    MicroExpr::var("xmm2")
+                ),
+            }]
+        );
+    }
+
+    #[test]
+    fn vex_arithmetic_and_conversions_read_as_named_intrinsics() {
+        // vmulsd xmm0, xmm1, xmm2 = C5 F3 59 C2
+        assert_eq!(
+            lift_one(&[0xC5, 0xF3, 0x59, 0xC2]),
+            vec![MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::intrinsic("__vmulsd", vec![MicroExpr::var("xmm1"), MicroExpr::var("xmm2")]),
+            }]
+        );
+        // vcvtsi2sd xmm0, xmm2, r13d = C4 C1 6B 2A C5 — the middle operand is
+        // only the merge source; the conversion reads the last one.
+        assert_eq!(
+            lift_one(&[0xC4, 0xC1, 0x6B, 0x2A, 0xC5]),
+            vec![MicroStmt::Assign {
+                dst: "xmm0".into(),
+                value: MicroExpr::intrinsic("__vcvtsi2sd", vec![MicroExpr::var("r13")]),
+            }]
+        );
+        // vpextrb eax, xmm1, 3 = C4 E3 79 14 C8 03 — the lane index is a source.
+        assert_eq!(
+            lift_one(&[0xC4, 0xE3, 0x79, 0x14, 0xC8, 0x03]),
+            vec![MicroStmt::Assign {
+                dst: "rax".into(),
+                value: MicroExpr::intrinsic("__vpextrb", vec![MicroExpr::var("xmm1"), MicroExpr::constant(3, 8)]),
+            }]
+        );
+    }
+
+    #[test]
+    fn leave_restores_the_frame_in_the_right_order() {
+        // leave = C9. `rsp = rbp; rbp = [rsp]; rsp = rsp + 8` — the last two
+        // must read `rsp`, not the `rbp` the middle statement just overwrote.
+        assert_eq!(
+            lift_one(&[0xC9]),
+            vec![
+                MicroStmt::Assign { dst: "rsp".into(), value: MicroExpr::var("rbp") },
+                MicroStmt::Assign { dst: "rbp".into(), value: MicroExpr::load(MicroExpr::var("rsp"), 64, false) },
+                MicroStmt::Assign {
+                    dst: "rsp".into(),
+                    value: MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(8, 64)),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scalar_fp_compare_writes_only_flags() {
+        // vucomisd xmm0, xmm1 = C5 F9 2E C1. The relation is a float one this
+        // integer IR cannot state, so nothing is claimed beyond the flag write.
+        let stmts = lift_one(&[0xC5, 0xF9, 0x2E, 0xC1]);
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(&stmts[0], MicroStmt::Assign { dst, .. } if dst == FLAGS_VAR), "got {stmts:?}");
     }
 
     #[test]

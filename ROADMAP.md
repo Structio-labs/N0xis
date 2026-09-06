@@ -1889,9 +1889,27 @@ lift/SLEIGH-ingest per ISA.
      size, with one honest movement — `QTextDocument`'s extent grows `0x18` →
      `0x20` because the by-value return buffer it already mis-attributed at
      `+0x10` is now seen at its real 16-byte width.
-   - ⬜ Still open: packed and scalar FP **arithmetic** in the VEX spelling
-     (`vpxor`, `vpcmpeqd`, `vpaddb`, `vpextrb`, `vpinsrq`, `vmulsd`, … — 6 655
-     nodes remain, now dominated by these), and FP **compares**.
+   - ✅ *(2026-09-06, verified)* **Packed and scalar vector arithmetic — item 4
+     finished.** Bitwise ops lower to exact bit-operations; arithmetic, compares,
+     shuffles, permutes, blends, packs, shifts, lane-widening, insert/extract,
+     conversions and square roots to one named intrinsic each; a scalar FP
+     compare and `ptest` write only opaque flags, because the relation is a float
+     one this integer IR cannot state. `leave` is lifted exactly.
+     **One path serves both encodings**, and the difference is load-bearing:
+     legacy SSE is read-modify-write, VEX is non-destructive, so counting operand
+     0 as a source in the VEX form would invent a dependency on whatever the
+     destination held before. `EncodingKind` decides — not the operand count,
+     which legacy three-operand `pinsrq` would get wrong. Masked EVEX stays
+     opaque throughout.
+     **Measured over 1 460 methods:** `// asm:` nodes **6 655 → 373**, functions
+     carrying any at all **646 → 113** — 92% of the sample lifts end to end,
+     against 56% before this and 0% before the data-move work. Class fields
+     **2 468 → 2 485**; parameters carrying a type at all **22 103 → 22 756**;
+     the oracle holds at 18 of 21.
+     **The remaining tail, reported rather than rounded away**: `idiv` (56 —
+     integer division, a different class of change), `movbe` (40),
+     `vcvtph2ps`/`vcvtps2ph` (51, half-float), `vpabsb` (29), `bt` (26), and 18
+     genuinely undecodable bytes that must stay `(bad)`.
 5. ⬜ **PDB / type ingestion — corpus-dependent rank.** High value for
    system/Microsoft binaries (public symbol servers short-circuit type recovery with
    ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL

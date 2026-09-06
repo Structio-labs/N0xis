@@ -5,6 +5,38 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Packed and scalar vector arithmetic is lifted (Phase 10, item 4 finished)
+
+- **The VEX/EVEX half of the whole vector layer.** Bitwise ops (`vpxor`,
+  `vpand`, `vpandn`, `vorps`, …) lower to exact bit-operations; arithmetic,
+  compares, shuffles, permutes, blends, packs, shifts, lane-widening,
+  insert/extract, conversions and square roots to one named intrinsic each. A
+  scalar FP compare (`vucomisd`) and `ptest` write only flags, and the flags stay
+  opaque — the relation is a float one this integer IR cannot state, so nothing
+  is claimed beyond "the flags were written".
+- **One path serves both encodings, and the difference is load-bearing.** Legacy
+  SSE is read-modify-write (`addsd xmm0, xmm1` means `xmm0 = xmm0 + xmm1`), VEX
+  is non-destructive (`vaddsd xmm0, xmm1, xmm2` means `xmm0 = xmm1 + xmm2`).
+  Counting operand 0 as a source in the VEX form would invent a dependency on
+  whatever the destination held before, so `EncodingKind` decides — not the
+  operand count, which `pinsrq` (legacy, three operands) would get wrong.
+- **`leave` is lifted exactly**, and the order is the trap: after `rsp = rbp`,
+  the pop and the adjust both read `rsp`, because reading `rbp` would read the
+  value just popped into it.
+- **Masked EVEX forms stay opaque throughout.** With a `{k}` operand the
+  operation is conditional per element; an unconditional lift would state which
+  lanes changed when the mask decides that at run time.
+- **Measured over 1 460 methods of a Qt shared library:** `// asm:` nodes
+  **6 655 → 373**, and the functions carrying any at all **646 → 113** — 92% of
+  the sample now lifts end to end, against 56% before this and 0% before the
+  data-move work. Recovered class fields **2 468 → 2 485**, classes 382 → 383,
+  methods 3 933 → 3 943; parameters carrying a type at all **22 103 → 22 756**.
+  The `sizeof` oracle holds at 18 of 21, resolved virtual calls at 90.
+- **What is left is a short, mixed tail**, reported rather than rounded away:
+  `idiv` (56 — integer division, a different class of change), `movbe` (40),
+  `vcvtph2ps`/`vcvtps2ph` (51, half-float), `vpabsb` (29), `bt` (26), and 18
+  genuinely undecodable bytes that must stay `(bad)`.
+
 ### A class now travels to where the dispatch reads it (Phase 10)
 
 - **`devirt` binds a class to variables, not to one SSA name.** The map was keyed
