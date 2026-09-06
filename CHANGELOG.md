@@ -5,6 +5,28 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### The hidden return slot survives a stack spill (Phase 10)
+
+- **A large-object getter parks its result buffer on the stack.** The x64 ABI
+  marker for a by-value return — the function hands the caller's buffer back in
+  `rax` — was matched through copies and phis, but not through **memory**.
+  `QFontIconEngine::scaledPixmap` spills the buffer for the length of the
+  function and returns the reload, so nothing in the copy graph connects the
+  returned value to the argument register, and the function looked like an
+  ordinary method whose `this` was the buffer. The marker now tracks the *slot*
+  the buffer was stored into, and the reload out of it counts.
+- **Measured, same binary and build, over 1 460 methods:** resolved virtual
+  calls **83 → 88**; the `sizeof` oracle over 21 public Qt classes **17 → 18**
+  inside the true object size — `QMovie` was one of these getters. Typed class
+  fields **89 → 90**, propagated parameters **105 → 106**.
+- **Two correct refusals confirmed while measuring, not worked around.** A
+  dispatch like `(*this->d->field_0x1a8)(…)` where `QTextDocumentPrivate`'s
+  whole vtable is 11 slots is a call through a **function-pointer field of the
+  object**, not a virtual call; the vtable-bound check refuses it, and that is
+  the right answer rather than a gap. The `operator=` family genuinely returns
+  `*this`, so the argument shift can mis-fire there — the layout oracle is the
+  check that would catch it, and it did not.
+
 ### A virtual call's own target was being deleted as dead code (Phase 10)
 
 - **`stmt_read_exprs` never yielded an indirect call's target.** Use-counting

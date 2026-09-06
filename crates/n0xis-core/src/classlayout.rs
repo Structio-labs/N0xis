@@ -369,6 +369,12 @@ pub(crate) fn returns_first_arg(blocks: &[SsaBlock], aliases: &BTreeSet<String>,
     // while the same looseness in the field-observation set would file a field
     // under a class that has none.
     let mut reach: BTreeSet<&str> = aliases.iter().map(String::as_str).collect();
+    // Stack slots the buffer was spilled into. A large-object getter routinely
+    // parks the result buffer on the stack for the length of the function and
+    // reloads it at the end — `QFontIconEngine::scaledPixmap` does exactly that,
+    // and returns the reload, so nothing in the copy graph connects the returned
+    // value to the argument register. Tracking the *slot* is what crosses that.
+    let mut slots: Vec<&MicroExpr> = Vec::new();
     let known = |set: &BTreeSet<&str>, v: &str| set.contains(v) || root_reg(v) == reg;
     for _ in 0..MAX_ALIAS_ROUNDS {
         let mut changed = false;
@@ -379,10 +385,23 @@ pub(crate) fn returns_first_arg(blocks: &[SsaBlock], aliases: &BTreeSet<String>,
                 }
             }
             for s in &b.stmts {
-                let MicroStmt::Assign { dst, value } = &s.stmt else { continue };
-                let MicroExpr::Var(src) = peel(value) else { continue };
-                if known(&reach, src) && reach.insert(dst.as_str()) {
-                    changed = true;
+                match &s.stmt {
+                    MicroStmt::Assign { dst, value } => match peel(value) {
+                        MicroExpr::Var(src) if known(&reach, src) => {
+                            changed |= reach.insert(dst.as_str());
+                        }
+                        MicroExpr::Load { addr, .. } if slots.contains(&&**addr) => {
+                            changed |= reach.insert(dst.as_str());
+                        }
+                        _ => {}
+                    },
+                    MicroStmt::Store { addr, value, .. }
+                        if matches!(peel(value), MicroExpr::Var(v) if known(&reach, v)) && !slots.contains(&addr) =>
+                    {
+                        slots.push(addr);
+                        changed = true;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -391,7 +410,12 @@ pub(crate) fn returns_first_arg(blocks: &[SsaBlock], aliases: &BTreeSet<String>,
         }
     }
     blocks.iter().flat_map(|b| b.stmts.iter()).any(|s| match &s.stmt {
-        MicroStmt::Return(Some(e)) => matches!(peel(e), MicroExpr::Var(v) if known(&reach, v)),
+        MicroStmt::Return(Some(e)) => match peel(e) {
+            MicroExpr::Var(v) => known(&reach, v),
+            // The reload itself, returned without an intervening copy.
+            MicroExpr::Load { addr, .. } => slots.contains(&&**addr),
+            _ => false,
+        },
         _ => false,
     })
 }

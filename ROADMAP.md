@@ -1751,6 +1751,21 @@ lift/SLEIGH-ingest per ISA.
      base-vs-derived argument, changed nothing it was supposed to:
      `QRasterPlatformPixmap`'s methods already type `this` as the derived class
      either way. Not shipped.
+   - ✅ *(2026-09-06, verified)* **The hidden return slot survives a stack
+     spill.** The ABI marker for a by-value return was matched through copies and
+     phis but not through **memory**: `QFontIconEngine::scaledPixmap` parks the
+     result buffer in a stack slot for the length of the function and returns the
+     reload, so nothing in the copy graph joined the returned value to the
+     argument register and the function read as an ordinary method whose `this`
+     was the buffer. Tracking the slot closes it. Resolved virtual calls
+     **83 → 88**; the `sizeof` oracle **17 → 18 of 21** (`QMovie` is one of these
+     getters); typed fields **89 → 90**; propagated parameters **105 → 106**.
+     **Two refusals confirmed correct while measuring:** a dispatch through a
+     **function-pointer field** of an object (`(*this->d->field_0x1a8)(…)` where
+     that class's whole vtable is 11 slots) is not a virtual call, and the
+     vtable-bound check is right to refuse it; and the argument shift's known
+     false positive, `operator=`, did not materialize — the oracle is what would
+     have caught it.
    - ✅ *(2026-09-06, verified)* **A virtual call's own target was being deleted
      as dead code.** `optimize::stmt_read_exprs` yielded a `Call` statement's
      arguments but never its **indirect target**, so use-counting saw zero uses
