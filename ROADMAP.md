@@ -1134,19 +1134,30 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Signedness recovery | 🚧 Rung 3f/5 — signed vs unsigned comparisons render distinctly; stack-local signedness inferred from use. Register-variable signedness still ⬜ |
 | Global / data-segment typing | 🚧 early — `xref`/`xref string` exist, but globals are untyped and data-flow does not reach the decompiler |
 
-### Where other tools still lead — the honest gap map (2026-08-31, v0.2.1)
+### Where other tools still lead — the honest gap map (2026-08-31, revised 2026-09-06)
 
-With Rungs 1–7a landed, the *local* decompilation quality is measured against the
-free other tools on x64 (cleaner ABI-stripped output, C++ RTTI class + inheritance
-recovery, alias 2a/2b/2c). What another tool and another tool still lead on is **not**
-per-function analysis — it is breadth, scale, and surface:
+**A caveat this section needs and did not have.** The sentence that used to open
+it — "the local decompilation quality is measured on neutral targets and reported in absolute terms
+is an **unmeasured claim**. No review has been run: not on the same
+binaries, not on the same functions, not against any published metric. By this
+project's own rule that is exactly the kind of assertion that does not earn a ✅,
+and it should not have been stated as fact. What *is* measured is our own side of
+it, on neutral targets, and it is quoted throughout this phase. A real comparison
+would need the same corpus decompiled by each tool and a stated criterion —
+worth doing, not yet done.
 
-- **Whole-program type propagation — the one *core-decompilation* gap.** N0xis
-  recovers types **per function**; a `struct_rcx_0` recovered in one function is
-  not yet flowed to every other function that touches the same object. other tools
-  keep a persistent, call-graph-wide type database that binds hundreds of
-  functions into one class model. This is the next big rung (see priority 3 →
-  extended below) and the honest reason "massive C++" still favours other tools.
+What another tool, another tool and another tool lead on is breadth, scale, and surface:
+
+- ~~**Whole-program type propagation — the one *core-decompilation* gap.**~~
+  **Closed (2026-09-05/06).** `TypePropagatePass` flows a recovered type along
+  the call graph to a fixpoint and persists it; `ClassLayoutPass` unifies one
+  field set per RTTI class across every method that touches it. What remains is
+  not the mechanism but the **density of facts** to flow: 99 of 2 505 recovered
+  fields carry a type, and recovered *return* types are the weaker half. other tools
+  still lead here in practice because their type databases are seeded by
+  **library type information** (PDB, DWARF, GDT, shipped headers) that N0xis does
+  not ingest at all — so the gap moved from "no propagation" to "nothing to
+  propagate", which is priority 5, not priority 3.
 - **GUI — "eyes and hands."** Graph view, click-to-rename, an interactive type
   manager, xref navigation, instant re-analysis, undo. N0xis is headless
   (CLI/MCP) by design; a GUI is deferred, not ruled out, and can be built over
