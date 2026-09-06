@@ -1509,6 +1509,41 @@ lift/SLEIGH-ingest per ISA.
      byte `0x28` in 81 572 of them — the compressed `FuncInfo`, undocumented and
      MSVC-version-dependent. No neutral target on hand contains it, so it could
      not be verified here even if it were parsed. Refused, not guessed.
+   - ⬜ *(2026-09-06, reconnaissance done — parser deliberately **not** written)*
+     **`__CxxFrameHandler4`: the corpus was found, the format was confirmed, and
+     the thing the parser would recover is not in it.**
+     **Corpus.** Every x64 PE on this machine was scanned by resolving each
+     `UNWIND_INFO`'s handler RVA through its `jmp [IAT]` thunk to an import name
+     — the precise test, not a heuristic. Three binaries use
+     `__CxxFrameHandler4`: two are a Windows build of the **ICU** Unicode
+     library (neutral and universally known, the same category as the Qt shared
+     library used elsewhere here) at **1 080** and **355** functions, and one is
+     a vendor graphics DLL at 14. Total **1 449 functions over 978 distinct
+     `FuncInfo4` payloads**. So the earlier claim that no neutral target on hand
+     contains FH4 is **superseded**: one does.
+     **Format, confirmed by two independent descriptions plus the bytes.**
+     Microsoft's own `ehdata4_export.h` and a third-party reverse-engineering
+     write-up agree on the header byte — `isCatch` 0, `isSeparated` 1, `BBT` 2,
+     `UnwindMap` 3, `TryBlockMap` 4, `EHs` 5, `NoExcept` 6 — and on the rule that
+     `bbtFlags`, `dispUnwindMap`, `dispTryBlockMap` and `dispFrame` are omitted
+     when their bit is clear while `dispIPtoStateMap` is **always** present. The
+     bytes agree independently: a `0x28` payload carries exactly two RVAs and a
+     `0x60` payload exactly one, and decoding the first unwind entry of one
+     `0x28` payload gives type `DtorWithPtrToObj`, action RVA `0x11e0` — the
+     three bytes immediately after the function that owns it, i.e. its destructor
+     funclet — and frame offset `0x30`.
+     **Why no parser, and it is not the format.** Across all **978** distinct
+     payloads the header takes exactly three values — `0x28`, `0x60`, `0x68` —
+     and the only bits ever set are `UnwindMap` (890), `EHs` (978) and
+     `NoExcept` (110). **`TryBlockMap` is set in none of them**, nor is `isCatch`
+     or `isSeparated`. Every FH4 payload in the entire available corpus is
+     cleanup-only: destructor unwind and `noexcept`, with not one `try`/`catch`
+     block. A `TryBlockMap4` reader would therefore recover **zero** regions here
+     and could not be checked against either falsifiable property this phase uses
+     (a range inside its own function; a landing pad that is itself a
+     `RUNTIME_FUNCTION` start). The blocker moved from "no corpus" to "a corpus
+     with none of the construct", which is a sharper statement and still a
+     refusal to ship unverifiable code.
    - ✅ *(2026-09-06, verified)* **PE exception edges — `.pdata` + `.xdata`.**
      `crate::eh::scan_pdata`, behind the same `function eh` command and the same
      artifact shape as the ELF half. Every `RUNTIME_FUNCTION` yields an

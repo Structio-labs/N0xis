@@ -5,6 +5,35 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### `__CxxFrameHandler4`: corpus found, format confirmed, parser deliberately not written
+
+- **The corpus exists after all.** Every x64 PE on this machine was scanned by
+  resolving each `UNWIND_INFO`'s handler RVA through its `jmp [IAT]` thunk to an
+  import name — the precise test rather than a heuristic. Three binaries use
+  `__CxxFrameHandler4`: two are a Windows build of the **ICU** Unicode library
+  (neutral and universally known, the same category as the Qt shared library used
+  elsewhere here), at **1 080** and **355** functions, plus a vendor graphics DLL
+  at 14. **1 449 functions over 978 distinct `FuncInfo4` payloads.** The previous
+  entry's claim that no neutral target on hand contains FH4 is superseded.
+- **The format is confirmed, by two independent descriptions and by the bytes.**
+  Microsoft's `ehdata4_export.h` and a third-party reverse-engineering write-up
+  agree on the header byte (`isCatch` 0, `isSeparated` 1, `BBT` 2, `UnwindMap` 3,
+  `TryBlockMap` 4, `EHs` 5, `NoExcept` 6) and on which fields are omitted when
+  their bit is clear, `dispIPtoStateMap` being the one always present. The corpus
+  agrees on its own: a `0x28` payload carries exactly two RVAs and a `0x60`
+  payload exactly one, and the first unwind entry of a `0x28` payload decodes to
+  type `DtorWithPtrToObj` with action RVA `0x11e0` — the bytes immediately after
+  the function that owns it, its destructor funclet — and frame offset `0x30`.
+- **No parser, and the format is not the reason.** Across all 978 distinct
+  payloads the header takes three values — `0x28`, `0x60`, `0x68` — and the only
+  bits ever set are `UnwindMap` (890), `EHs` (978) and `NoExcept` (110).
+  **`TryBlockMap` is set in none of them.** Every FH4 payload in the available
+  corpus is cleanup-only: destructor unwind and `noexcept`, with not one
+  `try`/`catch` block. A reader would recover zero regions and could be checked
+  against neither falsifiable property this work uses — a range inside its own
+  function, and a landing pad that is itself a `RUNTIME_FUNCTION` start. The
+  blocker moved from "no corpus" to "a corpus with none of the construct".
+
 ### The lift tail is closed — 45 `// asm:` nodes left, each for a stated reason
 
 - **Integer division.** `div`/`idiv` read as two intrinsics over the real
