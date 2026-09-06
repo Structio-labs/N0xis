@@ -1497,9 +1497,14 @@ lift/SLEIGH-ingest per ISA.
      validates — sane count, `begin < end`, every address zero, the reserved `1`,
      or inside an executable section. One bad entry rejects the whole table.
      **Verified two ways**: function counts match `llvm-readobj --unwind`
-     **exactly** on both PE targets (467 and 371 250), and every recovered range
-     lies strictly inside its own function — 52 of 52 and 136 of 136, none
-     outside.
+     **exactly**, and every recovered range lies strictly inside its own
+     function, with none outside. On the two PE regression targets: 467 and
+     371 250 functions, 52 of 52 and 136 of 136 regions contained. Re-verified
+     on **neutral, universally-known** binaries — Microsoft's own
+     `msvcr120_clr0400.dll` (2 512 functions, **186** regions) and
+     `ucrtbase_clr0400.dll` (1 930, **162**) as shipped in any Wine prefix —
+     which carry nearly twice the scope tables and are what this work is checked
+     against from here on.
      **The cost, measured**: over the 41 functions of the smaller target that
      carry a protected range, gotos **54 → 155** and pseudo lines
      **2 073 → 2 709**, `// asm:` nodes unchanged. That is +636 lines of code the

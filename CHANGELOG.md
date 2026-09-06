@@ -24,9 +24,13 @@ All notable changes to N0xis are recorded here. Versions follow
   `__try`/`__except` jumps to `JumpTarget`, a `__finally`'s routine *is*
   `HandlerAddress`.
 - **Verified against an independent tool and a falsifiable property.** Function
-  counts match `llvm-readobj --unwind` **exactly** on both PE targets (467 and
-  371 250). Every recovered protected range lies strictly inside its own
-  function's `[begin, end)` — 52 of 52 and 136 of 136, none outside.
+  counts match `llvm-readobj --unwind` **exactly** (467 and 371 250 on the PE
+  regression targets), and every recovered protected range lies strictly inside
+  its own function's `[begin, end)` — 52 of 52 and 136 of 136, none outside.
+  Re-verified on neutral, universally-known binaries: Microsoft's own
+  `msvcr120_clr0400.dll` (2 512 functions, **186** regions) and
+  `ucrtbase_clr0400.dll` (1 930, **162**), both matching `llvm-readobj` exactly
+  and both fully contained.
 - **The cost, measured and not hidden.** Over the 41 functions of the smaller
   target that carry a protected range: gotos **54 → 155**, pseudo lines
   **2 073 → 2 709**, `// asm:` nodes unchanged at 15. That is not worse lifting —
