@@ -66,8 +66,11 @@ impl Pass for OptimizePass {
         "opt.delta"
     }
 
-    fn run(&self, _ctx: &Ctx, ssa: SsaArtifact) -> Result<OptArtifact, CoreError> {
+    fn run(&self, ctx: &Ctx, ssa: SsaArtifact) -> Result<OptArtifact, CoreError> {
         let mut blocks = ssa.blocks;
+        // Which frame slots a call clobbers by position is an ABI question, and
+        // the source answers it.
+        let win64 = n0xis_sources::MemorySource::abi_name(ctx.source) != "sysv";
         // Heap-allocation result vars (Rung 2c) — the Call `ret`s are SSA defs,
         // stable across the optimizer rounds, so this is computed once.
         let alloc_bases = allocation_bases(&blocks, &ssa.callsites);
@@ -78,8 +81,8 @@ impl Pass for OptimizePass {
             let mut changed = false;
             changed |= const_fold_round(&mut blocks, &mut delta);
             changed |= copy_prop_round(&mut blocks, &mut delta);
-            changed |= mem_forward_round(&mut blocks, &mut delta, &alloc_bases);
-            changed |= dead_store_round(&mut blocks, &mut delta);
+            changed |= mem_forward_round(&mut blocks, &mut delta, &alloc_bases, win64);
+            changed |= dead_store_round(&mut blocks, &mut delta, win64);
             changed |= expr_prop_round(&mut blocks, &mut delta);
             changed |= dce_round(&mut blocks, &mut delta);
             if !changed {
@@ -641,6 +644,11 @@ struct Escape {
     /// bases provably cannot alias, so a store through one does not clobber a
     /// value available at the other. Empty unless the forwarding round filled it.
     alloc_bases: std::collections::HashSet<String>,
+    /// Is the target's ABI **Win64**? It decides which frame slots a `call`
+    /// clobbers by position — see [`call_clobbers_frame_slot`]. Read from the
+    /// source rather than assumed, because assuming Win64 on an ELF discards
+    /// every local in the low 32 bytes of the frame at every call.
+    win64: bool,
 }
 
 impl Escape {
@@ -755,8 +763,8 @@ fn visit_escape(e: &MicroExpr, value_ctx: bool, esc: &mut Escape) {
     }
 }
 
-fn escape_info(blocks: &[SsaBlock]) -> Escape {
-    let mut esc = Escape::default();
+fn escape_info(blocks: &[SsaBlock], win64: bool) -> Escape {
+    let mut esc = Escape { win64, ..Escape::default() };
     for b in blocks {
         for s in &b.stmts {
             match &s.stmt {
@@ -833,30 +841,42 @@ fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
         // space** (`[rsp .. rsp+0x20]`, which a callee may write to spill its
         // register params). Those must not survive a call.
         MicroStmt::Call { .. } => {
-            avail.retain(|a| esc.call_safe(&a.base, a.off) && !call_clobbers_frame_slot(&a.base, a.off))
+            avail.retain(|a| esc.call_safe(&a.base, a.off) && !call_clobbers_frame_slot(&a.base, a.off, esc.win64))
         }
         _ => {}
     }
 }
 
-/// A stack slot a `call` clobbers by position, independent of escape: an
-/// `rsp`-relative slot below the shadow ceiling — negative offsets are the
-/// System V red zone (below `rsp`, overwritten by the callee's frame), and
-/// `[0, 0x20)` is the Win64 shadow space — or an `rbp`-relative slot in that low
-/// window (a frame pointer set equal to `rsp` would place its shadow there).
-/// Slots at higher offsets (locals proper, outgoing args a callee only reads)
-/// sit above the outgoing `rsp` and survive. Sound-conservative on both ABIs.
 /// Is `base` the stack or frame pointer — i.e. does `base+off` name a genuine
 /// stack slot rather than a store through an arbitrary pointer register?
 fn is_frame_base(base: &str) -> bool {
     base.starts_with("rsp") || base.starts_with("rbp")
 }
 
-fn call_clobbers_frame_slot(base: &str, off: i128) -> bool {
+/// A stack slot a `call` clobbers by position, independent of escape — and the
+/// answer differs by ABI, which is why the ABI is read rather than assumed.
+///
+/// **Win64** requires the caller to reserve 32 bytes of *home/shadow space* at
+/// `[rsp, rsp+0x20)` that the callee may write its register parameters into, so
+/// nothing in that window survives a call. **System V** has no shadow space at
+/// all; it has the 128-byte *red zone* **below** `rsp`, which a call's own frame
+/// overwrites. Applying the Win64 rule to a System V binary throws away every
+/// local in the low 32 bytes of the frame at every call — which is exactly where
+/// a compiler spills the first few, and it cost the store-to-load forwarding
+/// that connects a value across a call on ELF.
+///
+/// Slots above the window (locals proper, outgoing arguments a callee only
+/// reads) survive on both. Sound-conservative either way.
+fn call_clobbers_frame_slot(base: &str, off: i128, win64: bool) -> bool {
     if base.starts_with("rsp") {
-        off < 0x20
+        // Win64: the shadow space, and negatives for good measure (there is no
+        // red zone to protect). System V: only the red zone, below `rsp`.
+        if win64 { off < 0x20 } else { off < 0 }
     } else if base.starts_with("rbp") {
-        (0..0x20).contains(&off)
+        // A frame pointer set equal to `rsp` would place the shadow space here.
+        // System V has none, and its red zone is below the *outgoing* `rsp`,
+        // lower than any `rbp`-relative local.
+        win64 && (0..0x20).contains(&off)
     } else {
         false
     }
@@ -881,7 +901,12 @@ fn facts_eq(a: &[Avail], b: &[Avail]) -> bool {
         && a.iter().all(|x| b.iter().any(|y| same_slot(y, &x.base, x.off, x.bits) && y.value == x.value))
 }
 
-fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, alloc_bases: &std::collections::HashSet<String>) -> bool {
+fn mem_forward_round(
+    blocks: &mut [SsaBlock],
+    delta: &mut Vec<OptDeltaEntry>,
+    alloc_bases: &std::collections::HashSet<String>,
+    win64: bool,
+) -> bool {
     let n = blocks.len();
     if n == 0 {
         return false;
@@ -903,7 +928,7 @@ fn mem_forward_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, al
     // touch. Stable across optimizer rounds (forwarding only removes loads),
     // recomputed here so it tracks the current SSA names. The heap-allocation
     // bases (Rung 2c) ride along on it for the clobber check.
-    let mut esc = escape_info(blocks);
+    let mut esc = escape_info(blocks, win64);
     esc.alloc_bases = alloc_bases.clone();
 
     // Forward dataflow to a fixpoint: `cross_in[b]` is the memory available on
@@ -1024,8 +1049,8 @@ fn collect_load_slots(e: &MicroExpr, out: &mut Vec<(String, i128, n0xis_arch::Bi
     }
 }
 
-fn dead_store_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
-    let esc = escape_info(blocks);
+fn dead_store_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, win64: bool) -> bool {
+    let esc = escape_info(blocks, win64);
 
     // Every slot loaded anywhere in the function. A non-escaping slot can only
     // be read through its own base, so a same-base overlapping load is the only
@@ -1186,6 +1211,30 @@ fn dce_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// Which frame slots a `call` clobbers by position is an **ABI** question,
+    /// and getting it wrong costs real precision. Win64 reserves 32 bytes of
+    /// shadow space at `[rsp, rsp+0x20)` that a callee may write; System V has
+    /// no such window and instead has the red zone *below* `rsp`. Applying the
+    /// Win64 rule to an ELF discarded every local in the low 32 bytes of the
+    /// frame at every call — exactly where a compiler spills the first few.
+    #[test]
+    fn the_frame_window_a_call_clobbers_follows_the_abi() {
+        // Win64: the shadow space is written by the callee.
+        assert!(call_clobbers_frame_slot("rsp.1", 0x10, true));
+        assert!(call_clobbers_frame_slot("rbp.1", 0x10, true));
+        // System V: the same slots are ordinary locals and survive.
+        assert!(!call_clobbers_frame_slot("rsp.1", 0x10, false));
+        assert!(!call_clobbers_frame_slot("rbp.1", 0x10, false));
+        // System V's red zone is below `rsp`, and a call's own frame eats it.
+        assert!(call_clobbers_frame_slot("rsp.1", -8, false));
+        // Above the window, both ABIs keep the slot.
+        assert!(!call_clobbers_frame_slot("rsp.1", 0x40, true));
+        assert!(!call_clobbers_frame_slot("rsp.1", 0x40, false));
+        // A store through an arbitrary pointer is not a frame slot at all.
+        assert!(!call_clobbers_frame_slot("rax.3", 0x10, true));
+    }
+
     use super::*;
     use crate::{CfgInput, CfgPass, Ctx, SsaPass};
     use n0xis_arch::X64;

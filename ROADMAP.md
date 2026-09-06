@@ -1114,19 +1114,19 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Optimizer (copy/const/expr-prop, DCE) | ✅ production |
 | Renderer (pseudo-C) | ✅ production |
 | Switch / jump-table recovery | ✅ present — 2 x64 idioms, memory-resolved (narrower idiom set than other tools) |
-| Type recovery | 🚧 **per-function** — typed locals block, phi-web coalescing, struct-field/arity/return + ~30 API sigs + **C++ class from RTTI** (`this` typed to its class, vtable naming, template demangling, **inheritance graph**). **Whole-program type propagation** (a recovered struct flowed to every function that uses it) is the core gap vs other tools |
+| Type recovery | ✅ **per-function *and* whole-program** — typed locals block, phi-web coalescing, struct-field/arity/return + ~30 API sigs + **C++ class from RTTI**, plus `TypePropagatePass` (a recovered type flowed along the call graph to a fixpoint) and program-wide **class layouts** unified across every method. The remaining gap is **seed density**, not plumbing: 98 of 2 485 recovered fields carry a type. Recovered *return* types are the weak half and are gated on caller-side evidence no single-function pass has — see the falsified rule below |
 | Alias analysis | 🚧 **intraprocedural points-to** — escape analysis (2a), global distinct-constant (2b) and **heap-allocation** (2c) disambiguation; `Top` on loads through unknown pointers. Whole-program/distinct-parameter points-to still missing |
 | Tail-call detection | ✅ 2026-08-06 — edge class **+ semantic promotion** (`jmp func` and IAT-thunk `jmp [__imp_X]` lower to `call`+`return`, render `return f(...)`); verified on real PEs |
 | noreturn analysis | ✅ import calls (`ExitProcess`/`abort`/`_CxxThrowException`/…) end a block **and the function** (2026-07-22, firing on real binaries 2026-08-06 via the IAT-keying fix); ✅ whole-`.pdata`-set noreturn **detection** — `call`- *and* `jmp`(tail-call)-to-noreturn — verified on a real binary (`function noreturn`, 2026-08-29 — `CompressToolsLib.dll`: 10 functions incl. a `jmp TerminateProcess`, cross-checked); ⏳ the call-graph **propagation** step (a `sub_XXXX` flagged via another flagged `sub_XXXX`) fired in 0/14 real DLLs, unit-tested only, pending a real-corpus positive |
 | Import-name resolution | ✅ **both formats** — PE 2026-08-06 (direct, IAT-slot and thunk callees), **ELF 2026-09-05** (GOT slot via `.rela.*` `GLOB_DAT`/`JUMP_SLOT` + PLT stubs named after their import, provider library from `.gnu.version_r`); imports render by name and reach the known-API signature table |
 | Compiler-idiom recovery | 🚧 growing — `const identify`, junk, opaque predicates, **stack-canary, `min`/`max`, magic-division, rotates, `cmov`→`?:`, full intrinsic layer (SSE/bit-scan/FP), BMI/BMI2** (Rung 5b–5i) |
 | Memory SSA | ✅ Rung 1 — intra- and cross-block store-to-load forwarding + dead-store elimination, on escape analysis; verified on real Win64/MSVC and Linux/GCC |
-| Interprocedural propagation | 🚧 partial — whole-program noreturn IPA + call-site name/ABI resolution; **whole-program type propagation still missing** (the core remaining gap) |
-| Exception-edge recovery | 🟡 **ELF done, PE next** *(2026-09-05)* — `.eh_frame` FDE + `.gcc_except_table` LSDA → protected ranges and landing pads (`function eh`), fed into the CFG as `eh` edges so a pad is a reachable, labelled block instead of an unreachable island. FDE count verified **identical to `readelf`** (14 355 on `libQt6Core.so.6`). PE `.xdata` scope tables are the sibling follow-on |
-| Indirect / virtual call resolution | ✅ *(2026-09-05)* — `call qword ptr [rax+0x40]` resolves to the method: `this`-class × RTTI vtable × slot, read out of the image and rewritten to a direct call. Bounded by the next vtable (an out-of-range slot reads the next class's table) and named by the class it dispatches through (ICF folds one implementation under several class names). Yield is seed-bound: a dispatch on an object other than `this` needs field typing |
-| SIMD / FP lift | ✅ Rung 5c/5h — SSE **and AVX** data moves as 128/256-bit ops (`vmovdqa`/`vmovq`/…; `endbr64`/`vzeroupper` as no-ops; masked EVEX refused) + a full intrinsic layer (packed/scalar FP, pack/shuffle, conversions); packed *arithmetic* in the VEX spelling and FP *compares* left opaque |
+| Interprocedural propagation | ✅ whole-program noreturn IPA + call-site name/ABI resolution + **whole-program type propagation** (`analyze --typeflow`, persisted) and **class-layout unification** (`--layout`). Whole-program *points-to* is now the one core item untouched |
+| Exception-edge recovery | ✅ **both formats** *(ELF 2026-09-05, PE 2026-09-06)* — `.eh_frame` FDE + `.gcc_except_table` LSDA on ELF (FDE count identical to `readelf`, 14 355 on `libQt6Core.so.6`); on PE, `.pdata` `RUNTIME_FUNCTION` + `.xdata`, with `__C_specific_handler` `SCOPE_TABLE`s and MSVC C++ `FuncInfo` (`0x19930520`–`22`) reached through the handler **RVA**, funclet ranges attributed to the function whose bytes they cover. Function counts match `llvm-readobj --unwind` exactly. `__CxxFrameHandler4` is recognized as out of reach and why — see below |
+| Indirect / virtual call resolution | ✅ *(2026-09-05, extended 2026-09-06)* — resolves to the method: class × RTTI vtable × slot, read out of the image and rewritten to a direct call, bounded by the next vtable and named by the class it dispatches through. The class travels along every edge that carries a value (copies, agreeing phis, spill/reload, typed field loads, direct-call returns, a stored vtable, a constructor's argument 0), and a **constant** vtable address resolves with no class at all. Yield is seed-bound: of the indirect calls left, the largest bucket dispatches on a *field of another object* and needs that field typed |
+| SIMD / FP lift | ✅ Rung 5c/5h **complete** — SSE and AVX data moves as 128/256-bit ops, packed *and* scalar arithmetic in both encodings (legacy read-modify-write vs non-destructive VEX decided by `EncodingKind`, not operand count), FMA, predicate compares, conversions, blends, rounding; masked EVEX and per-lane conditional accesses refused on purpose. Over a 1 539-method sample **45** `// asm:` nodes remain, all four categories stated |
 | PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
-| C++ RTTI / vtable / class recovery | ✅ Rung 7a — MSVC RTTI scan, vtable naming, `this`-typing, **full template demangling, base-class inheritance graph** (Kenshi 3055 / STALKER 2 561 vtables). Whole-program class-graph propagation into every method still ⬜ |
+| C++ RTTI / vtable / class recovery | ✅ Rung 7a **+ program-wide layouts** — MSVC and Itanium RTTI, vtable naming, `this`-typing, full template demangling, base-class inheritance graph, and one **field set per class** unified across every method that touches it (`analyze --layout`, persisted), checked against `sizeof` from the real headers (18 of 21 classes inside the true object size) |
 | Library-function identification (FLIRT-class) | ✅ **matcher + generator + auto-apply** — `n0xis-flirt` matches, `sig gen` learns a corpus from any symbolized image (self-validating), `analyze --flirt` **persists** matches into `.n0x/` so the function list, xref, decompiler and GUI all render them with no flag; corpora chain. Shipped OSS corpus: zlib. Breadth of the shipped library is the remaining gap, not the mechanism |
 | Calling-convention & argument recovery | 🚧 early — arity + return only; CC is *assumed* x64-fastcall, no `this`call/vectorcall/variadic detection |
 | Stack-frame reconstruction (SP-delta, FPO) | 🚧 partial — locals recovered, but no explicit frame model, no frame-pointer-omission handling, no stack arrays/spills as typed variables |
@@ -1579,11 +1579,61 @@ lift/SLEIGH-ingest per ISA.
    Built incrementally — see **the analysis-depth staged plan** below; stage
    **1a (intra-block store-to-load forwarding) is landed and verified**
    *(2026-08-29)*.
-2. ⬜ **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
+2. 🚧 **Light points-to / alias, on top of Memory SSA — and the rank is now
+   measured, not asserted.** *(2026-09-06)* Two things landed and one is stated
+   as the blocker.
+   - ✅ **The frame window a `call` clobbers follows the ABI.** Win64 reserves 32
+     bytes of home/shadow space at `[rsp, rsp+0x20)` that a callee may write;
+     System V has none, and instead has the 128-byte red zone **below** `rsp`.
+     The optimizer applied the Win64 window unconditionally, so on every ELF
+     target it discarded **every local in the low 32 bytes of the frame at every
+     call** — exactly where a compiler spills the first few, and precisely the
+     forwarding that carries a value across a call. Now read from
+     `MemorySource::abi_name()`. Measured on a Qt shared library: fields
+     **2 493 → 2 505**, methods **3 948 → 3 970**, typed fields **98 → 99**,
+     typed parameters **22 823 → 23 054**, return types **315 → 343**, propagated
+     parameters **105 → 149**; oracle **18 of 21**; the three neutral PE gates
+     byte-identical, by construction (PE takes the same branch as before).
+     **Resolved virtual calls fell 126 → 123 and that is the point.** All three
+     are `QBasicDrag`, all three from one field losing a type: `QBasicDrag+0x58`
+     was typed `QRasterWindow *`, the headers say the member is a
+     `QShapedPixmapWindow *`, and `QShapedPixmapWindow : public QRasterWindow`.
+     The recovered type was a **base class**, so each dispatch read a slot out of
+     the *base's* vtable for an object whose dynamic type is derived — right only
+     if the derived class overrides nothing there, which nothing here can know.
+     Losing it satisfies rule #1 instead of violating it.
+   - ⬜ **A latent hazard this exposed, recorded rather than patched in haste.**
+     Devirtualization through a field requires only that the field's recovered
+     type be a *pointer* — but a base-class type is a perfectly sound **type**
+     and an unsound **vtable**. Both directions are present today:
+     `QBasicDrag+0x58` carried a base claim for a derived member, and
+     `QPixmap+0x10` carries a derived claim (`QBlittablePlatformPixmap *`) for a
+     base-typed member. What devirtualization needs from a field is the *exact
+     dynamic class*, which "the type of something stored into it once" does not
+     give. Options are to require agreement across more methods, or to resolve
+     only where the class has no subclasses in the recovered inheritance graph —
+     both cost yield, and neither should be chosen without measuring.
+   - ⬜ **Why the item still ranks where it does — now with the chain, measured
+     end to end.** Of the unresolved indirect calls, the largest bucket
+     dispatches on an object that is a **field of another object**. Of those the
+     owner class is known for 90; 10 already have the field typed and the other
+     80 need **11 distinct `(class, offset)` pairs** — **51 of them one field**,
+     `QVulkanWindowPrivate+0x290`. So it is a handful of facts, not 285 problems.
+     That field is filled by the return value of one named call
+     (`…::deviceFunctions`), whose return type is unknown because its two return
+     paths disagree: one returns a **freshly constructed object**, which the
+     constructor seed already names, and the other returns the **cached pointer
+     read back** from the very cell the first path stored it into. They are the
+     same type and the code proves it — but proving it means forwarding a store
+     to a load through a memory cell **across a call**, which is alias analysis.
+     That is this item, and this is the first time its rank rests on a chain
+     traced from the top metric to the missing capability rather than on
+     judgement.
+   Original framing: **Light points-to / alias, on top of Memory SSA.** Co-evolves with type
    recovery — chicken-and-egg: alias precision needs types, type recovery needs
    alias. Climb 1–2 together; neither is precise alone.
-3. 🚧 **Function-summary IPA + whole-program type propagation — now the #1 core
-   gap vs other tools.** Two layers. (a) ✅ *(2026-09-05)* **Summaries**: per-function
+3. ✅ **Function-summary IPA + whole-program type propagation — was the #1 core
+   gap vs other tools; it is shipped, and the gap moved to seed density.** Two layers. (a) ✅ *(2026-09-05)* **Summaries**: per-function
    returns / `noreturn` / clobber set / arg & return types / side effects —
    composes with the existing `ManifestPass`, an extension not a new subsystem. (b) **Whole-program
    type propagation** (the layer other tools lead on): a persistent, call-graph-wide
@@ -1973,7 +2023,7 @@ lift/SLEIGH-ingest per ISA.
      already resolved. The first bucket is the same seed-density ceiling, one
      level down: it needs field types on the specific classes those dispatches go
      through, and 98 of 2 485 fields carry one.
-4. 🚧 **SIMD / FP lift — a floor-fixer, and not only for *this* corpus.** For a
+4. ✅ **SIMD / FP lift — a floor-fixer, and not only for *this* corpus.** For a
    *general* decompiler this looks like mere coverage (rank low). For N0xis's
    corpus (game engines) it is a floor problem: `movaps`/`mulps`/`addps`/
    `sqrtss`/`movss` appear every few lines. Measurement on ordinary C++ says the
@@ -2123,19 +2173,38 @@ lift/SLEIGH-ingest per ISA.
      std::ios_base, std::_Iosb<int>`; STALKER 2 (UE5) 516/561 vtables carry
      bases — `GregorianCalendar : Calendar, UObject, UMemory`,
      `StringCharacterIterator`'s five-level ICU chain.
-   - ⬜ Still open for this item: **virtual-call devirtualization**. Measured on
-     the corpus (Kenshi `CompressToolsLib`, ~210 indirect-call sites / 200
-     functions): the virtual calls dispatch through a **runtime** vtable pointer
-     (`rax = *this; call [rax+k]`), not a constant — so statically resolving the
-     slot would be **unsound** (a derived class overrides it), which rule #1
-     forbids. The soundly-resolvable slice (`call [&Class::vtable + k]`, a
-     *constant* vtable — inside a constructor after the vtable store, once
-     store-to-load forwarding exposes it) does not visibly fire here (the
-     compiler already de-virtualizes in-constructor calls). Sound devirt
-     therefore needs precise `this`-type flow across *all* methods — call-site
-     class propagation / points-to (**Rung 2**), not a local pattern — so it is
-     correctly gated on that, not a quick win. Also open: feeding the recovered
-     **bases into the decompiler** (type a `this` as the `Derived : Base` chain).
+   - ✅ *(2026-09-05, extended 2026-09-06 — this entry **supersedes and corrects**
+     the "still open" note that stood here)*. **Devirtualization is done, and the
+     reasoning that deferred it was half wrong.** The gating argument was right
+     about the main case and wrong about the exception. Right: a dispatch through
+     a **runtime** vptr does need precise `this`-type flow across all methods, and
+     that is what whole-program propagation plus program-wide class layouts now
+     provide — the class travels along every edge that carries a value, and the
+     resolution is bounded by the next vtable so an out-of-range slot cannot read
+     the neighbouring class's table.
+     The constant-vtable slice — `call [&Class::vtable + k]`, where the compiler
+     wrote the table's address as a **constant** — is now matched too: it needs
+     no class and no type at all, because the instruction names the table, and
+     multiple inheritance is no obstacle in this one case (the usual refusal
+     exists to avoid guessing *which* table a class name means, and here the
+     table is what is given). It is unit-tested and sound.
+     **Its measured yield on this corpus is zero, and the note that stood here
+     was right about that** — a first reading of the unresolved calls said 7 of
+     them were this shape, and that reading was wrong. The counting script
+     followed the *rendered* `x = y` chain, which has no phis in it; the IR does.
+     Every one of those calls is an arm of the compiler's own devirtualization
+     guard —
+     `if (slot != &Known::m) { v = *obj; } else { v = &Known::vtable; }` — so the
+     dispatch reads a **phi joining a loaded vptr and a constant**, which
+     `fold_phis` refuses because the inputs disagree, and refuses correctly. The
+     call sits *after* the join, so even path-sensitive knowledge of each arm
+     would not resolve it. Unresolved is the right answer.
+     That makes it the eighth time in this phase that a ceiling turned out to be
+     a defect in the measurement rather than in the analysis — this time the
+     defect was in a throwaway script, which is exactly where it is cheapest and
+     most tempting to trust.
+     Still open for this item: feeding the recovered **bases into the decompiler**
+     (type a `this` as the `Derived : Base` chain).
    - ✅ *(2026-09-04)* **Itanium RTTI for ELF/GCC targets.** `scan_itanium_rtti`
      returns the same `RttiVtable` as the MSVC scan, so `Class::vfN` naming,
      `rtti_symbol_map` and the decompiler's `this`-typing all work on ELF with no

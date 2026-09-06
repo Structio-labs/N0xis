@@ -5,6 +5,71 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### A Win64 rule was being applied to System V — and the dispatch metric went *down* for a good reason
+
+- **Which frame slots a `call` clobbers is an ABI question, and it was assumed.**
+  Win64 requires the caller to reserve 32 bytes of home/shadow space at
+  `[rsp, rsp+0x20)` that the callee may write, so nothing there survives a call.
+  System V has no shadow space at all — it has the 128-byte red zone **below**
+  `rsp`. The optimizer applied the Win64 window unconditionally, so on every ELF
+  target **every local in the low 32 bytes of the frame was discarded at every
+  call** — exactly where a compiler spills the first few. The window now follows
+  `MemorySource::abi_name()`; PE behaviour is unchanged by construction.
+- **Measured on a Qt shared library, 22 415 functions.** Recovered fields
+  **2 493 → 2 505**, methods **3 948 → 3 970**, typed fields **98 → 99**,
+  parameters carrying a type **22 823 → 23 054**, recovered return types
+  **315 → 343**, propagated parameters **105 → 149**. The `sizeof` oracle holds
+  at **18 of 21**. The three neutral PE regression gates are byte-identical
+  (0.924375 / 0.969625 / 0.920875, same flag sets).
+- **Resolved virtual calls fell 126 → 123, and that is the analysis getting more
+  honest, not less capable.** All three losses are in `QBasicDrag`, and all three
+  come from one field losing a type: `QBasicDrag+0x58` was typed
+  `QRasterWindow *`. The real Qt headers say the member is a
+  `QShapedPixmapWindow *`, and `QShapedPixmapWindow : public QRasterWindow` — so
+  the recovered type was a **base class**, and every dispatch resolved through it
+  read a slot out of the *base's* vtable for an object whose dynamic type is the
+  derived class. That is right only if the derived class overrides nothing at
+  that slot, which nothing here can know. The claim is gone, the calls read as
+  indirect again, and rule #1 (a wrong callee is far worse than an unresolved
+  one) is satisfied rather than violated.
+- **A latent hazard is recorded rather than left implicit.** Devirtualization
+  through a field requires only that the field's recovered type be a pointer —
+  but a *base-class* type is a perfectly sound type and an unsound vtable. Both
+  directions of the error exist in the current layout (`QPixmap+0x10` carries a
+  derived claim for a base-typed member). See `ROADMAP.md`.
+
+### A dispatch through a constant vtable — implemented, sound, and zero yield here
+
+- `call [&Class::vtable + k]` needs no class and no type: the instruction names
+  the table. It is matched now, unit-tested, and multiple inheritance is no
+  obstacle in this one case, because the usual refusal exists to avoid guessing
+  *which* table a class name means and here the table is what is given.
+- **Its measured yield on this corpus is zero, and the first reading that said
+  otherwise was a broken script.** A count of the unresolved calls reported 7 of
+  this shape; that script followed the *rendered* `x = y` chain, which has no
+  phis in it. The IR does. Every one of those calls is an arm of the compiler's
+  own devirtualization guard — `if (slot != &Known::m) { v = *obj; } else
+  { v = &Known::vtable; }` — so the dispatch reads a phi joining a loaded vptr
+  and a constant, which is refused because the inputs disagree, and refused
+  correctly. The call sits *after* the join, so even path-sensitive knowledge of
+  each arm would not resolve it. Eighth time in this phase that a ceiling was a
+  measurement defect rather than a missing feature.
+
+### What the remaining unresolved dispatches actually need, measured
+
+- The largest bucket dispatches on an object that is a **field of another
+  object**. Of those the owner class is known for 90; 10 already have the field
+  typed, and the other 80 need **11 distinct `(class, offset)` pairs** — **51 of
+  them one single field**, `QVulkanWindowPrivate+0x290`. It is not 285
+  independent problems.
+- That field is filled by the return value of one named call, whose return type
+  is unknown because its two return paths disagree: one returns a freshly
+  constructed object (which the constructor seed names), the other returns the
+  cached pointer read back from the cell the first path stored it into. Joining
+  them is store-to-load reasoning through a memory cell across a call — i.e.
+  **points-to / alias precision**, Phase 10's one untouched core item. The rank
+  that item has always carried is now measured rather than asserted.
+
 ### `__CxxFrameHandler4`: corpus found, format confirmed, parser deliberately not written
 
 - **The corpus exists after all.** Every x64 PE on this machine was scanned by

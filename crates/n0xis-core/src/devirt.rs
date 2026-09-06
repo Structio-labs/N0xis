@@ -145,6 +145,23 @@ enum Object<'a> {
     /// anywhere in this function, it is a property of `this`'s class that some
     /// *other* function proved.
     Field { base: &'a str, offset: i64 },
+    /// The **vtable address itself is a constant** — the compiler already knew
+    /// the class and wrote the table's address into a register, so there is no
+    /// vptr load to follow and no type to recover. It is the shape a
+    /// devirtualization guard leaves (`if (slot == &Known::m) …`), and the one
+    /// case where the object's class is irrelevant: the table is named.
+    Vtable(u64),
+}
+
+/// The absolute address a value denotes, when it is a constant — spelled either
+/// bare or behind an `&` by the lift.
+fn const_addr(e: &MicroExpr, defs: &BTreeMap<&str, &MicroExpr>) -> Option<u64> {
+    let inner = match resolve(e, defs) {
+        MicroExpr::AddrOf(i) => resolve(i, defs),
+        other => other,
+    };
+    let MicroExpr::Const { value, .. } = inner else { return None };
+    u64::try_from(*value).ok()
 }
 
 /// Split `Var ± Const` (either operand order) or a bare `Var`, resolving each
@@ -178,8 +195,11 @@ fn as_vtable_dispatch<'a>(expr: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a M
         },
         other => (other, 0),
     };
-    // The inner load is the vtable pointer, read from the object itself.
-    let MicroExpr::Load { addr: obj, .. } = inner else { return None };
+    // The inner load is the vtable pointer, read from the object itself — or
+    // there is no inner load at all, because the table's address is a constant.
+    let MicroExpr::Load { addr: obj, .. } = inner else {
+        return const_addr(inner, defs).map(|va| (Object::Vtable(va), off));
+    };
     match resolve(obj, defs) {
         MicroExpr::Var(name) => Some((Object::Var(name.as_str()), off)),
         // One more load: the object itself came out of a field of something we
@@ -374,8 +394,7 @@ fn value_class(
 /// without it a slot past this table's last method reads the following class's
 /// — a resolved-looking, wrong callee.
 fn class_to_vtable(vtables: &HashMap<u64, String>) -> BTreeMap<&str, (u64, u64)> {
-    let mut sorted: Vec<u64> = vtables.keys().copied().collect();
-    sorted.sort_unstable();
+    let sorted = sorted_vtables(vtables);
     let end_of = |va: u64| -> Option<u64> {
         let i = sorted.binary_search(&va).ok()?;
         sorted.get(i + 1).copied()
@@ -391,6 +410,15 @@ fn class_to_vtable(vtables: &HashMap<u64, String>) -> BTreeMap<&str, (u64, u64)>
         .collect()
 }
 
+/// Vtable addresses in ascending order — the basis for "where does this table
+/// end", which is the same bound for a table reached by name and one reached by
+/// its address.
+fn sorted_vtables(vtables: &HashMap<u64, String>) -> Vec<u64> {
+    let mut sorted: Vec<u64> = vtables.keys().copied().collect();
+    sorted.sort_unstable();
+    sorted
+}
+
 /// Resolve every virtual call this function makes that can be resolved
 /// *soundly*, rewriting the call target in place and returning what was
 /// resolved. A no-op without a recovered vtable map.
@@ -400,6 +428,7 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
         return Vec::new();
     }
     let by_class = class_to_vtable(vtables);
+    let sorted = sorted_vtables(vtables);
 
 
     let code: Vec<(u64, u64)> =
@@ -422,17 +451,31 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
 
     // Which variables hold an object of a known class — seeded from the
     // parameters and carried along every edge that carries a value.
+    // No early return on an empty class map: a dispatch through a **constant**
+    // vtable needs no class at all, and a function whose only dispatch is that
+    // shape would have been refused before it was looked at.
     let var_class = class_closure(ctx, blocks, types, &defs);
-    if var_class.is_empty() {
-        return Vec::new();
-    }
 
     let mut out = Vec::new();
     let mut plan: Vec<(usize, usize, Devirtualized)> = Vec::new();
     let mut consider = |bi: usize, si: usize, target: &CallTarget| {
         let CallTarget::Indirect(expr) = target else { return };
         let Some((object, slot)) = as_vtable_dispatch(expr, &defs) else { return };
+        // Where the table is, and which class it belongs to. Every route but the
+        // last has to *find* the class and then look its table up; the constant
+        // route already has the table and reads the class off it.
+        let mut bounds = None;
         let class: &str = match object {
+            // The table's address is in the instruction. Multiple inheritance is
+            // no obstacle here — the usual refusal exists because a class name
+            // cannot say *which* of its tables a dispatch goes through, and this
+            // one names the table itself.
+            Object::Vtable(va) => {
+                let Some(name) = vtables.get(&va) else { return };
+                let Some(end) = sorted.binary_search(&va).ok().and_then(|i| sorted.get(i + 1).copied()) else { return };
+                bounds = Some((va, end));
+                name.as_str()
+            }
             Object::Var(v) => match var_class.get(v) {
                 Some(c) => c.as_str(),
                 None => return,
@@ -454,7 +497,10 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
                 }
             }
         };
-        let Some(&(vtable, vtable_end)) = by_class.get(class) else { return };
+        if bounds.is_none() {
+            bounds = by_class.get(class).copied();
+        }
+        let Some((vtable, vtable_end)) = bounds else { return };
         let Some(addr) = vtable.checked_add(slot) else { return };
         // The slot must be inside THIS class's table, or we would read the next
         // class's and report its method with full confidence.
@@ -650,6 +696,42 @@ mod tests {
         // slot 0 and 8 are inside; slot 0x10 is the next class's first method.
         assert!(base + 8 <= end && base + 8 + 8 <= end);
         assert!(base + 0x10 + 8 > end, "slot 0x10 must be refused");
+    }
+
+    /// `rax = &Widget::vtable; call *(rax + 0x10)` — the compiler already knew
+    /// the class and wrote the table's address into a register, so there is no
+    /// vptr load to follow and no type to recover. Measured on a Qt shared
+    /// library: 7 dispatches of the 670 that stayed unresolved are this shape,
+    /// and the ROADMAP claim that it "does not visibly fire here" was wrong.
+    #[test]
+    fn a_constant_vtable_address_is_a_dispatch_with_no_object_to_type() {
+        let table = MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x9000, 64)));
+        let defs: BTreeMap<&str, &MicroExpr> = [("v1", &table)].into_iter().collect();
+        let call = MicroExpr::load(
+            MicroExpr::Binary(
+                n0xis_arch::BinOp::Add,
+                Box::new(MicroExpr::Var("v1".into())),
+                Box::new(MicroExpr::constant(0x10, 64)),
+            ),
+            64 as Bits,
+            false,
+        );
+        assert_eq!(as_vtable_dispatch(&call, &defs), Some((Object::Vtable(0x9000), 0x10)));
+        // A bare constant spelled without the `&` is the same value.
+        let bare = MicroExpr::constant(0x9000, 64);
+        let defs2: BTreeMap<&str, &MicroExpr> = [("v1", &bare)].into_iter().collect();
+        assert_eq!(as_vtable_dispatch(&call, &defs2), Some((Object::Vtable(0x9000), 0x10)));
+        // A *computed* table base is still refused — only a constant is proof.
+        let computed = MicroExpr::load(
+            MicroExpr::Binary(
+                n0xis_arch::BinOp::Add,
+                Box::new(MicroExpr::Var("rcx.0".into())),
+                Box::new(MicroExpr::constant(0x10, 64)),
+            ),
+            64 as Bits,
+            false,
+        );
+        assert_eq!(as_vtable_dispatch(&computed, &BTreeMap::new()), None);
     }
 
     #[test]
