@@ -5,6 +5,44 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### A class now travels to where the dispatch reads it (Phase 10)
+
+- **`devirt` binds a class to variables, not to one SSA name.** The map was keyed
+  on the *entry* name (`rdi.0`) and carried nowhere else, so a dispatch on any
+  later version of that register — or on a value the function had just loaded —
+  found nothing. A class now moves along every edge that carries a value: a copy
+  (through casts), a phi whose incoming values agree, a stack spill and reload,
+  a **field load** whose type the program-wide layout proved (pointer types only
+  — an embedded sub-object's first word is its own vptr), and a **direct call's
+  return value** whose type whole-program propagation proved.
+- **A known vtable written into an object settles that object's class.** The
+  constructor idiom, generalized off the parameter list: it is the one piece of
+  evidence that needs no other type to exist first, and Qt code builds `QPixmap`s
+  and `QImage`s as stack locals constantly.
+- **Measured: resolved virtual calls 88 → 90**, in 70 → 71 functions, over 1 460
+  methods of a Qt shared library. Class layouts are unchanged in every respect
+  (382 classes, 3 933 methods, 2 468 fields, 90 typed, 106 propagated
+  parameters) and the `sizeof` oracle holds at 18 of 21.
+- **That is far less than the shape of the problem predicted, and the reason is
+  worth more than the change.** Of 265 unresolved dispatches, 125 needed a typed
+  field, 29 a callee's return type, 22 only a copy — 176 that the closure now
+  covers *mechanically*. It moved 2. The facts are not there to move: **90 of
+  2 468** recovered fields carry a type (3.6%), and **315 of 22 413** functions
+  have a recovered return type (1.4%), those 315 being almost entirely
+  by-value-return buffers. The ceiling is seed density, not propagation — the
+  same finding priority 3b recorded for parameters, now measured for fields and
+  returns.
+- **A second hypothesis, tried and reverted.** Devirtualizing *inside* the layout
+  pass, so a resolved `this->d->method()` would name a class and feed the
+  field-typing rule that needs one: typed fields **90 → 90**, and a third more
+  wall-clock. The circularity is real; breaking it there buys nothing, because
+  the dispatches that resolve are not the ones whose result is handed on as a
+  `this`.
+- **The measurement itself was wrong and is corrected.** The dispatch counter
+  matched only the `(*x->field_0xNN)(…)` spelling and silently missed
+  `(*rax.2)(…)`, undercounting by 2.5×. The honest figure over the same sample is
+  **659 → 657** unresolved indirect calls, not 265.
+
 ### PE exception edges — `.pdata` + `.xdata` scope tables (Phase 10, priority 0)
 
 - **`function eh` now answers on a PE.** The ELF half (`.eh_frame` +

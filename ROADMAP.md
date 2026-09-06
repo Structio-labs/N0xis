@@ -1783,6 +1783,35 @@ lift/SLEIGH-ingest per ISA.
      base-vs-derived argument, changed nothing it was supposed to:
      `QRasterPlatformPixmap`'s methods already type `this` as the derived class
      either way. Not shipped.
+   - ✅ *(2026-09-06, verified)* **A class travels to where the dispatch reads
+     it — and the measurement says that was not the ceiling.** `devirt` bound a
+     class to one *entry* SSA name (`rdi.0`); it now moves along every edge that
+     carries a value — copies, agreeing phis, stack spill/reload, a **field load**
+     whose type the layout proved (pointer types only), and a **direct call's
+     return value** whose type propagation proved — plus a new seed that needs no
+     other type to exist: **a known vtable written into an object settles that
+     object's class** (the constructor idiom, generalized off the parameter list).
+     Resolved virtual calls **88 → 90** in 70 → 71 functions; layouts unchanged
+     (382 / 3 933 / 2 468 / 90 typed / 106 propagated) and the oracle holds at
+     **18 of 21**.
+     **The honest result.** Of 265 unresolved dispatches, 176 were mechanically
+     in scope for the closure — 125 needing a typed field, 29 a callee return
+     type, 22 only a copy. It moved 2. **The facts are not there to move**: 90 of
+     2 468 fields carry a type (3.6%) and 315 of 22 413 functions have a recovered
+     return type (1.4%), those 315 almost entirely by-value-return buffers. The
+     ceiling is **seed density**, not propagation — the same conclusion 3b reached
+     for parameters, now measured for fields and returns. More typed fields and
+     more recovered return types is the next lever; the plumbing is no longer it.
+     **A second hypothesis, tried and reverted rather than left implied**:
+     devirtualizing *inside* the layout pass so a resolved `this->d->method()`
+     would name a class and feed the field-typing rule — typed fields **90 → 90**,
+     a third more wall-clock. The circularity is real; breaking it there buys
+     nothing, because the dispatches that resolve are not the ones whose result is
+     handed on as a `this`.
+     **The metric was wrong and is corrected**: the dispatch counter matched only
+     the `(*x->field_0xNN)(…)` spelling and missed `(*rax.2)(…)`, undercounting by
+     2.5×. Over the same sample the honest figure is **659 → 657** unresolved
+     indirect calls, not 265.
    - ✅ *(2026-09-06, verified)* **The hidden return slot survives a stack
      spill.** The ABI marker for a by-value return was matched through copies and
      phis but not through **memory**: `QFontIconEngine::scaledPixmap` parks the

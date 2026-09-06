@@ -192,6 +192,151 @@ fn as_vtable_dispatch<'a>(expr: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a M
     }
 }
 
+/// Rounds the class closure runs. A class reaches a dispatch through a handful
+/// of copies; the bound is what stops a cyclic definition.
+const MAX_CLOSURE_ROUNDS: usize = 8;
+
+/// Every variable that provably holds an object of a named class.
+///
+/// The seed — a parameter whose recovered type is a class — is where this
+/// started and where it used to stop: the map was keyed on the *entry* SSA name
+/// (`rdi.0`) and carried nowhere else, so a dispatch on any other version of
+/// that register, or on a value the function had just loaded, found nothing.
+/// Measured on a Qt shared library over 1 460 methods: of 265 virtual dispatches
+/// that stayed unresolved, **235** had a base whose class the program already
+/// knew somewhere — 125 in a *typed field* of an object in hand, 29 in the
+/// *return type* of a named callee, 22 behind a plain copy.
+///
+/// So the class travels, along exactly the edges that carry a value:
+/// - a **copy**, through casts;
+/// - a **phi**, when every incoming value agrees (one that disagrees is left
+///   alone — see [`fold_phis`], same rule, same reason);
+/// - a **stack spill and reload**, tracked by the slot's address expression;
+/// - a **field load**, when the program-wide layout proved that field's type —
+///   and it must be a *pointer* type, because an embedded sub-object's first
+///   word is its own vptr and treating `Widget` and `Widget *` alike would
+///   resolve a slot of the wrong table with full confidence;
+/// - a **direct call's return value**, when whole-program propagation proved the
+///   callee's return type.
+///
+/// Every one of those is a fact some other pass already established. Nothing
+/// here infers a class; it moves one that was proven elsewhere to the place the
+/// dispatch actually reads.
+fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact, defs: &BTreeMap<&str, &MicroExpr>) -> BTreeMap<String, String> {
+    let mut cls: BTreeMap<String, String> = types
+        .signature
+        .params
+        .iter()
+        .filter_map(|p| Some((format!("{}.0", p.reg), class_of(p.ty.name.as_deref()?)?.to_string())))
+        .collect();
+    // Stack slots a classed pointer was spilled into, by address expression.
+    let mut slots: Vec<(&MicroExpr, String)> = Vec::new();
+    let ret_class = |va: u64| ctx.type_flow.and_then(|f| f.ret(va)).and_then(class_of).map(str::to_string);
+
+    for _ in 0..MAX_CLOSURE_ROUNDS {
+        let mut changed = false;
+        for b in blocks {
+            for phi in &b.phis {
+                if cls.contains_key(phi.dst.as_str()) {
+                    continue;
+                }
+                let Some(first) = phi.inputs.first().and_then(|i| cls.get(i.value.as_str())).cloned() else { continue };
+                if phi.inputs.iter().all(|i| cls.get(i.value.as_str()) == Some(&first)) {
+                    cls.insert(phi.dst.clone(), first);
+                    changed = true;
+                }
+            }
+            for s in &b.stmts {
+                match &s.stmt {
+                    MicroStmt::Assign { dst, value } if !cls.contains_key(dst.as_str()) => {
+                        if let Some(c) = value_class(ctx, value, &cls, &slots, defs, &ret_class) {
+                            cls.insert(dst.clone(), c);
+                            changed = true;
+                        }
+                    }
+                    MicroStmt::Call { target: CallTarget::Direct { va }, ret: Some(dst), .. } if !cls.contains_key(dst.as_str()) => {
+                        if let Some(c) = ret_class(va.get()) {
+                            cls.insert(dst.clone(), c);
+                            changed = true;
+                        }
+                    }
+                    MicroStmt::Store { addr, value, .. } => {
+                        // A **known vtable written into an object** settles that
+                        // object's class outright — it is the constructor idiom,
+                        // and it is the only evidence that needs no other type to
+                        // already exist. Qt code builds `QPixmap`s and `QImage`s
+                        // as stack locals constantly, and until now the class of
+                        // every one of them was lost the moment the constructor
+                        // returned.
+                        if let Some((base, 0)) = base_offset(addr, defs)
+                            && let Some(c) = stored_vtable_class(ctx, value, defs)
+                            && cls.get(base) != Some(&c)
+                        {
+                            cls.insert(base.to_string(), c);
+                            changed = true;
+                        }
+                        if let MicroExpr::Var(v) = resolve(value, defs)
+                            && let Some(c) = cls.get(v.as_str())
+                            && !slots.iter().any(|(a, _)| *a == addr)
+                        {
+                            slots.push((addr, c.clone()));
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    cls
+}
+
+/// The class whose **vtable** this stored value is, if it is one. Accepts the
+/// address either as a bare constant or behind an `&`, which is the same value
+/// spelled two ways by the lift.
+fn stored_vtable_class(ctx: &Ctx, value: &MicroExpr, defs: &BTreeMap<&str, &MicroExpr>) -> Option<String> {
+    let inner = match resolve(value, defs) {
+        MicroExpr::AddrOf(i) => resolve(i, defs),
+        other => other,
+    };
+    let MicroExpr::Const { value, .. } = inner else { return None };
+    let addr = u64::try_from(*value).ok()?;
+    ctx.vtables?.get(&addr).cloned()
+}
+
+/// The class an rvalue holds, if any — the per-expression half of
+/// [`class_closure`].
+fn value_class(
+    ctx: &Ctx,
+    e: &MicroExpr,
+    cls: &BTreeMap<String, String>,
+    slots: &[(&MicroExpr, String)],
+    defs: &BTreeMap<&str, &MicroExpr>,
+    ret_class: &impl Fn(u64) -> Option<String>,
+) -> Option<String> {
+    match e {
+        MicroExpr::Var(v) => cls.get(v.as_str()).cloned(),
+        MicroExpr::Cast { expr, .. } => value_class(ctx, expr, cls, slots, defs, ret_class),
+        MicroExpr::Call { target: CallTarget::Direct { va }, .. } => ret_class(va.get()),
+        MicroExpr::Load { addr, .. } => {
+            if let Some((_, c)) = slots.iter().find(|(a, _)| *a == &**addr) {
+                return Some(c.clone());
+            }
+            let (base, offset) = base_offset(addr, defs)?;
+            let owner = cls.get(base)?;
+            let ty = ctx.layout.and_then(|l| l.field_type(owner, offset))?;
+            if !ty.trim_end().ends_with('*') {
+                return None;
+            }
+            class_of(ty).map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 /// Class name → `(vtable address, exclusive end)`. A class with several vtables
 /// (multiple inheritance) is **excluded**: the map cannot say which is the
 /// primary base's, and a virtual call through a `this` at offset 0 must use
@@ -228,17 +373,6 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
     }
     let by_class = class_to_vtable(vtables);
 
-    // The class of each parameter, keyed by its entry SSA name (`rcx.0`) — the
-    // `this` of a member function is exactly this.
-    let var_class: BTreeMap<String, &str> = types
-        .signature
-        .params
-        .iter()
-        .filter_map(|p| Some((format!("{}.0", p.reg), class_of(p.ty.name.as_deref()?)?)))
-        .collect();
-    if var_class.is_empty() {
-        return Vec::new();
-    }
 
     let code: Vec<(u64, u64)> =
         n0xis_sources::MemorySource::code_ranges(ctx.source).into_iter().map(|(s, n)| (s.get(), s.get() + n)).collect();
@@ -258,6 +392,13 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
     fold_phis(blocks, &mut defs);
     let defs = defs;
 
+    // Which variables hold an object of a known class — seeded from the
+    // parameters and carried along every edge that carries a value.
+    let var_class = class_closure(ctx, blocks, types, &defs);
+    if var_class.is_empty() {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
     let mut plan: Vec<(usize, usize, Devirtualized)> = Vec::new();
     let mut consider = |bi: usize, si: usize, target: &CallTarget| {
@@ -265,7 +406,7 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
         let Some((object, slot)) = as_vtable_dispatch(expr, &defs) else { return };
         let class: &str = match object {
             Object::Var(v) => match var_class.get(v) {
-                Some(c) => c,
+                Some(c) => c.as_str(),
                 None => return,
             },
             // A dispatch on a field needs the field's type, which only the
@@ -274,7 +415,7 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
             // `Widget` and `Widget *` alike here would resolve a slot of the
             // wrong table with full confidence.
             Object::Field { base, offset } => {
-                let Some(owner) = var_class.get(base) else { return };
+                let Some(owner) = var_class.get(base).map(String::as_str) else { return };
                 let Some(ty) = ctx.layout.and_then(|l| l.field_type(owner, offset)) else { return };
                 if !ty.trim_end().ends_with('*') {
                     return;
