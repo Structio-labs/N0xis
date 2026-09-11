@@ -1,0 +1,40 @@
+[package]
+name = "n0xis-mcp"
+description = "MCP frontend — agent-native tools over the same core API as the CLI (ROADMAP Phase 5)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "n0xis-mcp"
+path = "src/main.rs"
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-core = { workspace = true }
+n0xis-pipeline = { workspace = true }
+# The shared frontend seam — source/arch resolution, identical to the CLI's.
+# Cross-platform on its own (it carries the same target split inside).
+n0xis-frontend = { workspace = true }
+# Feature-neutral here: this crate never touches `locator`, the only thing
+# n0xis-project's `live` feature gates.
+n0xis-project = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+schemars = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+rmcp = { version = "2.2.0", features = ["schemars", "transport-io"] }
+
+# Live-process analysis is keyed on the real compile target — see
+# n0xis-cli/Cargo.toml for the same split. `live` means the capability, and
+# both Windows and Linux/Android have an adapter behind `trait LiveTarget`.
+# (n0xis-project's `live` feature only gates its `locator` module, which this
+# crate doesn't use, so it's never requested here.)
+[target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+
+[target.'cfg(not(any(windows, target_os = "linux", target_os = "android")))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe"] }

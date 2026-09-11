@@ -1,0 +1,1323 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+//! Typed-expression → pseudo-C text. Shared by every `decomp pseudo` style
+//! (`goto` / `structured` / `ssa`) — they differ in *which* IR they render
+//! (raw lift, SSA, or SSA+optimized) and whether a structuring pass ran, not
+//! in how a [`MicroExpr`] becomes text. One renderer, one place bugs get
+//! fixed (CONCEPT §3 rule 3).
+
+use std::collections::HashMap;
+
+use n0xis_arch::{BinOp, CallTarget, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
+use n0xis_contracts::Va;
+
+use crate::demangle::demangle;
+use crate::ir::Callsite;
+use crate::signatures::{known_signature, KnownSignature};
+use crate::typeinfer::TypeArtifact;
+
+/// Resolves a call target address to a human name, when known (from the
+/// function's own `CfgArtifact::callsites`, which already went through the
+/// symbol seam — the renderer itself never touches `Ctx`), plus (Phase 4)
+/// recovered locals/struct fields and whether the function is `void`. All
+/// optional: a `RenderNames` with no [`Self::with_types`] call behaves
+/// exactly as it did before Phase 4 (ad hoc `local_XX` naming, generic
+/// `*(type*)(addr)` field access, `return rax;` always shown).
+pub struct RenderNames {
+    callee_names: HashMap<u64, String>,
+    /// IAT-slot address → the import reached through it. Separate from
+    /// `callee_names` because the key is a *pointer to* the callee, not the
+    /// callee — conflating the two would name a function by the address of a
+    /// variable holding its address.
+    slot_names: HashMap<u64, String>,
+    locals: HashMap<i64, String>,
+    /// Base SSA var name → (field offset → field name). An empty inner map means a
+    /// recovered but un-named struct (renders `field_0x{off}`); a populated one
+    /// comes from a user/RTTI struct definition bound to this base (renders the
+    /// field's real name). Presence of the key is what marks a var as a struct
+    /// pointer at all.
+    structs: HashMap<String, std::collections::BTreeMap<i64, String>>,
+    /// A recovered parameter's entry SSA version (`"rcx.0"`) → its parameter
+    /// name (`"rcx"`). The `.0` version of a register is uniquely its incoming
+    /// value — i.e. the parameter itself — so rendering it under the parameter
+    /// name (dropping the redundant `.0`) connects the body to the signature
+    /// without conflating anything: `rcx.1`/`rcx.2` keep their subscripts, and
+    /// there is never a bare `rcx` for this to collide with.
+    param_names: HashMap<String, String>,
+    /// This ISA's stack-pointer name, when the caller knows it. Frame
+    /// bookkeeping (`rsp.1 = rsp.0 - 0x90`) is not a statement the program
+    /// performs — it is how the prologue is spelled, and the frame is already
+    /// reported on its own line. Measured against a second decompiler over 200
+    /// functions of one C++ runtime: it appeared in the text of **103** of
+    /// them here and **0** there.
+    stack_var: Option<String>,
+    /// How the **target** spells the canonical register names, from
+    /// [`Arch::display_reg_map`](n0xis_arch::Arch::display_reg_map). Empty on
+    /// every target whose canonical spelling is its own; non-empty for a
+    /// 32-bit x86 image, where the canonical `rax`/`rsp` name registers the
+    /// machine does not have. The identity has to stay canonical everywhere
+    /// else in here — `stack_var` and `entry_return_var` are *compared*
+    /// against SSA names, not printed — so this applies at the single point
+    /// where a var becomes text.
+    display_regs: &'static [(&'static str, &'static str)],
+    /// SSA name of the **untouched entry value** of the ABI's integer return
+    /// register (`rax.0` on x86-64, `x0.0` on AArch64). Threaded in rather than
+    /// spelled here: a renderer that writes `"rax.0"` into a `matches!` is an
+    /// x86 fact living in a target-neutral pass, and it silently stops matching
+    /// on any other architecture.
+    entry_return_var: Option<String>,
+    void_return: bool,
+    /// This function is a **constructor or destructor**, so it has no return
+    /// value at source level whatever the ABI leaves in the return register.
+    /// Without this the last call's result is printed as `return rax.5;` in a
+    /// constructor — a value the source never produced. Found by differential
+    /// review on `QFontIconEngine::QFontIconEngine`.
+    ctor_or_dtor: bool,
+    /// Recovered C++ vtable address → class name (ROADMAP Phase 10 item 7). A
+    /// constant equal to a key is the address of that class's vtable — the
+    /// value an MSVC constructor stores into `*this` — so it renders
+    /// `&Class::vtable` instead of an opaque `(void*)0x…`. Empty unless
+    /// [`Self::with_vtables`] was given the RTTI scan's result.
+    vtables: std::sync::Arc<HashMap<u64, String>>,
+    /// Address of a read-only C string → its already-escaped C literal
+    /// (`"hello %s"`). A constant equal to a key is the address of that string —
+    /// what a `lea`/`mov imm` into a format-string or message argument produces —
+    /// so it renders as the literal instead of a bare `0x…`/`(void*)0x…`. Built
+    /// by [`crate::decomp`] from the source bytes; empty otherwise. Sound because
+    /// the bytes at the address are validated to be a printable NUL-terminated
+    /// string before an entry is ever added.
+    strings: HashMap<u64, String>,
+    /// Address of a named global/static/function → its `&name` reference. A
+    /// constant equal to a key is that symbol's address (`&crc_table`), rather
+    /// than a bare number. Built from the symbol provider by [`crate::decomp`].
+    data_refs: HashMap<u64, String>,
+    /// User renames of decompiled variables, keyed by the variable's **current
+    /// displayed** name (`local_78`, `rcx`, `v3`) → the chosen name. Consulted
+    /// last, after every other naming rule has produced a display string, so it
+    /// overrides whatever the synthesizer chose — the WYSIWYG contract: you rename
+    /// exactly what you see. Empty unless [`Self::with_user_names`] was given the
+    /// function's `annotate var` map.
+    user_names: HashMap<String, String>,
+}
+
+impl RenderNames {
+    pub fn new(callsites: &[Callsite]) -> Self {
+        let callee_names = callsites
+            .iter()
+            .filter_map(|c| Some((c.target?.get(), c.target_name.clone()?)))
+            .collect();
+        let slot_names = callsites
+            .iter()
+            .filter_map(|c| Some((c.via_slot?.get(), c.target_name.clone()?)))
+            .collect();
+        RenderNames {
+            callee_names,
+            slot_names,
+            locals: HashMap::new(),
+            structs: HashMap::new(),
+            param_names: HashMap::new(),
+            display_regs: &[],
+            stack_var: None,
+            entry_return_var: None,
+            void_return: false,
+            ctor_or_dtor: false,
+            vtables: std::sync::Arc::new(HashMap::new()),
+            strings: HashMap::new(),
+            data_refs: HashMap::new(),
+            user_names: HashMap::new(),
+        }
+    }
+
+    /// Attach the function's `annotate var` renames (displayed-name → user-name),
+    /// applied last at every variable render site.
+    /// Name the stack pointer so frame bookkeeping stays out of the text.
+    /// Without it nothing changes — the statements render exactly as before.
+    /// The ABI's integer return register, from which the entry-value name a
+    /// `void` function's `ret` carries is derived (`rax` → `rax.0`).
+    pub fn with_return_register(mut self, name: Option<&str>) -> Self {
+        self.entry_return_var = name.map(|n| format!("{n}.0"));
+        self
+    }
+
+    /// The target's own spelling for canonical register names — pass
+    /// `arch.display_reg_map()`. Without it a 32-bit function decompiles to
+    /// `rax.1 = f();`, naming a register the target has not got.
+    pub fn with_register_spelling(mut self, map: &'static [(&'static str, &'static str)]) -> Self {
+        self.display_regs = map;
+        self
+    }
+
+    pub fn with_stack_pointer(mut self, name: Option<&str>) -> Self {
+        self.stack_var = name.map(str::to_string);
+        self
+    }
+
+    pub fn with_user_names(mut self, user_names: HashMap<String, String>) -> Self {
+        self.user_names = user_names;
+        self
+    }
+
+    /// Apply a user rename to a just-computed display name, if one exists.
+    fn user_override(&self, display: String) -> String {
+        self.user_names.get(&display).cloned().unwrap_or(display)
+    }
+
+    /// Enrich with Phase 4's recovered locals/struct-fields/signature.
+    pub fn with_types(mut self, types: &TypeArtifact) -> Self {
+        self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
+        self.structs = types.structs.iter().map(|s| (s.base_var.clone(), std::collections::BTreeMap::new())).collect();
+        self.param_names = types.signature.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
+        // Only a *measured* void suppresses the return line; an unknown one
+        // must not, or a value the function does return disappears.
+        self.void_return = types.signature.ret.is_void();
+        self
+    }
+
+    /// Bind field-name maps to specific base vars (from a user/RTTI struct
+    /// definition applied to a typed pointer), overriding the anonymous entries
+    /// [`Self::with_types`] set — so those bases render `p->count` instead of
+    /// `p->field_0x68`. A base not in `fields` keeps whatever it had.
+    pub fn with_struct_fields(mut self, fields: HashMap<String, std::collections::BTreeMap<i64, String>>) -> Self {
+        for (base, map) in fields {
+            self.structs.insert(base, map);
+        }
+        self
+    }
+
+    /// Replace the variable-display map with the full SSA-coalescing result
+    /// (Rung 3b): it maps each coalesced version and each parameter entry
+    /// version to its single display name, and *subsumes* the parameter naming
+    /// [`Self::with_types`] set. Applied only for the optimized (`ssa`) style,
+    /// which is the one whose IR the coalescing was computed against.
+    pub fn with_coalescing(mut self, var_names: HashMap<String, String>) -> Self {
+        self.param_names = var_names;
+        self
+    }
+
+    /// Attach the recovered vtable-address → class-name map so a vtable constant
+    /// renders as `&Class::vtable` (ROADMAP Phase 10 item 7 — RTTI in the
+    /// decompiler). See the [`RenderNames::vtables`] field.
+    /// Mark this function a constructor or destructor — see
+    /// [`RenderNames::ctor_or_dtor`].
+    pub fn as_ctor_or_dtor(mut self, yes: bool) -> Self {
+        self.ctor_or_dtor = yes;
+        self
+    }
+
+    pub fn with_vtables(mut self, vtables: std::sync::Arc<HashMap<u64, String>>) -> Self {
+        self.vtables = vtables;
+        self
+    }
+
+    /// If `value` is the address of a recovered vtable, the readable
+    /// `&Class::vtable` reference for it. A verbatim (undecoded, template) class
+    /// name is used as-is — sound over pretty, exactly as callee names are.
+    fn vtable_ref(&self, value: i128) -> Option<String> {
+        let va = u64::try_from(value).ok()?;
+        self.vtables.get(&va).map(|class| format!("&{class}::vtable"))
+    }
+
+    /// Attach the recovered string-address → C-literal map (see
+    /// [`RenderNames::strings`]).
+    pub fn with_strings(mut self, strings: HashMap<u64, String>) -> Self {
+        self.strings = strings;
+        self
+    }
+
+    /// If `value` is the address of a recovered read-only string, its C literal
+    /// (`"hello %s"`) — already escaped and quoted.
+    fn string_ref(&self, value: i128) -> Option<String> {
+        let va = u64::try_from(value).ok()?;
+        self.strings.get(&va).cloned()
+    }
+
+    /// Attach the recovered address → `&name` map (see [`RenderNames::data_refs`]).
+    pub fn with_data_refs(mut self, data_refs: HashMap<u64, String>) -> Self {
+        self.data_refs = data_refs;
+        self
+    }
+
+    /// If `value` is the address of a named global/function, its `&name` form.
+    fn data_ref(&self, value: i128) -> Option<String> {
+        let va = u64::try_from(value).ok()?;
+        self.data_refs.get(&va).cloned()
+    }
+
+    /// Add names for callees the CFG never saw as direct targets — today, the
+    /// methods [`crate::devirtualize`] resolved out of a vtable. Existing names
+    /// win: a name the CFG established came from a real branch operand.
+    pub fn with_extra_callees(mut self, extra: HashMap<u64, String>) -> Self {
+        for (va, name) in extra {
+            self.callee_names.entry(va).or_insert(name);
+        }
+        self
+    }
+
+    fn callee(&self, va: Va) -> String {
+        match self.callee_names.get(&va.get()) {
+            Some(name) => render_callee_name(name),
+            None => format!("sub_{:x}", va.get()),
+        }
+    }
+
+    /// A variable's display name: a recovered parameter's entry version
+    /// (`"rcx.0"`) renders as the parameter name (`"rcx"`), everything else
+    /// unchanged. Single source of truth so every render site — bare `Var`,
+    /// struct-field base, store target — agrees.
+    fn display_var(&self, name: &str) -> String {
+        let display = self
+            .param_names
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| self.spell_register(name));
+        self.user_override(display)
+    }
+
+    /// A canonical SSA name spelled as the target spells its registers:
+    /// `rax.1` → `eax.1` on i386. Identity when the target renames nothing,
+    /// and identity for anything that is not a register (a local, a temp, a
+    /// coalesced name) — only the stem before the version is consulted, and
+    /// only against the table.
+    fn spell_register(&self, name: &str) -> String {
+        if self.display_regs.is_empty() {
+            return name.to_string();
+        }
+        let (stem, version) = match name.split_once('.') {
+            Some((stem, v)) => (stem, Some(v)),
+            None => (name, None),
+        };
+        match self.display_regs.iter().find(|(c, _)| *c == stem) {
+            Some((_, target)) => match version {
+                Some(v) => format!("{target}.{v}"),
+                None => (*target).to_string(),
+            },
+            None => name.to_string(),
+        }
+    }
+
+    /// The known-API signature for a direct call target, if its resolved
+    /// name (bare, `module!` prefix stripped) is in the signature library.
+    fn known_sig_for(&self, va: Va) -> Option<&'static KnownSignature> {
+        let name = self.callee_names.get(&va.get())?;
+        let bare = name.rsplit('!').next().unwrap_or(name);
+        known_signature(bare)
+    }
+}
+
+/// `kernel32!CreateFileW` -> `kernel32__CreateFileW` (a valid C identifier).
+/// The module half is a real file name, so it can carry characters C can't
+/// (`KERNEL32.dll`, and every API-set forwarder — `api-ms-win-core-*.dll`);
+/// anything outside `[A-Za-z0-9_]` becomes `_` so the rendered text stays
+/// pseudo-**C**, not pseudo-C-with-arithmetic-in-the-callee.
+fn mangle_call_name(name: &str) -> String {
+    name.replace('!', "__")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// A resolved callee name as it should appear in pseudo-C. A demangled
+/// C++/Rust name (`Foo::bar<T>`) is shown as-is — real decompilers don't
+/// C-identifier-sanitize these, and doing so would throw away the readability
+/// win. Only a plain `module!function` import name gets the identifier-safe
+/// `!` -> `__` treatment.
+pub(crate) fn render_callee_name(name: &str) -> String {
+    // Split off a `module!` prefix so a C++-mangled *import*
+    // (`MSVCP140.dll!?sputc@…`) reaches the demangler — whose MSVC/Itanium paths
+    // require the bare `?`/`_Z` symbol, which the module prefix otherwise hides.
+    // A successful demangle drops the module
+    // (`std::basic_streambuf<…>::sputc`, not `MSVCP140_dll__…`); a plain C import
+    // (`kernel32!CreateFileW`) doesn't demangle and keeps its `module__name` form.
+    let bare = name.rsplit('!').next().unwrap_or(name);
+    // An MSVC C++ symbol renders as its qualified name only (a call site wants
+    // `std::…::sputc`, not the full return-type/params/access prototype).
+    if let Some(n) = crate::demangle::demangle_msvc_name_only(bare) {
+        return n;
+    }
+    let demangled = demangle(bare);
+    if demangled != *bare {
+        return demangled;
+    }
+    mangle_call_name(name)
+}
+
+/// The slot address of a call made *through memory* — the `CallTarget` shape
+/// the lifter produces for `call`/`jmp qword ptr [rip+disp]`: a load from a
+/// constant address. Mirrors `x64_lift::call_target`'s RIP-relative arm; any
+/// other indirect shape (a register, a computed address) has no static slot.
+fn as_slot_call(target: &CallTarget) -> Option<u64> {
+    let CallTarget::Indirect(expr) = target else { return None };
+    match expr.as_ref() {
+        MicroExpr::Load { addr, .. } => match addr.as_ref() {
+            MicroExpr::Const { value, .. } => u64::try_from(*value).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub(crate) fn c_type(bits: n0xis_arch::Bits, signed: bool) -> &'static str {
+    match (bits, signed) {
+        (1 | 8, false) => "uint8_t",
+        (1 | 8, true) => "int8_t",
+        (16, false) => "uint16_t",
+        (16, true) => "int16_t",
+        (32, false) => "uint32_t",
+        (32, true) => "int32_t",
+        (64, true) => "int64_t",
+        // SSE/AVX vector widths — the neutral intrinsic types a 128/256/512-bit
+        // data move (`movdqu`/`movups`) lands in. Naming the real width keeps a
+        // vector store from masquerading as a 64-bit one (which would falsely
+        // imply the upper bytes are untouched).
+        (128, _) => "__m128",
+        (256, _) => "__m256",
+        (512, _) => "__m512",
+        _ => "uint64_t",
+    }
+}
+
+/// A pre-SSA or post-SSA variable name is "the flags bookkeeping var" if it's
+/// `"flags"` with an optional `.N` version suffix stripped.
+fn is_flags_var(name: &str) -> bool {
+    name.split('.').next() == Some(FLAGS_VAR)
+}
+
+impl RenderNames {
+    /// `sp = sp ± constant` — the prologue's own arithmetic. A *dynamic* stack
+    /// adjustment (`sp = sp - rax`, an `alloca`) is a real statement and is
+    /// deliberately not matched: only a constant displacement is bookkeeping.
+    fn is_frame_bookkeeping(&self, dst: &str, value: &MicroExpr) -> bool {
+        let Some(sp) = self.stack_var.as_deref() else { return false };
+        fn base_of(n: &str) -> &str {
+            n.split('.').next().unwrap_or(n)
+        }
+        if base_of(dst) != sp {
+            return false;
+        }
+        // Built only from the stack pointer and constants, at any depth. A
+        // one-level check missed `rsp.2 = ((rsp.0 & -0x20) + -0x80)` — align,
+        // then allocate — which is how a function needing 32-byte alignment
+        // opens, and which survived on a Qt build the first version was not
+        // measured against.
+        fn only_sp_and_constants(e: &MicroExpr, sp: &str) -> bool {
+            match e {
+                MicroExpr::Var(n) => base_of(n) == sp,
+                MicroExpr::Const { .. } => true,
+                MicroExpr::Binary(_, l, r) => only_sp_and_constants(l, sp) && only_sp_and_constants(r, sp),
+                MicroExpr::Unary(_, v) | MicroExpr::Cast { expr: v, .. } | MicroExpr::AddrOf(v) => {
+                    only_sp_and_constants(v, sp)
+                }
+                _ => false,
+            }
+        }
+        only_sp_and_constants(value, sp)
+    }
+}
+
+/// Recognize `base + k` (or bare `base`), the one address shape stack locals
+/// and struct fields both key off (see `typeinfer.rs::as_base_offset`, the
+/// same pattern by construction — single source of truth for what counts as
+/// "nameable").
+fn as_base_offset(addr: &MicroExpr) -> Option<(&str, i128)> {
+    match addr {
+        MicroExpr::Var(name) => Some((name.as_str(), 0)),
+        MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {
+            (MicroExpr::Var(name), MicroExpr::Const { value, .. }) => Some((name.as_str(), *value)),
+            (MicroExpr::Const { value, .. }, MicroExpr::Var(name)) => Some((name.as_str(), *value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_stack_root(root: &str) -> bool {
+    root == "rsp" || root == "rbp"
+}
+
+/// The display text for a `Load`/`Store` address when it resolves to a named
+/// local (`local_18`) or a recovered struct field (`base->field_0x68`) —
+/// `None` if the address doesn't match that shape at all, in which case the
+/// caller falls back to the generic `*(type*)(addr)` rendering. Stack-local
+/// naming works even without [`RenderNames::with_types`] (same ad hoc
+/// `local_XX` scheme `typeinfer.rs` also produces, so the two never
+/// disagree); struct-field naming only fires once [`TypeArtifact`] recovered
+/// that base pointer.
+fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> {
+    let (base, offset) = as_base_offset(addr)?;
+    let root = base.split('.').next().unwrap_or(base);
+    if is_stack_root(root) {
+        let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| format!("local_{:x}", offset.unsigned_abs()));
+        return Some(names.user_override(name));
+    }
+    if let Some(fieldmap) = names.structs.get(base) {
+        let based = names.display_var(base);
+        // A user/RTTI struct definition supplies a real field name at this offset.
+        if let Some(fname) = fieldmap.get(&(offset as i64)) {
+            return Some(format!("{based}->{fname}"));
+        }
+        // A negative offset accesses memory *before* the base (a header/cookie,
+        // or a mid-object pointer) — render it signed as `field_neg_0x8`, not as
+        // the two's-complement giant hex `field_0xfffff…f8` that `{:x}` on a
+        // negative `i128` would produce.
+        return Some(match offset {
+            0 => format!("*{based}"),
+            o if o < 0 => format!("{based}->field_neg_0x{:x}", o.unsigned_abs()),
+            o => format!("{based}->field_0x{o:x}"),
+        });
+    }
+    None
+}
+
+fn render_const(value: i128, bits: n0xis_arch::Bits) -> String {
+    if value < 0 {
+        format!("-0x{:x}", value.unsigned_abs())
+    } else {
+        let mask = if bits == 0 || bits >= 128 { u128::MAX } else { (1u128 << bits) - 1 };
+        format!("0x{:x}", (value as u128) & mask)
+    }
+}
+
+fn cmp_op_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Ult => "< /*u*/",
+        BinOp::Ule => "<= /*u*/",
+        BinOp::Ugt => "> /*u*/",
+        BinOp::Uge => ">= /*u*/",
+        BinOp::Slt => "<",
+        BinOp::Sle => "<=",
+        BinOp::Sgt => ">",
+        BinOp::Sge => ">=",
+        _ => "?",
+    }
+}
+
+fn bin_op_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::UDiv | BinOp::SDiv => "/",
+        BinOp::UMod | BinOp::SMod => "%",
+        BinOp::And => "&",
+        BinOp::Or => "|",
+        BinOp::Xor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr | BinOp::Sar => ">>",
+        _ => cmp_op_text(op),
+    }
+}
+
+/// Recognize the stack-canary XOR: `x ^ <stack-pointer>` (either operand
+/// order). The compiler's stack protector is the *only* thing that XORs a
+/// value with the raw stack pointer — a load of `__security_cookie` XORed with
+/// `rsp` on function entry (`mov rax, cookie; xor rax, rsp`) and the frame
+/// copy XORed with `rsp` again before the epilogue check. No legitimate
+/// arithmetic ever does this, so matching on a stack-pointer XOR operand is a
+/// sound recognizer (it cannot misfire on real code). Returns the *other*
+/// operand — the value being guarded — so the caller can render the idiom by
+/// name instead of as opaque arithmetic on a mystery global.
+fn stack_guard_operand<'a>(l: &'a MicroExpr, r: &'a MicroExpr) -> Option<&'a MicroExpr> {
+    let is_stack_ptr = |e: &MicroExpr| matches!(e, MicroExpr::Var(name) if is_stack_root(name.split('.').next().unwrap_or(name)));
+    if is_stack_ptr(r) {
+        Some(l)
+    } else if is_stack_ptr(l) {
+        Some(r)
+    } else {
+        None
+    }
+}
+
+/// Recognize the `min`/`max` idiom a `cmovcc`-after-`cmp` lowers to: a select
+/// `(l <cmp> r) ? x : y` where the two branch values are exactly the two
+/// compared operands. Which of min/max — and signed vs unsigned — is fixed by
+/// the comparison operator and by whether the "true" branch keeps the left or
+/// the right operand. Sound: it fires only on that exact shape (the branches
+/// must be structurally the compared values), so it can never relabel an
+/// unrelated ternary. Returns the intrinsic name and the two operands.
+fn min_max_idiom<'a>(cond: &'a MicroExpr, a: &'a MicroExpr, b: &'a MicroExpr) -> Option<(&'static str, &'a MicroExpr, &'a MicroExpr)> {
+    let MicroExpr::Binary(op, l, r) = cond else { return None };
+    if !is_comparison(*op) {
+        return None;
+    }
+    let (l, r) = (l.as_ref(), r.as_ref());
+    let straight = a == l && b == r; // (l <cmp> r) ? l : r
+    let swapped = a == r && b == l; //  (l <cmp> r) ? r : l
+    if !straight && !swapped {
+        return None;
+    }
+    use BinOp::*;
+    let picks_smaller_when_true = matches!(op, Ult | Ule | Slt | Sle);
+    // "true" keeps the smaller operand AND the true-branch is the left operand
+    // ⇒ min; the two flips (a greater-than compare, or swapped branches) each
+    // invert it.
+    let is_min = picks_smaller_when_true == straight;
+    let signed = matches!(op, Slt | Sle | Sgt | Sge);
+    let name = match (is_min, signed) {
+        (true, true) => "__min",
+        (true, false) => "__umin",
+        (false, true) => "__max",
+        (false, false) => "__umax",
+    };
+    Some((name, l, r))
+}
+
+/// Recognize an array subscript inside a load/store address: `base + i*stride`
+/// where `stride` equals the element size (`bits/8`). Returns `(base, index)` so
+/// the access renders `base[i]` instead of `*(T*)(base + i*4)` — identical C
+/// semantics, far more readable. Requires an explicit `* stride` with `stride ≥
+/// 2`: a byte array (`base + i`) is left as a pointer add, since a bare sum is
+/// too ambiguous to reshape soundly.
+fn as_array_index(addr: &MicroExpr, bits: n0xis_arch::Bits) -> Option<(&MicroExpr, &MicroExpr)> {
+    let stride = i128::from(bits / 8);
+    if stride < 2 {
+        return None;
+    }
+    let MicroExpr::Binary(BinOp::Add, a, b) = addr else { return None };
+    // The index term is `i * stride` (either operand order); the other Add
+    // operand is the base. Try both arrangements.
+    for (base, offset) in [(a.as_ref(), b.as_ref()), (b.as_ref(), a.as_ref())] {
+        if let MicroExpr::Binary(BinOp::Mul, m1, m2) = offset {
+            let idx = match (m1.as_ref(), m2.as_ref()) {
+                (idx, MicroExpr::Const { value, .. }) if *value == stride => Some(idx),
+                (MicroExpr::Const { value, .. }, idx) if *value == stride => Some(idx),
+                _ => None,
+            };
+            if let Some(idx) = idx {
+                return Some((base, idx));
+            }
+        }
+    }
+    None
+}
+
+fn is_comparison(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Ult | BinOp::Ule | BinOp::Ugt | BinOp::Uge | BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge
+    )
+}
+
+pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
+    match e {
+        MicroExpr::Const { value, bits } => names
+            .vtable_ref(*value)
+            .or_else(|| names.string_ref(*value))
+            .or_else(|| names.data_ref(*value))
+            .unwrap_or_else(|| render_const(*value, *bits)),
+        MicroExpr::Var(name) => names.display_var(name),
+        MicroExpr::Load { addr, bits, signed } => {
+            if let Some(text) = field_or_local_text(addr, names) {
+                return text;
+            }
+            if let Some((base, idx)) = as_array_index(addr, *bits) {
+                return format!("{}[{}]", render_expr(base, names), render_expr(idx, names));
+            }
+            format!("*({}*)({})", c_type(*bits, *signed), render_expr(addr, names))
+        }
+        MicroExpr::Unary(UnOp::Neg, v) => format!("-{}", render_expr(v, names)),
+        MicroExpr::Unary(UnOp::Not, v) => format!("~{}", render_expr(v, names)),
+        MicroExpr::Binary(BinOp::Xor, l, r) if stack_guard_operand(l, r).is_some() => {
+            let guarded = stack_guard_operand(l, r).expect("just checked is_some");
+            format!("__stack_guard({})", render_expr(guarded, names))
+        }
+        MicroExpr::Binary(op, l, r) => {
+            format!("({} {} {})", render_expr(l, names), bin_op_text(*op), render_expr(r, names))
+        }
+        MicroExpr::Cast { signed, bits, expr } => format!("({}){}", c_type(*bits, *signed), render_expr(expr, names)),
+        MicroExpr::AddrOf(inner) => match inner.as_ref() {
+            // `lea rax, [rip+vtable]` — the address of a recovered vtable reads
+            // as `&Class::vtable`, otherwise as the raw pointer constant.
+            MicroExpr::Const { value, .. } => names
+                .vtable_ref(*value)
+                .or_else(|| names.string_ref(*value))
+                .or_else(|| names.data_ref(*value))
+                .unwrap_or_else(|| format!("(void*)0x{:x}", *value as u64)),
+            // `lea rax, [rsp+0x10]` and `lea rax, [rbx+0x8]` name a slot, and
+            // the address of a slot is what `&` means.
+            other if field_or_local_text(other, names).is_some() => {
+                format!("&{}", field_or_local_text(other, names).expect("just matched"))
+            }
+            // Everything else `lea` computes is **arithmetic**, not an address:
+            // a compiler reaches for it to multiply and add without touching the
+            // flags, so `lea rax,[rdx+rdx*2]` is `rdx * 3`. Rendering that as
+            // `&(rdx + rdx * 2)` is not C, and it reads as a pointer to a sum —
+            // which is a claim about the value's *kind*, made confidently and
+            // wrongly, in the one place a reader looks.
+            MicroExpr::Binary(..) | MicroExpr::Unary(..) | MicroExpr::Cast { .. } => {
+                render_expr(inner, names)
+            }
+            other => format!("&{}", render_expr(other, names)),
+        },
+        MicroExpr::Compare { kind, lhs, rhs } => {
+            // Only reachable if a Compare survives un-consumed by
+            // `Arch::branch_condition` (e.g. a dead flags def) — a sound
+            // fallback, not the normal rendering path for a condition.
+            format!("/*{:?}({}, {})*/", kind, render_expr(lhs, names), render_expr(rhs, names))
+        }
+        MicroExpr::Select { cond, a, b } => {
+            if let Some((name, l, r)) = min_max_idiom(cond, a, b) {
+                format!("{name}({}, {})", render_expr(l, names), render_expr(r, names))
+            } else {
+                format!("({} ? {} : {})", render_expr(cond, names), render_expr(a, names), render_expr(b, names))
+            }
+        }
+        MicroExpr::OpaqueFlags { mnemonic } => format!("/*flags after {mnemonic}*/"),
+        MicroExpr::Call { target, args } => render_call(target, args, names),
+        MicroExpr::Unknown(s) => format!("/*{s}*/"),
+    }
+}
+
+/// Renders a call (direct or indirect), consulting the known-signature
+/// library (Phase 4) to trim the generic 4-register arg list down to the
+/// real arity and name each argument inline, and to cast the result to a
+/// known return type (`(HANDLE)CreateFileW(...)`) when known. Falls back to
+/// the plain 4-arg rendering when the callee isn't in the library — sound,
+/// just less pretty.
+/// A call argument that is lift padding: the bare entry value (`rN.0`) of a
+/// register that is not a recovered parameter of the current function. Such a
+/// value is the uninitialized incoming register, injected only because the
+/// Win64 lift passes four argument registers at every call — never a real
+/// argument. A recovered parameter's entry version is in `param_names` (the
+/// coalescing/parameter map), so it is *not* padding.
+fn is_padding_arg(a: &MicroExpr, names: &RenderNames) -> bool {
+    matches!(a, MicroExpr::Var(n) if n.ends_with(".0") && !names.param_names.contains_key(n))
+}
+
+/// How many arguments a **constructor or destructor** really takes, read off its
+/// own demangled name: one `this`, plus the parameters the name lists.
+///
+/// The lift passes every argument register at every call because it cannot know
+/// the callee's arity, and the trailing-padding trim only drops bare *entry*
+/// values — so a call inside a function that has real parameters of its own
+/// keeps them all: `QPixmap::QPixmap()(rdi.1, rsi, rdx, rcx.2)`, three of those
+/// four being the caller's own arguments, not the callee's.
+///
+/// Restricted to constructors and destructors **on purpose**. A demangled name
+/// states the parameter list but not the return type, so for an ordinary
+/// function returning a large object by value the ABI's hidden result-buffer
+/// argument is invisible here and trusting the count would drop a real
+/// argument. A constructor cannot return by value, so for that slice the count
+/// is exact. Variadic names are refused outright.
+fn ctor_arity(callee: &str) -> Option<usize> {
+    let (qualified, params) = declared_params(callee)?;
+    crate::classlayout::ctor_class_of(qualified)?;
+    Some(params + 1)
+}
+
+/// The most arguments a **named** callee can possibly take, from its demangled
+/// name: the parameters it lists, plus at most two the name cannot state — a
+/// `this` pointer on a member function, and the hidden result buffer of a
+/// function returning a large object by value.
+///
+/// This is deliberately a *ceiling*, not a count. It can never drop a real
+/// argument, and it still cuts the six-register spray the lift emits at every
+/// call down to something the name allows: `QDataStream::atEnd() const` called
+/// with six arguments is a statement about the caller's registers, not about
+/// the callee.
+///
+/// [`ctor_arity`] stays the exact answer for the slice where one exists — a
+/// constructor cannot return by value, so there is no hidden buffer to allow.
+fn declared_ceiling(callee: &str) -> Option<usize> {
+    let (_, params) = declared_params(callee)?;
+    Some(params + 2)
+}
+
+/// `(qualified name, parameter count)` from a demangled `Name(a, b)` form.
+/// Variadic names are refused outright: `...` states no count at all.
+fn declared_params(callee: &str) -> Option<(&str, usize)> {
+    let open = callee.find('(')?;
+    let (qualified, rest) = callee.split_at(open);
+    // A trailing cv-qualifier is part of the signature, not of the parameters.
+    let rest = rest.trim_end();
+    let rest = rest.strip_suffix("const").map(str::trim_end).unwrap_or(rest);
+    let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
+    if inner.contains("...") {
+        return None;
+    }
+    let list = inner.trim();
+    if list.is_empty() || list == "void" {
+        return Some((qualified.trim(), 0));
+    }
+    // Top-level commas only — a template argument list or a nested function
+    // pointer type carries its own.
+    let (mut depth, mut params) = (0i32, 1usize);
+    for c in list.chars() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => params += 1,
+            _ => {}
+        }
+    }
+    Some((qualified.trim(), params))
+}
+
+/// The C operator an `__fcmp_*` intrinsic is exactly equivalent to.
+///
+/// Only the **ordered** predicates qualify. `ult` is "less than *or
+/// unordered*", which is what `x < y` compiles to but not what `x < y` means
+/// when either side is NaN — printing it as `<` would quietly assert the two
+/// are the same. `uno`/`ord` have no operator at all. Those keep their names,
+/// which is a longer line and a true one.
+fn float_compare_operator(name: &str) -> Option<&'static str> {
+    let rest = name.strip_prefix("__fcmp_")?;
+    let (pred, _width) = rest.rsplit_once('_')?;
+    Some(match pred {
+        "ogt" => ">",
+        "oge" => ">=",
+        "olt" => "<",
+        "ole" => "<=",
+        "oeq" => "==",
+        "one" => "!=",
+        _ => return None,
+    })
+}
+
+fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> String {
+    // An intrinsic prints its own name over its exact operands — no symbol
+    // resolution, no known-signature lookup, and no padding trim (its arguments
+    // are precise, not the Win64 four-register spray a real call carries).
+    if let CallTarget::Intrinsic(name) = target {
+        // A floating-point comparison is a *relation*, and a reader wants to see
+        // one. The lift names these after the predicate they actually test —
+        // `o` ordered, `u` "or unordered" — because after `ucomisd` a NaN takes
+        // the `jb` branch, and flattening that to `<` would state something the
+        // machine does not do. So the ordered forms print as operators, and the
+        // ones whose meaning `<` cannot carry keep their name.
+        if let Some(op) = float_compare_operator(name)
+            && let [lhs, rhs] = args
+        {
+            return format!("{} {op} {}", render_expr(lhs, names), render_expr(rhs, names));
+        }
+        let inner = args.iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", ");
+        return format!("{name}({inner})");
+    }
+    // An indirect call through a *known* slot (`call qword ptr [rip+disp]` to
+    // an import) is only syntactically indirect: the callee has a name, and
+    // printing `(*(uint64_t*)(0x14002a3e8))(...)` instead of
+    // `kernel32__CloseHandle(...)` throws away information the CFG already
+    // resolved — and blocks the known-API signature lookup that gives the
+    // call typed parameter names.
+    let slot = as_slot_call(target).and_then(|slot| names.slot_names.get(&slot));
+    let callee = match (slot, target) {
+        (Some(name), _) => render_callee_name(name),
+        (None, CallTarget::Direct { va }) => names.callee(*va),
+        (None, CallTarget::Indirect(t)) => format!("(*{})", render_expr(t, names)),
+        // Unreachable: intrinsics return above. Kept total and non-panicking.
+        (None, CallTarget::Intrinsic(name)) => name.clone(),
+    };
+    let known = match (slot, target) {
+        (Some(name), _) => known_signature(name.rsplit('!').next().unwrap_or(name)),
+        (None, CallTarget::Direct { va }) => names.known_sig_for(*va),
+        (None, CallTarget::Indirect(_)) | (None, CallTarget::Intrinsic(_)) => None,
+    };
+    let args_text = match known {
+        Some(sig) => {
+            let n = sig.params.len().min(args.len());
+            args[..n]
+                .iter()
+                .zip(sig.params.iter())
+                .map(|(a, p)| format!("/*{}*/ {}", p.name, render_expr(a, names)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        None => {
+            // Drop trailing lift-padding arguments. The Win64 lift passes all
+            // four argument registers (rcx/rdx/r8/r9) at *every* call — it can't
+            // know the callee's arity — so a **trailing** argument that is the
+            // bare entry value (`rN.0`) of a register this function neither
+            // takes as a parameter nor ever writes is padding, not a real
+            // argument (it's the uninitialized incoming register). Only trailing
+            // padding is dropped, and only bare non-parameter entry values, so a
+            // genuine forwarded value or any computed argument is always kept.
+            let mut keep = args.iter().rposition(|a| !is_padding_arg(a, names)).map_or(0, |i| i + 1);
+            // A constructor or destructor states its arity exactly; every other
+            // named callee states a ceiling. Both only ever lower `keep`, so a
+            // computed or forwarded argument is still never dropped.
+            if let Some(n) = ctor_arity(callee.as_str()).or_else(|| declared_ceiling(callee.as_str())) {
+                keep = keep.min(n);
+            }
+            args[..keep].iter().map(|a| render_expr(a, names)).collect::<Vec<_>>().join(", ")
+        }
+    };
+    let call = format!("{callee}({args_text})");
+    match known.and_then(|s| s.ret) {
+        Some(type_name) => format!("({type_name}){call}"),
+        None => call,
+    }
+}
+
+/// The exact condition text for a `cjmp` block's terminator. `is_comparison`
+/// determines whether extra parens are needed; kept simple since
+/// `render_expr` already wraps every `Binary`.
+pub fn render_condition(e: &MicroExpr, names: &RenderNames) -> String {
+    render_expr(e, names)
+}
+
+/// A statement that's pure bookkeeping for soundness (flags dataflow,
+/// call-clobber invalidation) and not something a human wrote — dropped from
+/// the *text* rendering only; the underlying artifact still carries it for
+/// anyone inspecting the JSON.
+fn is_noise(stmt: &MicroStmt, names: &RenderNames) -> bool {
+    match stmt {
+        MicroStmt::Assign { dst, value } => {
+            is_flags_var(dst)
+                // The address an indirect jump computes. The terminator already
+                // shows where control goes; printing the computation as an
+                // assignment to a variable nothing reads is noise of the same
+                // kind as a flags write.
+                || dst.split('.').next() == Some(n0xis_arch::JUMP_TARGET_VAR)
+                || matches!(value, MicroExpr::Unknown(s) if s == n0xis_arch::CALL_CLOBBER)
+                || names.is_frame_bookkeeping(dst, value)
+        }
+        MicroStmt::Nop => true,
+        _ => false,
+    }
+}
+
+/// Render one statement to a pseudo-C line, or `None` if it's noise / a nop.
+pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
+    if is_noise(stmt, names) {
+        return None;
+    }
+    Some(match stmt {
+        MicroStmt::Assign { dst, value } => format!("{} = {};", names.display_var(dst), render_expr(value, names)),
+        MicroStmt::Store { addr, value, bits } => {
+            if let Some(text) = field_or_local_text(addr, names) {
+                format!("{text} = {};", render_expr(value, names))
+            } else if let Some((base, idx)) = as_array_index(addr, *bits) {
+                format!("{}[{}] = {};", render_expr(base, names), render_expr(idx, names), render_expr(value, names))
+            } else {
+                format!("*({}*)({}) = {};", c_type(*bits, false), render_expr(addr, names), render_expr(value, names))
+            }
+        }
+        MicroStmt::Call { target, args, ret } => {
+            let call = render_call(target, args, names);
+            match ret {
+                Some(r) => format!("{} = {call};", names.display_var(r)),
+                None => format!("{call};"),
+            }
+        }
+        MicroStmt::Return(Some(e)) => {
+            // A `void` function's `ret` still reads `rax` (our lift always
+            // models it that way — see x64_lift.rs), but if `rax` was never
+            // otherwise defined, that's the *untouched entry value*, not a
+            // real return value: `TypeInferPass` marks the signature `void`
+            // in exactly that case, so drop the meaningless `return rax.0;`.
+            // A constructor or destructor returns nothing at source level; the
+            // ABI's leftover in the return register is not a value the program
+            // produced. Only a **plain variable** is dropped — a folded call
+            // still has to execute, so it is kept rather than silently deleted.
+            let bare_var = matches!(e, MicroExpr::Var(_));
+            let untouched_entry = names
+                .entry_return_var
+                .as_deref()
+                .is_some_and(|entry| matches!(e, MicroExpr::Var(n) if n == entry));
+            if (names.ctor_or_dtor && bare_var) || (names.void_return && untouched_entry) {
+                "return;".to_string()
+            } else {
+                format!("return {};", render_expr(e, names))
+            }
+        }
+        MicroStmt::Return(None) => "return;".to_string(),
+        MicroStmt::Nop => return None,
+        MicroStmt::Unlifted { text, .. } => format!("// asm: {text}"),
+    })
+}
+
+/// Structural negation of an already-rendered condition *expression* (not
+/// text) — used by the structuring pass when it needs `!cond` for a
+/// `while`/`do-while` whose natural exit arm is the "true" edge. Negating the
+/// typed expression (rather than string-munging rendered text, as v0 did)
+/// means the result renders through the exact same `render_expr` path.
+pub fn negate_condition(e: &MicroExpr) -> MicroExpr {
+    match e {
+        MicroExpr::Binary(op, l, r) if is_comparison(*op) => {
+            let negated = match *op {
+                BinOp::Eq => BinOp::Ne,
+                BinOp::Ne => BinOp::Eq,
+                BinOp::Ult => BinOp::Uge,
+                BinOp::Uge => BinOp::Ult,
+                BinOp::Ule => BinOp::Ugt,
+                BinOp::Ugt => BinOp::Ule,
+                BinOp::Slt => BinOp::Sge,
+                BinOp::Sge => BinOp::Slt,
+                BinOp::Sle => BinOp::Sgt,
+                BinOp::Sgt => BinOp::Sle,
+                other => other,
+            };
+            MicroExpr::Binary(negated, l.clone(), r.clone())
+        }
+        other => MicroExpr::Unary(UnOp::Not, Box::new(other.clone())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `sp = sp - 0x90` is how a prologue is spelled, not something the program
+    /// does, and the frame is reported on its own line already. Measured
+    /// against a second decompiler over 200 functions of one C++ runtime: it
+    /// stood in the text of 103 of them here and none of them there.
+    ///
+    /// A *dynamic* adjustment is a different thing — `alloca` is a statement —
+    /// so only a constant displacement is dropped.
+    #[test]
+    fn frame_bookkeeping_is_not_a_statement_but_alloca_is() {
+        let names = RenderNames::new(&[]).with_stack_pointer(Some("rsp"));
+        let constant = MicroStmt::Assign {
+            dst: "rsp.1".into(),
+            value: MicroExpr::Binary(
+                BinOp::Sub,
+                Box::new(MicroExpr::var("rsp.0")),
+                Box::new(MicroExpr::constant(0x90, 64)),
+            ),
+        };
+        assert_eq!(render_stmt(&constant, &names), None, "the prologue's own arithmetic");
+
+        let dynamic = MicroStmt::Assign {
+            dst: "rsp.1".into(),
+            value: MicroExpr::Binary(
+                BinOp::Sub,
+                Box::new(MicroExpr::var("rsp.0")),
+                Box::new(MicroExpr::var("rax.5")),
+            ),
+        };
+        assert!(render_stmt(&dynamic, &names).is_some(), "an alloca is a real statement");
+
+        // And with no stack pointer named, nothing is dropped that was not
+        // dropped before.
+        let unnamed = RenderNames::new(&[]);
+        assert!(render_stmt(&constant, &unnamed).is_some(), "unchanged when the ISA names no stack pointer");
+    }
+
+    #[test]
+    fn renders_a_field_load_through_a_call_result() {
+        let names = RenderNames::new(&[]);
+        let expr = MicroExpr::load(
+            MicroExpr::binary(
+                BinOp::Add,
+                MicroExpr::Call { target: CallTarget::Direct { va: Va(0x1000) }, args: vec![] },
+                MicroExpr::constant(0x68, 64),
+            ),
+            32,
+            false,
+        );
+        assert_eq!(render_expr(&expr, &names), "*(uint32_t*)((sub_1000() + 0x68))");
+    }
+
+    #[test]
+    fn stack_relative_load_renders_as_a_local() {
+        let names = RenderNames::new(&[]);
+        let expr = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)), 64, false);
+        assert_eq!(render_expr(&expr, &names), "local_20");
+    }
+
+    /// The lift sprays every argument register at every call. Inside a function
+    /// that has real parameters of its own, the trailing-padding trim keeps them
+    /// all — `QPixmap::QPixmap()(rdi.1, rsi, rdx, rcx.2)`, three of which belong
+    /// to the caller. A constructor's own name states its arity, so it is used.
+    #[test]
+    fn a_constructor_call_is_trimmed_to_the_arity_its_name_states() {
+        assert_eq!(ctor_arity("QPixmap::QPixmap()"), Some(1), "this only");
+        assert_eq!(ctor_arity("QFont::QFont(QString const&, int)"), Some(3), "this + 2");
+        assert_eq!(ctor_arity("QList<QPair<int, int> >::QList(int, int)"), Some(3),
+                   "a template argument's comma is not a parameter separator");
+        assert_eq!(ctor_arity("QPixmap::~QPixmap()"), Some(1), "a destructor too");
+        assert_eq!(ctor_arity("QPixmap::isNull()"), None, "an ordinary method states no arity here");
+        assert_eq!(ctor_arity("printf(char const*, ...)"), None, "variadic is refused");
+        assert_eq!(ctor_arity("sub_1400"), None, "an unnamed callee has nothing to read");
+    }
+
+    #[test]
+    fn a_known_win32_call_gets_named_trimmed_args_and_a_typed_cast() {
+        let callsites = vec![Callsite {
+            from: Va(0x2000),
+            kind: "named".to_string(),
+            target: Some(Va(0x3000)),
+            target_name: Some("kernel32!CloseHandle".to_string()),
+            via_slot: None,
+        }];
+        let names = RenderNames::new(&callsites);
+        // The lift always passes all 4 register slots positionally;
+        // `CloseHandle` only takes one — the extra 3 must be trimmed, not
+        // shown as noise, and the known `HANDLE` param should be named.
+        let call = MicroExpr::Call {
+            target: CallTarget::Direct { va: Va(0x3000) },
+            args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
+        };
+        let text = render_expr(&call, &names);
+        assert_eq!(text, "(BOOL)kernel32__CloseHandle(/*hObject*/ rcx.0)");
+    }
+
+    /// The same import called the way real code calls it — through its IAT
+    /// slot — must read identically. Before the slot was carried on the
+    /// callsite this rendered `(*(uint64_t*)(0x3000))(rcx.0, rdx.0, …)`:
+    /// syntactically honest, but it hid a name the CFG had already resolved
+    /// and skipped the known-signature arg trimming.
+    #[test]
+    fn an_import_called_through_its_iat_slot_is_named_like_a_direct_call() {
+        let callsites = vec![Callsite {
+            from: Va(0x2000),
+            kind: "named".to_string(),
+            target: None,
+            target_name: Some("kernel32!CloseHandle".to_string()),
+            via_slot: Some(Va(0x3000)),
+        }];
+        let names = RenderNames::new(&callsites);
+        let call = MicroExpr::Call {
+            target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x3000, 64), 64, false))),
+            args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
+        };
+        assert_eq!(render_expr(&call, &names), "(BOOL)kernel32__CloseHandle(/*hObject*/ rcx.0)");
+    }
+
+    #[test]
+    fn a_module_prefixed_cpp_import_demangles_to_its_qualified_name() {
+        // A C++-mangled import (`MSVCP140.dll!?sputc@…`) must reach the demangler
+        // despite the module prefix, and render as the qualified name only —
+        // `std::basic_streambuf<…>::sputc` — not the full prototype and not the
+        // sanitized `MSVCP140_dll___sputc___…` the pre-split path produced.
+        let n = render_callee_name("MSVCP140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z");
+        assert!(n.contains("basic_streambuf") && n.ends_with("sputc"), "{n}");
+        assert!(!n.contains("MSVCP140") && !n.contains("QEAAHD"), "no module prefix, no prototype: {n}");
+        // A plain C import keeps the identifier-safe module-qualified form.
+        assert_eq!(render_callee_name("kernel32!CloseHandle"), "kernel32__CloseHandle");
+    }
+
+    #[test]
+    fn a_real_module_name_is_sanitized_into_a_valid_c_identifier() {
+        // Real symbol tables give `KERNEL32.dll!X` and API-set forwarders
+        // `api-ms-win-core-libraryloader-l1-2-0.dll!X` — neither is a C
+        // identifier until the dots and dashes go.
+        assert_eq!(mangle_call_name("KERNEL32.dll!CloseHandle"), "KERNEL32_dll__CloseHandle");
+        assert_eq!(
+            mangle_call_name("api-ms-win-core-version-l1-1-1.dll!GetFileVersionInfoSizeW"),
+            "api_ms_win_core_version_l1_1_1_dll__GetFileVersionInfoSizeW"
+        );
+    }
+
+    /// …but an indirect call through an *unknown* slot must stay honest.
+    #[test]
+    fn an_unknown_indirect_call_still_renders_as_a_dereference() {
+        let names = RenderNames::new(&[]);
+        let call = MicroExpr::Call {
+            target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x3000, 64), 64, false))),
+            args: vec![MicroExpr::var("rcx.0")],
+        };
+        assert!(render_expr(&call, &names).starts_with("(*"), "{}", render_expr(&call, &names));
+    }
+
+    #[test]
+    fn trailing_lift_padding_arguments_are_dropped_from_an_unknown_call() {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, TypeArtifact};
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![],
+            signature: RecoveredSignature {
+                params: vec![ParamInfo { reg: "rcx", name: "rcx".into(), ty: CType { bits: 64, signed: false, name: None } }],
+                ret: crate::typeinfer::ReturnType::Void,
+                ret_registers: vec![],
+                params_known: true,
+            },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        // Unknown callee, args = (rcx.0 [parameter], rdx.1 [computed], r8.0, r9.0 [padding]).
+        let call = MicroExpr::Call {
+            target: CallTarget::Direct { va: Va(0x5000) },
+            args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.1"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
+        };
+        // Trailing non-parameter entry values r8.0/r9.0 are dropped; the
+        // parameter rcx.0 renders as its name, the computed rdx.1 is kept.
+        assert_eq!(render_expr(&call, &names), "sub_5000(rcx, rdx.1)");
+    }
+
+    #[test]
+    fn a_parameter_entry_value_in_a_trailing_argument_is_kept() {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, TypeArtifact};
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![],
+            signature: RecoveredSignature {
+                params: vec![
+                    ParamInfo { reg: "rcx", name: "rcx".into(), ty: CType { bits: 64, signed: false, name: None } },
+                    ParamInfo { reg: "rdx", name: "rdx".into(), ty: CType { bits: 64, signed: false, name: None } },
+                ],
+                ret: crate::typeinfer::ReturnType::Void,
+                ret_registers: vec![],
+                params_known: true,
+            },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        // rdx.0 is a real parameter forwarded straight through — it must NOT be
+        // trimmed even though it is a trailing bare entry value.
+        let call = MicroExpr::Call {
+            target: CallTarget::Direct { va: Va(0x5000) },
+            args: vec![MicroExpr::var("rcx.1"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0")],
+        };
+        assert_eq!(render_expr(&call, &names), "sub_5000(rcx.1, rdx)");
+    }
+
+    #[test]
+    fn a_recovered_parameter_entry_version_renders_as_its_name() {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, TypeArtifact};
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![],
+            signature: RecoveredSignature {
+                params: vec![ParamInfo { reg: "rcx", name: "rcx".into(), ty: CType { bits: 64, signed: false, name: Some("void *".into()) } }],
+                ret: crate::typeinfer::ReturnType::Void,
+                ret_registers: vec![],
+                params_known: true,
+            },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        // The entry version `rcx.0` *is* the parameter -> rendered as its name.
+        assert_eq!(render_expr(&MicroExpr::var("rcx.0"), &names), "rcx");
+        // A later definition `rcx.1` is a different value -> keeps its subscript
+        // (no conflation with the parameter).
+        assert_eq!(render_expr(&MicroExpr::var("rcx.1"), &names), "rcx.1");
+        // A register that isn't a recovered parameter is untouched.
+        assert_eq!(render_expr(&MicroExpr::var("rbx.0"), &names), "rbx.0");
+    }
+
+    #[test]
+    fn negate_flips_the_comparison_operator() {
+        let cond = MicroExpr::binary(BinOp::Eq, MicroExpr::var("rcx"), MicroExpr::constant(0, 64));
+        let negated = negate_condition(&cond);
+        assert_eq!(negated, MicroExpr::binary(BinOp::Ne, MicroExpr::var("rcx"), MicroExpr::constant(0, 64)));
+    }
+
+    #[test]
+    fn a_stack_pointer_xor_renders_as_the_named_stack_guard_idiom() {
+        let names = RenderNames::new(&[]);
+        // `mov rax, __security_cookie; xor rax, rsp` — the canary setup.
+        let cookie = MicroExpr::load(MicroExpr::constant(0x1421173c8, 64), 64, false);
+        let setup = MicroExpr::binary(BinOp::Xor, cookie, MicroExpr::var("rsp.1"));
+        assert_eq!(render_expr(&setup, &names), "__stack_guard(*(uint64_t*)(0x1421173c8))");
+
+        // The epilogue check XORs the frame copy with rsp; operand order reversed.
+        let check = MicroExpr::binary(
+            BinOp::Xor,
+            MicroExpr::var("rsp.1"),
+            MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x8, 64)), 64, false),
+        );
+        assert_eq!(render_expr(&check, &names), "__stack_guard(local_8)");
+    }
+
+    #[test]
+    fn a_compare_select_over_its_own_operands_renders_as_min_or_max() {
+        let names = RenderNames::new(&[]);
+        let sel = |op, a: &str, b: &str| {
+            MicroExpr::select(
+                MicroExpr::binary(op, MicroExpr::var("rax.1"), MicroExpr::var("rbx.1")),
+                MicroExpr::var(a),
+                MicroExpr::var(b),
+            )
+        };
+        // (a <u b) ? a : b  = unsigned min ; branches swapped = unsigned max
+        assert_eq!(render_expr(&sel(BinOp::Ult, "rax.1", "rbx.1"), &names), "__umin(rax.1, rbx.1)");
+        assert_eq!(render_expr(&sel(BinOp::Ult, "rbx.1", "rax.1"), &names), "__umax(rax.1, rbx.1)");
+        // signed greater-than keeping the left operand = signed max
+        assert_eq!(render_expr(&sel(BinOp::Sgt, "rax.1", "rbx.1"), &names), "__max(rax.1, rbx.1)");
+    }
+
+    #[test]
+    fn a_select_whose_branches_are_not_the_compared_values_stays_a_ternary() {
+        // Soundness: the min/max fold requires the branches to *be* the compared
+        // operands; an unrelated select must render as a plain `?:`.
+        let names = RenderNames::new(&[]);
+        let sel = MicroExpr::select(
+            MicroExpr::binary(BinOp::Ult, MicroExpr::var("rax.1"), MicroExpr::var("rbx.1")),
+            MicroExpr::var("rcx.1"),
+            MicroExpr::var("rdx.1"),
+        );
+        assert_eq!(render_expr(&sel, &names), "((rax.1 < /*u*/ rbx.1) ? rcx.1 : rdx.1)");
+    }
+
+    #[test]
+    fn a_scaled_pointer_load_renders_as_an_array_subscript() {
+        let names = RenderNames::new(&[]);
+        // *(uint32_t*)(v9 + (idx * 4))  →  v9[idx]  (stride 4 == sizeof u32)
+        let load = MicroExpr::Load {
+            addr: Box::new(MicroExpr::binary(
+                BinOp::Add,
+                MicroExpr::var("v9"),
+                MicroExpr::binary(BinOp::Mul, MicroExpr::var("idx"), MicroExpr::constant(4, 64)),
+            )),
+            bits: 32,
+            signed: false,
+        };
+        assert_eq!(render_expr(&load, &names), "v9[idx]");
+
+        // Soundness: a stride that is NOT the element size is left as a pointer
+        // deref — reshaping it to `base[i]` would silently change the semantics.
+        let mismatch = MicroExpr::Load {
+            addr: Box::new(MicroExpr::binary(
+                BinOp::Add,
+                MicroExpr::var("v9"),
+                MicroExpr::binary(BinOp::Mul, MicroExpr::var("idx"), MicroExpr::constant(4, 64)),
+            )),
+            bits: 64, // sizeof u64 == 8, but the stride is 4 → not an array access
+            signed: false,
+        };
+        assert_eq!(render_expr(&mismatch, &names), "*(uint64_t*)((v9 + (idx * 0x4)))");
+    }
+
+    #[test]
+    fn a_negative_struct_field_offset_renders_signed_not_as_giant_hex() {
+        use crate::typeinfer::{RecoveredSignature, TypeArtifact};
+        // A recovered struct base accessed at a negative offset (`*(rcx.1 - 8)`).
+        let types = TypeArtifact {
+            locals: vec![],
+            structs: vec![crate::typeinfer::RecoveredType { base_var: "rcx.1".into(), type_name: "struct_rcx_1".into(), fields: vec![] }],
+            signature: RecoveredSignature { params: vec![], ret: crate::typeinfer::ReturnType::Void, ret_registers: vec![], params_known: true },
+        };
+        let names = RenderNames::new(&[]).with_types(&types);
+        let addr = MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(-8, 64));
+        let load = MicroExpr::load(addr, 64, false);
+        // Not `field_0xfffffffffffffffffffffffffffffff8`.
+        assert_eq!(render_expr(&load, &names), "rcx.1->field_neg_0x8");
+        // A positive offset is unchanged.
+        let pos = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(0x10, 64)), 64, false);
+        assert_eq!(render_expr(&pos, &names), "rcx.1->field_0x10");
+    }
+
+    #[test]
+    fn a_vtable_constant_renders_as_a_named_class_vtable_reference() {
+        // ROADMAP Phase 10 item 7 — RTTI in the decompiler. The MSVC constructor
+        // idiom `mov rax, offset vtable; mov [rcx], rax` stores the vtable
+        // address into `*this`; with the RTTI map attached that address names
+        // its class instead of reading as an opaque pointer.
+        let mut vtables = HashMap::new();
+        vtables.insert(0x180021548u64, "std::exception".to_string());
+        let names = RenderNames::new(&[]).with_vtables(std::sync::Arc::new(vtables));
+        // Both the `lea`-shaped AddrOf(Const) and a bare Const of the same
+        // address resolve to the class.
+        assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "&std::exception::vtable");
+        assert_eq!(render_expr(&MicroExpr::constant(0x180021548, 64), &names), "&std::exception::vtable");
+        // A different constant is untouched — sound, no misfire.
+        assert_eq!(render_expr(&MicroExpr::constant(0x180021549, 64), &names), "0x180021549");
+    }
+
+    #[test]
+    fn without_the_rtti_map_a_pointer_constant_reads_exactly_as_before() {
+        // Soundness/regression: with no vtable map attached, the address renders
+        // as the raw pointer constant it always did.
+        let names = RenderNames::new(&[]);
+        assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "(void*)0x180021548");
+    }
+
+    #[test]
+    fn a_plain_xor_of_two_data_registers_is_never_mistaken_for_a_stack_guard() {
+        // Soundness: the recognizer keys strictly on a stack-pointer operand, so
+        // ordinary `xor rax, rbx` arithmetic renders as itself, not as a guard.
+        let names = RenderNames::new(&[]);
+        let plain = MicroExpr::binary(BinOp::Xor, MicroExpr::var("rax.2"), MicroExpr::var("rbx.1"));
+        assert_eq!(render_expr(&plain, &names), "(rax.2 ^ rbx.1)");
+    }
+}

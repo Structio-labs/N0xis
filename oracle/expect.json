@@ -1,0 +1,289 @@
+{
+  "_comment": [
+    "The truth, written from the C source \u2014 never from a tool's output. That is what",
+    "makes this rung 1: the answer is known before the question is asked.",
+    "",
+    "Per function: `params` is the class of each argument (`int` covers int/long/pointer,",
+    "`float` covers float/double, `stack` means the ABI gives no register to key it on),",
+    "and `ret` is `void`, `int` or `float`.",
+    "",
+    "`known_open` names a field whose answer is *expected to be wrong*, with the reason.",
+    "A mismatch there is reported and does not fail. A **match** fails the test \u2014 the gap",
+    "closed and this file is now lying about the tool. That is deliberate: a recorded gap",
+    "has to stay true in both directions or it rots into folklore.",
+    "",
+    "`params_ordered` says whether the ABI lets the *order* be recovered. Win64 assigns",
+    "argument position to a register in whichever file the type belongs to, so it can be.",
+    "System V consumes the two files independently, so `f(int,double)` and `f(double,int)`",
+    "compile to the same two registers and the order is genuinely unrecoverable \u2014 the test",
+    "compares a multiset there, because asserting an order would be asserting a guess."
+  ],
+  "shapes": [
+    {
+      "id": "sysv",
+      "description": "ELF, x86-64, System V",
+      "source": "sysv.c",
+      "binary": "sysv.so",
+      "compiler": "gcc",
+      "cc_args": [
+        "-shared",
+        "-O1",
+        "-fPIC"
+      ],
+      "params_ordered": false,
+      "functions": {
+        "sysv_v_v": {
+          "params": [],
+          "ret": "void"
+        },
+        "sysv_i_i2": {
+          "params": [
+            "int",
+            "int"
+          ],
+          "ret": "int"
+        },
+        "sysv_d_d1": {
+          "params": [
+            "float"
+          ],
+          "ret": "float"
+        },
+        "sysv_d_d3": {
+          "params": [
+            "float",
+            "float",
+            "float"
+          ],
+          "ret": "float"
+        },
+        "sysv_f_f2": {
+          "params": [
+            "float",
+            "float"
+          ],
+          "ret": "float"
+        },
+        "sysv_d_id": {
+          "params": [
+            "int",
+            "float"
+          ],
+          "ret": "float"
+        },
+        "sysv_d_di": {
+          "params": [
+            "float",
+            "int"
+          ],
+          "ret": "float"
+        },
+        "sysv_p_p1": {
+          "params": [
+            "int"
+          ],
+          "ret": "int"
+        },
+        "sysv_l_l1": {
+          "params": [
+            "int"
+          ],
+          "ret": "int"
+        },
+        "sysv_v_pi": {
+          "params": [
+            "int",
+            "int"
+          ],
+          "ret": "void"
+        }
+      }
+    },
+    {
+      "id": "win64",
+      "description": "PE, x86-64, Microsoft x64",
+      "source": "win64.c",
+      "binary": "win64.dll",
+      "compiler": "x86_64-w64-mingw32-gcc",
+      "cc_args": [
+        "-shared",
+        "-O1"
+      ],
+      "params_ordered": true,
+      "functions": {
+        "win64_v_v": {
+          "params": [],
+          "ret": "void"
+        },
+        "win64_i_i2": {
+          "params": [
+            "int",
+            "int"
+          ],
+          "ret": "int"
+        },
+        "win64_d_d1": {
+          "params": [
+            "float"
+          ],
+          "ret": "float"
+        },
+        "win64_d_d3": {
+          "params": [
+            "float",
+            "float",
+            "float"
+          ],
+          "ret": "float"
+        },
+        "win64_f_f2": {
+          "params": [
+            "float",
+            "float"
+          ],
+          "ret": "float"
+        },
+        "win64_d_id": {
+          "params": [
+            "int",
+            "float"
+          ],
+          "ret": "float"
+        },
+        "win64_d_di": {
+          "params": [
+            "float",
+            "int"
+          ],
+          "ret": "float"
+        },
+        "win64_p_p1": {
+          "params": [
+            "int"
+          ],
+          "ret": "int"
+        },
+        "win64_l_l1": {
+          "params": [
+            "int"
+          ],
+          "ret": "int"
+        },
+        "win64_v_pi": {
+          "params": [
+            "int",
+            "int"
+          ],
+          "ret": "void"
+        }
+      }
+    },
+    {
+      "id": "i386",
+      "description": "PE32, i386, cdecl + stdcall",
+      "source": "i386.c",
+      "binary": "i386.dll",
+      "compiler": "i686-w64-mingw32-gcc",
+      "cc_args": [
+        "-shared",
+        "-O1"
+      ],
+      "params_ordered": true,
+      "functions": {
+        "i386_cdecl_v_v": {
+          "params": [],
+          "ret": "void",
+          "known_open": {
+            "params": "cdecl cleans up in the caller, so the return states no arity and there is no argument register to scan. The tool renders `()` \u2014 C for unspecified \u2014 which is honest and is not the count. The evidence is still in the bytes: the incoming stack slots the body reads. Recorded in private/GROWTH-IDEAS.md item Q."
+          }
+        },
+        "i386_cdecl_i_i1": {
+          "params": [
+            "stack"
+          ],
+          "ret": "int",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v"
+          }
+        },
+        "i386_cdecl_i_i3": {
+          "params": [
+            "stack",
+            "stack",
+            "stack"
+          ],
+          "ret": "int",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v \u2014 this one reads [esp+4], [esp+8] and [esp+0Ch], three slots plainly visible"
+          }
+        },
+        "i386_cdecl_v_pi": {
+          "params": [
+            "stack",
+            "stack"
+          ],
+          "ret": "void",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v",
+            "ret": "the body uses eax as scratch for the pointer, so the ABI's return register is written and the function reads as returning a value. Distinguishing a scratch write from a result needs the callee's source-level type, which no ABI records."
+          }
+        },
+        "i386_cdecl_d_d1": {
+          "params": [
+            "stack"
+          ],
+          "ret": "float",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v",
+            "ret": "i386 returns floating-point on the x87 stack (st0), which the lift does not model. The tool now says `/*unknown*/` rather than `void` \u2014 the claim is honest, the type is still not recovered. Modelling x87 is private/GROWTH-IDEAS.md items J and S."
+          }
+        },
+        "i386_cdecl_f_f2": {
+          "params": [
+            "stack",
+            "stack"
+          ],
+          "ret": "float",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v",
+            "ret": "same as i386_cdecl_d_d1"
+          }
+        },
+        "i386_cdecl_l_l1": {
+          "params": [
+            "stack"
+          ],
+          "ret": "int",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v"
+          }
+        },
+        "i386_cdecl_p_p1": {
+          "params": [
+            "stack"
+          ],
+          "ret": "int",
+          "known_open": {
+            "params": "same as i386_cdecl_v_v"
+          }
+        },
+        "i386_stdcall_i_i2": {
+          "params": [
+            "stack",
+            "stack"
+          ],
+          "ret": "int"
+        },
+        "i386_stdcall_v_p1": {
+          "params": [
+            "stack"
+          ],
+          "ret": "void",
+          "known_open": {
+            "ret": "same as i386_cdecl_v_pi \u2014 eax carries the scratch pointer"
+          }
+        }
+      }
+    }
+  ]
+}

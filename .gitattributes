@@ -1,0 +1,35 @@
+# Line endings — one representation, every OS.
+#
+# This repo is developed from both Windows and Linux against the same working
+# tree. Without this file git's per-machine `core.autocrlf` decides the on-disk
+# form, so a checkout made on Windows shows up as "every file modified" the
+# moment it is opened on Linux (36k phantom line changes across 76 files —
+# measured, not hypothetical). Pinning eol=lf makes the working tree identical
+# on both hosts; the repository blobs were already LF, so nothing is rewritten.
+#
+# Rust, git and every editor in use here read LF natively on Windows.
+* text=auto eol=lf
+
+# Windows-native scripts must keep CRLF: cmd.exe and older PowerShell hosts
+# mis-parse LF-only batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary — never touch, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.bin binary
+*.dat binary
+
+# Generated / vendored: keep them out of diff noise and language stats.
+Cargo.lock -diff linguist-generated
+archive/** linguist-vendored
