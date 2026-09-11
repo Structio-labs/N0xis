@@ -625,6 +625,21 @@ All notable changes to N0xis are recorded here. Versions follow
   `_Z9qBadAllocv` had measured 1 139 B against a true 55 B, swallowing ~20
   neighbours. Zero PE regression.
 
+## [0.3.1] — 2026-09-11
+
+A clean public re-release. No analysis behaviour changed; the changes are to
+what the build gates on and what the repository says about itself.
+
+- **The toolchain- and own-binary-oracle tests moved behind a local `oracle`
+  feature.** Tests that need a compiler on the machine, or that read N0xis's own
+  freshly compiled binary, are instruments for local verification, not things a
+  CI runner can honestly gate on. CI now runs the rustc-only tests; the oracle
+  suite is run locally with `--features oracle`.
+- **Docs describe binaries by measured shape, not by third-party product name.**
+  Commercial product and engine names were removed from the tree and its
+  history; a target is now described by what was measured about it and its size.
+- **Repository history was reset** for the public release.
+
 ## [0.2.1] — 2026-08-31
 
 The decompiler jump: from a Memory-SSA foundation to **readable, source-level
