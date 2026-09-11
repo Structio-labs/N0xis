@@ -4,15 +4,11 @@ name: docs
 # carries (README, CONCEPT, ROADMAP, docs/*), projected into mdBook pages by
 # scripts/build_book.py. It therefore cannot drift from the repo the way a wiki
 # does: every deploy regenerates every page from the canonical file.
+#
+# Manual-only. Deploying needs GitHub Pages enabled for this repository; until an
+# owner turns Pages on, an automatic run on every push only fails. Enable Pages,
+# then run this workflow from the Actions tab (workflow_dispatch) to publish.
 on:
-  push:
-    branches: [main]
-    # Only rebuild when something the book is made of actually changed.
-    paths:
-      - "**.md"
-      - book.toml
-      - scripts/build_book.py
-      - .github/workflows/docs.yml
   workflow_dispatch:
 
 # Pages deployments are not cancelled mid-flight: a half-published site is worse
