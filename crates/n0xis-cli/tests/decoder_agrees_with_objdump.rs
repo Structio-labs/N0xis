@@ -25,6 +25,8 @@
 //!
 //! No `objdump` (or no compiler for a shape) skips that shape and says so.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

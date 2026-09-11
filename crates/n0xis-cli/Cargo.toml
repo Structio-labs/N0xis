@@ -28,6 +28,15 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+default = []
+# Integration tests that spawn an external toolchain (a C/cross compiler,
+# objdump/nm/readelf, qemu, wine) at runtime are gated behind this feature so
+# they compile out of the default `cargo test` — CI runs on a moving runner
+# whose toolchain version is not pinned, and those tests are LOCAL verification
+# instruments, not CI gates. Off by default; enable it locally to run them.
+oracle = []
+
 # Live-process analysis is keyed on the real compile target, not a synthetic
 # feature flag: it is a statement about what the OS can do. It is no longer a
 # synonym for Windows — `trait LiveTarget` has a Win32 adapter and a

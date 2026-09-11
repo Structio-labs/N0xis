@@ -28,6 +28,8 @@
 //! above is only true for that frame base. Guessing there is how the first
 //! attempt went wrong.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;

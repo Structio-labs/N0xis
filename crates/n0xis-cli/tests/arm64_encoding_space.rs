@@ -37,6 +37,8 @@
 //! if it grows. They are deliberately not zero, because zero would be a lie —
 //! and lowering them is the work, tracked in `ROADMAP.md`.
 
+#![cfg(feature = "oracle")]
+
 use std::process::{Command, Stdio};
 use std::io::Write;
 use std::path::PathBuf;

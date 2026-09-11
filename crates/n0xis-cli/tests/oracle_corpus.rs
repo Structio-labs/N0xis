@@ -25,6 +25,11 @@
 //! verified with no toolchain at all.
 
 use std::path::{Path, PathBuf};
+// `Command` and every item below carrying `#[cfg(feature = "oracle")]` spawn a
+// compiler or the built n0xis binary. The feature keeps them out of CI (they
+// depend on the runner's unpinned toolchain — see CONTRIBUTING.md), while the
+// fixture-only coherence test compiles unconditionally and stays a CI gate.
+#[cfg(feature = "oracle")]
 use std::process::Command;
 
 use serde_json::Value;
@@ -34,6 +39,7 @@ fn oracle_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("oracle")
 }
 
+#[cfg(feature = "oracle")]
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -52,6 +58,7 @@ fn expect_json() -> Value {
 /// The class of one recovered parameter, named after the *register file* the
 /// tool put it in — which is exactly the fact that was wrong when a
 /// floating-point argument was reported as absent.
+#[cfg(feature = "oracle")]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 enum Class {
     /// An integer/pointer argument register (`rdi`, `rcx`, …).
@@ -62,6 +69,7 @@ enum Class {
     Stack,
 }
 
+#[cfg(feature = "oracle")]
 impl Class {
     fn parse(s: &str) -> Class {
         match s {
@@ -88,6 +96,7 @@ impl Class {
 }
 
 /// The return's class as the signature states it.
+#[cfg(feature = "oracle")]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Ret {
     Void,
@@ -99,6 +108,7 @@ enum Ret {
     Unknown,
 }
 
+#[cfg(feature = "oracle")]
 impl Ret {
     fn parse(s: &str) -> Ret {
         match s {
@@ -116,12 +126,14 @@ impl Ret {
 /// `params: None` is `()` — C for *unspecified*, which is what an unmeasured
 /// arity must render as. `Some(vec![])` is `(void)`, C for *none*. Collapsing
 /// those two is the defect this distinction exists to catch.
+#[cfg(feature = "oracle")]
 #[derive(Debug)]
 struct Claim {
     params: Option<Vec<Class>>,
     ret: Ret,
 }
 
+#[cfg(feature = "oracle")]
 fn parse_signature(sig: &str) -> Claim {
     let open = sig.find('(').unwrap_or_else(|| panic!("no parameter list in {sig:?}"));
     let close = sig.rfind(')').unwrap_or_else(|| panic!("unterminated parameter list in {sig:?}"));
@@ -187,6 +199,7 @@ fn every_oracle_function_has_a_stated_truth_and_the_reverse() {
 }
 
 /// Build one shape, or `None` with a printed reason.
+#[cfg(feature = "oracle")]
 fn build(shape: &Value, out_dir: &Path) -> Option<PathBuf> {
     let id = shape["id"].as_str().unwrap();
     let cc = shape["compiler"].as_str().unwrap();
@@ -216,6 +229,7 @@ fn build(shape: &Value, out_dir: &Path) -> Option<PathBuf> {
 /// Every discovered function's entry address, by name. Names come from the
 /// image's own export/symbol table; a wrong one shows up as "not found", which
 /// is a failure and never a false pass.
+#[cfg(feature = "oracle")]
 fn entry_addresses(binary: &Path) -> Vec<(String, String)> {
     let out = Command::new(n0xis_exe())
         .args(["function", "discover", "--quiet", "--file"])
@@ -236,11 +250,13 @@ fn entry_addresses(binary: &Path) -> Vec<(String, String)> {
 
 /// `i386_stdcall_i_i2` is exported as `i386_stdcall_i_i2@8`, and the renderer
 /// makes that a C identifier (`…_8`). Match the stem, not the decoration.
+#[cfg(feature = "oracle")]
 fn same_function(discovered: &str, wanted: &str) -> bool {
     let Some(rest) = discovered.strip_prefix(wanted) else { return false };
     rest.is_empty() || rest.starts_with('@') || rest.trim_start_matches('_').chars().all(|c| c.is_ascii_digit())
 }
 
+#[cfg(feature = "oracle")]
 fn signature_at(binary: &Path, va: &str) -> Option<String> {
     let out = Command::new(n0xis_exe())
         .args(["decomp", "pseudo", "--quiet", "--addr", va, "--file"])
@@ -255,6 +271,7 @@ fn signature_at(binary: &Path, va: &str) -> Option<String> {
 /// `known_open` is *expected* to disagree, and **agreeing fails** — a gap that
 /// quietly closed leaves `expect.json` lying about the tool, which is how a
 /// recorded limitation rots into folklore.
+#[cfg(feature = "oracle")]
 #[test]
 fn the_oracle_corpus_answers_what_it_was_built_to_answer() {
     if !n0xis_exe().exists() {

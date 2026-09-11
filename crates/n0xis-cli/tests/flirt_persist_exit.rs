@@ -21,6 +21,8 @@
 //! (CONCEPT §3 rule 6).
 //!
 //! Linux/x86-64 only — it needs a C compiler that can link statically.
+#![cfg(feature = "oracle")]
+
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::collections::{HashMap, HashSet};

@@ -32,6 +32,8 @@
 //! The counts are ratcheted. `disagrees` must stay at its recorded floor, and
 //! the floor may only be lowered by a commit that says why.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

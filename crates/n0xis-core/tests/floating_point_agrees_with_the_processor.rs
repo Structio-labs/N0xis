@@ -22,6 +22,8 @@
 //! after `ucomisd` means "less **or unordered**", and `cvtsi2sd` reads its
 //! integer source as signed.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

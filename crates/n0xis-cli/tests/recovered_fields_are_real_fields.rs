@@ -19,6 +19,8 @@
 //! Measured when this was written: **15 recovered field offsets across 10
 //! functions, every one a real member. None invented.**
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;

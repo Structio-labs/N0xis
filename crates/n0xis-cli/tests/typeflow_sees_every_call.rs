@@ -16,6 +16,8 @@
 //! `objdump` is the outside source: it lists the direct calls, and this counts
 //! the ones whose target is a function in the same image.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -16,6 +16,15 @@ rustc-demangle = { workspace = true }
 msvc-demangler = { workspace = true }
 cpp_demangle = { workspace = true }
 
+[features]
+default = []
+# Integration tests that spawn an external toolchain (a C/cross compiler,
+# objdump/nm/readelf, qemu, wine) at runtime are gated behind this feature so
+# they compile out of the default `cargo test` — CI runs on a moving runner
+# whose toolchain version is not pinned, and those tests are LOCAL verification
+# instruments, not CI gates. Off by default; enable it locally to run them.
+oracle = []
+
 [dev-dependencies]
 serde_json = { workspace = true }
 # Tests only: the real PE loader, to validate the NativeAOT reader against a

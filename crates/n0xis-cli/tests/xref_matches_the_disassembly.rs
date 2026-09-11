@@ -19,6 +19,8 @@
 //! the answer. The measurement was narrower than the tool, which is the usual
 //! direction.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;

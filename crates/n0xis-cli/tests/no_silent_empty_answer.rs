@@ -25,6 +25,8 @@
 //! reason. That list is the honest half — without it the sweep would only cover
 //! what happens to work.
 
+#![cfg(feature = "oracle")]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

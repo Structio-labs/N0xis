@@ -25,6 +25,8 @@
 //! Each case returns a distinct constant, so a wrong edge is a wrong number and
 //! the processor settles which.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
