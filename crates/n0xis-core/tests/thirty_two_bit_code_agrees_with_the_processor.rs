@@ -22,6 +22,8 @@
 //! the width under test. The arguments are placed in the emulated stack where
 //! the ABI puts them, and the answer comes from the processor.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};

@@ -25,6 +25,8 @@
 //! The target is the oracle corpus's System V shape, built here — see
 //! `oracle/README.md`. No compiler, no check, and it says so.
 
+#![cfg(feature = "oracle")]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

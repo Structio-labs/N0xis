@@ -25,6 +25,8 @@
 //! table on three images (10, 15 467 and 14 355 entries), and **0 exported
 //! functions missed** out of 10 and 7 105.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

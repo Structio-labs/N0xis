@@ -19,6 +19,8 @@
 //! second shape and recognizing only the first would miss most real calls.
 //!
 //! Linux-only: it links a real `.so` against the system libc.
+#![cfg(feature = "oracle")]
+
 #![cfg(all(feature = "static-pe", target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;

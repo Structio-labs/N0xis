@@ -42,6 +42,8 @@
 //! an architecture with no lift, any *other* stop would mean the harness
 //! starved the run rather than the IR being incomplete.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

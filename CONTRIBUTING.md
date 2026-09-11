@@ -31,6 +31,25 @@ sh scripts/check_boundary.sh     # the layering law, mechanically
 Zero warnings is enforced, not a suggestion — every phase in this project's
 history shipped with a clean build, and that's not going to change now.
 
+### Running the full test suite (the toolchain oracles)
+
+CI runs the **rustc-only** subset: unit tests, checked-in-fixture tests, and
+parser tests. A second class of integration tests spawns an external toolchain
+at runtime — a C or cross compiler, `objdump`/`nm`/`readelf`, `qemu`, `wine` —
+and checks the tool's answer against what that toolchain produces. Those are
+**LOCAL verification instruments, not CI gates**: their result depends on the
+runner's compiler version (an unpinned gcc can emit a construct the IR does not
+yet model, and the test then rightly fails on the *runner*, not on a regression),
+so they are gated behind a `oracle` feature that is OFF by default and compiled
+out of CI. Run the full verification against your local, pinned toolchain with:
+
+```
+cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle
+```
+
+A test whose toolchain is genuinely absent (no `qemu`, no mingw, no `wine`) skips
+itself and says so on stderr; one whose toolchain *is* present must run and pass.
+
 **CI runs exactly these four** ([.github/workflows/ci.yml](.github/workflows/ci.yml)),
 so a green local run is a green PR:
 

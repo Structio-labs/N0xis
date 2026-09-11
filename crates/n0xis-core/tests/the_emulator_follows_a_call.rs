@@ -29,6 +29,8 @@
 //!
 //! [`emulator_agrees_with_the_cpu`]: ../emulator_agrees_with_the_cpu/index.html
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

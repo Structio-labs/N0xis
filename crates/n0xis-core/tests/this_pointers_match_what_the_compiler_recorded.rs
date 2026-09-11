@@ -29,6 +29,8 @@
 //! *class* is cross-checked with `c++filt`, a third-party demangler, so
 //! n0xis's own demangling is never both the question and the answer.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -17,6 +17,8 @@
 //! Every function folds **both halves** of its result into one integer, so a
 //! defect in the upper lane is as visible as one in the lower.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

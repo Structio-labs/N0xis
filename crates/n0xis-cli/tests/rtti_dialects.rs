@@ -20,6 +20,8 @@
 //! by hand, which puts the answer on the highest rung there is. It is known
 //! because it was written, not inferred from a build.
 
+#![cfg(feature = "oracle")]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

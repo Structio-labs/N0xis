@@ -27,6 +27,8 @@
 //! Measured when this was written: **94 functions of a system C library, 0 call
 //! sites missed and 0 invented.**
 
+#![cfg(feature = "oracle")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;

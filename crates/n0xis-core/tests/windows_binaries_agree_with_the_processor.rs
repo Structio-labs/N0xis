@@ -23,6 +23,8 @@
 //! anything — the expected value comes from the hardware, on this platform,
 //! and any difference is n0xis's.
 
+#![cfg(feature = "oracle")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

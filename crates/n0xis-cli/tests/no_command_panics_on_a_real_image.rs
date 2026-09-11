@@ -25,6 +25,8 @@
 //!
 //! Commands that mutate anything are skipped by name, not by hope.
 
+#![cfg(feature = "oracle")]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
