@@ -1,0 +1,44 @@
+[package]
+name = "n0xis-frontend"
+description = "Shared frontend layer: source resolution, ISA selection and argument parsing that every frontend (CLI, MCP, HUD) goes through. One contract instead of a copy per frontend."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-flirt = { workspace = true }
+n0xis-arch = { workspace = true }
+# The registry's built-in capabilities run real passes — this crate sits
+# *above* the core, never the other way round (scripts/check_boundary.sh
+# enforces that direction).
+n0xis-core = { workspace = true }
+# `cfg_cached` — capabilities go through the pipeline's content-addressed
+# artifact cache, exactly as the CLI's own handlers did.
+n0xis-pipeline = { workspace = true }
+# The IL2CPP managed layer (Phase 12): imported symbol indices served through
+# the existing SymbolProvider seam.
+n0xis-il2cpp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Same target split as n0xis-cli / n0xis-mcp. `live` is keyed on the compile
+# target rather than a feature because it is a statement about what the OS can
+# do, not a user choice — and it is no longer a synonym for Windows: Linux and
+# Android have an adapter behind `trait LiveTarget` too. Anything else (macOS,
+# BSD) still builds, with `Src::Live` simply never constructed.
+[target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+
+[target.'cfg(not(any(windows, target_os = "linux", target_os = "android")))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe"] }
+
+# n0xis-project's `live` feature gates its `locator` module, which still takes a
+# concrete Win32 `LiveProcess`; until that is relaxed to the seam it stays
+# Windows-only.
+[target.'cfg(windows)'.dependencies]
+n0xis-project = { workspace = true, features = ["live"] }
+
+[target.'cfg(not(windows))'.dependencies]
+n0xis-project = { workspace = true }

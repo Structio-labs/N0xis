@@ -1,0 +1,53 @@
+[package]
+name = "n0xis-cli"
+description = "The n0xis CLI — thin clap frontend over the pipeline. Emits the ok/data/meta envelope. Binary: n0xis (kept invocable as n0x)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "n0xis"
+path = "src/main.rs"
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+# The FLIRT-class signature matcher — `sig gen` produces its `.npat` databases.
+n0xis-flirt = { workspace = true }
+n0xis-core = { workspace = true }
+n0xis-pipeline = { workspace = true }
+# The shared frontend seam — source/arch resolution and argument parsing,
+# identical to what n0xis-mcp uses. Cross-platform on its own (it carries the
+# same cfg(windows) split inside).
+n0xis-frontend = { workspace = true }
+n0xis-bitsquid = { workspace = true }
+n0xis-lua = { workspace = true }
+n0xis-luajit = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Live-process analysis is keyed on the real compile target, not a synthetic
+# feature flag: it is a statement about what the OS can do. It is no longer a
+# synonym for Windows — `trait LiveTarget` has a Win32 adapter and a
+# Linux/Android `/proc` one, so both get it, and a plain Windows build sees
+# byte-identical enabled features to before.
+[target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+
+[target.'cfg(not(any(windows, target_os = "linux", target_os = "android")))'.dependencies]
+n0xis-sources = { workspace = true, features = ["static-pe"] }
+
+# n0xis-project's `live` feature gates `locator`, which still takes a concrete
+# Win32 LiveProcess; Windows-only until that is relaxed to the seam.
+[target.'cfg(windows)'.dependencies]
+n0xis-project = { workspace = true, features = ["live"] }
+
+[target.'cfg(not(windows))'.dependencies]
+n0xis-project = { workspace = true }
+
+[dev-dependencies]
+# Ground truth for the FLIRT exit test: read the unstripped twin's symbol table
+# directly, so a matched name is checked against the linker's own answer.
+goblin = { workspace = true }

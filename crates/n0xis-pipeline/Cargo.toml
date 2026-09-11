@@ -1,0 +1,22 @@
+[package]
+name = "n0xis-pipeline"
+description = "Wires a source + arch (+ project) into the core and runs passes. Phase 1 is a thin PassManager; artifact caching / incremental recompute land in Phase 6."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-sources = { workspace = true }
+n0xis-core = { workspace = true }
+n0xis-project = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# Exercises the real LiveProcess adapter in this crate's test suite (spawns a
+# real process) — opt-in, same reasoning as n0xis-sources itself: default
+# builds/tests stay OS-free.
+live = ["n0xis-sources/live"]

@@ -1,0 +1,59 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Rust / Cargo
+/target/
+n0x-cli-rs/target/
+src-tauri/target/
+**/*.rs.bk
+
+# Per-project N0x state (analysis artifacts, patches, dumps)
+.n0x/
+
+# Field tests — capture journals, screenshots and findings from live sessions
+# against specific game targets. Session evidence, not source.
+/field-tests/
+
+# Bundled archive — not source
+n0x.zip
+
+# Obsidian workspace state (keep config, drop transient state)
+.obsidian/workspace*.json
+.obsidian/cache
+.nexus/
+
+# Agent scratch state — session notes written by assistant tooling, not source.
+memory.json
+
+# Linux desktop / archive-manager leftovers on the shared NTFS volume.
+.Trash-*/
+.directory
+
+# The WARP interoperability layer is a separate repo (developed as a plugin).
+# It carries another project's own fixture file, which this repo must not
+# redistribute; a local checkout here must never enter this repo.
+/crates/n0xis-warp/
+
+# Private working notes — never publish (also in .git/info/exclude, but that is
+# local-only: a fresh clone of this public repo would not inherit it).
+private/
+
+# Local verification scratch (oracle programs, A/B harnesses, project dirs)
+scratchpad/
+
+# Compiler output that lands in a crate root because a test built something
+# with the wrong cwd or the wrong argv. A file literally named `-fPIC` — an
+# ELF32 shared object, written by a test whose `-o` came before its flags —
+# was tracked for a commit. A name beginning with a dash is never a source
+# file, and neither is a linked object beside a Cargo.toml.
+/crates/*/-*
+/crates/*/*.so
+/crates/*/*.dll
+/crates/*/*.exe
+/crates/*/*.o

@@ -1,0 +1,235 @@
+// Copyright (c) 2026 Tymofii Kosovskyi
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+//! Schema identifiers — the versioned names that tag every `data` payload.
+//!
+//! Naming policy (CONCEPT §12): new v1 schemas are `n0xis.*.vN`; the archived
+//! v0 schemas stay `n0x.*` and are reserved here so the compatibility surface
+//! is explicit and nothing silently reuses an id. Breaking a payload's shape
+//! bumps its `vN`.
+
+/// New v1 (`n0xis.*`) schema ids, minted as capabilities land.
+pub mod v1 {
+    /// Linear decode / disassembly output (`decode` pass, `disasm`).
+    pub const DECODE: &str = "n0xis.decode.v1";
+    /// Process listing (`process ps`).
+    pub const PROCESS_PS: &str = "n0xis.process.ps.v1";
+    /// Module listing (`module list`).
+    pub const MODULE_LIST: &str = "n0xis.module.list.v1";
+    /// CFG + block/def-use IR (`ir build` / `ir cfg`).
+    pub const IR_CFG: &str = "n0xis.ir.cfg.v1";
+    /// Human-readable IR summary (`ir explain`).
+    pub const IR_EXPLAIN: &str = "n0xis.ir.explain.v1";
+    /// Graphviz DOT rendering of the CFG (`ir dot`).
+    pub const IR_DOT: &str = "n0xis.ir.dot.v1";
+    /// Backward register slice over a function (`ir slice`).
+    pub const IR_SLICE: &str = "n0xis.ir.slice.v1";
+    /// Per-function index with quality scoring (`ir manifest`).
+    pub const IR_MANIFEST: &str = "n0xis.ir.manifest.v1";
+    /// Heuristic function discovery (`function discover`).
+    pub const FUNCTION_DISCOVER: &str = "n0xis.function.discover.v1";
+    /// Call-graph walk from a root (`function trace`).
+    pub const FUNCTION_TRACE: &str = "n0xis.function.trace.v1";
+    /// Whole-program noreturn set: functions proven never to return, via the
+    /// call-graph fixpoint (`function noreturn`, ROADMAP Phase 10 priority 0).
+    pub const FUNCTION_NORETURN: &str = "n0xis.function.noreturn.v1";
+    /// Exception edges: protected ranges and the landing pads they unwind to.
+    pub const FUNCTION_EH: &str = "n0xis.function.eh.v1";
+    /// Per-function interprocedural summary (returns/params/clobbers/callees).
+    pub const FUNCTION_SUMMARY: &str = "n0xis.function.summary.v1";
+    /// Whole-program type propagation over the call graph.
+    pub const FUNCTION_TYPEFLOW: &str = "n0xis.function.typeflow.v1";
+    /// Program-wide per-class field layout, unified over every method.
+    pub const FUNCTION_LAYOUT: &str = "n0xis.function.layout.v1";
+    /// Whole-program analysis pass: discover → RTTI → xref index → IR cache,
+    /// materializing the `.n0x/` summary layer with progress (`analyze`).
+    pub const ANALYZE: &str = "n0xis.analyze.v1";
+    pub const FIND: &str = "n0xis.find.v1";
+    pub const TYPES: &str = "n0xis.types.v1";
+    /// Cross-references to/from an address (`xref to` / `xref from`).
+    pub const XREF: &str = "n0xis.xref.v1";
+    /// String-literal search + referencing instructions (`xref string`).
+    pub const XREF_STRING: &str = "n0xis.xref.string.v1";
+    /// Memory read (`mem read`).
+    pub const MEM_READ: &str = "n0xis.mem.read.v1";
+    /// Memory write (`mem write`).
+    pub const MEM_WRITE: &str = "n0xis.mem.write.v1";
+    /// Address-space region map (`mem map`).
+    pub const MEM_MAP: &str = "n0xis.mem.map.v1";
+    /// Patch operation result (`patch *`).
+    pub const PATCH: &str = "n0xis.patch.v1";
+    /// Named memory-range selection (`selection *`).
+    pub const SELECTION: &str = "n0xis.selection.v1";
+    /// Persistent artifact store (`dump *`).
+    pub const DUMP: &str = "n0xis.dump.v1";
+    /// Environment / readiness report (`doctor`).
+    pub const DOCTOR: &str = "n0xis.doctor.v1";
+    /// Target profile: image facts + engine detection + per-command
+    /// advisories (`profile`).
+    pub const PROFILE: &str = "n0xis.profile.v1";
+    /// Built-in quick reference (`guide`).
+    pub const GUIDE: &str = "n0xis.guide.v1";
+    /// Project init report (`init`).
+    pub const PROJECT_INIT: &str = "n0xis.project.init.v1";
+    /// Resolved project paths/config (`project info`).
+    pub const PROJECT_INFO: &str = "n0xis.project.info.v1";
+    /// Software-breakpoint hit report (`debug await-hit`).
+    pub const DEBUG_AWAIT_HIT: &str = "n0xis.debug.await_hit.v1";
+    /// SSA form (`ir ssa`, ROADMAP Phase 3).
+    pub const IR_SSA: &str = "n0xis.ir.ssa.v1";
+    /// Per-pass optimization delta — the "explainable" artifact (`ir opt`,
+    /// Phase 3, KF-5); also inlined into `decomp pseudo --style ssa`.
+    pub const OPT_DELTA: &str = "n0xis.opt.delta.v1";
+    /// Typed value scan / rescan result (`scan value` / `scan filter`, Phase 4b).
+    pub const SCAN: &str = "n0xis.scan.v1";
+    /// AOB signature scan result (`scan aob`, Phase 4b).
+    pub const AOB_SCAN: &str = "n0xis.scan.aob.v1";
+    /// Pointer-path scan result (`scan pointer-path`, Phase 4b).
+    pub const POINTER_PATH: &str = "n0xis.scan.pointer_path.v1";
+    /// Struct dissection result (`scan dissect`, Phase 4b).
+    pub const DISSECT: &str = "n0xis.scan.dissect.v1";
+    /// Group scan: struct bases where several interrelated values co-occur within
+    /// a byte window (`scan group`) — find a struct by its related fields at once.
+    pub const SCAN_GROUP: &str = "n0xis.scan.group.v1";
+    /// NativeAOT stack-trace metadata: recovered `RVA → managed method name`
+    /// map for .NET NativeAOT images (`aot symbols`).
+    pub const AOT_SYMBOLS: &str = "n0xis.aot.symbols.v1";
+    /// A `.n0xt` table or entry (`table *`, CONCEPT §10, Phase 4b).
+    pub const TABLE: &str = "n0xis.table.v1";
+    /// Freeze-loop report (`table freeze`, Phase 4b).
+    pub const FREEZE: &str = "n0xis.freeze.v1";
+    /// Hardware-breakpoint watchpoint hit report (`debug watch`, Phase 4b).
+    pub const WATCHPOINT: &str = "n0xis.debug.watchpoint.v1";
+    /// Plain attach-and-hold report (`debug attach`) — the anti-debug-vs-bug
+    /// isolation diagnostic.
+    pub const DEBUG_ATTACH: &str = "n0xis.debug.attach.v1";
+    /// Recovered call stack(s) from a captured register set (`stack backtrace`).
+    /// Format-neutral: PE `.pdata`/`.xdata` or ELF `.eh_frame` DWARF CFI, chosen
+    /// per module — the same schema whether the target is native or under Wine.
+    pub const STACK_BACKTRACE: &str = "n0xis.stack.backtrace.v1";
+
+    /// Provenance graph (Phase 4c, KF-1).
+    pub const PROVENANCE: &str = "n0xis.provenance.v1";
+    /// One address's asserted name/type/comment + history (`annotate *`, Phase 6).
+    pub const ANNOTATION: &str = "n0xis.annotation.v1";
+    /// A captured, reloadable memory snapshot (`snapshot dump`, Phase 6).
+    pub const SNAPSHOT: &str = "n0xis.snapshot.v1";
+    /// Per-SSA-variable value-set analysis (`ir value-set`, Phase 7).
+    pub const VALUE_SET: &str = "n0xis.value_set.v1";
+    /// Deobfuscated pseudo-C, with the removed junk logged (`decomp pseudo
+    /// --deobfuscate`, Phase 7).
+    pub const DEOBFUSCATE: &str = "n0xis.deobfuscate.v1";
+    /// A structural diff between two functions/binaries (`diff functions`,
+    /// Phase 7).
+    pub const DIFF: &str = "n0xis.diff.v1";
+
+    /// MSVC RTTI vtable → class-name recovery (`rtti scan`).
+    pub const RTTI_SCAN: &str = "n0xis.rtti.scan.v1";
+
+    /// Bitsquid bundle entry listing (`bundle list`).
+    pub const BUNDLE_LIST: &str = "n0xis.bundle.list.v1";
+    /// Bitsquid bundle extraction result (`bundle extract`).
+    pub const BUNDLE_EXTRACT: &str = "n0xis.bundle.extract.v1";
+    /// Lua/LuaJIT bytecode disassembly (`lua disasm`).
+    pub const LUA_DISASM: &str = "n0xis.lua.disasm.v1";
+    /// Live LuaJIT GCstr discovery in a running process (`lua strings`).
+    pub const LUA_STRINGS: &str = "n0xis.lua.strings.v1";
+    /// A decoded `GCtab` — a different shape from the string scan, and it was
+    /// reported under the scan's schema, so a consumer dispatching on `schema`
+    /// was handed an array/hash payload where it expected a list of strings.
+    pub const LUA_TABLE: &str = "n0xis.lua.table.v1";
+    /// Live Lua array-of-known-strings run discovery (`lua combo`).
+    pub const LUA_COMBO: &str = "n0xis.lua.combo.v1";
+    /// LCG seed recovery from an observed sequence (`lua seedscan`).
+    pub const LUA_SEEDSCAN: &str = "n0xis.lua.seedscan.v1";
+
+    // --- Phase 8: spec-first method tooling ---
+    /// Vocabulary-cluster search+rank over scripts/data/strings (`game grep`).
+    pub const GAME_GREP: &str = "n0xis.game.grep.v1";
+    /// Transition-diff localization workflow (`locate by-transition`).
+    pub const LOCATE_TRANSITION: &str = "n0xis.locate.transition.v1";
+    /// Actuation-path probe: which injection methods a target will register
+    /// (`input probe`).
+    pub const INPUT_PROBE: &str = "n0xis.input.probe.v1";
+    /// Canonical magic-constant identification (`const identify`).
+    pub const CONST_IDENTIFY: &str = "n0xis.const.identify.v1";
+    /// Script-VM native-binding enumeration (`bindings list`).
+    pub const BINDINGS: &str = "n0xis.bindings.v1";
+    /// Signature invariance validation, refusing <3 independent samples
+    /// (`sig validate`).
+    pub const SIG_VALIDATE: &str = "n0xis.sig.validate.v1";
+
+    /// FLIRT-class signature database generated from a symbolized image
+    /// (`sig gen`).
+    pub const SIG_GEN: &str = "n0xis.sig.gen.v1";
+
+    /// WARP file function table — GUID + name per function. **Reserved, not
+    /// emitted by this binary:** the WARP interoperability layer moved out to
+    /// its own plugin repository (2026-09-11), taking `warp dump` with it. The
+    /// id stays declared per this module's policy, so nothing silently reuses
+    /// it and a plugin that emits this payload emits the same name.
+    pub const WARP_DUMP: &str = "n0xis.warp.dump.v1";
+
+    // --- Phase 9: UI-layer localization ---
+    /// Structural-predicate scan: matches by relations between fields, not
+    /// byte constants (the generalized primitive `ui locate` is built on).
+    pub const SCAN_STRUCTURAL: &str = "n0xis.scan.structural.v1";
+    /// Screen region -> candidate memory addresses, by hit-testing a live
+    /// target's own retained-scene-graph bounding boxes (`ui locate`).
+    pub const UI_LOCATE: &str = "n0xis.ui.locate.v1";
+    /// A target process's top-level windows + rects/DPI (`ui windows`).
+    pub const UI_WINDOWS: &str = "n0xis.ui.windows.v1";
+    /// A window capture + its honest blank-frame verdict (`ui screenshot`).
+    pub const UI_SCREENSHOT: &str = "n0xis.ui.screenshot.v1";
+    /// Foreground-focus attempt result (`ui focus`).
+    pub const UI_FOCUS: &str = "n0xis.ui.focus.v1";
+
+    /// Registered analysis plugin (`plugin list/add/rm`, `docs/COMMUNITY_ROADMAP.md`
+    /// "Plugin system").
+    pub const PLUGIN: &str = "n0xis.plugin.v1";
+    /// The capability catalog (`capability list`): every registered
+    /// capability, built-in and plugin-provided alike, with its origin.
+    pub const CAPABILITY_LIST: &str = "n0xis.capability.list.v1";
+
+    // --- Phase 12: the IL2CPP managed layer ---
+    /// Importing an external managed symbol dump, and the measured evidence
+    /// behind how its addresses were bound to the target (`il2cpp import`).
+    pub const IL2CPP_IMPORT: &str = "n0xis.il2cpp.import.v1";
+    /// Querying an imported index by name or address (`il2cpp symbols`).
+    pub const IL2CPP_SYMBOLS: &str = "n0xis.il2cpp.symbols.v1";
+    /// `global-metadata.dat` read natively: format version, the tables the
+    /// header declares, and the string literals — the half of the managed layer
+    /// that needs no external dumper (`il2cpp metadata`).
+    /// Engine internal calls recovered from their resolution sites, with
+    /// the .data slot each resolved pointer is cached into (`il2cpp icalls`).
+    /// A live address identified through the runtime type system: its class, its
+    /// fields with runtime offsets, and the discovered layout evidence (`il2cpp obj`).
+    /// Live C# classes discovered by sampling the heap for object headers
+    /// (`il2cpp classes`).
+    pub const IL2CPP_CLASSES: &str = "n0xis.il2cpp.classes.v1";
+    pub const IL2CPP_OBJ: &str = "n0xis.il2cpp.obj.v1";
+    pub const IL2CPP_ICALLS: &str = "n0xis.il2cpp.icalls.v1";
+    pub const IL2CPP_METADATA: &str = "n0xis.il2cpp.metadata.v1";
+
+    // --- reserved for the phases ahead (declared so the id is owned) ---
+
+    /// The banner `serve` writes before its first session line: the image is
+    /// loaded and the session is ready. Carries a schema like every other
+    /// response — a consumer that dispatches on `meta.schema` would otherwise
+    /// break on the very first line it reads.
+    pub const SERVE_READY: &str = "n0xis.serve.ready.v1";
+}
+
+/// Reserved v0 (`n0x.*`) schema ids — the compatibility contract from
+/// [`docs/CLI_COMMANDS.md`](../../../docs/CLI_COMMANDS.md). Kept so the
+/// port preserves the exact wire names agents already depend on.
+pub mod v0 {
+    pub const IR: &str = "n0x.ir.v1";
+    pub const IR_CFG: &str = "n0x.ir.cfg.v1";
+    pub const IR_DOT: &str = "n0x.ir.dot.v1";
+    pub const IR_SLICE: &str = "n0x.ir.slice.v1";
+    pub const IR_MANIFEST: &str = "n0x.ir.manifest.v1";
+    pub const IR_EXPLAIN: &str = "n0x.ir.explain.v1";
+    pub const DECOMP_PSEUDO: &str = "n0x.decomp.pseudo.v1";
+    pub const DEBUG_AWAIT_HIT: &str = "n0x.debug.await_hit.v1";
+}

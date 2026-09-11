@@ -1,0 +1,28 @@
+[package]
+name = "n0xis-project"
+description = "The .n0x/ analysis database: project discovery, config, init. Ported from the proven v0 layout; back-compat dir (.n0x) and shim (n0x.cmd) preserved."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-core = { workspace = true }
+# Not optional: `patch` journals reads/writes over the OS-free `MemorySource`
+# seam, so it needs the trait on every target. With no features enabled
+# n0xis-sources links no OS crate, so this does not cost the OS-free property
+# the boundary check enforces.
+n0xis-sources = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+
+[features]
+default = []
+# Gates `locator` alone now — it still takes a concrete Win32 `LiveProcess`.
+# `patch` used to sit behind this too, even though its body only ever called
+# read/write; it is on the seam now and needs no feature.
+live = ["n0xis-sources/live"]

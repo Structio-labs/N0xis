@@ -1,0 +1,85 @@
+# N0xis — reverse-engineering and live-memory toolkit (v1 rewrite).
+# See CONCEPT.md §4 for the crate boundaries and why each seam exists.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The archived v0 binary is its own independent crate (kept buildable for the
+# Phase 2 parity gate) — not a workspace member.
+# The WARP interoperability layer lives in its own separate repo (developed as a
+# plugin, 2026-09-11): reading another project's format meant carrying its own
+# fixture file, and with it an attribution obligation this repo does not want to
+# redistribute under. If it is checked out into `crates/n0xis-warp/` for local
+# work it must NOT be pulled into this workspace by the `crates/*` glob — it is
+# git-ignored here and builds on its own.
+exclude = ["archive/n0x-cli-rs-v0", "crates/n0xis-warp"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/Structio-labs/N0xis"
+rust-version = "1.90"
+
+[workspace.dependencies]
+# --- external (single source of truth for versions) ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+iced-x86 = "1"
+dirs = "6"
+goblin = "0.10"
+libloading = "0.8"
+# The Unix side of the live adapter: process_vm_readv/writev, kill(pid, 0).
+# Target-gated at the crate that uses it, exactly as windows-sys is — this is
+# the OS seam's second implementation, not a new global dependency.
+libc = "0.2"
+rustc-demangle = "0.1.28"
+msvc-demangler = "0.11.0"
+cpp_demangle = "0.5.1"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_Xps",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Kernel",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+# Pure-Rust PNG encoder for `ui screenshot` (only heavy dep is miniz_oxide,
+# already in the tree via other crates). Deliberately not `image` — we need
+# only the encoder. Gated to the `live` feature in n0xis-sources so the default
+# OS-free build (the n0xis-core boundary test) never links it.
+png = "0.18"
+
+# --- internal crates (path deps; the workspace is the graph in CONCEPT §4) ---
+n0xis-contracts = { path = "crates/n0xis-contracts" }
+n0xis-flirt = { path = "crates/n0xis-flirt" }
+n0xis-arch = { path = "crates/n0xis-arch" }
+n0xis-sources = { path = "crates/n0xis-sources" }
+n0xis-core = { path = "crates/n0xis-core" }
+n0xis-project = { path = "crates/n0xis-project" }
+n0xis-pipeline = { path = "crates/n0xis-pipeline" }
+# The shared frontend seam (source/arch resolution + argument parsing). Every
+# frontend goes through it; nothing below it may depend on it.
+n0xis-frontend = { path = "crates/n0xis-frontend" }
+# Pluggable game-asset-format adapters — no other crate depends on these two,
+# and n0xis-core never will (CONCEPT §4's "isolate an external system behind
+# an adapter" rule; these are engine/language formats, not ISA/OS seams).
+n0xis-bitsquid = { path = "crates/n0xis-bitsquid" }
+n0xis-lua = { path = "crates/n0xis-lua" }
+n0xis-luajit = { path = "crates/n0xis-luajit" }
+# The IL2CPP managed layer (Phase 12). Same adapter rule: a format parser the
+# analysis core must never reach for.
+n0xis-il2cpp = { path = "crates/n0xis-il2cpp" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

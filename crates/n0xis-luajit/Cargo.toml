@@ -1,0 +1,12 @@
+[package]
+name = "n0xis-luajit"
+description = "Live LuaJIT VM introspection: finds and decodes GC objects (starting with GCstr) directly in a running process's heap, without a per-string hand-picked byte pattern. Source-agnostic (works over any n0xis-sources::MemorySource, so it's testable against Snapshot with zero OS APIs) — n0xis-core never depends on this crate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-sources = { workspace = true }
+serde = { workspace = true }
