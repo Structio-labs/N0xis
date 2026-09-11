@@ -80,6 +80,23 @@ const PAIRS: &[Pair] = &[
     },
 ];
 
+/// Substitute `{target}`/`{entry}` into a JSON args template, escaping each
+/// value as a JSON string body. A Windows path substituted raw makes invalid
+/// JSON (`C:\Users` -> a bad `\U` escape) and comes back `bad-args` — not a
+/// door disagreement but a malformed question the CLI door never has to answer,
+/// because it takes the path as a plain argv rather than inside JSON. The
+/// templates already supply the surrounding quotes, so the value is escaped as
+/// a string *body*.
+fn json_fill(template: &str, target: &str, entry: &str) -> String {
+    let esc = |v: &str| {
+        let quoted = serde_json::to_string(v).expect("json string");
+        quoted[1..quoted.len() - 1].to_string()
+    };
+    template
+        .replace("{target}", &esc(target))
+        .replace("{entry}", &esc(entry))
+}
+
 fn run(args: &[String]) -> Option<Value> {
     let out = Command::new(n0xis_exe()).args(args).output().ok()?;
     serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()
@@ -132,7 +149,7 @@ fn a_command_gives_the_same_answer_through_the_cli_and_the_registry() {
             "run".into(),
             pair.cap.into(),
             "--args".into(),
-            fill(pair.args),
+            json_fill(pair.args, &target, &entry),
             "--quiet".into(),
         ]);
         match (via_cli, via_reg) {
@@ -180,4 +197,18 @@ fn summarize(v: &Value) -> String {
         }
         other => other.to_string().chars().take(80).collect(),
     }
+}
+
+#[test]
+fn a_windows_path_survives_json_encoding_into_the_registry_args() {
+    // The regression that made every registry call answer `bad-args` on the
+    // Windows runner while the CLI door succeeded: a backslash path substituted
+    // raw into a JSON template is invalid JSON. This fails on every platform if
+    // `json_fill` ever goes back to a raw `.replace()` — the guard does not need
+    // a Windows host to catch the Windows bug.
+    let win = r"C:\Users\runneradmin\AppData\Local\Temp\n0xis\sysv.so";
+    let out = json_fill(r#"{"file":"{target}","limit":100000}"#, win, "0x1000");
+    let parsed: Value = serde_json::from_str(&out)
+        .unwrap_or_else(|e| panic!("json_fill produced invalid JSON: {e}\n  {out}"));
+    assert_eq!(parsed["file"], win, "the path must round-trip unchanged");
 }
