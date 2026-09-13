@@ -186,6 +186,8 @@ road-tested by outside users — expect shapes to move.
   in `n0x guide` and `--help`, which are generated too.
 - **[oracle/README.md](oracle/README.md)** — the corpus of targets whose answer is known
   before the question is asked, how the ranking of sources works, and how to add a shape.
+- **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — the verification ledger: every check with
+  its source rung and case count, and what is proven, open, or not claimed — all in one place.
 - **[CONCEPT.md](CONCEPT.md)** — architecture: adapters, passes, seams.
 - **[ROADMAP.md](ROADMAP.md)** — build history and the analysis capabilities still missing.
 - **[MAP.md](MAP.md)** — the 15-crate workspace layout.
