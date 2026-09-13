@@ -15,10 +15,20 @@
 //! rejected rather than applied. On this corpus a confident wrong name is the
 //! worst possible output — it poisons every downstream command at once.
 //!
-//! Windows-only: the fixture uses the test binary itself as a real PE with a
-//! known image base and `.text` RVAs. On a non-PE host (an ELF `n0xis`) there
-//! is no equivalent self-image, so these end-to-end assertions are gated to
-//! Windows; the cross-platform `n0xis-il2cpp` unit tests cover the parser.
+//! Windows-only: the binding tests below use the test binary itself as a real
+//! PE and hard-code `RVAS` — the real function starts of n0xis's OWN
+//! `n0xis.exe`. On a non-PE host (an ELF `n0xis`) there is no equivalent
+//! self-image and those RVAs bind 0.0%, so these end-to-end assertions stay
+//! gated to Windows; the cross-platform `n0xis-il2cpp` unit tests cover the
+//! parser.
+//!
+//! The name-binding tests that used to live here (the ones discovering a real
+//! caller/callee pair via `find_call_pair`) were the only ones whose ground
+//! truth was n0xis's own compiled machine code — which moved between build
+//! configurations and failed on the MSVC runner while passing on GNU/ELF. They
+//! moved to `phase12_il2cpp_fixture.rs`, which analyses a committed,
+//! deterministic PE fixture instead and therefore runs on any host and gates CI
+//! on both OSes.
 #![cfg(windows)]
 
 use std::process::Command;
@@ -26,8 +36,8 @@ use std::process::Command;
 use serde_json::Value;
 
 /// The image base of `n0xis.exe`, and the RVAs of four real functions inside
-/// its `.text` (taken from `function discover`). Any PE would do; using the
-/// binary under test keeps the fixture honest and self-updating.
+/// its `.text` (taken from `function discover` on the MSVC build). These are
+/// n0xis's OWN build artifact, which is why this file is `#![cfg(windows)]`.
 const IMAGE_BASE: u64 = 0x1_4000_0000;
 const RVAS: [u64; 4] = [0x1000, 0x102c, 0x1420, 0x3b50];
 
@@ -251,156 +261,6 @@ fn a_name_query_returns_a_set_and_reports_what_it_paged_over() {
     assert_eq!(v["data"]["more"], true, "a page must say more exists rather than leaving it to be inferred");
 }
 
-/// Find a real caller/callee pair by asking the binary itself.
-///
-/// Deliberately discovered rather than hardcoded: addresses in `n0xis.exe`
-/// move between build configurations (`cargo test -p` and `cargo test
-/// --workspace` resolve features differently and produce different code), so a
-/// pinned address is a test that passes alone and fails in CI. Returns the
-/// caller's VA as a hex string and the callee's RVA.
-///
-/// Side effect by design: the `decomp pseudo` calls here populate the artifact
-/// cache *before* any index exists, which is exactly the state the cache-key
-/// regression test needs.
-#[cfg(feature = "oracle")]
-fn find_call_pair(s: &Scratch) -> (String, u64) {
-    let (v, ok) = s.run(&["function", "discover", "--file", &exe()]);
-    assert!(ok, "function discover should work on the test binary: {v}");
-    let text = v.to_string();
-
-    let candidates: Vec<String> = text
-        .match_indices("0x1")
-        .filter_map(|(i, _)| {
-            let tail = &text[i..];
-            let end = tail.find(|c: char| !c.is_ascii_hexdigit() && c != 'x')?;
-            (end > 6).then(|| tail[..end].to_string())
-        })
-        .take(40)
-        .collect();
-
-    for addr in candidates {
-        let (v, ok) = s.run(&["decomp", "pseudo", "--file", &exe(), "--addr", &addr]);
-        if !ok {
-            continue;
-        }
-        let body = v["data"]["pseudo"].to_string();
-        let self_name = format!("sub_{}", addr.trim_start_matches("0x"));
-        // A call to some *other* function is what we need — the function's own
-        // header names itself and proves nothing about symbol resolution.
-        if let Some(i) = body.match_indices("sub_1").map(|(i, _)| i).find(|&i| !body[i..].starts_with(&self_name)) {
-            let tail = &body[i + 4..];
-            let end = tail.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(tail.len());
-            if let Ok(callee) = u64::from_str_radix(&tail[..end], 16)
-                && callee > IMAGE_BASE
-            {
-                return (addr, callee - IMAGE_BASE);
-            }
-        }
-    }
-    panic!("no function in the test binary showed a call to another function — the fixture assumption is broken");
-}
-
-#[cfg(feature = "oracle")]
-#[test]
-fn an_imported_index_names_call_targets_in_decompiled_output() {
-    let s = Scratch::new("naming");
-    let (caller, callee_rva) = find_call_pair(&s);
-    let dump = s.write_dump("m.json", &[(callee_rva, "PlayerHealth$$ApplyDamage")]);
-    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &exe()]);
-    assert!(ok, "{v}");
-
-    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &exe(), "--addr", &caller]);
-    assert!(ok, "{v}");
-    let body = v["data"]["pseudo"].to_string();
-    assert!(body.contains("PlayerHealth"), "the call target should carry its managed name, got: {body}");
-    assert!(!body.contains(&format!("sub_{:x}", IMAGE_BASE + callee_rva)), "the raw address name should be gone: {body}");
-
-    // And the answer must say where the names came from — `meta.note` exists
-    // for results that are easy to misread, and "these names are from a file
-    // beside the binary" is exactly that.
-    let note = v["meta"]["note"].as_str().unwrap_or_default();
-    assert!(note.contains("il2cpp index"), "the response should name the layer its names came from: {note}");
-}
-
-#[cfg(feature = "oracle")]
-#[test]
-fn importing_an_index_takes_effect_on_already_analyzed_functions() {
-    // Regression: the artifact cache keyed on the binary's bytes alone, so a
-    // CFG built before an index existed was reused afterwards — with its
-    // pre-import, unnamed call targets baked in. Importing appeared to do
-    // nothing until `.n0x/ir-cache/` was deleted by hand.
-    let s = Scratch::new("cachekey");
-
-    // Discovery decompiles as it searches, so by the time it returns the
-    // artifact cache already holds this function — analyzed with no index in
-    // sight. That is precisely the poisoned state the fix has to survive.
-    let (caller, callee_rva) = find_call_pair(&s);
-    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &exe(), "--addr", &caller]);
-    assert!(ok, "{v}");
-    assert!(
-        v["data"]["pseudo"].to_string().contains(&format!("sub_{:x}", IMAGE_BASE + callee_rva)),
-        "precondition: the callee is unnamed before any index exists"
-    );
-
-    let dump = s.write_dump("m.json", &[(callee_rva, "PlayerHealth$$ApplyDamage")]);
-    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &exe()]);
-    assert!(ok, "{v}");
-
-    // No cache clearing between these two runs — that is the whole point.
-    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &exe(), "--addr", &caller]);
-    assert!(ok, "{v}");
-    assert!(
-        v["data"]["pseudo"].to_string().contains("PlayerHealth"),
-        "a newly imported index must invalidate cached artifacts, not be shadowed by them: {}",
-        v["data"]["pseudo"]
-    );
-}
-
-#[cfg(feature = "oracle")]
-fn rva_of(addr: &str) -> u64 {
-    u64::from_str_radix(addr.trim_start_matches("0x"), 16).expect("hex address") - IMAGE_BASE
-}
-
-#[cfg(feature = "oracle")]
-#[test]
-fn an_indexed_function_names_itself_not_only_its_callees() {
-    let s = Scratch::new("selfname");
-    let (caller, _) = find_call_pair(&s);
-    let dump = s.write_dump("self.json", &[(rva_of(&caller), "Inventory$$CommitSlot")]);
-    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &exe()]);
-    assert!(ok, "{v}");
-
-    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &exe(), "--addr", &caller]);
-    assert!(ok, "{v}");
-    let sig = v["data"]["signature"].as_str().unwrap();
-    assert!(sig.contains("Inventory"), "the signature line should carry the managed name: {sig}");
-    assert!(!sig.contains("sub_"), "the address placeholder should be gone: {sig}");
-    // The body's opening line is built from the same string — one fix, both places.
-    let first = v["data"]["pseudo"][0].as_str().unwrap();
-    assert!(first.contains("Inventory"), "the rendered body should open with the same name: {first}");
-}
-
-#[cfg(feature = "oracle")]
-#[test]
-fn a_symbol_that_merely_covers_the_address_does_not_name_the_function() {
-    // Soundness: the index attributes a whole span to its symbol, so a query
-    // anywhere inside answers. Naming a function from a *near* hit would label
-    // it after whichever one precedes it — the exact confident-wrong-name
-    // failure this corpus makes easy.
-    let s = Scratch::new("nearmiss");
-    let (caller, _) = find_call_pair(&s);
-    let just_below = rva_of(&caller) - 0x10;
-    let dump = s.write_dump("near.json", &[(just_below, "NotThisOne$$Method")]);
-    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &exe()]);
-    assert!(ok, "{v}");
-
-    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &exe(), "--addr", &caller]);
-    assert!(ok, "{v}");
-    let sig = v["data"]["signature"].as_str().unwrap();
-    assert!(!sig.contains("NotThisOne"), "only an exact hit on the function start may name it: {sig}");
-    assert!(sig.contains("sub_"), "with no exact hit the address stands in, as it always did: {sig}");
-}
-
 #[test]
 fn a_mismatched_index_says_it_was_not_applied_instead_of_going_quiet() {
     let s = Scratch::new("skipnote");
@@ -521,66 +381,6 @@ fn the_blob_is_found_beside_the_target_without_being_told_where() {
     let (v, ok) = s.run(&["il2cpp", "metadata", "--file", lonely.to_str().unwrap()]);
     assert!(!ok, "{v}");
     assert_eq!(v["error"]["code"], "no-metadata");
-}
-
-// ---------------------------------------------------------------------------
-// Item 2, second half — the range-scoped seam
-// ---------------------------------------------------------------------------
-
-// UNRESOLVED, and gated deliberately rather than fixed: on the Windows MSVC PE
-// this assertion FAILED — `ir manifest` discovered the functions over the range
-// (`sub_1400011D0` / `sub_140001200`) but neither carried `CombatResolver`, i.e.
-// the range-scoped path did not attach the imported managed name the way the
-// single-address path does. The test is gated because its ground truth is the
-// exact machine code of n0xis's OWN build — a build artifact of whatever compiler
-// the CI runner happens to ship — so it cannot gate a moving runner, the same
-// reason the toolchain-oracle tests are gated. Whether the range-scoped
-// index-chaining is genuinely broken on PE, or the discovered boundaries simply
-// did not land on the indexed start, is NOT settled here and needs diagnosis on
-// real Windows. (Note: this whole file is `#![cfg(windows)]`, so the assertion
-// has never executed on the Linux ELF either — it is not "known-good on ELF".)
-#[cfg(feature = "oracle")]
-#[test]
-fn range_scoped_analysis_gets_managed_names_too() {
-    // `ir manifest` discovers functions over a range and ranks them; it went
-    // through the range-scoped helper, which did not chain the index — so a
-    // triage listing stayed a wall of `sub_` on a target whose names were
-    // sitting in the project. Triage is where names matter most: it is read as
-    // a list, not one address at a time.
-    let s = Scratch::new("manifest");
-    let (caller, _) = find_call_pair(&s);
-    let rva = rva_of(&caller);
-    let dump = s.write_dump("m.json", &[(rva, "CombatResolver$$Resolve")]);
-    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &exe()]);
-    assert!(ok, "{v}");
-
-    let start = format!("0x{:x}", IMAGE_BASE + rva);
-    let (v, ok) = s.run(&["ir", "manifest", "--file", &exe(), "--start", &start, "--size", "0x40", "--limit", "8"]);
-    assert!(ok, "{v}");
-    let body = v.to_string();
-    assert!(body.contains("CombatResolver"), "a discovered function with an indexed start must carry its managed name: {body}");
-    let note = v["meta"]["note"].as_str().unwrap_or_default();
-    assert!(note.contains("il2cpp index"), "and the response must say which layer named it: {note}");
-}
-
-#[cfg(feature = "oracle")]
-#[test]
-fn a_covering_symbol_does_not_name_a_discovered_function() {
-    // The span-attribution half of the exact-hit rule, asserted where a real
-    // span-attributing provider exists: an imported index answers for any
-    // address inside a function, so a candidate discovered *after* a symbol's
-    // start must not inherit its name.
-    let s = Scratch::new("mfnearmiss");
-    let (caller, _) = find_call_pair(&s);
-    let rva = rva_of(&caller);
-    let dump = s.write_dump("near.json", &[(rva - 0x20, "NotThisOne$$Method")]);
-    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &exe()]);
-    assert!(ok, "{v}");
-
-    let start = format!("0x{:x}", IMAGE_BASE + rva);
-    let (v, ok) = s.run(&["ir", "manifest", "--file", &exe(), "--start", &start, "--size", "0x40", "--limit", "8"]);
-    assert!(ok, "{v}");
-    assert!(!v.to_string().contains("NotThisOne"), "a symbol that merely covers the address must not name the function: {v}");
 }
 
 // ---------------------------------------------------------------------------
