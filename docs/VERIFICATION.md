@@ -48,6 +48,7 @@ closed) · **NOT CLAIMED** (needs an input or a platform not available here).
 | Live memory (Windows 11) | the target process itself | 1 | 21/23 checks | 0 wrong; `stack backtrace` is Linux-only |
 | CLI ↔ registry front doors agree | the tool's two doors, one question | 5→contract | 4 pairs | agree; a Windows JSON-escaping bug in the *test* found and fixed 2026-09-11 |
 | Discontiguous functions (hot/cold split `<fn>.cold`) | the processor, under gcc-14 `-O2` | 1 | a_switch, all levels | 768 agree, 0 disagree, 0 not modelled; the `.cold` partition folds into its parent so the switch default has a successor (fixed 2026-09-13, was 46/0/2 at `-O2`) |
+| Range-scoped IL2CPP managed-name attachment (PE) | a committed fixture PE (`native_pe.dll`) | 2 | 6 tests | bind + attach through the single-address and the range path; deterministic (no self-image, no toolchain), gates CI on both OSes, calibrated (2026-09-14) |
 
 The full prose, with every caveat, is in the [README §Status](../README.md#status)
 and `ROADMAP.md`. Numbers here are that same measured state, not a second copy to
@@ -58,7 +59,6 @@ this row is stale.
 
 | Gap | State | Where |
 | --- | --- | --- |
-| **PE range-scoped managed-name attachment** | Most likely test fragility, not a product bug. Reproduced the flow locally against a GNU-linked PE: `il2cpp import` binds (validated), and BOTH the single-address and the range path carry the managed name — the feature works on a PE. The CI failure is MSVC-build-specific: the test analyses n0xis's own binary with a hard-coded base and `find_call_pair` flow that the MSVC layout does not satisfy. Durable fix: give the test a checked-in fixture PE instead of the self-image; a narrow MSVC binding-validation edge is not ruled out (would need the MSVC binary). | `phase12_il2cpp::range_scoped_analysis_gets_managed_names_too` |
 | AArch64 **lift `-O0`** | Unmeasured: `-O0` reproduced 0 of 240 because stack stores are not lifted; the "526 of 960" figure rests on `-O1/-O2/-Os` only. Not "55% coverage" of AArch64 generally. | AArch64 lift oracle |
 | AArch64 extending-register add | The dominant remaining `Unlifted` at optimised levels (`add x0, x0, w2, uxth`). | AArch64 lift oracle |
 
