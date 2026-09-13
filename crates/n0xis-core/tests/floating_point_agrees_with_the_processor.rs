@@ -209,7 +209,11 @@ fn check_one_build(so: &Path, driver: &Path, level: &str) -> (usize, usize, usiz
 
     let elf = StaticElf::load(so).expect("n0xis loads the same library");
     let arch = X64::new();
-    let ctx = Ctx::new(&elf, &arch);
+    // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
+    // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition back
+    // into its parent, so a hot/cold-split function would be silently
+    // under-measured. Measure the pipeline, not a starved `Ctx`.
+    let ctx = Ctx::new(&elf, &arch).with_symbols(&elf);
 
     // Build each function's IR once; the cases only change the inputs.
     let mut forms = BTreeMap::new();

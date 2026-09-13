@@ -184,7 +184,11 @@ fn every_declared_local_is_touched_at_the_address_dwarf_states() {
 
         let elf = StaticElf::load(&so).expect("n0xis loads the same library");
         let arch = X64::new();
-        let ctx = Ctx::new(&elf, &arch);
+        // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
+        // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition
+        // back into its parent, so a hot/cold-split function would be silently
+        // under-measured. Measure the pipeline, not a starved `Ctx`.
+        let ctx = Ctx::new(&elf, &arch).with_symbols(&elf);
 
         for sub in &subs {
             if !sub.cfa_frame_base {

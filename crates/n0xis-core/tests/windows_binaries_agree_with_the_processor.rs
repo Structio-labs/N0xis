@@ -179,7 +179,11 @@ fn check_one(tmp: &Path, dll_name: &str, label: &str) -> (usize, usize, usize) {
 
     let image = StaticImage::load(&dll).expect("n0xis loads the same DLL");
     let arch = X64::new();
-    let ctx = Ctx::new(&image, &arch);
+    // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
+    // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition back
+    // into its parent, so a hot/cold-split function would be silently
+    // under-measured. Measure the pipeline, not a starved `Ctx`.
+    let ctx = Ctx::new(&image, &arch).with_symbols(&image);
     // Win64 passes integers in `rcx, rdx, r8, r9`. Asked for, never spelled:
     // the whole point of this file is that the platform changed, and a literal
     // register list here would be the one thing that did not notice.

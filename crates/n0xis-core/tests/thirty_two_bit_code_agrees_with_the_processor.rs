@@ -422,7 +422,11 @@ fn check_one(so: &Path, driver: &Path, target: &Target, label: &str) -> (usize, 
     let image = StaticImage::load(so).expect("n0xis loads the same library");
     // The decoder, the register widths and the lift all follow from this.
     let arch = X64::x86();
-    let ctx = Ctx::new(&image, &arch);
+    // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
+    // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition back
+    // into its parent, so a hot/cold-split function would be silently
+    // under-measured. Measure the pipeline, not a starved `Ctx`.
+    let ctx = Ctx::new(&image, &arch).with_symbols(&image);
 
     let mut forms = BTreeMap::new();
     let mut ssa_bodies = BodyMap::new();
