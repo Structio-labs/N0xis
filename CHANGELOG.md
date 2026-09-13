@@ -625,6 +625,22 @@ All notable changes to N0xis are recorded here. Versions follow
   `_Z9qBadAllocv` had measured 1 139 B against a true 55 B, swallowing ~20
   neighbours. Zero PE regression.
 
+## [0.3.2] — 2026-09-14
+
+Correctness fixes for defects present in 0.3.1; no new features. If you have the
+0.3.1 binaries, replace them.
+
+- **A switch whose default case gcc `-O2` split into a `<fn>.cold` partition was
+  read as a broken graph.** The cold partition is now folded into its parent, so
+  the dispatch is complete. 0.3.1 mishandles hot/cold-split switches.
+- **An IL2CPP index no longer names a binary it was not imported for.** A
+  `default` index used to auto-attach to every analysis and, on a coincidental
+  `.text` hit, overrode the real symbol with a fabricated managed name. It now
+  records the identity of the binary it was validated against and attaches only
+  to that one — a confident wrong answer removed.
+- Test-harness hardening that measures the pipeline rather than a starved
+  context (symbols attached; own-binary tests moved to committed fixtures).
+
 ## [0.3.1] — 2026-09-11
 
 A clean public re-release. No analysis behaviour changed; the changes are to
