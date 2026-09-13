@@ -250,8 +250,99 @@ impl Pass for CfgPass {
             (false, _) => all,
         };
 
+        // Fold in any `.cold` partition the compiler split out of this function
+        // (`-freorder-blocks-and-partition`, on at gcc `-O2`). Its address is
+        // unrelated to the primary range's — routinely *below* it — so the
+        // forward decode window never sees it, and a branch into it would read
+        // as a tail call into a separate function, leaving a dispatch block's
+        // conditional branch with no in-function successor.
+        let instrs = fold_cold_partitions(ctx, input.start, instrs);
+
         build(ctx, &instrs, input.start)
     }
+}
+
+/// Fold in any `.cold` partition the compiler split out of the function at
+/// `start`, so `build` sees one **discontiguous** function rather than a
+/// spurious tail call into a separate one.
+///
+/// gcc's `-freorder-blocks-and-partition` (default at `-O2`) moves a function's
+/// unlikely blocks — a switch's default case, an error path — into
+/// `.text.unlikely` under the symbol `<parent>.cold`, reached only by a branch
+/// from the parent and never called. The signal that identifies it is exactly
+/// that symbol name: a direct branch whose target is named `<parent>.cold` (or
+/// `<parent>.cold.N`) lands on this function's own cold partition, not on a
+/// separate function. Each such partition is decoded (its extent is the
+/// symbol's own `st_size`) and appended after the primary range, keeping the
+/// entry — the instruction at `start` — first, which the whole stack downstream
+/// requires (the entry is block index 0 and id 0).
+///
+/// **Requires a symbol table.** Without one (a stripped image) a cold partition
+/// cannot be told from a genuinely separate function, so nothing is folded and
+/// the split stands — the safe refusal rather than a heuristic that might weld
+/// two real functions together.
+fn fold_cold_partitions(ctx: &Ctx, start: Va, mut instrs: Vec<DecodedInsn>) -> Vec<DecodedInsn> {
+    let Some(syms) = ctx.symbols else { return instrs };
+    let parent = match syms.symbol_at(start) {
+        Some(s) if !s.name.is_empty() => s.name,
+        _ => return instrs,
+    };
+    // `<parent>.cold` and `<parent>.cold.N` (gcc numbers partitions when a
+    // function is split more than once), but not an unrelated `<parent>foo`.
+    let is_cold_of_parent = |name: &str| {
+        name.strip_prefix(parent.as_str())
+            .and_then(|rest| rest.strip_prefix(".cold"))
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with('.'))
+    };
+
+    // Addresses already decoded, so a partition is folded at most once and a
+    // branch back into the primary range is not mistaken for a new partition.
+    let mut present: std::collections::BTreeSet<u64> = instrs.iter().map(|i| i.va.0).collect();
+
+    // A cold partition can branch to another cold partition, so iterate to a
+    // fixpoint. Bounded: each round folds a partition whose start was not yet
+    // present, and there are finitely many symbols.
+    loop {
+        let mut next_cold: Option<(Va, u64)> = None;
+        for ins in &instrs {
+            if !matches!(ins.kind, InsnKind::Jump | InsnKind::CondJump) {
+                continue;
+            }
+            let Some(t) = ins.target else { continue };
+            if present.contains(&t.0) {
+                continue;
+            }
+            let names_cold_partition =
+                syms.symbol_at(t).is_some_and(|s| s.va == t && is_cold_of_parent(&s.name));
+            if !names_cold_partition {
+                continue;
+            }
+            let Some(size) = syms.symbol_size(t).filter(|n| *n > 0) else {
+                // A cold partition with no stated extent cannot be bounded
+                // safely; leave the branch as it was rather than guess a length.
+                present.insert(t.0);
+                continue;
+            };
+            next_cold = Some((t, size));
+            break;
+        }
+        let Some((cold_start, size)) = next_cold else { break };
+        // Never size a read from a stated length unbounded (the OOM rule).
+        let cap = (size as usize).min(MAX_DECLARED_EXTENT);
+        let Ok(bytes) = ctx.source.read(cold_start, cap) else {
+            present.insert(cold_start.0); // do not spin on an unreadable partition
+            continue;
+        };
+        let end = cold_start.0 + bytes.len() as u64;
+        let cold = ctx.arch.decode_stream(&bytes, cold_start, DEFAULT_MAX_INSNS);
+        for c in cold {
+            if c.va.0 < end {
+                present.insert(c.va.0);
+                instrs.push(c);
+            }
+        }
+    }
+    instrs
 }
 
 /// Resolve the symbolic name of a branch/call target: a direct near-branch
@@ -499,10 +590,20 @@ fn edge_confidence(kind: &str) -> f32 {
 
 fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, CoreError> {
     let frame = ctx.arch.analyze_frame(instrs);
-    let end_ip = instrs
-        .last()
-        .map(|i| i.va.0 + i.len as u64)
-        .unwrap_or(start.0);
+    // The function's nominal end is the end of the **primary** contiguous run
+    // that begins at `start` — not `instrs.last()`, because a folded `.cold`
+    // partition (appended, and routinely at a *lower* address than `start`)
+    // would otherwise report an `end` below `start`. `end` stays the primary
+    // extent so the range consumers that read `addr < cfg.end` keep working; a
+    // cold partition is reached only through an intra-function edge, never by
+    // being inside `[start, end)`.
+    let mut end_ip = start.0;
+    for ins in instrs {
+        if ins.va.0 != end_ip {
+            break; // the first address gap ends the primary run.
+        }
+        end_ip = ins.va.0 + ins.len as u64;
+    }
     let valid: BTreeSet<u64> = instrs.iter().map(|i| i.va.0).collect();
     let mut leaders = compute_leaders(instrs, &valid);
     // A landing pad is entered by the unwinder, never by a branch, so nothing in
@@ -543,11 +644,6 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
             }
         }
     }
-    let mut block_id_by_ip: BTreeMap<u64, usize> = BTreeMap::new();
-    for (id, ip) in leaders.iter().enumerate() {
-        block_id_by_ip.insert(*ip, id);
-    }
-
     let mut blocks: Vec<CfgBlock> = Vec::new();
     let mut callsites: Vec<Callsite> = Vec::new();
     let mut switches: Vec<ResolvedSwitch> = Vec::new();
@@ -556,7 +652,17 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
     let mut i = 0usize;
     while i < instrs.len() {
         let block_start_ip = instrs[i].va.0;
-        let block_id = *block_id_by_ip.get(&block_start_ip).unwrap_or(&blocks.len());
+        // A block's id is its position in `blocks`. This makes id == index a
+        // structural fact rather than a coincidence of address order, and it is
+        // what keeps the **entry** — the block at `start`, which `build` emits
+        // first because `instrs` begins there — at both index 0 and id 0. The
+        // SSA pass (`rename_block(0)`, dominators rooted at index 0) and the
+        // emulator (`by_id.get(&0)` for the entry, and `defsites` keyed on
+        // `id` but indexed as a block position) both depend on that. A
+        // discontiguous function whose `.cold` partition sits below `start`
+        // would, under the old address-sorted id, have given id 0 to the cold
+        // block and pointed both at the wrong entry.
+        let block_id = blocks.len();
         let mut ir_insns: Vec<IrInsn> = Vec::new();
         let mut successors: Vec<Successor> = Vec::new();
         let mut terminator = "fall".to_string();
@@ -597,12 +703,16 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
             // first, IAT slot second) — see `resolved_target_name`.
             let target_name = resolved_target_name(ctx, ins);
 
-            // A direct `jmp` outside this function's own range is a tail call.
+            // A direct `jmp` whose target is not an instruction of this function
+            // is a tail call. Membership is `valid` — the set of decoded
+            // instruction starts — the **one** fact about "does this address
+            // belong to this function", shared with the `cjmp` and switch-case
+            // arms below. A range test on `[start, end_ip)` was a second, weaker
+            // definition of the same fact: it broke on a discontiguous function,
+            // whose folded `.cold` partition sits outside that range yet is very
+            // much part of the function (a branch into it is an internal edge).
             let is_direct_tail = ins.kind == InsnKind::Jump
-                && ins
-                    .target
-                    .map(|t| t.0 < start.0 || t.0 >= end_ip)
-                    .unwrap_or(false);
+                && ins.target.map(|t| !valid.contains(&t.0)).unwrap_or(false);
             // So is an **import thunk** — `jmp qword ptr [rip+disp]` through an
             // IAT slot, the single most common tail-call shape in a real PE
             // (every `__imp_` forwarder is one). The branch is indirect, but
@@ -782,11 +892,22 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                 _ => {}
             }
 
+            let cur_end = ins.va.0 + ins.len as u64;
             i += 1;
             if i >= instrs.len() {
                 break;
             }
             let next_ip = instrs[i].va.0;
+            // Fall-through only exists between address-adjacent instructions.
+            // `instrs` is now a merged stream — the primary range plus any
+            // folded `.cold` partition — so the array-next instruction is not
+            // always the address-next one. At a partition boundary there is no
+            // fall-through; the only way across is a decoded branch, handled
+            // where that branch is. Fabricating a `fall` edge across the gap
+            // would invent control flow, the CFG's worst failure.
+            if next_ip != cur_end {
+                break;
+            }
             if leaders.contains(&next_ip) {
                 terminator = "fall".into();
                 successors.push(Successor {
