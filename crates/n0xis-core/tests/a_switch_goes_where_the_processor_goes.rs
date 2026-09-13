@@ -212,7 +212,16 @@ fn check_one_build(so: &Path, driver: &Path, level: &str) -> (usize, usize, usiz
 
     let elf = StaticElf::load(so).expect("n0xis loads the same library");
     let arch = X64::new();
-    let ctx = Ctx::new(&elf, &arch);
+    // Give the CFG pass the symbol table, which is what the real `decomp`
+    // pipeline attaches (`main.rs`: `.with_symbols(&full)`). The addresses to
+    // emulate still come from `nm`, an outside parser — this only lets n0xis
+    // read the image's own `st_size` extents and, at gcc `-O2`, recognise the
+    // `<fn>.cold` partition `-freorder-blocks-and-partition` splits out, so a
+    // discontiguous function is one function rather than a spurious tail call
+    // into a separate one. Without it the switch's default case, moved into
+    // `.text.unlikely`, has no block to run and the dispatch block's `ja` reads
+    // as a `cjmp` with no in-function successor.
+    let ctx = Ctx::new(&elf, &arch).with_symbols(&elf);
 
     // Build each function's IR once; the cases only change the inputs.
     let mut forms = BTreeMap::new();
