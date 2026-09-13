@@ -45,6 +45,15 @@ fn fixture() -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("native_pe.dll").to_str().expect("fixture path is utf-8").to_string()
 }
 
+/// A SECOND, distinct committed PE (`native_pe_b.dll`, built from
+/// `native_pe_b.c`) — "binary B" for the provenance test. Same image base and a
+/// function at RVA 0x1000 like `native_pe.dll`, but byte-different code, so an
+/// index validated against A would still *measure* as fitting B (the bug) yet
+/// carries a different provenance identity (the fix).
+fn fixture_b() -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("native_pe_b.dll").to_str().expect("fixture path is utf-8").to_string()
+}
+
 struct Scratch(std::path::PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -255,6 +264,53 @@ fn range_scoped_analysis_gets_managed_names_too() {
     assert!(body.contains("CombatResolver"), "a discovered function with an indexed start must carry its managed name: {body}");
     let note = v["meta"]["note"].as_str().unwrap_or_default();
     assert!(note.contains("il2cpp index"), "and the response must say which layer named it: {note}");
+}
+
+#[test]
+fn an_index_imported_for_one_binary_does_not_fabricate_names_on_another() {
+    // Provenance regression (the confident-wrong-name bug). A `default` index is
+    // imported and validated against binary A (`native_pe.dll`), then a DIFFERENT
+    // binary B (`native_pe_b.dll`) is analysed. B has a real function at the same
+    // RVA the index's lone method is planted at, and the same image base, so the
+    // OLD code auto-attached the index to B and named B's function after A's dump
+    // — a managed name on a binary the dump never described.
+    //
+    // With provenance recorded at import, the index auto-attaches only to A. B
+    // therefore shows its own symbol and carries NO il2cpp note.
+    //
+    // CALIBRATION: revert the provenance gate in `attach_for` (or drop the
+    // recorded `Index::provenance`) and this fails on the first assertion —
+    // B's signature reads `...FakeClass...` and the note names the il2cpp index.
+    let s = Scratch::new("provenance");
+
+    // native_pe.dll's internal `leaf` is at RVA 0x1000; plant the method there so
+    // the index measurably "fits" both A and B and the only thing separating them
+    // is provenance.
+    let dump = s.write_dump("a.json", &[(0x1000, "FakeClass$$FakeMethod")]);
+    let (v, ok) = s.run(&["il2cpp", "import", "--script-json", dump.to_str().unwrap(), "--file", &fixture()]);
+    assert!(ok, "import against binary A should succeed: {v}");
+    assert_eq!(v["data"]["binding"]["accepted"], serde_json::Value::Bool(true), "the index must validate against A (else the test proves nothing): {v}");
+
+    // Analyse binary B at the coincidental address.
+    let addr = format!("0x{:x}", IMAGE_BASE + 0x1000);
+    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &fixture_b(), "--addr", &addr]);
+    assert!(ok, "{v}");
+    let sig = v["data"]["signature"].as_str().unwrap_or_default();
+    assert!(!sig.contains("FakeClass"), "an index imported for A must not name a function in the unrelated B: {sig}");
+    let body = v["data"]["pseudo"].to_string();
+    assert!(!body.contains("FakeClass"), "…and not in the rendered body either: {body}");
+    // And no note implying an index applied — the corrected calibration is
+    // explicit that B carries no il2cpp note.
+    let note = v["meta"]["note"].as_str().unwrap_or_default();
+    assert!(!note.contains("il2cpp index"), "a mismatched index must leave no trace suggesting it named anything: {note}");
+
+    // Positive control: the SAME index still names its OWN binary A. Provenance
+    // gates cross-binary fabrication without breaking the legitimate same-binary
+    // bind the whole feature exists for.
+    let (v, ok) = s.run(&["decomp", "pseudo", "--file", &fixture(), "--addr", &addr]);
+    assert!(ok, "{v}");
+    let sig = v["data"]["signature"].as_str().unwrap_or_default();
+    assert!(sig.contains("FakeClass"), "the index must still name the binary it was validated against: {sig}");
 }
 
 #[test]
