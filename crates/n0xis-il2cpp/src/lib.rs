@@ -160,6 +160,95 @@ impl SymbolKind {
     }
 }
 
+/// The identity of the native target an index was imported and validated
+/// against, recorded so the index only auto-attaches to *that* binary.
+///
+/// Without it a `default` index imported for one game silently binds to any
+/// other image whose `.text` happens to cover one of its method addresses — a
+/// single coincidental hit scores 1/1 = 100% confidence and fabricates a
+/// managed name on a binary the dump never described. Provenance is the guard:
+/// two distinct builds have distinct identities, so a mismatch refuses the
+/// auto-attach and the analysis falls back to the binary's own symbols.
+///
+/// The variants are ordered by strength. `BuildId` is base-invariant and
+/// survives a rebased load; `Fingerprint` is the fallback for images that carry
+/// no build identity, and it digests the `.text` *bytes* (not merely its range)
+/// so two images with the same layout but different code do not collide.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetIdentity {
+    /// An ELF GNU build-id (the note descriptor, lower-case hex). The strongest
+    /// match: distinct builds differ, and it does not move with the load base.
+    BuildId(String),
+    /// No build identity in the image — a digest of where the code sits and what
+    /// it is. `text_hash` is an FNV-1a of the `.text` prefix, kept explicit (not
+    /// `std::hash`) because it is persisted to disk and compared across process
+    /// runs, so it must be stable forever, not per-toolchain.
+    Fingerprint { module_base: u64, text_start: u64, text_len: u64, text_hash: u64 },
+}
+
+/// FNV-1a 64. Inlined and fixed rather than reached for through `std::hash`
+/// because a [`TargetIdentity::Fingerprint`] is written into `.n0x/il2cpp/` and
+/// re-computed on a later run to compare — a hash whose constants could change
+/// between Rust versions would silently stop matching the same binary.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+impl TargetIdentity {
+    /// Parse an ELF `.note.gnu.build-id` note (Elf note header + name + desc) and
+    /// return its descriptor as lower-case hex. `None` if the bytes are not a
+    /// GNU build-id note, so the caller falls back to a fingerprint.
+    pub fn from_gnu_build_id_note(note: &[u8]) -> Option<Self> {
+        // Nhdr: n_namesz(4) n_descsz(4) n_type(4), all native-endian u32; then
+        // the name padded to 4, then the descriptor. NT_GNU_BUILD_ID == 3,
+        // name == "GNU\0".
+        let namesz = u32::from_le_bytes(note.get(0..4)?.try_into().ok()?) as usize;
+        let descsz = u32::from_le_bytes(note.get(4..8)?.try_into().ok()?) as usize;
+        let n_type = u32::from_le_bytes(note.get(8..12)?.try_into().ok()?);
+        if n_type != 3 {
+            return None;
+        }
+        let name = note.get(12..12 + namesz)?;
+        if name.first_chunk::<3>() != Some(b"GNU") {
+            return None;
+        }
+        let desc_start = 12 + namesz.next_multiple_of(4);
+        let desc = note.get(desc_start..desc_start + descsz)?;
+        if desc.is_empty() {
+            return None;
+        }
+        let mut hex = String::with_capacity(desc.len() * 2);
+        for b in desc {
+            use std::fmt::Write;
+            let _ = write!(hex, "{b:02x}");
+        }
+        Some(TargetIdentity::BuildId(hex))
+    }
+
+    /// Fingerprint an image with no build identity: its base, its `.text` range,
+    /// and a stable digest of the `.text` prefix.
+    pub fn fingerprint(module_base: u64, text_start: u64, text_len: u64, text_prefix: &[u8]) -> Self {
+        TargetIdentity::Fingerprint { module_base, text_start, text_len, text_hash: fnv1a_64(text_prefix) }
+    }
+
+    /// A short human-readable form for the import report — enough to see which
+    /// identity kind was recorded without dumping the whole hash.
+    pub fn describe(&self) -> String {
+        match self {
+            TargetIdentity::BuildId(id) => format!("build-id {id}"),
+            TargetIdentity::Fingerprint { text_start, text_len, text_hash, .. } => {
+                format!("text-fingerprint .text@{text_start:#x}+{text_len:#x} hash {text_hash:#018x}")
+            }
+        }
+    }
+}
+
 /// One entry as the dump gave it — the address is in the index's own space and
 /// has had nothing added to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +274,13 @@ pub struct Index {
     /// Which tool produced the dump, for the `meta.source` trail.
     pub source: String,
     pub counts: Counts,
+    /// The native target this index was imported and validated against, when a
+    /// target was given at import time. `None` for a wasm index, an import with
+    /// no target, or any index stored before provenance was tracked — and a
+    /// `None` index is never *auto*-attached, precisely so a provenance-less
+    /// leftover cannot fabricate names on an unrelated binary.
+    #[serde(default)]
+    pub provenance: Option<TargetIdentity>,
     /// Sorted by `addr`, so lookups are a binary search.
     pub symbols: Vec<RawSymbol>,
     #[serde(default)]
@@ -195,7 +291,7 @@ impl Index {
     pub fn from_parsed(parsed: script_json::Parsed, space: AddressSpace, source: impl Into<String>) -> Self {
         let mut symbols = parsed.symbols;
         symbols.sort_by_key(|s| s.addr);
-        Index { space, source: source.into(), counts: parsed.counts, symbols, strings: parsed.strings }
+        Index { space, source: source.into(), counts: parsed.counts, provenance: None, symbols, strings: parsed.strings }
     }
 
     pub fn len(&self) -> usize {
@@ -391,7 +487,7 @@ mod tests {
     fn index(space: AddressSpace, symbols: Vec<RawSymbol>) -> Index {
         let mut symbols = symbols;
         symbols.sort_by_key(|s| s.addr);
-        Index { space, source: "test".into(), counts: Counts::default(), symbols, strings: Vec::new() }
+        Index { space, source: "test".into(), counts: Counts::default(), provenance: None, symbols, strings: Vec::new() }
     }
 
     fn native_index() -> Index {
@@ -545,5 +641,40 @@ mod tests {
         assert_eq!(back.len(), 3);
         assert_eq!(back.space, idx.space);
         assert!(text.contains("\"space\":{\"native\""), "the address space must survive persistence: {}", &text[..80.min(text.len())]);
+    }
+
+    #[test]
+    fn an_index_stored_before_provenance_deserializes_to_none() {
+        // The field is additive: a `.n0x/il2cpp/*.json` written before it existed
+        // has no `provenance` key, and must load without error as "unknown".
+        let legacy = r#"{"space":{"native":{"module":null}},"source":"old","counts":{"methods":0,"metadata":0,"metadata_methods":0,"strings":0},"symbols":[]}"#;
+        let idx: Index = serde_json::from_str(legacy).unwrap();
+        assert_eq!(idx.provenance, None);
+    }
+
+    #[test]
+    fn a_gnu_build_id_note_parses_to_a_hex_build_id() {
+        // n_namesz=4 ("GNU\0"), n_descsz=4, n_type=3, name "GNU\0", desc 4 bytes.
+        let mut note = Vec::new();
+        note.extend_from_slice(&4u32.to_le_bytes());
+        note.extend_from_slice(&4u32.to_le_bytes());
+        note.extend_from_slice(&3u32.to_le_bytes());
+        note.extend_from_slice(b"GNU\0");
+        note.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(TargetIdentity::from_gnu_build_id_note(&note), Some(TargetIdentity::BuildId("deadbeef".into())));
+        // A non-build-id note (wrong type) is rejected so the caller fingerprints.
+        note[8] = 1;
+        assert_eq!(TargetIdentity::from_gnu_build_id_note(&note), None);
+    }
+
+    #[test]
+    fn a_fingerprint_reflects_the_text_bytes_not_only_the_range() {
+        // Two images at the same base and range but different code must not share
+        // an identity — that is the collision the .text digest exists to prevent.
+        let a = TargetIdentity::fingerprint(0x1000, 0x1000, 0x200, b"machine code A");
+        let b = TargetIdentity::fingerprint(0x1000, 0x1000, 0x200, b"machine code B");
+        assert_ne!(a, b);
+        // The same bytes and layout reproduce the same identity across runs.
+        assert_eq!(a, TargetIdentity::fingerprint(0x1000, 0x1000, 0x200, b"machine code A"));
     }
 }

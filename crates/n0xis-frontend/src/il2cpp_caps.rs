@@ -19,7 +19,7 @@
 //!   than applied — confident wrong names are the worst outcome on this corpus.
 
 use n0xis_contracts::{Response, Va, schema};
-use n0xis_il2cpp::{AddressSpace, Index, metadata, script_json};
+use n0xis_il2cpp::{AddressSpace, Index, TargetIdentity, metadata, script_json};
 use serde_json::{Value, json};
 
 use crate::registry::{Capability, Origin, Plugin, Registry};
@@ -62,13 +62,48 @@ fn load_index(name: &str) -> Result<Index, Box<Response<Value>>> {
 }
 
 /// The target facts a binding measurement needs: where the image sits and
-/// where its code is. Three bare `u64`s would be indistinguishable at every
-/// call site.
-#[derive(Debug, Clone, Copy)]
+/// where its code is, plus the identity it is recorded/matched by. Bare fields
+/// would be indistinguishable at every call site.
+#[derive(Debug, Clone)]
 struct TargetRanges {
     module_base: u64,
     text_start: u64,
     text_len: u64,
+    /// The target's provenance identity, or `None` when the source exposes no
+    /// `.text` to identify it by — recorded at import, matched at attach.
+    identity: Option<TargetIdentity>,
+}
+
+/// The identity a target is recognised by for IL2CPP index provenance.
+///
+/// Prefers a base-invariant GNU build-id the image carries itself; falls back to
+/// a digest of the `.text` prefix for images (e.g. most PEs here) that carry no
+/// build-id. Computed the same way at import and at attach, so the same binary
+/// always produces the same identity and a different build does not. `None` when
+/// the source exposes no `.text` range, which can neither be recorded nor
+/// matched.
+///
+/// One place, two callers: [`target_ranges`] records it at import,
+/// [`attach_for`] recomputes it to gate auto-attach — deriving it twice would be
+/// the "one fact, two places" trap this project keeps paying for.
+fn target_identity(src: &crate::source::Src) -> Option<TargetIdentity> {
+    // A GNU build-id is the strongest identity and does not move with the base.
+    if let Some((va, len)) = src.section_range(".note.gnu.build-id") {
+        let cap = (len as usize).min(4096);
+        if let Ok(note) = src.as_mem().read(va, cap)
+            && let Some(id) = TargetIdentity::from_gnu_build_id_note(&note)
+        {
+            return Some(id);
+        }
+    }
+    // Otherwise fingerprint where the code sits and what it is. The prefix is
+    // capped: enough bytes to distinguish builds, bounded so this stays cheap on
+    // a multi-megabyte `.text` recomputed on every analysis.
+    let (text_start, text_len) = src.text_range()?;
+    let base = crate::source::module_base_of(src).map(|v| v.0).unwrap_or(0);
+    let cap = (text_len as usize).min(64 * 1024);
+    let prefix = src.as_mem().read(text_start, cap).ok()?;
+    Some(TargetIdentity::fingerprint(base, text_start.0, text_len, &prefix))
 }
 
 /// Resolve the target's module base and `.text` range, for binding detection.
@@ -88,7 +123,8 @@ fn target_ranges(args: &Value) -> Result<Option<TargetRanges>, Box<Response<Valu
         return Err(Box::new(Response::error("no-text-range", "this target exposes no .text range, so a binding cannot be measured against it")));
     };
     let base = crate::source::module_base_of(&resolved.src).map(|v| v.0).unwrap_or(0);
-    Ok(Some(TargetRanges { module_base: base, text_start: text_start.0, text_len }))
+    let identity = target_identity(&resolved.src);
+    Ok(Some(TargetRanges { module_base: base, text_start: text_start.0, text_len, identity }))
 }
 
 /// Locate an IL2CPP metadata blob next to `image_path`, if one exists.
@@ -129,7 +165,11 @@ pub fn find_metadata_near(image_path: &str) -> Option<String> {
 /// *present but unusable* must not look like no index at all, or a user stares
 /// at unnamed pseudo-C wondering why the import they just ran did nothing.
 pub enum IndexAttach {
-    /// No index in the project — the ordinary case for a non-IL2CPP target.
+    /// Nothing to attach: no index in the project (the ordinary non-IL2CPP
+    /// case), or an index whose recorded provenance does not match this target
+    /// (or has none). The analysis renders exactly as if no index existed — no
+    /// managed names and, deliberately, no note: an index that does not describe
+    /// this binary must not leave a trace suggesting it did.
     None,
     Attached(Box<n0xis_il2cpp::Il2CppSymbols>, String),
     /// Found, and deliberately not used. Carries the reason.
@@ -175,6 +215,24 @@ pub fn attach_for(args: &Value, src: &crate::source::Src) -> IndexAttach {
         return IndexAttach::Skipped(format!(
             "il2cpp index '{name}' is a WebGL (wasm) index and cannot be bound to a native target; query it with `il2cpp symbols`"
         ));
+    }
+    // Provenance gate: an index auto-attaches only to the binary it was imported
+    // and validated against. Without this a `default` index imported for one
+    // target silently fabricates managed names on any *other* image whose `.text`
+    // happens to cover a method address — a single coincidental hit scores 1/1 =
+    // 100% confidence, so the ratio alone never rejects it. A mismatch, or a
+    // provenance-less legacy index (imported before this was recorded), falls
+    // back to the binary's own symbols with no note at all: a wrong name is worse
+    // than a missing one, and a note claiming an index applied would be its own
+    // small lie. Re-import against this target to record provenance and restore
+    // naming.
+    match &index.provenance {
+        None => return IndexAttach::None,
+        Some(recorded) => {
+            if target_identity(src).as_ref() != Some(recorded) {
+                return IndexAttach::None;
+            }
+        }
     }
     let Some((text_start, text_len)) = src.text_range() else {
         return IndexAttach::Skipped(format!("il2cpp index '{name}' was not applied: this target exposes no .text range to bind against"));
@@ -238,7 +296,7 @@ impl Plugin for Il2CppTools {
                     Ok(p) => p,
                     Err(e) => return Response::error("bad-dump", format!("{dump}: {e}")),
                 };
-                let index = Index::from_parsed(parsed, space, format!("Il2CppDumper script.json ({dump})"));
+                let mut index = Index::from_parsed(parsed, space, format!("Il2CppDumper script.json ({dump})"));
 
                 // Measure the binding when a target is available. A WebGL index
                 // is never bound, so it is not measured either — saying "0%
@@ -249,7 +307,17 @@ impl Plugin for Il2CppTools {
                     None
                 } else {
                     match target_ranges(args) {
-                        Ok(Some(t)) => Some((index.detect_binding(t.module_base, t.text_start, t.text_len), t.module_base)),
+                        Ok(Some(t)) => {
+                            let report = index.detect_binding(t.module_base, t.text_start, t.text_len);
+                            // Record which binary this index was validated against
+                            // so it only ever auto-attaches to that binary. Set
+                            // even when the binding is rejected-but-forced: the
+                            // user still pointed the import at this target, and the
+                            // auto-attach path independently requires the binding
+                            // to fit, so a forced misfit stays inert there too.
+                            index.provenance = t.identity.clone();
+                            Some((report, t.module_base))
+                        }
                         Ok(None) => None,
                         Err(r) => return *r,
                     }
@@ -308,13 +376,19 @@ impl Plugin for Il2CppTools {
                             "accepted": r.accepted,
                         })),
                         "bindable": !is_wasm,
+                        // The recorded provenance, so the caller can see which
+                        // binary this index will auto-attach to. Absent when no
+                        // target was given — such an index is searchable but is
+                        // never auto-attached to an analysis.
+                        "provenance": index.provenance.as_ref().map(TargetIdentity::describe),
                         "note": if is_wasm {
                             "a WebGL index is a searchable name table: its addresses are WebAssembly offsets, \
                              and this build has no WASM front end to bind them to"
                         } else if binding.is_none() {
-                            "no target given, so the address convention was not measured; pass pid or file to validate it"
+                            "no target given, so the address convention was not measured and no provenance was recorded; \
+                             pass pid or file to validate it — an index with no provenance is searchable but never auto-attached to an analysis"
                         } else {
-                            "bound and validated against the target's .text"
+                            "bound and validated against the target's .text; provenance recorded, so this index auto-attaches only to this same binary"
                         },
                     }),
                 )
