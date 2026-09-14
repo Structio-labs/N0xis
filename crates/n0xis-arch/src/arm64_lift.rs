@@ -540,6 +540,14 @@ pub(crate) fn lift(arch: &Arm64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt
 /// `x64_lift::lift_opaque`, which is where it was decided.
 fn lift_opaque(arch: &Arm64, insn: &DecodedInsn) -> Vec<MicroStmt> {
     let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+    // A pre-/post-indexed load/store updates its base register by a delta that
+    // is fully known from the encoding, even though the memory transfer stays
+    // opaque. `reg_access` reports that base among its writes; emit the *precise*
+    // `base := base + K` for it here, so the base is not lost to the `Unknown`
+    // below. Only the base is modelled — the loaded value (`Rt`/`Rt2`) and the
+    // transfer itself remain opaque. `arm64::writeback` is the same source
+    // `reg_access` used, so the two agree on which register is the base.
+    let wb = raw(insn).and_then(decoder::decode).and_then(|op| crate::arm64::writeback(&op));
     for w in arch.reg_access(insn).writes {
         // `reg_access` names the zero register when an instruction discards its
         // result into it. There is no such variable, and defining one would
@@ -547,7 +555,18 @@ fn lift_opaque(arch: &Arm64, insn: &DecodedInsn) -> Vec<MicroStmt> {
         if w == "xzr" {
             continue;
         }
-        out.push(MicroStmt::Assign { dst: w, value: MicroExpr::Unknown(insn.text.clone()) });
+        match &wb {
+            Some(wb) if wb.base == w => out.push(MicroStmt::Assign {
+                dst: w,
+                value: MicroExpr::binary(
+                    BinOp::Add,
+                    MicroExpr::var(wb.base.as_str()),
+                    MicroExpr::constant(i128::from(wb.delta), WORD_BITS),
+                ),
+            }),
+            _ => out
+                .push(MicroStmt::Assign { dst: w, value: MicroExpr::Unknown(insn.text.clone()) }),
+        }
     }
     out.push(opaque_flags(&insn.mnemonic));
     out
@@ -1417,36 +1436,120 @@ mod tests {
         );
     }
 
-    /// **A recorded limitation, not a passing check.**
+    /// **A pre-/post-indexed load/store writes its base register back, and both
+    /// the def-use record and the lift now say so precisely.**
     ///
-    /// A pre- or post-indexed load/store writes its *base* register back —
-    /// `stp x29, x30, [sp, #-16]!` decrements `sp` — and [`Arch::reg_access`]
-    /// does not report that write. So the invalidation above cannot cover it,
-    /// and after an unmodelled pre-indexed store the IR still believes `sp`
-    /// holds its old value. Every stack offset computed from it afterwards is
-    /// then a frame too high, which is the *same* defect x86-64 had when
-    /// `push` lifted to nothing — and it was measured there against the
-    /// compiler's own DWARF frame base.
-    ///
-    /// Loads and stores are out of this increment, so the fix belongs with
-    /// them. This asserts the gap so that closing it fails **here**, on this
-    /// line, rather than leaving a stale comment behind.
+    /// `stp x29, x30, [sp, #-16]!` decrements `sp`. [`Arch::reg_access`] reports
+    /// `sp` among its writes (so the value is invalidated for anything that does
+    /// not model it), and the lift emits the *exact* update `sp := sp + (-16)` —
+    /// not `Unknown` — because the delta is fully known from the encoding while
+    /// the memory transfer itself stays opaque. This closes the same defect
+    /// x86-64 had when `push` lifted to nothing.
     #[test]
-    fn a_writeback_base_register_is_not_yet_reported_and_therefore_not_invalidated() {
+    fn a_writeback_base_register_is_reported_and_lifted_precisely() {
         let arch = Arm64::new();
         // `stp x29, x30, [sp, #-16]!` -> a9bf7bfd
         let insn = arch.decode(&le(0xa9bf7bfd), Va(0x1000)).expect("decodes");
         assert!(
-            !arch.reg_access(&insn).writes.iter().any(|w| w == "sp"),
-            "reg_access now reports the writeback — teach lift_opaque about it \
-             and delete this test"
+            arch.reg_access(&insn).writes.iter().any(|w| w == "sp"),
+            "reg_access reports the writeback base as written: {:?}",
+            arch.reg_access(&insn).writes
+        );
+        let stmts = lift_word(0xa9bf7bfd);
+        assert!(
+            stmts.contains(&assign(
+                "sp",
+                MicroExpr::binary(BinOp::Add, MicroExpr::var("sp"), MicroExpr::constant(-16, 64))
+            )),
+            "the lift emits the precise sp := sp + (-16), not Unknown: {stmts:?}"
         );
         assert!(
-            !lift_word(0xa9bf7bfd).iter().any(|s| matches!(
+            !stmts.iter().any(|s| matches!(
                 s,
                 MicroStmt::Assign { dst, value: MicroExpr::Unknown(_) } if dst == "sp"
             )),
-            "sp is not invalidated across a pre-indexed store; see above"
+            "sp is never left Unknown across the writeback: {stmts:?}"
+        );
+    }
+
+    /// **CALIBRATION of the writeback delta `K` against an independent
+    /// disassembler (rung 3).** Every word below was produced by
+    /// `aarch64-linux-gnu-as` and its offset read from `aarch64-linux-gnu-objdump
+    /// -d`; the `K` the lift emits in `base := base + K` must equal that printed
+    /// offset. This is the one wrong-answer surface of the fix — the immediate's
+    /// **sign-extension** and, for the pair forms, its **scale** by the access
+    /// size. The table exercises both signs, both pair sizes (the ×4-vs-×8
+    /// scale), and a single `imm9` both signs.
+    ///
+    /// The PAuth (`LDST_IMM10`) rows below were confirmed with
+    /// `llvm-mc --triple=aarch64 --mattr=+pauth --show-encoding` (rung 3), which
+    /// assembles `ldraa`/`ldrab` where this box's GNU assembler refuses them; the
+    /// scale is ×8 and the `W` bit (bit 11) gates the writeback form.
+    ///
+    /// Verified to fail when broken: dropping the pair scale (using `imm7`
+    /// unshifted) makes `stp …,#-192` read -24 not -192 and fails
+    /// `[a9b47bfd] stp …,#-192`; using ×8 for the 32-bit pair makes `ldp w…,#8`
+    /// read 16 and fails `[28c107e0] ldp w…,#8`; dropping the sign-extension
+    /// makes every negative K read as a large positive and fails the first
+    /// negative row; dropping the ×8 PAuth scale makes `ldrab …,#-16` read -2 not
+    /// -16 and fails `[f8ffefe2] ldrab …,#-16`.
+    #[test]
+    fn writeback_delta_k_matches_the_disassembler() {
+        // (word, base register, disassembler-printed offset = expected K)
+        let table: &[(u32, &str, i128)] = &[
+            (0xa9bf7bfd, "sp", -16),  // stp x29, x30, [sp, #-16]!   64-bit pair, neg
+            (0xa9b47bfd, "sp", -192), // stp x29, x30, [sp, #-192]!  64-bit pair, neg, large
+            (0xa8c17bfd, "sp", 16),   // ldp x29, x30, [sp], #16     64-bit pair, pos
+            (0xa9817bfd, "sp", 16),   // stp x29, x30, [sp, #16]!    64-bit pair, pos (pre)
+            (0xa8ff07e0, "sp", -16),  // ldp x0, x1, [sp], #-16      64-bit pair, neg (post)
+            (0x28c107e0, "sp", 8),    // ldp w0, w1, [sp], #8        32-bit pair, ×4 scale
+            (0xf8408422, "x1", 8),    // ldr x2, [x1], #8            single imm9, pos, unscaled
+            (0xf85f8420, "x1", -8),   // ldr x0, [x1], #-8           single imm9, neg, unscaled
+            (0xf8201c20, "x1", 8),    // ldraa x0, [x1, #8]!         PAuth imm10, pos, ×8 (llvm-mc)
+            (0xf8ffefe2, "sp", -16),  // ldrab x2, [sp, #-16]!       PAuth imm10, neg, ×8 (llvm-mc)
+        ];
+        for &(word, base, expected) in table {
+            let arch = Arm64::new();
+            let insn = arch.decode(&le(word), Va(0x1000)).expect("decodes");
+            assert!(
+                arch.reg_access(&insn).writes.iter().any(|w| w == base),
+                "[{word:08x}] reg_access must report {base} as written: {:?}",
+                arch.reg_access(&insn).writes
+            );
+            let k = lift_word(word).into_iter().find_map(|s| match s {
+                MicroStmt::Assign {
+                    dst,
+                    value: MicroExpr::Binary(BinOp::Add, lhs, rhs),
+                } if dst == base && *lhs == MicroExpr::var(base) => match *rhs {
+                    MicroExpr::Const { value, .. } => Some(value),
+                    _ => None,
+                },
+                _ => None,
+            });
+            assert_eq!(
+                k,
+                Some(expected),
+                "[{word:08x}] lifted writeback K must equal the disassembler's offset {expected}"
+            );
+        }
+
+        // The base-only (W=0) PAuth form is NOT a writeback: `ldraa x0, [x1, #8]`
+        // (no `!`) -> f8201420 (llvm-mc). The base must not be reported as
+        // written and the lift must not emit a base update for it — a class is in
+        // both reg_access.writes and a precise lift, or in neither.
+        let arch = Arm64::new();
+        let insn = arch.decode(&le(0xf8201420), Va(0x1000)).expect("decodes");
+        assert!(
+            !arch.reg_access(&insn).writes.iter().any(|w| w == "x1"),
+            "[f8201420] ldraa without `!` (W=0) does not write its base: {:?}",
+            arch.reg_access(&insn).writes
+        );
+        assert!(
+            !lift_word(0xf8201420).iter().any(|s| matches!(
+                s,
+                MicroStmt::Assign { dst, value: MicroExpr::Binary(BinOp::Add, ..) } if dst == "x1"
+            )),
+            "[f8201420] no base update is lifted for the W=0 PAuth form"
         );
     }
 
