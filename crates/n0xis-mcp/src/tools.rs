@@ -12,11 +12,7 @@
 
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
-use n0xis_core::{
-    CfgInput, CoordSpace, Ctx, DecodeInput, DecodePass, DecompInput, DecompPass,
-    DecompStyle, DiscoverInput, DiscoverPass, Pass,
-    Rect,
-};
+use n0xis_core::{CoordSpace, Ctx, Pass, Rect};
 // Needed only by the tools that still require Win32 — the watchpoint-driven
 // provenance trace and the UI-localization family. The list is an inventory of
 // what a Linux adapter has yet to reach.
@@ -38,7 +34,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::N0xisServer;
-use crate::source::{self, Src};
+use crate::source;
 
 fn emit<T: serde::Serialize>(resp: Response<T>) -> String {
     serde_json::to_string(&resp)
@@ -51,31 +47,6 @@ fn err(code: &str, msg: impl Into<String>) -> String {
 
 fn bad_addr(e: impl std::fmt::Display) -> String {
     err("bad-addr", e.to_string())
-}
-
-/// Build a `Ctx` for whichever source `resolve()` picked and hand it to `work`.
-///
-/// `arch` is a parameter, not a constant: this frontend used to name
-/// `X64::new()` inline here, which quietly made every MCP tool x64-only while
-/// the CLI had an `--arch` flag — the ISA seam existing in the core but being
-/// bypassed at the edge (CONCEPT §3 rule 4).
-fn with_ctx<R>(src: &Src, arch: &dyn n0xis_arch::Arch, work: impl FnOnce(&Ctx) -> R) -> R {
-    match src {
-        Src::Live(l) => work(&Ctx::new(l.as_ref(), arch)),
-        Src::Static(p) => work(&Ctx::new(p.as_ref(), arch).with_symbols(p.as_ref()).with_modules(p.as_ref())),
-        Src::Snap(s) => work(&Ctx::new(s, arch)),
-        Src::Remote(r) => work(&Ctx::new(r.as_ref(), arch)),
-    }
-}
-
-/// Resolve a tool's `arch` argument or bail with the shared error envelope.
-macro_rules! arch_or_return {
-    ($a:expr) => {
-        match n0xis_frontend::resolve_arch($a.arch.as_deref()) {
-            Ok(a) => a,
-            Err(e) => return err("bad-arch", e),
-        }
-    };
 }
 
 macro_rules! resolve_or_return {
@@ -669,39 +640,51 @@ impl N0xisServer {
 
     #[tool(description = "Linear disassembly of `count` instructions starting at `addr`.")]
     fn disasm(&self, Parameters(a): Parameters<DisasmRequest>) -> String {
-        let start = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let src = resolve_or_return!(a);
-        let arch = arch_or_return!(a);
-        let out = with_ctx(&src, arch.as_ref(), |ctx| DecodePass.run(ctx, DecodeInput::count(start, a.count)));
-        match out {
-            Ok(o) => emit(Response::success(schema::v1::DECODE, o).with_source(src.label())),
-            Err(e) => err("decode-failed", e.to_string()),
-        }
+        // Dispatched through the shared registry — the exact same `decode`
+        // capability `n0x disasm` reaches through `run_capability`. Reimplementing
+        // it here made three answers drift from the CLI's: the arch was forced to
+        // x64 (an AArch64 image decoded as `add [rax],al` garbage, an i386 image
+        // printed with 64-bit registers), an out-of-image address returned
+        // `decode-failed` instead of `addr-out-of-image` with its image-base hint,
+        // and a data-section decode carried no "not executable" advisory note.
+        // Delegation inherits all three at once. This method is argument mapping only.
+        emit(n0xis_frontend::build_registry().dispatch(
+            "decode",
+            &json!({
+                "addr": a.addr,
+                "count": a.count,
+                "arch": a.arch,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(description = "Heuristic function discovery over a code range (defaults to `.text`).")]
     fn function_discover(&self, Parameters(a): Parameters<DiscoverRequest>) -> String {
-        let explicit_start = match a.start.as_deref().map(Va::parse).transpose() {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let src = resolve_or_return!(a);
-        let Some((start, size)) = source::scan_range(src.text_range(), explicit_start, a.size) else {
-            return err("no-range", "could not resolve a scan range; pass start and size");
-        };
-        let arch = arch_or_return!(a);
-        let out = with_ctx(&src, arch.as_ref(), |ctx| DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: a.offset.unwrap_or(0) }));
-        match out {
-            Ok(art) => {
-                let (returned, truncated) = (art.count, art.truncated);
-                let resp = Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(src.label());
-                emit(if truncated { resp.with_cap(returned) } else { resp })
-            }
-            Err(e) => err("discover-failed", e.to_string()),
-        }
+        // Dispatched through the shared registry — the same `function.discover`
+        // capability, which attaches the full symbol chain (the image's exports, a
+        // managed IL2CPP index, FLIRT matches, the user's own renames) and picks
+        // the arch from the image header. The bespoke path here did neither: it
+        // built a `Ctx` with only the image's own symbols and forced x64, so on an
+        // AArch64 image it reported almost nothing and named none of what it found.
+        // This method is argument mapping only.
+        emit(n0xis_frontend::build_registry().dispatch(
+            "function.discover",
+            &json!({
+                "start": a.start,
+                "size": a.size,
+                "limit": a.limit,
+                "offset": a.offset,
+                "arch": a.arch,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(description = "Call-graph walk (BFS) from a root function address.")]
@@ -742,24 +725,50 @@ impl N0xisServer {
                         and a summary of what changed."
     )]
     fn explain_opt_delta(&self, Parameters(a): Parameters<DecompRequest>) -> String {
+        // Runs the same pipeline as `decomp_pseudo(style=ssa, explain=true)` and
+        // projects out only its `delta`. It used to reimplement that pipeline —
+        // its own arch choice (forced x64) and its own starved `Ctx` — so the
+        // reasoning it explained was for a different decompilation than the one
+        // `decomp_pseudo` produced. Delegated to the shared `decomp.pseudo`
+        // capability so the two can never diverge; the only work left here is the
+        // key rename (`delta` -> `{address, rounds, entries}`) that names the
+        // `n0xis.opt.delta.v1` shape.
         let start = match Va::parse(&a.addr) {
             Ok(v) => v,
             Err(e) => return bad_addr(e),
         };
-        let src = resolve_or_return!(a);
-        let cfg_input = CfgInput { start, max_bytes: a.size, auto_end: !a.no_auto_end };
-        let arch = arch_or_return!(a);
-        let out = with_ctx(&src, arch.as_ref(), |ctx| -> Result<_, String> {
-            let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, cfg_input).map_err(|e| e.to_string())?;
-            // This tool *is* the delta, so it always asks for it.
-            DecompPass.run(ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: true, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).map_err(|e| e.to_string())
-        });
-        match out {
-            Ok(pf) => emit(
-                Response::success(schema::v1::OPT_DELTA, json!({ "address": start, "rounds": pf.delta.len(), "entries": pf.delta }))
-                    .with_source(src.label()),
-            ),
-            Err(e) => err("decomp-failed", e),
+        let resp = n0xis_frontend::build_registry().dispatch(
+            "decomp.pseudo",
+            &json!({
+                "addr": a.addr,
+                "size": a.size,
+                "no_auto_end": a.no_auto_end,
+                // style/explain are fixed: this tool *is* the SSA optimizer delta.
+                "style": "ssa",
+                "explain": true,
+                "arch": a.arch,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        );
+        match resp {
+            Response::Ok(ok) => {
+                // `delta` is `skip_serializing_if = "Vec::is_empty"`, so a function
+                // the optimizer left untouched has no key at all — that is zero
+                // rounds, not an error.
+                let entries = ok.data.get("delta").cloned().unwrap_or_else(|| json!([]));
+                let rounds = entries.as_array().map_or(0, Vec::len);
+                let out = Response::success(schema::v1::OPT_DELTA, json!({ "address": start, "rounds": rounds, "entries": entries }));
+                emit(match ok.meta.source {
+                    Some(s) => out.with_source(s),
+                    None => out,
+                })
+            }
+            // Any failure (bad address, decode/ir failure) passes straight through
+            // with the capability's own code and message.
+            err @ Response::Err(_) => emit(err),
         }
     }
 
