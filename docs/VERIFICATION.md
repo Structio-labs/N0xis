@@ -51,6 +51,25 @@ closed) · **NOT CLAIMED** (needs an input or a platform not available here).
 | Range-scoped IL2CPP managed-name attachment (PE) | a committed fixture PE (`native_pe.dll`) | 2 | 6 tests | bind + attach through the single-address and the range path; deterministic (no self-image, no toolchain), gates CI on both OSes, calibrated (2026-09-14) |
 | An IL2CPP index names only the binary it was imported for | `nm`/`objdump` on a second fixture PE | 3 | cross-binary test | import an index for A, analyse B → B keeps its real symbol, no fabricated managed name. Provenance (build-id / `.text` fingerprint) gates auto-attach; a mismatch or a provenance-less index does not attach. Found by the gcc-14 hunt; fixed and calibrated 2026-09-14 |
 
+### Confident-wrong-answer regressions closed (calibrated)
+
+A pass over the tool's own output found defects that *compiled and passed the
+suite* yet returned a confident wrong answer — the worst shape, since the caller
+has no error to branch on. Each was fixed and guarded by a test that fails on its
+own line if the fix is reverted (rung 1: the right answer is known from the
+source's meaning before the question is asked). Recorded here because a tool that
+claims reliability must show its wrong answers being found and fenced, not hide
+them.
+
+| Was wrong | Now | Guard |
+| --- | --- | --- |
+| A search / rotated / middle-exit loop decompiled to the wrong result — the loop returned its sentinel instead of the found index at `-O0`, an off-by-one at `-O2` | `break` targets the block the loop actually lays out after itself; a conditional-exit latch routes to do/while | 3 calibrated tests (the loop body had had no external-truth test — "a layer whose only test is itself") |
+| The MCP door reimplemented decoder/architecture and symbol selection and had drifted from the CLI — wrong arch on a non-x64 image, missing symbol chain, a mismatched error code | the door delegates to the shared registry, so both front doors answer one question one way | 5 cross-door parity tests |
+| `provenance trace`, on a function it failed to locate, emitted a hardcoded false cause ("a leaf with no prologue") regardless of the real reason | a full-range fallback finds the writer wherever it is, or the answer says honestly that no recovered function covers the address | calibrated test (an unaligned leaf after a tail call is found, not fabricated) |
+| An AVX self-xor accumulator (`vpxor xmm,xmm,xmm`, which zeroes) was read as up to four phantom `double` parameters | a self-annihilating `xor`/`sub` (both operands the same value) is recognised as a constant, not a live-in use | calibrated test (a real subtract and a genuine FP parameter are untouched) |
+| A non-x64 file analysed without `--arch` decoded as x86-64 across six commands — phantom `sub_` from an x86 prologue pattern inside ARM bytes | file-analysing commands pick the decoder through the header-bearing source (`Src::pick_arch`), which cannot ignore the declared machine | calibrated test on the real header→decoder path (revert → arm64 flips to x86-64); verified the parsers' machine strings intersect what the selector accepts |
+| An externally loaded signature with too few fixed bytes named unrelated code confidently (a `jmp rel32` trimmed to a lone `e9` matched every `0xe9`) | the runtime matcher refuses a name below the same fixed-byte floor `sig gen` already enforces (one named constant for both) | calibrated test; the shipped corpus's minimum is exactly the floor and the end-to-end oracle still matches, so no real name was suppressed |
+
 The full prose, with every caveat, is in the [README §Status](../README.md#status)
 and `ROADMAP.md`. Numbers here are that same measured state, not a second copy to
 drift — if a row and the README disagree, the README/ROADMAP measurement wins and
