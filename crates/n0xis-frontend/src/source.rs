@@ -209,6 +209,16 @@ impl Src {
             _ => None,
         }
     }
+
+    /// Pick the decoder architecture for this source, honouring the image
+    /// header. An explicit `--arch` wins; otherwise the declared machine
+    /// decides; otherwise bitness. This is the header-aware path every
+    /// file-analyzing command must use — prefer it over the raw
+    /// [`crate::resolve_arch`]/[`crate::pick_arch`], which ignore the header and
+    /// so decode a non-x64 image as x86-64 whenever `--arch` is omitted.
+    pub fn pick_arch(&self, explicit: Option<&str>) -> Result<Box<dyn n0xis_arch::Arch>, String> {
+        crate::arch::pick_arch_for(explicit, self.declared_machine().as_deref(), !self.is_64())
+    }
 }
 
 /// How a frontend names its target. All fields optional: what is left after
@@ -611,5 +621,59 @@ mod tests {
         let spec = SourceSpec { remote_cmd: Some("   "), ..Default::default() };
         let Err(e) = resolve(spec) else { panic!("a blank remote command must not resolve") };
         assert_eq!(e.0, "bad-remote-cmd");
+    }
+
+    /// A minimal but goblin-parseable 64-bit little-endian ELF header carrying
+    /// `e_machine`. Header-only (no program/section headers) is a valid ELF, and
+    /// it is bytes planted on purpose: the machine field is the one fact under
+    /// test, so nothing else needs to be real. `StaticImage::machine` reads
+    /// `e_machine` at offset 0x12 directly, and `StaticImage::is_64` reports true
+    /// for any ELF, so this exercises the real `declared_machine()`/`is_64()`
+    /// path that `Src::pick_arch` delegates through.
+    fn elf64_header(e_machine: u16) -> Vec<u8> {
+        let mut b = vec![0u8; 64];
+        b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        b[4] = 2; // EI_CLASS = ELFCLASS64
+        b[5] = 1; // EI_DATA  = ELFDATA2LSB (little-endian)
+        b[6] = 1; // EI_VERSION
+        b[0x10..0x12].copy_from_slice(&3u16.to_le_bytes()); // e_type = ET_DYN
+        b[0x12..0x14].copy_from_slice(&e_machine.to_le_bytes()); // e_machine
+        b[0x14..0x18].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        b[0x34..0x36].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        b
+    }
+
+    /// Wrap a hand-built ELF header as a real static `Src` so the test drives the
+    /// same `declared_machine()` -> `pick_arch_for` path the CLI does.
+    fn static_src(e_machine: u16) -> Src {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("n0xis_pick_arch_{}_{n}.elf", std::process::id()));
+        std::fs::write(&path, elf64_header(e_machine)).expect("write temp elf");
+        let img = StaticImage::load(&path).expect("minimal elf header parses");
+        let _ = std::fs::remove_file(&path);
+        Src::Static(std::sync::Arc::new(img))
+    }
+
+    /// `Src::pick_arch` must decode a source with the ISA its header declares —
+    /// the B1 defect class: an AArch64 image analysed without `--arch` was
+    /// decoded as x86-64 (`jnp`, `div dword ptr` over four-byte ARM), a confident
+    /// wrong answer with no error anywhere.
+    ///
+    /// CALIBRATION: revert `Src::pick_arch`'s body to `resolve_arch(explicit)`
+    /// (dropping the declared machine, the pre-fix footgun) and assertion (a)
+    /// below fails on its own line — `"arm64"` becomes `"x86-64"`. That is the
+    /// exact regression this guards.
+    #[test]
+    fn src_pick_arch_honours_the_header_the_image_declares() {
+        // 0xB7 = EM_AARCH64, which StaticImage::machine reports as "arm64".
+        let arm = static_src(0xB7);
+        // (a) No --arch: the declared machine decides, NOT the x64 default.
+        assert_eq!(arm.pick_arch(None).unwrap().name(), "arm64");
+        // (b) An explicit --arch overrides the declared machine.
+        assert_eq!(arm.pick_arch(Some("x64")).unwrap().name(), "x86-64");
+        // (c) An x64 image (0x3E = EM_X86_64) still decodes as x64.
+        let x64 = static_src(0x3E);
+        assert_eq!(x64.pick_arch(None).unwrap().name(), "x86-64");
     }
 }
