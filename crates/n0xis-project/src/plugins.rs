@@ -85,6 +85,18 @@ pub fn list() -> Result<Vec<PluginRecord>> {
     Ok(records)
 }
 
+/// The canonical `n0xis.plugin.v1` list payload — one shape both front doors
+/// emit. The CLI and the MCP `plugin_list` tool stamped the same `meta.schema`
+/// but produced two `data` shapes: the CLI carried `op: "list"`, the MCP door
+/// omitted it. Same schema, two payloads. This is the single builder that
+/// closes that drift; callers wrap it in `Response::success(schema::v1::PLUGIN,
+/// ...)` and emit it their own way.
+pub fn list_payload() -> Result<serde_json::Value> {
+    let items = list()?;
+    let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({ "op": "list", "count": items.len(), "plugins": items_v }))
+}
+
 /// Every registered plugin that declares it handles `kind`
 /// (`"cfg"`/`"pseudo"`/`"discover"`) — the artifact kind a caller names when
 /// it invokes the plugin

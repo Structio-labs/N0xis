@@ -347,6 +347,76 @@ fn function_discover_carries_a_project_rename() {
     assert_eq!(name, Some("RenamedThroughMcp"), "MCP discover must carry the project rename (B2 chain)");
 }
 
+// ---- doctor / plugin: the bespoke MCP tools that drifted from the CLI --------
+
+/// A fresh scratch dir carrying a local `.n0x/` project, so both doors resolve
+/// the *same* project (and don't fall back to a machine-global session in
+/// `$HOME`, which would make `doctor`'s `project_resolves` machine-dependent but
+/// still identical across doors). Cleaned on drop.
+struct Project {
+    dir: PathBuf,
+    cli: PathBuf,
+}
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+fn new_project(tag: &str) -> Option<Project> {
+    let Some(cli) = cli_binary() else {
+        eprintln!("SKIP[{tag}]: sibling `n0xis` CLI binary not found next to n0xis-mcp — run under `cargo test --workspace`");
+        return None;
+    };
+    let dir = unique_dir(&format!("parity-{tag}"));
+    std::fs::create_dir_all(dir.join(".n0x")).expect("create local .n0x project");
+    Some(Project { dir, cli })
+}
+
+/// The MCP `doctor` tool was a hand-written copy of the CLI's `cmd_doctor`: it
+/// reported one decoder engine (`"iced-x86"`, x64 only) and omitted the
+/// `arch_arm64` check and the `roadmap` field the CLI emits. Both doors now call
+/// `n0xis_frontend::doctor::payload`, so `data` must be byte-identical.
+///
+/// Calibration: revert either door to its old bespoke literal and the whole-
+/// `data` equality below fails on its own line (the MCP copy lacks `arch_arm64`
+/// and `roadmap` and spells `decoder` as `engine`, not `engines`).
+#[test]
+fn doctor_agrees_across_doors() {
+    let Some(p) = new_project("doctor") else { return };
+    let mut mcp = McpClient::spawn(&p.dir);
+
+    let c = cli(&p.cli, &p.dir, &["doctor"]);
+    let m = mcp.call("doctor", json!({}));
+    assert_eq!(c["data"], m["data"], "doctor data must be identical across doors");
+    // Pin the canonical (richer) answer both doors must now carry — the exact
+    // fields the MCP copy used to drop.
+    assert!(m["data"]["checks"]["arch_arm64"].is_object(), "doctor must report the arm64 check: {}", m["data"]);
+    assert!(m["data"]["checks"]["decoder"]["engines"].is_array(), "doctor must list both decoder engines: {}", m["data"]);
+    assert!(m["data"]["roadmap"].is_string(), "doctor must carry the roadmap pointer: {}", m["data"]);
+}
+
+/// The MCP `plugin_list` tool omitted `data.op` while the CLI `plugin list`
+/// emits `op: "list"`, under an identical `meta.schema` (`n0xis.plugin.v1`).
+/// Both doors now call `n0xis_project::plugins::list_payload`.
+///
+/// Calibration: revert either door to its bespoke `json!` literal and either the
+/// whole-`data` equality or the `op == "list"` assertion fails on its own line.
+#[test]
+fn plugin_list_agrees_across_doors() {
+    let Some(p) = new_project("plugin-list") else { return };
+    // Register a plugin through the CLI so the list is non-empty — a shape drift
+    // hides in an empty payload.
+    let add = cli(&p.cli, &p.dir, &["plugin", "add", "--name", "demo", "--command", "cat", "--handles", "cfg"]);
+    assert_eq!(add["ok"], true, "plugin add failed: {add}");
+
+    let mut mcp = McpClient::spawn(&p.dir);
+    let c = cli(&p.cli, &p.dir, &["plugin", "list"]);
+    let m = mcp.call("plugin_list", json!({}));
+    assert_eq!(c["data"], m["data"], "plugin list data must be identical across doors");
+    assert_eq!(m["data"]["op"], "list", "MCP plugin_list must carry `op: \"list\"`, not omit it");
+    assert_eq!(m["data"]["count"], 1, "the registered plugin must be listed: {}", m["data"]);
+}
+
 // ---- D1: the error contract for an out-of-image address ---------------------
 
 /// An out-of-image address is refused with the *same* code on both doors, with
