@@ -37,6 +37,15 @@
 
 use std::collections::HashMap;
 
+/// The minimum number of FIXED (non-wildcard) bytes a pattern must match for
+/// [`Db::lookup`] to return its name as a confident identification. Below this a
+/// pattern is not a fingerprint — a handful of fixed bytes (a bare prologue, a
+/// `jmp rel32` whose target is wildcarded and trailing-trimmed to a lone `e9`)
+/// is shared by unrelated functions, so naming on it is a confident wrong
+/// answer. This is the READ-side mirror of `sig gen`'s `--min-fixed` write-side
+/// floor; the two are the same fact, so `sig gen` defaults `--min-fixed` to it.
+pub const DEFAULT_MIN_FIXED_BYTES: usize = 6;
+
 /// One position in a [`Pattern`]: a fixed byte, or a wildcard that matches any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PatByte {
@@ -194,7 +203,24 @@ impl Db {
     /// matches **or the match is ambiguous** (two equally-specific signatures
     /// disagree — never guess a name). The most specific match (longest pattern,
     /// then most fixed bytes) wins outright over less specific ones.
+    ///
+    /// A match below [`DEFAULT_MIN_FIXED_BYTES`] fixed bytes is refused: too
+    /// little concrete code to name a function without colliding with unrelated
+    /// code that shares those bytes. Use [`Self::lookup_min_fixed`] to exercise
+    /// the matching mechanics at a lower floor.
     pub fn lookup(&self, code: &[u8]) -> Option<&str> {
+        self.lookup_min_fixed(code, DEFAULT_MIN_FIXED_BYTES)
+    }
+
+    /// [`Self::lookup`] with an explicit specificity floor: the most-specific
+    /// unambiguous match is refused unless it has at least `min_fixed` FIXED
+    /// (non-wildcard) bytes. The floor is on `fixed_count()`, the specificity
+    /// measure, NOT `len()` — wildcards add length but no discrimination.
+    ///
+    /// Because ranking is by `(len, fixed_count)` and `best` is the maximum, if
+    /// the best match is below the fixed floor then every match is, so refusing
+    /// `best` is correct and complete. `min_fixed == 0` disables the floor.
+    pub fn lookup_min_fixed(&self, code: &[u8], min_fixed: usize) -> Option<&str> {
         let first = code.first().copied();
         let candidates = first
             .and_then(|b| self.by_first.get(&b))
@@ -223,7 +249,10 @@ impl Db {
             }
         }
         match best {
-            Some((s, _, _)) if !ambiguous => Some(&s.name),
+            // `fixed` is the specificity of the winning match; the floor sits
+            // here, after ambiguity resolution, so it refuses an under-specific
+            // best rather than any losing candidate (which is already below it).
+            Some((s, _, fixed)) if !ambiguous && fixed >= min_fixed => Some(&s.name),
             _ => None,
         }
     }
@@ -304,44 +333,51 @@ mod tests {
 
     #[test]
     fn looks_up_a_matching_function_and_misses_a_non_match() {
+        // These toy patterns have <6 fixed bytes; this test exercises the
+        // MATCHING MECHANICS, so it threads an explicit floor of 0 to stay
+        // independent of the [`DEFAULT_MIN_FIXED_BYTES`] trust floor.
         let mut db = Db::new();
         db.add_pat("48 89 5c 24 .. 57", "free").unwrap();
-        assert_eq!(db.lookup(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x90]), Some("free"));
-        assert_eq!(db.lookup(&[0x90]), None);
-        assert_eq!(db.lookup(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x58]), None); // last byte differs
+        assert_eq!(db.lookup_min_fixed(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x90], 0), Some("free"));
+        assert_eq!(db.lookup_min_fixed(&[0x90], 0), None);
+        assert_eq!(db.lookup_min_fixed(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x58], 0), None); // last byte differs
     }
 
     #[test]
     fn the_most_specific_signature_wins() {
+        // Matching-mechanics test on <6-fixed toy patterns: floor threaded to 0.
         let mut db = Db::new();
         db.add_pat("48 89", "generic_prologue").unwrap();
         db.add_pat("48 89 5c 24 08", "specific_fn").unwrap();
         // The longer, more specific pattern is chosen over the short one.
-        assert_eq!(db.lookup(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0xc3]), Some("specific_fn"));
+        assert_eq!(db.lookup_min_fixed(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0xc3], 0), Some("specific_fn"));
     }
 
     #[test]
     fn an_ambiguous_match_refuses_to_guess() {
+        // Ambiguity resolution is independent of the trust floor, so this
+        // matching-mechanics test threads a floor of 0.
         // Two equally-specific signatures disagree on the name → None, never a
         // wrong guess (sound over complete).
         let mut db = Db::new();
         db.add_pat("48 89 c3", "alpha").unwrap();
         db.add_pat("48 89 c3", "beta").unwrap();
-        assert_eq!(db.lookup(&[0x48, 0x89, 0xc3, 0x90]), None);
+        assert_eq!(db.lookup_min_fixed(&[0x48, 0x89, 0xc3, 0x90], 0), None);
         // But a same-name duplicate is not ambiguous.
         let mut db2 = Db::new();
         db2.add_pat("48 89 c3", "same").unwrap();
         db2.add_pat("48 89 c3", "same").unwrap();
-        assert_eq!(db2.lookup(&[0x48, 0x89, 0xc3]), Some("same"));
+        assert_eq!(db2.lookup_min_fixed(&[0x48, 0x89, 0xc3], 0), Some("same"));
     }
 
     #[test]
     fn loads_an_npat_text_database() {
+        // Toy CRT patterns with <6 fixed bytes: matching-mechanics test at floor 0.
         let text = "# CRT signatures\n48 89 5c 24 .. 57   free\n48 83 ec 28   memcpy\n\n";
         let db = Db::load_npat(text).unwrap();
         assert_eq!(db.len(), 2);
-        assert_eq!(db.lookup(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x57]), Some("free"));
-        assert_eq!(db.lookup(&[0x48, 0x83, 0xec, 0x28, 0x90]), Some("memcpy"));
+        assert_eq!(db.lookup_min_fixed(&[0x48, 0x89, 0x5c, 0x24, 0x08, 0x57], 0), Some("free"));
+        assert_eq!(db.lookup_min_fixed(&[0x48, 0x83, 0xec, 0x28, 0x90], 0), Some("memcpy"));
     }
 
     #[test]
@@ -366,6 +402,42 @@ mod tests {
         let window = [0x48, 0x83, 0xec, 0x28, 0xe9, 0x11, 0x22, 0x33, 0x44];
         let pat = Pattern::from_window(&window, &[(5, 4)]);
         assert_eq!(pat.to_npat(), "48 83 ec 28 e9");
+    }
+
+    /// D-Q1: [`Db::lookup`] must refuse an under-specific signature at the
+    /// DEFAULT floor. A lone `e9` (a `jmp rel32` trailing-trimmed to one fixed
+    /// byte) is shared by unrelated code, so naming on it is a confident wrong
+    /// answer — the exact defect this floor exists to prevent.
+    ///
+    /// CALIBRATION: assertion (a) is the one that fails if the floor is removed.
+    /// Revert `lookup` to the unfloored body (or make it call
+    /// `lookup_min_fixed(code, 0)`) and (a) returns `Some("libfoo_trampoline")`,
+    /// failing this test on its own line.
+    #[test]
+    fn a_lone_under_specific_signature_is_not_a_confident_name() {
+        // (a) One fixed byte is below DEFAULT_MIN_FIXED_BYTES → no name, even
+        // though the pattern matches the code's leading byte.
+        let mut db = Db::new();
+        db.add_pat("e9", "libfoo_trampoline").unwrap();
+        assert_eq!(db.lookup(&[0xe9, 0x12, 0x34, 0x56, 0x78, 0xc3]), None, "one fixed byte must not name a function");
+        // The same match IS served once the floor is lowered — proving the
+        // refusal is the floor's doing, not a matching failure.
+        assert_eq!(db.lookup_min_fixed(&[0xe9, 0x12, 0x34, 0x56, 0x78, 0xc3], 0), Some("libfoo_trampoline"));
+
+        // (b) A specific signature at exactly the floor (6 fixed bytes) names
+        // its own bytes and refuses unrelated code.
+        let mut db2 = Db::new();
+        assert_eq!(DEFAULT_MIN_FIXED_BYTES, 6, "this test's pattern is sized to the floor");
+        db2.add_pat("55 48 89 e5 41 57", "specific_fn").unwrap(); // 6 fixed bytes
+        assert_eq!(db2.lookup(&[0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x90]), Some("specific_fn"));
+        assert_eq!(db2.lookup(&[0x90, 0x90, 0x90, 0x90, 0x90, 0x90]), None);
+
+        // (c) The pre-existing same-specificity ambiguity refusal still holds
+        // (both patterns are >= the floor, so ambiguity, not the floor, refuses).
+        let mut db3 = Db::new();
+        db3.add_pat("55 48 89 e5 41 57", "alpha").unwrap();
+        db3.add_pat("55 48 89 e5 41 57", "beta").unwrap();
+        assert_eq!(db3.lookup(&[0x55, 0x48, 0x89, 0xe5, 0x41, 0x57]), None);
     }
 }
 

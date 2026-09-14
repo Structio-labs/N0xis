@@ -823,8 +823,10 @@ struct SigGenArgs {
     #[arg(long, default_value_t = 32, value_parser = parse_hex_or_decimal_usize)]
     window: usize,
     /// Drop a signature with fewer than this many fixed (non-wildcard) bytes —
-    /// too little concrete code to name a function without collisions.
-    #[arg(long, default_value_t = 6)]
+    /// too little concrete code to name a function without collisions. Defaults
+    /// to the read side's floor ([`n0xis_flirt::DEFAULT_MIN_FIXED_BYTES`]) so the
+    /// write and read sides refuse at the same specificity (one fact, one place).
+    #[arg(long, default_value_t = n0xis_flirt::DEFAULT_MIN_FIXED_BYTES)]
     min_fixed: usize,
     /// Keep compiler/CRT glue (`_init`, `register_tm_clones`, `frame_dummy`, …).
     /// By default these are skipped: they are present, byte-identical, in nearly
@@ -6528,7 +6530,10 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
         // Every name the shipping database would claim wrongly this round.
         let mut guilty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for (_, name, _, _, window) in built.iter() {
-            if let Some(got) = db.lookup(window)
+            // Validate at exactly the specificity the corpus will ship/trust at,
+            // not the hardcoded default: identical at the default `min_fixed`,
+            // but honours a user who lowered `--min-fixed`.
+            if let Some(got) = db.lookup_min_fixed(window, a.min_fixed)
                 && got != name.as_str()
             {
                 guilty.insert(got);
