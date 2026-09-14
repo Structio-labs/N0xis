@@ -3790,7 +3790,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         }
         (None, Some(rd)) => {
             let _ = rd;
-            let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.rtti_data_ranges(), src.text_range(), src.pointer_size());
+            let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size());
             let n = vts.len();
             let (mut functions, data) = n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range());
             functions.retain(|va, _| {
@@ -4205,10 +4205,11 @@ fn cmd_xref(a: XrefArgs, dir: XrefDir, pretty: bool) -> bool {
     )
 }
 
-/// Search a data window for `--query` and a code window for referencing
-/// `lea`s. The two windows default independently: data to `.rdata` (falling
-/// back to `.text`), code to `.text` — string literals and the code that
-/// points to them usually live in different sections.
+/// Search the data sections for `--query` and the code sections for referencing
+/// `lea`s. The two default independently and each spans *all* of its sections:
+/// data across every initialized/read-only range (`.rdata`/`.rodata`/`.data…`),
+/// code across every executable range — string literals and the code that
+/// points at them live in different sections, and neither is just one section.
 fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
     run_capability(
         "xref.string",
@@ -6261,26 +6262,28 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
 
-    let (default_text, default_data) = match &src {
-        Src::Static(pe) => (pe.text_range(), pe.section_range(".rdata").or_else(|| pe.text_range())),
+    let default_text = match &src {
+        Src::Static(pe) => pe.text_range(),
         Src::Live(l) => {
             if let Some(modname) = &a.module {
                 // No `use ModuleProvider` needed: it is a supertrait of
                 // LiveTarget, so `modules()` is in scope through the seam.
                 let needle = modname.to_lowercase();
                 match l.modules().iter().find(|m| m.name.to_lowercase().contains(&needle)).map(|m| m.base) {
-                    Some(base) => (
-                        l.section_range_of(base, ".text"),
-                        l.section_range_of(base, ".rdata").or_else(|| l.section_range_of(base, ".text")),
-                    ),
+                    Some(base) => l.section_range_of(base, ".text"),
                     None => return ir_err("no-module", &format!("no loaded module name contains '{modname}'"), pretty),
                 }
             } else {
-                (l.text_range(), l.section_range(".rdata").or_else(|| l.text_range()))
+                l.text_range()
             }
         }
-        Src::Snap(_) | Src::Remote(_) => (None, None),
+        Src::Snap(_) | Src::Remote(_) => None,
     };
+    // The name strings a binding registers live in read-only/initialized data;
+    // its primary window is `.rdata` on a PE, `.rodata` on an ELF — both come
+    // from the one shared enumerator. The old `.rdata`->`.text` fallback scanned
+    // *code* as the name window and so found nothing on any ELF.
+    let default_data = src.data_ranges_of(a.module.as_deref()).first().copied();
     let (code_start, code_size) = scan_range(default_text, region_len, explicit_code_start, a.size, bytes_base);
     let (data_start, data_size) = scan_range(default_data, region_len, explicit_data_start, a.data_size, bytes_base);
     if code_size == 0 || data_size == 0 {

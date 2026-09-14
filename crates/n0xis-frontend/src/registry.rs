@@ -300,7 +300,7 @@ fn subclassed_classes(src: &Src) -> std::sync::Arc<std::collections::HashSet<Str
         return m.clone();
     }
     let scanned = match (src.module_base(), src.section_range(".rdata")) {
-        (Some(base), Some(_)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.rtti_data_ranges(), src.text_range(), src.pointer_size()),
+        (Some(base), Some(_)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size()),
         _ => match src {
             Src::Static(img) => match img.as_ref() {
                 n0xis_sources::StaticImage::Elf(elf) => {
@@ -338,7 +338,7 @@ fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, S
         persisted
     } else {
         match (src.module_base(), src.section_range(".rdata")) {
-            (Some(base), Some(_)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.rtti_data_ranges(), src.text_range(), src.pointer_size())
+            (Some(base), Some(_)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size())
                 .into_iter()
                 .map(|v| (v.vtable.get(), v.name))
                 .collect(),
@@ -1112,7 +1112,7 @@ impl Plugin for AnalysisPasses {
                         return Response::error("no-rdata", "no .rdata section — MSVC RTTI lives there".to_string());
                     };
                     let _ = rdata;
-                    n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.rtti_data_ranges(), text, resolved.src.pointer_size())
+                    n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.data_ranges_of(None), text, resolved.src.pointer_size())
                 };
                 let payload = json!({ "count": vtables.len(), "vtables": vtables });
                 ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
@@ -2063,17 +2063,19 @@ impl Plugin for AnalysisPasses {
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
                 with_src_ctx(args, base, move |ctx, src, region_len, label| {
-                    // String literals and the code pointing at them usually sit
-                    // in different sections, so the two windows default
-                    // independently: data to `.rdata` (falling back to `.text`).
-                    let default_data =
-                        src.section_range_in(module.as_deref(), ".rdata").or_else(|| src.section_range_in(module.as_deref(), ".text"));
-                    // The *code* side spans every executable section. This is
-                    // the command the whole finding came out of: the engine
-                    // internal-call names are in `.rdata` and the `lea`s that
-                    // reference them are in the `il2cpp` section, so scanning
-                    // `.text` returned `count: 0` for a string that is plainly
-                    // there, four times over.
+                    // String literals and the code pointing at them sit in
+                    // different sections, and *neither* is a single section. The
+                    // data side spans every initialized/read-only data range
+                    // (`data_ranges_of` — the one place that knows the list) and
+                    // the code side every executable range (`code_ranges_of`).
+                    // This is the command the whole finding came out of, twice:
+                    // an IL2CPP build keeps its internal-call names in `.rdata`
+                    // and the `lea`s that reference them in the `il2cpp` section,
+                    // so scanning only `.text` returned `count: 0`; and an ELF
+                    // keeps its C strings in `.rodata`, which a `.rdata`->`.text`
+                    // data default never reached, so `count: 0` again for a
+                    // string that is plainly there.
+                    let data_ranges = src.data_ranges_of(module.as_deref());
                     let code_ranges = src.code_ranges_of(module.as_deref());
                     // An unmatched module must refuse, not quietly scan the main
                     // one: being handed a different module's code is how a wrong
@@ -2085,25 +2087,44 @@ impl Plugin for AnalysisPasses {
                     }
                     let code_windows =
                         crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_code_start, code_size_arg, base);
-                    let (data_start, data_size) =
-                        crate::source::scan_range_or(default_data, region_len, explicit_data_start, data_size_arg, base);
-                    if data_size == 0 || code_windows.iter().all(|(_, size)| *size == 0) {
+                    // The primary data section (first in `data_ranges_of`) is the
+                    // single-window default: `.rdata` on a PE, `.rodata` on an ELF.
+                    let data_windows =
+                        crate::source::scan_ranges_or(&data_ranges, data_ranges.first().copied(), region_len, explicit_data_start, data_size_arg, base);
+                    if data_windows.iter().all(|(_, size)| *size == 0) || code_windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a data/code range; pass data_start/data_size and start/size");
                     }
                     let mut merged: Option<n0xis_core::StringXrefArtifact> = None;
-                    for (code_start, code_size) in code_windows.into_iter().filter(|(_, s)| *s > 0) {
-                        let input =
-                            n0xis_core::StringXrefInput { data_start, data_size, code_start, code_size, query: query.clone(), limit };
-                        match n0xis_core::Pass::run(&n0xis_core::StringXrefPass, ctx, input) {
-                            // Each window rediscovers the same literals (the
-                            // data side does not move) and contributes its own
-                            // referencing instructions, so hits merge by
-                            // address rather than concatenating.
-                            Ok(art) => match &mut merged {
-                                Some(acc) => merge_string_hits(acc, art),
-                                None => merged = Some(art),
-                            },
-                            Err(e) => return Response::error("xref-string-failed", e.to_string()),
+                    for (data_start, data_size) in data_windows.into_iter().filter(|(_, s)| *s > 0) {
+                        // Within one data section the code windows rediscover the
+                        // same literals (the data side does not move) and each
+                        // contributes its own referencing instructions, so their
+                        // hits merge by address.
+                        let mut per_data: Option<n0xis_core::StringXrefArtifact> = None;
+                        for (code_start, code_size) in code_windows.iter().copied().filter(|(_, s)| *s > 0) {
+                            let input =
+                                n0xis_core::StringXrefInput { data_start, data_size, code_start, code_size, query: query.clone(), limit };
+                            match n0xis_core::Pass::run(&n0xis_core::StringXrefPass, ctx, input) {
+                                Ok(art) => match &mut per_data {
+                                    Some(acc) => merge_string_hits(acc, art),
+                                    None => per_data = Some(art),
+                                },
+                                Err(e) => return Response::error("xref-string-failed", e.to_string()),
+                            }
+                        }
+                        // Data sections are disjoint address ranges, so each
+                        // contributes new literals (merge by address still holds)
+                        // and its own tally of found-but-unreferenced occurrences,
+                        // which sums rather than being overwritten.
+                        if let Some(pd) = per_data {
+                            match &mut merged {
+                                Some(acc) => {
+                                    let unref = pd.found_unreferenced;
+                                    merge_string_hits(acc, pd);
+                                    acc.found_unreferenced += unref;
+                                }
+                                None => merged = Some(pd),
+                            }
                         }
                     }
                     match merged {

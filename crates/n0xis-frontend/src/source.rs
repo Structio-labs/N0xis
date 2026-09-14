@@ -164,19 +164,27 @@ impl Src {
         }
     }
 
-    /// Whether the source is 64-bit. A 32-bit **static PE32** returns `false`
-    /// (so the frontend picks the i386 arch); everything else defaults to `true`
-    /// (64-bit ELF, and live/snapshot/remote whose bitness this seam does not
-    /// yet carry — those stay x64 as today).
-    /// Every initialized data range a vtable could live in, in one place so no
-    /// caller has to remember the list.
+    /// Every initialized / read-only data range a string literal, a vtable, or
+    /// a binding name can live in — enumerated across formats in ONE place so no
+    /// caller has to remember the section list. This is *the* single statement
+    /// of "where initialized data lives"; every data-window default routes
+    /// through it.
     ///
-    /// `.rdata` is where MSVC puts them; a mingw-built PE puts them in `.data`,
-    /// and an ELF in `.data.rel.ro`. Asking only about `.rdata` reported zero
-    /// classes for a 32-bit C++ runtime that had them — the locators were laid
-    /// out exactly as expected, one section over.
-    pub fn rtti_data_ranges(&self) -> Vec<(Va, u64)> {
-        [".rdata", ".data", ".data.rel.ro"].iter().filter_map(|s| self.section_range(s)).collect()
+    /// A PE keeps read-only data in `.rdata` (and a mingw build sometimes in
+    /// `.data`); an ELF keeps read-only data in `.rodata`, relocated-then-
+    /// readonly constants in `.data.rel.ro`, and writable initialized data in
+    /// `.data`. Naming only `.rdata` — the PE section — returned nothing for
+    /// every ELF: `xref string` reported `count: 0` for a C string plainly
+    /// present in `.rodata`, and the MSVC RTTI list missed the same section, one
+    /// section over from where it looked. Absent sections are skipped, so the
+    /// full list is safe to state for every format (a PE has no `.rodata`, an ELF
+    /// no `.rdata`).
+    ///
+    /// `.rdata` leads so it is the primary window for single-window callers on a
+    /// PE; `.rodata` leads on an ELF (whose `.rdata` is absent) — the section
+    /// each format actually keeps its string literals in.
+    pub fn data_ranges_of(&self, module: Option<&str>) -> Vec<(Va, u64)> {
+        [".rdata", ".rodata", ".data.rel.ro", ".data"].iter().filter_map(|s| self.section_range_in(module, s)).collect()
     }
 
     /// Pointer width in bytes, derived from [`Src::is_64`] so the two can never
@@ -190,6 +198,10 @@ impl Src {
         if self.is_64() { 8 } else { 4 }
     }
 
+    /// Whether the source is 64-bit. A 32-bit **static PE32** returns `false`
+    /// (so the frontend picks the i386 arch); everything else defaults to `true`
+    /// (64-bit ELF, and live/snapshot/remote whose bitness this seam does not
+    /// yet carry — those stay x64 as today).
     pub fn is_64(&self) -> bool {
         match self {
             Src::Static(img) => img.is_64(),
@@ -675,5 +687,100 @@ mod tests {
         // (c) An x64 image (0x3E = EM_X86_64) still decodes as x64.
         let x64 = static_src(0x3E);
         assert_eq!(x64.pick_arch(None).unwrap().name(), "x86-64");
+    }
+
+    /// Write one 64-byte ELF section header.
+    #[allow(clippy::too_many_arguments)]
+    fn put_shdr(b: &mut [u8], sh_base: usize, idx: usize, name: u32, sh_type: u32, flags: u64, addr: u64, offset: u64, size: u64) {
+        let o = sh_base + idx * 64;
+        b[o..o + 4].copy_from_slice(&name.to_le_bytes());
+        b[o + 4..o + 8].copy_from_slice(&sh_type.to_le_bytes());
+        b[o + 8..o + 16].copy_from_slice(&flags.to_le_bytes());
+        b[o + 16..o + 24].copy_from_slice(&addr.to_le_bytes());
+        b[o + 24..o + 32].copy_from_slice(&offset.to_le_bytes());
+        b[o + 32..o + 40].copy_from_slice(&size.to_le_bytes());
+        b[o + 48..o + 56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+    }
+
+    /// A minimal but goblin-parseable ELF64 carrying the allocated data
+    /// sections `.rodata`, `.data.rel.ro`, `.data` (and a `.text`), named by a
+    /// `.shstrtab`. Bytes planted on purpose: [`Src::data_ranges_of`] reads only
+    /// each header's name/address/size, so no section *content* is needed and the
+    /// addresses are the one fact under test.
+    fn elf64_with_sections() -> Vec<u8> {
+        // Index 0 is the empty name; each section's `sh_name` indexes into this.
+        let shstr: &[u8] = b"\0.text\0.rodata\0.data.rel.ro\0.data\0.shstrtab\0";
+        let (n_text, n_rodata, n_relro, n_data, n_shstr) = (1u32, 7u32, 15u32, 28u32, 34u32);
+        const SHOFF: usize = 0x80;
+        const STROFF: usize = 0x40;
+        let mut b = vec![0u8; SHOFF + 6 * 64];
+        b[STROFF..STROFF + shstr.len()].copy_from_slice(shstr);
+
+        b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        b[4] = 2; // ELFCLASS64
+        b[5] = 1; // ELFDATA2LSB
+        b[6] = 1; // EI_VERSION
+        b[0x10..0x12].copy_from_slice(&3u16.to_le_bytes()); // e_type = ET_DYN
+        b[0x12..0x14].copy_from_slice(&0x3Eu16.to_le_bytes()); // e_machine = EM_X86_64
+        b[0x14..0x18].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        b[0x28..0x30].copy_from_slice(&(SHOFF as u64).to_le_bytes()); // e_shoff
+        b[0x34..0x36].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        b[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        b[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        b[0x3c..0x3e].copy_from_slice(&6u16.to_le_bytes()); // e_shnum
+        b[0x3e..0x40].copy_from_slice(&5u16.to_le_bytes()); // e_shstrndx
+
+        // [0] SHT_NULL stays zero.
+        put_shdr(&mut b, SHOFF, 1, n_text, 1, 0x2 | 0x4, 0x1000, 0x40, 0x100); // ALLOC|EXECINSTR
+        put_shdr(&mut b, SHOFF, 2, n_rodata, 1, 0x2, 0x2000, 0x40, 0x100); // ALLOC
+        put_shdr(&mut b, SHOFF, 3, n_relro, 1, 0x2 | 0x1, 0x3000, 0x40, 0x100); // ALLOC|WRITE
+        put_shdr(&mut b, SHOFF, 4, n_data, 1, 0x2 | 0x1, 0x4000, 0x40, 0x100); // ALLOC|WRITE
+        put_shdr(&mut b, SHOFF, 5, n_shstr, 3, 0, 0, STROFF as u64, shstr.len() as u64); // STRTAB, not allocated
+        b
+    }
+
+    /// `data_ranges_of` is the single source of "where initialized data lives".
+    /// The shipped defect was that it named only the PE section `.rdata` and so
+    /// returned *nothing* for an ELF, where string literals sit in `.rodata` —
+    /// which is how `xref string` reported `count: 0` for a string plainly
+    /// present. It must now enumerate `.rodata` (the ELF's primary read-only
+    /// section) first, then the other initialized ranges, and never `.text`.
+    ///
+    /// CALIBRATION: revert the helper's list to `[".rdata", ".data",
+    /// ".data.rel.ro"]` (the shipped version, no `.rodata`) and this equality
+    /// fails on its own line — the `.rodata` range vanishes and the order shifts.
+    #[test]
+    fn data_ranges_of_covers_every_read_only_and_initialized_elf_section() {
+        let path = std::env::temp_dir().join(format!("n0xis_data_ranges_{}.elf", std::process::id()));
+        std::fs::write(&path, elf64_with_sections()).expect("write temp elf");
+        let img = StaticImage::load(&path).expect("synthetic sectioned elf parses");
+        let _ = std::fs::remove_file(&path);
+        let src = Src::Static(std::sync::Arc::new(img));
+
+        assert_eq!(
+            src.data_ranges_of(None),
+            vec![(Va(0x2000), 0x100), (Va(0x3000), 0x100), (Va(0x4000), 0x100)],
+            ".rodata must lead the ELF data window, followed by .data.rel.ro and .data",
+        );
+    }
+
+    /// No-regression twin: on a PE the primary read-only section is `.rdata`,
+    /// and it must stay first so single-window callers still default to it. The
+    /// committed `native_pe.dll` is a real mingw PE with a genuine `.rdata`.
+    #[test]
+    fn data_ranges_of_still_leads_with_rdata_on_a_pe() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../n0xis-cli/tests/fixtures/native_pe.dll");
+        if !fixture.exists() {
+            eprintln!("data_ranges: skipping the PE side — fixture {fixture:?} is absent, so nothing was checked");
+            return;
+        }
+        let img = StaticImage::load(&fixture).expect("committed native_pe.dll parses");
+        let src = Src::Static(std::sync::Arc::new(img));
+        let rdata = src.section_range(".rdata").expect("native_pe.dll has a .rdata section");
+        assert_eq!(
+            src.data_ranges_of(None).first().copied(),
+            Some(rdata),
+            "a PE's data window must lead with .rdata",
+        );
     }
 }
