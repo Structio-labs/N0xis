@@ -126,10 +126,15 @@ fn explain_hit(ctx: &Ctx, hit: ProvenanceHit, module: Option<&Module>, scan_star
         context_unavailable =
             Some(format!("no executable range was resolved for the module holding {}", hit.instruction_va));
     } else if found.is_none() {
+        // State only what is true: discovery — windowed, then boundary-bracketed,
+        // then a full-range scan — did not recover a function whose extent covers
+        // this address. Naming a *specific* cause (a missing prologue, "plain
+        // arithmetic") is a guess the code did not verify, and it was wrong: it
+        // fired for `damage`, a function with a canonical `push rbp; mov rsp,rbp`
+        // prologue that `function discover` finds by the `call` that reaches it.
         context_unavailable = Some(format!(
-            "no recovered function contains {} — on a live target without symbols the containing \
-             function is found by prologue scanning, and a leaf function that starts with plain \
-             arithmetic has no prologue to find",
+            "no recovered function covers {} — discovery found no function extent containing it \
+             in the scanned code range",
             hit.instruction_va
         ));
     }
@@ -221,43 +226,71 @@ const FUNCTION_MAX_BYTES: usize = 8192;
 /// slack for discovery heuristics without scanning the whole module.
 const DISCOVER_WINDOW_BACK: u64 = 64 * 1024;
 
-fn find_function_containing(ctx: &Ctx, scan_start: Va, scan_size: usize, target: Va) -> Option<(Va, CfgArtifact)> {
-    if target.get() < scan_start.get() {
-        return None;
-    }
-    // We only need the *one* function that contains `target`. Discovering the
-    // entire `.text` here is pathologically slow over live memory (a hit's
-    // scan range is the whole module — thousands of ReadProcessMemory calls
-    // that made `provenance trace` appear to hang). The containing function's
-    // prologue sits at most a function's length before `target`, so window the
-    // discovery to a bounded region ending just past it.
-    let scan_end = scan_start.get().saturating_add(scan_size as u64);
-    let win_start = target.get().saturating_sub(DISCOVER_WINDOW_BACK).max(scan_start.get());
-    let win_end = target.get().saturating_add(16).min(scan_end);
-    let win_size = win_end.saturating_sub(win_start) as usize;
-    let discovered = DiscoverPass.run(ctx, DiscoverInput { start: Va(win_start), size: win_size, limit: 100_000, offset: 0 }).ok()?;
-    let mut candidates: Vec<Va> = discovered.functions.iter().map(|f| f.va).filter(|&va| va.get() <= target.get()).collect();
+/// The nearest discovered function start at or below `target` whose CFG extent
+/// actually covers `target`. Candidates are tried closest-first and bounded by
+/// [`MAX_CANDIDATES_TRIED`], so a target far from any real function fails fast
+/// rather than rebuilding CFGs forever.
+fn cover_target(ctx: &Ctx, starts: impl Iterator<Item = Va>, target: Va) -> Option<(Va, CfgArtifact)> {
+    let mut candidates: Vec<Va> = starts.filter(|&va| va.get() <= target.get()).collect();
     candidates.sort_by_key(|va| std::cmp::Reverse(va.get()));
-
+    candidates.dedup();
     for &start in candidates.iter().take(MAX_CANDIDATES_TRIED) {
         let Ok(cfg) = CfgPass.run(ctx, CfgInput::new(start, FUNCTION_MAX_BYTES)) else { continue };
         if target.get() < cfg.end.get() {
             return Some((start, cfg));
         }
     }
+    None
+}
 
-    // Nothing with a recognised prologue covers the target. A leaf function
-    // often has none — `n0x_tick` on the verification target begins
-    // `mov rax,rdi`, which no prologue pattern matches — so the whole
-    // explanation collapsed to a bare address for exactly the small functions
-    // a watchpoint most often lands in.
-    //
-    // The other boundary a function has is the end of the one before it. Walk
-    // back from the target to the nearest return and try the byte after it:
-    // that is where the next function starts, whatever its prologue looks like.
-    boundary_before(ctx, win_start, target)
+fn find_function_containing(ctx: &Ctx, scan_start: Va, scan_size: usize, target: Va) -> Option<(Va, CfgArtifact)> {
+    if target.get() < scan_start.get() {
+        return None;
+    }
+    let scan_end = scan_start.get().saturating_add(scan_size as u64);
+
+    // Fast path. We only need the *one* function that contains `target`, and
+    // discovering the entire `.text` on every hit is pathologically slow over
+    // live memory (a hit's scan range is the whole module — thousands of
+    // ReadProcessMemory calls that made `provenance trace` appear to hang). The
+    // containing function's prologue sits at most a function's length before
+    // `target`, so window the discovery to a bounded region ending just past it.
+    let win_start = target.get().saturating_sub(DISCOVER_WINDOW_BACK).max(scan_start.get());
+    let win_end = target.get().saturating_add(16).min(scan_end);
+    let win_size = win_end.saturating_sub(win_start) as usize;
+    if let Ok(discovered) = DiscoverPass.run(ctx, DiscoverInput { start: Va(win_start), size: win_size, limit: 100_000, offset: 0 })
+        && let Some(hit) = cover_target(ctx, discovered.functions.iter().map(|f| f.va), target)
+    {
+        return Some(hit);
+    }
+
+    // A leaf with a recognised prologue would have been found above; one with
+    // none has to be bracketed by the end of the function before it. Walk back
+    // from the target to the nearest return and try the byte after it — that is
+    // where the next function starts, whatever its prologue looks like.
+    if let Some(hit) = boundary_before(ctx, win_start, target)
         .and_then(|start| CfgPass.run(ctx, CfgInput::new(start, FUNCTION_MAX_BYTES)).ok().map(|cfg| (start, cfg)))
         .filter(|(_, cfg)| target.get() < cfg.end.get())
+    {
+        return Some(hit);
+    }
+
+    // Last resort, on a genuine miss only. The windowed discovery above is
+    // blind to two real functions: one whose prologue is unaligned (dropped by
+    // the entry-alignment rule) and whose only other evidence is the `call`
+    // that names it — and that `call` can sit anywhere in `.text`, well past
+    // the forward edge of the window — and one a *tail-call* precedes with no
+    // padding, which `boundary_before` cannot bracket. A gcc `-O0` leaf laid
+    // out right after `frame_dummy` (which ends in a `jmp`) at an unaligned
+    // address is exactly both at once, and the command fabricated a false
+    // "no prologue / plain arithmetic" cause for it. A full-range discovery
+    // sees the naming `call` wherever it is — the same evidence
+    // `function discover` uses to report the function — for one scan, paid only
+    // when the fast paths have already missed.
+    if let Ok(full) = DiscoverPass.run(ctx, DiscoverInput { start: scan_start, size: scan_size, limit: 100_000, offset: 0 }) {
+        return cover_target(ctx, full.functions.iter().map(|f| f.va), target);
+    }
+    None
 }
 
 /// The most recent function boundary below `target`.
@@ -436,6 +469,68 @@ mod tests {
         assert!(!entry.decompiled_context.is_empty(), "should have extracted the block's pseudo-C");
         let text = entry.decompiled_context.join("\n");
         assert!(text.contains("rcx"), "expected the write's source register in the decompiled context: {text}");
+    }
+
+    /// A function the windowed discovery cannot see is still found, not
+    /// explained away with a fabricated cause.
+    ///
+    /// Reproduces the live gcc `-O0` failure exactly. `damage` sits at an
+    /// **unaligned** address right after a `frame_dummy` that ends in a `jmp`
+    /// (a tail-call shape) with no padding between them, and the write the
+    /// watchpoint traps lands early in its body. Three things then defeat the
+    /// fast paths at once:
+    ///   - the entry-alignment rule drops the unaligned prologue, so the
+    ///     windowed `DiscoverPass` has no prologue candidate for it;
+    ///   - the only other evidence — `main`'s `call damage` — sits past the
+    ///     window's forward edge (`target + 16`), so the window never sees it;
+    ///   - `boundary_before` brackets the *tail-call* predecessor, not `damage`,
+    ///     because a `jmp` with no trailing padding marks no boundary.
+    ///
+    /// The command used to answer with a specific, verifiably false cause
+    /// ("no prologue / plain arithmetic") for a function with a canonical
+    /// `push rbp; mov rbp,rsp` prologue. The full-range discovery fallback finds
+    /// it by the naming `call`, the same way `function discover` does.
+    ///
+    /// Revert the fallback and this fails on `function_va` — the fabricated
+    /// branch takes over and reports no function at all.
+    #[test]
+    fn an_unaligned_leaf_after_a_tail_call_is_found_not_fabricated() {
+        // 0x1000 f3 0f 1e fa  endbr64            }
+        // 0x1004 eb fa        jmp 0x1000         } a tail-call-shaped predecessor
+        // 0x1006 55           push rbp           <- damage, unaligned (0x…6)
+        // 0x1007 48 89 e5     mov rbp,rsp
+        // 0x100a 48 89 08     mov [rax],rcx      <- the watched write
+        // 0x100d 48 ff c0 ×6  inc rax            <- body past target+16 (0x101d)
+        // 0x101f c3           ret
+        // 0x1020 e8 e1 ff ff ff  call 0x1006     <- names damage, past the window
+        // 0x1025 c3           ret
+        let code = vec![
+            0xF3, 0x0F, 0x1E, 0xFA, 0xEB, 0xFA, 0x55, 0x48, 0x89, 0xE5, 0x48, 0x89, 0x08, 0x48, 0xFF, 0xC0, 0x48, 0xFF,
+            0xC0, 0x48, 0xFF, 0xC0, 0x48, 0xFF, 0xC0, 0x48, 0xFF, 0xC0, 0x48, 0xFF, 0xC0, 0xC3, 0xE8, 0xE1, 0xFF, 0xFF,
+            0xFF, 0xC3,
+        ];
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        // The hardware reports the instruction *after* the write, as on a live
+        // target: the mov ends at 0x100d.
+        let hit = ProvenanceHit { instruction_va: Va(0x100d), access_kind: "write".to_string() };
+        let graph = ProvenancePass
+            .run(
+                &ctx,
+                ProvenanceInput {
+                    value_addr: Va(0x2000),
+                    hits: vec![hit],
+                    module: None,
+                    code_scan_start: Some(Va(0x1000)),
+                    code_scan_size: 0x26,
+                },
+            )
+            .unwrap();
+        let e = &graph.entries[0];
+        assert_eq!(e.function_va, Some(Va(0x1006)), "the unaligned leaf named by the call must be recovered: {e:?}");
+        assert_eq!(e.instruction_va, Va(0x100a), "the write is the mov that ends where the trap was reported");
+        assert!(e.context_unavailable.is_none(), "a recovered function must carry no reason-it-failed: {e:?}");
     }
 
     #[test]
