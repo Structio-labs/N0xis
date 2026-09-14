@@ -3374,13 +3374,17 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
     if a.pid.is_none() && a.file.is_none() {
         return ir_err("no-source", "profile needs a PE image: pass --file <pe> or --pid <n>", pretty);
     }
-    let arch = match resolve_arch(a.arch.as_deref()) {
-        Ok(x) => x,
-        Err(e) => return ir_err("bad-arch", &e, pretty),
-    };
+    // `build_source` first so the arch pick can read the image header: a static
+    // PE/ELF states its own machine, and `Src::pick_arch` honours it when no
+    // explicit `--arch` is given. Neither block depends on the other's result,
+    // so the reorder is behaviour-preserving.
     let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, None, None, Va(0)) {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
+    };
+    let arch = match src.pick_arch(a.arch.as_deref()) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
     };
     let base = match base_for_module(&src, a.module.as_deref()) {
         Ok(b) => b,
@@ -3710,7 +3714,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let arch = match resolve_arch(a.arch.as_deref()) {
+    let arch = match src.pick_arch(a.arch.as_deref()) {
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
@@ -4049,7 +4053,7 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let arch = match resolve_arch(a.arch.as_deref()) {
+    let arch = match src.pick_arch(a.arch.as_deref()) {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
@@ -6203,9 +6207,15 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    // Data-side command: nothing here decodes an instruction, so the ISA is
-    // only what `Ctx` requires structurally — not a bypassed seam.
-    let arch = X64::new();
+    // This `--addr` path decompiles the function to enumerate its literals:
+    // `cfg_cached` -> `CfgPass` decodes the instructions, so the ISA is a real
+    // decode fact, not a structural placeholder. Honour the image header (no
+    // `--arch` flag on this command) so an AArch64/i386 image is not read as
+    // x86-64 — the same B1 footgun `Src::pick_arch` exists to close.
+    let arch = match src.pick_arch(None) {
+        Ok(x) => x,
+        Err(e) => return ir_err("bad-arch", &e, pretty),
+    };
     let input = CfgInput { start: addr, max_bytes: a.func_size, auto_end: true };
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
@@ -6215,10 +6225,10 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
         Ok(pf.pseudo)
     };
     let pseudo = match &src {
-        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), &arch).with_symbols(pe.as_ref())),
-        Src::Live(l) => run(&Ctx::new(l.as_ref(), &arch)),
-        Src::Snap(s) => run(&Ctx::new(s, &arch)),
-        Src::Remote(r) => run(&Ctx::new(r.as_ref(), &arch)),
+        Src::Static(pe) => run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref())),
+        Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref())),
+        Src::Snap(s) => run(&Ctx::new(s, arch.as_ref())),
+        Src::Remote(r) => run(&Ctx::new(r.as_ref(), arch.as_ref())),
     };
     let pseudo = match pseudo {
         Ok(p) => p,
@@ -6244,7 +6254,7 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let arch = match resolve_arch(a.arch.as_deref()) {
+    let arch = match src.pick_arch(a.arch.as_deref()) {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
@@ -6420,7 +6430,12 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
         Ok(i) => i,
         Err(e) => return emit(&Response::<serde_json::Value>::error("load-failed", e.to_string()), pretty),
     };
-    let arch = match n0xis_frontend::pick_arch(a.arch.as_deref(), !img.is_64()) {
+    // Honour the image's own machine field, not just its bitness: a signature
+    // library must fingerprint an AArch64 image with the AArch64 decoder, never
+    // x86-64. `StaticImage` lives below the frontend, so thread its declared
+    // machine into `pick_arch_for` directly (an explicit `--arch` still wins).
+    let declared = img.machine();
+    let arch = match n0xis_frontend::pick_arch_for(a.arch.as_deref(), Some(declared.as_str()), !img.is_64()) {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };

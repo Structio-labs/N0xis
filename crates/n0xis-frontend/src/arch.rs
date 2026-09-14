@@ -17,6 +17,14 @@ pub const DEFAULT_ARCH: &str = "x64";
 /// inline: a hardcoded ISA is an ABI fact baked into logic, which CONCEPT §3
 /// rule 4 forbids, and it is why the MCP frontend was x64-only while the CLI
 /// had an `--arch` flag.
+///
+/// **Footgun (B1): this does NOT consult the image header.** With `name = None`
+/// it defaults to [`DEFAULT_ARCH`] (x64) regardless of what the file declares,
+/// so a non-x64 image analysed without `--arch` decodes with the wrong ISA —
+/// phantom `sub_` functions, missed real ones, `jnp`/`div dword ptr` over
+/// four-byte ARM. Use it only on the no-header paths: raw `--bytes`, a live
+/// process, or when the caller has already established the machine. Any command
+/// analysing a FILE must call [`crate::Src::pick_arch`], which reads the header.
 pub fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
     match name.unwrap_or(DEFAULT_ARCH).to_ascii_lowercase().as_str() {
         "x64" | "x86-64" | "x86_64" => Ok(Box::new(X64::new())),
@@ -62,6 +70,14 @@ pub fn pick_arch_for(
 }
 
 /// [`pick_arch_for`] for a caller that has no machine declaration to offer.
+///
+/// **Footgun (B1): bitness-only — this does NOT consult the image header**, it
+/// hard-passes `None` for the machine and so only distinguishes 32- from
+/// 64-bit. An AArch64 image is 64-bit and decodes as x86-64 through here. Use it
+/// only for the no-header paths (raw `--bytes`, a live process, or a bitness-only
+/// signature pass). A command analysing a FILE must use [`crate::Src::pick_arch`]
+/// (or [`pick_arch_for`] threading the real `declared_machine`), which reads the
+/// header.
 pub fn pick_arch(explicit: Option<&str>, source_is_32bit: bool) -> Result<Box<dyn Arch>, String> {
     pick_arch_for(explicit, None, source_is_32bit)
 }
