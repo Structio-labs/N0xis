@@ -566,23 +566,13 @@ fn parse_watch_kind(s: &str) -> Result<WatchKind, String> {
 
 #[tool_router(vis = "pub")]
 impl N0xisServer {
-    #[tool(description = "Environment / readiness check (arch decoder, project resolution).")]
+    #[tool(description = "Environment / readiness check (arch decoders, project resolution).")]
     fn doctor(&self) -> String {
-        let arch = X64::new();
-        let project = n0xis_project::resolve();
-        let (proj_ok, proj_dir, proj_local) = match &project {
-            Ok(p) => (true, p.dir.display().to_string(), p.is_local),
-            Err(_) => (false, String::new(), false),
-        };
-        let data = json!({
-            "status": "ready",
-            "checks": {
-                "arch_x64": { "ok": true, "name": <X64 as n0xis_arch::Arch>::name(&arch) },
-                "decoder": { "ok": true, "engine": "iced-x86" },
-                "project_resolves": { "ok": proj_ok, "dir": proj_dir, "local": proj_local },
-            },
-        });
-        emit(Response::success(schema::v1::DOCTOR, data))
+        // One builder, both doors — see n0xis_frontend::doctor. This used to be
+        // a hand-written copy that reported one decoder engine and omitted the
+        // arm64 check and `roadmap`, so an agent got a drifted, less-capable
+        // answer than a human at the CLI.
+        emit(Response::success(schema::v1::DOCTOR, n0xis_frontend::doctor::payload()))
     }
 
     #[tool(description = "List running processes, optionally filtered by name substring.")]
@@ -946,8 +936,11 @@ impl N0xisServer {
 
     #[tool(description = "Every registered analysis plugin (name -> spawn command + declared artifact kinds), from .n0x/plugins.json.")]
     fn plugin_list(&self) -> String {
-        match n0xis_project::plugins::list() {
-            Ok(items) => emit(Response::success(schema::v1::PLUGIN, json!({ "count": items.len(), "plugins": items }))),
+        // One builder, both doors: the CLI `plugin list` emits this exact
+        // payload (`plugins::list_payload`). It used to omit `op` here while the
+        // CLI carried `op: "list"` under the same schema.
+        match n0xis_project::plugins::list_payload() {
+            Ok(data) => emit(Response::success(schema::v1::PLUGIN, data)),
             Err(e) => err("plugin-list-failed", e.to_string()),
         }
     }

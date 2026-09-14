@@ -16,7 +16,7 @@
 mod emit;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use n0xis_arch::{Arch, Arm64, InsnKind, X64};
+use n0xis_arch::{Arch, InsnKind, X64};
 // The shared frontend seam (source resolution, ISA selection, argument
 // parsing) — `n0xis-mcp` goes through the exact same functions, so `--pid`
 // and `"pid"` cannot mean different things (CONCEPT §3 rules 3 and 5).
@@ -2899,28 +2899,9 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
 }
 
 fn cmd_doctor(pretty: bool) -> bool {
-    let arch = X64::new();
-    let project = n0xis_project::resolve();
-    let (proj_ok, proj_dir, proj_local) = match &project {
-        Ok(p) => (true, p.dir.display().to_string(), p.is_local),
-        Err(_) => (false, String::new(), false),
-    };
-    let data = json!({
-        "status": "ready",
-        "checks": {
-            "arch_x64": { "ok": true, "name": <X64 as n0xis_arch::Arch>::name(&arch) },
-            "arch_arm64": { "ok": true, "name": Arm64::new().name() },
-            "decoder": { "ok": true, "engines": ["iced-x86 (x64)", "disarm64 (arm64)"] },
-            "project_resolves": { "ok": proj_ok, "dir": proj_dir, "local": proj_local },
-        },
-        // Deliberately not a phase list. The previous value ("Phases 1-7
-        // complete") was stale the moment Phase 8 landed and stayed stale for
-        // four more phases, because a status baked into a binary drifts from
-        // the document that owns it. Same reasoning as `guide`, which is
-        // generated from the clap tree rather than hand-maintained.
-        "roadmap": "ROADMAP.md is the authority on phase status; this build reports its own capabilities via `guide` and `capability list`",
-    });
-    emit(&Response::success(schema::v1::DOCTOR, data), pretty)
+    // One builder, both doors: the MCP `doctor` tool emits this exact payload.
+    // See n0xis_frontend::doctor for why it reports capabilities, not phases.
+    emit(&Response::success(schema::v1::DOCTOR, n0xis_frontend::doctor::payload()), pretty)
 }
 
 /// Which category a top-level command belongs to (curated grouping — clap
@@ -4446,14 +4427,10 @@ fn cmd_plugin(cmd: PluginCmd, pretty: bool) -> bool {
             }
             Err(e) => ir_err("plugin-add-failed", &e.to_string(), pretty),
         },
-        PluginCmd::List => match pl::list() {
-            Ok(items) => {
-                let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
-                emit(
-                    &Response::success(schema::v1::PLUGIN, json!({ "op": "list", "count": items.len(), "plugins": items_v })),
-                    pretty,
-                )
-            }
+        // One builder, both doors: the MCP `plugin_list` tool emits this exact
+        // payload (`pl::list_payload`), so the two cannot drift on `op` again.
+        PluginCmd::List => match pl::list_payload() {
+            Ok(data) => emit(&Response::success(schema::v1::PLUGIN, data), pretty),
             Err(e) => ir_err("plugin-list-failed", &e.to_string(), pretty),
         },
         PluginCmd::Rm(a) => match pl::remove(&a.name) {
