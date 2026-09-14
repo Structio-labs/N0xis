@@ -3494,7 +3494,15 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
             Ok(x) => x,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-    let arch = match resolve_arch(a.arch.as_deref()) {
+    // Arch is picked *after* the source and *from its header*, the same way the
+    // registry and disasm do it. `resolve_arch` defaults to x64, so discovering
+    // an AArch64 or i386 image without `--arch` ran an x86-64 prologue scan over
+    // foreign bytes: it invents `sub_XXXX` where an x86-64 prologue pattern
+    // happens to match inside ARM instructions and misses the real functions —
+    // a confident wrong answer, not an error. The header states the ISA; only a
+    // raw `--bytes`/live target with no declaration falls back to the default,
+    // and an explicit `--arch` still wins outright.
+    let arch = match n0xis_frontend::pick_arch_for(a.arch.as_deref(), src.declared_machine().as_deref(), !src.is_64()) {
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
