@@ -675,17 +675,33 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
             // A `call` architecturally writes only `rsp`, and that is what
             // `reg_access` answers, because whether `rax` changes is an ABI
             // fact about the callee rather than a property of the instruction.
-            // Def-use analysis needs the ABI fact: without it the definition of
-            // the value a call produced does not exist, and a backward slice of
-            // that value stops at the `mov` that copied it out of the return
-            // register without ever naming the call. Measured on a function
-            // whose source is `middle(v) + leaf_a(v)`: the slice reported the
-            // three register moves and neither call.
-            if ins.kind == InsnKind::Call
-                && let Some(ret) = abi_return_register(ctx)
-                && !access.writes.contains(&ret)
-            {
-                access.writes.push(ret);
+            // Def-use analysis needs the ABI fact, in two directions:
+            //
+            //  - the value a call *produces* must have a definition, or a
+            //    backward slice of it stops at the `mov` that copied it out of
+            //    the return register without ever naming the call (measured on
+            //    `middle(v) + leaf_a(v)`: the slice reported the three register
+            //    moves and neither call); and
+            //  - the values a call *destroys* must stop reaching forward, or a
+            //    post-call read of a caller-saved register links back to a def
+            //    that preceded the call — asserting the value survived a call
+            //    the ABI says clobbered it.
+            //
+            // Both are the same fact: a call defines every caller-saved
+            // register. `volatile_registers` is the single source of that set
+            // (shared with `function summary`), and the return register is one
+            // of its members, so recording the whole set subsumes the old
+            // return-register-only write. The names must be normalized to the
+            // spelling def-use records reads and writes under (`xmm0` -> the
+            // widest `zmm0`), or the added writes silently fail to match the
+            // later reads and the clobber is a no-op.
+            if ins.kind == InsnKind::Call {
+                for name in volatile_registers(ctx) {
+                    let reg = ctx.arch.normalize_reg(name);
+                    if !access.writes.contains(&reg) {
+                        access.writes.push(reg);
+                    }
+                }
             }
 
             let mut def_use = Vec::new();
@@ -969,6 +985,40 @@ pub(crate) fn abi_return_register(ctx: &Ctx) -> Option<String> {
     ctx.arch.regs().name(cc.ret).map(str::to_string)
 }
 
+/// The **caller-saved (volatile) registers** of the target's ABI, in the ABI's
+/// own spelling — the integer set (`cc.volatile`) followed by the vector set
+/// (`cc.volatile_float`). A `call` clobbers exactly these and leaves the
+/// callee-saved ones intact.
+///
+/// **The** single source of this set. `function summary`'s clobber list and
+/// `ir build`'s def-use both need it, and a set defined twice is a set that will
+/// eventually be two different sets — the recurring shape of every confident
+/// wrong answer this pass has produced. The return register is a member of this
+/// set on every convention here (rax / x0 / r0 are all caller-saved), so callers
+/// that only needed "the call defines its result" get that for free.
+///
+/// Both halves are load-bearing: leaving the vector set out made a pure
+/// `double add(double, double)` report `clobbers: []` with
+/// `clobbers_complete: true` in `function summary` — a confident claim that
+/// calling it destroys nothing, about a function whose one instruction writes
+/// `xmm0`.
+///
+/// Names come out in the **ABI spelling** (`xmm0`, not the def-use `zmm0`);
+/// a consumer that matches against def-use register names must
+/// [`normalize_reg`](n0xis_arch::Arch::normalize_reg) each one first, or the
+/// vector names silently fail to match and the clobber is a no-op.
+pub(crate) fn volatile_registers(ctx: &Ctx) -> Vec<&'static str> {
+    match abi_conv(ctx) {
+        Some(cc) => cc
+            .volatile
+            .iter()
+            .filter_map(|&r| ctx.arch.regs().name(r))
+            .chain(cc.volatile_float.iter().copied())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
 /// **The** calling convention of the target, and the only place that choice is
 /// made: the one whose name the *source* declares (`MemorySource::abi_name` —
 /// `"win64"` for a PE, `"sysv"` for an ELF), falling back to the architecture's
@@ -1131,6 +1181,78 @@ mod tests {
             .flat_map(|b| &b.insns)
             .any(|i| i.writes.iter().any(|w| w == "rcx"));
         assert!(wrote_rcx, "reg_access should surface the rcx write");
+    }
+
+    #[test]
+    fn a_call_clobbers_caller_saved_registers_but_not_callee_saved_ones() {
+        // The x86-64 ABI (System V and Win64 both) makes rax/rcx/rdx/... and the
+        // volatile vector set caller-saved: a call destroys them. Only rbx, rbp,
+        // r12-r15, rsp survive. Def-use must record the call as the reaching def
+        // of every caller-saved register, or a post-call read links back across
+        // the call to a pre-call def — asserting a value survived a call the ABI
+        // says clobbered it (the defect this test guards).
+        //
+        // 0x1000 mov ecx, 5          b9 05 00 00 00   -> rcx  (caller-saved)
+        // 0x1005 mov ebx, 7          bb 07 00 00 00   -> rbx  (callee-saved)
+        // 0x100a movsd xmm0, xmm1    f2 0f 10 c1      -> xmm0 (caller-saved vec)
+        // 0x100e call 0x2000         e8 ed 0f 00 00   (external)
+        // 0x1013 mov eax, ecx        89 c8            reads rcx
+        // 0x1015 mov edx, ebx        89 da            reads rbx
+        // 0x1017 movsd xmm2, xmm0    f2 0f 10 d0      reads xmm0
+        // 0x101b ret                 c3
+        let code = vec![
+            0xb9, 0x05, 0x00, 0x00, 0x00, // mov ecx, 5
+            0xbb, 0x07, 0x00, 0x00, 0x00, // mov ebx, 7
+            0xf2, 0x0f, 0x10, 0xc1, //       movsd xmm0, xmm1
+            0xe8, 0xed, 0x0f, 0x00, 0x00, // call 0x2000
+            0x89, 0xc8, //                   mov eax, ecx
+            0x89, 0xda, //                   mov edx, ebx
+            0xf2, 0x0f, 0x10, 0xd0, //       movsd xmm2, xmm0
+            0xc3, //                         ret
+        ];
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+
+        let art = CfgPass
+            .run(&ctx, CfgInput::new(Va(0x1000), 64))
+            .expect("cfg builds");
+
+        let insns: Vec<&IrInsn> = art.blocks.iter().flat_map(|b| &b.insns).collect();
+        // The reaching def `def_use` records for `reg` at instruction `va`.
+        let def_addr = |va: u64, reg: &str| -> Option<Va> {
+            insns
+                .iter()
+                .find(|i| i.va == Va(va))
+                .unwrap_or_else(|| panic!("no instruction at {va:#x}"))
+                .def_use
+                .iter()
+                // `reg` is matched through the arch's normalization, so the test
+                // reads by the disassembly's spelling (`xmm0`) while the def-use
+                // records the widest view (`zmm0`).
+                .find(|d| ctx.arch.normalize_reg(&d.reg) == ctx.arch.normalize_reg(reg))
+                .map(|d| d.def_addr)
+        };
+
+        const CALL: u64 = 0x100e;
+        // Caller-saved: the call is the reaching def, NOT the pre-call assignment.
+        assert_eq!(
+            def_addr(0x1013, "rcx"),
+            Some(Va(CALL)),
+            "rcx is caller-saved: the read after the call must reach the call, not `mov ecx,5` @0x1000",
+        );
+        assert_eq!(
+            def_addr(0x1017, "xmm0"),
+            Some(Va(CALL)),
+            "xmm0 is caller-saved: the read after the call must reach the call, not `movsd xmm0,xmm1` @0x100a",
+        );
+        // Callee-saved: the call does NOT clobber it — the guard against
+        // over-clobbering the whole register file.
+        assert_eq!(
+            def_addr(0x1015, "rbx"),
+            Some(Va(0x1005)),
+            "rbx is callee-saved: it survives the call and still reaches `mov ebx,7` @0x1005",
+        );
     }
 
     #[test]

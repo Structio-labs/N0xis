@@ -118,26 +118,6 @@ impl Pass for SummaryPass {
     }
 }
 
-/// The volatile (caller-saved) register names of the target's ABI. Which
-/// convention applies comes from the **source** (`MemorySource::abi_name`), the
-/// same way [`crate::TypeInferPass`] picks its argument registers — a pass must
-/// never bake in an ABI.
-fn volatile_regs(ctx: &Ctx) -> Vec<&'static str> {
-    match crate::ir::abi_conv(ctx) {
-        // Both halves of the set. Leaving the vector registers out made a pure
-        // `double add(double, double)` report `clobbers: []` with
-        // `clobbers_complete: true` — a confident claim that calling it destroys
-        // nothing, about a function whose one instruction writes `xmm0`.
-        Some(cc) => cc
-            .volatile
-            .iter()
-            .filter_map(|&r| ctx.arch.regs().name(r))
-            .chain(cc.volatile_float.iter().copied())
-            .collect(),
-        None => Vec::new(),
-    }
-}
-
 /// Summarize one function. `None` when it cannot be decoded at `va`.
 pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary> {
     let cfg = CfgPass.run(ctx, CfgInput::new(va, max_bytes)).ok()?;
@@ -151,7 +131,7 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
     // `zmm0` and `xmm0` are one register, and the caller should read the
     // spelling the disassembly shows.
     let volatile: std::collections::HashMap<String, &'static str> =
-        volatile_regs(ctx).into_iter().map(|n| (ctx.arch.normalize_reg(n), n)).collect();
+        crate::ir::volatile_registers(ctx).into_iter().map(|n| (ctx.arch.normalize_reg(n), n)).collect();
     let mut clobbers: BTreeSet<String> = BTreeSet::new();
     let mut writes_memory = false;
     for block in &cfg.blocks {
