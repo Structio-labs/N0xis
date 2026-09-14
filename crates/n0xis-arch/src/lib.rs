@@ -322,6 +322,22 @@ pub trait Arch {
         self.lift(insn, abi)
     }
 
+    /// Lift a direct call whose callee **name** is known, for arch-specific
+    /// named-call idioms — the motivating case is the i386 PIC PC-thunk
+    /// `__x86.get_pc_thunk.<reg>`, whose body is `mov e<reg>,[esp]; ret` and so
+    /// loads the return address into the *suffix-named* register, not the ABI
+    /// return register [`Arch::lift`] would assume. Recognizing it needs both
+    /// the resolved callee name (which `lift`, having no `Ctx`/symbol seam,
+    /// cannot see) and ISA knowledge of what the idiom does — so the name is
+    /// resolved once by the core (`resolved_target_name` in `n0xis-core`) and
+    /// handed in here, keeping ISA specifics behind this seam.
+    ///
+    /// Default: `None` — the caller falls back to [`Arch::lift`]. This method
+    /// must not re-derive the name; it only pattern-matches the one it is given.
+    fn lift_named_call(&self, _insn: &DecodedInsn, _abi: &str, _callee: &str) -> Option<Vec<MicroStmt>> {
+        None
+    }
+
     /// Turn a conditional-branch mnemonic (`"je"`, `"jg"`, …) plus the
     /// dataflow value reaching it for [`FLAGS_VAR`] into an exact condition
     /// expression. Only sound when `flags_value` is the precise

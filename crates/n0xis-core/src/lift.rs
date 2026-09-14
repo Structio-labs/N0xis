@@ -84,10 +84,24 @@ impl Pass for LiftPass {
                         // a predicated Thumb instruction lift soundly.
                         decoded.cond = insn.cond.clone();
                         let abi = ctx.source.abi_name();
-                        let lowered = if tail_index == Some(idx) {
-                            ctx.arch.lift_tail_call(&decoded, abi)
-                        } else {
-                            ctx.arch.lift(&decoded, abi)
+                        // A direct call whose callee name is known first offers
+                        // the arch a chance at a named-call idiom (i386 PIC
+                        // get_pc_thunk — the suffix register, not `eax`, gets the
+                        // return address). The name is the one the CFG already
+                        // resolved (`IrInsn::target_name`, via the core's
+                        // `resolved_target_name`): reused, never re-derived here,
+                        // so name resolution stays single-sourced. `None` falls
+                        // back to the generic call lift. A tail call is handled
+                        // separately below and get_pc_thunk is never a tail call,
+                        // so this only applies to a non-tail instruction.
+                        let named = (tail_index != Some(idx))
+                            .then_some(insn.target_name.as_deref())
+                            .flatten()
+                            .and_then(|name| ctx.arch.lift_named_call(&decoded, abi, name));
+                        let lowered = match named {
+                            Some(stmts) => stmts,
+                            None if tail_index == Some(idx) => ctx.arch.lift_tail_call(&decoded, abi),
+                            None => ctx.arch.lift(&decoded, abi),
                         };
                         for stmt in lowered {
                             stmts.push(LiftedStmt { va: insn.va, stmt });

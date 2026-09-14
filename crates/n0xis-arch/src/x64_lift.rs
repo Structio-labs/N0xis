@@ -856,6 +856,55 @@ pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -
     ]
 }
 
+/// The i386 PIC PC-thunk idiom. GCC emits `__x86.get_pc_thunk.<reg>` (and the
+/// older `__i686.get_pc_thunk.<reg>`) with the two-instruction body
+/// `mov e<reg>,[esp]; ret` — it loads the **return address** (the VA of the
+/// instruction after the `call`) into the register named by the `<reg>` suffix,
+/// which the very next `add e<reg>,<GOT-offset>` turns into the PIC base every
+/// GOT-relative access in the function indexes through.
+///
+/// The generic call lift (`lift_tail_call`/the `Call` arm) cannot express this:
+/// it binds the callee's result to the ABI return register (`eax`), producing a
+/// dead `eax = __x86_get_pc_thunk_bx()` and leaving the suffix register with no
+/// defining statement — so the PIC base has no reaching def and every access
+/// through it dangles. Recognizing the idiom needs the resolved callee *name*,
+/// which `lift` cannot see (no `Ctx`), so the core resolves it once and routes
+/// it here through [`crate::Arch::lift_named_call`].
+///
+/// Returns the single assignment `<suffix-reg> = <next-insn VA>` (a 32-bit
+/// constant), spelled through [`reg_name`] so the def matches the reads def-use
+/// records under (the canonical full-width name, e.g. `rbx` for `ebx`). `None`
+/// for any other name — the caller then falls back to the generic call lift.
+pub(crate) fn lift_named_call(insn: &DecodedInsn, callee: &str) -> Option<Vec<MicroStmt>> {
+    // Match `__x86.get_pc_thunk.<reg>` or `__i686.get_pc_thunk.<reg>` exactly,
+    // extracting the register suffix. A resolved import keeps a `module!` prefix
+    // and a mangled callee would differ, so a plain suffix strip is enough.
+    let suffix = callee
+        .strip_prefix("__x86.get_pc_thunk.")
+        .or_else(|| callee.strip_prefix("__i686.get_pc_thunk."))?;
+    // The suffix names a GPR by its 16-bit spelling; map it to the register so
+    // `reg_name` gives the canonical full-width name def-use records under. Any
+    // other suffix is not a PC-thunk we model — fall back rather than guess.
+    let reg = match suffix {
+        "ax" => Register::RAX,
+        "bx" => Register::RBX,
+        "cx" => Register::RCX,
+        "dx" => Register::RDX,
+        "si" => Register::RSI,
+        "di" => Register::RDI,
+        "bp" => Register::RBP,
+        _ => return None,
+    };
+    // The value loaded is [esp] at entry to the thunk — the return address the
+    // `call` pushed, i.e. the VA of the instruction *after* the call. i386 is a
+    // 32-bit address space, so the constant is 32-bit.
+    let next_va = insn.va.0.wrapping_add(insn.len as u64) as i128;
+    Some(vec![MicroStmt::Assign {
+        dst: reg_name(reg),
+        value: MicroExpr::constant(next_va, 32),
+    }])
+}
+
 pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
     let Some(instr) = decode_raw(insn, arch.bitness()) else {
         return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
@@ -3030,6 +3079,60 @@ mod tests {
             CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x1006, 64), 64, false)))
         );
         assert_eq!(stmts[1], MicroStmt::Return(Some(MicroExpr::var("rax"))));
+    }
+
+    /// The i386 PIC PC-thunk idiom. `call __x86.get_pc_thunk.bx` loads the
+    /// return address (the VA *after* the call) into `ebx`, not into the ABI
+    /// return register the generic call lift would assume — so it must lower to
+    /// a single `rbx = <next VA>` and emit no `eax`/`rax` def.
+    ///
+    /// The register is spelled `rbx`, not `ebx`: def-use records every GPR under
+    /// its canonical full-width name (`reg_name` -> `full_register`), so a def
+    /// spelled `ebx` would not connect to the `add ebx, off` read that follows.
+    fn thunk(callee: &str) -> Option<Vec<MicroStmt>> {
+        // A one-byte body is enough: `lift_named_call` reads only `va` and `len`.
+        let arch = X64::x86();
+        let insns = arch.decode_stream(&[0x90], Va(0x1000), 1);
+        arch.lift_named_call(&insns[0], "sysv", callee)
+    }
+
+    #[test]
+    fn a_pic_pc_thunk_defines_its_suffix_register_with_the_return_address() {
+        // `nop` at 0x1000, len 1 -> the return address the thunk reads is 0x1001.
+        assert_eq!(
+            thunk("__x86.get_pc_thunk.bx"),
+            Some(vec![MicroStmt::Assign {
+                dst: "rbx".into(),
+                value: MicroExpr::constant(0x1001, 32),
+            }])
+        );
+        // Every suffix maps to its canonical full-width GPR name, and the older
+        // `__i686.` spelling is the same idiom.
+        for (callee, reg) in [
+            ("__x86.get_pc_thunk.ax", "rax"),
+            ("__x86.get_pc_thunk.cx", "rcx"),
+            ("__x86.get_pc_thunk.dx", "rdx"),
+            ("__x86.get_pc_thunk.si", "rsi"),
+            ("__x86.get_pc_thunk.di", "rdi"),
+            ("__x86.get_pc_thunk.bp", "rbp"),
+            ("__i686.get_pc_thunk.cx", "rcx"),
+        ] {
+            assert_eq!(
+                thunk(callee),
+                Some(vec![MicroStmt::Assign { dst: reg.into(), value: MicroExpr::constant(0x1001, 32) }]),
+                "{callee} should define {reg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_thunk_name_falls_back_to_the_generic_call_lift() {
+        // Anything that is not a get_pc_thunk returns `None` so the core uses the
+        // ordinary call lowering — including a lookalike with an unknown suffix.
+        assert_eq!(thunk("memcpy"), None);
+        assert_eq!(thunk("__x86.get_pc_thunk"), None);
+        assert_eq!(thunk("__x86.get_pc_thunk.zz"), None);
+        assert_eq!(thunk("kernel32!GetProcAddress"), None);
     }
 }
 

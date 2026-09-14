@@ -648,6 +648,14 @@ impl Arch for X64 {
         crate::x64_lift::lift_tail_call(self, insn, abi)
     }
 
+    /// Recognizes the i386 PIC PC-thunk (`__x86.get_pc_thunk.<reg>`); every
+    /// other callee returns `None` so the core falls back to [`Arch::lift`].
+    /// `abi` is unused — the idiom is decoded from the callee name alone, and
+    /// x86-64 code never contains these thunks, so no bitness guard is needed.
+    fn lift_named_call(&self, insn: &DecodedInsn, _abi: &str, callee: &str) -> Option<Vec<crate::MicroStmt>> {
+        crate::x64_lift::lift_named_call(insn, callee)
+    }
+
     /// x86-64's condition codes *are* the vocabulary [`crate::flags`] speaks,
     /// so this forwards unchanged. An architecture that spells them otherwise
     /// translates first — see `Arm64::branch_condition`.
