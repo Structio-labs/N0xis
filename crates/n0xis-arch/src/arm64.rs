@@ -30,7 +30,7 @@
 
 use disarm64::registers::get_int_reg_name;
 use disarm64::{InsnDisplay, InsnOpcode, decoder};
-use disarm64_defn::InsnClass;
+use disarm64_defn::{InsnClass, InsnOperandKind};
 use n0xis_contracts::{Reg, Va};
 
 use crate::frame::FrameInfo;
@@ -232,15 +232,18 @@ fn direct_target(bits: u32, va: Va, class: InsnClass) -> Option<Va> {
 /// GPR name for encoded register number `n` (0-31), honoring the `sf` bit
 /// (bit 31, 1 = 64-bit `x`, 0 = 32-bit `w`) that selects width across nearly
 /// every base-ISA form. `want_zr` selects which reading of register 31 this
-/// specific operand position permits: **not every instruction class can
-/// encode `sp`** — only `ADDSUB_IMM`'s `Rd`/`Rn` and a load/store's base
-/// `Rn` can; every other GPR position (register-form ALU operands, `Rt`
-/// transfer registers, branch registers) is architecturally `xzr`-only, and
-/// getting this backwards silently mislabels the classic `sub sp, sp, #N`
-/// prologue and any `xzr`-using idiom (`madd x, y, z, xzr`, `orr x0, xzr,
-/// xzr` as a `mov #0`) as touching the stack pointer instead — caught
-/// against real, compiler-generated AArch64 code, not just hand-picked
-/// bytes; see the call sites in [`Arch::reg_access`] for the per-class rule.
+/// specific operand position permits: **not every operand can encode `sp`** —
+/// only an `Rd_SP`/`Rn_SP` operand kind can (`add sp, sp, #N`, `and sp, x0,
+/// #-16`, the extended `add x0, sp, w1, uxtw`); every other GPR position
+/// (register-form ALU operands, `Rt` transfer registers, branch registers) is
+/// architecturally `xzr`-only. **Which one applies is a property of the
+/// operand, not the instruction class**, and both callers derive it from the
+/// definition's operand kinds through [`crate::arm64_lift::kind_is_sp_eligible`]
+/// — deciding it from the class instead silently mislabels `subs wzr, …`,
+/// `and sp, …` and the extended add/sub, and any `xzr`-using idiom (`madd x,
+/// y, z, xzr`, `orr x0, xzr, xzr` as a `mov #0`) as touching the stack pointer
+/// instead — caught against real, compiler-generated AArch64 code, not just
+/// hand-picked bytes.
 /// The **canonical** name of a general-purpose register: always the 64-bit
 /// spelling, whatever width the instruction accesses it at.
 ///
@@ -309,6 +312,19 @@ fn build_insn(bits: u32, va: Va) -> DecodedInsn {
     }
 }
 
+/// Whether the decoded instruction's definition carries an operand of `kind`.
+///
+/// An AArch64 instruction has at most one `Rd` operand and at most one `Rn`
+/// operand, so "the definition contains an `Rd_SP` operand" unambiguously means
+/// the Rd position is stack-pointer-eligible — which is the `sp`-vs-`xzr` fact
+/// [`crate::arm64_lift::gpr`] reads *per operand* and [`Arch::reg_access`] needs
+/// *per position*. `reg_access` addresses its registers by fixed bit field
+/// (`Rd`/`Rt` at 4:0, `Rn` at 9:5), not by operand index, so it asks the
+/// question of the whole definition rather than of one operand.
+fn has_operand_kind(op: &decoder::Opcode, kind: InsnOperandKind) -> bool {
+    op.definition().operands.iter().any(|o| o.kind == kind)
+}
+
 impl Arch for Arm64 {
     fn name(&self) -> &'static str {
         "arm64"
@@ -361,38 +377,47 @@ impl Arch for Arm64 {
         let rm = bitrange(bits, 20, 16);
         let rt2_ra = bitrange(bits, 14, 10);
 
-        // `want_zr = false` (sp-eligible) only for ADDSUB_IMM's Rd/Rn (the
-        // `add/sub sp, sp, #N` prologue idiom) and a load/store's base Rn
-        // (`ldr x0, [sp, #16]`) — every other GPR position on AArch64 cannot
-        // encode `sp` at all, so it's always `want_zr = true` there.
+        // Whether register 31 reads as `sp` or `xzr` is a property of the
+        // *operand kind*, not the instruction class: only an `Rd_SP`/`Rn_SP`
+        // operand can encode `sp`. Derive the Rd and Rn choice from the
+        // definition so it cannot drift from `arm64_lift::gpr`, which reads the
+        // same fact per operand — the class-based version got four positions
+        // wrong (`subs wzr` wrote `sp`, `and sp` wrote `xzr`, the extended
+        // `add x0, sp, w1, uxtw` read `xzr`, the extended `add sp, x1, x2`
+        // wrote `xzr`). Rm, Ra and Rt2 are never sp-eligible, so they stay
+        // `want_zr = true`; the load/store base `Rn` is modelled inside an
+        // address operand (no `Rn_SP` present), so it keeps its own hardcoded
+        // `false` below, unchanged.
+        let rd_zr = !has_operand_kind(&op, InsnOperandKind::Rd_SP);
+        let rn_zr = !has_operand_kind(&op, InsnOperandKind::Rn_SP);
         match class {
             InsnClass::ADDSUB_IMM => {
-                access.writes.push(gpr_name(bits, rd_rt, false));
-                access.reads.push(gpr_name(bits, rn, false));
+                access.writes.push(gpr_name(bits, rd_rt, rd_zr));
+                access.reads.push(gpr_name(bits, rn, rn_zr));
             }
             InsnClass::LOG_IMM | InsnClass::MOVEWIDE | InsnClass::BITFIELD | InsnClass::PCRELADDR => {
-                access.writes.push(gpr_name(bits, rd_rt, true));
+                access.writes.push(gpr_name(bits, rd_rt, rd_zr));
                 if !matches!(class, InsnClass::MOVEWIDE | InsnClass::PCRELADDR) {
-                    access.reads.push(gpr_name(bits, rn, true));
+                    access.reads.push(gpr_name(bits, rn, rn_zr));
                 }
             }
             InsnClass::ADDSUB_SHIFT | InsnClass::ADDSUB_EXT | InsnClass::ADDSUB_CARRY
             | InsnClass::LOG_SHIFT | InsnClass::EXTRACT | InsnClass::CONDSEL
             | InsnClass::CONDCMP_REG | InsnClass::DP_2SRC => {
-                access.writes.push(gpr_name(bits, rd_rt, true));
-                access.reads.push(gpr_name(bits, rn, true));
+                access.writes.push(gpr_name(bits, rd_rt, rd_zr));
+                access.reads.push(gpr_name(bits, rn, rn_zr));
                 access.reads.push(gpr_name(bits, rm, true));
             }
             InsnClass::CONDCMP_IMM => {
-                access.reads.push(gpr_name(bits, rn, true));
+                access.reads.push(gpr_name(bits, rn, rn_zr));
             }
             InsnClass::DP_1SRC => {
-                access.writes.push(gpr_name(bits, rd_rt, true));
-                access.reads.push(gpr_name(bits, rn, true));
+                access.writes.push(gpr_name(bits, rd_rt, rd_zr));
+                access.reads.push(gpr_name(bits, rn, rn_zr));
             }
             InsnClass::DP_3SRC => {
-                access.writes.push(gpr_name(bits, rd_rt, true));
-                access.reads.push(gpr_name(bits, rn, true));
+                access.writes.push(gpr_name(bits, rd_rt, rd_zr));
+                access.reads.push(gpr_name(bits, rn, rn_zr));
                 access.reads.push(gpr_name(bits, rm, true));
                 access.reads.push(gpr_name(bits, rt2_ra, true)); // Ra (accumulator)
             }
@@ -743,5 +768,80 @@ mod tests {
         let access = arch.reg_access(&di);
         assert_eq!(access.reads, vec!["sp".to_string()]);
         assert_eq!(access.writes, vec!["sp".to_string()]);
+    }
+
+    /// **The four operand positions where `sp`-vs-`xzr` used to be decided by
+    /// the instruction *class* and was therefore wrong.** Each word is a real,
+    /// compiler-emitted form disassembled by `llvm-mc`/`aarch64-linux-gnu`
+    /// (rung 3, independent of this crate and of `disarm64`). `reg_access` now
+    /// derives register 31's reading from the definition's operand kind
+    /// (`Rd_SP`/`Rn_SP`) — the same fact the lift uses via
+    /// `arm64_lift::kind_is_sp_eligible` — so all four come out right.
+    ///
+    /// CALIBRATION (verified by reverting the derivation to the old per-class
+    /// booleans): with ADDSUB_IMM's Rd back to `false`, the `subs wzr` block
+    /// fails on "subs wzr, w0, #1 discards into xzr, not sp"; with LOG_IMM's
+    /// Rd back to `true`, the `and sp` block fails on "and sp must write sp";
+    /// with the extended add/sub Rn/Rd back to `true`, the two `add … sp`
+    /// blocks fail on "extended add reads sp" and "extended add writes sp".
+    #[test]
+    fn register_31_reads_as_sp_or_xzr_by_operand_kind_not_class() {
+        let arch = Arm64::new();
+        let access = |bits: u32| arch.reg_access(&arch.decode(&le(bits), Va(0x1000)).unwrap());
+
+        // `subs wzr, w0, #1` (= `cmp w0, #1`): the result is discarded, so Rd
+        // is the zero register, not the stack pointer.
+        let subs = access(0x7100041f);
+        assert!(
+            !subs.writes.iter().any(|w| w == "sp"),
+            "subs wzr, w0, #1 discards into xzr, not sp: {subs:?}"
+        );
+        assert!(
+            subs.writes.iter().any(|w| w == "xzr"),
+            "subs wzr, w0, #1 writes xzr: {subs:?}"
+        );
+
+        // `and sp, x0, #-16` (gcc's stack realign): Rd is `Rd_SP`, so `sp`.
+        let and_sp = access(0x927cec1f);
+        assert!(and_sp.writes.iter().any(|w| w == "sp"), "and sp must write sp: {and_sp:?}");
+
+        // `add x0, sp, w1, uxtw` (ADDSUB_EXT): Rn is `Rn_SP`, so the read is sp.
+        let add_ext_read = access(0x8b2143e0);
+        assert!(
+            add_ext_read.reads.iter().any(|r| r == "sp"),
+            "extended add reads sp: {add_ext_read:?}"
+        );
+
+        // `add sp, x1, x2` (ADDSUB_EXT, S=0): Rd is `Rd_SP`, so the write is sp.
+        let add_ext_write = access(0x8b22603f);
+        assert!(
+            add_ext_write.writes.iter().any(|w| w == "sp"),
+            "extended add writes sp: {add_ext_write:?}"
+        );
+    }
+
+    /// The classes that were already right must not shift under the operand-kind
+    /// derivation. Every word here is independently disassembled
+    /// (`aarch64-linux-gnu-as`/`objdump`, `llvm-mc`); the point is that
+    /// register 31 keeps its correct reading on both sides of the fix.
+    #[test]
+    fn the_positions_that_were_already_right_stay_right() {
+        let arch = Arm64::new();
+        let access = |bits: u32| arch.reg_access(&arch.decode(&le(bits), Va(0x1000)).unwrap());
+
+        // `add x1, sp, #16` — ADDSUB_IMM Rn is `Rn_SP`, reads sp.
+        assert!(access(0x910043e1).reads.iter().any(|r| r == "sp"), "add x1, sp, #16 reads sp");
+        // `add sp, x0, #16` — ADDSUB_IMM Rd is `Rd_SP`, writes sp.
+        assert!(access(0x9100401f).writes.iter().any(|w| w == "sp"), "add sp, x0, #16 writes sp");
+        // `ands xzr, x0, #1` (`tst x0, #1`) — LOG_IMM Rd is plain `Rd`, xzr.
+        assert!(access(0xf240001f).writes.iter().any(|w| w == "xzr"), "ands xzr writes xzr");
+        // `add xzr, x0, x1` — ADDSUB_SHIFT Rd is plain `Rd`, xzr.
+        assert!(access(0x8b01001f).writes.iter().any(|w| w == "xzr"), "add xzr shifted writes xzr");
+        // `ldr x0, [sp]` — load base stays sp (hardcoded, unchanged by the fix).
+        assert!(access(0xf94003e0).reads.iter().any(|r| r == "sp"), "ldr x0, [sp] reads sp base");
+        // `str xzr, [x1]` — the stored Rt is the zero register.
+        let str_xzr = access(0xf900003f);
+        assert!(str_xzr.reads.iter().any(|r| r == "xzr"), "str xzr, [x1] reads xzr: {str_xzr:?}");
+        assert!(str_xzr.reads.iter().any(|r| r == "x1"), "str xzr, [x1] reads x1 base");
     }
 }

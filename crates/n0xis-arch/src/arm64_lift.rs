@@ -169,6 +169,21 @@ fn narrow(width: Bits, value: MicroExpr) -> MicroExpr {
     }
 }
 
+/// Which operand kinds can encode the stack pointer in register 31.
+///
+/// `Rd_SP`/`Rn_SP` are the only two positions the base ISA lets `sp` appear in;
+/// every other GPR operand kind reads register 31 as `xzr`. **This is the
+/// single source of that fact.** [`crate::arm64::Arm64::reg_access`] derives its
+/// per-position `sp`/`xzr` choice from the same rule — by asking the definition
+/// whether it carries an `Rd_SP`/`Rn_SP` operand — so the two cannot drift.
+/// They used to: `reg_access` decided from the instruction *class* and so
+/// disagreed with this file about `and sp, x0, #-16` (LOG_IMM's `Rd` is
+/// `Rd_SP`), the extended `add x0, sp, w1, uxtw` (Rn is `Rn_SP`) and
+/// `subs wzr, w0, #1` (whose `Rd` is a plain `Rd`, so `xzr`).
+pub(crate) fn kind_is_sp_eligible(kind: InsnOperandKind) -> bool {
+    matches!(kind, InsnOperandKind::Rd_SP | InsnOperandKind::Rn_SP)
+}
+
 /// Resolve operand `operand` as a general-purpose register.
 ///
 /// **Which reading of register 31 applies is the operand's own property, and
@@ -176,23 +191,29 @@ fn narrow(width: Bits, value: MicroExpr) -> MicroExpr {
 /// pointer, every other GPR position is architecturally `xzr`-only. Deriving it
 /// from the operand kind rather than from the instruction class is what makes
 /// `and sp, x1, #0xf` (whose `Rd` *is* `Rd_SP`) and `subs xzr, x0, x1` come out
-/// right from one rule.
+/// right from one rule — [`kind_is_sp_eligible`].
 ///
 /// The register number comes from the operand's first bit-field, which is how
 /// `disarm64`'s own integer formatter reads it.
 fn gpr(op: &Opcode, operand: usize) -> Option<Gpr> {
     let o = op.definition().operands.get(operand)?;
-    let want_zr = match o.kind {
-        InsnOperandKind::Rd_SP | InsnOperandKind::Rn_SP => false,
-        InsnOperandKind::Rd
-        | InsnOperandKind::Rn
-        | InsnOperandKind::Rm
-        | InsnOperandKind::Ra
-        | InsnOperandKind::Rt => true,
-        // Not a plain integer register operand; the caller has the wrong shape
-        // and must not guess.
-        _ => return None,
-    };
+    // Only a plain integer register operand belongs here; anything else means
+    // the caller has the wrong shape and must not guess. The `sp`-vs-`xzr`
+    // sub-decision inside that set is `kind_is_sp_eligible`, the one place the
+    // fact lives.
+    if !matches!(
+        o.kind,
+        InsnOperandKind::Rd_SP
+            | InsnOperandKind::Rn_SP
+            | InsnOperandKind::Rd
+            | InsnOperandKind::Rn
+            | InsnOperandKind::Rm
+            | InsnOperandKind::Ra
+            | InsnOperandKind::Rt
+    ) {
+        return None;
+    }
+    let want_zr = !kind_is_sp_eligible(o.kind);
     let spec = o.bit_fields.first()?;
     let (lsb, width) = (u32::from(spec.lsb), u32::from(spec.width));
     let n = bitrange(op.bits(), lsb + width - 1, lsb);
@@ -1356,31 +1377,31 @@ mod tests {
         }
     }
 
-    /// **A recorded defect, not an endorsement.**
+    /// **One fact, one place: register 31's `sp`-vs-`xzr` reading.**
     ///
     /// Whether register 31 in an operand position means `xzr` or `sp` is one
-    /// fact, and this crate derives it twice: this file reads the operand's
-    /// *kind* from the definition (`Rd_SP` ⇒ sp-eligible), while
-    /// [`Arch::reg_access`] decides it from the instruction *class*. The two
-    /// agree everywhere except `LOG_IMM`, whose `Rd` really is `Rd_SP` —
-    /// `and sp, x0, #-16` is a real instruction (gcc emits it to realign the
-    /// stack), and `reg_access` records it as writing `xzr`, so the stack
-    /// pointer's definition is invisible to def-use.
+    /// fact, and this crate now derives it from one rule — the operand's *kind*
+    /// in the decoder's definition, via [`kind_is_sp_eligible`]. This file reads
+    /// that per operand; [`Arch::reg_access`] asks the same definition whether
+    /// it carries an `Rd_SP`/`Rn_SP` operand. `and sp, x0, #-16` is a real
+    /// instruction (gcc emits it to realign the stack) whose `Rd` is `Rd_SP`, so
+    /// both must record it writing `sp`.
     ///
-    /// The lift is the one that is right. Fixing `reg_access` is a change to a
-    /// separate, already-shipped answer and belongs with its own calibration,
-    /// so this pins the disagreement: closing it fails **here**, on this line,
-    /// instead of leaving a stale sentence behind.
+    /// This used to be a *recorded disagreement*: `reg_access` decided from the
+    /// instruction class and wrote `xzr`, hiding the stack pointer's definition
+    /// from def-use. Now it agrees, and this guards that agreement — reverting
+    /// `reg_access` to the class-based decision fails **here**, on the first
+    /// assertion.
     #[test]
-    fn reg_access_and_the_lift_still_disagree_about_a_logical_immediate_writing_sp() {
+    fn reg_access_and_the_lift_agree_a_logical_immediate_writes_sp() {
         let arch = Arm64::new();
         // `and sp, x0, #0xfffffffffffffff0` -> 927cec1f, from the same
         // assembler as everything else here.
         let insn = arch.decode(&le(0x927cec1f), Va(0x1000)).expect("decodes");
         assert_eq!(
             arch.reg_access(&insn).writes,
-            vec!["xzr".to_string()],
-            "reg_access now agrees that this writes sp — delete this test"
+            vec!["sp".to_string()],
+            "reg_access derives sp/xzr from the operand kind, like the lift"
         );
         assert_eq!(
             lift_word(0x927cec1f),
