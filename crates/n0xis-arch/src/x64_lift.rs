@@ -389,13 +389,24 @@ fn intr_binary(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
     smart_write(instr, 0, MicroExpr::intrinsic(name, vec![dst, src]), out);
 }
 
-/// Sign-extend the accumulator's low `from` bits to `to` bits in place — the
-/// `cbw`/`cwde`/`cdqe` family. The inner cast reinterprets the low bits, the
-/// outer sign-extends, so it renders as `(int64_t)(int32_t)rax`.
-fn sext_acc(from: Bits, to: Bits, out: &mut Vec<MicroStmt>) {
+/// Sign-extend the accumulator's low `from` bits into the accumulator sub-
+/// register `dst` — the `cbw`/`cwde`/`cdqe` family. The inner cast reinterprets
+/// the low `from` bits, the outer sign-extends to `dst`'s width, so it renders
+/// as `(int64_t)(int32_t)rax` for `cdqe`.
+///
+/// The write goes through [`reg_write`] rather than a bare `rax` assign, because
+/// only `cdqe` (32→64) is a full-register write. `cbw` (AL→AX) must *preserve*
+/// rax[63:16] and `cwde` (AX→EAX) must *zero* rax[63:32] — a 32-bit write's
+/// zero-extension, so the value that lands in the 64-bit word is the 16→32
+/// sign-extension zero-extended to 64, not sign-extended to 64. Those two
+/// partial-register rules already live in `reg_write`; routing through it is the
+/// single source of that truth. Lifting all three as a full `rax` clobber was
+/// only correct for `cdqe`, and surfaced on any 64-bit consumer of `cbw`/`cwde`.
+fn sext_acc(instr: &Instruction, from: Bits, dst: Register, out: &mut Vec<MicroStmt>) {
+    let to = (dst.size() * 8) as Bits;
     let low = MicroExpr::Cast { signed: true, bits: from, expr: Box::new(MicroExpr::var("rax")) };
     let value = MicroExpr::Cast { signed: true, bits: to, expr: Box::new(low) };
-    out.push(MicroStmt::Assign { dst: "rax".to_string(), value });
+    reg_write(instr, dst, value, out);
 }
 
 /// A BMI2 flag-less shift (`shlx`/`shrx`/`sarx`): `op0 = op1 <shift> op2`, with
@@ -1842,10 +1853,12 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         // would preserve the text and invalidate registers it never touches.
         Mnemonic::Bt => out.push(opaque_flags(mn)),
         // Sign-extend the accumulator in place (`cbw`/`cwde`/`cdqe`): the low
-        // `from` bits, sign-extended to `to`. Reads as `(int64_t)(int32_t)rax`.
-        Mnemonic::Cbw => sext_acc(8, 16, &mut out),
-        Mnemonic::Cwde => sext_acc(16, 32, &mut out),
-        Mnemonic::Cdqe => sext_acc(32, 64, &mut out),
+        // `from` bits, sign-extended into the destination sub-register. Only
+        // `cdqe` is a full-`rax` write; `cbw`/`cwde` are partial-register writes
+        // (see `sext_acc`), so the destination width is named explicitly.
+        Mnemonic::Cbw => sext_acc(&instr, 8, Register::AX, &mut out),
+        Mnemonic::Cwde => sext_acc(&instr, 16, Register::EAX, &mut out),
+        Mnemonic::Cdqe => sext_acc(&instr, 32, Register::RAX, &mut out),
         // Sign-extend rax into rdx (`cdq`/`cqo`) — the `rdx:rax` dividend setup.
         Mnemonic::Cdq | Mnemonic::Cqo => {
             out.push(MicroStmt::Assign { dst: "rdx".into(), value: MicroExpr::intrinsic(mnemonic_intrinsic(mn), vec![MicroExpr::var("rax")]) });
@@ -1870,21 +1883,29 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             out.push(opaque_flags(mn));
         }
         // BMI2 `mulx hi, lo, src` — `hi:lo = src * rdx` (implicit `rdx`), no
-        // flags. Low half is the product, high half `__umulh`; the high write is
-        // emitted first so both read the pre-multiply `rdx`.
+        // flags. Low half is the product, high half `__umulh`.
+        //
+        // **Order matters and needs one temporary**, exactly as the legacy `mul`
+        // above. Both destinations are arbitrary registers and either may alias
+        // the implicit multiplicand `rdx` (or the explicit `src`): `mulx rdx, rax,
+        // rbx` names `rdx` as the *high* destination, so writing the high half
+        // first — as this used to — clobbered `rdx` before the low half read it,
+        // and the low product came out as `__umulh(rdx,rbx) * rbx`. The high half
+        // is parked in a temporary and the two destinations are written while the
+        // inputs are still live, high moved in last, so both halves read the
+        // pre-multiply operands whatever they alias.
         Mnemonic::Mulx => {
             let src = read_operand(&instr, 2);
             let rdx = MicroExpr::var("rdx");
-            write_operand(
-                &instr,
-                0,
-                MicroExpr::intrinsic(
+            out.push(MicroStmt::Assign {
+                dst: MUL_TEMP.into(),
+                value: MicroExpr::intrinsic(
                     "__umulh",
                     vec![rdx.clone(), src.clone(), MicroExpr::constant(i128::from(op_bits(&instr, 0)), 8)],
                 ),
-                &mut out,
-            );
+            });
             write_operand(&instr, 1, MicroExpr::binary(BinOp::Mul, rdx, src), &mut out);
+            write_operand(&instr, 0, MicroExpr::var(MUL_TEMP), &mut out);
         }
         // Bit test-and-reset/set/complement, immediate index: the value change is
         // exact (`dst &= ~(1<<n)` / `|=` / `^=`); the CF it also sets (the old
@@ -2482,6 +2503,108 @@ mod tests {
                     && args[3] == MicroExpr::constant(64, 8))
         };
         assert!(reads_pair(&stmts[0]) && reads_pair(&stmts[1]), "both halves read rdx:rax: {stmts:?}");
+    }
+
+    /// `cbw` = 66 98 — sign-extend AL into AX, **preserving rax[63:16]**. It was
+    /// lifted as a full 64-bit clobber (`rax = (int64)(int8)rax`), which is only
+    /// correct for `cdqe`; on a 64-bit consumer (`cbw; add rax,rax`) it computed
+    /// on the sign-extension of the byte instead of preserving the high word.
+    #[test]
+    fn cbw_is_a_partial_write_that_preserves_the_high_word() {
+        let stmts = lift_one(&[0x66, 0x98]);
+        assert_eq!(stmts.len(), 1, "{stmts:?}");
+        let MicroStmt::Assign { dst, value } = &stmts[0] else {
+            panic!("cbw writes rax: {stmts:?}");
+        };
+        assert_eq!(dst, "rax");
+        // A partial write is a masked merge, not a bare clobber: rax[63:16] is
+        // carried through `rax & 0xFFFF_FFFF_FFFF_0000`.
+        let MicroExpr::Binary(BinOp::Or, kept, _placed) = value else {
+            panic!("cbw must merge into rax, not clobber it: {value:?}");
+        };
+        assert_eq!(
+            **kept,
+            MicroExpr::binary(
+                BinOp::And,
+                MicroExpr::var("rax"),
+                MicroExpr::constant(0xFFFF_FFFF_FFFF_0000u64 as i128, 64),
+            ),
+            "the high word must be preserved: {value:?}",
+        );
+    }
+
+    /// `cwde` = 98 — sign-extend AX into EAX. A 32-bit write **zeroes** rax[63:32],
+    /// so the value stored to the 64-bit word is the 16→32 sign-extension
+    /// zero-extended to 64, **not** sign-extended to 64.
+    #[test]
+    fn cwde_zero_extends_the_high_half() {
+        let stmts = lift_one(&[0x98]);
+        assert_eq!(stmts.len(), 1, "{stmts:?}");
+        let MicroStmt::Assign { dst, value } = &stmts[0] else {
+            panic!("cwde writes rax: {stmts:?}");
+        };
+        assert_eq!(dst, "rax");
+        // The outermost cast is an *unsigned* 32-bit narrow — that is what zeroes
+        // rax[63:32]. A `(int64)` outer cast here would sign-extend and be wrong.
+        let MicroExpr::Cast { signed: false, bits: 32, expr } = value else {
+            panic!("cwde must zero-extend rax[63:32]: {value:?}");
+        };
+        assert_eq!(
+            **expr,
+            MicroExpr::Cast { signed: true, bits: 32, expr: Box::new(low_signed(16, "rax")) },
+            "the inner value is the 16->32 sign-extension: {value:?}",
+        );
+    }
+
+    // `cdqe` (the genuine full-64-bit case, unchanged by the partial-write fix)
+    // is covered by `cdqe_sign_extends_the_accumulator` below.
+
+    /// `mulx rdx, rax, rbx` = C4 E2 FB F6 D3 — `rdx:rax = rbx * rdx` (implicit
+    /// rdx), no flags. The high destination aliases the implicit multiplicand
+    /// `rdx`, so writing it before the low half fed the low product the *post*-
+    /// multiply rdx. Both halves must read the pre-multiply operands.
+    #[test]
+    fn mulx_with_a_destination_aliasing_rdx_reads_the_pre_multiply_operands() {
+        let stmts = lift_one(&[0xC4, 0xE2, 0xFB, 0xF6, 0xD3]);
+        let dsts: Vec<&str> = stmts
+            .iter()
+            .filter_map(|s| match s {
+                MicroStmt::Assign { dst, .. } => Some(dst.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The high half is parked in a temporary and the aliasing `rdx`
+        // destination is written LAST, so the low half's `rdx` read is the
+        // pre-multiply value.
+        assert_eq!(dsts, vec![MUL_TEMP, "rax", "rdx"], "{stmts:?}");
+        // The low half (written to rax) is `rbx * rdx` reading the untouched rdx.
+        let low = stmts
+            .iter()
+            .find_map(|s| match s {
+                MicroStmt::Assign { dst, value } if dst == "rax" => Some(value),
+                _ => None,
+            })
+            .expect("mulx writes the low half to rax");
+        assert_eq!(
+            *low,
+            MicroExpr::binary(BinOp::Mul, MicroExpr::var("rdx"), MicroExpr::var("rbx")),
+            "the low product must read the pre-multiply rdx: {stmts:?}",
+        );
+        // The parked high half is `__umulh(rdx, rbx, 64)` over the same pre-values.
+        let hi = stmts
+            .iter()
+            .find_map(|s| match s {
+                MicroStmt::Assign { dst, value } if dst == MUL_TEMP => Some(value),
+                _ => None,
+            })
+            .expect("mulx parks the high half");
+        assert!(
+            matches!(hi, MicroExpr::Call { target: CallTarget::Intrinsic(n), args }
+                if n == "__umulh"
+                    && args[0] == MicroExpr::var("rdx")
+                    && args[1] == MicroExpr::var("rbx")),
+            "the high half is __umulh over the pre-multiply operands: {hi:?}",
+        );
     }
 
     /// `lock incl (%rax)` = F0 FF 00 — an atomic reference-count bump. Lifting
