@@ -511,6 +511,15 @@ fn recover_structs(accesses: &[MemAccess]) -> Vec<RecoveredType> {
 /// callee's arity, learned from all its call sites, back-propagated to each
 /// forwarding argument). Sound-over-complete: the forwarded value still
 /// renders in the body; only the signature's arity is conservative.
+/// `a @ a` for the two operations that yield zero from equal operands — the
+/// dependency-breaking `xor`/`sub` idiom. Equality is on the *SSA name*, so it
+/// only fires when both operands are the identical version (`xmm0.0 ^ xmm0.0`);
+/// `rax.2 - rax.1` is a genuine subtraction and is left alone.
+fn self_annihilates(op: BinOp, l: &MicroExpr, r: &MicroExpr) -> bool {
+    matches!(op, BinOp::Xor | BinOp::Sub)
+        && matches!((l, r), (MicroExpr::Var(a), MicroExpr::Var(b)) if a == b)
+}
+
 fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
     fn walk(e: &MicroExpr, out: &mut BTreeSet<String>) {
         match e {
@@ -519,6 +528,22 @@ fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
             }
             MicroExpr::Load { addr, .. } => walk(addr, out),
             MicroExpr::Unary(_, v) => walk(v, out),
+            // A self-annihilating idiom — `xmm0 ^ xmm0`, `rax - rax` — is a
+            // dependency-breaking *zero*, not a read of its operand: the value
+            // is `0` before anything the register held is consulted, so the
+            // entry-version operand is not evidence of a live-in parameter.
+            // The lift already collapses the general-register form
+            // (`xor edx,edx`) to `Const(0)` (`x64_lift.rs`, the `Mnemonic::Xor`
+            // arm), which is why a GP self-xor produces no phantom integer
+            // param; but the packed/VEX vector form (`vpxor xmm0,xmm0,xmm0`,
+            // `pxor`) is lifted as an exact `Binary(Xor, …)` and reaches this
+            // seam intact. Counting its operand pinned an AVX reduction —
+            // `int isum(const int*, int)` summing through `vpxor`-seeded
+            // accumulators — at four `double` parameters it then zeroes before
+            // reading. This is the same fact the return-register seam leans on
+            // (`ssa.rs`): a value nothing computed for the caller is none of
+            // the caller's business.
+            MicroExpr::Binary(op, l, r) if self_annihilates(*op, l, r) => {}
             MicroExpr::Binary(_, l, r) => {
                 walk(l, out);
                 walk(r, out);
@@ -1789,6 +1814,43 @@ mod tests {
             Some("void *"),
             "the caller's rcx must inherit the callee's pointer parameter type: {:?}",
             types.signature.params,
+        );
+    }
+
+    /// An AVX-seeded accumulator is not a floating-point parameter.
+    ///
+    /// A vectorised integer reduction opens each accumulator with the
+    /// dependency-breaking `vpxor xmm,xmm,xmm` idiom — the register is set to
+    /// zero *before* anything it held is read, so its entry version is no
+    /// live-in. Counting it made `int isum(const int*, int)` — which sums
+    /// through such accumulators — report phantom `double` parameters it then
+    /// zeroes. The general-register form (`xor edx,edx`) is collapsed to a
+    /// constant by the lift and never showed this; the packed/VEX form reaches
+    /// type inference as an exact `Binary(Xor, …)`.
+    ///
+    /// Bytes verified with `objdump` (they are the exact prefix of a
+    /// `-O3 -mavx2` reduction):
+    ///   c5 f9 ef c0   vpxor  xmm0,xmm0,xmm0
+    ///   c5 f9 fe 07   vpaddd xmm0,xmm0,[rdi]   ; the seed is *used*, not dead
+    ///   c5 f9 7e c0   vmovd  eax,xmm0
+    ///   c3            ret
+    #[test]
+    fn a_self_xor_zeroed_avx_accumulator_is_not_a_float_parameter() {
+        let art = infer_code(vec![0xC5, 0xF9, 0xEF, 0xC0, 0xC5, 0xF9, 0xFE, 0x07, 0xC5, 0xF9, 0x7E, 0xC0, 0xC3]);
+        assert!(
+            art.signature.params.iter().all(|p| !p.reg.starts_with("xmm")),
+            "a vpxor-zeroed accumulator must not be counted as a float parameter: {:#?}",
+            art.signature.params,
+        );
+
+        // Calibration in the other direction — the fix is narrow. A genuine
+        // live-in vector register (`addsd xmm0,xmm1` reads xmm0 before writing
+        // it) is still a parameter.
+        let real = infer_code(vec![0xF2, 0x0F, 0x58, 0xC1, 0xC3]);
+        assert!(
+            real.signature.params.iter().any(|p| p.reg.starts_with("xmm")),
+            "a genuine xmm argument is still a parameter: {:#?}",
+            real.signature.params,
         );
     }
 
