@@ -325,6 +325,66 @@ fn has_operand_kind(op: &decoder::Opcode, kind: InsnOperandKind) -> bool {
     op.definition().operands.iter().any(|o| o.kind == kind)
 }
 
+/// The base-register write-back a pre-/post-indexed load/store performs.
+///
+/// A writeback addressing mode updates the base register (`Rn`) it read to form
+/// the address by a signed byte delta that is **fully determined by the
+/// encoding** — nothing about the memory contents is involved. `stp x29, x30,
+/// [sp, #-192]!` does `sp := sp - 192`; `ldr x2, [x1], #8` does `x1 := x1 + 8`.
+///
+/// This is the **single source** of both the writeback discriminator (which
+/// classes update their base) and the delta `K`. [`Arch::reg_access`] calls it
+/// to report the base as *written*, and [`crate::arm64_lift`] calls it to emit
+/// the precise `base := base + K`; deriving those from one function is what keeps
+/// the def-use record and the lift from disagreeing about which register the
+/// instruction defines. The discriminator mirrors how `disarm64` itself decides:
+///
+/// - `LDST_IMM9` (single-register pre/post index, `ldr`/`str [x,#imm]!`,
+///   `[x],#imm`): **always** writeback. `imm9` at bits 20:12, signed, **not**
+///   scaled (a raw byte offset).
+/// - `LDSTPAIR_INDEXED` (`ldp`/`stp` pre/post index): **always** writeback.
+///   `imm7` at bits 21:15, signed, **scaled** by the access size — the trap. For
+///   a GPR pair the scale is ×4 (32-bit regs, `opc`=00) or ×8 (64-bit regs,
+///   `opc`=10); for a SIMD/FP pair (`V`=1, bit 26) it is ×4/×8/×16 for `opc`
+///   00/01/10. Both are `imm7 << (2 + (opc >> if V {0} else {1}))`.
+/// - `LDST_IMM10` (PAuth `ldraa`/`ldrab`): writeback **iff** the `W` bit (bit
+///   11) is set. `imm10` = `S`(bit 22):`imm9`(bits 20:12), signed, scaled ×8.
+/// - every other load/store class updates no base: `None`.
+///
+/// The base register is named `gpr_name(bits, Rn, false)` — reg 31 spells `sp`,
+/// exactly the spelling `reg_access` uses when it reads the same base.
+pub(crate) struct Writeback {
+    /// The base register the writeback updates, spelled as the base *read* is.
+    pub base: String,
+    /// Signed byte delta: the instruction performs `base := base + delta`.
+    pub delta: i64,
+}
+
+pub(crate) fn writeback(op: &decoder::Opcode) -> Option<Writeback> {
+    let bits = op.bits();
+    let delta = match op.definition().class {
+        InsnClass::LDST_IMM9 => sign_extend(bitrange(bits, 20, 12), 9),
+        InsnClass::LDSTPAIR_INDEXED => {
+            let imm7 = bitrange(bits, 21, 15);
+            let opc = bitrange(bits, 31, 30);
+            let is_simd = bitrange(bits, 26, 26) == 1;
+            let scale_log2 = 2 + if is_simd { opc } else { opc >> 1 };
+            sign_extend(imm7, 7) * (1i64 << scale_log2)
+        }
+        InsnClass::LDST_IMM10 => {
+            // PAuth: the `W` bit (bit 11) selects the pre-indexed writeback form
+            // from the base-only (no-writeback) form.
+            if bitrange(bits, 11, 11) == 0 {
+                return None;
+            }
+            let imm10 = (bitrange(bits, 22, 22) << 9) | bitrange(bits, 20, 12);
+            sign_extend(imm10, 10) * 8
+        }
+        _ => return None,
+    };
+    Some(Writeback { base: gpr_name(bits, bitrange(bits, 9, 5), false), delta })
+}
+
 impl Arch for Arm64 {
     fn name(&self) -> &'static str {
         "arm64"
@@ -462,6 +522,15 @@ impl Arch for Arm64 {
             }
             _ => {}
         }
+        // A pre-/post-indexed load/store also *writes* its base register: the
+        // same `Rn` it read to form the address is updated by the writeback
+        // delta. `writeback` is the one source of which classes do this; the
+        // base stays in `reads` (it is read to compute the address) and is added
+        // to `writes` here, so the lift's precise `base := base + K` and this
+        // def-use record name the same defined register.
+        if let Some(wb) = writeback(&op) {
+            access.writes.push(wb.base);
+        }
         access
     }
 
@@ -506,9 +575,14 @@ impl Arch for Arm64 {
         let rt2 = bitrange(bits, 14, 10);
         let rn = bitrange(bits, 9, 5);
         if is_stp_pre && rt == 29 && rt2 == 30 && rn == 31 {
-            let imm7 = bitrange(bits, 21, 15);
-            let disp = sign_extend(imm7, 7) * 8; // scaled by 8 for the 64-bit pair form
-            frame.frame_size = (-disp) as u64;
+            // The frame size is the magnitude of the writeback delta this
+            // pre-indexed `stp` applies to `sp`. Deriving it from `writeback()`
+            // keeps the LDSTPAIR-64 ×8 scaling a *single* fact, shared with the
+            // lift and `reg_access`, instead of a second copy here. On a decode
+            // failure `frame_size` keeps its default (0), as before.
+            if let Some(wb) = decoder::decode(bits).and_then(|op| writeback(&op)) {
+                frame.frame_size = (-wb.delta) as u64;
+            }
             frame.spilled_regs.push("x29".to_string());
             frame.spilled_regs.push("x30".to_string());
             frame.prolog.push(first.va);
