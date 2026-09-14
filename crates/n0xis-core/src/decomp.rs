@@ -685,58 +685,81 @@ fn read_c_string(source: &dyn n0xis_sources::MemorySource, va: u64) -> Option<St
     Some(lit)
 }
 
-/// Add every constant used as (or foldable into) an address in `stmt` to `out`.
+/// Add every constant *used as an address* in `stmt` to `out` — the base of a
+/// Load/Store address operand, an indirect call target, or anything under an
+/// `AddrOf` (a `lea`/RIP-relative address). A constant that flows only as an
+/// integer VALUE — a return value, an arithmetic operand, a compared value — is
+/// NOT an address and is excluded: string/data-ref resolution off this set must
+/// never mistake the integer `1000` (or a value that happens to land on
+/// printable bytes) for a pointer to a string. The `in_addr` flag carried
+/// through [`collect_const_exprs`] is what distinguishes the two positions; a
+/// bare `Const` is collected only when it is reached in address position.
 fn collect_const_addrs(stmt: &n0xis_arch::MicroStmt, out: &mut std::collections::HashSet<u64>) {
     use n0xis_arch::MicroStmt;
     match stmt {
-        MicroStmt::Assign { value, .. } => collect_const_exprs(value, out),
+        // The assigned value is a value; addresses inside it announce themselves
+        // via `Load`/`AddrOf` (e.g. `rax = &g_thing` is `AddrOf(Const)`).
+        MicroStmt::Assign { value, .. } => collect_const_exprs(value, false, out),
         MicroStmt::Store { addr, value, .. } => {
-            collect_const_exprs(addr, out);
-            collect_const_exprs(value, out);
+            collect_const_exprs(addr, true, out);
+            collect_const_exprs(value, false, out);
         }
         MicroStmt::Call { target, args, .. } => {
+            // The indirect target is the address jumped to.
             if let n0xis_arch::CallTarget::Indirect(e) = target {
-                collect_const_exprs(e, out);
+                collect_const_exprs(e, true, out);
             }
+            // Arguments are values (a string arg is an `AddrOf(Const)` and still
+            // self-announces as an address).
             for a in args {
-                collect_const_exprs(a, out);
+                collect_const_exprs(a, false, out);
             }
         }
-        MicroStmt::Return(Some(e)) => collect_const_exprs(e, out),
+        MicroStmt::Return(Some(e)) => collect_const_exprs(e, false, out),
         MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
     }
 }
 
-fn collect_const_exprs(e: &n0xis_arch::MicroExpr, out: &mut std::collections::HashSet<u64>) {
+/// Collect constants that reach an *address position*. `in_addr` is true when
+/// the current sub-expression is being used to compute an address; a bare
+/// `Const` is recorded only then. `Load`/`AddrOf` turn their operand into an
+/// address position regardless of the incoming flag; a `Compare` yields a
+/// boolean, so its operands are values; every other node propagates the flag
+/// (address arithmetic `base + i*stride` keeps its base an address).
+fn collect_const_exprs(e: &n0xis_arch::MicroExpr, in_addr: bool, out: &mut std::collections::HashSet<u64>) {
     use n0xis_arch::MicroExpr;
     match e {
         MicroExpr::Const { value, .. } => {
-            if let Ok(v) = u64::try_from(*value) {
+            if in_addr && let Ok(v) = u64::try_from(*value) {
                 out.insert(v);
             }
         }
-        MicroExpr::AddrOf(inner) | MicroExpr::Unary(_, inner) | MicroExpr::Cast { expr: inner, .. } | MicroExpr::Load { addr: inner, .. } => {
-            collect_const_exprs(inner, out)
-        }
+        // The dereferenced/taken address is an address position; the value a
+        // `Load` yields is not, but a `Load` has no other constant children.
+        MicroExpr::AddrOf(inner) | MicroExpr::Load { addr: inner, .. } => collect_const_exprs(inner, true, out),
+        MicroExpr::Unary(_, inner) | MicroExpr::Cast { expr: inner, .. } => collect_const_exprs(inner, in_addr, out),
         MicroExpr::Binary(_, l, r) => {
-            collect_const_exprs(l, out);
-            collect_const_exprs(r, out);
+            collect_const_exprs(l, in_addr, out);
+            collect_const_exprs(r, in_addr, out);
         }
+        // A comparison produces a boolean; its operands are compared as values.
         MicroExpr::Compare { lhs, rhs, .. } => {
-            collect_const_exprs(lhs, out);
-            collect_const_exprs(rhs, out);
+            collect_const_exprs(lhs, false, out);
+            collect_const_exprs(rhs, false, out);
         }
+        // The selected value inherits the context (`*(cond ? p : q)` makes both
+        // arms addresses); the condition is a boolean.
         MicroExpr::Select { cond, a, b } => {
-            collect_const_exprs(cond, out);
-            collect_const_exprs(a, out);
-            collect_const_exprs(b, out);
+            collect_const_exprs(cond, false, out);
+            collect_const_exprs(a, in_addr, out);
+            collect_const_exprs(b, in_addr, out);
         }
         MicroExpr::Call { target, args } => {
             if let n0xis_arch::CallTarget::Indirect(inner) = target {
-                collect_const_exprs(inner, out);
+                collect_const_exprs(inner, true, out);
             }
             for a in args {
-                collect_const_exprs(a, out);
+                collect_const_exprs(a, false, out);
             }
         }
         MicroExpr::Var(_) | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => {}
@@ -777,10 +800,17 @@ mod tests {
             }
         }
 
-        // Two constants: the global's exact start, and an interior offset.
+        // Two constants: the global's exact start, and an interior offset. Each is
+        // taken as an ADDRESS (`lea`-shaped `AddrOf(Const)`, `x = &g`) — the only
+        // position `collect_const_addrs` now treats as an address, so that a plain
+        // integer value is never mistaken for a pointer (see the string-recovery
+        // test below). A bare `Assign { value: Const }` would be an integer here.
         let stmt = |dst: &str, v: i128| crate::ssa::SsaStmt {
             va: Va(0x1000),
-            stmt: n0xis_arch::MicroStmt::Assign { dst: dst.into(), value: n0xis_arch::MicroExpr::constant(v, 64) },
+            stmt: n0xis_arch::MicroStmt::Assign {
+                dst: dst.into(),
+                value: n0xis_arch::MicroExpr::AddrOf(Box::new(n0xis_arch::MicroExpr::constant(v, 64))),
+            },
         };
         let blocks = vec![SsaBlock {
             id: 0,
@@ -797,6 +827,43 @@ mod tests {
         // not borrow the symbol that starts before it).
         assert_eq!(refs.get(&0x4000).map(String::as_str), Some("&crc_table"));
         assert_eq!(refs.get(&0x4040), None);
+    }
+
+    #[test]
+    fn string_recovery_resolves_a_pointer_but_never_an_integer_that_collides_with_it() {
+        // Defect B: `recover_strings` drives off `collect_const_addrs`, which must
+        // collect a constant ONLY where it is used as an ADDRESS. A plain integer
+        // whose numeric value happens to equal a real string's address (here the
+        // return value `mov $0x3000,%eax; ret`) must render as the integer, not
+        // the string; a genuine pointer to that same string (`lea 0x3000(%rip)` →
+        // `AddrOf(Const)`) must still resolve to the literal. Assert BOTH — a
+        // restriction that made real strings vanish would trade one wrong answer
+        // for another (the refusal trap).
+        let snap = Snapshot::builder().region(Va(0x3000), b"hello, world\0".to_vec()).build();
+
+        let block = |value: n0xis_arch::MicroExpr| {
+            vec![SsaBlock {
+                id: 0,
+                start: Va(0x1000),
+                end: Va(0x1010),
+                terminator: "ret".into(),
+                successors: Vec::new(),
+                phis: Vec::new(),
+                stmts: vec![crate::ssa::SsaStmt { va: Va(0x1000), stmt: n0xis_arch::MicroStmt::Return(Some(value)) }],
+                condition: None,
+            }]
+        };
+
+        // (a) The integer 0x3000 returned as a value — NOT an address. It must not
+        // be mistaken for the string at 0x3000.
+        let int_blocks = block(n0xis_arch::MicroExpr::constant(0x3000, 64));
+        let int_strings = recover_strings(&[&int_blocks], &snap);
+        assert_eq!(int_strings.get(&0x3000), None, "an integer return value must not resolve to a string");
+
+        // (b) A genuine pointer to the string (`AddrOf(Const)`) still resolves.
+        let ptr_blocks = block(n0xis_arch::MicroExpr::AddrOf(Box::new(n0xis_arch::MicroExpr::constant(0x3000, 64))));
+        let ptr_strings = recover_strings(&[&ptr_blocks], &snap);
+        assert_eq!(ptr_strings.get(&0x3000).map(String::as_str), Some("\"hello, world\""), "a real string reference must still resolve");
     }
 
     #[test]
