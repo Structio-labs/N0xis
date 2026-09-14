@@ -118,6 +118,16 @@ struct Ctx<'a> {
     conds: &'a [Option<MicroExpr>],
     visited: Vec<bool>,
     loop_stack: Vec<usize>,
+    /// Parallel to `loop_stack`: the block each active loop emits as its
+    /// continuation — the block physically laid out immediately after the loop.
+    /// This, not the globally-chosen `loop_exit`, is the only correct `break`
+    /// target. A loop with more than one exit edge (a search/find loop whose
+    /// found-path early-returns) picks one exit as `loop_exit`, but `emit_loop`
+    /// lays out the header's *other* out-arm after the loop; a `break` keyed on
+    /// `loop_exit` then lands on the wrong exit, collapsing the found-value exit
+    /// onto the not-found sentinel. `break` fires only for the block named here;
+    /// every other exit is lowered on its own control path (emitted inline).
+    loop_cont: Vec<Option<usize>>,
     out: Vec<String>,
     indent: usize,
     fallback_count: usize,
@@ -161,8 +171,8 @@ fn emit_node(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         ctx.out.push(format!("{}continue;", pad(ctx.indent)));
         return;
     }
-    if let Some(&active) = ctx.loop_stack.last()
-        && ctx.loop_exit.get(&active).copied().flatten() == Some(n)
+    if let Some(&Some(cont)) = ctx.loop_cont.last()
+        && cont == n
     {
         ctx.out.push(format!("{}break;", pad(ctx.indent)));
         return;
@@ -594,12 +604,28 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
 
 fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
     ctx.loop_stack.push(h);
+    // Set once each path below knows the block it lays out after the loop.
+    ctx.loop_cont.push(None);
     let exit = ctx.loop_exit.get(&h).copied().flatten();
     let term = ctx.cfg.blocks[h].terminator.clone();
     let body_set = ctx.loop_body.get(&h).cloned().unwrap_or_default();
     let back_edges = ctx.loop_back_edges.get(&h).cloned().unwrap_or_default();
 
-    if term == "cjmp" {
+    // A back-edge from a `cjmp` whose *other* arm leaves the loop is a
+    // conditional latch: the loop's real termination test sits at the BOTTOM (a
+    // rotated / bottom-test loop, gcc -O2's default shape for a search). The
+    // header's own `cjmp` is then a value-carrying in-body exit — `if (a[i] < 0)
+    // return i;` — NOT the loop's top test. Folding it into `while (cond) {
+    // header_body; … }` moves that exit AFTER the latch's increment: an
+    // off-by-one (returns index+1), and when the exit carries a live induction
+    // value, the wrong value entirely. Detect it so the top-test fold defers to
+    // the do/while reconstruction below, which keeps the header exit in-body
+    // ahead of the step.
+    let has_conditional_exit_latch = back_edges
+        .iter()
+        .any(|&b| ctx.cfg.blocks[b].terminator == "cjmp" && ctx.succ[b].iter().any(|&s| !body_set.contains(&s)));
+
+    if term == "cjmp" && !has_conditional_exit_latch {
         let (t_idx, f_idx) = cjmp_arms(ctx.cfg, ctx.succ, h);
         if let (Some(t), Some(f)) = (t_idx, f_idx) {
             let t_in = body_set.contains(&t);
@@ -608,6 +634,11 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                 let cond_for_loop = if t_in { cond_text(ctx, h) } else { negated_cond_text(ctx, h) };
                 let inside = if t_in { t } else { f };
                 let outside = if t_in { f } else { t };
+                // The header's out-arm is the loop continuation; a `break`
+                // inside the body targets exactly this block. Any *other* exit
+                // (a second early-return edge) is not this block and so renders
+                // on its own control path instead of collapsing to `break`.
+                *ctx.loop_cont.last_mut().expect("loop_cont pushed on entry") = Some(outside);
 
                 // Emit the loop body (header block + the in-loop arm) into a
                 // buffer, then reformat: if its last top-level statement is an
@@ -636,6 +667,7 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                     ctx.out.push(format!("{pad0}}}"));
                 }
                 ctx.loop_stack.pop();
+                ctx.loop_cont.pop();
                 emit_node(ctx, outside, until);
                 return;
             }
@@ -666,6 +698,10 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                 };
                 if let Some(cond_for_loop) = do_while_cond {
                     let outside = if tt_back && tf_out { tf } else { tt };
+                    // The latch's out-arm is the loop continuation and the only
+                    // `break` target; a value-carrying header exit (the found
+                    // path) is a different block and stays an inline exit.
+                    *ctx.loop_cont.last_mut().expect("loop_cont pushed on entry") = Some(outside);
                     ctx.out.push(format!("{}do {{", pad(ctx.indent)));
                     ctx.indent += 1;
                     ctx.visited[t] = true;
@@ -676,6 +712,7 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                     ctx.indent -= 1;
                     ctx.out.push(format!("{}}} while ({cond_for_loop});", pad(ctx.indent)));
                     ctx.loop_stack.pop();
+                    ctx.loop_cont.pop();
                     emit_node(ctx, outside, until);
                     return;
                 }
@@ -683,13 +720,17 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
         }
     }
 
-    // Generic infinite-loop-with-break fallback.
+    // Generic infinite-loop-with-break fallback. Its continuation — the block
+    // laid out after `while (1) { … }` — is the chosen loop exit, so a `break`
+    // in the body targets that block.
+    *ctx.loop_cont.last_mut().expect("loop_cont pushed on entry") = exit;
     ctx.out.push(format!("{}while (1) {{", pad(ctx.indent)));
     ctx.indent += 1;
     emit_block_body_and_terminator(ctx, h, Some(h));
     ctx.indent -= 1;
     ctx.out.push(format!("{}}}", pad(ctx.indent)));
     ctx.loop_stack.pop();
+    ctx.loop_cont.pop();
     if let Some(e) = exit {
         emit_node(ctx, e, until);
     }
@@ -848,6 +889,7 @@ fn structure_once(
         conds: &conds,
         visited: vec![false; n],
         loop_stack: Vec::new(),
+        loop_cont: Vec::new(),
         out: Vec::new(),
         indent: 1,
         fallback_count: 0,
@@ -894,6 +936,103 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let names = RenderNames::new(&cfg.callsites);
         structure(&cfg, &ssa.blocks, &names)
+    }
+
+    /// Position of a substring, or a panic naming the missing text against the
+    /// whole rendering — used by the multi-exit loop regressions so a failure
+    /// shows *what* was expected and where it landed in the output.
+    fn pos(text: &str, needle: &str) -> usize {
+        text.find(needle).unwrap_or_else(|| panic!("expected {needle:?} in:\n{text}"))
+    }
+
+    // The three regressions below cover the multi-exit loop defect class: a
+    // loop whose early-exit edge carries a loop-variant value (a search /
+    // find / indexOf idiom). Each fixture is the *real* machine code a
+    // compiler emitted for a `for(i…) if(pred) return i; return -1;` shape
+    // (position-independent, so it structures identically at the test's base),
+    // with the C source and the value the compiled program actually returns.
+    // The recovered structure is checked against that ground truth, and each
+    // assertion is calibrated: reverting the structuring fix fails it on its
+    // own line (A1 reintroduces the mis-routed `break;`, A2/A3 collapse the
+    // rotated loop back into a top-test `while` and lose the `do`).
+
+    #[test]
+    fn a_search_loops_found_exit_returns_the_index_not_the_sentinel() {
+        // gcc -O0: int find_first_neg(int*a,int n){
+        //   for(int i=0;i<n;i++) if(a[i]<0) return i; return -1; }
+        // Ground truth (compiled + run): [5,-3,7]→1, [2,4,6]→-1.
+        // The loop has TWO exits reconverging at a shared phi-return: the found
+        // edge (a[i]<0) carries `i`, the exhaustion edge carries `-1`. The
+        // found edge must reach the return on its own control path, NOT collapse
+        // to a `break` that lands on the `-1` block.
+        let code = vec![
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xe8, 0x89, 0x75, 0xe4, 0xc7, 0x45, 0xfc, 0x00, 0x00,
+            0x00, 0x00, 0xeb, 0x23, 0x8b, 0x45, 0xfc, 0x48, 0x98, 0x48, 0x8d, 0x14, 0x85, 0x00, 0x00, 0x00,
+            0x00, 0x48, 0x8b, 0x45, 0xe8, 0x48, 0x01, 0xd0, 0x8b, 0x00, 0x85, 0xc0, 0x79, 0x05, 0x8b, 0x45,
+            0xfc, 0xeb, 0x11, 0x83, 0x45, 0xfc, 0x01, 0x8b, 0x45, 0xfc, 0x3b, 0x45, 0xe4, 0x7c, 0xd5, 0xb8,
+            0xff, 0xff, 0xff, 0xff, 0x5d, 0xc3,
+        ];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        // The pre-fix bug wired the found edge to the loop's `-1` exit with a
+        // `break;`, dropping the `return i` (it became dead code after the loop).
+        assert!(!text.contains("break;"), "the found exit must not collapse to a break:\n{text}");
+        // The found value (`local_4`, i.e. `i`) is loaded onto the return path
+        // INSIDE the loop, before the exhaustion sentinel `0xffffffff`.
+        let found = pos(&text, "rax.8 = (uint32_t)local_4;");
+        let sentinel = pos(&text, "0xffffffff");
+        assert!(found < sentinel, "the found index must be returned before the sentinel:\n{text}");
+        assert_eq!(out.fallback_count, 0, "should structure cleanly:\n{text}");
+    }
+
+    #[test]
+    fn a_rotated_search_loop_returns_the_pre_increment_index() {
+        // gcc -O2: int find_first_neg(int*a,int n){
+        //   for(int i=0;i<n;i++){ if(a[i]<0) return i; } return -1; }
+        // Ground truth (compiled + run): [5,-3,7]→1, [2,4,6]→-1.
+        // gcc rotated the loop: the exhaustion test (i!=n) sits at the bottom
+        // latch, so this is a `do`/`while`, and the header's value-carrying exit
+        // (return i) must stay in-body AHEAD of the increment. Folding it into a
+        // top-test `while` moves the exit past the `i++` → returns i+1.
+        let code = vec![
+            0x89, 0xf2, 0x31, 0xc0, 0x85, 0xf6, 0x7f, 0x11, 0xeb, 0x1e, 0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00,
+            0x48, 0x83, 0xc0, 0x01, 0x48, 0x39, 0xc2, 0x74, 0x0f, 0x8b, 0x0c, 0x87, 0x85, 0xc9, 0x79, 0xf0,
+            0xc3, 0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        assert!(out.has_loop, "{text}");
+        // A rotated loop with a conditional latch is a do/while, not a top-test
+        // while (the pre-fix path folded the header exit and produced the +1).
+        assert!(text.contains("do {"), "expected a do/while, not a top-test while:\n{text}");
+        // The found exit returns the counter BEFORE the increment defines the
+        // next version — `return rax.2;` precedes `rax.3 = (rax.2 + 0x1)`. That
+        // ordering is exactly what makes the returned index pre-increment (no +1).
+        let found = pos(&text, "return rax.2;");
+        let step = pos(&text, "rax.3 = (rax.2 + 0x1);");
+        assert!(found < step, "the found index must be returned before the increment:\n{text}");
+    }
+
+    #[test]
+    fn a_middle_exit_scan_loop_has_no_off_by_one() {
+        // gcc -O2: int walk_while(int*a,int n){
+        //   int i=0; while(i<n && a[i]!=0) i++; return i; }
+        // Ground truth (compiled + run): [1,1,0,4,5]→2 (first zero), [2,4,6]→3.
+        // Same rotated shape: the `a[i]!=0` exit carries the current `i` and
+        // must be returned before the latch's `i++`.
+        let code = vec![
+            0x31, 0xc0, 0x85, 0xf6, 0x7f, 0x25, 0xc3, 0x0f, 0x1f, 0x00, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x83, 0xc0, 0x01, 0x48, 0x83, 0xc7, 0x04, 0x39, 0xc6, 0x74, 0x0d, 0x8b, 0x17, 0x85, 0xd2, 0x75,
+            0xef, 0xc3, 0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0xc3,
+        ];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        assert!(out.has_loop, "{text}");
+        assert!(text.contains("do {"), "expected a do/while, not a top-test while:\n{text}");
+        let found = pos(&text, "return rax.2;");
+        let step = pos(&text, "rax.3 = (uint32_t)((uint32_t)rax.2 + 0x1);");
+        assert!(found < step, "the middle-exit index must be returned before the increment:\n{text}");
     }
 
     #[test]
