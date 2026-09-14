@@ -593,6 +593,26 @@ fn as_array_index(addr: &MicroExpr, bits: n0xis_arch::Bits) -> Option<(&MicroExp
     None
 }
 
+/// Render the base of an array subscript `base[idx]`. The base names the array
+/// *object*, so its bare name is wanted — `CSWTCH_1[i]` denotes the LOAD (the
+/// element's value), which is the whole point of the subscript. A data symbol's
+/// recovered name is stored `&`-prefixed (see `decomp::recover_data_refs`,
+/// which bakes in the `&` for the pointer-*value* use `&g_thing`); left as-is
+/// here it would produce `&CSWTCH_1[i]`, which C parses as `&(CSWTCH_1[i])` —
+/// the element ADDRESS, a confident wrong claim about the value's kind, exactly
+/// where a reader looks for the returned value. Strip the single leading `&`:
+/// `&NAME + i` is a pointer, `*(NAME + i)` is `NAME[i]`, so dropping the `&`
+/// and subscripting recovers the load. A base with no symbol (the clang
+/// anonymous-table path, and a plain register base) renders without a leading
+/// `&` and is therefore unaffected.
+fn render_array_base(base: &MicroExpr, names: &RenderNames) -> String {
+    let text = render_expr(base, names);
+    match text.strip_prefix('&') {
+        Some(bare) => bare.to_string(),
+        None => text,
+    }
+}
+
 fn is_comparison(op: BinOp) -> bool {
     matches!(
         op,
@@ -613,7 +633,7 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
                 return text;
             }
             if let Some((base, idx)) = as_array_index(addr, *bits) {
-                return format!("{}[{}]", render_expr(base, names), render_expr(idx, names));
+                return format!("{}[{}]", render_array_base(base, names), render_expr(idx, names));
             }
             format!("*({}*)({})", c_type(*bits, *signed), render_expr(addr, names))
         }
@@ -889,7 +909,7 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
             if let Some(text) = field_or_local_text(addr, names) {
                 format!("{text} = {};", render_expr(value, names))
             } else if let Some((base, idx)) = as_array_index(addr, *bits) {
-                format!("{}[{}] = {};", render_expr(base, names), render_expr(idx, names), render_expr(value, names))
+                format!("{}[{}] = {};", render_array_base(base, names), render_expr(idx, names), render_expr(value, names))
             } else {
                 format!("*({}*)({}) = {};", c_type(*bits, false), render_expr(addr, names), render_expr(value, names))
             }
@@ -1310,6 +1330,29 @@ mod tests {
         // as the raw pointer constant it always did.
         let names = RenderNames::new(&[]);
         assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "(void*)0x180021548");
+    }
+
+    #[test]
+    fn an_in_range_switch_value_table_load_renders_the_value_not_the_element_address() {
+        // Defect A: gcc's `CSWTCH` value table — `lea CSWTCH(%rip),%rax;
+        // mov (%rax,%rdi,4),%eax` — is a LOAD off the table base, so it must
+        // render as `CSWTCH_1[i]` (the loaded value), never `&CSWTCH_1[i]`
+        // (which C parses as the element ADDRESS). The data symbol's name is
+        // stored `&`-prefixed, the form its pointer-*value* use wants.
+        let mut data_refs = HashMap::new();
+        data_refs.insert(0x2010u64, "&CSWTCH_1".to_string());
+        let names = RenderNames::new(&[]).with_data_refs(data_refs);
+        // `*(uint32_t*)(&CSWTCH_1 + rdi*4)` — the shape `as_array_index` matches
+        // (base is the `lea`-shaped AddrOf(Const), index term is `rdi * 4`).
+        let base = MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x2010, 64)));
+        let index = MicroExpr::binary(BinOp::Mul, MicroExpr::var("rdi.1"), MicroExpr::constant(4, 64));
+        let load = MicroExpr::load(MicroExpr::binary(BinOp::Add, base, index), 32, false);
+        // The loaded value: bare-name subscript, no leading `&` (no address-of).
+        // `as_array_index` peels the `* 4` stride, leaving the bare index term.
+        assert_eq!(render_expr(&load, &names), "CSWTCH_1[rdi.1]");
+        // Regression: the same symbol used as a pointer VALUE (its address taken,
+        // not subscripted) still renders `&CSWTCH_1` — the `&` is correct there.
+        assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x2010, 64))), &names), "&CSWTCH_1");
     }
 
     #[test]
