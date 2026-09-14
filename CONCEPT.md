@@ -139,6 +139,19 @@ These derive from the global engineering rules and are binding on every module:
    lifter models *without acknowledging it*. Last run: 0 over 74.6 M
    instructions.
 
+7. **Reliability is measured, not asserted.** A capability is reliable only when
+   a source that is *not this tool* confirms it, ranked by rung (an answer known
+   before the question > the producer's own artifact > an independent tool > a
+   second implementation > the thing compared against itself). Say **"not
+   verified" out loud** — a missing measurement recorded as missing costs nothing;
+   presented as a result it costs the product. A **confident wrong answer is the
+   worst output** — worse than a crash, which at least announces itself — and none
+   ships. A **boast is worse than a wrong number:** the number gets corrected by
+   the next measurement, the boast never gets checked. And a claim is not real
+   until it is **reproducible** — pinned to the exact target, version and build so
+   a later reader can re-run it. [`docs/VERIFICATION.md`](docs/VERIFICATION.md) is
+   where this is kept honest.
+
 ## 4. Architecture: layers & seams
 
 ```
@@ -169,7 +182,7 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
                  (depended on by every crate above)
 ```
 
-### Crates (Cargo workspace — 13 members, `crates/*`)
+### Crates (Cargo workspace — 15 members, `crates/*`)
 
 | Crate | Responsibility | Depends on | Never touches |
 |---|---|---|---|
@@ -328,6 +341,27 @@ artifacts (N0xHUD is the existing proof) rather than displacing the contract.
   (a captured v0 decompiler transcript) no bare
   `rax`/`rcx` in the common path; memory dereferences resolved to named
   fields/locals; conditions provably correct under intervening flag writes.
+
+### Maturity gate (alpha → beta → 1.0)
+
+Status is a claim like any other — earned, not chosen.
+
+- **alpha** (now): the x64 static core is verified against external sources;
+  breadth — AArch64 decompilation, IL2CPP, live-memory depth — is partial or
+  self-tested only, and the JSON contract may still move.
+- **beta** requires, all at once: **zero known confident-wrong-answers**; **every
+  headline claim reproducible from the repo** (target + version + build-id pinned,
+  not "measured somewhere"); the **verification harness itself trustworthy** (no
+  starved contexts, no un-run axes); **robustness proven** (malformed input never
+  panics or OOMs); **defect-class hunting a standing, repeatable instrument** with
+  the open list published; and **real targets beyond the developer's own corpus**
+  (a fix measured on one input is not a fix).
+- **1.0** requires outside users who have exercised the contract without it moving
+  under them.
+
+"Kill every bug" is not the bar — no non-trivial program reaches it, and as a
+goal it is itself an unmeasurable claim. The bar above is stronger: bounded
+unknowns, reproducible knowns.
 
 ---
 
