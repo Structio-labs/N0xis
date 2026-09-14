@@ -206,6 +206,113 @@ fn recovered_function_extents_equal_the_images_own_unwind_table() {
     }
 }
 
+/// `nm`: the C-level entry points defined in the image (`T`/`t`), by name.
+fn text_symbol(binary: &Path, name: &str) -> Option<u64> {
+    let out = Command::new("nm").env("LC_ALL", "C").arg(binary).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| {
+        let mut it = l.split_whitespace();
+        let addr = it.next()?;
+        let kind = it.next()?;
+        let sym = it.next()?;
+        (matches!(kind, "T" | "t") && sym == name).then(|| u64::from_str_radix(addr, 16).ok())?
+    })
+}
+
+/// The set of function start addresses `function discover` reports for `binary`,
+/// with the given `--arch` (or none). `None` on any envelope failure.
+fn discover_starts(binary: &Path, arch: Option<&str>) -> Option<std::collections::BTreeSet<u64>> {
+    let mut args: Vec<String> =
+        vec!["function".into(), "discover".into(), "--quiet".into(), "--file".into(), binary.display().to_string()];
+    if let Some(a) = arch {
+        args.push("--arch".into());
+        args.push(a.into());
+    }
+    let listing = run_json(&args)?;
+    Some(
+        listing["data"]["functions"]
+            .as_array()?
+            .iter()
+            .map(|f| u64::from_str_radix(f["va"].as_str().unwrap_or("0").trim_start_matches("0x"), 16).unwrap_or(0))
+            .collect(),
+    )
+}
+
+/// **The prologue scan must decode the ISA the image's header declares, not the
+/// x86-64 default.** `cmd_discover` selected its decoder with `resolve_arch`,
+/// which defaults to x64, instead of reading the image's `e_machine`. On an
+/// AArch64 ELF that ran an x86-64 prologue scan over ARM bytes: it reported
+/// phantom `sub_XXXX` where an x86-64 prologue pattern happens to match inside
+/// four-byte ARM instructions, and the discovered set diverged from a scan told
+/// the real ISA. A confident wrong answer — `discover` still reported success.
+///
+/// Two anchors, neither of them this command compared with itself:
+/// - **`nm` (rung 3):** the real entry points `add`, `work`, `main` — every one
+///   must appear in the discovered list.
+/// - **the same image scanned with an explicit `--arch arm64`** — the ISA the
+///   header already declares. The header-driven scan (no `--arch`) must produce
+///   the identical function set; the explicit flag is the known-correct
+///   reference (the ARM decoder is checked against `objdump` elsewhere). This is
+///   the calibrated catcher: revert the fix (default to x64) and the two sets
+///   diverge — x86-64-prologue phantoms appear that the ARM decoder never emits —
+///   and the `assert_eq!` fails on its own line.
+///
+/// Skipped, loudly, where no AArch64 cross-compiler is installed (CI) — a
+/// missing measurement recorded as missing, never faked.
+#[test]
+fn discover_decodes_the_isa_the_header_declares() {
+    let cc = "aarch64-linux-gnu-gcc";
+    if !n0xis_exe().exists() || !have("nm") || !have(cc) {
+        eprintln!("arch-from-header: skipping — n0xis, nm or {cc} unavailable, so nothing was checked");
+        return;
+    }
+    let tmp = std::env::temp_dir().join(format!("n0xis_arch_hdr_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("temp dir");
+    let src = tmp.join("a.c");
+    std::fs::write(
+        &src,
+        "int add(int a,int b){return a+b;}\n\
+         int work(int*p,int n){int s=0;for(int i=0;i<n;i++)s+=p[i];return s;}\n\
+         int main(void){return add(work((int[]){1,2,3},3),4);}\n",
+    )
+    .expect("write source");
+    let binary = tmp.join("prog_arm64");
+    match Command::new(cc).args(["-O1", "-o"]).arg(&binary).arg(&src).output() {
+        Ok(o) if o.status.success() => {}
+        _ => {
+            eprintln!("arch-from-header: skipping — {cc} could not build the AArch64 fixture");
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+    }
+
+    // Header-driven (the fixed path) vs the correct ISA named outright.
+    let auto = discover_starts(&binary, None).expect("discover without --arch");
+    let forced_arm = discover_starts(&binary, Some("arm64")).expect("discover --arch arm64");
+
+    // External floor: the C entry points the symbol table names must all be in
+    // the header-driven answer. (They come from symbols, so this passes even on
+    // the buggy path — it is a sanity anchor, not the catcher.)
+    for name in ["add", "work", "main"] {
+        let addr = text_symbol(&binary, name).unwrap_or_else(|| panic!("nm has no {name}"));
+        assert!(
+            auto.contains(&addr),
+            "nm places {name} at {addr:#x} and the header-driven discover list does not have it"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    eprintln!("arch-from-header: {} functions from the header-driven scan of an AArch64 ELF", auto.len());
+    // The catcher. Before the fix, `auto` was an x86-64 scan of ARM bytes and
+    // carried phantom `sub_` addresses (e.g. an x86-64 prologue match at 0x755)
+    // that the ARM scan never produces — so the two sets differed here.
+    assert_eq!(
+        auto, forced_arm,
+        "discover without --arch decoded a different ISA than the AArch64 header declares:\n  \
+         header-driven: {auto:#x?}\n  --arch arm64:  {forced_arm:#x?}"
+    );
+}
+
 #[test]
 fn every_exported_function_appears_in_the_function_list() {
     if !n0xis_exe().exists() || !have("nm") || !have("gcc") {
