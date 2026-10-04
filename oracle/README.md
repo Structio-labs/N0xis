@@ -65,6 +65,15 @@ check that quietly does nothing is worse than no check.
 `oracle/build.sh` builds the same targets by hand, for measuring outside the
 test harness.
 
+## On real Windows
+
+`oracle/windows/` checks the Windows build on a Windows machine over SSH.
+`run.sh` cross-builds the binaries and a live target here, copies them over and
+runs `win_check.py` there. Windows has no `/proc`, so the target (`wtarget.c`)
+is its own oracle: it prints where its values live and changes them only on
+cue. Static answers are checked against the PE's own exception table, parsed
+without n0xis, and the Linux and Windows builds must agree on the same file.
+
 ## Adding to it
 
 1. Write the function in the `.c` for its shape. **Name it after its own

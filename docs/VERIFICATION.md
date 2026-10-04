@@ -45,7 +45,7 @@ closed) · **NOT CLAIMED** (needs an input or a platform not available here).
 | Recovered signatures | `oracle/` (compiled here, answer known) | 1 | 12/12 on both x86-64 ABIs | arg count, register file, return class correct; recorded gaps (cdecl arity, x87 return) fail the test if they quietly close |
 | Recovered C++ classes (RTTI) | the image's own type-descriptor strings | 2 | 93 + 97 + 152 vtables (MSVC), 269 (Itanium) | every recovered name present in the image's strings |
 | Live memory (Linux) | `/proc/<pid>/mem`, planted values | 1 | 29/31 commands | one wrong, found and fixed; 2 are Windows-only and refuse saying so |
-| Live memory (Windows 11) | the target process itself | 1 | 21/23 checks | 0 wrong; `stack backtrace` is Linux-only |
+| Live memory (Windows 11) | the target process itself | 1 | 21/23 checks | 0 wrong; `stack backtrace` is Linux-only. Re-checked 2026-10-04 with `oracle/windows/run.sh`: 12/12, and the Linux and Windows builds agree on the same PE |
 | CLI ↔ registry front doors agree | the tool's two doors, one question | 5→contract | 4 pairs | agree; a Windows JSON-escaping bug in the *test* found and fixed 2026-09-11 |
 | Discontiguous functions (hot/cold split `<fn>.cold`) | the processor, under gcc-14 `-O2` | 1 | a_switch, all levels | 768 agree, 0 disagree, 0 not modelled; the `.cold` partition folds into its parent so the switch default has a successor (fixed 2026-09-13, was 46/0/2 at `-O2`) |
 | Range-scoped IL2CPP managed-name attachment (PE) | a committed fixture PE (`native_pe.dll`) | 2 | 6 tests | bind + attach through the single-address and the range path; deterministic (no self-image, no toolchain), gates CI on both OSes, calibrated (2026-09-14) |
