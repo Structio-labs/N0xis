@@ -1566,7 +1566,9 @@ struct MemWriteArgs {
     #[arg(long)]
     addr: String,
     /// Bytes to write, e.g. "90 90 c3".
-    #[arg(long)]
+    // A payload, not a source: id `payload`, for the reason given on
+    // `FindArgs::bytes`. (`//`, not `///` — a doc comment here is help text.)
+    #[arg(long = "bytes", id = "payload", value_name = "BYTES")]
     bytes: String,
     #[arg(long)]
     pid: u32,
@@ -1620,7 +1622,9 @@ struct PatchDetourArgs {
 struct PatchWriteArgs {
     #[arg(long)]
     addr: String,
-    #[arg(long)]
+    // A payload, not a source: id `payload`, for the reason given on
+    // `FindArgs::bytes`.
+    #[arg(long = "bytes", id = "payload", value_name = "BYTES")]
     bytes: String,
     #[arg(long)]
     pid: u32,
@@ -2023,7 +2027,15 @@ struct FindArgs {
     #[arg(long)]
     arch: Option<String>,
     /// Byte pattern with `?`/`??` wildcards: `"48 8B ?? C3"`.
-    #[arg(long)]
+    //
+    // Spelled `--bytes` like the inline-bytes *source* other commands take,
+    // but here it is the thing searched for, not the thing searched — so its
+    // id is `pattern`. A `serve` session decides whether a request names its
+    // own source by argument id (`SERVE_SOURCE_IDS`); under the shared id this
+    // pattern counted as one, the session image was withheld, and `find`
+    // searched whatever the project default named instead. (`//`, not `///`:
+    // a doc comment on a clap field is its help text.)
+    #[arg(long = "bytes", id = "pattern", value_name = "BYTES")]
     bytes: Option<String>,
     /// A literal string to find (UTF-8 by default; pass `--utf16` for wide).
     #[arg(long)]
@@ -3424,11 +3436,12 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
             .collect();
         // ELF defined function symbols are this format's answer to the PE export
         // table. Thunk resolution is PE-specific (no equivalent walk here), so
-        // those fields stay `None` instead of being guessed.
+        // those fields stay `None` instead of being guessed. A defined function
+        // symbol has its body in this image, so none is a forwarder.
         let exports: Vec<n0xis_core::ExportInfo> = elf
             .named_functions()
             .into_iter()
-            .map(|(va, name)| n0xis_core::ExportInfo { name, va, thunk_target: None, thunk_kind: None })
+            .map(|(va, name)| n0xis_core::ExportInfo { name, va, forwarder: None, thunk_target: None, thunk_kind: None })
             .collect();
         let profile = n0xis_core::assemble_profile(elf.image_base(), elf.machine(), sections, exports, None, a.exports);
         let advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
@@ -5154,6 +5167,32 @@ fn serve_request_tokens(line: &str) -> Result<Vec<String>, String> {
     }
 }
 
+/// The argument ids that make a request name its own source: a session adds its
+/// `--file` only to a request that names none of these.
+///
+/// Ids, not flag spellings. The spelling `--bytes` is a source in `disasm`,
+/// `ir` or `xref` and data in `find` (a pattern) and `mem write`/`patch` (a
+/// payload); a token list could not tell them apart, so `find --bytes …` in a
+/// session was dispatched without the session's file and searched whatever
+/// the project default named. Those data arguments carry ids of their own, so
+/// the one question — "is this a source?" — has one answer, clap's.
+const SERVE_SOURCE_IDS: [&str; 5] = ["file", "pid", "snapshot", "remote_cmd", "bytes"];
+
+/// Whether a parsed request line names its own source: one of
+/// [`SERVE_SOURCE_IDS`] given on the command line of its leaf subcommand.
+fn serve_names_source(matches: &clap::ArgMatches) -> bool {
+    let mut leaf = matches;
+    while let Some((_, sub)) = leaf.subcommand() {
+        leaf = sub;
+    }
+    SERVE_SOURCE_IDS.iter().any(|id| {
+        // `try_get_raw` first: it answers `Err` for an id this leaf does not
+        // define, where `value_source` would panic. Then only a value the
+        // caller typed counts — a default is not the caller naming a source.
+        matches!(leaf.try_get_raw(id), Ok(Some(_))) && leaf.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
+    })
+}
+
 /// Persistent static session (see `Command::Serve`). Loads `--file` once to prime
 /// the resident image cache, then reads one command line per stdin line and
 /// dispatches it — the image is reused, so repeated calls skip the file re-load.
@@ -5203,15 +5242,19 @@ fn cmd_serve(a: &ServeArgs) {
         // the augmented line is *tried* and the bare one is the fallback —
         // and a parse error is reported from the bare line, so the message
         // never mentions a flag the caller did not type.
-        const SOURCE_FLAGS: [&str; 5] = ["--file", "--pid", "--snapshot", "--remote-cmd", "--bytes"];
-        let names_source = tokens.iter().any(|t| SOURCE_FLAGS.contains(&t.as_str()));
-        let bare = std::iter::once("n0xis".to_string()).chain(tokens.iter().cloned());
+        //
+        // Whether the line names a source is clap's to say too: the bare line
+        // is parsed and its leaf asked by argument id (`serve_names_source`).
+        // A bare line that does not parse names nothing that can be trusted,
+        // so it takes the no-source path and its own error is what is shown.
+        let bare: Vec<String> = std::iter::once("n0xis".to_string()).chain(tokens.iter().cloned()).collect();
+        let names_source = <Cli as clap::CommandFactory>::command()
+            .try_get_matches_from(&bare)
+            .is_ok_and(|m| serve_names_source(&m));
         let parsed = if names_source {
             Cli::try_parse_from(bare)
         } else {
-            let augmented = std::iter::once("n0xis".to_string())
-                .chain(tokens.iter().cloned())
-                .chain(["--file".to_string(), a.file.clone()]);
+            let augmented = bare.iter().cloned().chain(["--file".to_string(), a.file.clone()]);
             Cli::try_parse_from(augmented).or_else(|_| Cli::try_parse_from(bare))
         };
         match parsed {
@@ -7046,6 +7089,46 @@ mod guide_recipe_tests {
                 });
             assert!(runnable, "recipe `{name}` has no runnable step");
         }
+    }
+}
+
+#[cfg(test)]
+mod serve_source_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn names_source(argv: &[&str]) -> bool {
+        let full: Vec<&str> = std::iter::once("n0xis").chain(argv.iter().copied()).collect();
+        let m = Cli::command().try_get_matches_from(full).expect("the request parses");
+        serve_names_source(&m)
+    }
+
+    /// The defect: `find --bytes` was taken for an inline-bytes source because
+    /// it is spelled like one, so a session withheld its own image.
+    #[test]
+    fn a_search_pattern_is_not_a_source_but_inline_bytes_are() {
+        assert!(!names_source(&["find", "--bytes", "48 8B ?? C3"]), "a find pattern is data, not a source");
+        assert!(names_source(&["disasm", "--bytes", "48 89 c8 c3", "--addr", "0x1000"]), "disasm's --bytes is the source itself");
+        assert!(names_source(&["find", "--file", "x.bin", "--bytes", "48"]), "an explicit --file still names one");
+        assert!(names_source(&["xref", "string", "--bytes", "48 89 c8 c3", "--query", "x"]), "a nested leaf is reached");
+        assert!(!names_source(&["module", "list"]));
+    }
+
+    /// The renamed ids must still land in the same fields, or the fix would
+    /// trade a misrouted session for a command that silently loses its input.
+    #[test]
+    fn data_arguments_under_their_own_ids_still_reach_their_fields() {
+        let cli = Cli::try_parse_from(["n0xis", "find", "--bytes", "48 8B ?? C3"]).expect("parse find");
+        let Command::Find(f) = cli.command else { panic!("not find") };
+        assert_eq!(f.bytes.as_deref(), Some("48 8B ?? C3"));
+
+        let cli = Cli::try_parse_from(["n0xis", "mem", "write", "--addr", "0x10", "--bytes", "90 c3", "--pid", "1"]).expect("parse mem write");
+        let Command::Mem(MemCmd::Write(w)) = cli.command else { panic!("not mem write") };
+        assert_eq!(w.bytes, "90 c3");
+
+        let cli = Cli::try_parse_from(["n0xis", "patch", "dry-run", "--addr", "0x10", "--bytes", "90 c3", "--pid", "1"]).expect("parse patch");
+        let Command::Patch(PatchCmd::DryRun(w)) = cli.command else { panic!("not patch dry-run") };
+        assert_eq!(w.bytes, "90 c3");
     }
 }
 

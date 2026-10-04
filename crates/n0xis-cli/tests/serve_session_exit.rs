@@ -31,13 +31,24 @@ fn n0xis_exe() -> std::path::PathBuf {
 /// Drive one `serve` session and collect one parsed envelope per input line,
 /// plus the banner.
 fn serve(lines: &[&str]) -> Vec<Value> {
+    serve_in(None, lines)
+}
+
+/// [`serve`], with the session's working directory set — which is what decides
+/// the `.n0x/` project, and so the project default a request with no source
+/// falls back to.
+fn serve_in(cwd: Option<&std::path::Path>, lines: &[&str]) -> Vec<Value> {
     let exe = n0xis_exe();
     if !exe.exists() {
         eprintln!("skipping: {} not built", exe.display());
         return Vec::new();
     }
     let fixture = std::env::current_exe().expect("test exe");
-    let mut child = Command::new(&exe)
+    let mut cmd = Command::new(&exe);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
         .args(["serve", "--quiet", "--file"])
         .arg(&fixture)
         .stdin(Stdio::piped())
@@ -203,4 +214,79 @@ fn a_malformed_json_request_is_reported_and_the_session_continues() {
     assert_eq!(out[1]["ok"], false);
     assert_eq!(out[1]["error"]["code"], "bad-command");
     assert_eq!(out[2]["ok"], true, "one bad line does not end the session");
+}
+
+/// Bytes planted in this test binary — the session's image — so the answer to
+/// "where are they?" is known before the question is asked. Random-looking on
+/// purpose: a run of them occurring by accident elsewhere in the image is not
+/// a realistic worry, and the expectation is counted from the file anyway.
+#[used]
+static PLANTED: [u8; 20] = [
+    0x9d, 0x3b, 0xe1, 0x52, 0x0f, 0xa7, 0x6c, 0xd4, 0x18, 0x83, 0x5e, 0xb9, 0x27, 0xf0, 0x4a, 0xc6, 0x71, 0x0e, 0x95, 0x3d,
+];
+
+/// A working directory whose `.n0x/` project names a *different* image as the
+/// default source — the state the defect needed to answer from the wrong file.
+/// The decoy is a real image that does not hold [`PLANTED`], so searching it
+/// is a successful, silent zero rather than an error.
+fn decoy_project(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("n0xis-serve-source-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(".n0x")).expect("create .n0x");
+    let decoy = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native_pe.dll");
+    let session = serde_json::json!({ "file": decoy.to_string_lossy(), "attached_at_unix": 0 });
+    std::fs::write(dir.join(".n0x/session.json"), session.to_string()).expect("write session.json");
+    dir
+}
+
+/// How many times `needle` occurs in `hay` — counted from the raw file, not by
+/// the tool under test.
+fn occurrences(hay: &[u8], needle: &[u8]) -> usize {
+    hay.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+/// THE DEFECT. `find --bytes` takes a *pattern*; a session took it for an
+/// inline-bytes source because it is spelled like one, withheld its own image,
+/// and `find` searched the project default instead — here a decoy that answers
+/// "0 matches" with `ok: true`.
+#[test]
+fn a_find_pattern_in_a_session_searches_the_session_image() {
+    let fixture = std::fs::read(std::env::current_exe().expect("test exe")).expect("read fixture");
+    let expected = occurrences(&fixture, &PLANTED);
+    assert!(expected >= 1, "the planted bytes are in the fixture file");
+
+    let pattern: Vec<String> = PLANTED.iter().map(|b| format!("{b:02x}")).collect();
+    let line = serde_json::to_string(&["find", "--bytes", &pattern.join(" "), "--limit", "0"]).expect("encode");
+    let dir = decoy_project("find");
+    let out = serve_in(Some(&dir), &[&line]);
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.is_empty() {
+        return;
+    }
+    let resp = &out[1];
+    assert_eq!(resp["ok"], true, "{resp}");
+    assert_eq!(
+        resp["data"]["count"].as_u64(),
+        Some(expected as u64),
+        "the pattern must be searched for in the session's image, which holds it {expected} time(s): {resp}"
+    );
+    let name = std::env::current_exe().expect("test exe").file_name().expect("name").to_string_lossy().to_string();
+    assert_eq!(resp["meta"]["source"], format!("static:{name}"), "and the image searched is the session's: {resp}");
+}
+
+/// The other direction: where `--bytes` *is* the source, it still wins over
+/// the session's image.
+#[test]
+fn inline_bytes_in_a_session_are_still_the_source() {
+    let dir = decoy_project("disasm");
+    let out = serve_in(Some(&dir), &[r#"["disasm","--bytes","48 89 c8 c3","--addr","0x1000","--count","2"]"#]);
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.is_empty() {
+        return;
+    }
+    let resp = &out[1];
+    assert_eq!(resp["ok"], true, "inline bytes must be read, not merged with the session file: {resp}");
+    assert_eq!(resp["meta"]["source"], "bytes@0x1000", "the source is the inline bytes: {resp}");
+    let insns = resp["data"]["insns"].as_array().cloned().unwrap_or_default();
+    let text: Vec<String> = insns.iter().map(|i| i["text"].as_str().unwrap_or_default().to_string()).collect();
+    assert_eq!(text, ["mov rax,rcx", "ret"], "the four inline bytes, decoded: {resp}");
 }

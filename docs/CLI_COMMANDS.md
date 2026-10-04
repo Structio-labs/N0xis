@@ -36,7 +36,10 @@ object per command they are given. A `serve` request is either a command line
 (`decomp pseudo --addr 0x…`) or a JSON array of argument strings
 (`["annotate","comment","--addr","0x…","--value","…"]`); only the JSON form can
 carry an argument containing `"` or a line break. The banner lists the forms the
-session reads in `data.request_formats`.
+session reads in `data.request_formats`. A request that names no source of its own
+(`--file`, `--pid`, `--snapshot`, `--remote-cmd`, or `--bytes` where it is inline code) runs
+against the session's file; `--bytes` as a `find` pattern or a `mem write`/`patch` payload
+is data, not a source, and does not count.
 
 - success: `{"ok":true,"data":{…},"meta":{"schema":"n0xis.*.v1", …}}`
 - failure: `{"ok":false,"error":{"code":…,"message":…,"hint"?:…}}`
@@ -106,8 +109,11 @@ Environment / readiness check (arch decoders, project resolution).
 **Run this first on an unfamiliar target.** Reports what the image *is* and which commands
 will not work on it — the answer that is otherwise assembled from a sequence of empty
 results.
-- `data.image` — machine, sections, `export_count` vs `export_distinct_addresses` (they
-  differ when the linker folded identical bodies), `folded` groups, `thunk_count` (exports
+- `data.image` — machine, sections, `export_count`, `forwarded_count` (exports that are
+  forwarders: the table points at a string such as `OTHERDLL.Function`, not at code — with
+  `--exports` each carries it as `forwarder`), `export_distinct_addresses` (over the
+  non-forwarded exports only; lower than `export_count - forwarded_count` when the linker
+  folded identical bodies), `folded` groups, `thunk_count` (exports
   that are branch stubs, whose real implementation lives at the branch target),
   `pdata_present` / `pdata_functions`, and `engine_hints` with the evidence for each.
 - `data.il2cpp` — metadata path and format version, read from the blob header, when an

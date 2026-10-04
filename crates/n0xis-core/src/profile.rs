@@ -61,8 +61,22 @@ pub struct SectionInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct ExportInfo {
     pub name: String,
-    /// The address the export table points at.
+    /// The address the export table points at. For a [forwarder](Self::forwarder)
+    /// that is the address of the forwarder *string*, not of code: it is kept as
+    /// the table states it, and the `forwarder` field is what says so.
     pub va: Va,
+    /// Set when the export is a **forwarder**: its table entry points inside the
+    /// export directory itself, at an ASCII string such as `OTHERDLL.Function`
+    /// naming where the loader resolves it, and this image holds no code for it.
+    ///
+    /// Unmarked, a forwarder read as an ordinary export whose `va` was the
+    /// string's address in a data section — measured on a real x64 system DLL,
+    /// 211 of 1 698 exports, every one reported with a `.rdata` address, and
+    /// all of them counted as export *code* addresses. A caller that jumps to
+    /// `va` landed in data. A forwarder is never decoded as a thunk: a string is
+    /// not code, so `thunk_target`/`thunk_kind` are always absent beside it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forwarder: Option<String>,
     /// Where that address jumps to, when the export is a one-instruction
     /// branch stub. **This is the address generated code actually calls**, so
     /// a symbol lookup keyed on `va` alone will never name it.
@@ -122,10 +136,18 @@ pub struct ImageProfile {
     /// hex when unrecognized (never guessed into a wrong name).
     pub machine: String,
     pub sections: Vec<SectionInfo>,
+    /// Every named export the table lists:
+    /// `export_count = forwarded_count + (exports at their own code addresses)`.
     pub export_count: usize,
-    /// How many *distinct* addresses those exports occupy. Lower than
-    /// `export_count` means the linker folded some — see [`Self::folded`].
+    /// Exports that are [forwarders](ExportInfo::forwarder) — resolved by the
+    /// loader in another module, with no code in this image. Excluded from
+    /// every figure below, because their table address is a string's.
+    pub forwarded_count: usize,
+    /// How many *distinct* addresses the non-forwarded exports occupy. Lower
+    /// than `export_count - forwarded_count` means the linker folded some —
+    /// see [`Self::folded`].
     pub export_distinct_addresses: usize,
+    /// Non-forwarded exports that are one-instruction branch stubs.
     pub thunk_count: usize,
     /// Exports that relay through a pointer to an address **outside this
     /// image** — the signature of a detour installed after load. Always
@@ -186,11 +208,23 @@ fn profile_read(source: &dyn MemorySource, base: Va, rva: u32, len: usize) -> Op
     source.read(base.offset(rva as u64), len).ok()
 }
 
+/// Longest export name read; a corrupt table can never make a read unbounded.
+const MAX_NAME: usize = 512;
+
+/// Longest forwarder string read. It is `<module>.<name>` (or `<module>.#<n>`),
+/// so one name's worth plus room for the module part.
+const MAX_FORWARDER: usize = MAX_NAME + 256;
+
 /// Read a NUL-terminated ASCII name at `rva`, bounded so a corrupt table can
 /// never make this loop forever.
 fn read_cstr(source: &dyn MemorySource, base: Va, rva: u32) -> Option<String> {
-    const MAX_NAME: usize = 512;
-    let buf = profile_read(source, base, rva, MAX_NAME)?;
+    read_cstr_within(source, base, rva, MAX_NAME)
+}
+
+/// [`read_cstr`] with an explicit bound: at most `max` bytes are read, and a
+/// string with no NUL inside them is returned as far as it was read.
+fn read_cstr_within(source: &dyn MemorySource, base: Va, rva: u32, max: usize) -> Option<String> {
+    let buf = profile_read(source, base, rva, max)?;
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     Some(String::from_utf8_lossy(&buf[..end]).into_owned())
 }
@@ -230,6 +264,9 @@ pub fn profile_image(
     let magic = rd_u16(&hdr, e_lfanew + 24).unwrap_or(0x20b);
     let dd = e_lfanew + 24 + if magic == 0x10b { 96 } else { 112 };
     let export_rva = rd_u32(&hdr, dd).unwrap_or(0);
+    // The directory's size is what tells a forwarder from code: an entry whose
+    // RVA falls inside `[export_rva, export_rva + export_size)` is a string.
+    let export_size = rd_u32(&hdr, dd + 4).unwrap_or(0);
     let exception_rva = rd_u32(&hdr, dd + 3 * 8).unwrap_or(0);
     let exception_size = rd_u32(&hdr, dd + 3 * 8 + 4).unwrap_or(0);
 
@@ -269,7 +306,7 @@ pub fn profile_image(
         });
     }
 
-    let exports = read_exports(source, arch, module_base, export_rva);
+    let exports = read_exports(source, arch, module_base, export_rva, export_size);
 
     // `.pdata` entries are 12 bytes each; the count is exact, so report it
     // rather than re-walking the table.
@@ -295,8 +332,15 @@ pub fn assemble_profile(
     pdata: Option<usize>,
     with_exports: bool,
 ) -> ImageProfile {
+    // A forwarder's `va` is the address of a string naming another module's
+    // export, so every figure that reads `va` as a code address — distinct
+    // addresses, folding, thunks, detours, engine fingerprints — is computed
+    // over the exports that actually have code here, and only those.
+    let code_exports: Vec<&ExportInfo> = exports.iter().filter(|e| e.forwarder.is_none()).collect();
+    let forwarded_count = exports.len() - code_exports.len();
+
     let mut by_addr: HashMap<u64, Vec<String>> = HashMap::new();
-    for e in &exports {
+    for e in &code_exports {
         by_addr.entry(e.va.get()).or_default().push(e.name.clone());
     }
     let mut folded: Vec<FoldedExports> = by_addr
@@ -310,9 +354,9 @@ pub fn assemble_profile(
         .collect();
     folded.sort_by_key(|f| f.va.get());
 
-    let thunk_count = exports.iter().filter(|e| e.thunk_target.is_some()).count();
+    let thunk_count = code_exports.iter().filter(|e| e.thunk_target.is_some()).count();
     let export_distinct_addresses = by_addr.len();
-    let engine_hints = detect_engines(&exports);
+    let engine_hints = detect_engines(&code_exports);
 
     let pdata_present = pdata.is_some();
     let pdata_functions = pdata.unwrap_or(0);
@@ -324,7 +368,7 @@ pub fn assemble_profile(
         .map(Va)
         .unwrap_or(module_base);
 
-    let detoured_exports: Vec<String> = exports
+    let detoured_exports: Vec<String> = code_exports
         .iter()
         .filter(|e| e.thunk_kind == Some("indirect"))
         .filter(|e| e.thunk_target.is_some_and(|t| t.get() < module_base.get() || t.get() >= image_end.get()))
@@ -337,6 +381,7 @@ pub fn assemble_profile(
         machine,
         sections,
         export_count: exports.len(),
+        forwarded_count,
         export_distinct_addresses,
         thunk_count,
         detoured_exports,
@@ -352,9 +397,17 @@ pub fn assemble_profile(
 /// Walk `IMAGE_EXPORT_DIRECTORY`, resolving each *named* export to its address
 /// and, when that address holds a lone unconditional branch, to the branch
 /// target — the address the generated code actually calls.
-fn read_exports(source: &dyn MemorySource, arch: &dyn Arch, base: Va, export_rva: u32) -> Vec<ExportInfo> {
+///
+/// `export_size` is the directory's declared size. An entry whose RVA lies
+/// inside `[export_rva, export_rva + export_size)` is a forwarder (the format's
+/// own definition, and the loader's test): its string is read instead of its
+/// "code", and no thunk decode is attempted on it.
+fn read_exports(source: &dyn MemorySource, arch: &dyn Arch, base: Va, export_rva: u32, export_size: u32) -> Vec<ExportInfo> {
     // A malformed or hostile table must not be able to allocate unboundedly.
     const MAX_EXPORTS: usize = 100_000;
+    // Widened so a hostile `export_rva + export_size` cannot wrap and make the
+    // forwarder range cover code (or nothing) by overflow.
+    let dir_end = export_rva as u64 + export_size as u64;
     let Some(dir) = profile_read(source, base, export_rva, 40) else { return Vec::new() };
     let num_names = rd_u32(&dir, 24).unwrap_or(0) as usize;
     let addr_funcs = rd_u32(&dir, 28).unwrap_or(0);
@@ -381,11 +434,19 @@ fn read_exports(source: &dyn MemorySource, arch: &dyn Arch, base: Va, export_rva
             continue;
         }
         let va = base.offset(fn_rva as u64);
+        if (export_rva as u64..dir_end).contains(&(fn_rva as u64)) {
+            // The string lies inside the directory, so read no further than its
+            // declared end — and never more than one bounded name's worth.
+            let room = (dir_end - fn_rva as u64).min(MAX_FORWARDER as u64) as usize;
+            let Some(forwarder) = read_cstr_within(source, base, fn_rva, room) else { continue };
+            out.push(ExportInfo { name, va, forwarder: Some(forwarder), thunk_target: None, thunk_kind: None });
+            continue;
+        }
         let (thunk_target, thunk_kind) = match thunk_target_at(source, arch, va) {
             Some((t, k)) => (Some(t), Some(k)),
             None => (None, None),
         };
-        out.push(ExportInfo { name, va, thunk_target, thunk_kind });
+        out.push(ExportInfo { name, va, forwarder: None, thunk_target, thunk_kind });
     }
     out
 }
@@ -421,7 +482,7 @@ fn thunk_target_at(source: &dyn MemorySource, arch: &dyn Arch, va: Va) -> Option
     Some((Va(ptr), "indirect"))
 }
 
-fn detect_engines(exports: &[ExportInfo]) -> Vec<EngineHint> {
+fn detect_engines(exports: &[&ExportInfo]) -> Vec<EngineHint> {
     let mut hints = Vec::new();
     for (engine, prefix, min_hits) in ENGINE_EXPORT_PREFIXES {
         let hits = exports.iter().filter(|e| e.name.starts_with(prefix)).count();
@@ -907,6 +968,75 @@ mod tests {
         let adv = advisories(&p, None, false);
         let hook = adv.iter().find(|a| a.reason.contains("detoured since load")).expect("detour advisory");
         assert!(hook.reason.contains("il2cpp_thunked"));
+    }
+
+    /// A PE32+ whose export directory lists one forwarder and one export with
+    /// code, every byte planted so the answer is known before the profile runs.
+    ///
+    /// Directory at 0x400, declared size 0x100, so `[0x400, 0x500)` is "inside
+    /// the directory". The forwarder's RVA (0x480) points at its string there;
+    /// the code export's RVA is exactly 0x500 — the first byte *past* the
+    /// directory — so the half-open bound is pinned too.
+    fn pe_with_a_forwarder() -> (Snapshot, Va) {
+        let base = Va(0x180000000);
+        let mut img = vec![0u8; 0x1000];
+        let e_lfanew = 0x80usize;
+        img[0x3c..0x40].copy_from_slice(&(e_lfanew as u32).to_le_bytes());
+        img[e_lfanew..e_lfanew + 4].copy_from_slice(b"PE\0\0");
+        img[e_lfanew + 4..e_lfanew + 6].copy_from_slice(&0x8664u16.to_le_bytes());
+        img[e_lfanew + 20..e_lfanew + 22].copy_from_slice(&240u16.to_le_bytes());
+        img[e_lfanew + 24..e_lfanew + 26].copy_from_slice(&0x20bu16.to_le_bytes());
+        let dd = e_lfanew + 24 + 112;
+        img[dd..dd + 4].copy_from_slice(&0x400u32.to_le_bytes()); // export rva
+        img[dd + 4..dd + 8].copy_from_slice(&0x100u32.to_le_bytes()); // export size
+
+        let ed = 0x400usize;
+        let (names_rva, ords_rva, funcs_rva) = (0x430u32, 0x440u32, 0x448u32);
+        img[ed + 24..ed + 28].copy_from_slice(&2u32.to_le_bytes());
+        img[ed + 28..ed + 32].copy_from_slice(&funcs_rva.to_le_bytes());
+        img[ed + 32..ed + 36].copy_from_slice(&names_rva.to_le_bytes());
+        img[ed + 36..ed + 40].copy_from_slice(&ords_rva.to_le_bytes());
+        for (i, (rva, name)) in [(0x460u32, "fwd_export"), (0x470, "code_export")].iter().enumerate() {
+            let at = names_rva as usize + i * 4;
+            img[at..at + 4].copy_from_slice(&rva.to_le_bytes());
+            img[*rva as usize..*rva as usize + name.len()].copy_from_slice(name.as_bytes());
+            img[ords_rva as usize + i * 2..ords_rva as usize + i * 2 + 2].copy_from_slice(&(i as u16).to_le_bytes());
+        }
+        for (i, rva) in [0x480u32, 0x500].iter().enumerate() {
+            let at = funcs_rva as usize + i * 4;
+            img[at..at + 4].copy_from_slice(&rva.to_le_bytes());
+        }
+        let fwd = b"OTHERDLL.Function";
+        img[0x480..0x480 + fwd.len()].copy_from_slice(fwd);
+        img[0x500] = 0xC3; // `ret`: real code, right past the directory
+        (Snapshot::builder().region(base, img).build(), base)
+    }
+
+    #[test]
+    fn a_forwarded_export_is_marked_and_kept_out_of_the_code_address_figures() {
+        let (snap, base) = pe_with_a_forwarder();
+        let arch = X64::new();
+        let p = profile_image(&snap, &arch, base, true).unwrap();
+
+        let fwd = p.exports.iter().find(|e| e.name == "fwd_export").expect("the forwarder is still listed");
+        assert_eq!(fwd.forwarder.as_deref(), Some("OTHERDLL.Function"), "a forwarder carries its exact string");
+        assert_eq!(fwd.va, base.offset(0x480), "`va` stays what the table states");
+        assert_eq!((fwd.thunk_target, fwd.thunk_kind), (None, None), "a string is not decoded as a thunk");
+
+        let code = p.exports.iter().find(|e| e.name == "code_export").unwrap();
+        assert_eq!(code.forwarder, None, "the first byte past the directory is code, not a forwarder");
+        assert_eq!(code.va, base.offset(0x500));
+
+        assert_eq!(p.export_count, 2);
+        assert_eq!(p.forwarded_count, 1);
+        assert_eq!(p.export_distinct_addresses, 1, "the forwarder's string address is not an export address");
+        assert!(p.folded.is_empty());
+
+        // On the wire the field exists only where it means something.
+        let wire = serde_json::to_value(&p.exports).unwrap();
+        let by_name = |n: &str| wire.as_array().unwrap().iter().find(|e| e["name"] == n).unwrap().clone();
+        assert_eq!(by_name("fwd_export")["forwarder"], "OTHERDLL.Function");
+        assert!(by_name("code_export").get("forwarder").is_none());
     }
 
     #[test]
