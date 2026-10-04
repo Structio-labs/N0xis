@@ -646,14 +646,12 @@ deliberately-varied samples (RE_METHOD F3).
 
 ---
 
-## UI-layer localization (Phase 9)
+## UI-layer localization (Phase 9, marked invalid)
 
-> **Status.** `ui locate` is in the CLI (`cmd_ui_locate`), in MCP (`ui_locate`), and in the
-> guide under its own category — merged into `main`. It is **implemented and unit-tested**: the
-> predicate and overlap math are covered by synthetic-snapshot unit tests only. The live
-> appearance-correlation validation (Phase 9 brief §9.3) **has not been run against a live
-> target**, so its honest status is **"implemented, pending live validation"**, *not*
-> "verified".
+> **Status: marked INVALID (2026-10-04).** Screen region → memory is **not implemented** for
+> real targets. `ui locate` is in the CLI (`cmd_ui_locate`) and MCP (`ui_locate`), but it only
+> hit-tests one hardcoded AABB layout and has been exercised on synthetic snapshots and a planted
+> element, never validated live (Phase 9 brief §9.3). Do not rely on its results.
 
 ### `ui locate --pid <u32> --rect <x0,y0,x1,y1>`
 Enumerate live UI elements whose bounding box intersects a screen rect, by hit-testing a live
@@ -823,7 +821,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x sig gen` | Generate a FLIRT-class `.npat` signature database from a *symbolized* image: fingerprint each named function's leading bytes, wildcarding the displacements a linker varies (relative call/jump targets, RIP-relative offsets). Feed the output back with `decomp … --flirt` to name the same functions in a *stripped* binary that statically links them |
 | `n0x sig validate` | Report which bytes are invariant across samples; refuse to bless a signature from <3 deliberately-varied samples |
 
-### UI-layer localization (Phase 9) (4)
+### UI-layer localization (Phase 9, marked invalid) (4)
 
 | Command | What it does |
 |---|---|

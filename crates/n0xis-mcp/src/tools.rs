@@ -981,7 +981,7 @@ impl N0xisServer {
     }
 
     #[tool(
-        description = "Screen region -> memory addresses: hit-test a live target's own UI bounding boxes and report the elements drawing inside a rectangle. Read-only (no breakpoints, no writes). Use `space:\"auto\"` first and read `observed_range` to learn which coordinate space the target's boxes are in. For noisy results, run once over a rect where the widget is ABSENT with `save_as`, then re-run over the rect where it is PRESENT with `exclude_from` — the spatial diff drops structures that overlap every rect."
+        description = "NOT VALIDATED (Phase 9 marked invalid): only hit-tests one hardcoded UI-box layout, do not rely on the results. Screen region -> memory addresses: hit-test a live target's own UI bounding boxes and report the elements drawing inside a rectangle. Read-only (no breakpoints, no writes). Use `space:\"auto\"` first and read `observed_range` to learn which coordinate space the target's boxes are in. For noisy results, run once over a rect where the widget is ABSENT with `save_as`, then re-run over the rect where it is PRESENT with `exclude_from` — the spatial diff drops structures that overlap every rect."
     )]
     fn ui_locate(&self, Parameters(a): Parameters<UiLocateRequest>) -> String {
         let rect = match parse_rect(&a.rect) {

@@ -17,12 +17,9 @@ collected into one place.
 The Phase 8 spec-first method commands (`game grep`, `locate by-transition`,
 `input probe`, `const identify`, `bindings list`, `sig validate`) have **landed**
 and are documented in [CLI_COMMANDS.md](CLI_COMMANDS.md) — they are no longer
-claimable. Phase 9's `ui locate`, the structural-predicate scan primitive it's
-built on (`n0xis-core::structural`, an internal engine — **not** a runnable
-`scan structural` command), and the conditional hardware watchpoint
-(`debug watch --when`) are **implemented in the working tree** (unit-tested
-against synthetic snapshots, pending live-target validation — not yet on `main`)
-and likewise off this list. What's below is what's still genuinely open.
+claimable. Phase 9 (`ui locate`, screen region → memory) is **marked invalid**:
+the capability is not implemented on real targets, so that work is open again.
+What's below is what's still genuinely open.
 
 Labels follow [Bevy](https://github.com/bevyengine/bevy)'s shape, scaled down:
 **A-** (area), **D-** (difficulty: `Trivial` → `Complex`), **S-** (status).
@@ -149,9 +146,9 @@ not bundled into the first cut.
 
 ## MCP parity gaps
 
-The MCP server ([`n0xis-mcp`](../crates/n0xis-mcp/src/tools.rs)) exposes 18
-tools today — the read-oriented static/dynamic workflow plus the working-tree
-`ui_locate`. The stateful, cross-invocation verbs are the gap.
+The MCP server ([`n0xis-mcp`](../crates/n0xis-mcp/src/tools.rs)) exposes 25
+tools today — the read-oriented static/dynamic workflow (its `ui_locate` is not
+validated; Phase 9 is marked invalid). The stateful, cross-invocation verbs are the gap.
 
 - **Mirror `scan`/`table`/`patch`/`debug watch` as MCP tools** — these CLI
   verbs bridge state across independent process invocations via `.n0x/dumps/`;

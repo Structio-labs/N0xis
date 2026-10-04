@@ -870,16 +870,18 @@ regardless).
 
 ---
 
-## Phase 9 — Seeing what the target sees: UI-layer localization 🎯 ⏳
+## Phase 9 — Seeing what the target sees: UI-layer localization ❌ INVALID (for now)
 
-> **Status (2026-07-22) — committed to branch `feat/phase9-ui-locate` (`fbf7a5f`),
-> not yet merged to `main`.** Every ⚠️ item below is **implemented and self-tested**
-> (unit tests over synthetic snapshots — the AABB predicate, the overlap maths, the
-> mirrored-dword relation, the real 348k-noise sample) and the GDI capture path is
-> mspaint-verified, but the decisive **live-target validation** — the §9.3
-> appearance-correlation test on a running game — **has not been run**. Read the ⚠️ markers as *implemented, pending live
-> validation*, never *verified to `X64`'s standard* (same discipline as the ARM64
-> caveat in Phase 7).
+> **Status (2026-10-04): marked INVALID until it is redone.** The phase's deliverable,
+> getting from a region of the screen to the memory that drives it **on a real
+> target**, is **not implemented**. What exists is a hit-test over one hardcoded AABB
+> layout (offsets calibrated on a single engine's layout), exercised only on synthetic
+> snapshots and on a planted element in a test process. That checks the arithmetic, not
+> the capability, and the §9.3 live appearance-correlation test was never passed.
+> Nothing in this phase may be cited as a working feature (docs, posts, tool
+> descriptions) until it is reimplemented and validated live. The `ui *` commands stay
+> in the binary, labelled as not validated; the helper commands below do not deliver the
+> phase on their own. The text below is kept as the record of what was tried.
 
 Goal: close the last gap the combo campaign hit — **there is no way to get from
 "the thing I can see on screen" to "the memory that drives it."**
@@ -911,9 +913,10 @@ names a missing tool.
   address). On a hot site, filtering costs more than it saves — the guard makes
   that failure loud instead of fatal.
 
-- ⚠️ **`ui locate --rect <x0,y0,x1,y1>` — screen region → candidate addresses**
-  — implemented and wired (CLI `ui locate` + MCP `ui_locate`), pending live
-  validation *(the operator's own proposal; fixes the campaign's terminal dead end)*.
+- ❌ **`ui locate --rect <x0,y0,x1,y1>` — screen region → candidate addresses**
+  — **not implemented as a usable capability** (Phase 9 marked invalid 2026-10-04).
+  The CLI/MCP entry points exist but only hit-test one hardcoded layout; see the
+  status above *(the operator's own proposal; fixes the campaign's terminal dead end)*.
   **Implementation brief**:
   [`docs/PHASE9_UI_LOCATE_BRIEF.md`](docs/PHASE9_UI_LOCATE_BRIEF.md) — spec,
   verified offsets, rejected alternatives, validation plan.
@@ -945,7 +948,7 @@ names a missing tool.
   byte pattern. An interactive overlay for drawing the rectangle is a GUI
   concern (see the deferred-GUI note above); the command itself should take
   coordinates, so it stays CLI/MCP-drivable.
-  > **Implemented (2026-07-21).** `n0xis-core::ui_locate` (`UiLocatePass`,
+  > **Landed in code (2026-07-21); see the Phase 9 status, marked invalid.** `n0xis-core::ui_locate` (`UiLocatePass`,
   > `n0xis.ui.locate.v1`), a thin configuration of the new structural-scan
   > primitive (below) for one shape: the seven contiguous `f32`s of an AABB +
   > radius. Wired into the CLI (`ui locate`) and MCP (`ui_locate`, verified via
@@ -5056,7 +5059,7 @@ measures its own capture rather than asserting success — `blank: false`,
 `foreground: true, hwnd: 1836090`. After: `GetForegroundWindow()` returned
 **1836090**.
 
-**`ui locate` — verified, and this is its first run against a live target.**
+**`ui locate` — a planted-element check only, not a verification of the capability** (Phase 9 is marked invalid 2026-10-04; see its status).
 Against a process holding one planted element in the layout the scanner reads
 (seven contiguous `f32`: `min.xyz`, `max.xyz`, `radius`) plus two decoys
 elsewhere:
@@ -6725,7 +6728,7 @@ most laborious classic workflow.
      alone is not authoritative for either.
 5. ⬜ **Strings, properly.** Literal index → metadata-usage slot → `xref to` on the slot.
    This is what makes "find the code behind the text on screen" work here, and it is the most
-   common entry point in practice. Composes directly with Phase 9's `ui locate`: on-screen
+   common entry point in practice. Would compose with Phase 9's `ui locate` once that is redone (Phase 9 is marked invalid): on-screen
    text → managed `TMP_Text` instance → backing field → writing method.
 6. ⬜ **Devirtualization from metadata.** Vtable slot + interface-offset resolution turns
    Phase 10's hardest ❌ item (*indirect / virtual call resolution*) from "needs a real

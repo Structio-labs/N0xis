@@ -1,7 +1,7 @@
 # N0xis — Concept & Architecture (v1)
 
-> Status: **alpha** — implemented through ROADMAP Phase 9 (Phases 1–8 committed to
-> `main`; Phase 9 lives in the working tree). This is the design/architecture doc,
+> Status: **alpha** (phase status lives in ROADMAP; Phase 9, UI-layer localization,
+> is marked **invalid**: screen region → memory is not implemented). This is the design/architecture doc,
 > but no longer a greenfield plan: the shape described below is **built, not merely
 > proposed** — verify any specific "done" against the code and [`ROADMAP.md`](ROADMAP.md).
 > Companion docs: [`ROADMAP.md`](ROADMAP.md) · [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md).

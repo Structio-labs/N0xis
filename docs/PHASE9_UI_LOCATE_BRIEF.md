@@ -3,14 +3,12 @@
 **Audience**: the engineer/agent implementing this. Self-contained: you do not
 need the conversation this came from.
 
-**Status**: ⏳ **implemented, pending live validation** (working tree; not yet
-committed to `main`). `ui locate` is wired into the CLI (`cmd_ui_locate`, schema
-`n0xis.ui.locate.v1`) and exposed over MCP (`ui_locate`), built on the
-structural-predicate scan primitive (`n0xis-core::structural` +
-`ui_locate`). Its unit tests pass — predicate and overlap maths on synthetic
-buffers (§9.1, §11). The decisive **§9.3 live appearance-correlation test has
-NOT been run** on a real target, so this is "implemented and self-tested", **not
-"verified"**; live correlation validation is still pending. Conditional
+**Status**: ❌ **Phase 9 marked INVALID (2026-10-04).** The capability this brief
+specifies, screen region → memory **on a real target**, is **not implemented**.
+What landed is a hit-test over one hardcoded AABB layout (`cmd_ui_locate`, MCP
+`ui_locate`, schema `n0xis.ui.locate.v1`), exercised only on synthetic buffers
+(§9.1, §11) and a planted element; the §9.3 live appearance-correlation test was
+never passed. This file stays as the historical spec for a redo. Conditional
 watchpoints (the sibling item) also landed in the working tree — see "What
 already exists".
 

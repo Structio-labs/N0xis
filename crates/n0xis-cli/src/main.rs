@@ -273,9 +273,9 @@ enum Command {
     /// deliberately-varied samples (Phase 8; RE_METHOD F3).
     #[command(subcommand)]
     Sig(SigCmd),
-    /// Screen region -> memory addresses, by hit-testing a live target's own
-    /// retained scene graph from outside (Phase 9). No graphics-API hooking,
-    /// no frame capture, no pixels — see docs/PHASE9_UI_LOCATE_BRIEF.md.
+    /// NOT VALIDATED (Phase 9 is marked invalid): screen region -> memory is not
+    /// implemented for real targets; `ui locate` only hit-tests one hardcoded
+    /// layout. See docs/PHASE9_UI_LOCATE_BRIEF.md.
     #[command(subcommand)]
     Ui(UiCmd),
     /// IL2CPP managed layer (Phase 12): the C# names behind an IL2CPP target's
@@ -461,7 +461,8 @@ struct Il2cppMetadataArgs {
 
 #[derive(Subcommand)]
 enum UiCmd {
-    /// Enumerate live UI elements whose bounding box intersects a screen rect.
+    /// NOT VALIDATED (Phase 9 marked invalid): hit-test one hardcoded UI-box
+    /// layout against a screen rect. Do not rely on the results.
     Locate(UiLocateArgs),
     /// List a process's top-level windows (title/class/rects/DPI) so an agent
     /// can name the game window before capturing or locating.
@@ -2913,7 +2914,7 @@ fn guide_category(top: &str) -> &'static str {
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
-        "ui" => "UI-layer localization (Phase 9)",
+        "ui" => "UI-layer localization (Phase 9, marked invalid)",
         "il2cpp" => "IL2CPP managed layer (Phase 12)",
         "bundle" | "lua" => "Game-engine assets (Bitsquid/LuaJIT)",
         _ => "Other",
