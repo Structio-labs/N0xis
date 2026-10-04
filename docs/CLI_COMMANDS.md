@@ -32,7 +32,11 @@ failure, and including an argument error, which is an envelope like any other
 (`{"ok":false,"error":{"code":"bad-arguments",…}}`) rather than a usage message
 on stderr. The two exceptions are the persistent servers, `serve` and
 `remote-serve`: they are request loops, and emit a ready banner followed by one
-object per command they are given.
+object per command they are given. A `serve` request is either a command line
+(`decomp pseudo --addr 0x…`) or a JSON array of argument strings
+(`["annotate","comment","--addr","0x…","--value","…"]`); only the JSON form can
+carry an argument containing `"` or a line break. The banner lists the forms the
+session reads in `data.request_formats`.
 
 - success: `{"ok":true,"data":{…},"meta":{"schema":"n0xis.*.v1", …}}`
 - failure: `{"ok":false,"error":{"code":…,"message":…,"hint"?:…}}`

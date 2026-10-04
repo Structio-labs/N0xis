@@ -231,7 +231,10 @@ enum Command {
     /// compact JSON envelope per line to stdout — the image is parsed once and
     /// reused, so repeated decompile/disasm/xref calls avoid the per-call file
     /// re-load. A GUI/agent front-end drives this instead of spawning the CLI
-    /// per click. Blank line or EOF exits.
+    /// per click. A line may instead be a JSON array of argument strings
+    /// (`["annotate","comment","--addr","0x…","--value","…"]`), which carries
+    /// any text exactly; the ready banner lists the accepted forms in
+    /// `data.request_formats`. Blank line or EOF exits.
     Serve(ServeArgs),
     /// Structural diffing at the IR/pseudo level (Phase 7): agent-friendly
     /// change reports between two functions (e.g. two builds of a binary).
@@ -5134,6 +5137,23 @@ fn cmd_snapshot_list(pretty: bool) -> bool {
 /// the one it was written for: a Linux box can be the *target* an operator
 /// drives from elsewhere (`--remote-cmd "ssh box n0xis remote-serve --pid N"`),
 /// and the same path is how an Android device is reached over `adb`.
+/// The request forms a `serve` session reads, announced in its ready banner so
+/// a client learns them from the server instead of assuming them.
+const SERVE_REQUEST_FORMATS: [&str; 2] = ["text", "json-argv"];
+
+/// One session request line → argv. A line that opens with `[` is a JSON array
+/// of strings (`json-argv`), which carries every argument exactly. The text form
+/// has no escape: `"` only toggles quoting and a newline ends the request, so an
+/// argument holding either cannot be written in it at all.
+fn serve_request_tokens(line: &str) -> Result<Vec<String>, String> {
+    if line.starts_with('[') {
+        serde_json::from_str::<Vec<String>>(line)
+            .map_err(|e| format!("a request starting with `[` must be a JSON array of strings: {e}"))
+    } else {
+        n0xis_sources::split_command_line(line)
+    }
+}
+
 /// Persistent static session (see `Command::Serve`). Loads `--file` once to prime
 /// the resident image cache, then reads one command line per stdin line and
 /// dispatches it — the image is reused, so repeated calls skip the file re-load.
@@ -5143,7 +5163,7 @@ fn cmd_serve(a: &ServeArgs) {
     let ready = match n0xis_frontend::source::resolve(spec) {
         Ok(r) => serde_json::json!({
             "ok": true,
-            "data": { "ready": true, "label": r.label },
+            "data": { "ready": true, "label": r.label, "request_formats": SERVE_REQUEST_FORMATS },
             // Every response carries a schema; the banner is a response.
             "meta": { "schema": schema::v1::SERVE_READY, "tool": "n0xis", "tool_version": env!("CARGO_PKG_VERSION") },
         }),
@@ -5166,7 +5186,7 @@ fn cmd_serve(a: &ServeArgs) {
             println!("{}", serde_json::json!({ "ok": false, "error": { "code": code, "message": msg } }));
             let _ = std::io::stdout().flush();
         };
-        let tokens = match n0xis_sources::split_command_line(line) {
+        let tokens = match serve_request_tokens(line) {
             Ok(t) => t,
             Err(e) => {
                 emit_err("bad-command", e);

@@ -151,3 +151,56 @@ fn a_bad_line_reports_its_own_error_and_the_session_continues() {
     assert!(!msg.contains("--file"), "the error must be about what the caller typed, not an injected flag: {msg}");
     assert_eq!(out[2]["ok"], true, "one bad line does not end the session");
 }
+
+/// A client learns the request forms from the server. The GUI writes JSON argv
+/// only when the banner lists it, and an older engine that does not is driven
+/// with text lines instead of being sent a form it would misread.
+#[test]
+fn the_banner_lists_the_request_forms_the_session_reads() {
+    let out = serve(&["doctor"]);
+    if out.is_empty() {
+        return;
+    }
+    let formats = out[0]["data"]["request_formats"].as_array().cloned().unwrap_or_default();
+    assert!(formats.iter().any(|f| f == "json-argv"), "{}", out[0]);
+    assert!(formats.iter().any(|f| f == "text"), "{}", out[0]);
+}
+
+#[test]
+fn a_json_argv_request_runs_like_its_text_form() {
+    let out = serve(&[r#"["module","list"]"#]);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out[1]["ok"], true, "a JSON request inherits the session's file too: {}", out[1]);
+    assert_eq!(out[1]["meta"]["schema"], "n0xis.module.list.v1");
+}
+
+/// THE POINT of the JSON form. The text form has no escape: `"` only toggles
+/// quoting and is dropped, so this argument cannot be sent as text at all. As
+/// JSON it must reach the argument parser byte for byte; the parser's error
+/// quotes the unexpected argument back, which is what this reads.
+#[test]
+fn a_json_argv_argument_arrives_exactly_as_sent() {
+    let arg = r#"say "hi" \ back"#;
+    let line = serde_json::to_string(&["doctor", arg]).expect("encode");
+    let out = serve(&[&line]);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out[1]["ok"], false, "{}", out[1]);
+    assert_eq!(out[1]["error"]["code"], "parse-error");
+    let msg = out[1]["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains(arg), "the argument must reach the parser exactly as sent: {msg}");
+}
+
+#[test]
+fn a_malformed_json_request_is_reported_and_the_session_continues() {
+    let out = serve(&[r#"["doctor","#, "doctor"]);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out[1]["ok"], false);
+    assert_eq!(out[1]["error"]["code"], "bad-command");
+    assert_eq!(out[2]["ok"], true, "one bad line does not end the session");
+}
