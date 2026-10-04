@@ -4,7 +4,9 @@
 
 Memory scanners find the *address*. Decompilers explain the *code*. **N0xis connects them.**
 
-<!-- ▶ HERO GIF GOES HERE — record `provenance trace` running live and drop it at docs/assets/provenance.gif, then:  ![demo](docs/assets/provenance.gif) -->
+![A live run: scan for a value, narrow it after a hit, then a hardware watchpoint returns the decompiled statement that wrote it](docs/assets/provenance.gif)
+
+<sub>A real run of [`examples/hp-demo`](examples/hp-demo): find a value in a running process, narrow it after a hit, arm a hardware watchpoint, and get the statement that wrote it. Rerun it yourself with `demo.sh`.</sub>
 
 ```console
 $ n0x provenance trace --pid 9348 --addr 0x7ff68bef3010 --kind write
