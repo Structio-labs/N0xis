@@ -33,7 +33,7 @@ tmp="$(mktemp -d)"
 scp -q "$HOST:C:/n0xtest/win_check_report.json" "$tmp/report.json" || exit 1
 pe_win="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pe"])' "$tmp/report.json")"
 scp -q "$HOST:${pe_win//\\//}" "$tmp/pe.dll" || exit 1
-python3 - "$tmp/report.json" "$tmp/pe.dll" "$L" "$ROOT/oracle/windows/win_check.py" <<'PY'
+python3 -B - "$tmp/report.json" "$tmp/pe.dll" "$L" "$ROOT/oracle/windows/win_check.py" <<'PY'
 import hashlib, importlib.util, json, subprocess, sys
 report, pe, n0x, wc_path = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("wc", wc_path)

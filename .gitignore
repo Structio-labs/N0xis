@@ -57,3 +57,6 @@ scratchpad/
 /crates/*/*.dll
 /crates/*/*.exe
 /crates/*/*.o
+
+# Python bytecode from oracle/ helper scripts
+__pycache__/
