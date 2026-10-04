@@ -1127,7 +1127,7 @@ Legend: ✅ production · 🚧 partial / early · ❌ missing.
 | Exception-edge recovery | ✅ **both formats** *(ELF 2026-09-05, PE 2026-09-06)* — `.eh_frame` FDE + `.gcc_except_table` LSDA on ELF (FDE count identical to `readelf`, 14 355 on `libQt6Core.so.6`); on PE, `.pdata` `RUNTIME_FUNCTION` + `.xdata`, with `__C_specific_handler` `SCOPE_TABLE`s and MSVC C++ `FuncInfo` (`0x19930520`–`22`) reached through the handler **RVA**, funclet ranges attributed to the function whose bytes they cover. Function counts match `llvm-readobj --unwind` exactly. `__CxxFrameHandler4` is recognized as out of reach and why — see below |
 | Indirect / virtual call resolution | ✅ *(2026-09-05, extended 2026-09-06)* — resolves to the method: class × RTTI vtable × slot, read out of the image and rewritten to a direct call, bounded by the next vtable and named by the class it dispatches through. The class travels along every edge that carries a value (copies, agreeing phis, spill/reload, typed field loads, direct-call returns, a stored vtable, a constructor's argument 0), and a **constant** vtable address resolves with no class at all. Yield is seed-bound: of the indirect calls left, the largest bucket dispatches on a *field of another object* and needs that field typed |
 | SIMD / FP lift | ✅ Rung 5c/5h **complete** — SSE and AVX data moves as 128/256-bit ops, packed *and* scalar arithmetic in both encodings (legacy read-modify-write vs non-destructive VEX decided by `EncodingKind`, not operand count), FMA, predicate compares, conversions, blends, rounding; masked EVEX and per-lane conditional accesses refused on purpose. Over a 1 539-method sample **45** `// asm:` nodes remain, all four categories stated |
-| PDB / type ingestion | ❌ missing (corpus is stripped game builds — deliberately low priority) |
+| PDB / type ingestion | ⏳ **started 2026-10-04, PDB first.** Re-ranked from "low priority": the primary corpus is now general software and system binaries, which far more often come with debug information. Plan and first measurements under gap-closing item 1 below |
 | C++ RTTI / vtable / class recovery | ✅ Rung 7a **+ program-wide layouts** — MSVC and Itanium RTTI, vtable naming, `this`-typing, full template demangling, base-class inheritance graph, and one **field set per class** unified across every method that touches it (`analyze --layout`, persisted), checked against `sizeof` from the real headers (18 of 21 classes inside the true object size) |
 | Library-function identification (FLIRT-class) | ✅ **matcher + generator + auto-apply** — `n0xis-flirt` matches, `sig gen` learns a corpus from any symbolized image (self-validating), `analyze --flirt` **persists** matches into `.n0x/` so the function list, xref, decompiler and GUI all render them with no flag; corpora chain. Shipped OSS corpus: zlib. Breadth of the shipped library is the remaining gap, not the mechanism |
 | Calling-convention & argument recovery | 🚧 early — arity + return only; CC is *assumed* x64-fastcall, no `this`call/vectorcall/variadic detection |
@@ -1187,7 +1187,7 @@ recorded from it is what the difference exposed about N0xis, in absolute numbers
 `sizeof` oracle from real headers and the unwind-table cross-check: something
 outside this codebase that can prove it wrong.
 
-1. ⬜ **Library type information — PDB, DWARF, and header-derived types.** *The
+1. ⏳ **Library type information — PDB, DWARF, and header-derived types.** *The
    biggest lever, and it is not a hard problem — it is an unbuilt reader.*
    Whole-program propagation and program-wide class layouts both work; what they
    lack is input. Measured: **99 of 2 505** recovered fields carry a type (4%),
@@ -1202,6 +1202,40 @@ outside this codebase that can prove it wrong.
    coverage** (a wrong type is worse than none); and on a *stripped* binary of
    the same program, the types recovered without the debug info are scored
    against it as ground truth.
+   **Started 2026-10-04, PDB first.** It is the missing input above and, at the
+   same time, a rung-2 source for function names and boundaries on real binaries,
+   where the discovery numbers so far rested on a second decompiler (rung 4).
+   Measured before any code was written:
+   - a PE whose PDB contents are known in advance (rung 1) builds on Linux with
+     `clang --target=x86_64-w64-mingw32 -gcodeview -fuse-ld=lld`, so the oracle
+     needs no Windows toolchain;
+   - the chosen reader, `pdb2` (MIT/Apache-2.0), read every procedure (including
+     a `static` one that exists only in its module stream), field offset and
+     enumerator of that target exactly; it agrees with `llvm-pdbutil` (rung 3) on
+     all 59 918 function publics of five PE32+/MSVC system DLLs (0.9 to 4.3 MB)
+     whose PDBs come from the vendor's public symbol server; and it survived
+     1 500 mutated copies of the rung-1 PDB under a 1 GiB address-space cap with
+     no crash, hang or allocation failure. A second candidate reader aborted on an
+     untrusted length while merely opening a mutated file and was not taken;
+   - the first run of the PDBs as an oracle found a defect (chained unwind
+     fragments listed as functions) and 85 functions the PDBs name that neither
+     discovery mode finds, both recorded as open in
+     [the ledger](docs/VERIFICATION.md#open).
+
+   Milestones, each closed by its own measurement:
+   - **M1** the reader behind an adapter, fuzzed from its first commit, giving
+     names and authoritative function extents. A PDB is accepted only when its
+     GUID and age equal the image's own CodeView record; a symbol server is
+     contacted only on an explicit request, and what it returns is cached in the
+     standard symbol-store layout. Built under the hostile-input rule (see
+     *Hostile and corrupted input* below): the PDB is cross-checked against the
+     image, never trusted on its own.
+   - **M2** the PDB as a discovery oracle, then fix waves: chained fragments
+     first, then the missed functions.
+   - **M3** PDB types into the type system, judged by the *Done when* above.
+   - **M4** prototypes for API calls in binaries without a PDB, from the platform
+     vendor's MIT-licensed API metadata.
+   - **M5** DWARF, and debuginfod for ELF.
 2. ⬜ **Points-to / alias precision.** Ranked by a chain traced end to end this
    week: of the unresolved indirect calls, the largest bucket dispatches on a
    field of another object; 80 of those need **11 `(class, offset)` pairs**, and
@@ -2204,10 +2238,12 @@ lift/SLEIGH-ingest per ISA.
      third gate reads **0.920875**, not the 0.918875 recorded earlier, because
      the distribution upgraded that package mid-session — re-measured with the
      pre-change binary it is 0.920875 too, so the change itself moves nothing.
-5. ⬜ **PDB / type ingestion — corpus-dependent rank.** High value for
+5. ⏳ **PDB / type ingestion — corpus-dependent rank.** High value for
    system/Microsoft binaries (public symbol servers short-circuit type recovery with
    ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL
    work, below it for game work.
+   **Re-ranked 2026-10-04:** started as the first slice of gap-closing item 1,
+   because the corpus moved to general software and system binaries.
 6. ⬜ **Compiler-idiom library — the endless backlog.** The "hundreds of idioms"
    that two decades of decompiler work accumulate. Each idiom is independent and
    individually cheap; grow the library continuously. Never "done."
@@ -7473,6 +7509,51 @@ wanted, which is the whole argument for writing them down before that day.
   global value cannot serve both a sub-second transform and a plugin that streams for a
   minute. It belongs in the `PluginRecord` in `.n0x/plugins.json`, with 10 s as the
   default. This is a hard blocker for any long-running or streaming plugin.
+
+### Hostile and corrupted input: fail loudly or answer truly ⬜ (recorded 2026-10-04)
+
+For a reverse-engineering tool a malformed file is the normal case, not the edge:
+software that does not want to be analysed corrupts exactly the structures analysers
+read (the ELF section table, which the loader never uses, is the classic). A damaged
+input can end three ways, and only one of them is a lie:
+- the tool crashes, hangs or exhausts memory: visible, but it stops the analysis and
+  breaks an agent's pipeline;
+- the tool refuses and says why: correct;
+- the tool accepts garbage and answers confidently: the defect class this item exists
+  to remove.
+
+**Rule.** Trust what the loader and the processor use. Everything else a file carries,
+such as symbols, debug information or the section table, is a claim, and the answer
+says so. A forgery that is consistent everywhere cannot be detected from the file
+alone; what the tool can do is never present a claim as a verified fact.
+
+**Where it stands (measured 2026-10-04):** about ten targeted tests refuse truncated or
+malformed input in individual parsers (archive, metadata, signature and decoder paths);
+no parser is fuzzed; the rule "never allocate on a length read from the input" has no
+mechanical guard (no lint configuration, no CI step). Robustness against hostile input
+is therefore **not measured**.
+
+**Plan, each step with its definition of done:**
+1. ⬜ **Fuzz every parser**: PE, ELF, PDB, signature databases, IL2CPP metadata,
+   LuaJIT bytecode, archive formats, project files. Done when each has a checked-in
+   fuzz target and a recorded run with no crash, hang or allocation failure under a
+   memory cap.
+2. ⬜ **Differential mutation.** Damage a known-good file and compare this tool's
+   reading with an independent parser (`llvm-readobj`, `llvm-pdbutil`). An input the
+   reference rejects and this tool accepts silently, or one both accept but read
+   differently, is a candidate wrong answer. Done when the harness is checked in and
+   its recorded run shows zero silent disagreements on a stated mutation budget.
+3. ⬜ **Cross-checks inside the file.** Unwind codes describe the prologue and can be
+   compared with the bytes at the function start; a function from debug information
+   must lie in executable code and agree with the unwind table; the section headers a
+   PDB stores must equal the image's own. A contradiction is reported, never resolved
+   silently.
+4. ⬜ **A hostile corpus built here** (rung 1: the planted defect is known), alongside
+   an obfuscated-code corpus.
+5. ⬜ **A mechanical guard on allocations sized by input**, for example a
+   disallowed-methods lint with explicit allowances at reviewed sites.
+
+The PDB reader (gap-closing item 1, M1) is the first parser built under this rule.
 
 ## Sequencing notes
 - **Phases 1–2 are non-negotiable prerequisites** — the optimizing decompiler
