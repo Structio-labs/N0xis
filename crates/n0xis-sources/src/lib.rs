@@ -19,6 +19,11 @@ mod snapshot;
 
 pub use snapshot::{Snapshot, SnapshotBuilder};
 
+// The PE export table, read once for the file loader and for `profile` over a
+// mapped module alike — OS-free, so it is compiled without `static-pe`.
+mod pe_exports;
+pub use pe_exports::{read_export_table, ExportDirectory, ExportTarget, PeExport, MAX_EXPORT_SLOTS};
+
 mod linewire;
 
 mod remote;

@@ -1496,7 +1496,13 @@ struct DumpSaveArgs {
     #[arg(long)]
     kind: String,
     /// Read the payload from this file instead of `--content`/stdin.
-    #[arg(long)]
+    //
+    // The file to *store*, not a source: id `payload_file`. A `serve` session
+    // adds its own `--file` to a request whose leaf defines the source id
+    // `file`, and under that id this payload was one — so `dump save --content
+    // hello` in a session stored the whole session image as the note, ok:true.
+    // (`//`, not `///`: a doc comment here would join the help text above.)
+    #[arg(long = "file", id = "payload_file", value_name = "FILE")]
     file: Option<String>,
     /// Inline payload.
     #[arg(long)]
@@ -4472,8 +4478,14 @@ fn cmd_dump(cmd: DumpCmd, pretty: bool) -> bool {
                 String::new()
             } else {
                 use std::io::Read;
+                let mut stdin = match command_stdin() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return ir_err(STDIN_IS_SESSION_CODE, &format!("dump save has no --content or --file, so it would read its payload from stdin; {e}. Pass --content or --file."), pretty);
+                    }
+                };
                 let mut buf = String::new();
-                if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                if let Err(e) = stdin.read_to_string(&mut buf) {
                     return ir_err("stdin-failed", &e.to_string(), pretty);
                 }
                 buf
@@ -5167,8 +5179,43 @@ fn serve_request_tokens(line: &str) -> Result<Vec<String>, String> {
     }
 }
 
+/// Set by [`cmd_serve`] before it reads its first request, and never cleared:
+/// for the rest of the process stdin is the session's request channel.
+static STDIN_IS_SESSION_CHANNEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The error code a command answers with when it would read stdin inside a
+/// `serve` session.
+const STDIN_IS_SESSION_CODE: &str = "stdin-is-session-channel";
+
+/// Why a command may not read its stdin: inside a session it carries requests.
+struct StdinIsSessionChannel;
+
+impl std::fmt::Display for StdinIsSessionChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("inside a `serve` session stdin carries the session's requests, so it cannot be read as input")
+    }
+}
+
+/// The only way a command reaches its own stdin.
+///
+/// Inside a `serve` session stdin is the request channel, and the session
+/// holds its lock while a request runs. A command reading stdin there waits on
+/// that lock forever: measured with `dump save` and no payload, the session
+/// answered neither that request nor any after it, and stored nothing. Even
+/// unlocked, what it read would be the session's next requests. So the read is
+/// refused, and the command answers with an error naming what to pass
+/// instead. Every stdin reader goes through here; the `stdin_has_one_gate`
+/// test fails on one that does not.
+fn command_stdin() -> Result<std::io::Stdin, StdinIsSessionChannel> {
+    if STDIN_IS_SESSION_CHANNEL.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(StdinIsSessionChannel);
+    }
+    Ok(std::io::stdin())
+}
+
 /// The argument ids that make a request name its own source: a session adds its
-/// `--file` only to a request that names none of these.
+/// `--file` only to a request that names none of these (and whose leaf takes a
+/// `file` at all — see [`serve_leaf_takes_file`]).
 ///
 /// Ids, not flag spellings. The spelling `--bytes` is a source in `disasm`,
 /// `ir` or `xref` and data in `find` (a pattern) and `mem write`/`patch` (a
@@ -5178,17 +5225,54 @@ fn serve_request_tokens(line: &str) -> Result<Vec<String>, String> {
 /// the one question — "is this a source?" — has one answer, clap's.
 const SERVE_SOURCE_IDS: [&str; 5] = ["file", "pid", "snapshot", "remote_cmd", "bytes"];
 
-/// Whether a parsed request line names its own source: one of
-/// [`SERVE_SOURCE_IDS`] given on the command line of its leaf subcommand.
-fn serve_names_source(matches: &clap::ArgMatches) -> bool {
+/// The deepest subcommand's matches: where a request's own arguments live.
+fn serve_leaf(matches: &clap::ArgMatches) -> &clap::ArgMatches {
     let mut leaf = matches;
     while let Some((_, sub)) = leaf.subcommand() {
         leaf = sub;
     }
+    leaf
+}
+
+/// Whether a request's leaf subcommand takes the session's image: it defines
+/// an argument with the source id `file`. A session adds its `--file` to such
+/// a request, and to no other.
+///
+/// Asked of the id, not of the spelling `--file`: `dump save --file` is the
+/// file to store, so it lives under an id of its own, and a request that only
+/// *accepts* a `--file` no longer has the session image put in it. Before
+/// this, the session's `--file` was appended to any request naming no source
+/// and kept wherever it parsed — and in `dump save` it parsed as the payload.
+///
+/// The leaf's *definition* is asked — clap's command tree, walked by the
+/// subcommand names the line parsed to — not its matches. `ArgMatches` only
+/// knows which ids a leaf defines in a debug build: clap's unknown-id check is
+/// compiled under `debug_assertions`, and a release build answers `Ok(None)`
+/// for any id at all. A first version asked the matches, passed every test (a
+/// debug build), and in the release binary put the session image back into
+/// `dump save`.
+fn serve_leaf_takes_file(matches: &clap::ArgMatches) -> bool {
+    let root = <Cli as clap::CommandFactory>::command();
+    let mut cmd = &root;
+    let mut m = matches;
+    while let Some((name, sub)) = m.subcommand() {
+        let Some(next) = cmd.find_subcommand(name) else { return false };
+        cmd = next;
+        m = sub;
+    }
+    cmd.get_arguments().any(|arg| arg.get_id() == "file")
+}
+
+/// Whether a parsed request line names its own source: one of
+/// [`SERVE_SOURCE_IDS`] given on the command line of its leaf subcommand.
+fn serve_names_source(matches: &clap::ArgMatches) -> bool {
+    let leaf = serve_leaf(matches);
     SERVE_SOURCE_IDS.iter().any(|id| {
-        // `try_get_raw` first: it answers `Err` for an id this leaf does not
-        // define, where `value_source` would panic. Then only a value the
-        // caller typed counts — a default is not the caller naming a source.
+        // `try_get_raw` first: in a debug build it answers `Err` for an id this
+        // leaf does not define, where `value_source` would panic (a release
+        // build answers `Ok(None)` and does not panic — either way the id is
+        // not counted). Then only a value the caller typed counts — a default
+        // is not the caller naming a source.
         matches!(leaf.try_get_raw(id), Ok(Some(_))) && leaf.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
     })
 }
@@ -5198,6 +5282,8 @@ fn serve_names_source(matches: &clap::ArgMatches) -> bool {
 /// dispatches it — the image is reused, so repeated calls skip the file re-load.
 fn cmd_serve(a: &ServeArgs) {
     use std::io::{BufRead, Write};
+    // From here on stdin is the request channel; no command may read it.
+    STDIN_IS_SESSION_CHANNEL.store(true, std::sync::atomic::Ordering::SeqCst);
     let spec = SourceSpec { file: Some(a.file.as_str()), ..Default::default() };
     let ready = match n0xis_frontend::source::resolve(spec) {
         Ok(r) => serde_json::json!({
@@ -5238,24 +5324,32 @@ fn cmd_serve(a: &ServeArgs) {
         // repeat `--file` on every one. Supply it here when the line names no
         // source of its own; an explicit one on the line still wins.
         //
-        // Whether a given subcommand even accepts `--file` is clap's to say, so
-        // the augmented line is *tried* and the bare one is the fallback —
-        // and a parse error is reported from the bare line, so the message
-        // never mentions a flag the caller did not type.
+        // Both questions are clap's, asked by argument id. Does the line name
+        // a source (`serve_names_source`)? And does its leaf subcommand take
+        // the session's image at all — define the source id `file`
+        // (`serve_leaf_takes_file`)? Only a line that names none and takes one
+        // gets the session's `--file`. A `--file` that is data under another
+        // id (`dump save`'s payload) is never filled in with the image.
         //
-        // Whether the line names a source is clap's to say too: the bare line
-        // is parsed and its leaf asked by argument id (`serve_names_source`).
-        // A bare line that does not parse names nothing that can be trusted,
-        // so it takes the no-source path and its own error is what is shown.
+        // The leaf is read from the bare line; when that does not parse (a
+        // command whose `--file` is required), from the augmented one, which
+        // still has to define `file` to be used. A parse error is reported
+        // from the bare line, so the message never mentions a flag the caller
+        // did not type.
         let bare: Vec<String> = std::iter::once("n0xis".to_string()).chain(tokens.iter().cloned()).collect();
-        let names_source = <Cli as clap::CommandFactory>::command()
-            .try_get_matches_from(&bare)
-            .is_ok_and(|m| serve_names_source(&m));
-        let parsed = if names_source {
-            Cli::try_parse_from(bare)
+        let augmented: Vec<String> = bare.iter().cloned().chain(["--file".to_string(), a.file.clone()]).collect();
+        let cli = <Cli as clap::CommandFactory>::command();
+        let bare_matches = cli.clone().try_get_matches_from(&bare);
+        let names_source = bare_matches.as_ref().is_ok_and(serve_names_source);
+        let takes_file = !names_source
+            && match &bare_matches {
+                Ok(m) => serve_leaf_takes_file(m),
+                Err(_) => cli.try_get_matches_from(&augmented).is_ok_and(|m| serve_leaf_takes_file(&m)),
+            };
+        let parsed = if takes_file {
+            Cli::try_parse_from(&augmented).or_else(|_| Cli::try_parse_from(&bare))
         } else {
-            let augmented = bare.iter().cloned().chain(["--file".to_string(), a.file.clone()]);
-            Cli::try_parse_from(augmented).or_else(|_| Cli::try_parse_from(bare))
+            Cli::try_parse_from(&bare)
         };
         match parsed {
             Ok(cli) => match cli.command {
@@ -5981,6 +6075,19 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         "decreased" => FilterCriterion::Decreased,
         other => return ir_err("bad-transition", &format!("unknown --transition '{other}' (changed|increased|decreased)"), pretty),
     };
+    // Without `--wait-ms` the operator's Enter on stdin ends the pause. Claim it
+    // before attaching or snapshotting anything: inside a `serve` session stdin
+    // is the request channel (see `command_stdin`), so it is refused here,
+    // while nothing has been done yet.
+    let operator = match a.wait_ms {
+        Some(_) => None,
+        None => match command_stdin() {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return ir_err(STDIN_IS_SESSION_CODE, &format!("locate by-transition without --wait-ms waits for Enter on stdin; {e}. Pass --wait-ms."), pretty);
+            }
+        },
+    };
     {
         // Data-side command: nothing here decodes an instruction, so the ISA is
         // only what `Ctx` requires structurally — not a bypassed seam.
@@ -6013,10 +6120,10 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         if let Some(ms) = a.wait_ms {
             eprintln!("[n0x] toggle exactly one thing in the target now — rescanning in {ms}ms");
             std::thread::sleep(std::time::Duration::from_millis(ms));
-        } else {
+        } else if let Some(stdin) = &operator {
             eprintln!("[n0x] toggle exactly one thing in the target, then press Enter to rescan…");
             let mut _line = String::new();
-            let _ = std::io::stdin().read_line(&mut _line);
+            let _ = stdin.read_line(&mut _line);
         }
 
         // 3) Rescan and keep only what changed (the transition = the signal).
@@ -7129,6 +7236,127 @@ mod serve_source_tests {
         let cli = Cli::try_parse_from(["n0xis", "patch", "dry-run", "--addr", "0x10", "--bytes", "90 c3", "--pid", "1"]).expect("parse patch");
         let Command::Patch(PatchCmd::DryRun(w)) = cli.command else { panic!("not patch dry-run") };
         assert_eq!(w.bytes, "90 c3");
+    }
+
+    fn takes_file(argv: &[&str]) -> bool {
+        let full: Vec<&str> = std::iter::once("n0xis").chain(argv.iter().copied()).collect();
+        let m = Cli::command().try_get_matches_from(full).expect("the request parses");
+        serve_leaf_takes_file(&m)
+    }
+
+    /// The defect: `dump save`'s `--file` is the file to store, and a session
+    /// filled it with its own image.
+    #[test]
+    fn the_file_to_store_is_not_where_a_session_puts_its_image() {
+        assert!(!takes_file(&["dump", "save", "--name", "t", "--kind", "note", "--content", "hello"]), "a payload file is not a source");
+        assert!(takes_file(&["module", "list"]), "a command that reads a target takes the session's");
+        assert!(takes_file(&["xref", "string", "--query", "x"]), "a nested leaf is reached");
+        assert!(!takes_file(&["doctor"]), "a command with no --file at all takes nothing");
+    }
+
+    /// clap answers "is this id defined here?" only in a debug build: its
+    /// unknown-id check is compiled under `debug_assertions`, and a release
+    /// build returns `Ok(None)` for any id. So `try_get_*`'s `Err` must never
+    /// stand for "not defined" — the test suite (a debug build) would pass and
+    /// the release binary would answer differently. It happened here once: the
+    /// session's leaf test asked `try_get_raw("file").is_ok()`, passed every
+    /// test, and in release put the session image back into `dump save`.
+    #[test]
+    fn definedness_is_never_read_from_a_matches_error() {
+        let src = include_str!("main.rs");
+        let product = &src[..src.find("\n#[cfg(test)]").expect("test modules follow the product code")];
+        let bad: Vec<&str> = product
+            .lines()
+            .filter(|l| {
+                let code = l.split("//").next().unwrap_or("");
+                ["try_get_raw(", "try_get_one", "try_get_many", "try_contains_id("].iter().any(|f| code.contains(f))
+                    && [".is_ok()", ".is_err()", "Err("].iter().any(|r| code.contains(r))
+            })
+            .collect();
+        assert!(bad.is_empty(), "a clap `try_get_*` error read as an answer (debug-only): {bad:?}");
+    }
+
+    /// The payload's new id must still land in its field.
+    #[test]
+    fn the_file_to_store_still_reaches_its_field() {
+        let cli = Cli::try_parse_from(["n0xis", "dump", "save", "--name", "t", "--kind", "raw", "--file", "x.bin"]).expect("parse dump save");
+        let Command::Dump(DumpCmd::Save(d)) = cli.command else { panic!("not dump save") };
+        assert_eq!(d.file.as_deref(), Some("x.bin"));
+    }
+}
+
+#[cfg(test)]
+mod stdin_gate_tests {
+    use std::path::{Path, PathBuf};
+
+    /// Where a direct `stdin()` call is allowed, as `(file, enclosing fn, why)`.
+    /// Everything else must go through `command_stdin`.
+    const ALLOWED: &[(&str, &str, &str)] = &[
+        ("n0xis-cli/src/main.rs", "command_stdin", "the gate itself"),
+        ("n0xis-cli/src/main.rs", "cmd_serve", "the session's own request channel"),
+        ("n0xis-cli/src/main.rs", "cmd_remote_serve", "a request channel of its own; refused inside a session"),
+    ];
+
+    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                rs_files(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// A `serve` session reads its requests from stdin, so a command that read
+    /// stdin itself consumed requests as input. `command_stdin` refuses inside
+    /// a session; this keeps every reader behind it. Product code only — every
+    /// crate's `src/`, up to its first `#[cfg(test)]`.
+    #[test]
+    fn stdin_has_one_gate() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crates/").to_path_buf();
+        let mut files = Vec::new();
+        for c in std::fs::read_dir(&crates).expect("read crates/").flatten() {
+            rs_files(&c.path().join("src"), &mut files);
+        }
+        assert!(files.len() > 20, "the walk found the workspace's sources ({} files)", files.len());
+
+        let mut found: Vec<(String, String)> = Vec::new();
+        for f in &files {
+            let text = std::fs::read_to_string(f).expect("read source");
+            let product = &text[..text.find("\n#[cfg(test)]").unwrap_or(text.len())];
+            let rel = f.strip_prefix(&crates).expect("under crates/").to_string_lossy().replace('\\', "/");
+            let mut current_fn = String::new();
+            for line in product.lines() {
+                let code = line.split("//").next().unwrap_or("");
+                // `fn name(`, after any qualifiers (`pub(crate)`, `const`, …).
+                let mut words = code.split_whitespace().skip_while(|w| *w != "fn");
+                if words.next().is_some()
+                    && let Some(name) = words.next()
+                {
+                    current_fn = name.split(['(', '<']).next().unwrap_or("").to_string();
+                }
+                // `stdin()` as its own name (`io::stdin()`), not the tail of
+                // another (`command_stdin()`).
+                let direct = code.match_indices("stdin()").any(|(i, _)| {
+                    !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+                });
+                if direct {
+                    found.push((rel.clone(), current_fn.clone()));
+                }
+            }
+        }
+        let stray: Vec<&(String, String)> =
+            found.iter().filter(|(f, func)| !ALLOWED.iter().any(|(af, afn, _)| af == f && afn == func)).collect();
+        assert!(stray.is_empty(), "stdin read outside `command_stdin` (inside a session it is the request channel): {stray:?}");
+        for (f, func, why) in ALLOWED {
+            assert!(
+                found.iter().any(|(ff, fun)| ff == f && fun == func),
+                "stale exemption {f}::{func} ({why}) — it no longer reads stdin; remove it"
+            );
+        }
+        eprintln!("stdin readers: {} allowed, {} in all", ALLOWED.len(), found.len());
     }
 }
 

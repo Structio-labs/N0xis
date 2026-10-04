@@ -57,22 +57,38 @@ fn serve_in(cwd: Option<&std::path::Path>, lines: &[&str]) -> Vec<Value> {
         .spawn()
         .expect("spawn serve");
     {
-        let stdin = child.stdin.as_mut().expect("stdin");
+        let mut stdin = child.stdin.take().expect("stdin");
         for l in lines {
             writeln!(stdin, "{l}").expect("write line");
         }
         writeln!(stdin).expect("blank line ends the session");
     }
+    // Read the answers on a thread and give the session a deadline. A session
+    // that stops answering — a command that read stdin waited forever on the
+    // lock the session holds — then shows up as missing answers, which the
+    // tests count, instead of hanging the test run.
     let out = BufReader::new(child.stdout.take().expect("stdout"));
-    let vals: Vec<Value> = out
-        .lines()
-        .map_while(Result::ok)
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(&l).unwrap_or_else(|e| panic!("every session line is one JSON envelope: {e} in {l}")))
-        .collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(out.lines().map_while(Result::ok).collect::<Vec<String>>());
+    });
+    let raw = match rx.recv_timeout(SESSION_DEADLINE) {
+        Ok(raw) => raw,
+        Err(_) => {
+            let _ = child.kill();
+            rx.recv().unwrap_or_default()
+        }
+    };
     let _ = child.wait();
-    vals
+    raw.iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("every session line is one JSON envelope: {e} in {l}")))
+        .collect()
 }
+
+/// Far beyond any session these tests drive (each answers in well under a
+/// second); reached only by a session that has stopped answering.
+const SESSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[test]
 fn the_banner_is_an_envelope_like_every_other_response() {
@@ -104,8 +120,9 @@ fn a_session_command_inherits_the_file_it_was_started_with() {
 
 #[test]
 fn a_command_that_takes_no_file_still_runs() {
-    // The injection is *tried*, not forced: `doctor` accepts no `--file`, and
-    // must not start failing because the session has one.
+    // The session's `--file` goes only to a command whose leaf defines the
+    // source id `file`: `doctor` defines none, and must not start failing
+    // because the session has one.
     let out = serve(&["doctor"]);
     if out.is_empty() {
         return;
@@ -289,4 +306,90 @@ fn inline_bytes_in_a_session_are_still_the_source() {
     let insns = resp["data"]["insns"].as_array().cloned().unwrap_or_default();
     let text: Vec<String> = insns.iter().map(|i| i["text"].as_str().unwrap_or_default().to_string()).collect();
     assert_eq!(text, ["mov rax,rcx", "ret"], "the four inline bytes, decoded: {resp}");
+}
+
+/// A working directory with an empty `.n0x/` project, so `dump save` stores
+/// into it rather than into the user's data directory.
+fn empty_project(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("n0xis-serve-dump-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".n0x")).expect("create .n0x");
+    dir
+}
+
+/// THE DEFECT. `dump save`'s `--file` is the file to store. A session adds its
+/// own `--file` to a request that names no source, so this note was stored as
+/// the whole session image, with `ok: true`.
+#[test]
+fn a_note_saved_in_a_session_is_the_content_given() {
+    let dir = empty_project("content");
+    let out = serve_in(
+        Some(&dir),
+        &[r#"["dump","save","--name","t","--kind","note","--content","hello"]"#, r#"["dump","show","--name","t","--kind","note"]"#],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out[1]["ok"], true, "{}", out[1]);
+    assert_eq!(out[2]["ok"], true, "{}", out[2]);
+    assert_eq!(out[2]["data"]["content"], "hello", "the note holds what was given, not the session's image: {}", out[2]);
+}
+
+/// The other direction: a `--file` the caller names is still the payload.
+#[test]
+fn a_file_named_to_dump_save_in_a_session_is_the_one_stored() {
+    let dir = empty_project("file");
+    let payload = dir.join("payload.txt");
+    std::fs::write(&payload, "planted payload, not the session image").expect("write payload");
+    let save = serde_json::to_string(&["dump", "save", "--name", "u", "--kind", "note", "--file", &payload.to_string_lossy()]).expect("encode");
+    let out = serve_in(Some(&dir), &[&save, r#"["dump","show","--name","u","--kind","note"]"#]);
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out[1]["ok"], true, "{}", out[1]);
+    assert_eq!(out[2]["data"]["content"], "planted payload, not the session image", "{}", out[2]);
+}
+
+/// With no `--content` and no `--file`, `dump save` reads its payload from
+/// stdin — which in a session is the request channel, locked by the session
+/// while the request runs. Reading it there hung the session: no answer to
+/// that request or any after it. It must refuse, and the session must go on
+/// answering.
+#[test]
+fn dump_save_with_no_payload_in_a_session_is_refused_and_the_session_continues() {
+    let dir = empty_project("stdin");
+    let out = serve_in(
+        Some(&dir),
+        &[r#"["dump","save","--name","v","--kind","note"]"#, r#"["module","list"]"#, r#"["dump","list"]"#],
+    );
+    let stored = dir.join(".n0x/dumps/note/v.txt").exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out.len(), 4, "banner plus one answer per request — none went unanswered: {out:?}");
+    assert_eq!(out[1]["ok"], false, "{}", out[1]);
+    assert_eq!(out[1]["error"]["code"], "stdin-is-session-channel", "{}", out[1]);
+    assert!(!stored, "nothing was stored");
+    assert_eq!(out[2]["ok"], true, "the next request is answered normally: {}", out[2]);
+    assert_eq!(out[2]["meta"]["schema"], "n0xis.module.list.v1");
+    assert_eq!(out[3]["ok"], true, "{}", out[3]);
+}
+
+/// The other stdin reader a session request could reach: `locate
+/// by-transition` without `--wait-ms` pauses for the operator's Enter on
+/// stdin. In a session it is refused before it attaches to anything — pid 1 is
+/// never read — and the session goes on answering.
+#[test]
+fn a_pause_for_the_operator_in_a_session_is_refused_before_it_attaches() {
+    let out = serve(&[r#"["locate","by-transition","--pid","1","--save-as","x"]"#, r#"["module","list"]"#]);
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out.len(), 3, "banner plus one answer per request: {out:?}");
+    assert_eq!(out[1]["ok"], false, "{}", out[1]);
+    assert_eq!(out[1]["error"]["code"], "stdin-is-session-channel", "refused for the stdin read, before any attach: {}", out[1]);
+    assert_eq!(out[2]["ok"], true, "{}", out[2]);
 }

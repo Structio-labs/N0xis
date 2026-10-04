@@ -38,8 +38,12 @@ object per command they are given. A `serve` request is either a command line
 carry an argument containing `"` or a line break. The banner lists the forms the
 session reads in `data.request_formats`. A request that names no source of its own
 (`--file`, `--pid`, `--snapshot`, `--remote-cmd`, or `--bytes` where it is inline code) runs
-against the session's file; `--bytes` as a `find` pattern or a `mem write`/`patch` payload
-is data, not a source, and does not count.
+against the session's file, when its command takes a `--file` source at all; `--bytes` as a
+`find` pattern or a `mem write`/`patch` payload is data, not a source, and does not count, and
+`dump save --file` is the file to store, so the session's image is never put there. Inside a
+session stdin is the request channel, so no command reads it: `dump save` with neither
+`--content` nor `--file`, and `locate by-transition` without `--wait-ms`, answer
+`stdin-is-session-channel`.
 
 - success: `{"ok":true,"data":{…},"meta":{"schema":"n0xis.*.v1", …}}`
 - failure: `{"ok":false,"error":{"code":…,"message":…,"hint"?:…}}`
@@ -337,8 +341,9 @@ Show / remove one selection by name. `--name` required.
 ### `dump save --name <str> --kind <str>`
 Save a payload to `.n0x/dumps/<kind>/<name>.<ext>`.
 - `--kind` — one of `ir`, `pseudo`, `hex`, `raw`, `note`.
-- `--file <path>` (read payload from file) or `--content <str>` (inline; else stdin); `--force`
-  (overwrite same name+kind).
+- `--file <path>` (read payload from file) or `--content <str>` (inline; else stdin — refused
+  inside a `serve` session, where stdin carries the requests); `--force` (overwrite same
+  name+kind).
 - Schema: `n0xis.dump.v1`
 
 ### `dump list [--kind <str>]`

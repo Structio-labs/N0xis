@@ -18,7 +18,7 @@ use std::path::Path;
 use goblin::pe::PE;
 use n0xis_contracts::{Module, SymKind, Symbol, Va};
 
-use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
+use crate::{read_export_table, ExportDirectory, ExportTarget, MemorySource, ModuleProvider, PeExport, SourceError, SymbolProvider};
 
 #[derive(Debug, Clone)]
 struct SectionRange {
@@ -184,38 +184,7 @@ impl StaticPe {
             });
         }
 
-        let mut exports: BTreeMap<u64, Symbol> = BTreeMap::new();
-        for export in &pe.exports {
-            if let Some(name) = export.name {
-                let va = image_base.saturating_add(export.rva as u64);
-                exports.insert(
-                    va,
-                    Symbol {
-                        va: Va(va),
-                        module: module_name.clone(),
-                        name: name.to_string(),
-                        kind: SymKind::Export,
-                    },
-                );
-            }
-        }
-
-        // Exports **by ordinal** have no name, and the parser only yields named
-        // ones — so on this corpus 853 of 1216 exported functions were invisible
-        // to symbol resolution, discovery and cross-references alike. A DLL that
-        // exports mostly by ordinal is not unusual; it is the norm for system
-        // and shipped-game libraries. The export address table states them, so
-        // it is read here directly.
-        for (va, ordinal) in ordinal_exports(&bytes, &sections, image_base) {
-            exports.entry(va).or_insert_with(|| Symbol {
-                va: Va(va),
-                module: module_name.clone(),
-                // The file gives an ordinal, not a name; say exactly that
-                // rather than inventing one that looks like a symbol.
-                name: format!("Ordinal{ordinal}"),
-                kind: SymKind::Export,
-            });
-        }
+        let exports = export_symbols(&export_table(&bytes, &sections, image_base), &sections, &module_name);
 
         let mut iat: BTreeMap<u64, Symbol> = BTreeMap::new();
         for import in &pe.imports {
@@ -298,14 +267,15 @@ impl StaticPe {
     /// ebp,esp` is not in the scanned pattern set. A declaration beats a
     /// pattern; this is the declaration.
     ///
-    /// Forwarders (`KERNEL32.HeapAlloc`) point inside the export directory
-    /// rather than at code, and are excluded by the executable-section test.
+    /// Forwarders (`KERNEL32.HeapAlloc`) are not in the export map at all — see
+    /// [`export_symbols`] — so the executable-section test is about data
+    /// exports, not about them.
     pub fn export_entry_points(&self) -> Vec<Va> {
         self.exports
             .keys()
             .copied()
-            .filter(|va| self.sections.iter().any(|s| s.executable && *va >= s.va_start && *va < s.va_end))
             .map(Va)
+            .filter(|va| in_executable_section(&self.sections, *va))
             .collect()
     }
 
@@ -334,13 +304,13 @@ impl StaticPe {
         }
     }
 
-    fn section_for(&self, va: u64) -> Option<&SectionRange> {
-        self.sections.iter().find(|s| va >= s.va_start && va < s.va_end)
-    }
-
     /// The exported functions, address-ordered — the `(va, name)` list a
     /// signature generator fingerprints. A static CRT `.lib` linked into a DLL
     /// that re-exports it is one bootstrap source for a signature library.
+    ///
+    /// Forwarders are absent: their table address is a `MODULE.Function`
+    /// string, and fingerprinting it put 126 signatures made of forwarder text
+    /// into a 1 554-signature library built from a 0.9 MB x64 system DLL.
     pub fn named_functions(&self) -> Vec<(Va, String)> {
         self.exports.values().map(|s| (s.va, s.name.clone())).collect()
     }
@@ -348,27 +318,11 @@ impl StaticPe {
 
 impl MemorySource for StaticPe {
     fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
-        let Some(section) = self.section_for(va.0) else {
-            return Err(SourceError::Unmapped(va));
-        };
-        let in_section = (va.0 - section.va_start) as usize;
-        // Inside a section but past its raw data (BSS-style tail): not synthesized
-        // — a short read, exactly as a live RPM at the same spot would give.
-        if in_section >= section.file_size {
-            return Ok(Vec::new());
-        }
-        let file_start = section.file_offset + in_section;
-        let avail = section.file_size - in_section;
-        let take = len.min(avail);
-        let end = (file_start + take).min(self.bytes.len());
-        if file_start >= end {
-            return Ok(Vec::new());
-        }
-        Ok(self.bytes[file_start..end].to_vec())
+        FileView { bytes: &self.bytes, sections: &self.sections }.read(va, len)
     }
 
     fn contains(&self, va: Va) -> bool {
-        self.section_for(va.0).is_some()
+        FileView { bytes: &self.bytes, sections: &self.sections }.contains(va)
     }
 
     fn code_range(&self) -> Option<(Va, u64)> {
@@ -421,6 +375,95 @@ impl ModuleProvider for StaticPe {
 }
 
 
+/// The file's bytes seen through its section map: what a loaded image would
+/// hold at each address. [`StaticPe::read`] is this, and so is the view the
+/// export table is read through while the image is still being built — one
+/// address translation, not two that could drift.
+struct FileView<'a> {
+    bytes: &'a [u8],
+    sections: &'a [SectionRange],
+}
+
+impl MemorySource for FileView<'_> {
+    fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
+        let Some(section) = self.sections.iter().find(|s| va.0 >= s.va_start && va.0 < s.va_end) else {
+            return Err(SourceError::Unmapped(va));
+        };
+        let in_section = (va.0 - section.va_start) as usize;
+        // Inside a section but past its raw data (BSS-style tail): not synthesized
+        // — a short read, exactly as a live RPM at the same spot would give.
+        if in_section >= section.file_size {
+            return Ok(Vec::new());
+        }
+        let file_start = section.file_offset + in_section;
+        let avail = section.file_size - in_section;
+        let take = len.min(avail);
+        let end = (file_start + take).min(self.bytes.len());
+        if file_start >= end {
+            return Ok(Vec::new());
+        }
+        Ok(self.bytes[file_start..end].to_vec())
+    }
+
+    fn contains(&self, va: Va) -> bool {
+        self.sections.iter().any(|s| va.0 >= s.va_start && va.0 < s.va_end)
+    }
+
+    fn label(&self) -> String {
+        "static:file-view".to_string()
+    }
+}
+
+/// Whether `va` lies in a section the image marks executable.
+fn in_executable_section(sections: &[SectionRange], va: Va) -> bool {
+    sections.iter().any(|s| s.executable && va.0 >= s.va_start && va.0 < s.va_end)
+}
+
+/// The image's export table, classified by the one reader every consumer
+/// shares ([`read_export_table`](crate::read_export_table)) — so this loader
+/// and `profile` cannot disagree about which entries are forwarders.
+fn export_table(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> Vec<PeExport> {
+    let Some(dir) = ExportDirectory::from_header(bytes) else { return Vec::new() };
+    read_export_table(&FileView { bytes, sections }, Va(image_base), dir)
+}
+
+/// The symbol map the loader serves, from the classified export table.
+///
+/// - A **named** export is a symbol wherever it lands — code or an exported
+///   variable. Two names on one address: the later in name order wins, as it
+///   always has.
+/// - An export **by ordinal only** is a symbol when it lands in executable
+///   code. The third-party parser's export list, which this loader once took
+///   its exports from, holds named exports only, so on this corpus 853 of
+///   1216 exported functions were invisible to symbol resolution, discovery
+///   and cross-references alike; a DLL that exports mostly by ordinal is the
+///   norm for system and shipped-game libraries. A name never yields to one:
+///   the file gives an ordinal, and `Ordinal<n>` says exactly that rather than
+///   inventing a name.
+/// - A **forwarder** is not a symbol at all. Its table address is the
+///   `MODULE.Function` string the OS loader follows into another module, and
+///   naming that address made the decompiler title a string after a function
+///   and `sig gen` fingerprint the text as code.
+fn export_symbols(table: &[PeExport], sections: &[SectionRange], module: &str) -> BTreeMap<u64, Symbol> {
+    let symbol = |va: Va, name: String| Symbol { va, module: module.to_string(), name, kind: SymKind::Export };
+    let mut out: BTreeMap<u64, Symbol> = BTreeMap::new();
+    // `read_export_table` lists every named entry before any unnamed one, so a
+    // name is always in place before an ordinal could claim its address.
+    for e in table {
+        let ExportTarget::Local(va) = e.target else { continue };
+        match &e.name {
+            Some(name) => {
+                out.insert(va.0, symbol(va, name.clone()));
+            }
+            None if in_executable_section(sections, va) => {
+                out.entry(va.0).or_insert_with(|| symbol(va, format!("Ordinal{}", e.ordinal)));
+            }
+            None => {} // a data export with no name: nothing to call it
+        }
+    }
+    out
+}
+
 /// Read the `.pdata` exception table into `begin VA → exclusive end VA`.
 ///
 /// The table is found through the optional header's exception data directory
@@ -431,78 +474,6 @@ impl ModuleProvider for StaticPe {
 ///
 /// Absent (`0` RVA, no unwind info, 32-bit PE, ARM64's different record shape)
 /// leaves the map empty, which is exactly the previous behaviour.
-/// Every exported RVA the export address table lists, paired with its ordinal.
-///
-/// Named exports are already covered by the parsed export list; this exists for
-/// the ones with no name at all, which that list omits entirely. Forwarders
-/// (`KERNEL32.HeapAlloc`) are excluded: their "RVA" points inside the export
-/// directory at a string, not at code.
-///
-/// Every count here comes out of the file, so every count is bounded by what
-/// the file can physically hold before it is used for anything.
-fn ordinal_exports(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> Vec<(u64, u32)> {
-    // Every step below is "the header may simply not be there"; a missing field
-    // means no ordinal exports, never an error and never a guess.
-    read_ordinal_exports(bytes, sections, image_base).unwrap_or_default()
-}
-
-fn read_ordinal_exports(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> Option<Vec<(u64, u32)>> {
-    let mut out = Vec::new();
-    let rd32 = |off: usize| -> Option<u32> {
-        bytes.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")))
-    };
-    let rd16 = |off: usize| -> Option<u16> {
-        bytes.get(off..off + 2).map(|b| u16::from_le_bytes(b.try_into().expect("2 bytes")))
-    };
-    let rva_to_off = |rva: u64| -> Option<usize> {
-        let va = image_base.checked_add(rva)?;
-        let s = sections.iter().find(|s| va >= s.va_start && va < s.va_end)?;
-        let inside = (va - s.va_start) as usize;
-        (inside < s.file_size).then(|| s.file_offset + inside)
-    };
-
-    let e_lfanew = rd32(0x3c)? as usize;
-    if bytes.get(e_lfanew..e_lfanew + 4) != Some(&b"PE\0\0"[..]) {
-        return None;
-    }
-    // The export directory is entry 0 of the data directory, which sits at +96
-    // in a PE32 optional header and +112 in a PE32+ one.
-    let magic = rd16(e_lfanew + 24)?;
-    let dd = e_lfanew + 24 + if magic == 0x10b { 96 } else { 112 };
-    let (dir_rva, dir_size) = (rd32(dd)? as u64, rd32(dd + 4)? as u64);
-    if dir_rva == 0 || dir_size == 0 {
-        return None;
-    }
-    let dir = rva_to_off(dir_rva)?;
-
-    let ordinal_base = rd32(dir + 16)?;
-    let count = rd32(dir + 20)? as usize;
-    let addr_table = rd32(dir + 28)? as u64;
-    let table = rva_to_off(addr_table)?;
-    // `NumberOfFunctions` is a number in an untrusted file: cap it at the
-    // entries the table could actually contain before it sizes anything.
-    let count = count.min(bytes.len().saturating_sub(table) / 4);
-    out.reserve(count.min(1 << 16));
-
-    for i in 0..count {
-        let Some(rva) = rd32(table + i * 4) else { break };
-        if rva == 0 {
-            continue; // an unused ordinal slot
-        }
-        let rva = rva as u64;
-        // A forwarder's RVA lands inside the export directory itself.
-        if rva >= dir_rva && rva < dir_rva + dir_size {
-            continue;
-        }
-        let Some(va) = image_base.checked_add(rva) else { continue };
-        if !sections.iter().any(|s| s.executable && va >= s.va_start && va < s.va_end) {
-            continue; // a data export, not an entry point
-        }
-        out.push((va, ordinal_base.wrapping_add(i as u32)));
-    }
-    Some(out)
-}
-
 fn parse_pdata(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> BTreeMap<u64, u64> {
     let mut out = BTreeMap::new();
     let rd32 = |off: usize| -> Option<u32> {
@@ -581,6 +552,99 @@ mod tests {
         let p = std::env::temp_dir().join(format!("n0xis_static_pe_{}_{}.bin", std::process::id(), tag));
         std::fs::write(&p, bytes).unwrap();
         p
+    }
+
+    /// The loader's by-ordinal symbols as `(va, ordinal)`, read exactly the way
+    /// [`StaticPe::load`] reads them: the shared table, then the symbol map.
+    fn ordinal_exports(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> Vec<(u64, u32)> {
+        let table = export_table(bytes, sections, image_base);
+        let map = export_symbols(&table, sections, "m");
+        table
+            .iter()
+            .filter(|e| e.name.is_none())
+            .filter_map(|e| match e.target {
+                ExportTarget::Local(va) if map.get(&va.0).is_some_and(|s| s.name == format!("Ordinal{}", e.ordinal)) => {
+                    Some((va.0, e.ordinal))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A PE32+ file with one executable section (RVA 0x1000, file 0x1000)
+    /// holding the export directory *and* the code, and an export table of two
+    /// named entries: `code_export` at RVA 0x1300 (`ret`), and `fwd_export`,
+    /// whose address-table entry points inside the directory at the string
+    /// `OTHERDLL.Function`.
+    ///
+    /// The directory sits in the executable section on purpose: there the
+    /// forwarder string's address also passes the "lands in code" test that
+    /// [`StaticPe::export_entry_points`] applies, so only knowing it is a
+    /// forwarder keeps it out.
+    fn pe_with_a_forwarder() -> Vec<u8> {
+        let mut b = vec![0u8; 0x2000];
+        let put32 = |b: &mut Vec<u8>, o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        b[0..2].copy_from_slice(b"MZ");
+        put32(&mut b, 0x3c, 0x40);
+        b[0x40..0x44].copy_from_slice(b"PE\0\0");
+        b[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes()); // machine
+        b[0x46..0x48].copy_from_slice(&1u16.to_le_bytes()); // one section
+        b[0x54..0x56].copy_from_slice(&240u16.to_le_bytes()); // SizeOfOptionalHeader
+        b[0x56..0x58].copy_from_slice(&0x2022u16.to_le_bytes()); // DLL | executable | large-address
+        let opt = 0x58;
+        b[opt..opt + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        b[opt + 24..opt + 32].copy_from_slice(&0x1_8000_0000u64.to_le_bytes()); // ImageBase
+        put32(&mut b, opt + 32, 0x1000); // SectionAlignment
+        put32(&mut b, opt + 36, 0x200); // FileAlignment
+        put32(&mut b, opt + 56, 0x2000); // SizeOfImage
+        put32(&mut b, opt + 60, 0x400); // SizeOfHeaders
+        put32(&mut b, opt + 108, 16); // NumberOfRvaAndSizes
+        put32(&mut b, opt + 112, 0x1100); // export directory RVA
+        put32(&mut b, opt + 116, 0x100); // ... and size
+        let sh = opt + 240;
+        b[sh..sh + 5].copy_from_slice(b".text");
+        put32(&mut b, sh + 8, 0x1000); // VirtualSize
+        put32(&mut b, sh + 12, 0x1000); // VirtualAddress
+        put32(&mut b, sh + 16, 0x1000); // SizeOfRawData
+        put32(&mut b, sh + 20, 0x1000); // PointerToRawData
+        put32(&mut b, sh + 36, 0x6000_0020); // code | execute | read
+        let dir = 0x1100;
+        put32(&mut b, dir + 16, 1); // ordinal base
+        put32(&mut b, dir + 20, 2); // NumberOfFunctions
+        put32(&mut b, dir + 24, 2); // NumberOfNames
+        put32(&mut b, dir + 28, 0x1140); // AddressOfFunctions
+        put32(&mut b, dir + 32, 0x1150); // AddressOfNames
+        put32(&mut b, dir + 36, 0x1160); // AddressOfNameOrdinals
+        put32(&mut b, 0x1140, 0x1300); // slot 0: code
+        put32(&mut b, 0x1144, 0x11c0); // slot 1: inside the directory
+        put32(&mut b, 0x1150, 0x1170);
+        put32(&mut b, 0x1154, 0x1180);
+        b[0x1160..0x1162].copy_from_slice(&0u16.to_le_bytes());
+        b[0x1162..0x1164].copy_from_slice(&1u16.to_le_bytes());
+        b[0x1170..0x117c].copy_from_slice(b"code_export\0");
+        b[0x1180..0x118b].copy_from_slice(b"fwd_export\0");
+        b[0x11c0..0x11d2].copy_from_slice(b"OTHERDLL.Function\0");
+        b[0x1300] = 0xc3;
+        b
+    }
+
+    /// THE DEFECT. A forwarder's table address is a string, and the loader
+    /// named it: `named_functions()` handed it to `sig gen`, which built
+    /// signatures out of forwarder text, and `symbol_at` titled the string
+    /// after the function it forwards to.
+    #[test]
+    fn a_forwarder_is_not_a_function_of_this_image() {
+        let p = temp("forwarder", &pe_with_a_forwarder());
+        let pe = StaticPe::load(&p).expect("the image loads");
+        let _ = std::fs::remove_file(&p);
+        let base = 0x1_8000_0000u64;
+        assert_eq!(
+            pe.named_functions(),
+            vec![(Va(base + 0x1300), "code_export".to_string())],
+            "only the export with code here is a function; the forwarder string is not"
+        );
+        assert!(pe.symbol_at(Va(base + 0x11c0)).is_none(), "the forwarder string's address names nothing");
+        assert_eq!(pe.export_entry_points(), vec![Va(base + 0x1300)], "nor is it an entry point");
     }
 
     #[test]

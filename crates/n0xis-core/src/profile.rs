@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use n0xis_arch::{Arch, InsnKind};
 use n0xis_contracts::Va;
-use n0xis_sources::MemorySource;
+use n0xis_sources::{read_export_table, ExportDirectory, ExportTarget, MemorySource};
 use serde::Serialize;
 
 use crate::CoreError;
@@ -197,38 +197,6 @@ fn machine_name(m: u16) -> String {
     }
 }
 
-/// Map an RVA to the containing section so a file-backed source can be read at
-/// the right place. A live module is already laid out by RVA, and a
-/// [`StaticPe`](n0xis_sources::StaticPe) source translates internally, so
-/// callers here only ever need `base + rva`.
-fn profile_read(source: &dyn MemorySource, base: Va, rva: u32, len: usize) -> Option<Vec<u8>> {
-    if rva == 0 {
-        return None;
-    }
-    source.read(base.offset(rva as u64), len).ok()
-}
-
-/// Longest export name read; a corrupt table can never make a read unbounded.
-const MAX_NAME: usize = 512;
-
-/// Longest forwarder string read. It is `<module>.<name>` (or `<module>.#<n>`),
-/// so one name's worth plus room for the module part.
-const MAX_FORWARDER: usize = MAX_NAME + 256;
-
-/// Read a NUL-terminated ASCII name at `rva`, bounded so a corrupt table can
-/// never make this loop forever.
-fn read_cstr(source: &dyn MemorySource, base: Va, rva: u32) -> Option<String> {
-    read_cstr_within(source, base, rva, MAX_NAME)
-}
-
-/// [`read_cstr`] with an explicit bound: at most `max` bytes are read, and a
-/// string with no NUL inside them is returned as far as it was read.
-fn read_cstr_within(source: &dyn MemorySource, base: Va, rva: u32, max: usize) -> Option<String> {
-    let buf = profile_read(source, base, rva, max)?;
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Some(String::from_utf8_lossy(&buf[..end]).into_owned())
-}
-
 /// Profile the PE image mapped at `module_base`. `with_exports` includes the
 /// full export list in the result (off by default — a runtime DLL can export
 /// hundreds of names and the summary counts are what a reader usually needs).
@@ -259,14 +227,11 @@ pub fn profile_image(
     // end of a 224-byte optional header. The file states both sizes; read them.
     //
     // Optional-header magic: 0x10b = PE32, 0x20b = PE32+. The data directory
-    // sits at +96 in the first and +112 in the second. Directory 0 = export,
-    // 3 = exception (`.pdata`).
+    // sits at +96 in the first and +112 in the second. Directory 3 is the
+    // exception table (`.pdata`); directory 0, the exports, is located by
+    // `ExportDirectory::from_header`, the same call the file loader makes.
     let magic = rd_u16(&hdr, e_lfanew + 24).unwrap_or(0x20b);
     let dd = e_lfanew + 24 + if magic == 0x10b { 96 } else { 112 };
-    let export_rva = rd_u32(&hdr, dd).unwrap_or(0);
-    // The directory's size is what tells a forwarder from code: an entry whose
-    // RVA falls inside `[export_rva, export_rva + export_size)` is a string.
-    let export_size = rd_u32(&hdr, dd + 4).unwrap_or(0);
     let exception_rva = rd_u32(&hdr, dd + 3 * 8).unwrap_or(0);
     let exception_size = rd_u32(&hdr, dd + 3 * 8 + 4).unwrap_or(0);
 
@@ -306,7 +271,7 @@ pub fn profile_image(
         });
     }
 
-    let exports = read_exports(source, arch, module_base, export_rva, export_size);
+    let exports = ExportDirectory::from_header(&hdr).map_or_else(Vec::new, |dir| read_exports(source, arch, module_base, dir));
 
     // `.pdata` entries are 12 bytes each; the count is exact, so report it
     // rather than re-walking the table.
@@ -394,61 +359,34 @@ pub fn assemble_profile(
     }
 }
 
-/// Walk `IMAGE_EXPORT_DIRECTORY`, resolving each *named* export to its address
-/// and, when that address holds a lone unconditional branch, to the branch
-/// target — the address the generated code actually calls.
+/// Every *named* export, resolved to its address and, when that address holds
+/// a lone unconditional branch, to the branch target — the address the
+/// generated code actually calls.
 ///
-/// `export_size` is the directory's declared size. An entry whose RVA lies
-/// inside `[export_rva, export_rva + export_size)` is a forwarder (the format's
-/// own definition, and the loader's test): its string is read instead of its
-/// "code", and no thunk decode is attempted on it.
-fn read_exports(source: &dyn MemorySource, arch: &dyn Arch, base: Va, export_rva: u32, export_size: u32) -> Vec<ExportInfo> {
-    // A malformed or hostile table must not be able to allocate unboundedly.
-    const MAX_EXPORTS: usize = 100_000;
-    // Widened so a hostile `export_rva + export_size` cannot wrap and make the
-    // forwarder range cover code (or nothing) by overflow.
-    let dir_end = export_rva as u64 + export_size as u64;
-    let Some(dir) = profile_read(source, base, export_rva, 40) else { return Vec::new() };
-    let num_names = rd_u32(&dir, 24).unwrap_or(0) as usize;
-    let addr_funcs = rd_u32(&dir, 28).unwrap_or(0);
-    let addr_names = rd_u32(&dir, 32).unwrap_or(0);
-    let addr_ords = rd_u32(&dir, 36).unwrap_or(0);
-    if num_names == 0 || num_names > MAX_EXPORTS {
-        return Vec::new();
-    }
-
-    let Some(name_rvas) = profile_read(source, base, addr_names, num_names * 4) else { return Vec::new() };
-    let Some(ord_raw) = profile_read(source, base, addr_ords, num_names * 2) else { return Vec::new() };
-
-    let mut out = Vec::with_capacity(num_names);
-    for i in 0..num_names {
-        let Some(name_rva) = rd_u32(&name_rvas, i * 4) else { continue };
-        let Some(name) = read_cstr(source, base, name_rva) else { continue };
-        let ord = match ord_raw.get(i * 2..i * 2 + 2) {
-            Some(b) => u16::from_le_bytes(b.try_into().unwrap()) as usize,
-            None => continue,
-        };
-        let Some(fn_raw) = profile_read(source, base, addr_funcs + (ord as u32) * 4, 4) else { continue };
-        let Some(fn_rva) = rd_u32(&fn_raw, 0) else { continue };
-        if fn_rva == 0 {
-            continue;
-        }
-        let va = base.offset(fn_rva as u64);
-        if (export_rva as u64..dir_end).contains(&(fn_rva as u64)) {
-            // The string lies inside the directory, so read no further than its
-            // declared end — and never more than one bounded name's worth.
-            let room = (dir_end - fn_rva as u64).min(MAX_FORWARDER as u64) as usize;
-            let Some(forwarder) = read_cstr_within(source, base, fn_rva, room) else { continue };
-            out.push(ExportInfo { name, va, forwarder: Some(forwarder), thunk_target: None, thunk_kind: None });
-            continue;
-        }
-        let (thunk_target, thunk_kind) = match thunk_target_at(source, arch, va) {
-            Some((t, k)) => (Some(t), Some(k)),
-            None => (None, None),
-        };
-        out.push(ExportInfo { name, va, forwarder: None, thunk_target, thunk_kind });
-    }
-    out
+/// The table is read by [`read_export_table`], the reader the file loader uses
+/// too, so `profile` and the symbol map cannot disagree about which exports
+/// are forwarders. A forwarder is listed at its string's address with the
+/// string beside it, and no thunk decode is attempted on it: a string is not
+/// code. Exports by ordinal only are not listed — this is the *named* table.
+fn read_exports(source: &dyn MemorySource, arch: &dyn Arch, base: Va, dir: ExportDirectory) -> Vec<ExportInfo> {
+    read_export_table(source, base, dir)
+        .into_iter()
+        .filter_map(|e| {
+            let name = e.name?;
+            Some(match e.target {
+                ExportTarget::Forwarded { string, to } => {
+                    ExportInfo { name, va: string, forwarder: Some(to), thunk_target: None, thunk_kind: None }
+                }
+                ExportTarget::Local(va) => {
+                    let (thunk_target, thunk_kind) = match thunk_target_at(source, arch, va) {
+                        Some((t, k)) => (Some(t), Some(k)),
+                        None => (None, None),
+                    };
+                    ExportInfo { name, va, forwarder: None, thunk_target, thunk_kind }
+                }
+            })
+        })
+        .collect()
 }
 
 /// The branch target when `va` holds a single unconditional jump — i.e. the
@@ -695,6 +633,9 @@ mod tests {
         // Export directory at 0x400.
         let ed = 0x400usize;
         let (names_rva, funcs_rva, ords_rva) = (0x480u32, 0x4a0u32, 0x4b0u32);
+        // NumberOfFunctions: the address table's length, which bounds every
+        // name's ordinal index — as the OS loader bounds it.
+        img[ed + 20..ed + 24].copy_from_slice(&3u32.to_le_bytes());
         img[ed + 24..ed + 28].copy_from_slice(&3u32.to_le_bytes()); // NumberOfNames
         img[ed + 28..ed + 32].copy_from_slice(&funcs_rva.to_le_bytes());
         img[ed + 32..ed + 36].copy_from_slice(&names_rva.to_le_bytes());
@@ -992,6 +933,7 @@ mod tests {
 
         let ed = 0x400usize;
         let (names_rva, ords_rva, funcs_rva) = (0x430u32, 0x440u32, 0x448u32);
+        img[ed + 20..ed + 24].copy_from_slice(&2u32.to_le_bytes()); // NumberOfFunctions
         img[ed + 24..ed + 28].copy_from_slice(&2u32.to_le_bytes());
         img[ed + 28..ed + 32].copy_from_slice(&funcs_rva.to_le_bytes());
         img[ed + 32..ed + 36].copy_from_slice(&names_rva.to_le_bytes());
@@ -1037,6 +979,71 @@ mod tests {
         let by_name = |n: &str| wire.as_array().unwrap().iter().find(|e| e["name"] == n).unwrap().clone();
         assert_eq!(by_name("fwd_export")["forwarder"], "OTHERDLL.Function");
         assert!(by_name("code_export").get("forwarder").is_none());
+    }
+
+    /// `profile` and the file loader read one export table through one reader.
+    /// This holds them to one answer on a file: every export `profile` marks
+    /// as a forwarder is absent from the loader's symbol map, and every one it
+    /// does not is named there. Before the reader was shared the loader named
+    /// forwarder strings as functions, and `sig gen` fingerprinted them.
+    #[test]
+    fn profile_and_the_file_loader_agree_on_which_exports_are_forwarders() {
+        use n0xis_sources::{StaticPe, SymbolProvider};
+        // One executable section (RVA 0x1000 = file 0x1000) holding the export
+        // directory (RVA 0x1100, size 0x100) and the code: `code_export` at
+        // 0x1300, `fwd_export` pointing at its string inside the directory.
+        let mut b = vec![0u8; 0x2000];
+        let put = |b: &mut Vec<u8>, o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        b[0..2].copy_from_slice(b"MZ");
+        put(&mut b, 0x3c, 0x40);
+        b[0x40..0x44].copy_from_slice(b"PE\0\0");
+        b[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+        b[0x46..0x48].copy_from_slice(&1u16.to_le_bytes());
+        b[0x54..0x56].copy_from_slice(&240u16.to_le_bytes());
+        b[0x56..0x58].copy_from_slice(&0x2022u16.to_le_bytes());
+        let opt = 0x58;
+        b[opt..opt + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        b[opt + 24..opt + 32].copy_from_slice(&0x1_8000_0000u64.to_le_bytes());
+        put(&mut b, opt + 32, 0x1000);
+        put(&mut b, opt + 36, 0x200);
+        put(&mut b, opt + 56, 0x2000);
+        put(&mut b, opt + 60, 0x400);
+        put(&mut b, opt + 108, 16);
+        put(&mut b, opt + 112, 0x1100);
+        put(&mut b, opt + 116, 0x100);
+        let sh = opt + 240;
+        b[sh..sh + 5].copy_from_slice(b".text");
+        for (o, v) in [(8, 0x1000), (12, 0x1000), (16, 0x1000), (20, 0x1000), (36, 0x6000_0020)] {
+            put(&mut b, sh + o, v);
+        }
+        for (o, v) in [(16, 1), (20, 2), (24, 2), (28, 0x1140), (32, 0x1150), (36, 0x1160)] {
+            put(&mut b, 0x1100 + o, v);
+        }
+        for (o, v) in [(0x1140, 0x1300), (0x1144, 0x11c0), (0x1150, 0x1170), (0x1154, 0x1180)] {
+            put(&mut b, o, v);
+        }
+        b[0x1162..0x1164].copy_from_slice(&1u16.to_le_bytes());
+        b[0x1170..0x117c].copy_from_slice(b"code_export\0");
+        b[0x1180..0x118b].copy_from_slice(b"fwd_export\0");
+        b[0x11c0..0x11d2].copy_from_slice(b"OTHERDLL.Function\0");
+        b[0x1300] = 0xc3;
+        let path = std::env::temp_dir().join(format!("n0xis_profile_agree_{}.dll", std::process::id()));
+        std::fs::write(&path, &b).expect("write image");
+        let pe = StaticPe::load(&path).expect("load");
+        let _ = std::fs::remove_file(&path);
+
+        let p = profile_image(&pe, &X64::new(), pe.image_base(), true).expect("profile");
+        assert_eq!(p.forwarded_count, 1, "the fixture holds one forwarder: {:?}", p.exports);
+        for e in &p.exports {
+            let named = pe.symbol_at(e.va).filter(|s| s.va == e.va).map(|s| s.name);
+            match &e.forwarder {
+                Some(_) => assert_eq!(named, None, "{} is a forwarder to profile, a symbol to the loader", e.name),
+                None => assert_eq!(named.as_deref(), Some(e.name.as_str()), "{} has code to profile, no name in the loader", e.name),
+            }
+        }
+        let loader: Vec<String> = pe.named_functions().into_iter().map(|(_, n)| n).collect();
+        let profiled: Vec<String> = p.exports.iter().filter(|e| e.forwarder.is_none()).map(|e| e.name.clone()).collect();
+        assert_eq!(loader, profiled, "the loader's functions are exactly the exports profile finds code for");
     }
 
     #[test]
