@@ -233,7 +233,7 @@ pub fn window_pid(hwnd: usize) -> u32 {
     pid
 }
 
-/// Pick the best "the main window" for a pid: the largest visible, non-tool,
+/// Pick the target's main window for a pid: the largest visible, non-tool,
 /// non-cloaked, non-minimized window. `None` if the process has no such window.
 pub fn best_window(pid: u32) -> Option<WindowInfo> {
     list_windows(pid)

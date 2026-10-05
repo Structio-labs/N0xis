@@ -5,7 +5,7 @@
 //! by *relations between fields*, not by fixed byte constants. `scan aob` can
 //! answer "is this exact byte sequence here"; it cannot answer "are these six
 //! floats a valid bounding box" or "is `d0 == d3` and `d1 == d2`" — both were
-//! needed during the interact-combo campaign and both had to be abandoned for
+//! needed during an earlier investigation and both had to be abandoned for
 //! lack of an expressive-enough scanner (see
 //! `docs/PHASE9_UI_LOCATE_BRIEF.md` §8). AOB patterns match *constants*; this
 //! primitive matches *shapes*.

@@ -51,12 +51,13 @@ jobs:
         run: cargo build -p n0xis-cli -p n0xis-mcp
 
       # The whole workspace, not just the two frontends. This step is the one
-      # that would have caught `n0xis-hud` requesting `n0xis-sources/live`
-      # unconditionally: workspace-wide feature unification then turned `live`
-      # (and windows-sys) on for every member, and the build died at link time
-      # on undefined ReadProcessMemory/EnumWindows/Beep. Building only
-      # `-p n0xis-cli -p n0xis-mcp` never resolved hud's features, so Linux CI
-      # stayed green while a plain `cargo build --workspace` was broken.
+      # that catches a member requesting `n0xis-sources/live` unconditionally:
+      # workspace-wide feature unification then turns `live` (and windows-sys)
+      # on for every member, and the build dies at link time on undefined
+      # ReadProcessMemory/EnumWindows. That happened once: building only
+      # `-p n0xis-cli -p n0xis-mcp` never resolved the offending member's
+      # features, so Linux CI stayed green while a plain
+      # `cargo build --workspace` was broken.
       - name: Whole workspace builds off Windows
         run: cargo build --workspace
 
@@ -71,7 +72,7 @@ jobs:
       # Type-check the *Windows* half from the Linux runner. `cargo check` does
       # not link, so no mingw is needed, and it covers everything cfg(windows)
       # hides from the steps above: the Win32 live adapter, the debugger, the
-      # window/input modules, n0xis-hud. It costs ~40s and it is the only thing
+      # window/input modules. It costs ~40s and it is the only thing
       # standing between "Linux is green" and silently breaking Windows — it
       # caught exactly that during the LiveTarget refactor (a trait import
       # dropped from n0xis-mcp that only Windows needed).
@@ -81,7 +82,7 @@ jobs:
           cargo check --workspace --target x86_64-pc-windows-gnu
 
   # The full workspace, including everything gated on cfg(windows): the live
-  # process adapter, the debugger, N0xHUD.
+  # process adapter and the debugger.
   windows:
     name: build + test (windows)
     runs-on: windows-latest
@@ -118,7 +119,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # --all-targets covers tests and benches too, so a lint cannot hide in a
       # #[cfg(test)] module. Windows is the superset target: it is the only one
-      # that compiles n0xis-hud and the live/debug code paths.
+      # that compiles the live/debug code paths.
       #
       # Deliberately NOT gated here: `cargo fmt --check`. This codebase uses
       # hand-tuned layout (single-line struct literals in tables, aligned

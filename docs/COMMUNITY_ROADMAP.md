@@ -203,10 +203,8 @@ validated; Phase 9 is marked invalid). The stateful, cross-invocation verbs are 
   `scan filter` loop pays that enumeration cost each pass. Caching the
   discovered region set as an opt-in scan flag — invalidated on module
   load/unload so it can never narrow onto a stale map — would cut the
-  steady-state cost without changing results. N0xHUD's interact-combo solver
-  already does exactly this ad-hoc for its own pool region
-  (see [`n0xis-hud`](../crates/n0xis-hud/)); this task
-  promotes it to a first-class `scan` option. `A-DynamicMemory` / `D-Modest`.
+  steady-state cost without changing results. This task makes it a
+  first-class `scan` option. `A-DynamicMemory` / `D-Modest`.
   Status: Open.
 - **Smarter `alloc_code_cave` placement** — currently a plain `VirtualAllocEx`
   with no "near this address" search, so `patch detour`'s rel32-range check
@@ -249,6 +247,5 @@ Explicitly deferred, not ruled out (see [README.md](../README.md)). Needs a
 design discussion before implementation work starts — likely a thin
 visualization layer over existing `ok/data/meta` artifacts (CFG/DOT rendering,
 decompiled output, the analysis DB), not a rewrite of the CLI/MCP-drivable
-core. N0xHUD already exists as a third frontend of exactly that shape (a window
-over the same crates), so any GUI would be sibling to it, not a replacement.
+core.
 `A-GUI` / `D-Complex` / `S-Needs-Design`. Status: Open, not yet scoped.

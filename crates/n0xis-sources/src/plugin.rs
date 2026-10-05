@@ -15,12 +15,12 @@
 //!   round trip, done.
 //! - [`PluginSession`] — persistent: spawn once, hold the process open across
 //!   many ops, explicit `quit`-then-kill teardown (mirrors `RemoteAgent`'s
-//!   shape exactly). For `n0xis-hud`'s adapter dispatch, where `toggle_on`/
-//!   `toggle_off` fire synchronously **on the UI thread** on every checkbox
-//!   click or hotkey press — spawning a fresh OS process per click is a real
-//!   latency risk for an interactive companion window, and a stateful adapter
-//!   (e.g. one caching an already-scanned memory region) needs to keep that
-//!   state across calls instead of rediscovering it every click.
+//!   shape exactly). For a caller that fires ops synchronously and often
+//!   (an interactive frontend answering every click or hotkey press):
+//!   spawning a fresh OS process per op is a real latency risk there, and a
+//!   stateful plugin (e.g. one caching an already-scanned memory region)
+//!   needs to keep that state across calls instead of rediscovering it on
+//!   every op.
 
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout};

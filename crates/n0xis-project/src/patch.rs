@@ -124,8 +124,8 @@ fn parse_hex_spaced(s: &str) -> Result<Vec<u8>> {
 
 /// Read-verify-write-journal an in-place byte patch against a live process.
 /// Shared by the CLI's `patch apply` and any other frontend driving a
-/// live-process patch (e.g. n0xis-hud adapters) — same read/verify/journal
-/// sequence either way, not a copy per caller.
+/// live-process patch — same read/verify/journal sequence either way, not a
+/// copy per caller.
 pub fn apply(live: &dyn MemorySource, pid: u32, addr: Va, desired: &[u8]) -> Result<PatchRecord> {
     let before = live.read(addr, desired.len()).map_err(|e| anyhow!("{e}"))?;
     live.write(addr, desired).map_err(|e| anyhow!("{e}"))?;

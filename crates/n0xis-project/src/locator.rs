@@ -3,9 +3,9 @@
 
 //! Shared `.n0xt` locator resolution against a live process.
 //!
-//! Extracted from the CLI's `table freeze` handler so any frontend driving a
-//! live process against a `TableEntry` — the CLI and n0xis-hud alike — resolves
-//! addresses through the exact same logic, not a copy.
+//! Extracted from the CLI's `table pin` handler so any frontend driving a
+//! live process against a `TableEntry` resolves addresses through the exact
+//! same logic, not a copy.
 
 use n0xis_arch::X64;
 use n0xis_contracts::{TableLocator, Va};
@@ -16,8 +16,8 @@ use n0xis_sources::LiveTarget;
 ///
 /// Generic over [`LiveTarget`] (not the Win32-only `LiveProcess`) so it resolves
 /// against a live process on every platform — `LinuxProcess` included — mirroring
-/// `patch::apply`'s `&dyn MemorySource`. This is what lets a Linux/Proton frontend
-/// (n0xis-hud, or an external plugin) use it at all.
+/// `patch::apply`'s `&dyn MemorySource`. This is what lets a frontend or an
+/// external plugin on Linux use it at all.
 pub fn resolve_table_locator(live: &impl LiveTarget, locator: &TableLocator) -> Result<Va, String> {
     match locator {
         TableLocator::Address { va } => Ok(*va),

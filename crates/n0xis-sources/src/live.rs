@@ -225,9 +225,8 @@ impl LiveProcess {
     /// search covers when no explicit `--start`/`--size` (or equivalent) is
     /// given, since a value or pattern could be anywhere in the process's
     /// dynamically-allocated memory. Shared by the CLI's `scan value`/
-    /// `scan aob` and by any other frontend driving a live-process search
-    /// (e.g. n0xis-hud's adapters) — one definition of "the default region
-    /// set", not a copy per caller.
+    /// `scan aob` and by any other frontend driving a live-process search —
+    /// one definition of "the default region set", not a copy per caller.
     pub fn default_writable_regions(&self) -> Vec<(Va, usize)> {
         self.regions(1_000_000)
             .into_iter()

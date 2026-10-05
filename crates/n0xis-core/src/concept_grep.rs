@@ -57,7 +57,7 @@ pub struct TermHit {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct GameGrepArtifact {
+pub struct ConceptGrepArtifact {
     /// The vocabulary that was searched (normalized, lowercased).
     pub concept: Vec<String>,
     pub documents_scanned: usize,
@@ -138,7 +138,7 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 
 /// Rank `docs` by vocabulary-cluster density for `concept`. `concept` terms are
 /// lowercased and de-duplicated; empty terms are dropped.
-pub fn rank(concept: &[String], docs: &[Document], opts: &RankOptions) -> GameGrepArtifact {
+pub fn rank(concept: &[String], docs: &[Document], opts: &RankOptions) -> ConceptGrepArtifact {
     let mut terms: Vec<String> = concept.iter().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect();
     terms.sort();
     terms.dedup();
@@ -206,7 +206,7 @@ pub fn rank(concept: &[String], docs: &[Document], opts: &RankOptions) -> GameGr
     });
     hits.truncate(opts.limit);
 
-    GameGrepArtifact {
+    ConceptGrepArtifact {
         concept: terms,
         documents_scanned: docs.len(),
         documents_matched,

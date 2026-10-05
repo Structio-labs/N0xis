@@ -199,7 +199,7 @@ road-tested by outside users — expect shapes to move.
   its source rung and case count, and what is proven, open, or not claimed — all in one place.
 - **[CONCEPT.md](CONCEPT.md)** — architecture: adapters, passes, seams.
 - **[ROADMAP.md](ROADMAP.md)** — build history and the analysis capabilities still missing.
-- **[MAP.md](MAP.md)** — the 15-crate workspace layout.
+- **[MAP.md](MAP.md)** — the 14-crate workspace layout.
 - **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
   **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 

@@ -23,7 +23,7 @@ PURE_CRATES="${PURE_CRATES:-n0xis-contracts n0xis-arch n0xis-core}"
 # Forbidden transitive dependencies, by reason:
 #   windows-sys / windows-targets — OS APIs (the `live` adapter's business)
 #   goblin, png                   — file/image format parsers (source adapters)
-#   libloading                    — dynamic loading (n0xis-hud only)
+#   libloading                    — dynamic loading
 #   eframe, winit                 — GUI frontend
 #   tokio, rmcp, clap             — frontend/transport concerns
 #   n0xis-frontend                — the frontend seam; the arrow points down

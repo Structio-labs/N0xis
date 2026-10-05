@@ -13,17 +13,17 @@
 
 N0xis is a **reverse-engineering and live-memory toolkit** for **Windows and
 Linux** (x64 throughout; ARM64 decoder + CFG), driven through a stable CLI — with
-an MCP server and a companion window as two further frontends over the same
-contract. It analyzes both **files on disk** (static PE/ELF) and **live
-processes** (runtime memory) through one and the same analysis pipeline.
+an MCP server as a second frontend over the same contract. It analyzes both
+**files on disk** (static PE/ELF) and **live processes** (runtime memory) through
+one and the same analysis pipeline.
 
 **The CLI is the primary frontend, and a person is the primary user** — someone at
 a terminal who reads the output, pipes it through `jq`, and writes their own
 scripts around it.
 That the same versioned JSON is also trivially machine-readable is a *property* of
-the contract, not a statement about the audience — MCP is one frontend of three,
+the contract, not a statement about the audience — MCP is one frontend of two,
 not the product. Large shipped native application binaries are the best-exercised target, not the definition.
-There is no GUI **yet**: that is an unbuilt feature (see §2 and N0xHUD in §4), not
+There is no GUI **yet**: that is an unbuilt feature (see §2), not
 a claim that the tool is meant for bots.
 
 It is a **synthesis of two worlds that today live apart**:
@@ -56,10 +56,7 @@ reasoning. N0xis is built the other way round:
   no hidden interactive state. A GUI is **not now,
   but not never** — the earlier "GUI-never" absolutism is retired. If a GUI lands it
   is a *thin visualization layer over these same `ok/data/meta` artifacts*, never a
-  rewrite of the CLI/MCP core. **N0xHUD already exists as a third frontend of exactly
-  that shape** — a config-driven always-on-top companion window over the same crates
-  (see §4) — proving the contract-first core carries a windowed surface without ever
-  becoming GUI-first.
+  rewrite of the CLI/MCP core.
 - **Explainable decompilation.** Every analysis pass emits an *inspectable*
   artifact: raw IR, SSA form, the propagation/DCE delta, recovered types, the
   structured control tree. You can ask "why is this condition `x > 4`?" or
@@ -129,8 +126,7 @@ These derive from the global engineering rules and are binding on every module:
    names baked into logic. They live in named constants, an ISA descriptor, or
    config. Throwaway scripts are exempt.
 5. **Powerful CLI *and* MCP.** Both are first-class frontends over the same core
-   API. Neither is an afterthought. (N0xHUD is a third, thinner frontend of the
-   same core — a window over the engine, not a parallel implementation.)
+   API. Neither is an afterthought.
 6. **Never silently lose semantics.** Any instruction/pattern the analysis can't
    raise is preserved verbatim (as an `asm` node / comment) with a confidence
    marker — output is always *sound*, even when incomplete. Held to a standing
@@ -158,7 +154,6 @@ These derive from the global engineering rules and are binding on every module:
 FRONTENDS (output-side adapters)  ──── one stable core API + JSON contracts ────▶
     n0xis-cli    thin clap frontend (binary: n0xis, alias n0x)
     n0xis-mcp    MCP server — agent tools
-    n0xis-hud    N0xHUD — config-driven companion window over the same crates
         │
         ▼
 n0xis-pipeline
@@ -189,13 +184,12 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
 | `n0xis-contracts` | All wire schemas (`n0xis.*.vN`), shared value types (`Va`, `Symbol`, `Reg`). Single source of truth. | serde | everything else |
 | `n0xis-arch` | ISA abstraction (`trait Arch`) + `X64` impl (iced-x86): decode, lift-to-microIR, register model, calling conventions. `Arm64` (disarm64) is **implemented and self-tested** (CFG/discover/xref/goto+structured decompile); SSA optimization + flag-precise conditions stay x64-only, and ARM64 is **not yet verified to x64's standard**. | contracts, iced-x86, disarm64 | OS, I/O, sources |
 | `n0xis-sources` | Input adapters: `MemorySource` / `SymbolProvider` / `ModuleProvider` + `LiveProcess` (Win32), `StaticPe` (goblin), `Snapshot`, `RemoteAgent` (SSH/Tailscale). Also the `debug` (sw/hw breakpoints, cross-process unwind) and `input` (injection probe) adapters. | contracts, windows-sys, goblin | analysis logic |
-| `n0xis-core` | Pure analysis passes over `Arch` + source traits: CFG, IR, **SSA, propagation, DCE**, type inference, control structuring, pseudo-C render, xref, slice, plus the dynamic passes (scan/aob/pointer/dissect/valueset/deobfuscate/diff/provenance/gamegrep/constident/bindings/sigvalidate/structural/ui_locate). **No I/O, no OS.** | contracts, arch (trait), sources (traits) | concrete adapters |
+| `n0xis-core` | Pure analysis passes over `Arch` + source traits: CFG, IR, **SSA, propagation, DCE**, type inference, control structuring, pseudo-C render, xref, slice, plus the dynamic passes (scan/aob/pointer/dissect/valueset/deobfuscate/diff/provenance/concept_grep/constident/bindings/sigvalidate/structural/ui_locate). **No I/O, no OS.** | contracts, arch (trait), sources (traits) | concrete adapters |
 | `n0xis-project` | `.n0x/` analysis database: functions, names, types, comments, selections, patches, dumps, `.n0xt` tables, session, ir-cache. Versioned truth. | contracts | analysis logic |
 | `n0xis-pipeline` | Wires a source + arch + project into the core; `PassManager` schedules/caches passes (content-addressed artifacts). | all core-side crates | frontend concerns |
 | `n0xis-frontend` | The shared frontend seam: source resolution (all five target forms + the `.n0x/` session default), ISA selection, argument parsing, and the **capability registry** — one `Plugin` trait through which built-in analysis and external process plugins both register, with `build_registry()` as the single composition point. Exists because the CLI and MCP each used to carry their own copy of the first three, and had already drifted. | core, contracts, arch, sources, project | analysis internals, frontend-specific I/O |
 | `n0xis-cli` | Thin clap frontend → pipeline calls → JSON. The living command surface ([`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md)); the ported v0 commands live on inside that same current reference. | frontend, pipeline, contracts | analysis internals |
 | `n0xis-mcp` | MCP server exposing the same pipeline as agent tools (same `ok/data/meta` envelope). | frontend, pipeline, contracts | analysis internals |
-| `n0xis-hud` | **N0xHUD** — a config-driven, always-on-top **companion window** (eframe/egui) over the same crates: process-watcher auto-apply, write & freeze, global hotkeys, Interception-driver actuation, sequence/driver-macro input macros, and a process-based plugin protocol for target-specific automation (`[[adapters]]` bindings speak `on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio — see `docs/COMMUNITY_ROADMAP.md`'s "Plugin system"). `n0xis-hud` itself is deliberately target-agnostic; all target-specific logic lives in an external plugin process, not compiled in. A third frontend / runtime-instrumentation surface — **not** an in-target overlay or an injection layer. | sources, project, core, contracts (+ eframe/egui, windows) | the CLI/MCP dispatch; core analysis internals |
 | `n0xis-bitsquid` | Bitsquid bundle format adapter (archives, resource types). Pluggable asset-format adapter. | contracts | core (never depended on by it) |
 | `n0xis-lua` | Offline LuaJIT 2.0 bytecode dump decoder/patcher (header, prototypes, instructions, constants). Pluggable scripting-format adapter. | serde | core, OS |
 | `n0xis-luajit` | Live LuaJIT VM introspection: finds/decodes GC objects (starting with `GCstr`) directly in a running process's heap via `MemorySource`, no per-string hand-picked byte pattern. Sibling to `n0xis-lua` (live vs. offline), not a dependency of it. | contracts, sources (traits) | core, concrete OS calls |
@@ -323,7 +317,7 @@ process** and a **static file** — satisfying "works at runtime too" by constru
 Raw decompiler maturity is a decades-long body of work and is not what this
 project is built around. Its focus is elsewhere: scriptable, inspectable, unified
 live/static, reproducible. If a GUI ever lands, it rides on top of these same
-artifacts (N0xHUD is the existing proof) rather than displacing the contract.
+artifacts rather than displacing the contract.
 
 ## 8. Expectations / definition of done (per capability)
 
@@ -390,9 +384,7 @@ The capability set this layer is built to cover:
   `--when reg=value`), periodic re-scan; a time-scaling hook is a later stretch.
 
 Every one of these is a CLI verb + MCP tool returning a schema'd artifact — so an
-shell script (or an agent) can drive a full scan→filter→freeze loop headlessly. N0xHUD (§4) puts an
-interactive, always-on-top face on the same write/freeze/watch machinery for
-in-the-moment runtime instrumentation.
+shell script (or an agent) can drive a full scan→filter→freeze loop headlessly.
 
 ## 10. Own table format — `.n0xt`
 

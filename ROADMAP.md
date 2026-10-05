@@ -12,8 +12,8 @@ Legend: 🎯 milestone · ✅ done · ⏳ in progress · ⬜ todo · ⚠️ cave
 ## Phase 1 — Workspace skeleton & seams ✅
 Goal: the empty-but-correct architecture. No analysis yet; the boundaries exist.
 - ✅ Cargo workspace with the 8 core crates CONCEPT §4 originally specified
-  (`crates/*`) — the 4 companion crates (`hud`/`bitsquid`/`lua`/`luajit`) were
-  added in later phases (see the companion-tooling section; 12 crates today).
+  (`crates/*`) — the 3 companion crates (`bitsquid`/`lua`/`luajit`) were
+  added in later phases (see the companion-tooling section).
 - ✅ `n0xis-contracts`: `Va` (hex-string wire form), `Symbol`, `Module`, `Reg`, the
   `ok/data/meta` `Response` envelope, and v0 + v1 schema ids reserved.
 - ✅ `n0xis-sources`: `MemorySource` / `SymbolProvider` / `ModuleProvider` traits +
@@ -755,7 +755,7 @@ dependency order.
 > bindings,sig.validate}.v1`). +17 new core unit tests, all green; each command
 > verified end-to-end against the compiled `n0xis.exe`.
 >
-> - **`concept grep`** (first published as `game grep`) → `n0xis-core::gamegrep` (pure `rank()`), CLI `concept grep
+> - **`concept grep`** (first published as `game grep`) → `n0xis-core::concept_grep` (pure `rank()`), CLI `concept grep
 >   <concept> --dir <path>…`. The scoring *is* the feature: cluster **breadth**
 >   (distinct concept terms present) is squared and weighted so it always
 >   outranks raw frequency, with a log-damped frequency tail only breaking ties —
@@ -883,15 +883,13 @@ regardless).
 > in the binary, labelled as not validated; the helper commands below do not deliver the
 > phase on their own. The text below is kept as the record of what was tried.
 
-Goal: close the last gap the input-sequence campaign hit — **there is no way to get from
+Goal: close the last gap an earlier investigation hit — **there is no way to get from
 "the thing I can see on screen" to "the memory that drives it."**
 
-Like Phase 8, every item traces to a **named failure from a real campaign**
-(2026-07-20, universalizing the input-sequence solver — full post-mortem in the
-target project's `AUTO_COMBO_PLAN.md` §12; that planning doc is not tracked in this repo —
-see the companion-tooling doc-debt note below). Context: the solver was finished
-and working via *computed* sequences (template + seed), but the operator wanted the
-more general path — read the arrows the target is drawing, which would cover object
+Like Phase 8, every item traces to a **named failure from a real investigation**
+(2026-07-20; the full post-mortem lives in that project's own planning notes, which are
+not tracked in this repo). Context: the automation already worked from *computed* values (template + seed), but the
+more general path was wanted — read what the target draws on screen, which would cover object
 types no catalogue knows. That hunt failed four separate ways, and each failure
 names a missing tool.
 
@@ -6285,44 +6283,15 @@ time, and system packages (`unicorn`, `z3`, `qemu-user`, `rr`) via the distro.
 
 ---
 
-## Companion tooling (not a numbered phase) — N0xHUD, script-asset & LuaJIT track
+## Companion tooling (not a numbered phase) — script-asset & LuaJIT track
 
 A parallel track landed outside the numbered roadmap (commits `4cc5f4e`,
 `d6580f2`) and isn't otherwise represented here. These capabilities **exist and
 are wired**; framed correctly they are **runtime instrumentation / live-memory
-analysis + input actuation** over the very crates the CLI and MCP drive — a third
-frontend plus some format adapters, not a separate product. (These four extra
-crates — `n0xis-hud`, `n0xis-bitsquid`, `n0xis-lua`, `n0xis-luajit` — bring the
-workspace from Phase 1's 8 crates to **12** today.)
+analysis** over the very crates the CLI and MCP drive — format adapters and a
+plugin protocol, not a separate product. (These three extra crates —
+`n0xis-bitsquid`, `n0xis-lua`, `n0xis-luajit` — were added to Phase 1's 8.)
 
-- ✅ **N0xHUD — a third frontend** (`crates/n0xis-hud`, binary `n0xis-hud`). A
-  config-driven **companion window**, *not* an in-target overlay: a plain
-  always-on-top `eframe`/`egui` window that does **not** draw inside the target
-  (a separate always-on-top window beside the target), launched from a target's `.n0x/` project and driven by
-  `.n0x/hud.toml`. One shared `Engine` behind three background threads — a global
-  low-level keyboard hook (hotkeys), a process watcher that auto-applies adapter
-  plugins when the target appears, and a generic periodic plugin poller
-  (`plugin_poll.rs`). Shipped: config-driven bindings (nothing hardcoded), write
-  & pin over the Phase 4b primitives (pointer-path locators included),
-  global hotkeys with in-UI rebind + conflict detection, and (2026-07-22,
-  **superseding** an earlier in-binary adapter registry) a **process-based
-  plugin dispatch**: an `[[adapters]]` binding's `command` spawns a persistent
-  `n0xis_sources::PluginSession`, and `on_launch`/`toggle_on`/`toggle_off`/
-  `poll` become JSON ops on that session instead of a compiled-in Rust match —
-  `n0xis-hud` itself carries **zero** target-specific logic; all of it lives in
-  an external plugin process the user builds and points `command` at (see
-  `docs/COMMUNITY_ROADMAP.md`'s "Plugin system", whose transport this reuses).
-  ⚠️ Doc debt: the design docs under [`docs/n0xhud/`](docs/n0xhud/) still describe
-  the *unbuilt* overlay/injection plan and frame it as an in-target toggle menu — stale, flagged
-  for a rewrite; the shipped binary is the companion-window shape above.
-- ✅ **Interception-driver actuation** (`interception.rs`). Dynamically loads a
-  user-configured `interception.dll` (path from `hud.toml`, never hardcoded) and
-  sends keystrokes through the kernel-class driver — needed because some applications
-  filter `LLKHF_INJECTED` and ignore the identical scancode sent via
-  `SendInput` (confirmed live; `input probe` detects this directly). Two macro
-  subsystems ride on top: fixed **sequences / "Combinations"** replay (via
-  `SendInput`) and **key-sequence macros** (via Interception) — both fully
-  generic, config-driven, no target-specific code.
 - ✅ **Bitsquid-bundle + LuaJIT asset tooling** (`crates/n0xis-bitsquid`,
   `n0xis-lua`, `n0xis-luajit`; CLI `bundle {list,extract,repack}` and
   `lua {disasm,patch,strings,table,combo,seedscan}`). Offline bundle
@@ -6336,11 +6305,10 @@ workspace from Phase 1's 8 crates to **12** today.)
   `selection.rs`'s storage pattern; `n0xis-pipeline::PluginHost` for
   analysis-result plugins; CLI `plugin {list,add,rm}`; MCP `plugin_list`/
   `plugin_run`) — the previously-only-*proposed* design in
-  `docs/COMMUNITY_ROADMAP.md` now built and exercised by N0xHUD's own adapter
-  dispatch above. Validated end-to-end (2026-07-22) by porting a real,
-  previously in-binary, single-target automation feature — an input-sequence auto-solver
+  `docs/COMMUNITY_ROADMAP.md`, now built. Validated end-to-end (2026-07-22) by porting a real,
+  previously in-binary, single-target automation feature — an input automation helper
   (transition-diff detection of a just-opened UI window, seed-derived exact
-  solving for a high-stakes case, a safe brute fallback for the rest) — out of
+  answers where they matter, a safe fallback for the rest) — out of
   this repo entirely into an external plugin process, proving the protocol
   handles genuinely stateful, long-running automation, not just simple
   one-shot patches.
@@ -6770,16 +6738,15 @@ most laborious classic workflow.
    Phase 10's hardest ❌ item (*indirect / virtual call resolution*) from "needs a real
    points-to analysis" into a table lookup **on this corpus**. Cheap here, expensive there —
    take the cheap one.
-7. ⬜ **Outputs for mod authors** (the data seam earning its keep):
+7. ⬜ **Hook stubs and offsets for IL2CPP loaders** (the data seam earning its keep):
    `il2cpp emit-hook --loader melon|bepinex` (HarmonyX skeleton with the correct signature,
    hidden `MethodInfo*` included) or a native trampoline through the existing journaled
    `patch detour`; `il2cpp emit-offsets --format cpp|rust|json`; export back to
    `dump.cs`/`script.json` shape for ecosystem interop.
 8. ⬜ **`il2cpp diff --old <index> --new <index>` — the maintenance killer.** What an update
    broke: methods moved, field offsets shifted, signatures changed. Combined with `.n0xt`
-   tables and `diff functions`, this is **automatic offset migration for an existing mod** —
-   the one problem every mod author has forever and no RE tool addresses, because no RE tool
-   holds both indices and the user's own address table.
+   tables and `diff functions`, this is **automatic offset migration for an existing address
+   table** across a target update.
 
 ### Cross-target verification — the answer to "does this work on IL2CPP, or on *that build*"
 
@@ -6970,8 +6937,9 @@ truncated. A silent zero, which Phase 11 exists to make impossible.
 ### What this phase deliberately does **not** build
 
 Not a C# decompiler, not a mod loader, not a managed injector, not an IL reconstructor.
-BepInEx/MelonLoader/Il2CppInterop own *running* mods and do it well; N0xis's contribution is
-analysis, localization, provenance, and journaled patching. `emit-hook` generates a skeleton
+Loading managed code into a running target is the job of IL2CPP loaders (BepInEx,
+MelonLoader, Il2CppInterop); N0xis's scope is analysis, localization, provenance, and
+journaled patching. `emit-hook` generates a skeleton
 for someone else's loader — that is a data-seam output, not an ambition to become one.
 
 ### Framing rules this phase encodes
@@ -7058,8 +7026,8 @@ through plain syscalls — no signed driver, no code-integrity fight:
   in the target**. This is the biggest "not possible on stock Windows without a driver" win,
   and it is a near-perfect fit for provenance.
 - `uinput` / `evdev` — inject input as a *real kernel input device*, below any user-space
-  hook anti-tamper software installs. This is the built-in-kernel replacement for the third-party
-  Interception driver the Windows HUD used.
+  hook anti-tamper software installs. This is the built-in-kernel counterpart to the
+  third-party kernel input drivers `input probe` looks for on Windows.
 - Further out: `seccomp`-unotify (syscall interception), `LD_PRELOAD` interposition, and
   **KVM-based VM introspection** (run the target in a VM, inspect from outside, undetectable
   from within) — each a Linux-native answer to a Windows driver-or-nothing problem.
@@ -7113,7 +7081,7 @@ through plain syscalls — no signed driver, no code-integrity fight:
   ranges to ignore, so a write-watchpoint on a managed field that a `memcpy`/serialization
   helper constantly rewrites can skip the copy site (resumed with the watchpoint still armed,
   *without* spending the condition budget) and surface the semantic setter instead. Emerged
-  from a real .NET NativeAOT modding session where every hit landed in serialization copies.
+  from a real .NET NativeAOT analysis session where every hit landed in serialization copies.
 - ⚠️ Reaching a non-descendant needs `kernel.yama.ptrace_scope=0`, `CAP_SYS_PTRACE`, or root
   — the same gate `process_vm_readv` hits; the error says so.
 
@@ -7139,9 +7107,8 @@ through plain syscalls — no signed driver, no code-integrity fight:
    n0xis-pipeline --features live` is green on Linux (4 exit tests + lib).
 3. ⬜ **Beyond the v0 port — uprobes + eBPF provenance** — trace writes to an address with no byte
    patched in the target; the natural Linux-native upgrade to the watchpoint path.
-4. ⬜ **UI/automation track** (not needed for analysis): `uinput`/`evdev` input adapter
-   (replaces the Windows Interception driver), then `window` capture (X11 first; Wayland only
-   via portals). Abstract the HUD hotkey/window backend behind a trait.
+4. ⬜ **UI/automation track** (not needed for analysis): `uinput`/`evdev` input adapter,
+   then `window` capture (X11 first; Wayland only via portals).
 5. ⬜ **macOS** — a `LiveTarget` that stays unimplemented (`HAS_LIVE_ADAPTER=false`) until a
    `mach_vm_read`/`thread_get_state` adapter lands; frontends already degrade, not fail.
 6. ⬜ **Flexible dynamic-symbol resolution for ELF/GLIBC across distros.** The Windows path

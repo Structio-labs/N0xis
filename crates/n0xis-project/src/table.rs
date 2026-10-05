@@ -34,9 +34,9 @@ pub fn load(name: &str) -> Result<Table> {
 }
 
 /// Save into an explicit `.n0x` directory rather than the cwd-resolved one.
-/// A long-running GUI frontend (n0xis-hud) must use this: some windowing/GL
-/// init changes the process working directory out from under `resolve()`, so
-/// the HUD pins its project dir once at startup and always passes it here.
+/// A long-running GUI frontend must use this: some windowing/GL init changes
+/// the process working directory out from under `resolve()`, so such a
+/// frontend pins its project dir once at startup and always passes it here.
 pub fn save_at(n0x_dir: &Path, table: &Table) -> Result<()> {
     if table.name.is_empty() {
         bail!("table name must not be empty");

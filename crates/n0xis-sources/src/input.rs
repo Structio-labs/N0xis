@@ -4,7 +4,7 @@
 //! `input probe` — verify the actuation (write) path before building on it
 //! (ROADMAP Phase 8, fixes RE_METHOD F4).
 //!
-//! The campaign built, shipped, and believed-working an entire input feature on
+//! An earlier project built, shipped, and believed-working an entire input feature on
 //! `SendInput` that **never once registered in the target** — because the target
 //! filters injected input via the standard `LLKHF_INJECTED` check, and nobody
 //! tested the write half independently before integrating it. A one-key probe
@@ -20,7 +20,7 @@
 //! actuation method actually be seen?" *before* a feature is built on it.
 //!
 //! Honest scope: `SendInput` and `keybd_event` are actively exercised (they set
-//! `LLKHF_INJECTED`, which is precisely why the campaign's input was ignored).
+//! `LLKHF_INJECTED`, which is precisely why that project's input was ignored).
 //! `Interception` (a kernel driver that produces *non*-injected input — the real
 //! fix) and raw-HID injection require external drivers this tool does not bundle
 //! or assume; the probe *detects their availability* and says so, rather than

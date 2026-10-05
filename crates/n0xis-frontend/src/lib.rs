@@ -19,8 +19,8 @@
 //!
 //! ```text
 //!   n0xis-cli ─┐
-//!   n0xis-mcp ─┼─▶ n0xis-frontend ─▶ n0xis-pipeline ─▶ n0xis-core
-//!   n0xis-hud ─┘   (source + arch + argument parsing)
+//!              ├─▶ n0xis-frontend ─▶ n0xis-pipeline ─▶ n0xis-core
+//!   n0xis-mcp ─┘   (source + arch + argument parsing)
 //! ```
 //!
 //! Frontends stay free to differ where they genuinely differ (clap flags vs

@@ -31,7 +31,7 @@ mod dom;
 mod dot;
 mod eh;
 mod emulate;
-mod gamegrep;
+mod concept_grep;
 mod icalls;
 mod coalesce;
 mod klass;
@@ -70,7 +70,7 @@ pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};
 pub use aslr::{rebase, rva_of, va_at};
 pub use bindings::{Binding, BindingsArtifact, BindingsInput, BindingsPass};
 pub use constident::{identify_f64, identify_u64, ConstMatch};
-pub use gamegrep::{rank as game_grep_rank, Document, GameGrepArtifact, RankOptions, RankedHit, TermHit};
+pub use concept_grep::{rank as concept_grep_rank, Document, ConceptGrepArtifact, RankOptions, RankedHit, TermHit};
 pub use sigvalidate::{
     parse_mask, parse_sample, validate as sig_validate, MaskByte, MaskFinding, SigValidateArtifact,
     SigValidateInput, MIN_INDEPENDENT_SAMPLES,

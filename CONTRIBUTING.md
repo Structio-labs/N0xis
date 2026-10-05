@@ -59,7 +59,7 @@ so a green local run is a green PR:
   compile where the `live` adapter does not exist. This is CONCEPT §4's layering
   law; it used to be a claim in a doc, and now it fails the build instead.
 - **`windows`** — the full workspace (including `cfg(windows)` code: live
-  process, debugger, N0xHUD) built with `RUSTFLAGS=-D warnings` and tested.
+  process, debugger) built with `RUSTFLAGS=-D warnings` and tested.
 - **`clippy`** — the whole workspace, all targets, `-D warnings`.
 
 `cargo fmt` is deliberately *not* a gate: parts of this codebase use hand-tuned

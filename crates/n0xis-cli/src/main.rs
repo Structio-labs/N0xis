@@ -25,7 +25,7 @@ use n0xis_frontend::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_h
 use n0xis_contracts::{Response, Va, schema};
 use n0xis_contracts::TableValueType;
 use n0xis_core::{
-    game_grep_rank, identify_f64, identify_u64, parse_aob, AobByte, AobInput, AobScanPass, BindingsInput, BindingsPass,
+    concept_grep_rank, identify_f64, identify_u64, parse_aob, AobByte, AobInput, AobScanPass, BindingsInput, BindingsPass,
     CfgInput, ConstMatch, Ctx, DecompInput, DecompPass, DecompStyle,
     DiscoverInput, DiscoverPass, Document,
     FilterCriterion,
@@ -6189,7 +6189,7 @@ fn cmd_concept_grep(a: ConceptGrepArgs, spelled: Spelled, pretty: bool) -> bool 
     }
 
     let opts = RankOptions { limit: a.limit, max_snippets: a.max_snippets, min_distinct: a.min_distinct.max(1) };
-    let art = game_grep_rank(&terms, &docs, &opts);
+    let art = concept_grep_rank(&terms, &docs, &opts);
     emit(
         &Response::success(CONCEPT_GREP.schema(spelled), art).with_source(a.dirs.join(",")),
         pretty,

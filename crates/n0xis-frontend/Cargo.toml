@@ -1,6 +1,6 @@
 [package]
 name = "n0xis-frontend"
-description = "Shared frontend layer: source resolution, ISA selection and argument parsing that every frontend (CLI, MCP, HUD) goes through. One contract instead of a copy per frontend."
+description = "Shared frontend layer: source resolution, ISA selection and argument parsing that every frontend (CLI, MCP) goes through. One contract instead of a copy per frontend."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

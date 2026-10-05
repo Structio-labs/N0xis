@@ -65,7 +65,7 @@ pub enum TableValueType {
 impl TableValueType {
     /// Encode a pin/write value as little-endian bytes for this entry's
     /// type — shared by any frontend that writes a `TableEntry`'s value into
-    /// a live process (the CLI's `table pin`, n0xis-hud's menu toggles).
+    /// a live process (the CLI's `table pin` among them).
     pub fn encode_value(self, v: f64) -> Result<Vec<u8>, String> {
         Ok(match self {
             TableValueType::I8 => (v as i8).to_le_bytes().to_vec(),

@@ -75,13 +75,6 @@ PAGES: tuple[Page, ...] = (
         "decompiler pipeline, and the seams that keep them apart.",
     ),
     Page(
-        "docs/n0xhud/CONCEPT.md",
-        "n0xhud",
-        "N0xHUD",
-        "The companion-window frontend — a window over the analysis engine, "
-        "sharing the same crates as the CLI and MCP frontends.",
-    ),
-    Page(
         "ROADMAP.md",
         "roadmap",
         "Roadmap & build history",
@@ -131,7 +124,6 @@ WIKI_TARGETS = {
     "COMMUNITY_ROADMAP": "community",
     "CONTRIBUTING": "contributing",
     "CHANGELOG": "changelog",
-    "docs/n0xhud/CONCEPT": "n0xhud",
 }
 
 

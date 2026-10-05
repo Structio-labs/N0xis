@@ -5,6 +5,10 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Removed
+
+- The companion-window crate was removed from the workspace.
+
 ### A Win64 rule was being applied to System V — and the dispatch metric went *down* for a good reason
 
 - **Which frame slots a `call` clobbers is an ABI question, and it was assumed.**

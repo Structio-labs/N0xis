@@ -140,8 +140,8 @@ fn is_plausible_ascii(bytes: &[u8]) -> bool {
 /// is a flat `TValue[]`, and each element that holds an interned string is just
 /// `(LJ_TSTR<<47 | gcstr_addr)`. Matching those against the (few) known string
 /// object addresses recovers the sequence directly from its backing store —
-/// e.g. an interact-combo `{"up","down","down","up"}` reads straight out as
-/// `["up","down","down","up"]`. Coincidental single hits are filtered by
+/// e.g. a table `{"open","read","read","close"}` reads straight out as
+/// `["open","read","read","close"]`. Coincidental single hits are filtered by
 /// `min_run`, and false-positive string addresses simply never get referenced.
 #[derive(Debug, Clone, Serialize)]
 pub struct StringRun {

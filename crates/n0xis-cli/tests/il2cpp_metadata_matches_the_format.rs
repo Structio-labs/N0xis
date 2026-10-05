@@ -25,12 +25,15 @@
 //! Plus the structural invariants a wrong layout cannot satisfy: tables
 //! ascending, non-overlapping, and inside the file.
 //!
-//! **No target, no silence.** With no metadata blob to be found the test says so
-//! on stderr and checks nothing, the same way the oracle corpus skips a shape
-//! whose compiler is missing. Point it somewhere with `N0XIS_IL2CPP_ROOTS`
-//! (`:`-separated directories to scan).
+//! **No target, no silence.** The blob is machine-local, so where to look is the
+//! caller's to say: `N0XIS_IL2CPP_ROOTS`, `:`-separated directories to scan. Unset,
+//! or set with no metadata blob under it, the test says so on stderr and checks
+//! nothing, the same way the oracle corpus skips a shape whose compiler is
+//! missing. It used to guess conventional install directories instead; a guess
+//! names one vendor's layout, and the explicit list was always the real
+//! interface.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
@@ -44,41 +47,23 @@ fn n0xis_exe() -> PathBuf {
     p.join(if cfg!(windows) { "n0xis.exe" } else { "n0xis" })
 }
 
-/// Directories to look under. An explicit list wins; otherwise the conventional
-/// install roots, which is what makes this run without configuration on a
-/// machine that happens to have a target and skip cleanly on one that does not.
-fn roots() -> Vec<PathBuf> {
-    if let Ok(list) = std::env::var("N0XIS_IL2CPP_ROOTS") {
-        return list.split(':').filter(|s| !s.is_empty()).map(PathBuf::from).collect();
-    }
-    let mut out = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        for tail in [".steam/steam/steamapps/common", ".local/share/Steam/steamapps/common"] {
-            out.push(Path::new(&home).join(tail));
-        }
-    }
-    // Removable and secondary drives, one level down — a large library rarely
-    // lives on the system disk.
-    for base in ["/run/media", "/media", "/mnt"] {
-        let Ok(users) = std::fs::read_dir(base) else { continue };
-        for user in users.flatten() {
-            let Ok(drives) = std::fs::read_dir(user.path()) else { continue };
-            for drive in drives.flatten() {
-                out.push(drive.path().join("SteamLibrary/steamapps/common"));
-                out.push(drive.path().join("steamapps/common"));
-            }
-        }
-    }
-    out
+/// The environment variable naming the directories to look under.
+const ROOTS_VAR: &str = "N0XIS_IL2CPP_ROOTS";
+
+/// Directories to look under, from [`ROOTS_VAR`]. `None` when it is unset: the
+/// test then has no question to ask, which is a skip, not a pass.
+fn roots() -> Option<Vec<PathBuf>> {
+    let list = std::env::var(ROOTS_VAR).ok()?;
+    Some(list.split(':').filter(|s| !s.is_empty()).map(PathBuf::from).collect())
 }
 
-/// Every `*_Data/il2cpp_data/Metadata/global-metadata.dat` under the roots.
+/// Every `*_Data/il2cpp_data/Metadata/global-metadata.dat` under `roots`.
 /// Bounded to the depth the layout actually uses, so this never becomes a
 /// filesystem walk.
-fn find_metadata() -> Vec<PathBuf> {
+fn find_metadata(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for root in roots() {
-        let Ok(installs) = std::fs::read_dir(&root) else { continue };
+    for root in roots {
+        let Ok(installs) = std::fs::read_dir(root) else { continue };
         for install in installs.flatten() {
             let Ok(entries) = std::fs::read_dir(install.path()) else { continue };
             for e in entries.flatten() {
@@ -140,12 +125,19 @@ fn run(args: &[&str]) -> Value {
 
 #[test]
 fn the_metadata_reader_reproduces_the_files_own_header() {
-    let targets = find_metadata();
+    let Some(roots) = roots() else {
+        eprintln!(
+            "skip: {ROOTS_VAR} is unset — nothing was checked. The metadata blob is \
+             machine-local; set {ROOTS_VAR} to a directory holding an IL2CPP build."
+        );
+        return;
+    };
+    let targets = find_metadata(&roots);
     if targets.is_empty() {
         eprintln!(
             "skip: no global-metadata.dat under {:?} — nothing was checked. \
-             Set N0XIS_IL2CPP_ROOTS to a directory holding an IL2CPP build.",
-            roots().len()
+             Set {ROOTS_VAR} to a directory holding an IL2CPP build.",
+            roots.len()
         );
         return;
     }
