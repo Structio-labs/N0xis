@@ -1267,19 +1267,22 @@ static CALLEE_TYPES: std::sync::Mutex<CalleeTypesMemo> = std::sync::Mutex::new(N
 /// past it we simply stop adding and keep serving what is already cached.
 const CALLEE_TYPES_MAX: usize = 200_000;
 
-/// The inputs that can change a callee's inferred parameter types.
-fn ctx_identity(ctx: &Ctx) -> String {
-    format!(
-        "{}|{}|{}",
-        ctx.source.label(),
+/// The inputs that can change a callee's inferred parameter types, or `None`
+/// for a source with no identity (a live process): its code can change, so
+/// nothing about it is kept. The source's label is not an identity, since it
+/// names only the file.
+fn ctx_identity(ctx: &Ctx) -> Option<String> {
+    let source = ctx.source.identity()?;
+    Some(format!(
+        "{source}|{}|{}",
         ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
         ctx.vtables.map_or(0, |v| v.len()),
-    )
+    ))
 }
 
 /// [`callee_param_types`] served from the process memo (see [`CALLEE_TYPES`]).
 fn callee_param_types_memo(ctx: &Ctx, va: Va) -> Option<Vec<CType>> {
-    let id = ctx_identity(ctx);
+    let Some(id) = ctx_identity(ctx) else { return callee_param_types(ctx, va) };
     if let Ok(memo) = CALLEE_TYPES.lock()
         && let Some((cached_id, map)) = memo.as_ref()
         && *cached_id == id

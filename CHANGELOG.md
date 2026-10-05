@@ -28,6 +28,15 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A long-running process answered one file with another file's facts.** What the engine
+  keeps between requests (the unwind map, the function list, the reverse-xref index, the
+  vtable maps, inferred callee types) was keyed by the source's label, `static:<file name>`,
+  which is the same for two files of one name. In one MCP server, `function discover` on a
+  file with 10 functions answered 4, with `ok`, after another file of that name had been
+  asked about. Sources now have an identity made from their content (`SourceId`; none for a
+  live process, about which nothing is kept), and every one of those memos is keyed by it. A
+  test asks about two such files in turn in one process and compares each answer with a fresh
+  process's.
 - **Reads under an ELF's thread-local zero-fill section came back empty.** The linker gives
   `.tbss` the address the following sections also start at, because it takes no room in the
   image, and the ELF source mapped it anyway: as the first match it shadowed `.init_array`,

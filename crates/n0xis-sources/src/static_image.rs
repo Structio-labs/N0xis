@@ -11,7 +11,7 @@ use std::path::Path;
 
 use n0xis_contracts::{Module, Symbol, Va};
 
-use crate::{MemorySource, ModuleProvider, SourceError, StaticElf, StaticPe, SymbolProvider};
+use crate::{MemorySource, ModuleProvider, SourceError, SourceId, StaticElf, StaticPe, SymbolProvider};
 
 /// A file-backed static image, PE or ELF, chosen by its magic bytes.
 #[derive(Debug)]
@@ -148,6 +148,12 @@ impl MemorySource for StaticImage {
         match self {
             StaticImage::Pe(p) => p.next_readable(va, end),
             StaticImage::Elf(e) => e.next_readable(va, end),
+        }
+    }
+    fn identity(&self) -> Option<SourceId> {
+        match self {
+            StaticImage::Pe(p) => p.identity(),
+            StaticImage::Elf(e) => e.identity(),
         }
     }
     fn code_range(&self) -> Option<(Va, u64)> {

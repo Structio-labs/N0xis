@@ -192,8 +192,19 @@ pub trait MemorySource {
         Err(SourceError::ReadOnly)
     }
 
-    /// Provenance label for `meta.source`, e.g. `"snapshot:test"`.
+    /// Provenance label for `meta.source`, e.g. `"snapshot:test"`. For
+    /// showing only, never for keying what is kept between requests: two
+    /// different files of one name have the same label. Key by
+    /// [`identity`](MemorySource::identity).
     fn label(&self) -> String;
+
+    /// The identity of this source's bytes when they cannot change under it:
+    /// what anything kept between requests is keyed by. `None`, the default,
+    /// for a source whose bytes can change (a live process, a remote agent):
+    /// nothing about it may be kept.
+    fn identity(&self) -> Option<SourceId> {
+        None
+    }
 
     /// The calling-convention ABI this target uses, as a [`CallConv::name`]
     /// selector (`n0xis_arch::CallConv`): `"win64"` (default — PE, Windows) or
@@ -232,6 +243,33 @@ fn first_with_a_byte<S: MemorySource + ?Sized>(src: &S, at: impl IntoIterator<It
         }
     }
     Ok(None)
+}
+
+/// What a source's bytes are, for keying anything kept between requests: two
+/// sources with one id read the same bytes at every address, and carry the
+/// same symbols. Made from the content, never from a name. Memos keyed on a
+/// source's label (`static:<file name>`) handed one file's answers to another
+/// file of the same name in a long-running process: `function discover` on
+/// one counted 4 functions where it has 10, after the other had been asked
+/// about. Good within one process only: the hash is not stable across builds,
+/// so it is never written down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceId(u64);
+
+impl SourceId {
+    /// The id of whatever `content` feeds into a hasher.
+    pub fn of(content: impl std::hash::Hash) -> Self {
+        use std::hash::Hasher;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut h);
+        Self(h.finish())
+    }
+}
+
+impl std::fmt::Display for SourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
 }
 
 /// [`MemorySource::next_readable`] for a source whose readable bytes can

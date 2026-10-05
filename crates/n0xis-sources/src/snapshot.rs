@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use n0xis_contracts::{Module, Symbol, Va};
 use serde::{Deserialize, Serialize};
 
-use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
+use crate::{MemorySource, ModuleProvider, SourceError, SourceId, SymbolProvider};
 
 /// One contiguous mapped region of bytes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,7 +42,8 @@ impl Region {
 /// modules and symbols. Build one with [`Snapshot::builder`], or reload a
 /// captured one with `serde_json::from_str`/`from_slice` (round-trips
 /// through [`Serialize`]/[`Deserialize`] — see `snapshot dump`/`--snapshot`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(from = "Captured")]
 pub struct Snapshot {
     regions: Vec<Region>,
     modules: Vec<Module>,
@@ -53,6 +54,59 @@ pub struct Snapshot {
     /// entry address.
     iat_symbols: BTreeMap<u64, Symbol>,
     label: String,
+    /// Everything the snapshot holds, for keying what is kept between requests.
+    /// Made from the rest whenever a snapshot is made or read back, and never
+    /// written down.
+    id: SourceId,
+}
+
+/// A snapshot as `snapshot dump` writes it: everything but its identity.
+#[derive(Deserialize)]
+struct Captured {
+    regions: Vec<Region>,
+    modules: Vec<Module>,
+    symbols: BTreeMap<u64, Symbol>,
+    iat_symbols: BTreeMap<u64, Symbol>,
+    label: String,
+}
+
+/// The same, borrowed, so writing a snapshot does not copy its bytes.
+#[derive(Serialize)]
+struct CapturedRef<'a> {
+    regions: &'a [Region],
+    modules: &'a [Module],
+    symbols: &'a BTreeMap<u64, Symbol>,
+    iat_symbols: &'a BTreeMap<u64, Symbol>,
+    label: &'a str,
+}
+
+impl From<Captured> for Snapshot {
+    /// The one place a snapshot gets its identity: from its bytes and its
+    /// symbols both, since two snapshots of one memory with different names
+    /// attached answer differently.
+    fn from(c: Captured) -> Self {
+        let symbol = |s: &Symbol| (s.va.0, s.module.clone(), s.name.clone(), s.kind as u8);
+        let id = SourceId::of((
+            c.regions.iter().map(|r| (r.base, &r.bytes[..])).collect::<Vec<_>>(),
+            c.modules.iter().map(|m| (&m.name, m.base.0, m.size, &m.path)).collect::<Vec<_>>(),
+            c.symbols.values().map(symbol).collect::<Vec<_>>(),
+            c.iat_symbols.iter().map(|(va, s)| (*va, symbol(s))).collect::<Vec<_>>(),
+        ));
+        Snapshot { regions: c.regions, modules: c.modules, symbols: c.symbols, iat_symbols: c.iat_symbols, label: c.label, id }
+    }
+}
+
+impl Serialize for Snapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        CapturedRef {
+            regions: &self.regions,
+            modules: &self.modules,
+            symbols: &self.symbols,
+            iat_symbols: &self.iat_symbols,
+            label: &self.label,
+        }
+        .serialize(serializer)
+    }
 }
 
 impl Snapshot {
@@ -89,6 +143,11 @@ impl MemorySource for Snapshot {
 
     fn contains(&self, va: Va) -> bool {
         self.region_for(va.0).is_some()
+    }
+
+    /// A snapshot is captured once and never changes.
+    fn identity(&self) -> Option<SourceId> {
+        Some(self.id)
     }
 
     fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
@@ -157,13 +216,13 @@ impl SnapshotBuilder {
     }
     pub fn build(mut self) -> Snapshot {
         self.regions.sort_by_key(|r| r.base);
-        Snapshot {
+        Snapshot::from(Captured {
             regions: self.regions,
             modules: self.modules,
             symbols: self.symbols,
             iat_symbols: self.iat_symbols,
             label: self.label.unwrap_or_else(|| "snapshot".to_string()),
-        }
+        })
     }
 }
 
@@ -239,5 +298,18 @@ mod tests {
         assert_eq!(reloaded.modules().len(), 1);
         assert_eq!(reloaded.modules()[0].name, "target.exe");
         assert_eq!(reloaded.symbol_at(Va(0x1000)).map(|s| s.name), Some("entry".to_string()));
+        // Its identity is made again from what was read back, and never written.
+        assert_eq!(reloaded.identity(), snap.identity());
+        assert!(snap.identity().is_some());
+        assert!(!json.contains("\"id\""), "{json}");
+        // A different symbol is a different snapshot.
+        let renamed = Snapshot::builder()
+            .region(Va(0x1000), vec![1u8, 2, 3, 4])
+            .region(Va(0x2000), vec![9u8, 8, 7])
+            .module(Module { name: "target.exe".to_string(), base: Va(0x1000), size: 0x2000, path: None })
+            .symbol(Symbol { va: Va(0x1000), module: "target.exe".to_string(), name: "start".to_string(), kind: n0xis_contracts::SymKind::Function })
+            .label("captured")
+            .build();
+        assert_ne!(renamed.identity(), snap.identity());
     }
 }

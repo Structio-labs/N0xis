@@ -18,7 +18,7 @@ use std::path::Path;
 use goblin::pe::PE;
 use n0xis_contracts::{Module, SymKind, Symbol, Va};
 
-use crate::{read_export_table, ExportDirectory, ExportTarget, MemorySource, ModuleProvider, PeExport, SourceError, SymbolProvider};
+use crate::{read_export_table, ExportDirectory, ExportTarget, MemorySource, ModuleProvider, PeExport, SourceError, SourceId, SymbolProvider};
 
 #[derive(Debug, Clone)]
 struct SectionRange {
@@ -39,6 +39,8 @@ const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 /// A PE image on disk, mapped at its preferred base.
 #[derive(Debug)]
 pub struct StaticPe {
+    /// What the file holds, for keying what is kept between requests.
+    id: SourceId,
     bytes: Vec<u8>,
     image_base: u64,
     module_name: String,
@@ -226,6 +228,7 @@ impl StaticPe {
         let pdata = parse_pdata(&bytes, &sections, image_base);
 
         Ok(StaticPe {
+            id: SourceId::of(&bytes),
             bytes,
             image_base,
             module_name,
@@ -323,6 +326,12 @@ impl MemorySource for StaticPe {
 
     fn contains(&self, va: Va) -> bool {
         FileView { bytes: &self.bytes, sections: &self.sections }.contains(va)
+    }
+
+    /// An image on disk cannot change under the loaded copy; everything the
+    /// source answers comes from its bytes.
+    fn identity(&self) -> Option<SourceId> {
+        Some(self.id)
     }
 
     /// A readable stretch starts where a section (or the headers) starts or

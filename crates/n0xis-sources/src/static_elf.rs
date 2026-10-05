@@ -22,7 +22,7 @@ use std::path::Path;
 use goblin::elf::Elf;
 use n0xis_contracts::{Module, SymKind, Symbol, Va};
 
-use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
+use crate::{MemorySource, ModuleProvider, SourceError, SourceId, SymbolProvider};
 
 /// `SHF_EXECINSTR` — the section holds executable machine code.
 const SHF_EXECINSTR: u64 = 0x4;
@@ -91,6 +91,8 @@ fn takes_image_space(sh_type: u32, sh_flags: u64) -> bool {
 /// An ELF image on disk, mapped at its preferred base.
 #[derive(Debug)]
 pub struct StaticElf {
+    /// What the file holds, for keying what is kept between requests.
+    id: SourceId,
     bytes: Vec<u8>,
     image_base: u64,
     module_name: String,
@@ -431,6 +433,7 @@ impl StaticElf {
         let modules = vec![Module { name: module_name.clone(), base: Va(image_base), size, path: Some(path.to_string_lossy().to_string()) }];
 
         Ok(StaticElf {
+            id: SourceId::of(&bytes),
             bytes,
             image_base,
             module_name,
@@ -486,6 +489,12 @@ impl MemorySource for StaticElf {
 
     fn contains(&self, va: Va) -> bool {
         self.section_for(va.0).is_some()
+    }
+
+    /// An image on disk cannot change under the loaded copy; everything the
+    /// source answers comes from its bytes.
+    fn identity(&self) -> Option<SourceId> {
+        Some(self.id)
     }
 
     /// A readable stretch starts where a section starts or another ends.

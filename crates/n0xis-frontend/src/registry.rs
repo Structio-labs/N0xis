@@ -265,17 +265,17 @@ fn bool_arg(args: &Value, key: &str) -> bool {
 /// source). Keyed by the vtable's first-slot VA — the value an MSVC constructor
 /// stores into `*this`, so a pass can name that constant `&Class::vtable`
 /// (ROADMAP Phase 10 item 7). One `.rdata` scan; see [`n0xis_core::scan_msvc_rtti`].
-/// Process memo of the last built vtable map: `(source label, map)`. The `.rdata`
-/// scan is ~0.8 s on a target with tens of thousands of classes, and
+/// Process memo of the last built vtable map: `(source identity, map)`. The
+/// `.rdata` scan is ~0.8 s on a target with tens of thousands of classes, and
 /// [`with_cfg_ctx`] rebuilt it on **every** decompile — the real cost behind a
-/// slow re-view, dwarfing the decompile itself. Reused only for an **immutable**
-/// source (static PE/ELF, snapshot), whose `.rdata` cannot change under the label,
-/// so the label identifies a fixed image for the life of the process (same
-/// discipline as the xref-index memo).
-type VtableMemo = Option<(String, std::sync::Arc<std::collections::HashMap<u64, String>>)>;
+/// slow re-view, dwarfing the decompile itself. Kept only for a source with an
+/// identity (an image on disk, a snapshot): its bytes cannot change under it.
+/// It was keyed by the source's label, which names only the file, so a second
+/// file of the same name in one process got the first one's map.
+type VtableMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<std::collections::HashMap<u64, String>>)>;
 static VTABLE_MEMO: std::sync::Mutex<VtableMemo> = std::sync::Mutex::new(None);
 
-type SubclassMemo = Option<(String, std::sync::Arc<std::collections::HashSet<String>>)>;
+type SubclassMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<std::collections::HashSet<String>>)>;
 static SUBCLASS_MEMO: std::sync::Mutex<SubclassMemo> = std::sync::Mutex::new(None);
 
 /// Classes that have at least one **subclass in this image**.
@@ -290,12 +290,11 @@ static SUBCLASS_MEMO: std::sync::Mutex<SubclassMemo> = std::sync::Mutex::new(Non
 /// the vtable map is: the scan is the expensive half and must not run per
 /// decompile.
 fn subclassed_classes(src: &Src) -> std::sync::Arc<std::collections::HashSet<String>> {
-    let immutable = matches!(src, Src::Static(_) | Src::Snap(_));
-    let label = src.as_mem().label();
-    if immutable
+    let id = src.as_mem().identity();
+    if let Some(id) = id
         && let Ok(memo) = SUBCLASS_MEMO.lock()
         && let Some((l, m)) = memo.as_ref()
-        && *l == label
+        && *l == id
     {
         return m.clone();
     }
@@ -313,19 +312,20 @@ fn subclassed_classes(src: &Src) -> std::sync::Arc<std::collections::HashSet<Str
     };
     let set: std::collections::HashSet<String> = scanned.iter().flat_map(|v| v.bases.iter().cloned()).collect();
     let arc = std::sync::Arc::new(set);
-    if immutable && let Ok(mut memo) = SUBCLASS_MEMO.lock() {
-        *memo = Some((label, arc.clone()));
+    if let Some(id) = id
+        && let Ok(mut memo) = SUBCLASS_MEMO.lock()
+    {
+        *memo = Some((id, arc.clone()));
     }
     arc
 }
 
 fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, String>> {
-    let immutable = matches!(src, Src::Static(_) | Src::Snap(_));
-    let label = src.as_mem().label();
-    if immutable
+    let id = src.as_mem().identity();
+    if let Some(id) = id
         && let Ok(memo) = VTABLE_MEMO.lock()
         && let Some((l, m)) = memo.as_ref()
-        && *l == label
+        && *l == id
     {
         return m.clone();
     }
@@ -349,8 +349,10 @@ fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, S
         }
     };
     let arc = std::sync::Arc::new(map);
-    if immutable && let Ok(mut memo) = VTABLE_MEMO.lock() {
-        *memo = Some((label, arc.clone()));
+    if let Some(id) = id
+        && let Ok(mut memo) = VTABLE_MEMO.lock()
+    {
+        *memo = Some((id, arc.clone()));
     }
     arc
 }
@@ -359,7 +361,7 @@ fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, S
 /// vtable map above. `.eh_frame` is walked once (14 355 FDEs on `libQt6Core.so.6`)
 /// and every later function looks its regions up by address, so attaching
 /// exception edges costs one scan per process rather than one per decompile.
-type EhMemo = Option<(String, std::sync::Arc<Vec<n0xis_core::EhFunction>>)>;
+type EhMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<Vec<n0xis_core::EhFunction>>)>;
 static EH_MEMO: std::sync::Mutex<EhMemo> = std::sync::Mutex::new(None);
 
 /// A PE's preferred image base — `.pdata` and `.xdata` are written entirely in
@@ -475,19 +477,20 @@ fn merge_regions(into: &mut [n0xis_core::EhFunction], extra: Vec<n0xis_core::EhF
 }
 
 fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
-    let immutable = matches!(src, Src::Static(_) | Src::Snap(_));
-    let label = src.as_mem().label();
-    if immutable
+    let id = src.as_mem().identity();
+    if let Some(id) = id
         && let Ok(memo) = EH_MEMO.lock()
         && let Some((l, m)) = memo.as_ref()
-        && *l == label
+        && *l == id
     {
         return m.clone();
     }
     let map = scan_unwind(src).unwrap_or_default();
     let arc = std::sync::Arc::new(map);
-    if immutable && let Ok(mut memo) = EH_MEMO.lock() {
-        *memo = Some((label, arc.clone()));
+    if let Some(id) = id
+        && let Ok(mut memo) = EH_MEMO.lock()
+    {
+        *memo = Some((id, arc.clone()));
     }
     arc
 }

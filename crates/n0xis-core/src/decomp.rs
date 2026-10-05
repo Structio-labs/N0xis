@@ -27,28 +27,32 @@ use crate::render::{c_type, render_condition, render_stmt, RenderNames};
 ///
 /// Building it per decompile hashed **every** class name (57k on a Qt/MSVC
 /// target) to answer the 0–2 membership questions one function actually asks.
-/// Keyed by the source label plus the symbol fingerprint, so a re-`analyze` that
-/// changes the recovered classes invalidates it — the same discipline as the
-/// vtable map and callee-type memos.
+/// Keyed by the source's identity plus the symbol fingerprint, so a re-`analyze`
+/// that changes the recovered classes invalidates it — the same discipline as
+/// the vtable map and callee-type memos. A source with no identity is not kept.
 type VtableClassMemo = Option<(String, std::sync::Arc<std::collections::HashSet<String>>)>;
 static VTABLE_CLASSES: std::sync::Mutex<VtableClassMemo> = std::sync::Mutex::new(None);
 
 fn vtable_class_set(ctx: &Ctx) -> std::sync::Arc<std::collections::HashSet<String>> {
-    let id = format!(
-        "{}|{}|{}",
-        ctx.source.label(),
-        ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
-        ctx.vtables.map_or(0, |v| v.len()),
-    );
-    if let Ok(memo) = VTABLE_CLASSES.lock()
+    let id = ctx.source.identity().map(|source| {
+        format!(
+            "{source}|{}|{}",
+            ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
+            ctx.vtables.map_or(0, |v| v.len()),
+        )
+    });
+    if let Some(id) = &id
+        && let Ok(memo) = VTABLE_CLASSES.lock()
         && let Some((cached, set)) = memo.as_ref()
-        && *cached == id
+        && cached == id
     {
         return std::sync::Arc::clone(set);
     }
     let set: std::collections::HashSet<String> = ctx.vtables.map(|m| m.values().cloned().collect()).unwrap_or_default();
     let arc = std::sync::Arc::new(set);
-    if let Ok(mut memo) = VTABLE_CLASSES.lock() {
+    if let Some(id) = id
+        && let Ok(mut memo) = VTABLE_CLASSES.lock()
+    {
         *memo = Some((id, std::sync::Arc::clone(&arc)));
     }
     arc

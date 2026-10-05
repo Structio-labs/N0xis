@@ -365,13 +365,13 @@ pub fn discovered_cached(ctx: &Ctx, start: Va, size: usize, label: &str) -> Resu
     Ok(found)
 }
 
-/// Process-wide memo of the last built/loaded index: `(source label, key, index)`.
-/// Reused only when the label matches — the frontend calls [`xref_index_for`]
-/// exclusively for *immutable* sources (static PE/ELF, snapshot), so a label
-/// uniquely identifies a fixed byte image for the life of the process and we can
-/// skip re-hashing the whole code section on every query.
-static XREF_MEMO: std::sync::Mutex<Option<(String, String, std::sync::Arc<n0xis_core::XrefIndex>)>> =
-    std::sync::Mutex::new(None);
+/// Process-wide memo of the last built or loaded index, under the source's
+/// identity, the decoder and the ranges, so a re-query skips re-hashing the
+/// code. A source with no identity (a live process) is not kept: its code can
+/// change. This was keyed by the source's label, which names only the file, and
+/// a second file of the same name in one process was answered from the first
+/// one's index.
+static XREF_MEMO: std::sync::Mutex<Option<(String, std::sync::Arc<n0xis_core::XrefIndex>)>> = std::sync::Mutex::new(None);
 
 /// The reverse-xref index over `ranges`, memoized in-process and cached on disk
 /// under `.n0x/xref-index/`. The first call for a target builds it (one decode
@@ -379,14 +379,14 @@ static XREF_MEMO: std::sync::Mutex<Option<(String, String, std::sync::Arc<n0xis_
 /// call this session, and future sessions on unchanged bytes, is a map lookup.
 ///
 /// Soundness follows the IR cache: the disk key hashes the analyzer generation
-/// **and the actual code bytes**, so changed bytes miss (never a stale hit). The
-/// caller must only pass *immutable* sources — the in-process memo keys on the
-/// source label alone, which is a fixed image only when the bytes cannot change
-/// under it (static/snapshot, not a live process).
+/// **and the actual code bytes**, so changed bytes miss (never a stale hit), and
+/// the in-process memo is keyed by the source's identity.
 pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str) -> std::sync::Arc<n0xis_core::XrefIndex> {
-    if let Ok(memo) = XREF_MEMO.lock()
-        && let Some((l, _k, idx)) = memo.as_ref()
-        && l == label
+    let memo_key = ctx.source.identity().map(|id| format!("{id}|{}|{ranges:?}", ctx.arch.decoder_id()));
+    if let Some(wanted) = &memo_key
+        && let Ok(memo) = XREF_MEMO.lock()
+        && let Some((kept, idx)) = memo.as_ref()
+        && kept == wanted
     {
         return idx.clone();
     }
@@ -418,8 +418,10 @@ pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str) -> std::sync
         built
     };
     let arc = std::sync::Arc::new(idx);
-    if let Ok(mut memo) = XREF_MEMO.lock() {
-        *memo = Some((label.to_string(), key, arc.clone()));
+    if let Some(memo_key) = memo_key
+        && let Ok(mut memo) = XREF_MEMO.lock()
+    {
+        *memo = Some((memo_key, arc.clone()));
     }
     arc
 }
