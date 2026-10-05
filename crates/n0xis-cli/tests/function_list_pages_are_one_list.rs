@@ -126,3 +126,72 @@ fn pages_laid_end_to_end_are_the_one_list_and_names_stay_current() {
         }
     }
 }
+
+/// One `serve` session on `file` in `cwd`.
+fn serve_file(cwd: &std::path::Path, file: &std::path::Path, lines: &[String]) -> Vec<Value> {
+    let exe = n0xis_exe();
+    let mut child = Command::new(&exe)
+        .current_dir(cwd)
+        .args(["serve", "--quiet", "--file"])
+        .arg(file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        for l in lines {
+            writeln!(stdin, "{l}").expect("write line");
+        }
+        writeln!(stdin).expect("blank line ends the session");
+    }
+    let out = BufReader::new(child.stdout.take().expect("stdout"));
+    let raw: Vec<String> = out.lines().map_while(Result::ok).collect();
+    let _ = child.wait();
+    raw.iter().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).expect("an envelope")).collect()
+}
+
+fn kept_entries(project: &std::path::Path) -> usize {
+    std::fs::read_dir(project.join(".n0x/discover-cache"))
+        .map(|d| d.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "json")).count())
+        .unwrap_or(0)
+}
+
+/// The scan is kept on disk for the next session on the same bytes, and the
+/// key covers the code itself: changing one byte of code in the same file
+/// misses the kept answer instead of reading it.
+#[test]
+fn the_kept_scan_is_on_disk_and_keyed_by_the_code_bytes() {
+    if !n0xis_exe().exists() {
+        return; // binary not built in this profile
+    }
+    let project = std::env::temp_dir().join(format!("n0xis-kept-scan-{}", std::process::id()));
+    std::fs::create_dir_all(project.join(".n0x")).expect("temp project");
+    let target = project.join("target.bin");
+    std::fs::copy(std::env::current_exe().expect("test exe"), &target).expect("copy the fixture");
+    let page = || vec!["function discover --limit 40".to_string()];
+
+    let first = serve_file(&project, &target, &page());
+    assert_eq!(kept_entries(&project), 1, "the first session keeps its scan");
+    let second = serve_file(&project, &target, &page());
+    assert_eq!(kept_entries(&project), 1, "the second session on the same bytes reads it, writing nothing new");
+    assert_eq!(functions(&first[1]), functions(&second[1]), "and answers the same");
+
+    // Find the code of a listed function in the file by its bytes, and change one.
+    let va = functions(&first[1])[20].0.clone();
+    let dis = serve_file(&project, &target, &[format!("disasm --addr {va} --count 6")]);
+    let code: Vec<u8> = dis[1]["data"]["insns"]
+        .as_array()
+        .expect("instructions")
+        .iter()
+        .flat_map(|i| i["bytes"].as_str().unwrap_or_default().split_whitespace().map(|b| u8::from_str_radix(b, 16).expect("hex byte")).collect::<Vec<_>>())
+        .collect();
+    let mut image = std::fs::read(&target).expect("read the copy");
+    let at = image.windows(code.len()).position(|w| w == code.as_slice()).expect("the function's bytes are in the file");
+    image[at] ^= 0xff;
+    std::fs::write(&target, &image).expect("write the changed copy");
+    serve_file(&project, &target, &page());
+    assert_eq!(kept_entries(&project), 2, "changed code bytes are a different key, not a stale hit");
+    let _ = std::fs::remove_dir_all(&project);
+}

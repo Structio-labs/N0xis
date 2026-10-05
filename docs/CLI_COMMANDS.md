@@ -226,9 +226,11 @@ Discover functions by prologue scanning (`.text` by default).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.function.discover.v1`. `meta.total` is how many functions the whole range has,
   on every page. The scan always covers the whole range; the page only cuts what is returned.
-- For a file or a snapshot, the scan is kept for the process's lifetime, so a `serve` session
-  paging through the list pays for it once. Names and sizes are attached per page, so a rename
-  shows on the next page asked for. A live or remote process is scanned on every request.
+- For a file or a snapshot, the scan is kept: in the process, so a `serve` session paging
+  through the list pays for it once, and in the project's `.n0x/discover-cache/`, keyed by the
+  code bytes themselves, so the next session on the same bytes does not scan at all. Names and
+  sizes are attached per page, so a rename shows on the next page asked for. A live or remote
+  process is scanned on every request.
 
 ### `function trace --addr <hex>`
 Walk the call graph from a root function.

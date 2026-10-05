@@ -40,6 +40,7 @@ pub mod plugins;
 pub mod rtti_syms;
 pub mod selection;
 pub mod session;
+pub mod store;
 pub mod table;
 pub mod class_layout;
 pub mod type_flow;

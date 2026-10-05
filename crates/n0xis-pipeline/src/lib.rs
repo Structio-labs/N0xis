@@ -317,6 +317,54 @@ fn sweep_stale_xref_once() {
     });
 }
 
+/// Generation prefix for kept function discovery, for the same reason as
+/// [`xref_cache_generation`]: a rebuilt scanner never reads a previous build's
+/// answer.
+fn discover_cache_generation() -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    analysis_fingerprint().hash(&mut h);
+    format!("disc-{:08x}-", h.finish() as u32)
+}
+
+/// Function discovery over `[start, start + size)` of an image that cannot
+/// change, kept on disk under `.n0x/discover-cache/`. The key hashes the
+/// analyzer generation, the label, the range, the decoder, the declared
+/// functions and **the code bytes themselves**, so a changed image misses and
+/// never reads a stale answer. Names are not stored: they are attached per page.
+/// A read or parse failure is a miss; no project means no cache.
+pub fn discovered_cached(ctx: &Ctx, start: Va, size: usize, label: &str) -> Result<n0xis_core::Discovered, CoreError> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    "discover".hash(&mut h);
+    label.hash(&mut h);
+    start.0.hash(&mut h);
+    size.hash(&mut h);
+    ctx.arch.decoder_id().hash(&mut h);
+    if let Some(declared) = ctx.functions {
+        for (s, e) in declared {
+            s.0.hash(&mut h);
+            e.0.hash(&mut h);
+        }
+    }
+    if let Ok(bytes) = ctx.source.read(start, size) {
+        bytes.hash(&mut h);
+    }
+    let key = format!("{}{:016x}", discover_cache_generation(), h.finish());
+    static SWEPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    SWEPT.get_or_init(|| {
+        let _ = n0xis_project::store::DISCOVERED.retain_prefix(&discover_cache_generation());
+    });
+    if let Ok(Some(json)) = n0xis_project::store::DISCOVERED.get(&key)
+        && let Ok(found) = serde_json::from_str::<n0xis_core::Discovered>(&json)
+    {
+        return Ok(found);
+    }
+    let found = n0xis_core::discover_entries(ctx, start, size)?;
+    if let Ok(json) = serde_json::to_string(&found) {
+        let _ = n0xis_project::store::DISCOVERED.put(&key, &json);
+    }
+    Ok(found)
+}
+
 /// Process-wide memo of the last built/loaded index: `(source label, key, index)`.
 /// Reused only when the label matches — the frontend calls [`xref_index_for`]
 /// exclusively for *immutable* sources (static PE/ELF, snapshot), so a label

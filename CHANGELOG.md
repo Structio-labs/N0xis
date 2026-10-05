@@ -15,6 +15,12 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **Re-opening an image scanned its functions again.** The scan of a file is now also kept in
+  `.n0x/discover-cache/`, keyed by the analyzer generation and the code bytes. On the same
+  library a new session lists everything in 0.5 s instead of 10.9 s. A test changes one byte of
+  code in the same file and requires a new key. It fails, as it should, when the bytes are
+  left out of the key. The store behind it (`n0xis_project::store`) is one implementation for
+  new kinds of cached entry; the three older caches still carry their own copies.
 - **Paging `function discover` repeated the whole scan for every page.** Measured on a
   159 MB library: 10.6 s per page of 20 000, whatever the offset, so a front end needed over
   a minute to list 116 000 functions. In a session, the scan of a file or snapshot is now kept

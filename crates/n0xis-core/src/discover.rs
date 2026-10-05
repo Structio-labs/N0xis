@@ -338,7 +338,7 @@ impl Pass for DiscoverPass {
 /// of discovery, and it reads only bytes, the architecture and the declared
 /// functions, never a name; so it can be kept for an image that cannot change
 /// and paged with names attached per page ([`Discovered::page`]).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct Discovered {
     pub start: Va,
     pub scanned_bytes: usize,

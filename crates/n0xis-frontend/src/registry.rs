@@ -2305,8 +2305,7 @@ impl Plugin for AnalysisPasses {
                     };
                     // The scan is kept for an image that cannot change, so paging
                     // through a long list costs it once; names are attached per page.
-                    let key = crate::discovered::scan_key(src, label, start, size, ctx);
-                    match crate::discovered::discovered(ctx, start, size, key) {
+                    match crate::discovered::discovered(ctx, src, label, start, size) {
                         Ok(found) => {
                             let page = found.page(ctx, offset, limit);
                             let returned = page.count;

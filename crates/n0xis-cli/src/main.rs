@@ -3757,8 +3757,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         // returned), so the total is known and reported. It is kept for an image
         // that cannot change: a session paging through a long list pays for it
         // once, and names are attached per page, so a rename still shows.
-        let key = n0xis_frontend::discovered::scan_key(&src, &label, start, size, ctx);
-        match n0xis_frontend::discovered::discovered(ctx, start, size, key) {
+        match n0xis_frontend::discovered::discovered(ctx, &src, &label, start, size) {
             Ok(found) => {
                 let art = found.page(ctx, a.offset, a.limit);
                 let returned = art.count;
