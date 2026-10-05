@@ -21,6 +21,15 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **Reads under an ELF's thread-local zero-fill section came back empty.** The linker gives
+  `.tbss` the address the following sections also start at, because it takes no room in the
+  image, and the ELF source mapped it anyway: as the first match it shadowed `.init_array`,
+  `.fini_array`, the start of `.data.rel.ro` (where C++ vtables live), `.dynamic`, `.got` and
+  `.data`, and every read there answered `ok` with no bytes. 568 of 9 386 ELF files on one
+  system have such a layout. A sweep of every file-backed section of every ELF file there,
+  against the bytes at `readelf`'s offsets, found 348 sections read wrongly in the first
+  2 000 files before the fix and none of 204 692 sections in all 9 367 files after it. A test on
+  a fixture fails when `.tbss` is mapped again.
 - **`annotate var` and `annotate vartype` stored names that change nothing.** Any name was
   accepted with `ok:true`, including one that is not a variable of the function, and a type
   on a value the decompiler never types. With the image (`--file`, or the one a `serve`

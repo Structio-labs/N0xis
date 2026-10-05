@@ -28,6 +28,8 @@ use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
 const SHF_EXECINSTR: u64 = 0x4;
 /// `SHT_NOBITS` — occupies no file space (`.bss`); reads short, like a PE BSS tail.
 const SHT_NOBITS: u32 = 8;
+/// `SHF_TLS` — the section is a thread-local storage template.
+const SHF_TLS: u64 = 0x400;
 /// `STT_FUNC` — the symbol names a function.
 const STT_FUNC: u8 = 2;
 /// `STT_OBJECT` — the symbol names a data object (a global / static variable).
@@ -69,6 +71,21 @@ struct SectionRange {
     file_offset: usize,
     file_size: usize,
     executable: bool,
+    /// Whether the section takes room in the image's address space; see
+    /// [`takes_image_space`]. Only such sections answer an address lookup.
+    in_image: bool,
+}
+
+/// Whether a section of this type and these flags takes room in the image.
+///
+/// A TLS zero-fill section (`.tbss`: `SHT_NOBITS` and `SHF_TLS`) does not. It
+/// describes each thread's zero-initialized TLS, allocated per thread at run
+/// time, and the linker gives it the address the following sections also
+/// start at. Mapped, it shadows them: on one system 568 of 9 386 ELF files had
+/// a `.tbss` over `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`,
+/// `.got` or `.data`, and every read there came back empty.
+fn takes_image_space(sh_type: u32, sh_flags: u64) -> bool {
+    !(sh_type == SHT_NOBITS && sh_flags & SHF_TLS != 0)
 }
 
 /// An ELF image on disk, mapped at its preferred base.
@@ -204,6 +221,7 @@ impl StaticElf {
                 file_offset: sh.sh_offset as usize,
                 file_size,
                 executable: sh.sh_flags & SHF_EXECINSTR != 0,
+                in_image: takes_image_space(sh.sh_type, sh.sh_flags),
             });
         }
 
@@ -425,8 +443,10 @@ impl StaticElf {
         })
     }
 
+    /// The section that holds `va` in the image: the one address lookup, which
+    /// `read` and `contains` both go through.
     fn section_for(&self, va: u64) -> Option<&SectionRange> {
-        self.sections.iter().find(|s| va >= s.va_start && va < s.va_end)
+        self.sections.iter().find(|s| s.in_image && va >= s.va_start && va < s.va_end)
     }
 
     /// The **defined** function symbols (`.symtab`/`.dynsym`), address-ordered —
