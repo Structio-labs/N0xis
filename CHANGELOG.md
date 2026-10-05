@@ -21,6 +21,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **An `endbr64` where a call returns was listed as a function.** The code after a `setjmp`
+  carries `endbr64`, because `longjmp` comes back to it indirectly, and the scan trusted the
+  marker even inside a declared function's extent. A marker inside an extent is now an
+  entry only when the instruction before it, decoding from the declared start, is not a
+  call that ends on it. On Qt6Gui this removed the one false start among the five with no
+  unwind entry; the other four, and every listed start on two more images, are functions
+  (CRT helpers, `_init`, targets of direct calls, an assembly routine). A test fails when
+  return sites are accepted again.
 - **`analyze` missed the functions an image declares.** It ran a discovery of its own without
   them: 4 130 functions on a Rust binary whose unwind table declares 6 730, 116 331 on a C++
   library declaring 123 192. Everything it builds from that list (signature names, propagated

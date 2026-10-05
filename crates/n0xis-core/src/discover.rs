@@ -414,15 +414,38 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // matches there is part of *that* function, not the start of another
         // one. This is the same rule as trusting a declared start, applied to
         // the rest of the range it claims.
-        let inside_a_declared_function = |va: u64| -> bool {
+        // The declared function `va` lies strictly inside, if any.
+        let declared_around = |va: u64| -> Option<(u64, u64)> {
             match declared.binary_search_by(|(s, _)| s.cmp(&va)) {
-                Ok(_) => false, // the start itself, already carried above
-                Err(0) => false,
+                Ok(_) => None, // the start itself, already carried above
+                Err(0) => None,
                 Err(i) => {
                     let (s, e) = declared[i - 1];
-                    va > s && va < e
+                    (va > s && va < e).then_some((s, e))
                 }
             }
+        };
+        let inside_a_declared_function = |va: u64| declared_around(va).is_some();
+        // Whether the instruction that ends exactly at `va`, decoding from the
+        // declared start `from`, is a `call`: then `va` is where that call
+        // returns, inside the same function. `None` when the walk cannot reach
+        // `va` (the start lies outside the window, or the decode drifts past it).
+        let after_a_call = |from: u64, va: u64| -> Option<bool> {
+            let lo = input.start.0;
+            if from < lo {
+                return None;
+            }
+            let mut at = from;
+            let mut last = None;
+            while at < va {
+                let ins = ctx.arch.decode(bytes.get((at - lo) as usize..)?, Va(at)).ok()?;
+                if ins.len == 0 {
+                    return None;
+                }
+                last = Some(ins.kind);
+                at += u64::from(ins.len);
+            }
+            (at == va).then_some(last == Some(InsnKind::Call))
         };
 
         // The code that begins where a known function ends.
@@ -505,7 +528,16 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             if prologues.iter().any(|p| bytes[i..].starts_with(p)) {
                 let va = input.start.0 + i as u64;
                 let marker = markers.iter().any(|p| bytes[i..].starts_with(p));
-                if va.is_multiple_of(align) && (marker || !inside_a_declared_function(va)) {
+                // Inside a declared extent only the marker counts, and not where
+                // a call returns: code after a `setjmp` carries `endbr64` too,
+                // since `longjmp` comes back to it indirectly, and it goes on
+                // with the same function (found on a Qt build, the one false
+                // start of its 5 with no unwind entry).
+                let entry = match declared_around(va) {
+                    None => true,
+                    Some((from, _)) => marker && after_a_call(from, va) != Some(true),
+                };
+                if va.is_multiple_of(align) && entry {
                     found.entry(va).or_insert(None);
                 }
                 // Skip ahead so overlapping patterns in one prologue count once.
@@ -805,6 +837,32 @@ mod tests {
             art.functions.iter().map(|f| f.va).collect::<Vec<_>>(),
             vec![Va(0x1000), Va(0x1020)],
             "the marker is kept, the stack-adjust idiom is not",
+        );
+    }
+
+    #[test]
+    fn a_marker_where_a_call_returns_is_not_an_entry() {
+        // `call setjmp` then `endbr64`: `longjmp` returns there indirectly, so
+        // the compiler marks it, but it is the same function going on.
+        let mut code = vec![0xF3, 0x0F, 0x1E, 0xFA]; // 0x1000 endbr64, the declared start
+        code.resize(0x1B, 0x90);
+        code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00]); // 0x101b call 0x1020
+        code.extend_from_slice(&[0xF3, 0x0F, 0x1E, 0xFA]); // 0x1020 endbr64: a return site
+        code.resize(0x2F, 0x90);
+        code.push(0xC3); // 0x102f ret
+        code.extend_from_slice(&[0xF3, 0x0F, 0x1E, 0xFA]); // 0x1030 endbr64: a second entry
+        code.resize(0x40, 0x90);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let stated = [(Va(0x1000), Va(0x1040))];
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let art = DiscoverPass
+            .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
+            .unwrap();
+        assert_eq!(
+            art.functions.iter().map(|f| f.va).collect::<Vec<_>>(),
+            vec![Va(0x1000), Va(0x1030)],
+            "the return site is not an entry; the marker after a `ret` still is",
         );
     }
 
