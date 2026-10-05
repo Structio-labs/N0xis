@@ -4,24 +4,30 @@
 
 Memory scanners find the *address*. Decompilers explain the *code*. **N0xis takes you from one to the other in one scriptable loop.**
 
-![A live run: scan for a value, narrow it after a hit, then a hardware watchpoint returns the decompiled statement that wrote it](docs/assets/provenance.gif)
+![A live run: find a program's decrypted settings in its memory, watch them with a hardware watchpoint, and get the decompiled loop that wrote them](docs/assets/live-loop.gif)
 
-<sub>A real run of [`examples/hp-demo`](examples/hp-demo): find a value in a running process, narrow it after a hit, arm a hardware watchpoint, and get the statement that wrote it. Rerun it yourself with `demo.sh`.</sub>
+<sub>A real run of [`examples/config-demo`](examples/config-demo): a program keeps its settings encrypted and decrypts them into memory; find the plaintext, arm a hardware watchpoint on it, and get the decompiled code that wrote it. Rerun it yourself with `demo.sh`.</sub>
 
 ```console
-$ n0x provenance trace --pid 9348 --addr 0x7ff68bef3010 --kind write
+$ n0x provenance trace --pid 181529 --addr 0x564e32cb7060 --kind write
 ```
 ```jsonc
-"function_va": "0x7ff68bef1580",          // containing function, auto-resolved
+"instruction_va": "0x564e32cb4266",   // the byte store that wrote the watched address
+"function_va": "0x564e32cb4230",      // the function it sits in, auto-resolved
 "decompiled_context": [
-  "rax.2 = (*(uint32_t*)(0x7ff68bef3010) - 0x1);",
-  "*(uint32_t*)(0x7ff68bef3010) = rax.2;"  // ← the statement that moved your value
+  "rcx.3 = (uint32_t)((uint32_t)(uint32_t)*(uint8_t*)((rsi.1 + v2)) ^ (uint32_t)v1);",
+  "*(uint8_t*)((rdi.1 + v2)) = (uint8_t)rcx.3;",   // ← the write
+  "rcx.4 = (uint32_t)(v1 + (v1 * 0x2));",
+  "v2 = (v2 + 0x1);",
+  "v1 = (uint32_t)((v1 + (rcx.4 * 0x4)) + 0x7);"
 ]
 ```
 
-In the source this line is `hp -= 1;`. The output names the address, not `hp`: names of
-globals and functions from the binary's symbols are not carried into this answer yet. Verified
-on Windows **and** Linux.
+In the source this is the loop `config[i] = sealed[i] ^ key; key = key * 13 + 7;`: the
+decompiled key update, `v1 + (v1 * 2) * 4 + 7`, is the same `key * 13 + 7`. The answer gives
+addresses, not the names `config` and `decrypt_config`: names of globals and functions from the
+binary's symbols are not carried into it yet. The run above is on Linux; the live loop runs on
+Windows too.
 
 The watchpoint hit is resolved through the same SSA pipeline that decompiles the file, so
 the answer is the statement that wrote the value and the function it sits in, as JSON a
@@ -47,15 +53,15 @@ Every command prints **one** JSON object — argument errors included: `{"ok":tr
 
 ```sh
 n0x doctor                                                    # environment check
-n0x profile --file game.exe                                   # triage: sections, exports, engine hints
-n0x function discover --file game.exe --pdata                 # exact .pdata discovery
-n0x decomp pseudo --file game.exe --addr 0x140012a00 --style ssa --pretty
+n0x profile --file app.exe                                    # triage: sections, exports, runtime hints
+n0x function discover --file app.exe --pdata                 # exact .pdata discovery
+n0x decomp pseudo --file app.exe --addr 0x140012a00 --style ssa --pretty
 n0x provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty
 ```
 
 The same commands run on a live `--pid`, a static `--file`, a captured `--snapshot`, or a
 remote process over SSH. It is ordinary Unix plumbing —
-`n0x function discover --file game.exe --pdata | jq -r '.data.functions[].va'` feeds the next
+`n0x function discover --file app.exe --pdata | jq -r '.data.functions[].va'` feeds the next
 command. `n0x guide` lists all 113 commands, generated from the binary so it never drifts — and a test
 fails the build if this number does.
 
@@ -76,8 +82,8 @@ fails the build if this number does.
 - **Watch & explain** — software / hardware / conditional breakpoints and a real cross-process
   unwound call stack; the raw material provenance is built on.
 - **Recover names** — C++ classes from RTTI on both ABIs (MSVC `.rdata` chains and Itanium
-  `_ZTV` symbols), .NET NativeAOT `RVA ↔ Namespace.Type.Method`, LuaJIT, Bitsquid, IL2CPP —
-  so a stripped image reads as source, not `sub_XXXX`.
+  `_ZTV` symbols), .NET NativeAOT `RVA ↔ Namespace.Type.Method`, and a few runtime formats
+  (LuaJIT bytecode, Bitsquid, IL2CPP), so a stripped image reads as source, not `sub_XXXX`.
 - **Persist & diff** — `.n0xt` tables, versioned annotations, content-addressed caching,
   function/version diffing.
 
