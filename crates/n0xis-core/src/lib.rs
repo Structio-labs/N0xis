@@ -54,6 +54,7 @@ mod slice;
 mod ssa;
 mod structural;
 mod structure;
+mod strings;
 mod sigvalidate;
 mod rtti;
 mod switch;
@@ -131,6 +132,7 @@ pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};
 pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, build_xref_index, xref_kind};
+pub use strings::{find_strings, utf16_strings, utf8_strings, FoundString, StringEncoding};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
 use n0xis_arch::Arch;

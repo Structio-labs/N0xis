@@ -2529,6 +2529,7 @@ pub fn build_registry() -> Registry {
     reg.add_plugin(&crate::project_caps::ProjectOps);
     reg.add_plugin(&crate::method_caps::MethodTools);
     reg.add_plugin(&crate::il2cpp_caps::Il2CppTools);
+    reg.add_plugin(&crate::strings_caps::StringTools);
     reg.add_plugin(&ProcessPlugins);
     reg
 }

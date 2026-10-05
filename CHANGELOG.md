@@ -13,6 +13,21 @@ All notable changes to N0xis are recorded here. Versions follow
   (`ProjectRoot::derived_caches`). A test plants cache files of known size beside the user's
   names; the report and the clear match the planted bytes, and the names survive byte for byte.
 
+- **`strings`**: the text an image holds, each string with its address, section, encoding,
+  length and size. UTF-8 and UTF-16LE; in ASCII printable is what binutils `strings` takes it
+  to be, with line breaks kept in the string, and past ASCII any character text carries, so
+  text in another script is found whole. UTF-16 is read in the Latin, Greek and Cyrillic
+  scripts and common symbols only: with every printable character allowed, one library's hash
+  tables read as 10 625 UTF-16 strings where binutils found 11. By default the file-backed
+  sections that hold no code, or one section, all of them, or a range. `--contains` filters in
+  any case; the list is kept for a file, so paging and filtering scan once. Checked on a
+  fixture whose strings are planted (each where `nm` puts it, in its encoding); against
+  binutils `strings` in both encodings on four system images (15 304 of its strings, none
+  missed, none different); and against an independent disassembler's string search on five
+  ELF and PE images: 22 822 of its strings (4 486 UTF-16), each inside one of ours, and each of
+  our 20 371 ASCII strings exactly one of its. That comparison found the one wide string a
+  rule for ASCII read as UTF-16 had thrown away, now kept. Neither checks text past ASCII.
+
 - **`mem span --addr --size`**: every readable stretch of a window, as runs, with the gaps
   between them left as gaps. `mem read` stops where the first stretch ends and refuses an
   address in a gap, so a byte view of a window that crosses a section boundary had to guess.

@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **115 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **116 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -276,6 +276,34 @@ Find a string literal and who references it via `lea`.
 - `--limit` (default 50).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.xref.string.v1`
+
+### `strings`
+Text in the image: runs of printable characters, each with its address.
+- Encodings (`--encoding both|utf8|utf16le`, default both). In ASCII, printable is what binutils
+  `strings` takes it to be (tab and 0x20–0x7e), and line breaks besides: a C literal
+  `"done\n"` is one string. Cut at its line breaks, a string is exactly what binutils reports.
+  Past ASCII, a UTF-8 character counts when text carries it (not a control character, private
+  use or a noncharacter), so text in another script is one string, not the ASCII pieces between
+  its letters.
+- UTF-16LE is read at even addresses only, and in fewer characters: ASCII, the Latin, Greek and
+  Cyrillic letters, and common punctuation and symbols. Almost any two bytes of binary data are
+  a printable character, so with all of them allowed the hash tables and relocations of one
+  library read as 10 625 strings of CJK and Hangul where binutils found 11; UTF-16 text in CJK
+  and other scripts is not found. Two bytes of ASCII text are never one UTF-16 character, so
+  `…`, `•` and `™` split a wide string where they stand.
+- Read without the structure around it, a string can carry a neighbour: a resource table puts a
+  number just before its text, and a number that reads as a letter is shown as the string's
+  first character (`ĄPrint…` for menu item 0x104).
+- `--min` (default 4) characters. `--contains <text>` keeps the strings holding it, in any case.
+  `--limit` (default 1000; 0 for all) and `--offset` page; `meta.total` counts every match.
+- What is read: by default every file-backed section that holds no code (text read out of code
+  is almost always instructions that happen to print); `--all-sections` adds those, `--section
+  <name>` reads one, `--start`/`--size` one range (at most 256 MiB; the only choice for a
+  process). `data.ranges` names what was read; a string never runs across a gap.
+- Each string: `address`, `section`, `encoding`, `length` (characters), `size` (bytes), `text`.
+- The whole list is kept for a file or a snapshot, so paging and filtering it scan once.
+- Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
+- Schema: `n0xis.strings.v1`
 
 ### `diff functions --a-addr <hex> --b-addr <hex>`
 Decompile two functions (from two sources/addresses) and diff their pseudo-C line-by-line.
@@ -736,7 +764,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**115 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**116 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -758,7 +786,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x project cache` | How much disk the project's caches use, per kind; `--clear` removes them. Only what the engine can rebuild from the image is a cache: names, comments, types, patches and tables are never touched |
 | `n0x remote-serve` | Serve a live process over the remote-agent stdio protocol — the remote-side half of `--remote-cmd` (Phase 6). Typically invoked over SSH by the *other* machine, not run directly: e.g. locally, run `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...` |
 
-### Static analysis & decompilation (28)
+### Static analysis & decompilation (29)
 
 | Command | What it does |
 |---|---|
@@ -783,6 +811,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x ir value-set` | Light value-set / alias analysis over SSA (Phase 7): the bounded set of possible values each SSA variable can hold |
 | `n0x module list` | List modules of a live process (`--pid`) or a single PE (`--file`) |
 | `n0x rtti scan` | Scan `.rdata` for MSVC RTTI vtables and recover each one's class name |
+| `n0x strings` | Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `--section`, `--all-sections`, or `--start`/`--size` for others. `--contains` filters (any case); `--limit`/`--offset` page |
 | `n0x type enum` | Define (or replace) an enum. Repeat `--member "NAME=VALUE"` |
 | `n0x type list` | List every defined struct and enum |
 | `n0x type rm` | Remove a struct or enum by name |
@@ -932,6 +961,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x.decomp.pseudo.v1` (v0) | decomp pseudo |
 | `n0xis.xref.v1` | xref to, xref from |
 | `n0xis.xref.string.v1` | xref string |
+| `n0xis.strings.v1` | strings |
 | `n0xis.diff.v1` | diff functions |
 | `n0xis.mem.read.v1` | mem read |
 | `n0xis.mem.span.v1` | mem span |
@@ -983,5 +1013,5 @@ optimization delta; inlined into `decomp pseudo --style ssa`, and exposed standa
 
 Source of truth for this reference: `crates/n0xis-cli/src/main.rs` (clap enums + `main()`
 dispatch), `crates/n0xis-contracts/src/schema.rs` (mod `v1` / mod `v0`), cross-checked against
-`n0x guide --pretty` from this binary (`command_count: 115`). When in doubt, run `n0x
+`n0x guide --pretty` from this binary (`command_count: 116`). When in doubt, run `n0x
 guide` or `n0x <cmd> --help` — those are generated from the binary and never drift.

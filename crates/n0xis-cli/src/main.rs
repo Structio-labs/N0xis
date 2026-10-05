@@ -166,6 +166,11 @@ enum Command {
     /// (`\xNN`, `\n`, `\t`, `\r`, `\0`, `\\`). Scans every file-backed section by
     /// default; narrow with `--section`, or `--start`/`--size`.
     Find(FindArgs),
+    /// Text in the image: runs of printable UTF-8 or UTF-16LE characters, with
+    /// their addresses. By default the file-backed sections that hold no code;
+    /// `--section`, `--all-sections`, or `--start`/`--size` for others.
+    /// `--contains` filters (any case); `--limit`/`--offset` page.
+    Strings(StringsArgs),
     /// Define named struct / enum types the decompiler uses to render struct
     /// field names (`p->count` instead of `p->field_0x68`).
     #[command(subcommand)]
@@ -2067,6 +2072,47 @@ struct AnalyzeArgs {
 }
 
 #[derive(Args)]
+struct StringsArgs {
+    /// Fewest characters a string has.
+    #[arg(long, default_value_t = n0xis_frontend::strings_caps::DEFAULT_MIN_CHARS)]
+    min: usize,
+    /// Which encodings to read.
+    #[arg(long, default_value = "both", value_parser = ["both", "utf8", "utf16le"])]
+    encoding: String,
+    /// Read only this section.
+    #[arg(long)]
+    section: Option<String>,
+    /// Read the sections that hold code too.
+    #[arg(long)]
+    all_sections: bool,
+    /// Keep only the strings that contain this text, in any case.
+    #[arg(long)]
+    contains: Option<String>,
+    /// How many strings to return; 0 for all.
+    #[arg(long, default_value_t = n0xis_frontend::strings_caps::DEFAULT_STRINGS_LIMIT)]
+    limit: usize,
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
+    /// Read this range instead of sections (with `--size`).
+    #[arg(long)]
+    start: Option<String>,
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    size: Option<usize>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+}
+
+#[derive(Args)]
 struct FindArgs {
     #[arg(long)]
     pid: Option<u32>,
@@ -2967,6 +3013,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
     match command {
         Command::Analyze(a) => cmd_analyze(a, pretty, quiet),
         Command::Find(a) => cmd_find(a, pretty),
+        Command::Strings(a) => cmd_strings(a, pretty),
         Command::Type(TypeCmd::Struct(a)) => cmd_type_struct(a, pretty),
         Command::Type(TypeCmd::Enum(a)) => cmd_type_enum(a, pretty),
         Command::Type(TypeCmd::List) => run_capability("type.list", json!({}), pretty),
@@ -3108,7 +3155,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "type" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -4266,6 +4313,29 @@ fn build_find_pattern(a: &FindArgs) -> Result<Vec<AobByte>, (String, String)> {
         parse_escaped(a.escaped.as_deref().unwrap_or_default()).map_err(|e| ("bad-escaped".into(), e))?
     };
     Ok(raw.into_iter().map(AobByte::Exact).collect())
+}
+
+fn cmd_strings(a: StringsArgs, pretty: bool) -> bool {
+    run_capability(
+        "strings",
+        json!({
+            "min": a.min,
+            "encoding": a.encoding,
+            "section": a.section,
+            "all_sections": a.all_sections,
+            "contains": a.contains,
+            "limit": a.limit,
+            "offset": a.offset,
+            "start": a.start,
+            "size": a.size,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
 }
 
 /// `find` — the disassembler's Ctrl+F: locate a byte pattern / string / escaped

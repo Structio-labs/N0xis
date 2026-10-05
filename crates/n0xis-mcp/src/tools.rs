@@ -305,6 +305,45 @@ pub struct MemReadRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct StringsRequest {
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
+    /// Fewest characters a string has (default 4).
+    #[serde(default)]
+    pub min: Option<usize>,
+    /// `both` (default), `utf8` or `utf16le`.
+    #[serde(default)]
+    pub encoding: Option<String>,
+    /// Read only this section.
+    #[serde(default)]
+    pub section: Option<String>,
+    /// Read the sections that hold code too.
+    #[serde(default)]
+    pub all_sections: Option<bool>,
+    /// Keep only the strings that contain this text, in any case.
+    #[serde(default)]
+    pub contains: Option<String>,
+    /// How many to return (default 1000; 0 for all).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Read this range instead of sections (with `size`).
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemSpanRequest {
     #[serde(default)]
     pub pid: Option<u32>,
@@ -824,6 +863,28 @@ impl N0xisServer {
             "mem.read",
             &json!({
                 "addr": a.addr,
+                "size": a.size,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
+    }
+
+    #[tool(description = "Text in the image: runs of printable UTF-8 or UTF-16LE characters with their addresses. By default the file-backed sections that hold no code; `section`, `all_sections`, or `start`+`size` for others; `contains` filters, `limit`/`offset` page.")]
+    fn strings(&self, Parameters(a): Parameters<StringsRequest>) -> String {
+        emit(n0xis_frontend::build_registry().dispatch(
+            "strings",
+            &json!({
+                "min": a.min,
+                "encoding": a.encoding,
+                "section": a.section,
+                "all_sections": a.all_sections,
+                "contains": a.contains,
+                "limit": a.limit,
+                "offset": a.offset,
+                "start": a.start,
                 "size": a.size,
                 "pid": a.pid,
                 "file": a.file,

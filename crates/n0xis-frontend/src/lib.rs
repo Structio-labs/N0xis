@@ -38,6 +38,7 @@ pub mod parse;
 pub mod project_caps;
 pub mod registry;
 pub mod source;
+pub mod strings_caps;
 
 pub use arch::{pick_arch, pick_arch_for, resolve_arch};
 pub use registry::{Capability, Origin, Plugin, Registry, build_registry, stated_functions};

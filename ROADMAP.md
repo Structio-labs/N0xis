@@ -4433,6 +4433,7 @@ phase from its first mistake on.
 | `xref to` | Static analysis & decompilation | objdump — 1 444 of 1 444 call targets on PE, 400 of 400 on ELF |
 | `xref from` | Static analysis & decompilation | objdump, at instruction level |
 | `xref string` | Static analysis & decompilation | objdump — four literals at the exact `lea` sites the source predicts |
+| `strings` | Static analysis & decompilation | `nm` and `readelf` on a fixture whose strings are planted — each at its symbol's address, in its encoding, and the one too short left out; binutils `strings` (`-e s` and `-e l`) on four system images — 15 304 of its strings compared (14 UTF-16), every one inside one of ours, every ASCII one of ours, cut at line breaks, exactly one of its; an independent disassembler's string search on five ELF and PE images — 22 822 of its strings each inside one of ours, our 20 371 ASCII strings each exactly one of its. Text past ASCII has no oracle |
 | `rtti scan` | Static analysis & decompilation | the image's own type-descriptor strings — 97 of 97, none invented |
 | `analyze` | Static analysis & decompilation | the counts every other reader gives for the same image |
 | `find` | Static analysis & decompilation | the byte offsets computed in Python and DWARF |

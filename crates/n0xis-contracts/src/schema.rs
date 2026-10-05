@@ -48,6 +48,8 @@ pub mod v1 {
     pub const TYPES: &str = "n0xis.types.v1";
     /// Cross-references to/from an address (`xref to` / `xref from`).
     pub const XREF: &str = "n0xis.xref.v1";
+    /// Text in an image, with addresses (`strings`).
+    pub const STRINGS: &str = "n0xis.strings.v1";
     /// String-literal search + referencing instructions (`xref string`).
     pub const XREF_STRING: &str = "n0xis.xref.string.v1";
     /// Memory read (`mem read`).
