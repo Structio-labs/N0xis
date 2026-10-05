@@ -821,8 +821,8 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x annotate rm` | Remove all annotations (and history) at an address |
 | `n0x annotate show` | Show the current facts + full history for one address |
 | `n0x annotate type` | Assert (or clear) a type note at an address, e.g. `"int(char*, size_t)"` |
-| `n0x annotate var` | Rename (or clear) one decompiled variable on the function at `--addr`. `--var` is the variable's current displayed name (`local_78`, `rcx`, `v3`); take it from `variables[].key` of `decomp pseudo`, because the command has no image to check the name against and stores any name it is given |
-| `n0x annotate vartype` | Set (or clear) the C type of one variable/param/return on the function at `--addr`. `--var` is the variable's displayed name, or `@return` for the return type; `--value` is a C-type string (e.g. `int`, `char *`, `Foo *`) |
+| `n0x annotate var` | Rename (or clear) one decompiled variable on the function at `--addr`. `--var` is the variable's key or the name the page shows (`local_78`, `rcx`, `v3`). With the image (`--file`; a `serve` session supplies its own) the name is checked against `decomp pseudo`'s `variables`: one that is not a variable is refused (`not-a-variable`), a shown name is stored under its key. Without one nothing is checked, and `meta.note` says so |
+| `n0x annotate vartype` | Set (or clear) the C type of one variable/param/return on the function at `--addr`. `--var` is the variable's displayed name, or `@return` for the return type; `--value` is a C-type string (e.g. `int`, `char *`, `Foo *`). With the image, a variable that is neither a parameter nor a local is refused (`takes-no-type`): the decompiler applies a type only to those |
 | `n0x plugin add` | Register (or overwrite, by name) a plugin: an executable spawned with an artifact as JSON on stdin, expected to reply with one JSON findings object on stdout |
 | `n0x plugin list` | List registered plugins |
 | `n0x plugin rm` | Remove a plugin by name |

@@ -1331,6 +1331,21 @@ struct AnnotateVarArgs {
     /// New name; omit to clear the rename (revert to the synthesized name).
     #[arg(long)]
     value: Option<String>,
+    /// The image the function is in. With one (a `serve` session supplies its
+    /// own), `--var` is checked against the function's variables: a name that
+    /// is not one is refused, and a name the page shows is stored under its
+    /// key. Without one nothing is checked, and the answer says so.
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// Instruction set to decode the function with: `x64` (default) or `arm64`.
+    #[arg(long)]
+    arch: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -5245,12 +5260,19 @@ fn cmd_annotate_set(field: &str, a: AnnotateSetArgs, pretty: bool) -> bool {
     run_capability("annotate.set", json!({ "field": field, "addr": a.addr, "value": a.value }), pretty)
 }
 
+fn annotate_var_json(a: &AnnotateVarArgs) -> serde_json::Value {
+    json!({
+        "addr": a.addr, "var": a.var, "value": a.value,
+        "file": a.file, "pid": a.pid, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd, "arch": a.arch,
+    })
+}
+
 fn cmd_annotate_var(a: AnnotateVarArgs, pretty: bool) -> bool {
-    run_capability("annotate.var", json!({ "addr": a.addr, "var": a.var, "value": a.value }), pretty)
+    run_capability("annotate.var", annotate_var_json(&a), pretty)
 }
 
 fn cmd_annotate_vartype(a: AnnotateVarArgs, pretty: bool) -> bool {
-    run_capability("annotate.vartype", json!({ "addr": a.addr, "var": a.var, "value": a.value }), pretty)
+    run_capability("annotate.vartype", annotate_var_json(&a), pretty)
 }
 
 fn cmd_annotate_bookmark(a: AnnotateBookmarkArgs, pretty: bool) -> bool {

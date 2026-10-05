@@ -21,6 +21,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`annotate var` and `annotate vartype` stored names that change nothing.** Any name was
+  accepted with `ok:true`, including one that is not a variable of the function, and a type
+  on a value the decompiler never types. With the image (`--file`, or the one a `serve`
+  session holds, which it now supplies) the name is checked against the decompiler's own
+  `variables` in every style. A name that is not a variable is refused (`not-a-variable`,
+  listing the ones the function has); a name the page shows is stored under its key; a type
+  on a value is refused (`takes-no-type`). Without an image nothing is checked, and
+  `meta.note` says so. A test checks each case and fails with the check switched off.
 - **An `endbr64` where a call returns was listed as a function.** The code after a `setjmp`
   carries `endbr64`, because `longjmp` comes back to it indirectly, and the scan trusted the
   marker even inside a declared function's extent. A marker inside an extent is now an
@@ -51,11 +59,6 @@ All notable changes to N0xis are recorded here. Versions follow
   later pages stop reading current names. The prologue-scan path also reports `meta.total`
   now. The scan always covered the whole range, so the total was there to report.
 
-### Known
-
-- `annotate var` and `annotate vartype` read no image, so they store a rename for any name,
-  including one that is not a variable (`ok:true`, no effect). Take the name from
-  `variables[].key`.
 
 ## [0.3.3] — 2026-10-05
 

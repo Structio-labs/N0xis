@@ -46,6 +46,73 @@ fn ok<T: serde::Serialize>(schema_id: &str, data: T) -> Response<Value> {
     }
 }
 
+/// The fields a request names an image with, as `decomp.pseudo` reads them.
+const SOURCE_KEYS: [&str; 5] = ["file", "pid", "bytes", "snapshot", "remote_cmd"];
+
+/// One variable as `decomp pseudo` lists it.
+#[derive(serde::Deserialize, Clone)]
+struct ListedVar {
+    name: String,
+    key: String,
+    kind: String,
+}
+
+/// The variables of the function at `addr` in every decompiler style (each
+/// style names its own), when the request names an image to decompile; `None`
+/// when it names none and nothing can be checked.
+fn listed_variables(args: &Value, addr: &str) -> Option<Result<Vec<ListedVar>, String>> {
+    if !SOURCE_KEYS.iter().any(|k| args.get(*k).is_some_and(|v| !v.is_null())) {
+        return None;
+    }
+    let registry = crate::build_registry();
+    let mut all = Vec::new();
+    for style in ["ssa", "structured", "goto"] {
+        let mut query = json!({ "addr": addr, "style": style });
+        for k in SOURCE_KEYS.iter().chain(&["arch"]) {
+            if let Some(v) = args.get(*k).filter(|v| !v.is_null()) {
+                query[*k] = v.clone();
+            }
+        }
+        match registry.dispatch("decomp.pseudo", &query) {
+            Response::Ok(answer) => match serde_json::from_value::<Vec<ListedVar>>(answer.data["variables"].clone()) {
+                Ok(vars) => all.extend(vars),
+                Err(e) => return Some(Err(format!("the decompiler listed no variables ({e})"))),
+            },
+            Response::Err(f) => return Some(Err(format!("{}: {}", f.error.code, f.error.message))),
+        }
+    }
+    Some(Ok(all))
+}
+
+/// What `var` names among `vars`: a key as given, or a name the page shows,
+/// mapped to the key its rename or type is stored under. Answers the key, its
+/// kind, and a note when the name was mapped.
+fn resolve_var(vars: &[ListedVar], var: &str, addr: &str) -> Result<(String, String, Option<String>), ArgErr> {
+    if let Some(v) = vars.iter().find(|v| v.key == var) {
+        return Ok((v.key.clone(), v.kind.clone(), None));
+    }
+    let mut shown: Vec<&ListedVar> = vars.iter().filter(|v| v.name == var).collect();
+    shown.sort_by(|a, b| a.key.cmp(&b.key));
+    shown.dedup_by(|a, b| a.key == b.key);
+    match shown.as_slice() {
+        [one] => Ok((one.key.clone(), one.kind.clone(), Some(format!("`{var}` is shown for `{}`; stored under that name", one.key)))),
+        [] => {
+            let mut names: Vec<&str> = vars.iter().map(|v| v.name.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            let listed = names.iter().take(40).copied().collect::<Vec<_>>().join(", ");
+            Err(("not-a-variable", format!("`{var}` is not a variable of the function at {addr}; it has: {listed}")))
+        }
+        many => {
+            let keys: Vec<&str> = many.iter().map(|v| v.key.as_str()).collect();
+            Err(("ambiguous-variable", format!("`{var}` is shown for {}; name one of those instead", keys.join(", "))))
+        }
+    }
+}
+
+/// The note a write carries when nothing could check `var`.
+const UNCHECKED: &str = "not checked against the function's variables: name the image (`--file`) to have it checked";
+
 fn parse_table_type(name: &str) -> Result<TableValueType, String> {
     Ok(match name.to_ascii_lowercase().as_str() {
         "i8" => TableValueType::I8,
@@ -110,12 +177,29 @@ impl Plugin for ProjectOps {
                     Ok(v) => v,
                     Err(e) => return to_env(e),
                 };
-                let Some(key) = args.get("var").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+                let Some(var) = args.get("var").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
                     return err_pair("bad-var", "`var` (the variable's displayed name) is required".to_string());
                 };
+                let addr = args.get("addr").and_then(|v| v.as_str()).unwrap_or_default();
+                // A rename stored under a name that is not a variable changes
+                // nothing; with an image to decompile, that is refused instead.
+                let (key, note) = match listed_variables(args, addr) {
+                    None => (var.to_string(), Some(UNCHECKED.to_string())),
+                    Some(Err(e)) => return err_pair("not-checked", format!("the function's variables could not be listed: {e}")),
+                    Some(Ok(vars)) => match resolve_var(&vars, var, addr) {
+                        Ok((key, _, note)) => (key, note),
+                        Err(refusal) => return to_env(refusal),
+                    },
+                };
                 let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
-                match n0xis_project::annotate::set_var_name(va, key, value) {
-                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                match n0xis_project::annotate::set_var_name(va, &key, value) {
+                    Ok(rec) => {
+                        let answer = ok(schema::v1::ANNOTATION, rec);
+                        match note {
+                            Some(note) => answer.with_note(note),
+                            None => answer,
+                        }
+                    }
                     Err(e) => err_pair("annotate-failed", e.to_string()),
                 }
             }),
@@ -186,12 +270,40 @@ impl Plugin for ProjectOps {
                     Ok(v) => v,
                     Err(e) => return to_env(e),
                 };
-                let Some(key) = args.get("var").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+                let Some(var) = args.get("var").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
                     return err_pair("bad-var", "`var` (the variable's displayed name, or @return) is required".to_string());
                 };
+                let addr = args.get("addr").and_then(|v| v.as_str()).unwrap_or_default();
+                // Types apply to parameters and locals (and the return value);
+                // one stored for anything else changes nothing, so with an image
+                // to decompile it is refused instead.
+                let (key, note) = if var == "@return" {
+                    (var.to_string(), None)
+                } else {
+                    match listed_variables(args, addr) {
+                        None => (var.to_string(), Some(UNCHECKED.to_string())),
+                        Some(Err(e)) => return err_pair("not-checked", format!("the function's variables could not be listed: {e}")),
+                        Some(Ok(vars)) => match resolve_var(&vars, var, addr) {
+                            Ok((key, kind, _)) if kind != "param" && kind != "local" => {
+                                return err_pair(
+                                    "takes-no-type",
+                                    format!("`{key}` is neither a parameter nor a local; the decompiler applies a type only to those, so this one would change nothing"),
+                                );
+                            }
+                            Ok((key, _, note)) => (key, note),
+                            Err(refusal) => return to_env(refusal),
+                        },
+                    }
+                };
                 let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
-                match n0xis_project::annotate::set_var_type(va, key, value) {
-                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                match n0xis_project::annotate::set_var_type(va, &key, value) {
+                    Ok(rec) => {
+                        let answer = ok(schema::v1::ANNOTATION, rec);
+                        match note {
+                            Some(note) => answer.with_note(note),
+                            None => answer,
+                        }
+                    }
                     Err(e) => err_pair("annotate-failed", e.to_string()),
                 }
             }),
