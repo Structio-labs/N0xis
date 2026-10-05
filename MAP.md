@@ -7,7 +7,7 @@ aliases: [Index, Project Map, Hub, MOC]
 
 Central navigation hub (map-of-content) for **N0xis** — a CLI-driven reverse-engineering + live-memory toolkit. Open this folder as an **Obsidian vault** for backlinks, the graph view, and bidirectional navigation across every document below.
 
-N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a cheat/trainer maker. Status: **alpha**, PolyForm Noncommercial 1.0.0, public at `github.com/Structio-labs/N0xis`.
+N0xis (pronounced "Noxis") ships one binary invocable as either **`n0xis`** or **`n0x`**. It is an RE / dynamic-analysis toolkit — static analysis + first-class live memory + provenance — not a maker of packaged memory-editing tools. Status: **alpha**, PolyForm Noncommercial 1.0.0, public at `github.com/Structio-labs/N0xis`.
 
 > Navigation: [[README]] · [[CONCEPT]] · [[ROADMAP]] · [[CLI_COMMANDS|CLI reference]] · [[PRODUCT_POLICY]] · [[COMMUNITY_ROADMAP]] · [[docs/n0xhud/CONCEPT|N0xHUD concept]] · [[docs/n0xhud/ROADMAP|N0xHUD roadmap]] · [[CONTRIBUTING]]
 
@@ -20,7 +20,7 @@ Three frontends drive **one** analysis engine. Everything goes in and comes back
 ### Frontends (3)
 - **`n0xis` (alias `n0x`)** — the CLI. Thin clap frontend. See [[CLI_COMMANDS]].
 - **`n0xis-mcp`** — MCP server over stdio; same `{ok,data,meta}` envelope, tool names mirror CLI verbs; plus `capability_list` / `capability_run`, through which every registered capability is reachable without a per-command tool.
-- **`n0xis-hud` (N0xHUD)** — a config-driven, always-on-top companion window over the same crates. Runtime instrumentation / live-memory analysis with an on-screen face — **not** an in-game overlay, **not** a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]].
+- **`n0xis-hud` (N0xHUD)** — a config-driven, always-on-top companion window over the same crates. Runtime instrumentation / live-memory analysis with an on-screen face — **not** an in-target overlay, **not** a packaged memory-editing tool. See [[docs/n0xhud/CONCEPT|N0xHUD concept]].
 
 ### The pass pipeline (source → arch → core → project)
 ```
@@ -82,7 +82,7 @@ Of the 62 capabilities registered, **60 are dispatched by the CLI**; `decode` an
 | [CONCEPT.md](CONCEPT.md) — [[CONCEPT]] | Vision & design philosophy (positioning, contract-first stance, GUI stance) | dev, reviewer, agent |
 | [ROADMAP.md](ROADMAP.md) — [[ROADMAP]] | Phase-by-phase plan + live status (legend 🎯✅⏳⬜⚠️) | dev, agent |
 | [docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md) — [[CLI_COMMANDS]] | **Current** command reference — every leaf command, args, schemas | agent, dev, user |
-| [docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md) — [[PRODUCT_POLICY]] | Positioning, scope, and ethics — RE/dynamic-analysis, single-player | contributor, user |
+| [docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md) — [[PRODUCT_POLICY]] | Positioning, scope, and ethics — RE/dynamic-analysis | contributor, user |
 | [docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md) — [[COMMUNITY_ROADMAP]] | Community/backlog items and how contributions slot in | contributor |
 | [docs/PHASE9_UI_LOCATE_BRIEF.md](docs/PHASE9_UI_LOCATE_BRIEF.md) — [[docs/PHASE9_UI_LOCATE_BRIEF\|Phase 9 brief]] | Phase 9 design + definition-of-done (incl. the live §9.3 test still owed) | dev, agent |
 | [docs/n0xhud/CONCEPT.md](docs/n0xhud/CONCEPT.md) — [[docs/n0xhud/CONCEPT\|N0xHUD concept]] | N0xHUD design & rationale (companion window, not overlay) | dev, agent |
@@ -103,14 +103,14 @@ The Phase 3 optimizing SSA decompiler is the largest subsystem here. Build IR, d
 
 ### Dynamic memory / live analysis
 Value scanning with true snapshot-backed narrowing, AOB, pointer paths, region dissect, patches with an undo journal, tables, breakpoints/watchpoints.
-- Commands: `scan {value,filter,aob,pointer-path,dissect}`, `mem {read,write,map}`, `patch {dry-run,apply,list,show,undo,detour}`, `table {add,list,show,rm,freeze}`, `debug {await-hit,watch,attach}`. See [[CLI_COMMANDS]].
+- Commands: `scan {value,filter,aob,pointer-path,dissect}`, `mem {read,write,map}`, `patch {dry-run,apply,list,show,undo,detour}`, `table {add,list,show,rm,pin}`, `debug {await-hit,watch,attach}`. See [[CLI_COMMANDS]].
 - ⬜ Region caching as a built-in scan option is the one open Phase 8 item ([[ROADMAP]]).
 
 ### Provenance (Phase 4c)
 Watchpoint × decompiler: arm a hardware watchpoint on a value, wait for one real hit, and explain the exact decompiled statement responsible — with a true cross-process x64 caller chain from `.pdata`/`.xdata`.
 - Command: `provenance trace` (also exposed over MCP). See [[CLI_COMMANDS]].
 
-### Game-engine assets & LuaJIT
+### Asset bundles & LuaJIT
 Bitsquid bundles + offline and live LuaJIT introspection.
 - Commands: `bundle {list,extract,repack}`, `lua {disasm,patch,strings,table,combo,seedscan}`. See [[CLI_COMMANDS]].
 - Crates: `n0xis-bitsquid`, `n0xis-lua` (offline), `n0xis-luajit` (live GCstr discovery) — none depended on by core.
@@ -122,7 +122,7 @@ Turning a repeatable RE methodology's recipes into commands: `concept grep`, `lo
 Hit-test a live target's own retained scene-graph AABBs from outside — no graphics-API hooking, no frame capture. `ui locate --rect` (CLI + MCP), built on the internal `scan structural` primitive (`n0xis.scan.structural.v1` — a core primitive, **not** a runnable CLI subcommand), plus the conditional HW watchpoint `debug watch --when`. ❌ **Phase 9 is marked invalid:** screen region → memory is not implemented on real targets; the commands exist but are labelled not validated. See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].
 
 ### N0xHUD (companion window)
-The interactive, on-screen face of the same engine: a config-driven always-on-top `eframe`/`egui` window (`.n0x/hud.toml`), a process-watcher auto-apply loop, global hotkeys via a low-level keyboard hook, write & freeze, Interception kernel-driver actuation, macro/sequence macros, and a process-based plugin protocol (`on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio) for game-specific automation — the engine itself stays game-agnostic; all per-game logic (e.g. reading a generator seed live and recomputing/actuating a deterministic sequence) lives in an external plugin process, not compiled in. Framed as runtime instrumentation, never a trainer. See [[docs/n0xhud/CONCEPT|N0xHUD concept]] and [[docs/n0xhud/ROADMAP|N0xHUD roadmap]].
+The interactive, on-screen face of the same engine: a config-driven always-on-top `eframe`/`egui` window (`.n0x/hud.toml`), a process-watcher auto-apply loop, global hotkeys via a low-level keyboard hook, write & freeze, Interception kernel-driver actuation, driver/sequence macros, and a process-based plugin protocol (`on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio) for target-specific automation — the engine itself stays target-agnostic; all per-target logic (e.g. reading a generator seed live and recomputing/actuating a deterministic sequence) lives in an external plugin process, not compiled in. Framed as runtime instrumentation, never as a packaged memory-editing tool. See [[docs/n0xhud/CONCEPT|N0xHUD concept]] and [[docs/n0xhud/ROADMAP|N0xHUD roadmap]].
 
 ### The agent contract — `{ok,data,meta}`
 Every command emits exactly one JSON object: `{"ok":true,"data":{…},"meta":{"schema":"n0xis.*.vN",…}}` on success, `{"ok":false,"error":{…}}` on failure. `--pretty` indents; non-zero exit on `ok:false`; stderr progress is prefixed `[n0x]` (safe to ignore in scripts). New v1 schemas are `n0xis.*.vN`; a few ported shapes keep the archived `n0x.*.v1` id for back-compat. `meta.schema` names the payload shape and is defined once in `n0xis-contracts`. The same envelope is what the MCP server returns as a string. See [[CLI_COMMANDS]] (envelope + schema map) and [[CONCEPT]].

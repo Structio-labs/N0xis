@@ -22,7 +22,7 @@ a terminal who reads the output, pipes it through `jq`, and writes their own
 scripts around it.
 That the same versioned JSON is also trivially machine-readable is a *property* of
 the contract, not a statement about the audience — MCP is one frontend of three,
-not the product. Game binaries are the best-exercised target, not the definition.
+not the product. Large shipped native application binaries are the best-exercised target, not the definition.
 There is no GUI **yet**: that is an unbuilt feature (see §2 and N0xHUD in §4), not
 a claim that the tool is meant for bots.
 
@@ -32,7 +32,7 @@ It is a **synthesis of two worlds that today live apart**:
    optimizing decompiler, types, xrefs.
 2. **Live-memory tooling** — full *dynamic* memory work: value scanning,
    pointer-path scanning, AOB scanning, struct dissection, code injection,
-   freeze/write, hooks, and a persistent *cheat table*.
+   freeze/write, hooks, and a persistent table of watched values.
 
 The two are normally separate programs: a memory scanner finds runtime *values*
 without explaining the *code*, and a static analyzer explains code while treating
@@ -195,8 +195,8 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
 | `n0xis-frontend` | The shared frontend seam: source resolution (all five target forms + the `.n0x/` session default), ISA selection, argument parsing, and the **capability registry** — one `Plugin` trait through which built-in analysis and external process plugins both register, with `build_registry()` as the single composition point. Exists because the CLI and MCP each used to carry their own copy of the first three, and had already drifted. | core, contracts, arch, sources, project | analysis internals, frontend-specific I/O |
 | `n0xis-cli` | Thin clap frontend → pipeline calls → JSON. The living command surface ([`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md)); the ported v0 commands live on inside that same current reference. | frontend, pipeline, contracts | analysis internals |
 | `n0xis-mcp` | MCP server exposing the same pipeline as agent tools (same `ok/data/meta` envelope). | frontend, pipeline, contracts | analysis internals |
-| `n0xis-hud` | **N0xHUD** — a config-driven, always-on-top **companion window** (eframe/egui) over the same crates: process-watcher auto-apply, write & freeze, global hotkeys, Interception-driver actuation, sequence/macro input macros, and a process-based plugin protocol for game-specific automation (`[[adapters]]` bindings speak `on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio — see `docs/COMMUNITY_ROADMAP.md`'s "Plugin system"). `n0xis-hud` itself is deliberately game-agnostic; all game-specific logic lives in an external plugin process, not compiled in. A third frontend / runtime-instrumentation surface — **not** an in-game overlay or an injection layer. | sources, project, core, contracts (+ eframe/egui, windows) | the CLI/MCP dispatch; core analysis internals |
-| `n0xis-bitsquid` | Bitsquid bundle format adapter (archives, resource types). Pluggable game-format adapter. | contracts | core (never depended on by it) |
+| `n0xis-hud` | **N0xHUD** — a config-driven, always-on-top **companion window** (eframe/egui) over the same crates: process-watcher auto-apply, write & freeze, global hotkeys, Interception-driver actuation, sequence/driver-macro input macros, and a process-based plugin protocol for target-specific automation (`[[adapters]]` bindings speak `on_launch`/`toggle_on`/`toggle_off`/`poll` JSON over a spawned plugin's stdio — see `docs/COMMUNITY_ROADMAP.md`'s "Plugin system"). `n0xis-hud` itself is deliberately target-agnostic; all target-specific logic lives in an external plugin process, not compiled in. A third frontend / runtime-instrumentation surface — **not** an in-target overlay or an injection layer. | sources, project, core, contracts (+ eframe/egui, windows) | the CLI/MCP dispatch; core analysis internals |
+| `n0xis-bitsquid` | Bitsquid bundle format adapter (archives, resource types). Pluggable asset-format adapter. | contracts | core (never depended on by it) |
 | `n0xis-lua` | Offline LuaJIT 2.0 bytecode dump decoder/patcher (header, prototypes, instructions, constants). Pluggable scripting-format adapter. | serde | core, OS |
 | `n0xis-luajit` | Live LuaJIT VM introspection: finds/decodes GC objects (starting with `GCstr`) directly in a running process's heap via `MemorySource`, no per-string hand-picked byte pattern. Sibling to `n0xis-lua` (live vs. offline), not a dependency of it. | contracts, sources (traits) | core, concrete OS calls |
 
@@ -387,7 +387,7 @@ The capability set this layer is built to cover:
 - **Code injection / patching** — the existing `patch` surface + code caves +
   detour/trampoline hooks, all with persisted undo.
 - **Hooks / timers** — value-change watchpoints (HW breakpoints, incl. conditional
-  `--when reg=value`), periodic re-scan; a speedhack-style time hook is a later stretch.
+  `--when reg=value`), periodic re-scan; a time-scaling hook is a later stretch.
 
 Every one of these is a CLI verb + MCP tool returning a schema'd artifact — so an
 shell script (or an agent) can drive a full scan→filter→freeze loop headlessly. N0xHUD (§4) puts an
@@ -397,7 +397,7 @@ in-the-moment runtime instrumentation.
 ## 10. Own table format — `.n0xt`
 
 The persistent artifact of a session, stored in `.n0x/tables/`. It is a
-cheat-table-shaped entry list — address, pointer path, AOB, type, description,
+watched-value entry list — address, pointer path, AOB, type, description,
 hotkeys, groups — plus everything the static side knows:
 
 - Entries: address / typed pointer-path / AOB signature, value type, description,
@@ -432,8 +432,8 @@ The capability that requires spanning both worlds:
 
 - **Value → meaning (provenance).** Scan for a value; N0xis runs *find-what-accesses*
   (HW breakpoints), resolves each `VA → module+RVA → recovered function`, decompiles
-  it, and returns a **provenance graph**: *"this is `hp`, field `+0x68` of `Player`,
-  written by `sub_X` as `max_hp - damage`, from the combat tick."* The output is the
+  it, and returns a **provenance graph**: *"this is `balance`, field `+0x68` of `Account`,
+  written by `sub_X` as `balance - amount`, from the transfer handler."* The output is the
 explained, typed causal chain — as JSON — not an address on its own and not code
 on its own.
 
