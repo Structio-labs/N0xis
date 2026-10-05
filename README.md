@@ -62,7 +62,7 @@ n0x provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty
 The same commands run on a live `--pid`, a static `--file`, a captured `--snapshot`, or a
 remote process over SSH. It is ordinary Unix plumbing —
 `n0x function discover --file app.exe --pdata | jq -r '.data.functions[].va'` feeds the next
-command. `n0x guide` lists all 113 commands, generated from the binary so it never drifts — and a test
+command. `n0x guide` lists all 114 commands, generated from the binary so it never drifts — and a test
 fails the build if this number does.
 
 **From an agent:** point any MCP client at `n0xis-mcp` — 25 tools returning the identical

@@ -118,6 +118,18 @@ impl ProjectRoot {
         self.dir.join("decomp-cache")
     }
 
+    /// Every cache the engine can rebuild from the image alone, by name and
+    /// directory: what "clear the cache" removes. The user's own work (names,
+    /// comments, types, patches, tables) and the recovered names are not here.
+    pub fn derived_caches(&self) -> Vec<(&'static str, PathBuf)> {
+        vec![
+            ("ir-cache", self.ir_cache_dir()),
+            ("xref-index", self.xref_index_dir()),
+            ("decomp-cache", self.decomp_cache_dir()),
+            (store::DISCOVERED.dir_name(), self.dir.join(store::DISCOVERED.dir_name())),
+        ]
+    }
+
     /// Imported IL2CPP symbol indices (Phase 12), one JSON file per named
     /// index. A build's managed symbol table is expensive to obtain and cheap
     /// to keep, so it belongs beside the project rather than being re-derived.

@@ -2736,6 +2736,17 @@ struct InitArgs {
 enum ProjectCmd {
     /// Show the resolved project root, config, and storage paths.
     Info,
+    /// How much disk the project's caches use, per kind; `--clear` removes them.
+    /// Only what the engine can rebuild from the image is a cache: names,
+    /// comments, types, patches and tables are never touched.
+    Cache(ProjectCacheArgs),
+}
+
+#[derive(Args)]
+struct ProjectCacheArgs {
+    /// Remove every cache entry, then report what was freed.
+    #[arg(long)]
+    clear: bool,
 }
 
 #[derive(Args)]
@@ -2926,6 +2937,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Guide(a) => cmd_guide(a, pretty),
         Command::Init(a) => cmd_init(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
+        Command::Project(ProjectCmd::Cache(a)) => cmd_project_cache(a, pretty),
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
@@ -3278,6 +3290,52 @@ fn cmd_init(a: InitArgs, pretty: bool) -> bool {
             pretty,
         ),
     }
+}
+
+/// Files and bytes directly in `dir` (the caches are flat).
+fn dir_usage(dir: &std::path::Path) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|e| e.metadata().ok().filter(|m| m.is_file()))
+        .fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.len()))
+}
+
+fn cmd_project_cache(a: ProjectCacheArgs, pretty: bool) -> bool {
+    let root = match n0xis_project::resolve() {
+        Ok(root) => root,
+        Err(e) => return emit(&Response::<serde_json::Value>::error("project-unresolved", e.to_string()), pretty),
+    };
+    let mut caches = Vec::new();
+    let (mut total, mut freed) = (0u64, 0u64);
+    let mut failures = Vec::new();
+    for (name, dir) in root.derived_caches() {
+        let (files, bytes) = dir_usage(&dir);
+        total += bytes;
+        if a.clear && files > 0 {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().filter_map(Result::ok) {
+                let path = entry.path();
+                let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if path.is_file() {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => freed += len,
+                        Err(e) => failures.push(format!("{}: {e}", path.display())),
+                    }
+                }
+            }
+        }
+        caches.push(json!({ "name": name, "dir": dir.display().to_string(), "files": files, "bytes": bytes }));
+    }
+    let data = json!({
+        "dir": root.dir.display().to_string(),
+        "is_local": root.is_local,
+        "caches": caches,
+        "bytes": total,
+        "cleared": a.clear,
+        "freed": freed,
+        "failures": failures,
+    });
+    emit(&Response::success(schema::v1::PROJECT_CACHE, data), pretty)
 }
 
 fn cmd_project_info(pretty: bool) -> bool {

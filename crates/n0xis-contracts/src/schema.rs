@@ -73,6 +73,7 @@ pub mod v1 {
     pub const PROJECT_INIT: &str = "n0xis.project.init.v1";
     /// Resolved project paths/config (`project info`).
     pub const PROJECT_INFO: &str = "n0xis.project.info.v1";
+    pub const PROJECT_CACHE: &str = "n0xis.project.cache.v1";
     /// Software-breakpoint hit report (`debug await-hit`).
     pub const DEBUG_AWAIT_HIT: &str = "n0xis.debug.await_hit.v1";
     /// SSA form (`ir ssa`, ROADMAP Phase 3).

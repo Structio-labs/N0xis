@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **113 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **114 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -146,6 +146,14 @@ Create a `.n0x/` project (config, dirs, `n0x.cmd` shim).
 Show the resolved project root, config, and storage paths.
 - Args: none.
 - Schema: `n0xis.project.info.v1`
+
+### `project cache [--clear]`
+How much disk the project's caches use, per kind (`ir-cache`, `xref-index`, `decomp-cache`,
+`discover-cache`), and in total. A cache is only what the engine can rebuild from the image
+alone; names, comments, types, patches, tables and recovered names are never touched.
+- `--clear` — remove every cache entry, then report `freed` (bytes) and any file that could not
+  be removed (`failures`).
+- Schema: `n0xis.project.cache.v1`
 
 ### `process ps [--filter <str>]`
 List running processes.
@@ -711,7 +719,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**113 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**114 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -730,6 +738,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x process ps` | List running processes |
 | `n0x profile` | Profile a target before analyzing it: image facts (sections, exports, branch stubs, folded addresses, `.pdata`), the runtime/engine it was built with, and **which commands will be ineffective on it and why**. Run this first on an unfamiliar binary — it answers in one call what is otherwise learned by a sequence of empty results |
 | `n0x project info` | Show the resolved project root, config, and storage paths |
+| `n0x project cache` | How much disk the project's caches use, per kind; `--clear` removes them. Only what the engine can rebuild from the image is a cache: names, comments, types, patches and tables are never touched |
 | `n0x remote-serve` | Serve a live process over the remote-agent stdio protocol — the remote-side half of `--remote-cmd` (Phase 6). Typically invoked over SSH by the *other* machine, not run directly: e.g. locally, run `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...` |
 
 ### Static analysis & decompilation (28)
@@ -888,6 +897,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.guide.v1` | guide |
 | `n0xis.project.init.v1` | init |
 | `n0xis.project.info.v1` | project info |
+| `n0xis.project.cache.v1` | project cache |
 | `n0xis.process.ps.v1` | process ps |
 | *(none — stdio server)* | remote-serve |
 | `n0xis.module.list.v1` | module list |

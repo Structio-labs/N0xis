@@ -4334,6 +4334,7 @@ phase from its first mistake on.
 | `guide` | Environment & project | the binary's own command tree (a test fails the build on drift) |
 | `init` | Environment & project | the filesystem |
 | `project info` | Environment & project | the store on disk |
+| `project cache` | Environment & project | planted cache files of known size, and the user's names left byte-identical by a clear |
 | `process ps` | Environment & project | `/proc` |
 | `capability list` | Environment & project | the registry, and a registered plugin appearing in it |
 | `capability run` | Environment & project | the CLI's own answer, byte-identical on five capabilities |

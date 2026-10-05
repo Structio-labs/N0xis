@@ -7,6 +7,12 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Added
 
+- **`project cache [--clear]`**: how much disk the project's caches take, per kind
+  (`ir-cache`, `xref-index`, `decomp-cache`, `discover-cache`), and a clear that frees them.
+  Only what the engine can rebuild from the image counts as a cache, from one list
+  (`ProjectRoot::derived_caches`). A test plants cache files of known size beside the user's
+  names; the report and the clear match the planted bytes, and the names survive byte for byte.
+
 - **`decomp pseudo` lists the function's variables** (`data.variables`): each name as
   printed, the key `annotate var` / `annotate vartype` store it under, and whether it is a
   parameter, a stack local or another value. The renderer records each variable where it

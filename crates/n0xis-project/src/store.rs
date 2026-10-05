@@ -30,6 +30,11 @@ impl Store {
         Self { dir }
     }
 
+    /// The directory under `.n0x/` this kind of entry lives in.
+    pub const fn dir_name(&self) -> &'static str {
+        self.dir
+    }
+
     fn dir(&self) -> Result<PathBuf> {
         Ok(resolve()?.dir.join(self.dir))
     }
