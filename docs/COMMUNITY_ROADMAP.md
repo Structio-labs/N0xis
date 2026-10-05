@@ -14,7 +14,7 @@ gap is explicitly documented — none of this is guesswork about what might be
 missing; it's the project's own honest "not attempted, here's why" notes,
 collected into one place.
 
-The Phase 8 spec-first method commands (`game grep`, `locate by-transition`,
+The Phase 8 spec-first method commands (`concept grep`, `locate by-transition`,
 `input probe`, `const identify`, `bindings list`, `sig validate`) have **landed**
 and are documented in [CLI_COMMANDS.md](CLI_COMMANDS.md) — they are no longer
 claimable. Phase 9 (`ui locate`, screen region → memory) is **marked invalid**:
@@ -159,7 +159,7 @@ validated; Phase 9 is marked invalid). The stateful, cross-invocation verbs are 
   above, the broader static/dynamic surface isn't exposed yet either
   (`ir build/explain/dot/slice/manifest/value-set/deobfuscate`,
   `scan aob/pointer-path/dissect`, `selection`, `dump`, `snapshot`, `diff`,
-  `bundle`, `lua *`, `game grep`, `locate by-transition`, `input probe`,
+  `bundle`, `lua *`, `concept grep`, `locate by-transition`, `input probe`,
   `const identify`, `bindings list`, `sig validate`, `mem map`). Each is a
   near-mechanical wrapper around a verb the CLI already drives — good, low-risk
   first contributions. `A-MCP` / `D-Straightforward`. Status: Open.

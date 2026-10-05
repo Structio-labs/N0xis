@@ -116,7 +116,7 @@ Bitsquid bundles + offline and live LuaJIT introspection.
 - Crates: `n0xis-bitsquid`, `n0xis-lua` (offline), `n0xis-luajit` (live GCstr discovery) — none depended on by core.
 
 ### Spec-first method tooling (Phase 8)
-Turning a repeatable RE methodology's recipes into commands: `game grep`, `locate by-transition`, `input probe`, `const identify`, `bindings list`, `sig validate`. 6/7 landed and merged into `main`. See [[CLI_COMMANDS]].
+Turning a repeatable RE methodology's recipes into commands: `concept grep`, `locate by-transition`, `input probe`, `const identify`, `bindings list`, `sig validate`. 6/7 landed and merged into `main`. See [[CLI_COMMANDS]].
 
 ### UI-layer localization (Phase 9 — marked invalid)
 Hit-test a live target's own retained scene-graph AABBs from outside — no graphics-API hooking, no frame capture. `ui locate --rect` (CLI + MCP), built on the internal `scan structural` primitive (`n0xis.scan.structural.v1` — a core primitive, **not** a runnable CLI subcommand), plus the conditional HW watchpoint `debug watch --when`. ❌ **Phase 9 is marked invalid:** screen region → memory is not implemented on real targets; the commands exist but are labelled not validated. See [[docs/PHASE9_UI_LOCATE_BRIEF|Phase 9 brief]].

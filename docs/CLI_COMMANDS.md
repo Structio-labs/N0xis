@@ -586,16 +586,17 @@ once.
 
 ## Spec-first method tooling (Phase 8)
 
-The named Phase-8 commands (game grep, locate by-transition, input probe, const identify,
+The named Phase-8 commands (concept grep, locate by-transition, input probe, const identify,
 bindings list, sig validate) are **committed to `main`** (`a0a9168`). Each traces back to a
 specific technique from a real RE campaign's post-mortem — see `ROADMAP.md`'s Phase 8 section
 for the full write-up. The one remaining Phase-8 item — region caching as
 a built-in scan option — is still **open**; see [`../ROADMAP.md`](../ROADMAP.md).
 
-### `game grep <concept> --dir <path>`
+### `concept grep <concept> --dir <path>`
 Rank scripts/data/strings by how densely they cluster a concept's vocabulary. `<concept>`
 (positional, required) is the vocabulary — comma/whitespace/`|`-separated, e.g.
-`"combo,interact,macro"`.
+`"retry,backoff,timeout"`. `game grep` is a hidden alias for the same command (its first
+name), kept so existing scripts still run; the schema id keeps that first name.
 - `--dir` (required, repeatable) — directory of extracted scripts/data (LuaJIT bytecode
   auto-decoded to text).
 - `--term` (repeatable extra vocabulary term); `--min-distinct` (require N distinct terms per
@@ -829,8 +830,8 @@ sections above document a subset in depth; every command has `--help`, and
 | Command | What it does |
 |---|---|
 | `n0x bindings list` | List native bindings by pairing name strings with function pointers |
+| `n0x concept grep` | Rank scripts/data/strings by how densely they cluster a concept's vocabulary. `<concept>` is the vocabulary (comma/space/pipe-separated), e.g. `"retry,backoff,timeout"` |
 | `n0x const identify` | Recognize magic constants. Provide `--value`, or a function (`--file/--pid/--snapshot` + `--addr`), or a Lua chunk (`--lua`) |
-| `n0x game grep` | Rank scripts/data/strings by how densely they cluster a concept's vocabulary. `<concept>` is the vocabulary (comma/space/pipe-separated), e.g. `"combo,interact,macro"` |
 | `n0x input probe` | Try each actuation method and report which the OS input stack registers and whether each carries the `LLKHF_INJECTED` flag a target may filter |
 | `n0x locate by-transition` | Snapshot → operator toggles one thing → rescan → keep only what changed |
 | `n0x sig gen` | Generate a FLIRT-class `.npat` signature database from a *symbolized* image: fingerprint each named function's leading bytes, wildcarding the displacements a linker varies (relative call/jump targets, RIP-relative offsets). Feed the output back with `decomp … --flirt` to name the same functions in a *stripped* binary that statically links them |
@@ -911,7 +912,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.lua.strings.v1` | lua strings, lua table |
 | `n0xis.lua.combo.v1` | lua combo |
 | `n0xis.lua.seedscan.v1` | lua seedscan |
-| `n0xis.game.grep.v1` | game grep |
+| `n0xis.game.grep.v1` | concept grep |
 | `n0xis.locate.transition.v1` | locate by-transition |
 | `n0xis.input.probe.v1` | input probe |
 | `n0xis.const.identify.v1` | const identify |

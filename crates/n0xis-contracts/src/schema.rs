@@ -144,7 +144,10 @@ pub mod v1 {
     pub const LUA_SEEDSCAN: &str = "n0xis.lua.seedscan.v1";
 
     // --- Phase 8: spec-first method tooling ---
-    /// Vocabulary-cluster search+rank over scripts/data/strings (`game grep`).
+    /// Vocabulary-cluster search+rank over scripts/data/strings (`concept grep`).
+    /// The id still carries the command's first name, `game grep`: a consumer
+    /// dispatches on this string, so renaming it is a data-contract change of
+    /// its own, not part of renaming the command.
     pub const GAME_GREP: &str = "n0xis.game.grep.v1";
     /// Transition-diff localization workflow (`locate by-transition`).
     pub const LOCATE_TRANSITION: &str = "n0xis.locate.transition.v1";

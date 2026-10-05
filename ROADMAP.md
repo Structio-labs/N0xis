@@ -664,7 +664,7 @@ dependency order.
   (`bundle list/extract`, `lua disasm`, `xref string`) — the missing piece is
   the *search-and-rank* front door, not the readers.
   **Why first**: this is literally the thing that cracked the campaign, and it
-  was hand-rolled in throwaway Python. One grep for `combo|interact|macro`
+  was hand-rolled in throwaway Python. One grep for the feature's three key words
   found the component, the algorithm module, the RNG class, and every data
   template in ~30 minutes — after weeks of native RE had found none of it.
   Highest payoff on this list.
@@ -4406,7 +4406,7 @@ phase from its first mistake on.
 | `snapshot dump` | Provenance, annotations & snapshots | a live process — byte-identical over the whole capture |
 | `snapshot info` | Provenance, annotations & snapshots | the modules `/proc` lists |
 | `snapshot list` | Provenance, annotations & snapshots | the file on disk |
-| `game grep` | Spec-first method tooling | `grep -o` — every per-term count |
+| `concept grep` | Spec-first method tooling | `grep -o` — every per-term count |
 | `locate by-transition` | Spec-first method tooling | the address the target printed for the value it changes |
 | `input probe` | Spec-first method tooling | **Windows only** — refuses on Linux saying so; measured on Windows in the earlier pass |
 | `const identify` | Spec-first method tooling | the published definition of each constant |
@@ -6321,7 +6321,7 @@ workspace from Phase 1's 8 crates to **12** today.)
   filter `LLKHF_INJECTED` and ignore the identical scancode sent via
   `SendInput` (confirmed live; `input probe` detects this directly). Two macro
   subsystems ride on top: fixed **sequences / "Combinations"** replay (via
-  `SendInput`) and **macro macros** (via Interception) — both fully
+  `SendInput`) and **key-sequence macros** (via Interception) — both fully
   generic, config-driven, no game-specific code.
 - ✅ **Bitsquid-bundle + LuaJIT asset tooling** (`crates/n0xis-bitsquid`,
   `n0xis-lua`, `n0xis-luajit`; CLI `bundle {list,extract,repack}` and

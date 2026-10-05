@@ -103,7 +103,7 @@ struct GlobalArgs {
 #[derive(Args)]
 struct GuideArgs {
     /// Filter the catalog to commands whose path contains this substring
-    /// (e.g. `scan`, `provenance`, `game`). Omit for the full catalog.
+    /// (e.g. `scan`, `provenance`, `concept`). Omit for the full catalog.
     topic: Option<String>,
     /// Include the per-argument detail for every command (on by default; pass
     /// `--brief` to drop it for a shorter overview).
@@ -248,11 +248,16 @@ enum Command {
     /// Lua/LuaJIT bytecode disassembly.
     #[command(subcommand)]
     Lua(LuaCmd),
-    /// Spec-first game RE (Phase 8): search a target's scripts/data/strings
-    /// for a feature's vocabulary and rank by cluster density — the "climb the
-    /// spec ladder, don't reverse runtime state" front door (RE_METHOD F2).
-    #[command(subcommand)]
-    Game(GameCmd),
+    /// Spec-first RE (Phase 8): search a target's scripts/data/strings for a
+    /// concept's vocabulary and rank by cluster density — the "climb the spec
+    /// ladder, don't reverse runtime state" front door (RE_METHOD F2).
+    // `game` is a hidden alias: this command was first published as
+    // `game grep`, and scripts and recipes written against that name must keep
+    // parsing to exactly this command. Hidden, so `guide` and `--help` list one
+    // name and the catalog's command count does not change. A plain comment,
+    // not a doc comment: clap would print a `///` paragraph as user help.
+    #[command(subcommand, alias = "game")]
+    Concept(ConceptCmd),
     /// Localize a value by the *transition diff* — snapshot, let the operator
     /// toggle one thing, rescan, keep only what changed (Phase 8; RE_METHOD W1,
     /// the only localization technique that ever reliably worked).
@@ -589,15 +594,15 @@ struct UiLocateArgs {
 }
 
 #[derive(Subcommand)]
-enum GameCmd {
+enum ConceptCmd {
     /// Rank scripts/data/strings by how densely they cluster a concept's
     /// vocabulary. `<concept>` is the vocabulary (comma/space/pipe-separated),
-    /// e.g. `"combo,interact,macro"`.
-    Grep(GameGrepArgs),
+    /// e.g. `"retry,backoff,timeout"`.
+    Grep(ConceptGrepArgs),
 }
 
 #[derive(Args)]
-struct GameGrepArgs {
+struct ConceptGrepArgs {
     /// The concept vocabulary — comma / whitespace / `|`-separated terms.
     concept: String,
     /// Directory of extracted scripts/data to search (repeatable). LuaJIT
@@ -2899,7 +2904,7 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
         Command::Lua(LuaCmd::Table(a)) => cmd_lua_table(a, pretty),
         Command::Lua(LuaCmd::Combo(a)) => cmd_lua_combo(a, pretty),
         Command::Lua(LuaCmd::Seedscan(a)) => cmd_lua_seedscan(a, pretty),
-        Command::Game(GameCmd::Grep(a)) => cmd_game_grep(a, pretty),
+        Command::Concept(ConceptCmd::Grep(a)) => cmd_concept_grep(a, pretty),
         Command::Locate(LocateCmd::ByTransition(a)) => cmd_locate_by_transition(a, pretty),
         Command::Input(InputCmd::Probe(a)) => cmd_input_probe(a, pretty),
         Command::Const(ConstCmd::Identify(a)) => cmd_const_identify(a, pretty),
@@ -2934,7 +2939,7 @@ fn guide_category(top: &str) -> &'static str {
         "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "type" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
-        "game" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
+        "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
         "ui" => "UI-layer localization (Phase 9, marked invalid)",
         "il2cpp" => "IL2CPP managed layer (Phase 12)",
         "bundle" | "lua" => "Game-engine assets (Bitsquid/LuaJIT)",
@@ -3014,7 +3019,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
             "steps": [
                 "bundle list --file <archive>            # is there a script layer? extract it",
                 "bundle extract --file <archive> --type lua --out ./scripts",
-                "game grep \"combo,interact,ability\" --dir ./scripts   # find the feature's vocabulary cluster",
+                "concept grep \"retry,backoff,timeout\" --dir ./scripts   # find the feature's vocabulary cluster",
                 "lua disasm --file ./scripts/<hit>.luac  # read the algorithm out of the script",
                 "const identify --lua ./scripts/<hit>.luac  # recognize the RNG/hash by its constants",
                 "bindings list --file <game.exe> --name next_random   # only now go native, and only for what scripts call",
@@ -3130,7 +3135,7 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
         "workflows": workflows,
         "mcp": "the same pipeline is exposed as an MCP server (binary n0xis-mcp) over stdio, with the same tool names and { ok, data, meta } shapes — an agent's parsing code is identical whether it calls the CLI or MCP.",
         "docs": ["README.md", "CONCEPT.md", "ROADMAP.md"],
-        "hint": "narrow with `n0x guide <topic>` (e.g. `n0x guide scan`, `n0x guide game`); every command also has clap `--help` for the exact usage line. `n0x guide --brief` drops per-arg detail.",
+        "hint": "narrow with `n0x guide <topic>` (e.g. `n0x guide scan`, `n0x guide concept`); every command also has clap `--help` for the exact usage line. `n0x guide --brief` drops per-arg detail.",
     });
     emit(&Response::success(schema::v1::GUIDE, data), pretty)
 }
@@ -5943,7 +5948,7 @@ fn cmd_bundle_repack(a: BundleRepackArgs, pretty: bool) -> bool {
 // ============================================================================
 
 /// Split a `<concept>` argument into vocabulary terms on commas, `|`, or
-/// whitespace — so `"combo,interact|macro"` and `"combo interact"` both work.
+/// whitespace — so `"retry,backoff|timeout"` and `"retry backoff"` both work.
 fn split_concept(raw: &str) -> Vec<String> {
     raw.split(|c: char| c == ',' || c == '|' || c.is_whitespace())
         .map(|t| t.trim().to_string())
@@ -6041,7 +6046,7 @@ fn collect_documents(dir: &std::path::Path, docs: &mut Vec<Document>, budget: &m
     }
 }
 
-fn cmd_game_grep(a: GameGrepArgs, pretty: bool) -> bool {
+fn cmd_concept_grep(a: ConceptGrepArgs, pretty: bool) -> bool {
     let mut terms = split_concept(&a.concept);
     terms.extend(a.terms.iter().cloned());
     if terms.is_empty() {
@@ -7196,6 +7201,47 @@ mod guide_recipe_tests {
                 });
             assert!(runnable, "recipe `{name}` has no runnable step");
         }
+    }
+}
+
+/// `concept grep` was first published as `game grep`, and scripts and recipes
+/// written against that name are in the field. The rename is only safe if the
+/// old spelling still reaches *this* command with *these* arguments — a hidden
+/// alias that parsed to a neighbour, or dropped an argument on the way, would
+/// turn every old script into a confident wrong answer instead of an error.
+#[cfg(test)]
+mod concept_alias_tests {
+    use super::*;
+
+    /// Every argument set to a non-default value, so a field the alias failed
+    /// to carry cannot hide behind its default.
+    const GREP_ARGS: &[&str] = &[
+        "grep", "retry,backoff", "--dir", "a", "--dir", "b", "--term", "timeout",
+        "--min-distinct", "2", "--limit", "7", "--max-snippets", "1",
+    ];
+
+    fn parse_grep(top: &str) -> ConceptGrepArgs {
+        let argv: Vec<&str> = ["n0xis", top].into_iter().chain(GREP_ARGS.iter().copied()).collect();
+        let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("`{top} grep` must parse: {e}"));
+        match cli.command {
+            Command::Concept(ConceptCmd::Grep(a)) => a,
+            _ => panic!("`{top} grep` parsed to a different command than `concept grep`"),
+        }
+    }
+
+    #[test]
+    fn the_first_name_parses_to_the_same_command_with_the_same_arguments() {
+        // Exhaustive destructuring: a field added to the arguments must be
+        // compared here too, or this stops compiling.
+        let ConceptGrepArgs { concept, dirs, terms, min_distinct, limit, max_snippets } = parse_grep("concept");
+        let old = parse_grep("game");
+        assert_eq!(concept, "retry,backoff");
+        assert_eq!((&dirs, &terms, min_distinct, limit, max_snippets), (&vec!["a".to_string(), "b".to_string()], &vec!["timeout".to_string()], 2, 7, 1));
+        assert_eq!(
+            (concept, dirs, terms, min_distinct, limit, max_snippets),
+            (old.concept, old.dirs, old.terms, old.min_distinct, old.limit, old.max_snippets),
+            "`game grep` and `concept grep` must carry identical arguments"
+        );
     }
 }
 

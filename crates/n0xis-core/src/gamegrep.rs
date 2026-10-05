@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Tymofii Kosovskyi
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! `game grep <concept>` — rank a target's scripts/data/strings by how densely
+//! `concept grep <concept>` — rank a target's scripts/data/strings by how densely
 //! they cluster a concept's vocabulary (ROADMAP Phase 8, fixes RE_METHOD F2 —
 //! the campaign's root cause).
 //!
@@ -226,9 +226,9 @@ mod tests {
     fn breadth_outranks_frequency() {
         // Doc A mentions one term 50 times; doc B mentions three terms once each.
         let a = doc("a", "lua", &"combo ".repeat(50));
-        let b = doc("b", "lua", "combo interact macro");
+        let b = doc("b", "lua", "combo interact timeout");
         let art = rank(
-            &["combo".into(), "interact".into(), "macro".into()],
+            &["combo".into(), "interact".into(), "timeout".into()],
             &[a, b],
             &RankOptions::default(),
         );
