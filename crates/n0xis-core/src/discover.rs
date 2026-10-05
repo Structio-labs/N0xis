@@ -329,6 +329,65 @@ impl Pass for DiscoverPass {
     }
 
     fn run(&self, ctx: &Ctx, input: DiscoverInput) -> Result<DiscoverArtifact, CoreError> {
+        Ok(discover_entries(ctx, input.start, input.size)?.page(ctx, input.offset, input.limit))
+    }
+}
+
+/// Every function start discovery finds in `[start, start + size)`, in address
+/// order, each with the extent a declaration states. This is the expensive half
+/// of discovery, and it reads only bytes, the architecture and the declared
+/// functions, never a name; so it can be kept for an image that cannot change
+/// and paged with names attached per page ([`Discovered::page`]).
+#[derive(Clone, Debug)]
+pub struct Discovered {
+    pub start: Va,
+    pub scanned_bytes: usize,
+    pub entries: Vec<(Va, Option<Va>)>,
+}
+
+impl Discovered {
+    /// How many functions were found, all pages together.
+    pub fn total(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Entries `offset..offset + limit` (`limit` 0: all from `offset`), named
+    /// and sized by `ctx`'s symbols as they are now. Page N is the same set of
+    /// addresses however it was reached.
+    pub fn page(&self, ctx: &Ctx, offset: usize, limit: usize) -> DiscoverArtifact {
+        let unlimited = limit == 0;
+        let mut functions = Vec::new();
+        let mut hit_limit = false;
+        for &(va, stated_end) in self.entries.iter().skip(offset) {
+            if !unlimited && functions.len() >= limit {
+                hit_limit = true;
+                break;
+            }
+            // A stated size (ELF `st_size`, a PE `.pdata` entry) makes `end` a
+            // fact here — so a scanned image gets exact extents instead of
+            // leaving every consumer to infer one.
+            let end = ctx
+                .symbols
+                .and_then(|s| s.symbol_size(va))
+                .and_then(|n| va.0.checked_add(n))
+                .map(Va)
+                .or(stated_end);
+            functions.push(FunctionCandidate { name: name_at(ctx, va), va, end });
+        }
+        DiscoverArtifact {
+            start: self.start,
+            scanned_bytes: self.scanned_bytes,
+            count: functions.len(),
+            functions,
+            truncated: hit_limit,
+        }
+    }
+}
+
+/// Find every function start in `[start, start + size)`. See [`Discovered`].
+pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered, CoreError> {
+    let input = DiscoverInput { start, size, limit: 0, offset: 0 };
+    {
         let bytes = ctx.source.read(input.start, input.size)?;
         let prologues = ctx.arch.prologues(n0xis_sources::MemorySource::abi_name(ctx.source));
         let range = input.start.0..input.start.0.saturating_add(bytes.len() as u64);
@@ -456,38 +515,10 @@ impl Pass for DiscoverPass {
             i += 1;
         }
 
-        // `limit`/`offset` page over the address-ordered result: page N is the
-        // same set of addresses however it was reached.
-        let unlimited = input.limit == 0;
-        let mut functions = Vec::new();
-        let mut hit_limit = false;
-        for (n, (va, stated_end)) in found.into_iter().enumerate() {
-            if n < input.offset {
-                continue;
-            }
-            if !unlimited && functions.len() >= input.limit {
-                hit_limit = true;
-                break;
-            }
-            let va = Va(va);
-            // A stated size (ELF `st_size`, a PE `.pdata` entry) makes `end` a
-            // fact here — so a scanned image gets exact extents instead of
-            // leaving every consumer to infer one.
-            let end = ctx
-                .symbols
-                .and_then(|s| s.symbol_size(va))
-                .and_then(|n| va.0.checked_add(n))
-                .map(Va)
-                .or(stated_end);
-            functions.push(FunctionCandidate { name: name_at(ctx, va), va, end });
-        }
-
-        Ok(DiscoverArtifact {
+        Ok(Discovered {
             start: input.start,
             scanned_bytes: bytes.len(),
-            count: functions.len(),
-            functions,
-            truncated: hit_limit,
+            entries: found.into_iter().map(|(va, end)| (Va(va), end)).collect(),
         })
     }
 }

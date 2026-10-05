@@ -29,6 +29,7 @@
 
 pub mod annotation_syms;
 pub mod arch;
+pub mod discovered;
 pub mod doctor;
 pub mod flirt_syms;
 pub mod il2cpp_caps;

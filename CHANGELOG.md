@@ -13,6 +13,16 @@ All notable changes to N0xis are recorded here. Versions follow
   prints it, so a front end renames what the user points at without guessing from the text
   which words are variables. Only parameters and locals take a type.
 
+### Fixed
+
+- **Paging `function discover` repeated the whole scan for every page.** Measured on a
+  159 MB library: 10.6 s per page of 20 000, whatever the offset, so a front end needed over
+  a minute to list 116 000 functions. In a session, the scan of a file or snapshot is now kept
+  and paged, with names attached per page. A test lays the pages end to end against one
+  unpaged answer and renames a function between two pages; it fails, as it should, when
+  later pages stop reading current names. The prologue-scan path also reports `meta.total`
+  now. The scan always covered the whole range, so the total was there to report.
+
 ### Known
 
 - `annotate var` and `annotate vartype` read no image, so they store a rename for any name,

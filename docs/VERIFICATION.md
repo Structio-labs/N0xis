@@ -91,6 +91,7 @@ this row is stale.
 | Data exports reach `sig gen` | Measured 2026-10-05: `named_functions()` still includes named exports outside executable sections, 4 814 of 152 546 across 123 images (9 on one x64 system DLL), so a data export can be fingerprinted as code. | Section flags of the image |
 | `decomp pseudo` on a non-executable address | Measured 2026-10-05: it decodes the bytes as code and answers `ok:true` with no note, where `disasm` adds one. | Section flags of the image |
 | `annotate var` / `vartype` accept a name that is not a variable | Measured 2026-10-05: `annotate var --var nosuchvar` answers `ok:true` and stores the rename, which changes nothing. The command reads no image, so it cannot check. `decomp pseudo` now lists the function's variables with the key to use (`variables[].key`), and the native GUI only sends keys from that list; the CLI itself still accepts anything. | `decomp pseudo`'s `variables` |
+| `analyze` and `function discover` count different functions in one image | Measured 2026-10-05: 116 331 against 123 208 on libLLVM 23.1, 14 938 against 15 472 on Qt6Gui 6.11. Not yet measured which list an independent source agrees with, or what the difference is made of. | An independent function table (`.eh_frame` / symbols) |
 | `--file /dev/stdin` inside a session | Not guarded: given explicitly in a `serve` session, it would read the request channel as a file. Not measured beyond reading the code. | Session test |
 
 ## Not claimed (needs an input/platform not present)

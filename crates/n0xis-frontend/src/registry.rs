@@ -2303,12 +2303,15 @@ impl Plugin for AnalysisPasses {
                     else {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     };
-                    let input = n0xis_core::DiscoverInput { start, size, limit, offset };
-                    match n0xis_core::Pass::run(&n0xis_core::DiscoverPass, ctx, input) {
-                        Ok(out) => match serde_json::to_value(out) {
-                            Ok(v) => ok_json(n0xis_contracts::schema::v1::FUNCTION_DISCOVER, v, label),
-                            Err(e) => Response::error("serialize", e.to_string()),
-                        },
+                    // The scan is kept for an image that cannot change, so paging
+                    // through a long list costs it once; names are attached per page.
+                    let key = crate::discovered::scan_key(src, label, start, size, ctx);
+                    match crate::discovered::discovered(ctx, start, size, key) {
+                        Ok(found) => {
+                            let page = found.page(ctx, offset, limit);
+                            let returned = page.count;
+                            ok_json(n0xis_contracts::schema::v1::FUNCTION_DISCOVER, page, label).with_page(found.total(), returned)
+                        }
                         Err(e) => Response::error("discover-failed", e.to_string()),
                     }
                 })

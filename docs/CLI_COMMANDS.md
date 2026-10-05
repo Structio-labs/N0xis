@@ -218,12 +218,17 @@ predicates.
 Discover functions by prologue scanning (`.text` by default).
 - `--start`/`--size` — scan range (defaults to the module's `.text`; `--bytes` requires `--start`
   for the base).
-- `--limit` — cap on prologue-scan candidates; `0` = unlimited (default).
+- `--limit` / `--offset` — one page of the address-ordered list; `--limit 0` = everything
+  from `--offset`.
 - `--pdata` — discover from the PE `.pdata` exception table instead of prologue scanning: every
   function with unwind info, exact start+end, no heuristic and no cap (x64 `--pid`/`--file` only).
 - `--arch`.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
-- Schema: `n0xis.function.discover.v1`
+- Schema: `n0xis.function.discover.v1`. `meta.total` is how many functions the whole range has,
+  on every page. The scan always covers the whole range; the page only cuts what is returned.
+- For a file or a snapshot, the scan is kept for the process's lifetime, so a `serve` session
+  paging through the list pays for it once. Names and sizes are attached per page, so a rename
+  shows on the next page asked for. A live or remote process is scanned on every request.
 
 ### `function trace --addr <hex>`
 Walk the call graph from a root function.

@@ -27,7 +27,7 @@ use n0xis_contracts::TableValueType;
 use n0xis_core::{
     concept_grep_rank, identify_f64, identify_u64, parse_aob, AobByte, AobInput, AobScanPass, BindingsInput, BindingsPass,
     CfgInput, ConstMatch, Ctx, DecompInput, DecompPass, DecompStyle,
-    DiscoverInput, DiscoverPass, Document,
+    Document,
     FilterCriterion,
     Pass, RankOptions,
     ValueType, XrefDir,
@@ -3753,13 +3753,18 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     }
 
     let run = |ctx: &Ctx| -> bool {
-        match DiscoverPass.run(ctx, DiscoverInput { start, size, limit: a.limit, offset: a.offset }) {
-            Ok(art) => {
-                // The prologue scan stops at the cap on purpose, so the true
-                // total is unknown — say "truncated" without inventing one.
-                let (returned, truncated) = (art.count, art.truncated);
-                let resp = Response::success(schema::v1::FUNCTION_DISCOVER, art).with_source(label.clone());
-                let resp = if truncated { resp.with_cap(returned) } else { resp };
+        // The scan always covers the whole range (the cap only cuts what is
+        // returned), so the total is known and reported. It is kept for an image
+        // that cannot change: a session paging through a long list pays for it
+        // once, and names are attached per page, so a rename still shows.
+        let key = n0xis_frontend::discovered::scan_key(&src, &label, start, size, ctx);
+        match n0xis_frontend::discovered::discovered(ctx, start, size, key) {
+            Ok(found) => {
+                let art = found.page(ctx, a.offset, a.limit);
+                let returned = art.count;
+                let resp = Response::success(schema::v1::FUNCTION_DISCOVER, art)
+                    .with_source(label.clone())
+                    .with_page(found.total(), returned);
                 emit(&resp, pretty)
             }
             Err(e) => ir_err("discover-failed", &e.to_string(), pretty),

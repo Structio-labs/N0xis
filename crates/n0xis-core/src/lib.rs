@@ -87,7 +87,7 @@ pub use demangle::demangle;
 pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, KlassArtifact, KlassField, KlassInput, KlassPass, LayoutEvidence};
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};
-pub use discover::{discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, FunctionCandidate};
+pub use discover::{discover_entries, discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, Discovered, FunctionCandidate};
 pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
 pub use devirt::{devirtualize, Devirtualized};
 pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};
