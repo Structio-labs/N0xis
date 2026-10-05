@@ -252,7 +252,7 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   `n0xis.scan.v1`.
   - ⚠️→✅ **Snapshot-backed narrowing (the correct scanning model), reworked 2026-07.**
     The first cut materialized one match per hit and, on a common value (i32 `4`
-    in a game → millions of hits), capped at 200 000 via `break 'regions` — which
+    in a large process → millions of hits), capped at 200 000 via `break 'regions` — which
     silently *stopped scanning every higher-address region*, so the real target
     usually wasn't even looked at and no rescan could recover it. A partial,
     order/timing-dependent working set returned as if usable — a direct
@@ -292,7 +292,7 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   mirroring the existing `selection`/`patch` storage-only split. Deliberately
   **excludes** scriptable enable/disable hooks (arbitrary code execution in
   the target — out of scope, `groups`/`hotkey` leave room to grow toward it later).
-- ✅ **Freeze + code caves + detour/trampoline hooks** — `table freeze` is a bounded
+- ✅ **Pin + code caves + detour/trampoline hooks** — `table pin` is a bounded
   write-loop over the already-proven `LiveProcess::write`. Hooking is built to bound
   risk: `LiveProcess::alloc_code_cave` (`VirtualAllocEx`, RWX) + a **pure**
   `n0xis-core::build_trampoline` (`trampoline.rs`) that range-checks every `jmp rel32`
@@ -347,12 +347,12 @@ Goal: first-class dynamic memory work as a peer of static analysis (CONCEPT §9)
   `LiveProcess::write`, `ScanPass`-finds it, writes an increased value, `FilterPass`
   narrows to exactly that address, persists the result as a real `.n0xt` file via
   `n0xis-project::table`, reloads it from disk to prove persistence (not just
-  in-process state), then runs a bounded freeze loop and confirms the value stuck.
+  in-process state), then runs a bounded pin loop and confirms the value stuck.
   Passed 3/3 runs with no leaked processes. Additionally verified manually end-to-end
   via the compiled CLI against a real running process: `scan value` (unknown) → `scan
   filter` (increased) correctly narrowed 4 candidates to exactly the one live counter;
   `scan dissect` correctly classified a real heap pointer (0.9 confidence) next to a
-  plain integer; `table add`/`table freeze` persisted and drove a real live write loop;
+  plain integer; `table add`/`table pin` persisted and drove a real live write loop;
   `debug watch` caught a real hardware trap.
 
 ## Phase 4c — Provenance-Driven Memory Intelligence 🎯 ✅
@@ -377,7 +377,7 @@ Goal: fuse the two worlds (CONCEPT §11).
   --entry]` arms a watchpoint (Phase 4b), explains the hit (this phase), and — when
   asked — records the explanation onto a real table entry with a verification
   timestamp, reusing the same `patch`/`table` apply-then-verify pattern Phase 2/4b
-  already proved (`table freeze`'s bounded write-loop is the "apply"; a subsequent
+  already proved (`table pin`'s bounded write-loop is the "apply"; a subsequent
   `mem read`/`scan filter` is the "verify" — already-existing primitives, now
   provenance-annotated instead of bare).
 - ✅ **Runtime⇄static address reconciliation** — `n0xis-core::aslr` (`rebase`/`rva_of`/
@@ -389,7 +389,7 @@ Goal: fuse the two worlds (CONCEPT §11).
   (`--features live`): compiles a tiny known Rust target at test time (`rustc` is
   guaranteed present), spawns it, arms a real hardware watchpoint on its counter,
   catches a real write, fuses it through `ProvenancePass`, and asserts the decompiled
-  explanation actually shows the increment (not just a bare address) — then freezes the
+  explanation actually shows the increment (not just a bare address) — then pins the
   value and records the explanation onto a real `.n0xt` entry, reloading it from disk
   to confirm the provenance and verification timestamp survived the round trip.
   Passed 3/3 runs. **Verified manually against the compiled CLI too**: `provenance
@@ -647,17 +647,17 @@ verified. Don't repeat that mistake when reading this phase as "done."
 
 ## Phase 8 — Method tooling: spec-first RE 🎯 ⏳ (merged to main `a0a9168` — all 6 named commands + the hex-everywhere audit done; still ⏳ solely for the one ⬜ item, region caching as a built-in scan option)
 Goal: turn a real RE campaign's post-mortem into tools. That campaign
-(auto-solving a game's directional interact-combo mini-game) succeeded — and
+(auto-solving a target application's directional input-sequence puzzle) succeeded — and
 **~90% of the effort went into
 reverse-engineering runtime *state* to recover information that was
-declaratively *specified* in the game's own scripts and data**. The finished
+declaratively *specified* in the target's own scripts and data**. The finished
 solver reads 4 bytes from memory (a seed) and computes the rest.
 
 Every item below traces to a **specific, named failure** from that campaign, not
 to speculation. Ordered by (pain avoided × generality), which is also roughly
 dependency order.
 
-- ✅ **`game grep <concept>` — search a target's scripts/data/strings for a
+- ✅ **`concept grep <concept>` (first published as `game grep`) — search a target's scripts/data/strings for a
   feature's vocabulary** *(fixes RE_METHOD F2 — the campaign's root cause)*.
   Rank extracted script files + data + binary strings by vocabulary-cluster
   density for a concept, print hits with context. Builds on what already exists
@@ -690,7 +690,7 @@ dependency order.
   Interception / raw HID) against a live target and report which ones it
   actually registers.
   **Why**: an entire input feature was built, shipped, and believed working —
-  and had **never once registered in the game**, which filters injected input
+  and had **never once registered in the target**, which filters injected input
   (`LLKHF_INJECTED`). Discovered only at the very end, after the read half was
   already perfect. A one-key probe on day one would have caught it.
   The general rule this encodes: a memory tool has a **read** half and a
@@ -702,7 +702,7 @@ dependency order.
   → Numerical Recipes), hash seeds (`0x5bd1e995` → MurmurHash2, FNV/xxhash/CRC
   polys), float normalizers (`1/2^32`).
   **Why**: recognizing two constants by memory identified two whole algorithms
-  instantly, with zero reversing — the LCG *is* the combo generator, and the
+  instantly, with zero reversing — the LCG *is* the sequence generator, and the
   Murmur2 hit correctly told us we were looking at a texture-atlas lookup (i.e.
   the wrong layer). This is cheap to automate and pays off on every campaign.
 
@@ -755,7 +755,7 @@ dependency order.
 > bindings,sig.validate}.v1`). +17 new core unit tests, all green; each command
 > verified end-to-end against the compiled `n0xis.exe`.
 >
-> - **`game grep`** → `n0xis-core::gamegrep` (pure `rank()`), CLI `game grep
+> - **`concept grep`** (first published as `game grep`) → `n0xis-core::gamegrep` (pure `rank()`), CLI `concept grep
 >   <concept> --dir <path>…`. The scoring *is* the feature: cluster **breadth**
 >   (distinct concept terms present) is squared and weighted so it always
 >   outranks raw frequency, with a log-damped frequency tail only breaking ties —
@@ -775,7 +775,7 @@ dependency order.
 >   snapshot → changed rescan narrowed to 19k, with a "toggle again to narrow"
 >   note and a saved dump.
 > - **`input probe`** → `n0xis-sources::input` (behind `live`), CLI `input probe`.
->   Installs its own `WH_KEYBOARD_LL` hook — the exact vantage point a game's
+>   Installs its own `WH_KEYBOARD_LL` hook — the exact vantage point a target's
 >   anti-injection filter uses — actuates a benign key (VK_F15) through each
 >   method, and reports per method whether the OS input stack saw it **and
 >   whether it carried `LLKHF_INJECTED`**. `SendInput`/`keybd_event` are actively
@@ -818,7 +818,7 @@ dependency order.
 > for scan values, which still falls through to a real float since a criterion
 > can compare against `3.14`) applied to all 22 `--*size`/`--len`/`--max-bytes`
 > fields, `--max-offset`, and all 9 `--value`/`--min`/`--max` fields across
-> `scan`/`locate`/`table freeze`. `--addr`/`--start` already had this via
+> `scan`/`locate`/`table pin`. `--addr`/`--start` already had this via
 > `Va::parse`; this closes the gap RE_METHOD F7 named for everything else that
 > takes a byte count or a bound. Verified: `mem read --size 0x100`,
 > `scan pointer-path --max-offset 0x2000`, and `scan value --value 3.14` all
@@ -856,7 +856,7 @@ it **top-down**, each rung cheaper and more stable than the one below:
 The campaign climbed it backwards (5→1). Corollary the tools should encourage:
 **minimize the memory read surface** — every byte read from a live process is
 transient, ASLR'd, version-fragile and race-prone; prefer *computed* over
-*observed* wherever the game itself derives the value.
+*observed* wherever the target itself derives the value.
 
 **GUI**: explicitly deferred, not abandoned — user's own framing: "GUI-потім.
 Не зараз, але не 'ніколи'" (GUI later. Not now, but not "never"). No phase
@@ -883,29 +883,29 @@ regardless).
 > in the binary, labelled as not validated; the helper commands below do not deliver the
 > phase on their own. The text below is kept as the record of what was tried.
 
-Goal: close the last gap the combo campaign hit — **there is no way to get from
+Goal: close the last gap the input-sequence campaign hit — **there is no way to get from
 "the thing I can see on screen" to "the memory that drives it."**
 
 Like Phase 8, every item traces to a **named failure from a real campaign**
-(2026-07-20, universalizing the interact-combo solver — full post-mortem in the
-game's `AUTO_COMBO_PLAN.md` §12; that planning doc is not tracked in this repo —
+(2026-07-20, universalizing the input-sequence solver — full post-mortem in the
+target project's `AUTO_COMBO_PLAN.md` §12; that planning doc is not tracked in this repo —
 see the companion-tooling doc-debt note below). Context: the solver was finished
-and working via *computed* combos (template + seed), but the operator wanted the
-more general path — read the arrows the game is drawing, which would cover object
+and working via *computed* sequences (template + seed), but the operator wanted the
+more general path — read the arrows the target is drawing, which would cover object
 types no catalogue knows. That hunt failed four separate ways, and each failure
 names a missing tool.
 
 - ⚠️ **`debug watch --when <reg>=<value>` — conditional hardware breakpoint**
   *(implemented 2026-07-20; working tree — the guarded path has not been
   re-validated live since the `MAX_CONDITION_MISSES` guard was added: the
-  motivating "killed the game" story below is the failure that *prompted* the
+  motivating "killed the target" story below is the failure that *prompted* the
   guard, not a passing post-guard run)*. Non-matching hits are resumed with the watchpoint still
   armed, so a specific call can be singled out.
   **Why**: an execute breakpoint on a UI draw routine returned the *same*
   high-frequency caller (`r9=6`) on six consecutive arms — the interesting call
   (`r9=4`, the four-arrow draw) was unreachable by re-arming and hoping.
   **Ships with a hard safety limit** (`MAX_CONDITION_MISSES = 300`), because the
-  first version of exactly this feature **killed the game**: a per-frame
+  first version of exactly this feature **killed the target**: a per-frame
   function turns every non-matching hit into a full stop/inspect/resume
   round-trip, effectively single-stepping the target. The limit aborts with an
   explanation instead of grinding the process to death.
@@ -926,7 +926,7 @@ names a missing tool.
   **Why it's feasible, not speculative**: the draw path was already decompiled
   during the campaign, and UI elements keep their own AABB in memory —
   `+0xa4/+0xa8/+0xac` min, `+0xb0/+0xb4/+0xb8` max, `+0xbc` radius, `+0xa0`
-  dirty flag (from `sub_1400ce800`, the arrow vertex-buffer builder). The game
+  dirty flag (from `sub_1400ce800`, the arrow vertex-buffer builder). The target
   already answers "what occupies this part of the screen"; nothing needs to be
   inferred from pixels.
   **Why it matters**: this is the only remaining route to the arrow widgets.
@@ -940,7 +940,7 @@ names a missing tool.
   **Explicitly not required**: graphics-API hooking, frame capture, or reading
   pixels. Those were considered and rejected — they add a rendering dependency
   to a memory tool, and the operator had already ruled out screen-reading
-  (arrow positions move in multiplayer). Reading widget *data* is immune to that.
+  (arrow positions move in networked sessions). Reading widget *data* is immune to that.
   Design notes: the AABB init sentinel (`FLT_MAX` ×3) is **not** a usable
   signature — it is transient, overwritten with real bounds within the same
   frame rebuild (verified live: zero hits while the window was open). Candidate
@@ -978,7 +978,7 @@ names a missing tool.
   >   *before* the (tens-of-seconds) scan so a bad name fails fast, not after.
   > - Unit-tested per brief §9.1 (synthetic AABB at a known offset, exact
   >   overlap maths, `FLT_MAX`-sentinel rejection, the real 348k-noise sample,
-  >   a flat-z 2D widget accepted). **Not** validated against the live game —
+  >   a flat-z 2D widget accepted). **Not** validated against the live target —
   >   the §9.3 appearance-correlation test needs the running target and is the
   >   remaining acceptance step, called out honestly rather than claimed.
 
@@ -1016,7 +1016,7 @@ names a missing tool.
   not their appearance); it does not forbid *showing the operator/agent the
   window so they can pick a rectangle* — a distinct, read-only concern.
   - **`ui windows --pid <p>`** — enumerate a process's top-level windows
-    (title, class, on-screen rect), so an agent can name the game window rather
+    (title, class, on-screen rect), so an agent can name the target's main window rather
     than guess an HWND. Read-only.
   - **`ui screenshot --pid <p> [--out <png>]`** — capture the target window to
     a PNG (or base64 in the envelope) via external Win32 only (no injection, no
@@ -1033,7 +1033,7 @@ names a missing tool.
   > `ui_screenshot`/`ui_focus`, verified via `tools/list`). Backed by a research
   > pass on Windows capture (GDI / PrintWindow / DXGI-DDA / WGC) that decided the
   > dependency budget up front.
-  > - **`ui windows`** — `EnumWindows` filtered by pid, best-guess game window
+  > - **`ui windows`** — `EnumWindows` filtered by pid, best-guess main window
   >   first (visible, non-tool, non-cloaked, largest). Reports all three rects
   >   unambiguously — `rect_window` (raw, DWM-shadow-inflated), `rect_frame`
   >   (`DWMWA_EXTENDED_FRAME_BOUNDS`, the canonical one), `rect_client` (client
@@ -1059,7 +1059,7 @@ names a missing tool.
   >   a conditional DIB leak, found by an adversarial review, were fixed and
   >   re-verified.
   > - **Documented follow-on (the honest gap):** GDI/PrintWindow are **blank for
-  >   flip-model / DirectComposition** DirectX windows — which many modern games
+  >   flip-model / DirectComposition** DirectX windows — which many modern 3D applications
   >   are. The correct path there is Windows.Graphics.Capture (or DXGI Desktop
   >   Duplication), which requires the heavy `windows` crate (WinRT/DXGI/D3D11 —
   >   windows-sys has none of it). Not done here; the tool reports the blank
@@ -1070,7 +1070,7 @@ names a missing tool.
 - ⬜ **Flip-model / DirectComposition capture — WGC or DXGI Desktop Duplication**
   *(promotes the `ui screenshot` follow-on note above from prose to a tracked
   item: "reports blank honestly" is the floor, not the finish line)*. Modern
-  DirectX games render flip-model, where GDI `BitBlt`/`PrintWindow` come back
+  DirectX applications render flip-model, where GDI `BitBlt`/`PrintWindow` come back
   black; the correct capture path is Windows.Graphics.Capture (or DXGI Desktop
   Duplication), which pulls in the heavy `windows` crate (WinRT/DXGI/D3D11 —
   `windows-sys` has none of it). Scoped as its own item so the dependency-budget
@@ -1080,7 +1080,7 @@ names a missing tool.
   rather than a silent wrong answer.
 
 - ⬜ **Exit test — the live acceptance gate that flips ⚠️ → ✅.** The §9.3
-  appearance-correlation test on a **running DirectX game** (per the brief): open
+  appearance-correlation test on a **running DirectX application** (per the brief): open
   a UI element at a known screen rect, `ui locate --rect` it, then move/toggle the
   element and confirm the returned addresses track its real bounding box — and
   that the spatial-diff `--exclude-from` flow drops ambient structure. This is the
@@ -1423,7 +1423,7 @@ lift/SLEIGH-ingest per ISA.
      exception-edge recovery.
    - ⏳ *(2026-08-29)* **Whole-program noreturn propagation — the call-graph
      fixpoint.** The deeper noreturn sub-item the two passes above left open. A
-     game rarely calls `ExitProcess`/`abort` directly; it wraps them in its own
+     program rarely calls `ExitProcess`/`abort` directly; it wraps them in its own
      `FatalError`/`Assert`/`Panic` helper — a stripped `sub_XXXX`, not a named
      import — and calls *that* everywhere, so until the wrapper is itself known
      noreturn every caller kept a dead fall-through. New
@@ -1457,7 +1457,7 @@ lift/SLEIGH-ingest per ISA.
      verified on the same binary — a 10th function, `0x18001e3ac`, is now flagged
      because its sole exit is `jmp TerminateProcess` (cross-checked with
      `ir build`). But every flagged function across **14 real x64 C++ DLLs**
-     (a PE/MSVC C++ game's OGRE stack, the compression DLL, …) is still a *direct* import/tail
+     (a PE/MSVC C++ application's rendering stack, the compression DLL, …) is still a *direct* import/tail
      caller — the novel cross-function **propagation** step (a `sub_XXXX` flagged
      because it calls another flagged `sub_XXXX`) fired in **0 of 14** and is so
      far only **unit-tested on a synthetic chain** (`rounds == 2` is a
@@ -1467,7 +1467,7 @@ lift/SLEIGH-ingest per ISA.
      Per the project rule — ✅ only on a real-data *positive* — the propagation
      step stays ⏳ until a genuine instance is confirmed on a real binary.
      - ✅ **CONFIRMED 2026-09-05 on `libQt6Core.so.6`.** The corpus was the
-       reason, not the pass: the 14 DLLs were Windows/MSVC game code, where the
+       reason, not the pass: the 14 DLLs were Windows/MSVC application code, where the
        noreturn helpers really are leaves. On Qt, `QMessageLogger::fatal` is a
        `Q_NORETURN` **wrapper** — a `sub_XXXX` to us, not a named import — and
        propagation flags its callers through it. Of the first 400 functions, the
@@ -2146,7 +2146,7 @@ lift/SLEIGH-ingest per ISA.
      through, and 98 of 2 485 fields carry one.
 4. ✅ **SIMD / FP lift — a floor-fixer, and not only for *this* corpus.** For a
    *general* decompiler this looks like mere coverage (rank low). For N0xis's
-   corpus (game engines) it is a floor problem: `movaps`/`mulps`/`addps`/
+   corpus (large C++ applications) it is a floor problem: `movaps`/`mulps`/`addps`/
    `sqrtss`/`movss` appear every few lines. Measurement on ordinary C++ says the
    framing was too narrow — see below.
    - ✅ *(2026-09-06, verified)* **AVX data movement.** The legacy SSE moves had
@@ -2240,15 +2240,15 @@ lift/SLEIGH-ingest per ISA.
      pre-change binary it is 0.920875 too, so the change itself moves nothing.
 5. ⏳ **PDB / type ingestion — corpus-dependent rank.** High value for
    system/Microsoft binaries (public symbol servers short-circuit type recovery with
-   ground truth); **low for stripped game builds**. Rank it above SIMD for system-DLL
-   work, below it for game work.
+   ground truth); **low for stripped application builds**. Rank it above SIMD for system-DLL
+   work, below it for stripped-application work.
    **Re-ranked 2026-10-04:** started as the first slice of gap-closing item 1,
    because the corpus moved to general software and system binaries.
 6. ⬜ **Compiler-idiom library — the endless backlog.** The "hundreds of idioms"
    that two decades of decompiler work accumulate. Each idiom is independent and
    individually cheap; grow the library continuously. Never "done."
 7. 🚧 **C++ RTTI / vtable / class recovery — the highest-leverage addition for
-   *this* corpus.** Game engines are deep-hierarchy C++ with pervasive virtual
+   *this* corpus.** Large C++ applications are deep-hierarchy C++ with pervasive virtual
    dispatch, and the class graph is *already in the binary*: MSVC RTTI
    (`RTTICompleteObjectLocator` → `type_info` → base-class array) and Itanium RTTI
    encode names, bases and vtable layout directly. Parsing it names classes, types
@@ -2266,11 +2266,11 @@ lift/SLEIGH-ingest per ISA.
      at offset 0 — the constructor — types that parameter as the class, so
      `struct_rcx_0 *rcx` reads `std::exception *rcx`. Sound on non-MSVC/non-PE
      targets (no `.rdata` ⇒ empty map ⇒ output unchanged; **verified zero on
-     an ELF/GCC title**). **Verified on three PE/MSVC binaries:** a bundled PE/MSVC
+     an ELF/GCC program**). **Verified on three PE/MSVC binaries:** a bundled PE/MSVC
      compression DLL — 94/815 functions carry a named vtable across 27
      classes (`std::exception`@0x180021548 cross-checked vs `rtti scan`; user
      classes `FileIOStream`/`WaveletDecodeLayer`/…), `sub_1800010d0` →
-     `std::exception *rcx`; a PE/MSVC C++ game executable — 24/60 with
+     `std::exception *rcx`; a PE/MSVC C++ application — 24/60 with
      `AnimationEvent`/Ogre allocators; **a PE/MSVC Win64 shipping executable**
      — 561 vtables (432 cleanly demangled ICU classes), `sub_140cecb83` →
      `icu_64::GregorianCalendar *rcx` with `*rcx = &icu_64::GregorianCalendar::vtable`.
@@ -2280,7 +2280,7 @@ lift/SLEIGH-ingest per ISA.
      reads `std::vector<int>` instead of the verbatim decorated form — the case
      an external review flagged as the weakest point. **Verified corpus-wide:**
      the compression DLL 30/30 demangled, the PE/MSVC shipping build 561/561,
-     the game executable 2989/3055
+     the PE/MSVC C++ application 2989/3055
      (the 66 the MSVC demangler itself declines fall back to verbatim — sound);
      `sub_180003f70` decompiles
      `&std::basic_ifstream<unsigned char, struct std::char_traits<unsigned char> >::vtable`.
@@ -2616,7 +2616,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     (cross-checked — the surrounding function decompiles soundly, and a
     *different* slot whose value disagrees across paths is correctly *not*
     forwarded). It fires rarely on this corpus (≈2 functions per ~300) precisely
-    because optimized game code is call-heavy and the sound rule clears
+    because optimized C++ application code is call-heavy and the sound rule clears
     availability across every call — **which is exactly what escape analysis (a
     slice of Rung 2) unlocks:** a stack slot whose address is never taken cannot be
     written by a call, so a callee-saved spill would then forward across the whole
@@ -2656,7 +2656,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     Win64 **home/shadow space** (`[rsp..rsp+0x20]`) — since a callee overwrites
     that region without ever holding a pointer. **Verified on real x64 across two
     compilers:** on Windows/MSVC (the compression DLL), cross-block forwarding
-    jumped from **0 → 28 of 400 functions**; on a Linux/GCC ELF title (OpenSSL
+    jumped from **0 → 28 of 400 functions**; on a Linux/GCC ELF program (OpenSSL
     `dtls1_ctrl`) it decompiles at quality 1.0 with 10 sound forwards. **That
     ELF run caught a real soundness bug** — the first cut cleared only the
     Win64 shadow, so it would have forwarded a System V red-zone slot across a
@@ -2701,7 +2701,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
 - **Rung 3 — Variable & type recovery (readable locals).** 🚧
   Coalesce SSA versions back into named, **typed** variables; infer types from use
   (access widths, pointer arithmetic, known-API signatures), recover struct/field
-  layout and enums. *Output:* `player->health -= dmg;` instead of
+  layout and enums. *Output:* `session->credits -= cost;` instead of
   `*(int*)(rbx.7 + 0x40) = *(int*)(rbx.7 + 0x40) - eax.3;`. This rung is the single
   biggest readability jump.
   - **3a — parameter typing from use.** ✅ *(2026-08-30, pointer typing verified;*
@@ -2835,9 +2835,9 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     (`"win64"` for PE, `"sysv"` for ELF and Linux-live). Signature recovery selects
     the matching `CallConv` and reads its argument registers, so an ELF's parameters
     recover from the System V order (`rdi`/`rsi`/`rdx`/`rcx`/`r8`/`r9`) instead of the
-    Win64 `rcx`/`rdx`/`r8`/`r9`. **Verified:** an ELF/GCC title — `sub_fe2424` now
+    Win64 `rcx`/`rdx`/`r8`/`r9`. **Verified:** an ELF/GCC program — `sub_fe2424` now
     reads `(uint64_t rdi, uint64_t rsi, uint64_t rdx, struct_rcx_0 *rcx)` (System V,
-    4th arg typed as a struct pointer), while a PE/MSVC C++ game binary is unchanged at Win64
+    4th arg typed as a struct pointer), while a PE/MSVC C++ application is unchanged at Win64
     (`sub_1800010d0(struct_rcx_0 *rcx, uint64_t rdx)`). Follow-on **4d** closes the
     lift half.
   - **4d — ABI-aware *call sites* in the lift.** ✅ *(2026-08-30, verified.)* 4c
@@ -2851,12 +2851,12 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     invalidates `rsi`/`rdi` across the call — caller-saved on System V but
     callee-saved on Win64 — so a later read can no longer unsoundly reuse a pre-call
     value the callee was free to destroy. An unknown ABI falls back to the arch's
-    native (first) convention. **Verified:** an ELF/GCC title's `sub_fe2104` now emits
+    native (first) convention. **Verified:** an ELF/GCC program's `sub_fe2104` now emits
     `BIO_new(rax.1, rsi.1, rdx.1, rcx.1, r8.1, r9.1)` (six System V registers, arg 1
-    being rdi's value from the preceding `mov rdi, rax`), while a PE/MSVC game
-    binary's call sites stay Win64 (`(rcx.2, rdx.2, r8, r9)`). Corpus sweep — 40
-    call-bearing functions each on an ELF/GCC title, a Bevy/Rust title (ELF) and a
-    PE/MSVC C++ game binary: 120/120 ok,
+    being rdi's value from the preceding `mov rdi, rax`), while a PE/MSVC C++
+    application's call sites stay Win64 (`(rcx.2, rdx.2, r8, r9)`). Corpus sweep — 40
+    call-bearing functions each on an ELF/GCC program, a Rust application (ELF) and a
+    PE/MSVC C++ application: 120/120 ok,
     0 errors, 0 anomalies.
   - **4b — drop lift-padding call arguments.** ✅ *(2026-08-30, verified.)* The
     same fixed four-register call convention meant *every* call to a callee not
@@ -2875,7 +2875,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
 - **Rung 5 — Expression & idiom quality.** 🚧 Signedness inference, the compiler-
   idiom library (magic-number division, `cmov`→`min/max`, `rep`→`mem*`, canary
   recognition), and SIMD/FP lift (items 4, 6, 11). *Output:* the arithmetic reads
-  as the source wrote it, and SIMD-heavy game functions stop degrading to `asm`.
+  as the source wrote it, and SIMD-heavy functions stop degrading to `asm`.
   - **5a — branch conditions from arithmetic flags.** ✅ *(2026-08-30, verified.)*
     A `Jcc` after an arithmetic/logical op that keeps its result (`dec ecx; jne`,
     `sub rax,rbx; je`, `and edx,edx; jne`) previously rendered `/*cond(jne)*/`:
@@ -2902,7 +2902,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     result's sign bit). **Verified:** the compression DLL's `sub_180002fa0` reads
     `while ((v8 > 0x0))` / `if ((rdi.1 <= 0x0) || …)`, 0 opaque conditions in
     that function; corpus
-    opaque-cond lines collapse (the PE/MSVC game executable, 200 fns to 31 — all `jo`/`jp` or
+    opaque-cond lines collapse (the PE/MSVC C++ application, 200 fns to 31 — all `jo`/`jp` or
     opaque-flag-source, sound to leave), 0 regressions, 9 unit tests. Still ⬜:
     the idiom library and FP-compare conditions.
   - **5b — stack-canary recognition.** ✅ *(2026-08-30, verified.)* The compiler's
@@ -2914,12 +2914,12 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     recognizer keys strictly on a stack-pointer XOR operand and is sound by
     construction: it cannot misfire on real code. Such an XOR now renders as
     `__stack_guard(<guarded value>)` (recognition + labeling; nothing is deleted, so
-    the transform is information-preserving). **Verified:** a PE/MSVC C++ game
-    binary's `sub_140064abf` reads `rax.2 = __stack_guard(*(uint64_t*)(0x1421173c8))` at entry
+    the transform is information-preserving). **Verified:** a PE/MSVC C++
+    application's `sub_140064abf` reads `rax.2 = __stack_guard(*(uint64_t*)(0x1421173c8))` at entry
     and `return __security_check_cookie(__stack_guard(local_8), …)` at exit — the
     whole canary dance now self-labels. Corpus sweep of 80 functions each:
     the PE/MSVC binary fires on its real canaries (6 guards / 3 functions, a
-    setup+check pair each), while an ELF/GCC title, a Bevy/Rust title (ELF) and a
+    setup+check pair each), while an ELF/GCC program, a Rust application (ELF) and a
     116 MB PE/MSVC C++ shipping binary show **zero** — the Linux `%fs:0x28` canary never
     XORs `rsp`, proving no false positives; 320/320 functions decompiled with 0
     errors. Follow-on: sound *elision* of the now-labeled setup/check (they are dead
@@ -2938,12 +2938,12 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     128-bit lane move now presents the `xmm` view the source used. Scalar `movss`/
     `movsd` are deliberately left as `asm` — `movsd` shares its mnemonic with the
     string instruction, so lifting it as a scalar move would be unsound. **Verified:**
-    the census's ~4272 SSE lines drop to zero `// asm:`; the PE/MSVC game binary's
-    `sub_140064e17` reads its nonvolatile spill as `local_70 = xmm6.0`, and a Bevy/Rust title's
+    the census's ~4272 SSE lines drop to zero `// asm:`; the PE/MSVC C++ application's
+    `sub_140064e17` reads its nonvolatile spill as `local_70 = xmm6.0`, and a Rust application's
     struct copies read as `xmm0.1 = *rsi` / `local_10 = xmm0.1` with correct SSA
     versioning and struct-field recovery firing through the xmm value. Sweep of 60
-    functions each on a PE/MSVC C++ game binary, an ELF/GCC title and a Bevy/Rust
-    title: 180/180 ok, 0 errors (18 of the Bevy/Rust title's 60 now render `__m128`).
+    functions each on a PE/MSVC C++ application, an ELF/GCC program and a Rust
+    application (ELF): 180/180 ok, 0 errors (18 of the Rust application's 60 now render `__m128`).
   - **5d — `setcc` condition reconstruction.** ✅ *(2026-08-30, verified.)* A
     `setCC dst` writes the boolean of a condition code, and the census left every
     one as `/*sete cl*/` — a *computed value* dropped to a placeholder, worse than
@@ -2958,10 +2958,10 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     recovered boolean is right even if a source register was reassigned between the
     compare and the `setcc`). When the reaching flags are opaque, it stays a
     `/*cond*/` placeholder — never a fabricated condition. **Verified:** the PE/MSVC
-    game binary's `sub_140064abf` now reads `rcx.43 = (v6 == 0x0); rcx->field_0xa8 = rcx.43;`
+    C++ application's `sub_140064abf` now reads `rcx.43 = (v6 == 0x0); rcx->field_0xa8 = rcx.43;`
     (was `rcx.43 = /*sete cl*/`); `setne`/`setae` vanish from the `// asm:` census;
-    a corpus sweep of 60 functions each on a PE/MSVC C++ game binary, an ELF/GCC
-    title, a Bevy/Rust title and a 116 MB PE/MSVC C++ shipping binary decompiled
+    a corpus sweep of 60 functions each on a PE/MSVC C++ application, an ELF/GCC
+    program, a Rust application (ELF) and a 116 MB PE/MSVC C++ shipping binary decompiled
     240/240 with 0 errors and no `/*set*/` placeholders
     left in-sample. Follow-on: `cmovcc` reuses the same reaching-flags resolution but
     also needs a ternary (`cond ? a : b`) node — that overlaps Rung 6.
@@ -2976,13 +2976,13 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     (var-collection and use-counting recurse into all three children, so DCE never
     drops a def used only inside a select; value-set analysis takes the lattice
     *join* of the two branches — precise and sound). **Verified:** the PE/MSVC
-    game binary's `sub_140064abf` now reads `r8.30 = ((rbx.3 < /*u*/ r8.29) ? rbx.3 : r8.29)` (was
+    C++ application's `sub_140064abf` now reads `r8.30 = ((rbx.3 < /*u*/ r8.29) ? rbx.3 : r8.29)` (was
     `/*cmovb r8,rbx*/`) — which is exactly the unsigned-`min` idiom, now *visible* for
     a later idiom pass to fold. `cmovb`/`cmovbe` leave the `// asm:` census; a sweep
-    of 60 functions each on a PE/MSVC C++ game binary, an ELF/GCC title, a Bevy/Rust
-    title, a 116 MB PE/MSVC C++ shipping binary and an IL2CPP title decompiled
+    of 60 functions each on a PE/MSVC C++ application, an ELF/GCC program, a Rust
+    application (ELF), a 116 MB PE/MSVC C++ shipping binary and an IL2CPP build decompiled
     300/300 with 0 errors (ternaries now render in 20, 19 and 7 of the PE/MSVC,
-    Bevy/Rust and IL2CPP samples).
+    Rust and IL2CPP samples).
   - **5f — `min`/`max` idiom fold.** ✅ *(2026-08-30, verified.)* Once `cmovcc`
     lowers to a select (5e), the classic `cmov`-after-`cmp` becomes the visible shape
     `(l <cmp> r) ? x : y`. When the two branch values *are* the two compared
@@ -2992,10 +2992,10 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     `__min`/`__umin`/`__max`/`__umax(l, r)`. Sound: it fires only on that exact shape
     (the branches must be structurally the compared values), so it can never relabel
     an unrelated ternary — an unrelated select still renders as a plain `?:`.
-    **Verified:** the PE/MSVC game binary's `sub_140064abf`'s `((rbx.3 < /*u*/ r8.29) ? rbx.3 : r8.29)`
+    **Verified:** the PE/MSVC C++ application's `sub_140064abf`'s `((rbx.3 < /*u*/ r8.29) ? rbx.3 : r8.29)`
     now reads `__umin(rbx.3, r8.29)`; a sweep of 80 functions each recovered 16
-    min/max on it and 38 on a Bevy/Rust title (Rust's slice-bound and clamp code),
-    0 on an ELF/GCC title in-sample, with 240/240 ok and 0 errors.
+    min/max on it and 38 on a Rust application (Rust's slice-bound and clamp code),
+    0 on an ELF/GCC program in-sample, with 240/240 ok and 0 errors.
   - **5g — immediate rotate lift (`rol`/`ror`).** ✅ *(2026-08-30, verified.)* A
     rotate by an immediate is *exactly* a shift/shift/or, and it needs no new IR node:
     `rol x, n` → `(x << n) | (x >> (w-n))`, `ror` mirrors the directions (each keeps
@@ -3006,11 +3006,11 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     would need x86 count-masking modelled to stay sound, so it falls through to the
     opaque path rather than emitting an unmasked shift. The old catch-all was
     extracted to a shared `lift_opaque` helper so both paths invalidate writes
-    identically. **Verified:** a Bevy/Rust title's `sub_305686` now reads
+    identically. **Verified:** a Rust application's `sub_305686` now reads
     `rcx.11 = ((rcx.10 << 0xd) | (rcx.10 >> 0x33))` — a 64-bit `rol rcx, 13`
     (`0xd + 0x33 = 64`), a hash mix laid bare; `rol`/`ror` leave the census; sweep of
-    80 functions each on a PE/MSVC C++ game binary, an ELF/GCC title and a
-    Bevy/Rust title: 240/240 ok, 0 errors.
+    80 functions each on a PE/MSVC C++ application, an ELF/GCC program and a
+    Rust application (ELF): 240/240 ok, 0 errors.
   - **5h — the intrinsic layer (bit-scan, SSE, scalar FP).** ✅ *(2026-08-30,*
     *verified.)* A census of everything still hitting `// asm:` was dominated by
     instructions the IR had no shape for: SSE integer/string idioms
@@ -3030,11 +3030,11 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     only when an xmm register is actually involved — which soundly disambiguates the
     SSE `movsd` from the *string* `movsd`. **Verified:** the `// asm:` census collapses
     from thousands to a handful — only FP *compares* (`comisd`/`ucomiss`, flag-setters
-    left opaque) and `div` remain, both sound as opaque. A Bevy/Rust title's SIMD
+    left opaque) and `div` remain, both sound as opaque. A Rust application's SIMD
     string-scan reads `v31 = __pmovmskb(v33)` (316 `__pmovmskb`, 198 `__tzcnt`, 87
-    `__pcmpgtb`), a PE/MSVC game binary `return (__cvttsd2si(v2) + v1)`; a sweep of
-    100 functions each on a PE/MSVC C++ game binary, an ELF/GCC title, a Bevy/Rust
-    title, a 116 MB PE/MSVC C++ shipping binary and an IL2CPP title decompiled
+    `__pcmpgtb`), a PE/MSVC C++ application `return (__cvttsd2si(v2) + v1)`; a sweep of
+    100 functions each on a PE/MSVC C++ application, an ELF/GCC program, a Rust
+    application (ELF), a 116 MB PE/MSVC C++ shipping binary and an IL2CPP build decompiled
     **500/500 with 0 errors**. Remaining ⬜ for Rung 5: mapping an FP compare + its
     `jcc` to a real ordered/unordered condition, and signedness inference — both
     separate from this lift-coverage work.
@@ -3069,10 +3069,10 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     successor into its real `case 0xK:` label(s) by matching the block's start VA
     against the table's case→target map — fall-through cases that share a block
     stack their labels, and a successor with no table index becomes `default:`.
-    **Verified:** an ELF/GCC title's `sub_fe2424` reads `switch (rax) { case 0x0: case 0x2:
-    … }` and a Bevy/Rust title's `sub_30b4f5` recovers a full `switch (rdi)` over cases
+    **Verified:** an ELF/GCC program's `sub_fe2424` reads `switch (rax) { case 0x0: case 0x2:
+    … }` and a Rust application's `sub_30b4f5` recovers a full `switch (rdi)` over cases
     `0x0`–`0x20` (fall-through cases correctly stacked); sweep of 100 functions each
-    on a PE/MSVC C++ game binary, an ELF/GCC title and a Bevy/Rust title — 300/300 ok,
+    on a PE/MSVC C++ application, an ELF/GCC program and a Rust application (ELF) — 300/300 ok,
     0 errors, 6 switches
     recovered. Remaining ⬜: the `default`-vs-unresolved-case distinction when
     the table read is partial.
@@ -3085,7 +3085,7 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     duplication, bounded so a large shared body stays a single
     `goto` not bloat. **Verified:** the compression DLL's `sub_1800021e0` 2 gotos →
     0; corpus residual-goto lines ~halved (the compression DLL 246→112, an ELF/GCC
-    title 156→74, the PE/MSVC game executable 82→46), the newer-ISA (BMI/BMI2)
+    program 156→74, the PE/MSVC C++ application 82→46), the newer-ISA (BMI/BMI2)
     PE/MSVC shipping build 200 fns 0 errors. The remaining gotos
     are large shared-body merges (irreducible or bloat-if-duplicated — real C
     keeps these too).
@@ -3177,8 +3177,8 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
     slot points into `.text`. `demangle_rtti_name` reverses the `@`-qualified name
     (`.?AUData@Ns@@` → `Ns::Data`) and — sound over pretty — returns a
     template/special-mangled name (`?$`) **verbatim** rather than mis-decoding it.
-    Exposed as `rtti scan`. **Verified on a PE/MSVC C++ game binary
-    (Ogre + a third-party physics stack):** 3055 vtables
+    Exposed as `rtti scan`. **Verified on a PE/MSVC C++ application (a
+    third-party rendering and physics stack):** 3055 vtables
     recovered — `AnimationEvent`, `std::bad_alloc`, `AnimationSFXEvent` demangled
     cleanly, `Ogre::STLAllocator<…>` templates kept verbatim. The last-hop
     devirtualization (joining a call site's vtable slot to `Class::method`) and using
@@ -3189,15 +3189,15 @@ a real binary, not a synthetic sample (the project's verify-before-✅ rule).
 
 **Sequencing:** Rungs 1→2→3 are the spine and must go in order (each is the
 other's prerequisite). Rungs 4–6 are largely independent and can interleave by
-corpus payoff (SIMD and RTTI rank high for games — see the framing rules). Rung 7
+corpus payoff (SIMD and RTTI rank high for this corpus — see the framing rules). Rung 7
 compounds with everything and needs Memory SSA (Rung 1) underneath.
 
 ### Two framing rules this phase encodes
 
-- **The right priority is a function of the target corpus.** N0xis's is game
-  engines on x64 Windows — which pulls **SIMD up** (a floor problem, not coverage),
+- **The right priority is a function of the target corpus.** N0xis's is large
+  C++ applications on x64 Windows — which pulls **SIMD up** (a floor problem, not coverage),
   **RTTI/vtable class recovery and library-function ID up** (deep-hierarchy C++
-  with heavy STL/CRT), and **PDB down** (game builds are usually stripped). A
+  with heavy STL/CRT), and **PDB down** (release builds of such applications are usually stripped). A
   general-purpose x64 decompiler would order these differently. State the corpus
   *before* arguing the order.
 - **Correctness before power.** The lowest foundation is a *correct* CFG, not a
@@ -3349,7 +3349,7 @@ third-party format). Each increment is verified on a real binary before ✅.
 - **Fuzzing** (`cargo-fuzz`/libFuzzer) of the format/ISA parsers — mandatory,
   since they parse untrusted bytes (the OOM lesson: never `with_capacity` on a
   parsed length).
-- **Cross-arch corpus** — beyond games: MIPS/PPC/RISC-V/ARM samples, malware,
+- **Cross-arch corpus** — beyond x64 desktop applications: MIPS/PPC/RISC-V/ARM samples, malware,
   embedded firmware.
 
 #### The differential verification plan (2026-09-07)
@@ -3829,7 +3829,7 @@ own copy. A fix that moves the number by zero has not been understood yet.
 Everything under `#[cfg(windows)]` had never run anywhere. It was type-checked
 with `cargo check --target x86_64-pc-windows-gnu` and nothing more — no live
 adapter call, no debug register set, no detour written. That is 9 commands that
-refuse outright on Linux (`patch detour`, `table freeze`, `locate
+refuse outright on Linux (`patch detour`, `table pin`, `locate
 by-transition`, `input probe`, `ui locate`/`windows`/`screenshot`/`focus`,
 `il2cpp classes`) plus every Win32 path underneath the rest.
 
@@ -4340,15 +4340,15 @@ phase from its first mistake on.
 | `capability list` | Environment & project | the registry, and a registered plugin appearing in it |
 | `capability run` | Environment & project | the CLI's own answer, byte-identical on five capabilities |
 | `remote-serve` | Environment & project | a local read of the same bytes — identical, and the bytes are an ELF magic |
-| `bundle list` | Game-engine assets | the type hashes themselves — `murmur64a("timpani_bank")` computed here is the hash it reports, bit for bit |
-| `bundle extract` | Game-engine assets | the extracted files, read by another program — 165 of 165 begin with the LuaJIT bytecode magic |
-| `bundle repack` | Game-engine assets | **not checkable here** — needs a real engine archive to write back into |
-| `lua disasm` | Game-engine assets | LuaJIT's own `-bl` listing — 4 of 4 prototypes, identical opcode sequences |
-| `lua patch` | Game-engine assets | LuaJIT's own listing after the patch — exactly one byte changed, `ADDVV` became `SUBVV` |
-| `lua strings` | Game-engine assets | a live LuaJIT process — all eleven planted strings, none invented |
-| `lua table` | Game-engine assets | the addresses the script printed for its own tables |
-| `lua combo` | Game-engine assets | the array the script built, in source order |
-| `lua seedscan` | Game-engine assets | the seed planted at the address the script printed |
+| `bundle list` | Script & asset archives | the type hashes themselves — `murmur64a("timpani_bank")` computed here is the hash it reports, bit for bit |
+| `bundle extract` | Script & asset archives | the extracted files, read by another program — 165 of 165 begin with the LuaJIT bytecode magic |
+| `bundle repack` | Script & asset archives | **not checkable here** — needs a real engine archive to write back into |
+| `lua disasm` | Script & asset archives | LuaJIT's own `-bl` listing — 4 of 4 prototypes, identical opcode sequences |
+| `lua patch` | Script & asset archives | LuaJIT's own listing after the patch — exactly one byte changed, `ADDVV` became `SUBVV` |
+| `lua strings` | Script & asset archives | a live LuaJIT process — all eleven planted strings, none invented |
+| `lua table` | Script & asset archives | the addresses the script printed for its own tables |
+| `lua combo` | Script & asset archives | the array the script built, in source order |
+| `lua seedscan` | Script & asset archives | the seed planted at the address the script printed |
 | `il2cpp import` | IL2CPP managed layer | a dump of known addresses — VA, RVA and neither, all three decided right |
 | `il2cpp symbols` | IL2CPP managed layer | the names, addresses and signatures that went in |
 | `il2cpp metadata` | IL2CPP managed layer | an independent parse of the same blob — version 24, 18 244 literals from the table's own size, first five identical |
@@ -4385,7 +4385,7 @@ phase from its first mistake on.
 | `table list` | Live memory | the entry store on disk |
 | `table show` | Live memory | the entry store on disk |
 | `table rm` | Live memory | the table after — the entry is gone, not merely reported gone |
-| `table freeze` | Live memory | **Windows only** — refuses on Linux saying so; measured on Windows in the earlier pass |
+| `table pin` | Live memory | **Windows only** — refuses on Linux saying so; measured on Windows in the earlier pass |
 | `stack backtrace` | Other | `eu-stack` — six frames, same addresses in order |
 | `aot symbols` | Other | known C# source, and 2 128 of 2 128 RVAs against an independent unwind reader |
 | `serve` | Other | the CLI's own answer to the same four queries |
@@ -4500,7 +4500,7 @@ Where the 60 sat, and where they stand:
 | --- | --- | --- |
 | Static analysis & decompilation | 21 of 28 | **0** |
 | Provenance, annotations & snapshots | 15 of 16 | **0** |
-| Game-engine assets | 6 of 9 | **1** — `bundle repack`, recorded with its reason |
+| Script & asset archives | 6 of 9 | **1** — `bundle repack`, recorded with its reason |
 | Spec-first method tooling (Phase 8) | 6 of 7 | **0** |
 | Environment & project | 4 of 9 | **0** |
 | IL2CPP managed layer | 4 of 6 | **2** — `obj` and `classes`, recorded with their reason |
@@ -5002,7 +5002,7 @@ from an unrelated program named nothing. `sig validate` reports the invariant
 byte set exactly on a known input, blesses only with three samples *and* a named
 varied axis, and refuses with the specific reason otherwise.
 
-**`game grep` and `const identify`.** `game grep`'s per-term counts match
+**`concept grep` and `const identify`.** `concept grep`'s per-term counts match
 `grep -o` exactly on a directory built for it, and the file with none of the
 vocabulary is correctly unmatched. `const identify` is sound where it answers —
 CRC-32's reversed polynomial and the golden ratio come back with the right role,
@@ -5059,7 +5059,7 @@ watched=0x404030 steady_a=0x404034 steady_b=0x404038
 Neither decoy survives. This is the command's whole purpose — localize the
 value behind a change — and it had never been asked to do it.
 
-`ui locate`, `patch detour`'s trampoline and `table freeze` are still behind
+`ui locate`, `patch detour`'s trampoline and `table pin` are still behind
 that import; the comment now says so with them named, rather than listing
 commands that no longer belong to it.
 
@@ -5147,7 +5147,7 @@ and the same 1 152 export names on a runtime DLL as before.
 
 **`il2cpp obj` and `il2cpp classes` — not checked, and why.** Both read a live
 managed heap: an `Il2CppObject`'s class pointer and the class list a running
-IL2CPP runtime holds. That needs a running IL2CPP game, which this
+IL2CPP runtime holds. That needs a running IL2CPP application, which this
 machine does not have and which cannot be synthesized — the structures they
 walk are the runtime's own, not a file format one can write by hand. They are
 the two commands in this pass with no oracle available rather than none applied.
@@ -6263,8 +6263,8 @@ The same walk also found three aliases no compiler had emitted (`sbfiz`/`sbfm`,
   to run *on* the device, or use the existing `remote-serve` over SSH; Unicorn +
   a gdbstub client covers the rest of the arches dynamically.
 - **VM seam** (a recorded debt): engine support (IL2CPP/LuaJIT/Bitsquid) is
-  per-engine and hardcoded — lift it to one plugin contract so Mono / Godot
-  / V8 register as plugins, not surgery.
+  per-engine and hardcoded — lift it to one plugin contract so Mono / V8
+  / other script VMs register as plugins, not surgery.
 
 ### Recommended acquisition order
 
@@ -6285,7 +6285,7 @@ time, and system packages (`unicorn`, `z3`, `qemu-user`, `rr`) via the distro.
 
 ---
 
-## Companion tooling (not a numbered phase) — N0xHUD, game-asset & LuaJIT track
+## Companion tooling (not a numbered phase) — N0xHUD, script-asset & LuaJIT track
 
 A parallel track landed outside the numbered roadmap (commits `4cc5f4e`,
 `d6580f2`) and isn't otherwise represented here. These capabilities **exist and
@@ -6296,33 +6296,33 @@ crates — `n0xis-hud`, `n0xis-bitsquid`, `n0xis-lua`, `n0xis-luajit` — bring 
 workspace from Phase 1's 8 crates to **12** today.)
 
 - ✅ **N0xHUD — a third frontend** (`crates/n0xis-hud`, binary `n0xis-hud`). A
-  config-driven **companion window**, *not* an in-game overlay: a plain
+  config-driven **companion window**, *not* an in-target overlay: a plain
   always-on-top `eframe`/`egui` window that does **not** draw inside the target
-  (a separate always-on-top window beside the game), launched from a game's `.n0x/` project and driven by
+  (a separate always-on-top window beside the target), launched from a target's `.n0x/` project and driven by
   `.n0x/hud.toml`. One shared `Engine` behind three background threads — a global
   low-level keyboard hook (hotkeys), a process watcher that auto-applies adapter
   plugins when the target appears, and a generic periodic plugin poller
   (`plugin_poll.rs`). Shipped: config-driven bindings (nothing hardcoded), write
-  & freeze over the Phase 4b primitives (pointer-path locators included),
+  & pin over the Phase 4b primitives (pointer-path locators included),
   global hotkeys with in-UI rebind + conflict detection, and (2026-07-22,
   **superseding** an earlier in-binary adapter registry) a **process-based
   plugin dispatch**: an `[[adapters]]` binding's `command` spawns a persistent
   `n0xis_sources::PluginSession`, and `on_launch`/`toggle_on`/`toggle_off`/
   `poll` become JSON ops on that session instead of a compiled-in Rust match —
-  `n0xis-hud` itself carries **zero** game-specific logic; all of it lives in
+  `n0xis-hud` itself carries **zero** target-specific logic; all of it lives in
   an external plugin process the user builds and points `command` at (see
   `docs/COMMUNITY_ROADMAP.md`'s "Plugin system", whose transport this reuses).
   ⚠️ Doc debt: the design docs under [`docs/n0xhud/`](docs/n0xhud/) still describe
-  the *unbuilt* overlay/injection plan and use cheat-menu framing — stale, flagged
+  the *unbuilt* overlay/injection plan and frame it as an in-target toggle menu — stale, flagged
   for a rewrite; the shipped binary is the companion-window shape above.
 - ✅ **Interception-driver actuation** (`interception.rs`). Dynamically loads a
   user-configured `interception.dll` (path from `hud.toml`, never hardcoded) and
-  sends keystrokes through the kernel-class driver — needed because some games
+  sends keystrokes through the kernel-class driver — needed because some applications
   filter `LLKHF_INJECTED` and ignore the identical scancode sent via
   `SendInput` (confirmed live; `input probe` detects this directly). Two macro
   subsystems ride on top: fixed **sequences / "Combinations"** replay (via
   `SendInput`) and **key-sequence macros** (via Interception) — both fully
-  generic, config-driven, no game-specific code.
+  generic, config-driven, no target-specific code.
 - ✅ **Bitsquid-bundle + LuaJIT asset tooling** (`crates/n0xis-bitsquid`,
   `n0xis-lua`, `n0xis-luajit`; CLI `bundle {list,extract,repack}` and
   `lua {disasm,patch,strings,table,combo,seedscan}`). Offline bundle
@@ -6338,7 +6338,7 @@ workspace from Phase 1's 8 crates to **12** today.)
   `plugin_run`) — the previously-only-*proposed* design in
   `docs/COMMUNITY_ROADMAP.md` now built and exercised by N0xHUD's own adapter
   dispatch above. Validated end-to-end (2026-07-22) by porting a real,
-  previously in-binary game automation feature — an interact-combo auto-solver
+  previously in-binary, single-target automation feature — an input-sequence auto-solver
   (transition-diff detection of a just-opened UI window, seed-derived exact
   solving for a high-stakes case, a safe brute fallback for the rest) — out of
   this repo entirely into an external plugin process, proving the protocol
@@ -6374,9 +6374,9 @@ these are the places the output was quietly hostile to its primary consumer.
   from every `ir`/`decomp` command and from `provenance trace` *despite* pairing with
   `debug watch`, which had it. An RVA is the only address form that survives a restart, so
   the flag missing is exactly what pushes callers back to hand-computed absolute VAs.
-- ✅ **`--addr-module` / `profile --module`** — found by running against the live game
+- ✅ **`--addr-module` / `profile --module`** — found by running against the live target
   rather than reasoning about it. `--addr-rva` resolved against the *main* module, which
-  is the wrong one for the most common real target there is: an IL2CPP player EXE is 2
+  is the wrong one for the most common real target there is: an IL2CPP host EXE is 2
   exports and 319 functions while the 277 199 that matter are in `GameAssembly.dll`.
   `--addr 0xA54EC0 --addr-rva` landed on unmapped memory. Now selectable by
   case-insensitive substring, and a name that matches nothing fails loudly with the
@@ -6392,7 +6392,7 @@ these are the places the output was quietly hostile to its primary consumer.
   a confident wrong address. An indirect relay whose target lands *outside* the image is
   reported as `detoured_exports` + an advisory — the code running is not the code in the
   file, which silently invalidates static reasoning if nobody says so. On the live target
-  it names all five MelonLoader hooks (`il2cpp_alloc`, `il2cpp_free`,
+  it names all five hooks a third-party loader had installed (`il2cpp_alloc`, `il2cpp_free`,
   `il2cpp_resolve_icall`, `mono_metadata_free_mh`, `mono_string_free`); the detour target
   belongs to no loaded module at all, i.e. an allocated trampoline. Computed
   unconditionally, **not** gated behind `--exports`: an advisory that only fires when the
@@ -6477,7 +6477,7 @@ The runtime ships two scripting backends. **Mono** emits real .NET assemblies
 (`Assembly-CSharp.dll`) and JITs them — managed-assembly editors read them, edit them, write them back;
 that target is solved and uninteresting. **IL2CPP** is ahead-of-time: Roslyn compiles C# to
 IL, `il2cpp.exe` transpiles the IL to C++, and the platform C++ compiler emits native code.
-The shipped game contains **no IL and no managed assemblies** — only machine code, exactly
+The shipped build contains **no IL and no managed assemblies** — only machine code, exactly
 like a C++ engine.
 
 C# semantics (reflection, GC, boxing, generics, interfaces, exceptions) cannot survive that
@@ -6487,7 +6487,7 @@ meaningful *together*:
 | Layer | Where | Holds |
 |---|---|---|
 | **Native code** | `GameAssembly.dll` `.text` | every transpiled C# method, plus `libil2cpp` — the C++ runtime, statically linked, exporting the `il2cpp_*` embedder API (measured: 386 exports on 279 distinct addresses, 49 thunks, 277 199 `.pdata` functions) |
-| **Managed metadata** | `<Game>_Data/il2cpp_data/Metadata/global-metadata.dat` | the symbol table of the managed world: type / method / field / parameter names, tokens, generic containers, vtable slot layout, **and every string literal** (measured: 23 023 literals, ~672 KB) |
+| **Managed metadata** | `<Name>_Data/il2cpp_data/Metadata/global-metadata.dat` | the symbol table of the managed world: type / method / field / parameter names, tokens, generic containers, vtable slot layout, **and every string literal** (measured: 23 023 literals, ~672 KB) |
 | **Registrations** | `.data` of the DLL — `Il2CppCodeRegistration`, `Il2CppMetadataRegistration` | the join key: per-module method-pointer arrays, generic instantiations, field-offset tables, metadata-usage slots |
 
 **Neither half alone is enough, and that is the entire difficulty.** Names without addresses
@@ -6495,7 +6495,7 @@ meaningful *together*:
 naive tool never looks at. Every IL2CPP tool that exists is, at bottom, that join.
 
 The corollary is the good news: an IL2CPP target is **native-speed code carrying a complete
-symbol table**. Once the join is done it is better documented than a stripped C++ game —
+symbol table**. Once the join is done it is better documented than a stripped C++ application —
 every class, method, field, and offset, by name. IL2CPP is the runtime's hard mode only until the
 managed layer is parsed; after that it is one of the most tractable corpora in the industry.
 
@@ -6561,12 +6561,12 @@ argument, which is *in a register at the moment the watchpoint fires* — a fact
 tool can use, and the exact place a static dumper cannot follow.
 
 Nothing in the ecosystem does this. Static dumpers do not see the running process; a memory scanner cannot name IL2CPP
-frames; a MelonLoader/HarmonyX mod can hook a method it already knows but cannot start from
+frames; a hooking plugin injected by a third-party loader can hook a method it already knows but cannot start from
 an address and ask *who touched it*. **Sequence the phase so this lands as early as the
 dependencies allow** — it is the point of the phase, not step 4 of a list.
 
 A second, quieter win of the same kind: **static fields make pointer paths largely
-unnecessary here.** Most game singletons are a static `Instance`; the metadata gives the
+unnecessary here.** Most singletons in such a build are a static `Instance`; the metadata gives the
 klass, the klass gives `static_fields`, and that is a stable, restart-survivable anchor
 derived by name instead of by AOB/pointer scanning. On this corpus that replaces the single
 most laborious classic workflow.
@@ -6616,12 +6616,12 @@ most laborious classic workflow.
      is the command that reaches it (the parser landed first and sat unreachable, which is
      dead code however good it is): version, the table inventory, and a case-insensitive
      literal search with real paging.
-     **Measured on a real target** (an IL2CPP title's `global-metadata.dat`,
+     **Measured on a real target** (an IL2CPP build's `global-metadata.dat`,
      22 984 696 bytes): version 31, **23 023 literals**, `string_literal_data` 672 564 bytes,
      and **zero** non-UTF-8 entries — the module's own tripwire for a wrong stride, clean.
-     Searching returns real game text (`EnemyHealth`, `Drink_HealthPotion`,
+     Searching returns the target's real text (`EnemyHealth`, `Drink_HealthPotion`,
      `ActivateDamageZoneRpc`, `Dealing Damage to: `). That is the first thing on this corpus
-     that answers *"is this on-screen text in the game"* **with no external dumper at all** —
+     that answers *"is this on-screen text in the program"* **with no external dumper at all** —
      the question `xref string` structurally cannot answer here, since the literals are not
      in the image.
    - ✅ **The IL2CPP directory layout is knowledge held once.** `--file <image>` finds the blob
@@ -6706,9 +6706,9 @@ most laborious classic workflow.
      sites on one address is the evidence the shape matched, several means it matched
      something else too. Measured live: 1074 sites → 424 distinct entries, 212 with slots,
      two resolvers at 537 sites each; `Transform::get_position_Injected` → `0x7ff9d0d41a00`.
-     **Those addresses land outside `GameAssembly.dll` — in the player module** — which is
+     **Those addresses land outside `GameAssembly.dll` — in the engine's native module** — which is
      the correctness signal: the pass never looks there, the process points there itself.
-     A null slot means the game has not called that icall yet, and is reported as such
+     A null slot means the program has not called that icall yet, and is reported as such
      rather than as address 0.
    - ✅ **`il2cpp obj` — the live klass route, and it needs neither a metadata parser
      nor a dumper.** `*(void**)addr` is an object's `Il2CppClass*`, and from there the type
@@ -6722,8 +6722,8 @@ most laborious classic workflow.
      a class called `mscorlib.mscorlib.dll`; stray pairs in unrelated structures did the same.
      Every *true* class hit — and no false one — also produced a back-referencing field array,
      so results now carry `confidence: validated | weak-name-pair-only`. Measured on the
-     running game: `Unity.Collections.Allocator` (validated, 8 fields, `value__@0x10` after
-     the 16-byte header, enum constants at 0), and a real game class
+     running target: `Unity.Collections.Allocator` (validated, 8 fields, `value__@0x10` after
+     the 16-byte header, enum constants at 0), and a real application class
      `Entities.States.DeflectState` (validated, `BodyObjectToHide@0xb8`,
      `BodyObjectToShow@0xbc`, `UseAnimationLength@0xc0`) — beside the two coincidences,
      correctly marked weak.
@@ -6738,7 +6738,7 @@ most laborious classic workflow.
      by repeat count, and keeps only candidates whose field array points back at them.
      Measured live: 1 MB across 8 regions → 12 474 distinct pointers, 2000 probed, 16 dropped
      as weak, **15 classes** — `System.Int32`, `System.String`, `UnityEngine.Object`, and the
-     game's own `PassiveItem_Key`. Every answer states it is a *sample*, with the probe
+     application's own `PassiveItem_Key`. Every answer states it is a *sample*, with the probe
      denominator, because a capped search must not read as an inventory.
    - 🐛 **Closing the loop found a real bug.** Feeding an enumerated class address back into
      `il2cpp obj` returned `mscorlib.mscorlib.dll`: the pass tried the object reading first
@@ -6781,15 +6781,15 @@ most laborious classic workflow.
    the one problem every mod author has forever and no RE tool addresses, because no RE tool
    holds both indices and the user's own address table.
 
-### Cross-target verification — the answer to "does this work on IL2CPP, or on *that game*"
+### Cross-target verification — the answer to "does this work on IL2CPP, or on *that build*"
 
-Everything above was measured on one target, which supports "works on this game" and not the
-claim the phase actually needs. So the local game library was inventoried and every IL2CPP build
+Everything above was measured on one target, which supports "works on this target" and not the
+claim the phase actually needs. So the local library of installed applications was inventoried and every IL2CPP build
 in it run through the same battery. Three real targets, three **different metadata versions**;
-the three other managed titles installed are Mono (`Managed/Assembly-CSharp.dll`, no
+the three other managed applications installed are Mono (`Managed/Assembly-CSharp.dll`, no
 `il2cpp_data`) and are correctly not treated as IL2CPP.
 
-| | the IL2CPP title (v24) | the IL2CPP title (v29) | the IL2CPP title (v31) |
+| | the IL2CPP build (v24) | the IL2CPP build (v29) | the IL2CPP build (v31) |
 |---|---|---|---|
 | metadata version | **24** | **29** | **31** |
 | `GameAssembly.dll` | 42.5 MB | 45.1 MB | 94.0 MB |
@@ -6808,12 +6808,12 @@ one build (3/3, with `.text` holding under 11 % of the code every time). The met
 version-independent header prefix holds across v24, v29 and v31 — 57 000 literals decoded with
 **zero** non-UTF-8 entries, which is the module's own tripwire for a wrong stride, clean on all
 three. The runtime klass route discovered the *same* offsets on v24 and v31 (`name` at `0x10`,
-`fields` at `0x80`), and on the IL2CPP title (v24) recovered 98 classes including
+`fields` at `0x80`), and on the IL2CPP build (v24) recovered 98 classes including
 `TMPro.TMP_Text` (229 fields) and `TMPro.TMP_FontAsset` (55 fields, `m_SourceFontFileGUID`,
 `m_AtlasPopulationMode`, `m_GlyphLookupDictionary` — unmistakably real).
 
 **What it disproved, and the fix.** The icall shape is **not** universal. The IL2CPP
-title (v29) has 1911 icall names in `.rdata` and **nothing in the image references them** —
+build (v29) has 1911 icall names in `.rdata` and **nothing in the image references them** —
 verified three ways: no referencing `lea` (`xref string` finds the string but no xref), no
 absolute 8-byte pointer, no 4-byte RVA. So `il2cpp icalls` correctly returned zero, and returned it *silently*, which is
 the exact failure this project exists to prevent. `names_in_data` now distinguishes the three
@@ -6824,7 +6824,7 @@ possible zeros:
 - no names, no sites → *not an IL2CPP image, or the wrong module/section was scanned*
 - sites found → the ordinary case
 
-The IL2CPP title (v24) is the intermediate case that makes the point: 1740 names, only
+The IL2CPP build (v24) is the intermediate case that makes the point: 1740 names, only
 72 sites. The shape is a **codegen option, not a format guarantee**, and the tool now says so
 per target.
 
@@ -6844,9 +6844,9 @@ Measured coverage before the fix:
 
 | | `.text` swept | `il2cpp` swept |
 |---|---|---|
-| the IL2CPP title (v31) | 85.9 % | **0.45 %** |
-| the IL2CPP title (v24) | 23.2 % | 0.31 % |
-| the IL2CPP title (v29) | **5.1 %** | 1.47 % |
+| the IL2CPP build (v31) | 85.9 % | **0.45 %** |
+| the IL2CPP build (v24) | 23.2 % | 0.31 % |
+| the IL2CPP build (v29) | **5.1 %** | 1.47 % |
 
 Counting only the sites inside those swept prefixes reproduces the old output exactly —
 1074, 72 and 0 — which is what makes this a diagnosis rather than a theory.
@@ -6856,9 +6856,9 @@ four section-wide passes use it. Re-measured:
 
 | | sites before | sites after | distinct icalls | with cache slot |
 |---|---|---|---|---|
-| the IL2CPP title (v24) | 72 | **3454** | 1745 | 1397 |
-| the IL2CPP title (v29) | **0** | **4053** | 1916 | 1893 |
-| the IL2CPP title (v31) | 1074 | **50 875** | 4921 | 2448 |
+| the IL2CPP build (v24) | 72 | **3454** | 1745 | 1397 |
+| the IL2CPP build (v29) | **0** | **4053** | 1916 | 1893 |
+| the IL2CPP build (v31) | 1074 | **50 875** | 4921 | 2448 |
 
 Independently confirmed by a brute-force byte scan for `lea reg,[rip+disp32]` landing on a
 known name address — disassembler-free, and it puts the true totals at 3447 / 4041 / 50 875.
@@ -6881,8 +6881,8 @@ known name address — disassembler-free, and it puts the true totals at 3447 / 
 
 | Route | Wins | Costs |
 |---|---|---|
-| **File** — parse `.dat` + registrations statically | deterministic, ASLR-free, reproducible, no running game | dead against on-disk encryption; version-fragile |
-| **Runtime** — read `Il2CppClass` / `MethodInfo` from a live process (`klass->name` is a `const char*` into the mapped metadata blob) | survives on-disk encryption and metadata relocation; authoritative offsets; the only route to `MethodInfo*` disambiguation | needs the game running; klass layout is itself version-fragile |
+| **File** — parse `.dat` + registrations statically | deterministic, ASLR-free, reproducible, no running process | dead against on-disk encryption; version-fragile |
+| **Runtime** — read `Il2CppClass` / `MethodInfo` from a live process (`klass->name` is a `const char*` into the mapped metadata blob) | survives on-disk encryption and metadata relocation; authoritative offsets; the only route to `MethodInfo*` disambiguation | needs the target running; klass layout is itself version-fragile |
 
 And the bridge between them: **`il2cpp index --pid`** — recover the metadata blob from the
 running process (it is decrypted in memory by definition) via the existing `snapshot dump`,
@@ -6956,12 +6956,12 @@ truncated. A silent zero, which Phase 11 exists to make impossible.
     quietly gave up on the bulk of the code, reporting it as unresolved. Fixing the seam
     fixed it; fixing the symptom never would have found it.
   - ✅ **`--module` on the range-scoped commands**, because a *live* IL2CPP target needs it:
-    the main module is a thin player executable and the code is in `GameAssembly.dll`, so
+    the main module is a thin host executable and the code is in `GameAssembly.dll`, so
     `code_ranges()` alone answered about the wrong module. Both windows are module-scoped —
     fixing only the code side was measurably worse than fixing neither (61 MB scanned against
-    the *player's* `.rdata`, finding nothing, slowly). An unmatched name **refuses** rather
+    the *host executable's* `.rdata`, finding nothing, slowly). An unmatched name **refuses** rather
     than falling back to the main module.
-  - **Verified against the running game, and cross-checked against the file.** Live
+  - **Verified against the running target, and cross-checked against the file.** Live
     `xref string --pid --module GameAssembly.dll` finds the icall literal at
     `0x7ff9b6dd0630` with four referencing `lea`s; converting by the live module base gives
     rva `0x42c0630` and xref rva `0x725e83` — **identical to the static run's**
@@ -6989,7 +6989,7 @@ for someone else's loader — that is a data-seam output, not an ambition to bec
 ## Phase 12b — .NET NativeAOT: the managed layer, other half 🎯 ✅
 
 The sibling of Phase 12. Where IL2CPP is the managed-name problem of one runtime, **NativeAOT**
-(`ILC` / `PublishAot`, the shape a modern Godot-C# or .NET game ships) is the CoreCLR one: the
+(`ILC` / `PublishAot`, the shape a modern .NET application ships) is the CoreCLR one: the
 compiler strips ordinary symbols, so `disasm`/`decomp` see only `sub_XXXX` and a config read by
 enum index leaves no string to `xref`. But the managed names are still *in the image*, in the
 NativeAOT reflection/stack-trace metadata — and this phase parses them, universally, with no
@@ -7003,8 +7003,8 @@ per-target hardcode.
   - the **stack-trace `RvaToTokenMapping`** — a linear map, framework/generic-heavy; and
   - the **reflection `InvokeMap`** — a `NativeHashtable` whose entrypoint indices resolve
     through the `CommonFixupsTable` external-references table, joined to the method's declaring
-    type by walking the metadata type tree. **This is the one that resolves a game's own
-    gameplay methods** (the stack-trace map largely does not).
+    type by walking the metadata type tree. **This is the one that resolves an application's own
+    methods** (the stack-trace map largely does not).
   Each symbol carries its `source` (`stacktrace` / `invoke`); the artifact reports
   `stacktrace_count` / `invoke_count`.
 - ✅ **A full NativeFormat reader, ported to Rust** — the low-bit-count varints, the
@@ -7016,9 +7016,9 @@ per-target hardcode.
   with an advisory pointing at `aot symbols`.
 - ✅ **Enables the live-patch workflow** — the recovered RVAs feed `decomp pseudo --addr`
   (now with named calls) and the [Phase 14 `debug watch --exclude-rip`](#phase-14--cross-platform-the-linux-native-live-track-) setter hunt.
-- **Measured:** on a Godot Windows x86-64 module (Godot-C# NativeAOT, .NET 8, ReadyToRun 9.1)
+- **Measured:** on a Windows x86-64 module (C# NativeAOT, .NET 8, ReadyToRun 9.1)
   → **208 056** methods (91 136 stack-trace + 116 920 invoke); `common.*` fully covered, and
-  gameplay targets resolve, e.g. `common.<title>.UI.Drawer.GameSetupMenu.GetMaxPlayersOptions
+  the application's own methods resolve, e.g. `common.<title>.UI.Drawer.GameSetupMenu.GetMaxPlayersOptions
   @ 0x122f520`.
 - ⬜ *Follow-ons:* `VirtualInvokeMap` (virtual/interface method entrypoints), and feeding the
   map into `decomp`/`function discover` as a `SymbolProvider` overlay so **every** call renders
@@ -7039,7 +7039,7 @@ existing seam, and where Linux offers a strictly stronger primitive, prefer it.
 On Windows, several of the capabilities this tool wants are either driver-only or actively
 fought by the kernel: hardware watchpoints and stealthy cross-process reads want a driver;
 **PatchGuard/KPP**, **Driver Signature Enforcement**, **HVCI/VBS**, and vendor **kernel-mode
-anti-cheat** exist specifically to stop the rest. On Linux the equivalent power is in the
+anti-tamper** exist specifically to stop the rest. On Linux the equivalent power is in the
 kernel already, reachable from an unprivileged (or `CAP_SYS_PTRACE`) userspace process
 through plain syscalls — no signed driver, no code-integrity fight:
 
@@ -7058,7 +7058,7 @@ through plain syscalls — no signed driver, no code-integrity fight:
   in the target**. This is the biggest "not possible on stock Windows without a driver" win,
   and it is a near-perfect fit for provenance.
 - `uinput` / `evdev` — inject input as a *real kernel input device*, below any user-space
-  hook an anti-cheat installs. This is the built-in-kernel replacement for the third-party
+  hook anti-tamper software installs. This is the built-in-kernel replacement for the third-party
   Interception driver the Windows HUD used.
 - Further out: `seccomp`-unotify (syscall interception), `LD_PRELOAD` interposition, and
   **KVM-based VM introspection** (run the target in a VM, inspect from outside, undetectable
@@ -7134,7 +7134,7 @@ through plain syscalls — no signed driver, no code-integrity fight:
 2. ✅ **Test hygiene** — *done*: the `pipeline` live exit tests are cross-platform and pass on
    Linux. `unwind_exit` and `phase4c_exit` (the full provenance loop) drop the hard-coded
    `.exe`/`LiveProcess` and select the adapter + `EXE_SUFFIX` per OS; `phase4b` (scan → filter
-   → freeze → persist) was ported off `powershell` onto a compiled Rust target with a known
+   → pin → persist) was ported off `powershell` onto a compiled Rust target with a known
    leaked buffer, so it now gives real Linux scan/filter coverage too. `cargo test -p
    n0xis-pipeline --features live` is green on Linux (4 exit tests + lib).
 3. ⬜ **Beyond the v0 port — uprobes + eBPF provenance** — trace writes to an address with no byte
@@ -7238,17 +7238,17 @@ through plain syscalls — no signed driver, no code-integrity fight:
    `StaticElf` source (goblin's ELF path) mirrors `StaticPe` behind the same seams: a section
    map for `read`/`code_ranges` (allocated sections, `.bss` reads short), the preferred base
    from the minimum `PT_LOAD` vaddr, and **defined function symbols from `.symtab`/`.dynsym`**
-   (ELF binaries are often *not stripped* — a windfall). **Verified:** a **Bevy/Rust** title
-   (PIE, not stripped) — 38 048 functions discovered, Rust names recovered and demangled
-   (`once_cell::imp::OnceCell<T>::initialize` decompiles at quality 1.0); an **ELF/GCC** title
+   (ELF binaries are often *not stripped* — a windfall). **Verified:** a **Rust** application
+   (ELF, PIE, not stripped) — 38 048 functions discovered, Rust names recovered and demangled
+   (`once_cell::imp::OnceCell<T>::initialize` decompiles at quality 1.0); an **ELF/GCC** program
    (System V, 24 106 functions) decompiles at 1.0 with `.dynsym` naming the OpenSSL calls
    (`BIO_push`, and its statically-linked `…__BIO_new_ssl_connect`).
    Follow-ons: **System V calling-convention
    recovery** (Rung 4 is Win64-register-specific, so ELF *signatures*/args are not yet right — the
    body is), **PLT/GOT import-slot naming** (`iat_slot` returns `None` on ELF today), and **DWARF**
-   type/line recovery from `.debug_info` (the Bevy/Rust title carries it — a ground-truth goldmine).
+   type/line recovery from `.debug_info` (the Rust application carries it — a ground-truth goldmine).
 9. ⬜ **LuaJIT 2.1 (bytecode dump v2).** `lua disasm`/`patch` read only the LuaJIT **2.0**
-   dump (version 1); modern games ship LuaJIT 2.1 (dump v2), which is rejected
+   dump (version 1); modern applications ship LuaJIT 2.1 (dump v2), which is rejected
    (`unsupported LuaJIT dump version 2`). Add the v2 reader.
 10. ✅ **32-bit i386 (PE32) support** *(reported by external testers, 2026-08-30; fixed
     same day.)* The bug: a **32-bit PE32** decoded with the fixed-64-bit decoder shares
@@ -7268,7 +7268,7 @@ through plain syscalls — no signed driver, no code-integrity fight:
     32-bit PE tool binary and its i386 hook DLL): the decode matches byte-for-byte
     (`inc eax` / `push ebx` / `add dl,[eax]` — the exact bytes objdump shows), a 26-function
     sweep decompiles 26/26 with 0 errors at avg quality 0.913, and the 64-bit PE/MSVC
-    game binary is unchanged. Follow-ons: stack-based cdecl/stdcall arg recovery, the `eax`-vs-`rax`
+    C++ application is unchanged. Follow-ons: stack-based cdecl/stdcall arg recovery, the `eax`-vs-`rax`
     display (registers normalize to the 64-bit name — sound, the low-32 *is* `eax`), live
     32-bit processes, and the bonus Authenticode-signer-CN in `profile`.
 
@@ -7288,7 +7288,7 @@ through plain syscalls — no signed driver, no code-integrity fight:
 
 - **No in-process code loading.** Extension stays across the process seam (API/MCP), never a
   foreign `.so` in the analysis process — the Trust-seam law is unchanged by going portable.
-- **No anti-anti-cheat / kernel-driver arms race.** The point is that Linux *doesn't need*
+- **No anti-anti-tamper / kernel-driver arms race.** The point is that Linux *doesn't need*
   the driver, not that we ship one to defeat someone else's.
 
 ---
@@ -7430,7 +7430,7 @@ of the rest is recorded below.
   same registry rather than needing a hand-written tool per command.
   **Not everything should migrate**: roughly a third of the surface is not
   "arguments in, envelope out" — `remote-serve` is a server, `debug watch` blocks on an
-  event, `table freeze` loops writes for a duration, `ui screenshot` returns a PNG,
+  event, `table pin` loops writes for a duration, `ui screenshot` returns a PNG,
   `project init` / `plugin add` mutate `.n0x/` rather than analyzing anything. The
   realistic ceiling is ~40-50 capabilities, not 87.
 
@@ -7497,7 +7497,7 @@ wanted, which is the whole argument for writing them down before that day.
   inventing the trait now would be inventing it from a sample size of one. Recorded so that
   the second engine triggers an extraction rather than a third parallel crate.
 - ⬜ **`n0xis-luajit`'s `GCstr` layout is a single-build measurement typed as a universal
-  law.** The module doc says so plainly — "a validated constant for this game/build, not a
+  law.** The module doc says so plainly — "a validated constant for this target/build, not a
   general LuaJIT-version law", never cross-checked against upstream `lj_obj.h` — but
   **nothing in the code or in any envelope carries that caveat**, so the honesty lives only
   where a user will not look. Anti-hardcode fix: make the layout a named, overridable
@@ -7570,14 +7570,14 @@ The PDB reader (gap-closing item 1, M1) is the first parser built under this rul
   Its items are small next to Phase 3's decompiler, but they attack the thing
   that actually dominated wall-clock time: not missing capability, but **working
   the layers in the wrong order** and **trusting under-evidenced patterns**.
-  Sequence it by payoff, not by size — `game grep` (F2) and `locate
+  Sequence it by payoff, not by size — `concept grep` (F2) and `locate
   --by-transition` (W1) are worth more than the rest combined, because one
   attacks the root cause and the other formalizes the only technique that ever
   reliably worked.
 - **Phase 12 is independent of Phase 10 and partly substitutes for it on this corpus.**
   It needs nothing from the decompiler-depth work, and its devirtualization item resolves
   Phase 10's hardest ❌ (indirect/virtual calls) by table lookup for IL2CPP targets — so on
-  a game corpus, 12 outranks 10 on payoff per unit of work. Within 12, ship item 0 (import
+  a corpus like this one, 12 outranks 10 on payoff per unit of work. Within 12, ship item 0 (import
   an external dump) immediately: it is a day's work, it is reversible, and it tells you
   what the rest of the phase is actually worth before you write a metadata parser. Then
   drive to item 3 (managed provenance) — it is the item the phase exists for, and

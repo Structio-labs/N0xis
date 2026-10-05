@@ -4,7 +4,7 @@
 //! **Live-memory exit test** — the 27% of the command surface that had no
 //! oracle at all.
 //!
-//! Thirty-one commands read, write, patch, scan, watch and freeze another
+//! Thirty-one commands read, write, patch, scan, watch and pin values in another
 //! process's memory, and until this test every one of them was believed rather
 //! than measured: there is no static fixture for a running program, so nothing
 //! checked them. This spawns a disposable target that *plants* known values at
@@ -26,7 +26,8 @@
 //! silence as a defect.
 //!
 //! Linux-only, because the objective source is. `patch detour` and
-//! `table freeze` are Windows-only in the product and are asserted to *say so*
+//! `table pin` (called below by its first name, `table freeze`, which must
+//! keep working) are Windows-only in the product and are asserted to *say so*
 //! rather than being silently skipped — an unimplemented path that answers
 //! "unsupported on this build" is a kept promise; one that answers nothing is
 //! not.

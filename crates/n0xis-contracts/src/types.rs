@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn module_rva_and_containment() {
         let m = Module {
-            name: "game.exe".into(),
+            name: "app.exe".into(),
             base: Va(0x140000000),
             size: 0x1000,
             path: None,

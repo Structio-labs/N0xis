@@ -4,9 +4,8 @@
 use std::fs;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let name = args.get(1).expect("usage: dump_one <filename.luac> [grep]");
+    let path = std::path::PathBuf::from(args.get(1).expect("usage: dump_one <path/to/chunk.luac> [grep]"));
     let grep = args.get(2).cloned();
-    let path = std::env::temp_dir().join("lua_chunks").join(name);
     let bytes = fs::read(&path).unwrap();
     let chunk = n0xis_lua::disassemble(&bytes).unwrap();
     println!("protos: {}", chunk.protos.len());

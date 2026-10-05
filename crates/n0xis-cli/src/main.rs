@@ -33,7 +33,7 @@ use n0xis_core::{
     ValueType, XrefDir,
 };
 use n0xis_core::{CoordSpace, Rect};
-// Used only by the commands that still need Win32 (table freeze/locator, the
+// Used only by the commands that still need Win32 (table pin/locator, the
 // watchpoint-driven provenance trace, detour trampolines, UI localization).
 // Kept beside those rather than in the cross-platform block above, so the list
 // doubles as an inventory of what a Linux adapter has yet to reach.
@@ -205,7 +205,7 @@ enum Command {
     /// NativeAOT strips from ordinary symbols. Works on `--file` and `--pid`.
     #[command(subcommand)]
     Aot(AotCmd),
-    /// `.n0xt` cheat/analysis tables.
+    /// `.n0xt` address/analysis tables.
     #[command(subcommand)]
     Table(TableCmd),
     /// Fuse a live watchpoint hit with the SSA decompiler: what code, in
@@ -241,8 +241,8 @@ enum Command {
     #[command(subcommand)]
     Diff(DiffCmd),
     /// Bitsquid bundle files (chunked-zlib archive +
-    /// exploded-package entries/variants) — reading game assets, not process
-    /// memory.
+    /// exploded-package entries/variants) — reading packaged assets, not
+    /// process memory.
     #[command(subcommand)]
     Bundle(BundleCmd),
     /// Lua/LuaJIT bytecode disassembly.
@@ -254,9 +254,12 @@ enum Command {
     // `game` is a hidden alias: this command was first published as
     // `game grep`, and scripts and recipes written against that name must keep
     // parsing to exactly this command. Hidden, so `guide` and `--help` list one
-    // name and the catalog's command count does not change. A plain comment,
-    // not a doc comment: clap would print a `///` paragraph as user help.
-    #[command(subcommand, alias = "game")]
+    // name and the catalog's command count does not change. The alias is read
+    // from `CONCEPT_GREP`, the record that also keeps the old spelling's schema
+    // id, so the name that parses and the name that is bridged are one fact.
+    // A plain comment, not a doc comment: clap would print a `///` paragraph
+    // as user help.
+    #[command(subcommand, alias = CONCEPT_GREP.first[0])]
     Concept(ConceptCmd),
     /// Localize a value by the *transition diff* — snapshot, let the operator
     /// toggle one thing, rescan, keep only what changed (Phase 8; RE_METHOD W1,
@@ -319,7 +322,7 @@ enum Il2cppCmd {
     /// every field with the offset the runtime states. No metadata parse, no
     /// external dumper — the layout is discovered and validated.
     Obj(Il2cppObjArgs),
-    /// Enumerate the C# classes a running game has loaded, by sampling the heap
+    /// Enumerate the C# classes a running process has loaded, by sampling the heap
     /// for object headers. No metadata parse, no dumper — and a sample, which
     /// the answer says plainly.
     Classes(Il2cppClassesArgs),
@@ -394,8 +397,8 @@ struct Il2cppClassesArgs {
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     min_hits: Option<usize>,
     /// Accept classes with no pointer to themselves. Needed only for builds
-    /// older than Unity 2018.1, and much slower — the self-pointer is what
-    /// rejects candidates without reading strings.
+    /// whose IL2CPP runtime predates 2018.1, and much slower — the self-pointer
+    /// is what rejects candidates without reading strings.
     #[arg(long)]
     any_layout: bool,
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
@@ -430,8 +433,8 @@ struct Il2cppIcallsArgs {
     #[arg(long)]
     file: Option<String>,
     /// Which module to scan, by case-insensitive substring. Required in
-    /// practice on a live IL2CPP target: the main module is a thin player and
-    /// the code is in `GameAssembly.dll`.
+    /// practice on a live IL2CPP target: the main module is a thin host
+    /// executable and the code is in `GameAssembly.dll`.
     #[arg(long)]
     module: Option<String>,
     /// Case-insensitive substring of the registration name.
@@ -455,7 +458,7 @@ struct Il2cppMetadataArgs {
     #[arg(long)]
     file: Option<String>,
     /// Case-insensitive substring to search the string literals for — the
-    /// static answer to "is this on-screen text in the game".
+    /// static answer to "is this on-screen text in the program".
     #[arg(long)]
     query: Option<String>,
     /// Maximum literals to return (default 50, capped at 1000).
@@ -473,7 +476,7 @@ enum UiCmd {
     /// layout against a screen rect. Do not rely on the results.
     Locate(UiLocateArgs),
     /// List a process's top-level windows (title/class/rects/DPI) so an agent
-    /// can name the game window before capturing or locating.
+    /// can name the target's main window before capturing or locating.
     Windows(UiWindowsArgs),
     /// Capture a window to a PNG so an agent can visually choose a rect. Honest
     /// about blank frames (GDI/PrintWindow return black for flip-model DirectX)
@@ -507,7 +510,7 @@ struct UiScreenshotArgs {
     #[arg(long)]
     pid: u32,
     /// Capture this specific window (HWND, as printed by `ui windows`);
-    /// defaults to the best-guess game window for the pid.
+    /// defaults to the best-guess main window for the pid.
     #[arg(long)]
     hwnd: Option<usize>,
     /// Capture path. `auto` (default) tries composited then GDI and returns the
@@ -529,7 +532,7 @@ struct UiFocusArgs {
     #[arg(long)]
     pid: u32,
     /// Window to focus (HWND from `ui windows`); defaults to the best-guess
-    /// game window for the pid.
+    /// main window for the pid.
     #[arg(long)]
     hwnd: Option<usize>,
 }
@@ -809,7 +812,7 @@ struct SigValidateArgs {
     #[arg(long)]
     signature: Option<String>,
     /// Which axes you deliberately varied across the samples
-    /// (`map,mission,seed`). Required to bless — an invariant is only
+    /// (`input,session,seed`). Required to bless — an invariant is only
     /// meaningful relative to what changed.
     #[arg(long)]
     varied: Option<String>,
@@ -874,7 +877,7 @@ enum BundleCmd {
 
 #[derive(Args)]
 struct BundleListArgs {
-    /// The bundle (archive) file — a hash-named file under the game's
+    /// The bundle (archive) file — a hash-named file under the application's
     /// `contents/` directory.
     #[arg(long)]
     file: String,
@@ -941,12 +944,12 @@ enum LuaCmd {
     Table(LuaTableArgs),
     /// Find live Lua *arrays of known strings* in the heap by matching runs of
     /// tagged `TValue`s against a target string set — layout-independent (needs
-    /// no `GCtab` calibration). Built for reading an interact-combo
+    /// no `GCtab` calibration). Built for reading a direction sequence
     /// `{"up","down",…}` straight out of memory, but general to any
     /// array-of-known-tokens.
     Combo(LuaComboArgs),
     /// Recover an LCG seed from an observed sequence: scan a live process for a
-    /// 4-byte word whose `s'=s*a+c` LCG reproduces a known combo, locating the
+    /// 4-byte word whose `s'=s*a+c` LCG reproduces a known sequence, locating the
     /// seed field and validating the RNG model at once. Constants are flags
     /// (default = the commonly observed Numerical-Recipes pair).
     Seedscan(LuaSeedscanArgs),
@@ -962,8 +965,8 @@ struct LuaSeedscanArgs {
     start: Option<String>,
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
-    /// The observed combo as directions (`up,down,down,up`) — mapped to the
-    /// engine's `random(0,3)` codes `left=0,up=1,right=2,down=3`.
+    /// The observed sequence as directions (`up,down,down,up`) — mapped to the
+    /// script's `random(0,3)` codes `left=0,up=1,right=2,down=3`.
     #[arg(long)]
     combo: String,
     /// LCG multiplier `a` (default: Numerical Recipes).
@@ -975,7 +978,7 @@ struct LuaSeedscanArgs {
     /// Range size `k` for `random(0, k-1)` (4 directions).
     #[arg(long, default_value_t = 4)]
     range: u32,
-    /// Constrain candidate seeds to `[1, 2^31-2]` (the game's `math.random`
+    /// Constrain candidate seeds to `[1, 2^31-2]` (the target's `math.random`
     /// range) to cut coincidental matches. Pass `--no-seed-bound` to disable.
     #[arg(long = "no-seed-bound", action = clap::ArgAction::SetFalse)]
     seed_bound: bool,
@@ -1070,7 +1073,7 @@ struct LuaComboArgs {
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Comma-separated token set the array elements must be drawn from. Default
-    /// is the four interact-combo directions.
+    /// is the four directions.
     #[arg(long, default_value = "up,down,left,right")]
     strings: String,
     /// Minimum consecutive matching elements to report as a run (filters
@@ -1438,7 +1441,7 @@ enum CapabilityCmd {
 struct CapabilityRunArgs {
     /// Capability name, as reported by `capability list` (e.g. `decode`).
     name: String,
-    /// Arguments as a JSON object, e.g. `{"file":"game.exe","addr":"0x140001000"}`.
+    /// Arguments as a JSON object, e.g. `{"file":"app.exe","addr":"0x140001000"}`.
     #[arg(long, default_value = "{}")]
     args: String,
 }
@@ -1704,7 +1707,7 @@ enum FunctionCmd {
     /// Walk the call graph from a root function.
     Trace(FunctionTraceArgs),
     /// Whole-program noreturn analysis: discover functions, then run the
-    /// call-graph fixpoint that proves which never return — including a game's
+    /// call-graph fixpoint that proves which never return — including a program's
     /// own `FatalError`/`Assert` wrappers, not just named imports.
     Noreturn(FunctionNoreturnArgs),
     /// Per-function interprocedural summary — the substrate the whole-program
@@ -1879,7 +1882,7 @@ struct ProfileArgs {
     arch: Option<String>,
     /// Which loaded module to profile (case-insensitive substring). Defaults
     /// to the main module — worth overriding on any target whose real code is
-    /// in a DLL: an IL2CPP player EXE profiles as 2 exports and 319 functions
+    /// in a DLL: an IL2CPP host EXE profiles as 2 exports and 319 functions
     /// while `--module GameAssembly.dll` is where the other 277 199 live.
     #[arg(long)]
     module: Option<String>,
@@ -2152,7 +2155,7 @@ enum XrefCmd {
 struct XrefStringArgs {
     /// Restrict the scan to this module, by case-insensitive name substring
     /// (e.g. `GameAssembly.dll`). Live IL2CPP targets need it: the main module is
-    /// a thin player executable and the code lives in a DLL.
+    /// a thin host executable and the code lives in a DLL.
     #[arg(long)]
     module: Option<String>,
 
@@ -2194,7 +2197,7 @@ struct XrefStringArgs {
 struct XrefArgs {
     /// Restrict the scan to this module, by case-insensitive name substring
     /// (e.g. `GameAssembly.dll`). Live IL2CPP targets need it: the main module is
-    /// a thin player executable and the code lives in a DLL.
+    /// a thin host executable and the code lives in a DLL.
     #[arg(long)]
     module: Option<String>,
 
@@ -2248,7 +2251,7 @@ enum IrCmd {
 struct ManifestArgs {
     /// Restrict the scan to this module, by case-insensitive name substring
     /// (e.g. `GameAssembly.dll`). Live IL2CPP targets need it: the main module is
-    /// a thin player executable and the code lives in a DLL.
+    /// a thin host executable and the code lives in a DLL.
     #[arg(long)]
     module: Option<String>,
 
@@ -2582,8 +2585,13 @@ enum TableCmd {
     Show(TableShowArgs),
     /// Remove one entry (or the whole table with `--whole-table`).
     Rm(TableShowArgs),
-    /// Repeatedly write an entry's frozen value for a bounded duration.
-    Freeze(TableFreezeArgs),
+    /// Repeatedly write an entry's pinned value for a bounded duration.
+    // `freeze` is a hidden alias: the command was first published as
+    // `table freeze`, and that spelling must keep parsing to exactly this
+    // command. Read from `TABLE_PIN`, which also keeps the old spelling's
+    // schema id. A plain comment, not a doc comment: clap would print it.
+    #[command(alias = TABLE_PIN.first[1])]
+    Pin(TablePinArgs),
 }
 
 #[derive(Args)]
@@ -2615,7 +2623,7 @@ struct TableShowArgs {
 }
 
 #[derive(Args)]
-struct TableFreezeArgs {
+struct TablePinArgs {
     #[arg(long)]
     table: String,
     #[arg(long)]
@@ -2646,7 +2654,7 @@ struct IrArgs {
     /// Which module `--addr-rva` is relative to (case-insensitive substring).
     /// Defaults to the main module — which is the *wrong* one whenever the
     /// code you care about lives in a DLL, as it does in every IL2CPP
-    /// game (`--addr-module GameAssembly.dll`).
+    /// build (`--addr-module GameAssembly.dll`).
     #[arg(long)]
     addr_module: Option<String>,
     /// Instruction set to decode: `x64` (default) or `arm64`.
@@ -2783,17 +2791,129 @@ fn main() {
         cmd_serve(a);
         return;
     }
-    let ok = dispatch(cli.command, pretty, cli.global.quiet);
+    // Lossy, because only subcommand names are read from it, and those are
+    // ASCII: `std::env::args()` would panic on a non-UTF-8 path argument that
+    // clap itself accepted above.
+    let argv: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
+    let typed = typed_path(&<Cli as clap::CommandFactory>::command(), &argv);
+    let ok = dispatch(cli.command, &typed, pretty, cli.global.quiet);
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
         std::process::exit(2);
     }
 }
 
+/// A leaf command that shipped under one path and was renamed later.
+///
+/// Two promises ride on the first name, and both are read from this one record
+/// so they cannot drift apart: the first spelling still *parses* — the hidden
+/// clap alias on the renamed level is spelled from [`Renamed::first`] — and a
+/// call spelled that way still answers with the schema id the first release
+/// emitted, so a consumer dispatching on `meta.schema` keeps working ("bridge,
+/// never break"). The current spelling answers with the current id.
+struct Renamed {
+    /// The path the catalog lists, e.g. `["concept", "grep"]`.
+    // Read only through `path`, which only the off-Windows refusal of
+    // `table pin` uses; on Windows that command runs and its answer names
+    // itself by schema id instead.
+    #[cfg_attr(windows, allow(dead_code))]
+    current: &'static [&'static str],
+    /// The path the command was first published under, e.g. `["game", "grep"]`.
+    first: &'static [&'static str],
+    current_schema: &'static str,
+    first_schema: &'static str,
+}
+
+/// Which of its two names a renamed command was called by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spelled {
+    Current,
+    First,
+}
+
+impl Renamed {
+    /// Which spelling `typed` (from [`typed_path`]) is. Only an exact match of
+    /// the first path is the first spelling: the dispatch arm that asks has
+    /// already matched this command, so anything else is the current name.
+    fn spelled(&self, typed: &[String]) -> Spelled {
+        if typed.iter().map(String::as_str).eq(self.first.iter().copied()) { Spelled::First } else { Spelled::Current }
+    }
+
+    fn schema(&self, s: Spelled) -> &'static str {
+        match s {
+            Spelled::Current => self.current_schema,
+            Spelled::First => self.first_schema,
+        }
+    }
+
+    /// The command path in the spelling the caller used, for messages that
+    /// name the command back to them.
+    #[cfg_attr(windows, allow(dead_code))]
+    fn path(&self, s: Spelled) -> String {
+        match s {
+            Spelled::Current => self.current.join(" "),
+            Spelled::First => self.first.join(" "),
+        }
+    }
+}
+
+/// `concept grep`, first published as `game grep`.
+const CONCEPT_GREP: Renamed = Renamed {
+    current: &["concept", "grep"],
+    first: &["game", "grep"],
+    current_schema: schema::v1::CONCEPT_GREP,
+    first_schema: schema::v1::GAME_GREP,
+};
+
+/// `table pin`, first published as `table freeze`.
+const TABLE_PIN: Renamed = Renamed {
+    current: &["table", "pin"],
+    first: &["table", "freeze"],
+    current_schema: schema::v1::PIN,
+    first_schema: schema::v1::FREEZE,
+};
+
+/// The subcommand path exactly as the caller typed it, alias spellings kept.
+///
+/// clap resolves an alias to its canonical subcommand and reports only that —
+/// `game grep` parses to the very `Command` that `concept grep` does, which is
+/// the point of the alias, and leaves no trace of which name was used. So the
+/// spelling is read from the tokens: walk the clap tree from the root, and let
+/// each word that names a subcommand of the current level (by name or by
+/// alias) descend, stopping at the leaf. Words starting with `-` are skipped
+/// as value-less flags; that holds because no command above a leaf takes an
+/// option with a value (`typed_path_premise_tests` fails if one ever does —
+/// its value would be read here as a subcommand name).
+///
+/// `argv` includes the program name, as `std::env::args` and the `serve`
+/// request line do.
+fn typed_path(root: &clap::Command, argv: &[String]) -> Vec<String> {
+    let mut cur = root;
+    let mut path = Vec::new();
+    for tok in argv.iter().skip(1) {
+        if tok == "--" {
+            break;
+        }
+        if tok.starts_with('-') {
+            continue;
+        }
+        match cur.get_subcommands().find(|c| c.get_name() == tok || c.get_all_aliases().any(|a| a == tok)) {
+            Some(next) => {
+                path.push(tok.clone());
+                cur = next;
+            }
+            None => break,
+        }
+    }
+    path
+}
+
 /// Dispatch one parsed command to its handler, returning whether it succeeded.
 /// Factored out of `main` so the persistent `serve` loop can re-run commands
-/// against an already-loaded image (see `cmd_serve`).
-fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
+/// against an already-loaded image (see `cmd_serve`). `typed` is the command
+/// path as the caller spelled it ([`typed_path`]) — the parsed `command` cannot
+/// say which name a renamed command was called by, and the answer differs.
+fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bool {
     match command {
         Command::Analyze(a) => cmd_analyze(a, pretty, quiet),
         Command::Find(a) => cmd_find(a, pretty),
@@ -2879,7 +2999,7 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
         Command::Table(TableCmd::List(a)) => cmd_table_list(a, pretty),
         Command::Table(TableCmd::Show(a)) => cmd_table_show(a, pretty),
         Command::Table(TableCmd::Rm(a)) => cmd_table_rm(a, pretty),
-        Command::Table(TableCmd::Freeze(a)) => cmd_table_freeze(a, pretty),
+        Command::Table(TableCmd::Pin(a)) => cmd_table_pin(a, TABLE_PIN.spelled(typed), pretty),
         Command::Provenance(ProvenanceCmd::Trace(a)) => cmd_provenance_trace(a, pretty),
         Command::Annotate(AnnotateCmd::Name(a)) => cmd_annotate_set("name", a, pretty),
         Command::Annotate(AnnotateCmd::Type(a)) => cmd_annotate_set("type", a, pretty),
@@ -2904,7 +3024,7 @@ fn dispatch(command: Command, pretty: bool, quiet: bool) -> bool {
         Command::Lua(LuaCmd::Table(a)) => cmd_lua_table(a, pretty),
         Command::Lua(LuaCmd::Combo(a)) => cmd_lua_combo(a, pretty),
         Command::Lua(LuaCmd::Seedscan(a)) => cmd_lua_seedscan(a, pretty),
-        Command::Concept(ConceptCmd::Grep(a)) => cmd_concept_grep(a, pretty),
+        Command::Concept(ConceptCmd::Grep(a)) => cmd_concept_grep(a, CONCEPT_GREP.spelled(typed), pretty),
         Command::Locate(LocateCmd::ByTransition(a)) => cmd_locate_by_transition(a, pretty),
         Command::Input(InputCmd::Probe(a)) => cmd_input_probe(a, pretty),
         Command::Const(ConstCmd::Identify(a)) => cmd_const_identify(a, pretty),
@@ -2942,7 +3062,7 @@ fn guide_category(top: &str) -> &'static str {
         "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
         "ui" => "UI-layer localization (Phase 9, marked invalid)",
         "il2cpp" => "IL2CPP managed layer (Phase 12)",
-        "bundle" | "lua" => "Game-engine assets (Bitsquid/LuaJIT)",
+        "bundle" | "lua" => "Script & asset archives (Bitsquid/LuaJIT)",
         _ => "Other",
     }
 }
@@ -3013,8 +3133,8 @@ fn guide_collect(cmd: &clap::Command, prefix: &str, brief: bool, out: &mut Vec<s
 fn guide_workflows() -> Vec<serde_json::Value> {
     vec![
         json!({
-            "name": "spec-first ladder (start here for any game feature)",
-            "when": "you want to understand a game mechanic (a combo, a timer, a drop table). Climb top-down: data → scripts → native bindings → native code → memory. Each rung is cheaper and more stable than the one below.",
+            "name": "spec-first ladder (start here for any application feature)",
+            "when": "you want to understand an application's behaviour (an input sequence, a timer, a lookup table). Climb top-down: data → scripts → native bindings → native code → memory. Each rung is cheaper and more stable than the one below.",
             "maps_to": "RE_METHOD F2/W4 — ~90% of a campaign was wasted reversing runtime state that was declaratively specified in scripts.",
             "steps": [
                 "bundle list --file <archive>            # is there a script layer? extract it",
@@ -3022,7 +3142,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
                 "concept grep \"retry,backoff,timeout\" --dir ./scripts   # find the feature's vocabulary cluster",
                 "lua disasm --file ./scripts/<hit>.luac  # read the algorithm out of the script",
                 "const identify --lua ./scripts/<hit>.luac  # recognize the RNG/hash by its constants",
-                "bindings list --file <game.exe> --name next_random   # only now go native, and only for what scripts call",
+                "bindings list --file <app.exe> --name next_random   # only now go native, and only for what scripts call",
                 "# read memory ONLY for the irreducible input (a seed/handle), never the whole object graph"
             ]
         }),
@@ -3051,7 +3171,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
             "when": "you are about to build any input/automation feature. Verify the target actually registers your actuation first.",
             "maps_to": "RE_METHOD F4 — an entire input feature was shipped that never once registered (LLKHF_INJECTED filtered).",
             "steps": [
-                "input probe --pid <p>   # reports which methods carry LLKHF_INJECTED (a filtering game ignores those)"
+                "input probe --pid <p>   # reports which methods carry LLKHF_INJECTED (a filtering target ignores those)"
             ]
         }),
         json!({
@@ -3059,7 +3179,7 @@ fn guide_workflows() -> Vec<serde_json::Value> {
             "when": "you have a candidate byte pattern / marker and want to know if it is real or an N=2 coincidence.",
             "maps_to": "RE_METHOD F3 — a marker matched two same-seed instances and shipped broken.",
             "steps": [
-                "sig validate --sample <hex-a> --sample <hex-b> --sample <hex-c> --varied map,mission,seed --signature \"48 8B ?? 68\"",
+                "sig validate --sample <hex-a> --sample <hex-b> --sample <hex-c> --varied input,session,seed --signature \"48 8B ?? 68\"",
                 "# refuses to bless <3 deliberately-varied samples; reports which bytes are actually invariant"
             ]
         }),
@@ -3403,8 +3523,8 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
 
     // The image path: the file we were handed, or the live module's own path.
     // The *metadata* search is deliberately anchored to the main module's
-    // directory either way — an IL2CPP game's `*_Data` folder sits beside the
-    // player executable, not necessarily beside whichever DLL is being
+    // directory either way — an IL2CPP build's `*_Data` folder sits beside the
+    // host executable, not necessarily beside whichever DLL is being
     // profiled.
     let image_path = match (&a.file, &src) {
         (Some(f), _) => Some(f.clone()),
@@ -4587,7 +4707,7 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
 // scan / pointer-path / aob / dissect (ROADMAP Phase 4b)
 // ============================================================================
 
-/// Turn a CLI number into a typed scan value. `table freeze` still needs Win32,
+/// Turn a CLI number into a typed scan value. `table pin` still needs Win32,
 /// but `locate by-transition` does not — the conversion itself is arithmetic.
 fn to_scan_value(v: f64) -> ScanValue {
     if v.fract() == 0.0 && v.abs() < 9.2e18 { ScanValue::Int(v as i64) } else { ScanValue::Float(v) }
@@ -5344,6 +5464,10 @@ fn cmd_serve(a: &ServeArgs) {
         let bare: Vec<String> = std::iter::once("n0xis".to_string()).chain(tokens.iter().cloned()).collect();
         let augmented: Vec<String> = bare.iter().cloned().chain(["--file".to_string(), a.file.clone()]).collect();
         let cli = <Cli as clap::CommandFactory>::command();
+        // The spelling is the line's own, read from the bare tokens: the
+        // `--file` the session may append sits after the leaf and cannot change
+        // the path. A renamed command answers per spelling (see `Renamed`).
+        let typed = typed_path(&cli, &bare);
         let bare_matches = cli.clone().try_get_matches_from(&bare);
         let names_source = bare_matches.as_ref().is_ok_and(serve_names_source);
         let takes_file = !names_source
@@ -5363,7 +5487,7 @@ fn cmd_serve(a: &ServeArgs) {
                 cmd => {
                     // force compact output so every response is exactly one line;
                     // suppress [n0x] progress so it can't interleave a session line
-                    let _ = dispatch(cmd, false, true);
+                    let _ = dispatch(cmd, &typed, false, true);
                 }
             },
             Err(e) => emit_err("parse-error", e.to_string()),
@@ -5519,7 +5643,7 @@ fn cmd_table_rm(a: TableShowArgs, pretty: bool) -> bool {
     run_capability("table.rm", json!({ "table": a.table, "name": a.name }), pretty)
 }
 
-fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
+fn cmd_table_pin(a: TablePinArgs, spelled: Spelled, pretty: bool) -> bool {
     let table = match n0xis_project::table::load(&a.table) {
         Ok(t) => t,
         Err(e) => return ir_err("table-not-found", &e.to_string(), pretty),
@@ -5538,7 +5662,8 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
     #[cfg(not(windows))]
     {
         let _ = &bytes;
-        ir_err("live-unsupported", "table freeze requires a Windows build (needs LiveProcess/Win32 APIs)", pretty)
+        let msg = format!("{} requires a Windows build (needs LiveProcess/Win32 APIs)", TABLE_PIN.path(spelled));
+        ir_err("live-unsupported", &msg, pretty)
     }
     #[cfg(windows)]
     {
@@ -5569,7 +5694,7 @@ fn cmd_table_freeze(a: TableFreezeArgs, pretty: bool) -> bool {
             "table": a.table, "entry": a.name, "address": addr, "value": value,
             "writes": writes, "errors": errors, "durationMs": a.duration_ms, "intervalMs": a.interval_ms,
         });
-        emit(&Response::success(schema::v1::FREEZE, data).with_source(live.label()), pretty)
+        emit(&Response::success(TABLE_PIN.schema(spelled), data).with_source(live.label()), pretty)
     }
 }
 
@@ -5802,7 +5927,7 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
             return ir_err("no-strings", "--strings must list at least one token", pretty);
         }
         let layout = gcstr_layout(a.gcstr_len_off);
-        // Longest token bounds the GCstr scan; the combo tokens are short ASCII.
+        // Longest token bounds the GCstr scan; the wanted tokens are short ASCII.
         let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
         // Every candidate GCstr whose text is one of the wanted tokens becomes a
         // target address — the run cross-check discards any that aren't referenced.
@@ -5817,7 +5942,7 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
             let data = json!({ "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
             return emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(live.label()), pretty);
         }
-        // A combo array may be laid out as 8-byte Lua `TValue`s or as a packed
+        // A token array may be laid out as 8-byte Lua `TValue`s or as a packed
         // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
         let mut runs_json: Vec<serde_json::Value> = Vec::new();
         let tv = n0xis_luajit::find_string_runs(live.as_ref(), &regions, &targets, a.min_run);
@@ -5839,7 +5964,7 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
     }
 }
 
-/// `random(0,3)` direction codes, from the game's `modify_random_combo_inputs`:
+/// `random(0,3)` direction codes, from the target script's direction randomizer:
 /// `0=left, 1=up, 2=right, 3=down`.
 fn dir_to_code(d: &str) -> Option<u32> {
     match d.trim() {
@@ -6046,7 +6171,7 @@ fn collect_documents(dir: &std::path::Path, docs: &mut Vec<Document>, budget: &m
     }
 }
 
-fn cmd_concept_grep(a: ConceptGrepArgs, pretty: bool) -> bool {
+fn cmd_concept_grep(a: ConceptGrepArgs, spelled: Spelled, pretty: bool) -> bool {
     let mut terms = split_concept(&a.concept);
     terms.extend(a.terms.iter().cloned());
     if terms.is_empty() {
@@ -6066,7 +6191,7 @@ fn cmd_concept_grep(a: ConceptGrepArgs, pretty: bool) -> bool {
     let opts = RankOptions { limit: a.limit, max_snippets: a.max_snippets, min_distinct: a.min_distinct.max(1) };
     let art = game_grep_rank(&terms, &docs, &opts);
     emit(
-        &Response::success(schema::v1::GAME_GREP, art).with_source(a.dirs.join(",")),
+        &Response::success(CONCEPT_GREP.schema(spelled), art).with_source(a.dirs.join(",")),
         pretty,
     )
 }
@@ -6949,7 +7074,7 @@ fn cmd_ui_windows(a: UiWindowsArgs, pretty: bool) -> bool {
             "count": windows.len(),
             "windows": windows,
             "coords": "physical",
-            "note": "rect_frame is the canonical visible bounds for capture/input; rect_window includes the DWM shadow; rect_client is where the game renders. Pass an hwnd to `ui screenshot`/`ui focus`.",
+            "note": "rect_frame is the canonical visible bounds for capture/input; rect_window includes the DWM shadow; rect_client is where the application renders. Pass an hwnd to `ui screenshot`/`ui focus`.",
         });
         emit(&Response::success(schema::v1::UI_WINDOWS, data).with_source(format!("pid:{}", a.pid)), pretty)
     }
@@ -6957,7 +7082,7 @@ fn cmd_ui_windows(a: UiWindowsArgs, pretty: bool) -> bool {
 
 /// Resolve the target window: an explicit `--hwnd` (verified to actually belong
 /// to `pid`, so a stale/foreign handle can't silently screenshot another
-/// process while the envelope reports this pid), else the best-guess game
+/// process while the envelope reports this pid), else the best-guess main
 /// window for the pid. Returns the HWND integer or an error payload.
 #[cfg(windows)]
 fn resolve_ui_window(pid: u32, hwnd: Option<usize>, pretty: bool) -> Result<usize, bool> {
@@ -7242,6 +7367,158 @@ mod concept_alias_tests {
             (old.concept, old.dirs, old.terms, old.min_distinct, old.limit, old.max_snippets),
             "`game grep` and `concept grep` must carry identical arguments"
         );
+    }
+}
+
+/// `table pin` was first published as `table freeze`; the same promise as
+/// `concept_alias_tests`, for the second renamed command.
+#[cfg(test)]
+mod table_pin_alias_tests {
+    use super::*;
+
+    /// Every argument set to a non-default value, so a field the alias failed
+    /// to carry cannot hide behind its default.
+    const PIN_ARGS: &[&str] = &[
+        "--table", "t", "--name", "n", "--pid", "4242", "--value", "7",
+        "--interval-ms", "11", "--duration-ms", "13",
+    ];
+
+    fn parse_pin(sub: &str) -> TablePinArgs {
+        let argv: Vec<&str> = ["n0xis", "table", sub].into_iter().chain(PIN_ARGS.iter().copied()).collect();
+        let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("`table {sub}` must parse: {e}"));
+        match cli.command {
+            Command::Table(TableCmd::Pin(a)) => a,
+            _ => panic!("`table {sub}` parsed to a different command than `table pin`"),
+        }
+    }
+
+    #[test]
+    fn the_first_name_parses_to_the_same_command_with_the_same_arguments() {
+        // Exhaustive destructuring: a field added to the arguments must be
+        // compared here too, or this stops compiling.
+        let TablePinArgs { table, name, pid, value, interval_ms, duration_ms } = parse_pin("pin");
+        let old = parse_pin("freeze");
+        assert_eq!((table.as_str(), name.as_str(), pid, value, interval_ms, duration_ms), ("t", "n", 4242, Some(7.0), 11, 13));
+        assert_eq!(
+            (table, name, pid, value, interval_ms, duration_ms),
+            (old.table, old.name, old.pid, old.value, old.interval_ms, old.duration_ms),
+            "`table freeze` and `table pin` must carry identical arguments"
+        );
+    }
+}
+
+/// The schema bridge for renamed commands: which name the caller typed decides
+/// which id the answer carries, and clap cannot say which name that was.
+#[cfg(test)]
+mod renamed_command_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    const RENAMES: &[&Renamed] = &[&CONCEPT_GREP, &TABLE_PIN];
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// Follow `path` down the clap tree, by canonical name only or also by
+    /// alias. `None` when a word names no subcommand at its level.
+    fn node<'a>(root: &'a clap::Command, path: &[&str], by_alias: bool) -> Option<&'a clap::Command> {
+        let mut cur = root;
+        for w in path {
+            cur = cur.get_subcommands().find(|c| c.get_name() == *w || (by_alias && c.get_all_aliases().any(|a| a == *w)))?;
+        }
+        Some(cur)
+    }
+
+    /// The ids are wire contracts, so they are written out here rather than
+    /// read back from the constants under test: the first ids are the ones the
+    /// first release emitted, and a change to either must fail this line.
+    #[test]
+    fn each_spelling_maps_to_its_own_schema_id() {
+        assert_eq!(CONCEPT_GREP.schema(Spelled::First), "n0xis.game.grep.v1");
+        assert_eq!(CONCEPT_GREP.schema(Spelled::Current), "n0xis.concept.grep.v1");
+        assert_eq!(TABLE_PIN.schema(Spelled::First), "n0xis.freeze.v1");
+        assert_eq!(TABLE_PIN.schema(Spelled::Current), "n0xis.pin.v1");
+    }
+
+    #[test]
+    fn the_typed_path_keeps_the_spelling_clap_resolves_away() {
+        let root = Cli::command();
+        // Global flags before, between and after the words, and an argument
+        // after the leaf that happens to spell a command name: none of them may
+        // move the path.
+        let cases: &[(&[&str], &[&str])] = &[
+            (&["n0xis", "game", "grep", "x", "--dir", "d"], &["game", "grep"]),
+            (&["n0xis", "--pretty", "concept", "--quiet", "grep", "table", "--dir", "game"], &["concept", "grep"]),
+            (&["n0xis", "table", "freeze", "--table", "t", "--name", "pin", "--pid", "1"], &["table", "freeze"]),
+            (&["n0xis", "--quiet", "table", "pin", "--table", "freeze"], &["table", "pin"]),
+        ];
+        for (input, want) in cases {
+            assert_eq!(typed_path(&root, &argv(input)), argv(want), "typed path of {input:?}");
+        }
+        // And the spelling each yields.
+        assert_eq!(CONCEPT_GREP.spelled(&argv(&["game", "grep"])), Spelled::First);
+        assert_eq!(CONCEPT_GREP.spelled(&argv(&["concept", "grep"])), Spelled::Current);
+        assert_eq!(TABLE_PIN.spelled(&argv(&["table", "freeze"])), Spelled::First);
+        assert_eq!(TABLE_PIN.spelled(&argv(&["table", "pin"])), Spelled::Current);
+    }
+
+    /// The record and the clap definition must describe the same command: the
+    /// current path is a real leaf under its canonical names, the first path
+    /// reaches that same leaf only through an alias, and the alias is hidden —
+    /// a visible one would print a second name in `--help`.
+    #[test]
+    fn every_rename_record_matches_the_command_tree() {
+        let root = Cli::command();
+        for r in RENAMES {
+            let current = node(&root, r.current, false).unwrap_or_else(|| panic!("{:?} is not a command", r.current));
+            assert!(current.get_subcommands().next().is_none(), "{:?} must be a leaf", r.current);
+            let first = node(&root, r.first, true).unwrap_or_else(|| panic!("{:?} does not parse", r.first));
+            assert!(std::ptr::eq(first, current), "{:?} reaches a different command than {:?}", r.first, r.current);
+            assert!(node(&root, r.first, false).is_none(), "{:?} is a canonical name, not an alias", r.first);
+            let mut level = &root;
+            for w in r.first {
+                let next = level.get_subcommands().find(|c| c.get_name() == *w || c.get_all_aliases().any(|a| a == *w)).expect("resolved above");
+                assert!(!next.get_visible_aliases().any(|a| a == *w), "`{w}` in {:?} is a visible alias", r.first);
+                level = next;
+            }
+        }
+    }
+}
+
+/// [`typed_path`] skips every `-`-prefixed token as a value-less flag. That is
+/// only sound while no command above a leaf takes an option with a value: if
+/// one did, its value would be read as a subcommand name and a renamed command
+/// could be answered under the wrong schema id.
+#[cfg(test)]
+mod typed_path_premise_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn collect_valued(cmd: &clap::Command, path: &str, out: &mut Vec<String>) {
+        if cmd.get_subcommands().next().is_none() {
+            return; // a leaf: `typed_path` has stopped before its arguments
+        }
+        for a in cmd.get_arguments() {
+            let takes_value = !matches!(
+                a.get_action(),
+                clap::ArgAction::SetTrue | clap::ArgAction::SetFalse | clap::ArgAction::Count | clap::ArgAction::Help | clap::ArgAction::HelpShort | clap::ArgAction::HelpLong | clap::ArgAction::Version
+            );
+            if takes_value {
+                out.push(format!("`{path}` --{}", a.get_id()));
+            }
+        }
+        for s in cmd.get_subcommands() {
+            collect_valued(s, format!("{path} {}", s.get_name()).trim(), out);
+        }
+    }
+
+    #[test]
+    fn no_command_above_a_leaf_takes_an_option_with_a_value() {
+        let root = Cli::command();
+        let mut valued = Vec::new();
+        collect_valued(&root, "", &mut valued);
+        assert!(valued.is_empty(), "options with values above a leaf break `typed_path`: {valued:?}");
     }
 }
 

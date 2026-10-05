@@ -430,7 +430,7 @@ pub struct UiWindowsRequest {
 pub struct UiScreenshotRequest {
     pub pid: u32,
     /// Specific window HWND (from `ui_windows`); defaults to the best-guess
-    /// game window for the pid.
+    /// main window for the pid.
     #[serde(default)]
     pub hwnd: Option<usize>,
     /// `"auto"` (default), `"window-dc"`, or `"printwindow"`.
@@ -468,7 +468,7 @@ fn parse_capture_methods(s: &str) -> Result<Vec<CaptureMethod>, String> {
     }
 }
 
-/// Resolve `hwnd` (verified to belong to `pid`) or the best-guess game window
+/// Resolve `hwnd` (verified to belong to `pid`) or the best-guess main window
 /// for `pid`. Mirrors the CLI's `resolve_ui_window`.
 #[cfg(windows)]
 fn resolve_ui_hwnd(pid: u32, hwnd: Option<usize>) -> Result<usize, String> {
@@ -1045,7 +1045,7 @@ impl N0xisServer {
     }
 
     #[tool(
-        description = "List a target process's top-level windows (title, class, visibility, rects, DPI), best-guess game window first. Read-only. Use it to pick an hwnd for ui_screenshot / ui_focus, or to see why a capture is blank (minimized / cloaked / off-screen). rect_frame is the canonical visible bounds; rect_client is where the game renders."
+        description = "List a target process's top-level windows (title, class, visibility, rects, DPI), best-guess main window first. Read-only. Use it to pick an hwnd for ui_screenshot / ui_focus, or to see why a capture is blank (minimized / cloaked / off-screen). rect_frame is the canonical visible bounds; rect_client is where the application renders."
     )]
     fn ui_windows(&self, Parameters(a): Parameters<UiWindowsRequest>) -> String {
         #[cfg(not(windows))]

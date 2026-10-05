@@ -305,7 +305,7 @@ fn a_metadata_blob_is_read_natively_with_no_dumper_in_sight() {
 }
 
 #[test]
-fn a_literal_query_answers_is_this_text_in_the_game() {
+fn a_literal_query_answers_is_this_text_in_the_program() {
     // The most common entry point in practice, and the one `xref string`
     // structurally cannot serve on this format: the literals are not in the
     // image at all.
@@ -357,7 +357,7 @@ fn a_file_that_is_not_metadata_is_refused_by_name() {
 
 #[test]
 fn the_blob_is_found_beside_the_target_without_being_told_where() {
-    // The IL2CPP layout is `<Game>_Data/il2cpp_data/Metadata/`, and an agent
+    // The IL2CPP layout is `<name>_Data/il2cpp_data/Metadata/`, and an agent
     // holding `--file GameAssembly.dll` should not have to know that.
     let s = Scratch::new("discover");
     let data_dir = s.path("Game_Data").join("il2cpp_data").join("Metadata");
@@ -390,7 +390,7 @@ fn the_blob_is_found_beside_the_target_without_being_told_where() {
 #[test]
 fn an_unmatched_module_refuses_instead_of_scanning_a_different_one() {
     // Range-scoped commands take `--module` because a live IL2CPP target keeps
-    // its code in `GameAssembly.dll` while the main module is a thin player.
+    // its code in `GameAssembly.dll` while the main module is a thin host.
     // The failure mode to prevent is the quiet substitution: asking for a
     // module that is not there and being handed another one's code back, which
     // is how a wrong answer comes to look right.

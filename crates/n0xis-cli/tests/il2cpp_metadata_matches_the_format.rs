@@ -78,9 +78,9 @@ fn roots() -> Vec<PathBuf> {
 fn find_metadata() -> Vec<PathBuf> {
     let mut found = Vec::new();
     for root in roots() {
-        let Ok(games) = std::fs::read_dir(&root) else { continue };
-        for game in games.flatten() {
-            let Ok(entries) = std::fs::read_dir(game.path()) else { continue };
+        let Ok(installs) = std::fs::read_dir(&root) else { continue };
+        for install in installs.flatten() {
+            let Ok(entries) = std::fs::read_dir(install.path()) else { continue };
             for e in entries.flatten() {
                 let p = e.path().join("il2cpp_data/Metadata/global-metadata.dat");
                 if p.is_file() {

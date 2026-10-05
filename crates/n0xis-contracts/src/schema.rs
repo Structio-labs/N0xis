@@ -96,7 +96,12 @@ pub mod v1 {
     pub const AOT_SYMBOLS: &str = "n0xis.aot.symbols.v1";
     /// A `.n0xt` table or entry (`table *`, CONCEPT §10, Phase 4b).
     pub const TABLE: &str = "n0xis.table.v1";
-    /// Freeze-loop report (`table freeze`, Phase 4b).
+    /// Bounded write-loop report (`table pin`, Phase 4b).
+    pub const PIN: &str = "n0xis.pin.v1";
+    /// The same payload as [`PIN`], under the id it first shipped with. The
+    /// command was published as `table freeze`; that spelling still parses (a
+    /// hidden alias) and still answers with this id, so a consumer dispatching
+    /// on `meta.schema` keeps working. Emitted only for that spelling.
     pub const FREEZE: &str = "n0xis.freeze.v1";
     /// Hardware-breakpoint watchpoint hit report (`debug watch`, Phase 4b).
     pub const WATCHPOINT: &str = "n0xis.debug.watchpoint.v1";
@@ -145,9 +150,12 @@ pub mod v1 {
 
     // --- Phase 8: spec-first method tooling ---
     /// Vocabulary-cluster search+rank over scripts/data/strings (`concept grep`).
-    /// The id still carries the command's first name, `game grep`: a consumer
-    /// dispatches on this string, so renaming it is a data-contract change of
-    /// its own, not part of renaming the command.
+    pub const CONCEPT_GREP: &str = "n0xis.concept.grep.v1";
+    /// The same payload as [`CONCEPT_GREP`], under the id it first shipped
+    /// with. The command was published as `game grep`; that spelling still
+    /// parses (a hidden alias) and still answers with this id, so a consumer
+    /// dispatching on `meta.schema` keeps working. Emitted only for that
+    /// spelling.
     pub const GAME_GREP: &str = "n0xis.game.grep.v1";
     /// Transition-diff localization workflow (`locate by-transition`).
     pub const LOCATE_TRANSITION: &str = "n0xis.locate.transition.v1";

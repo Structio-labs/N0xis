@@ -20,7 +20,7 @@ pub struct Meta {
     pub tool: String,
     /// Version of the contracts crate.
     pub tool_version: String,
-    /// What produced the bytes: `"snapshot:test"`, `"static:game.exe"`,
+    /// What produced the bytes: `"snapshot:test"`, `"static:app.exe"`,
     /// `"live:1234"`. Absent when not applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,

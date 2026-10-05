@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! The `.n0xt` table entry format (CONCEPT §10) — a superset of the `.CT`
-//! cheat-table format. Lives here (not `n0xis-project`) because it's a shared
+//! address-table format. Lives here (not `n0xis-project`) because it's a shared
 //! wire contract like every other schema'd type: `n0xis-core`'s scan passes
 //! produce data that becomes a [`TableEntry`], `n0xis-project` persists it,
 //! `n0xis-cli`/`n0xis-mcp` both read and write it — one shape, one place.
@@ -57,15 +57,15 @@ pub enum TableValueType {
     U64,
     F32,
     F64,
-    /// A raw byte blob of `size` bytes (freeze/write not meaningful; used
+    /// A raw byte blob of `size` bytes (pin/write not meaningful; used
     /// for AOB-anchored data regions).
     Aob,
 }
 
 impl TableValueType {
-    /// Encode a freeze/write value as little-endian bytes for this entry's
+    /// Encode a pin/write value as little-endian bytes for this entry's
     /// type — shared by any frontend that writes a `TableEntry`'s value into
-    /// a live process (the CLI's `table freeze`, n0xis-hud's menu toggles).
+    /// a live process (the CLI's `table pin`, n0xis-hud's menu toggles).
     pub fn encode_value(self, v: f64) -> Result<Vec<u8>, String> {
         Ok(match self {
             TableValueType::I8 => (v as i8).to_le_bytes().to_vec(),
@@ -78,7 +78,7 @@ impl TableValueType {
             TableValueType::U64 => (v as u64).to_le_bytes().to_vec(),
             TableValueType::F32 => (v as f32).to_le_bytes().to_vec(),
             TableValueType::F64 => v.to_le_bytes().to_vec(),
-            TableValueType::Aob => return Err("cannot freeze an Aob-typed entry as a scalar value".to_string()),
+            TableValueType::Aob => return Err("cannot write an Aob-typed entry as a scalar value".to_string()),
         })
     }
 }
@@ -152,12 +152,12 @@ mod tests {
     #[test]
     fn table_entry_roundtrips_through_json() {
         let entry = TableEntry {
-            name: "hp".to_string(),
-            locator: TableLocator::PointerPath { module: "game.exe".to_string(), root_offset: 0x1234, offsets: vec![0x10, -0x8] },
+            name: "counter".to_string(),
+            locator: TableLocator::PointerPath { module: "app.exe".to_string(), root_offset: 0x1234, offsets: vec![0x10, -0x8] },
             value_type: TableValueType::I32,
-            description: Some("player HP".to_string()),
+            description: Some("retry counter".to_string()),
             hotkey: None,
-            groups: vec!["player".to_string()],
+            groups: vec!["session".to_string()],
             frozen: true,
             freeze_value: Some(999.0),
             provenance: Provenance::default(),

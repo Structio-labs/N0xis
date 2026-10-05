@@ -132,7 +132,7 @@ results.
 Machine-readable capability catalog: every command, its args, and composable workflow recipes, as
 structured JSON derived from the live clap tree.
 - `<topic>` (positional, optional) — filter to command paths containing this substring (e.g.
-  `scan`, `game`).
+  `scan`, `concept`).
 - `--brief` — drop per-argument detail.
 - Schema: `n0xis.guide.v1`
 
@@ -270,7 +270,7 @@ Decompile two functions (from two sources/addresses) and diff their pseudo-C lin
 Recover managed method names for a **.NET NativeAOT** image (ILC / `PublishAot`), which strips
 ordinary symbols. Reconstructs `RVA ↔ Namespace.Type.Method(params)` from both the stack-trace
 `RvaToTokenMapping` (framework/generic-heavy) and the reflection `InvokeMap` (the reflection-
-registered surface, where a game's own gameplay methods live); each symbol is tagged with its
+registered surface, where an application's own methods live); each symbol is tagged with its
 `source`. `profile` flags such an image as `engine: nativeaot`.
 - Sources: `--file` | `--pid` (`--module <substr>` restricts a live process to one module).
 - `--name <substr>` (case-insensitive) / `--rva <hex>` to filter; `--limit` (default 200) bounds
@@ -453,11 +453,16 @@ List table names, or one table's entries with `--table`.
 Show / remove one entry (or the whole table with `--whole-table` on `rm`).
 - Schema: `n0xis.table.v1`
 
-### `table freeze --table <t> --name <str> --pid <u32>`
-Repeatedly write an entry's frozen value for a bounded duration.
+### `table pin --table <t> --name <str> --pid <u32>`
+Repeatedly write an entry's pinned value for a bounded duration.
 - `--value` (defaults to the entry's stored `freeze_value`); `--interval-ms` (default 100);
   `--duration-ms` (default 5000).
-- Schema: `n0xis.freeze.v1`
+- `table freeze` is a hidden alias for the same command (its first name), kept so existing
+  scripts still run.
+- Schema: `n0xis.pin.v1` when called as `table pin`; `n0xis.freeze.v1` when called as
+  `table freeze` — the id the first release emitted, kept for compatibility so a consumer
+  dispatching on `meta.schema` keeps working. Both carry the same payload. Windows only: off
+  Windows the command refuses (`live-unsupported`) and emits no schema id.
 
 ---
 
@@ -515,7 +520,7 @@ List captured snapshots. No args.
 
 ---
 
-## Game-engine assets (Bitsquid/LuaJIT)
+## Script & asset archives (Bitsquid/LuaJIT)
 
 ### `bundle list --file <path>`
 List a bundle's entries (type/path hash, variant sizes), optionally filtered to one known type.
@@ -564,8 +569,8 @@ resolved to text. Pure memory reads, no debugger. Live only.
 
 ### `lua combo --pid <u32>`
 Find live Lua *arrays of known strings* in the heap by matching runs of tagged `TValue`s against
-a target string set — layout-independent (no `GCtab` calibration). Built for reading an
-interact-combo `{"up","down",…}` straight out of memory.
+a target string set — layout-independent (no `GCtab` calibration). Built for reading a
+direction sequence `{"up","down",…}` straight out of memory.
 - `--start`/`--size` (omit to scan every committed writable region); `--strings`
   (comma-separated token set; default `"up,down,left,right"`); `--min-run` (min consecutive
   matching elements, default 2). Live only.
@@ -573,8 +578,8 @@ interact-combo `{"up","down",…}` straight out of memory.
 
 ### `lua seedscan --pid <u32> --combo <str>`
 Recover an LCG seed from an observed sequence: scan a live process for a 4-byte word whose
-`s'=s*a+c` LCG reproduces a known combo — locating the seed field and validating the RNG model at
-once.
+`s'=s*a+c` LCG reproduces a known sequence — locating the seed field and validating the RNG model
+at once.
 - `--combo` (required) — observed directions (`up,down,down,up`), mapped `left=0,up=1,right=2,down=3`.
 - `--start`/`--size` (omit to scan every committed writable region); `--lcg-a` (default
   1664525); `--lcg-c` (default 1013904223); `--range` (default 4 — the commonly observed
@@ -596,13 +601,16 @@ a built-in scan option — is still **open**; see [`../ROADMAP.md`](../ROADMAP.m
 Rank scripts/data/strings by how densely they cluster a concept's vocabulary. `<concept>`
 (positional, required) is the vocabulary — comma/whitespace/`|`-separated, e.g.
 `"retry,backoff,timeout"`. `game grep` is a hidden alias for the same command (its first
-name), kept so existing scripts still run; the schema id keeps that first name.
+name), kept so existing scripts still run.
 - `--dir` (required, repeatable) — directory of extracted scripts/data (LuaJIT bytecode
   auto-decoded to text).
 - `--term` (repeatable extra vocabulary term); `--min-distinct` (require N distinct terms per
   file, default 1); `--limit` (default 40); `--max-snippets` (context snippets per file, default
   3).
-- Schema: `n0xis.game.grep.v1`
+- Schema: `n0xis.concept.grep.v1` when called as `concept grep`; `n0xis.game.grep.v1` when
+  called as `game grep` — the id the first release emitted, kept for compatibility so a consumer
+  dispatching on `meta.schema` keeps working. Both carry the same payload; inside a `serve`
+  session the spelling is read from each request line.
 
 ### `locate by-transition --pid <u32> --save-as <name>`
 Snapshot → operator toggles one thing → rescan → keep only what changed — the only localization
@@ -655,7 +663,7 @@ deliberately-varied samples (RE_METHOD F3).
   `--sample-file <path>` (raw file bytes as one sample); `--at <hex>` (read `--len` bytes at an
   address from `--pid`/`--file`; needs `--len`).
 - `--signature "<hex>"` — the proposed signature to audit (`??` = wildcard).
-- `--varied <axes>` — which axes you deliberately varied (e.g. `map,mission,seed`); **required to
+- `--varied <axes>` — which axes you deliberately varied (e.g. `input,session,seed`); **required to
   bless** — an invariant is only meaningful relative to what changed.
 - `--min-independent` — independence bar (default 3).
 - Schema: `n0xis.sig.validate.v1`
@@ -725,7 +733,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x function discover` | Discover functions by prologue scanning (`.text` by default) |
 | `n0x function eh` | Exception edges: the protected ranges and landing pads an unwinder uses. A `try`/`catch` landing pad has NO incoming branch, so it is invisible to a CFG built from instructions alone — this is where that control flow is actually written down. ELF (`.eh_frame` + `.gcc_except_table`) today |
 | `n0x function layout` | Program-wide class layouts: unify per-function field recovery into ONE field set per RTTI class. Each method sees its own slice of the object and names it after a register (`struct_rdi_0`), so nothing it learns survives leaving the function; keyed on the class instead, every method's observations merge, and a field is typed from what is stored into it |
-| `n0x function noreturn` | Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that proves which never return — including a game's own `FatalError`/`Assert` wrappers, not just named imports |
+| `n0x function noreturn` | Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that proves which never return — including a program's own `FatalError`/`Assert` wrappers, not just named imports |
 | `n0x function summary` | Per-function interprocedural summary — the substrate the whole-program passes read instead of re-analyzing a callee once per question: does it return, what types are its parameters and result, which volatile registers does it clobber (and is that set complete), whom does it call |
 | `n0x function trace` | Walk the call graph from a root function |
 | `n0x function typeflow` | Whole-program type propagation: flow recovered types along the call graph to a fixpoint, so a class recovered in one function (from RTTI, or from concrete field accesses) reaches every function that touches the same object — a persistent, call-graph-wide type database |
@@ -777,8 +785,8 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x selection save` | Save (or overwrite, by name) a named `[start, end)` range |
 | `n0x selection show` | Show one selection by name |
 | `n0x table add` | Add (or overwrite, by name) an entry with a fixed-address locator |
-| `n0x table freeze` | Repeatedly write an entry's frozen value for a bounded duration |
 | `n0x table list` | List table names, or one table's entries with `--table` |
+| `n0x table pin` | Repeatedly write an entry's pinned value for a bounded duration |
 | `n0x table rm` | Remove one entry (or the whole table with `--whole-table`) |
 | `n0x table show` | Show one entry |
 
@@ -811,17 +819,17 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x serve` | Persistent static session: load `--file` once, then read one command line per line from stdin (e.g. `decomp pseudo --addr 0x…`) and write one compact JSON envelope per line to stdout — the image is parsed once and reused, so repeated decompile/disasm/xref calls avoid the per-call file re-load. A GUI/agent front-end drives this instead of spawning the CLI per click. Blank line or EOF exits |
 | `n0x stack backtrace` | Snapshot a thread's registers and walk its call stack. Frame 0 is the current instruction; each caller is recovered through that module's unwind data (never a raw `[rsp]` guess). Reads registers via `ptrace` and stack/unwind bytes with `process_vm_readv`; `/proc/<pid>/maps` (and `/proc/<pid>/task` for `--all-threads`) supplies only the module map. The thread is held stopped just for the duration of the walk |
 
-### Game-engine assets (Bitsquid/LuaJIT) (9)
+### Script & asset archives (Bitsquid/LuaJIT) (9)
 
 | Command | What it does |
 |---|---|
 | `n0x bundle extract` | Extract every variant of a given type to files on disk |
 | `n0x bundle list` | List a bundle's entries (type/path hash, variant sizes), optionally filtered to one known type |
 | `n0x bundle repack` | Replace one variant's raw bytes with a same-length file and recompress — the write-back half of `extract`/`n0xis-lua::patch_instruction` |
-| `n0x lua combo` | Find live Lua *arrays of known strings* in the heap by matching runs of tagged `TValue`s against a target string set — layout-independent (needs no `GCtab` calibration). Built for reading an interact-combo `{"up","down",…}` straight out of memory, but general to any array-of-known-tokens |
+| `n0x lua combo` | Find live Lua *arrays of known strings* in the heap by matching runs of tagged `TValue`s against a target string set — layout-independent (needs no `GCtab` calibration). Built for reading a direction sequence `{"up","down",…}` straight out of memory, but general to any array-of-known-tokens |
 | `n0x lua disasm` | Disassemble a Lua/LuaJIT bytecode chunk |
 | `n0x lua patch` | Overwrite one instruction's raw 4-byte word in place |
-| `n0x lua seedscan` | Recover an LCG seed from an observed sequence: scan a live process for a 4-byte word whose `s'=s*a+c` LCG reproduces a known combo, locating the seed field and validating the RNG model at once. Constants are flags (default = the commonly observed Numerical-Recipes pair) |
+| `n0x lua seedscan` | Recover an LCG seed from an observed sequence: scan a live process for a 4-byte word whose `s'=s*a+c` LCG reproduces a known sequence, locating the seed field and validating the RNG model at once. Constants are flags (default = the commonly observed Numerical-Recipes pair) |
 | `n0x lua strings` | Find live LuaJIT GCstr objects in a running process's heap, by decoding the real object header — no hand-picked byte pattern needed per string |
 | `n0x lua table` | Decode a live LuaJIT table (`GCtab`) at an address: its array part and hash part, with string values resolved to text. Walk the object graph without a debugger (pure memory reads) |
 
@@ -844,13 +852,13 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x ui focus` | Bring a window to the foreground (window selector). NOT read-only — it activates a window on the target |
 | `n0x ui locate` | Enumerate live UI elements whose bounding box intersects a screen rect |
 | `n0x ui screenshot` | Capture a window to a PNG so an agent can visually choose a rect. Honest about blank frames (GDI/PrintWindow return black for flip-model DirectX) — never reports a blank capture as a real image |
-| `n0x ui windows` | List a process's top-level windows (title/class/rects/DPI) so an agent can name the game window before capturing or locating |
+| `n0x ui windows` | List a process's top-level windows (title/class/rects/DPI) so an agent can name the target's main window before capturing or locating |
 
 ### IL2CPP managed layer (Phase 12) (6)
 
 | Command | What it does |
 |---|---|
-| `n0x il2cpp classes` | Enumerate the C# classes a running game has loaded, by sampling the heap for object headers. No metadata parse, no dumper — and a sample, which the answer says plainly |
+| `n0x il2cpp classes` | Enumerate the C# classes a running process has loaded, by sampling the heap for object headers. No metadata parse, no dumper — and a sample, which the answer says plainly |
 | `n0x il2cpp icalls` | Recover engine internal calls from the code that resolves them: the registration name and the `.data` slot its resolved pointer is cached into. Against a live target the slots are read, turning names into real addresses on a process that reports no symbols at all |
 | `n0x il2cpp import` | Import an external dump as a named index under `.n0x/il2cpp/`. With a target it also *measures* how the dump's addresses map onto it — dumper versions disagree about RVA vs VA, so both are tried against `.text` and a mismatch is refused rather than applied |
 | `n0x il2cpp metadata` | Read `global-metadata.dat` natively — format version, the tables its header declares, and the string literals. Needs no external dumper, and `--file <image>` finds the blob beside the target on its own |
@@ -902,7 +910,8 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.scan.group.v1` | scan group |
 | `n0xis.aot.symbols.v1` | aot symbols |
 | `n0xis.table.v1` | table add/list/show/rm |
-| `n0xis.freeze.v1` | table freeze |
+| `n0xis.pin.v1` | table pin |
+| `n0xis.freeze.v1` | table pin, called as `table freeze` (first-release id, kept for compatibility) |
 | `n0xis.provenance.v1` | provenance trace |
 | `n0xis.annotation.v1` | annotate name/type/comment/show/list/rm |
 | `n0xis.snapshot.v1` | snapshot dump/info/list |
@@ -912,7 +921,8 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.lua.strings.v1` | lua strings, lua table |
 | `n0xis.lua.combo.v1` | lua combo |
 | `n0xis.lua.seedscan.v1` | lua seedscan |
-| `n0xis.game.grep.v1` | concept grep |
+| `n0xis.concept.grep.v1` | concept grep |
+| `n0xis.game.grep.v1` | concept grep, called as `game grep` (first-release id, kept for compatibility) |
 | `n0xis.locate.transition.v1` | locate by-transition |
 | `n0xis.input.probe.v1` | input probe |
 | `n0xis.const.identify.v1` | const identify |

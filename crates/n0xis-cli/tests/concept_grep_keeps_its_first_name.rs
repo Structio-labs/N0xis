@@ -15,9 +15,14 @@
 //!   (`concept_alias_tests` in `main.rs`); this one runs the binary on a
 //!   directory planted here, whose answer is known before either spelling is
 //!   asked, and requires both spellings to return it.
+//! - A consumer dispatching on `meta.schema` must keep working too. The first
+//!   release answered `n0xis.game.grep.v1`; the old spelling still does, and
+//!   only the new spelling answers `n0xis.concept.grep.v1` — one-shot and
+//!   inside a `serve` session, where the spelling is the request line's own.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
@@ -69,6 +74,19 @@ fn plant(dir: &Path) {
     std::fs::write(dir.join("none.txt"), "nothing to see here\n").expect("write");
 }
 
+/// The schema id each spelling must answer with — written out, not read from
+/// the contracts crate, because these strings are the wire contract itself.
+const NEW_ID: &str = "n0xis.concept.grep.v1";
+const OLD_ID: &str = "n0xis.game.grep.v1";
+
+/// The envelope with `meta.schema` taken out, after checking it is `id`. The
+/// two spellings differ there on purpose and must agree on everything else.
+fn without_schema(mut v: Value, id: &str, who: &str) -> Value {
+    assert_eq!(v["meta"]["schema"], id, "{who} answered under the wrong schema id: {v}");
+    v["meta"].as_object_mut().expect("a success carries meta").remove("schema");
+    v
+}
+
 #[test]
 fn both_names_return_the_same_answer_on_a_planted_directory() {
     let dir: PathBuf = std::env::temp_dir().join(format!("n0xis_concept_grep_{}", std::process::id()));
@@ -86,5 +104,74 @@ fn both_names_return_the_same_answer_on_a_planted_directory() {
     let top = new["data"]["hits"][0]["id"].as_str().unwrap_or_default();
     assert!(top.ends_with("both.txt"), "the two-term file must rank first, got {top:?}");
 
+    // Each spelling answers under its own id, and nothing else may differ.
+    let new = without_schema(new, NEW_ID, "`concept grep`");
+    let old = without_schema(old, OLD_ID, "`game grep`");
     assert_eq!(old, new, "`game grep` and `concept grep` answered differently");
+}
+
+/// Global flags may stand anywhere, including between the two words; the
+/// spelling must still be read off the words themselves.
+#[test]
+fn the_spelling_survives_global_flags_between_the_words() {
+    let dir: PathBuf = std::env::temp_dir().join(format!("n0xis_concept_grep_flags_{}", std::process::id()));
+    plant(&dir);
+    let d = dir.to_string_lossy().to_string();
+    let old = run(&["--quiet", "game", "--pretty", "grep", "retry", "--dir", &d]);
+    let new = run(&["--quiet", "concept", "--pretty", "grep", "retry", "--dir", &d]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(old["meta"]["schema"], OLD_ID, "{old}");
+    assert_eq!(new["meta"]["schema"], NEW_ID, "{new}");
+}
+
+/// Inside a `serve` session each request line is parsed on its own, so the
+/// spelling has to come from that line, not from the `serve` command line.
+/// Both forms of request the session accepts are sent: a plain line and a JSON
+/// array of argument strings.
+#[test]
+fn inside_a_session_each_line_answers_under_its_own_spelling() {
+    let dir: PathBuf = std::env::temp_dir().join(format!("n0xis_concept_grep_serve_{}", std::process::id()));
+    plant(&dir);
+    let d = dir.to_string_lossy().to_string();
+    // The session needs an image to load; this test's own executable is one.
+    let image = std::env::current_exe().expect("test exe");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_n0xis"))
+        .args(["serve", "--quiet", "--file"])
+        .arg(&image)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+    let dir_json = serde_json::to_string(&d).expect("json string");
+    let lines = [
+        format!("game grep retry,backoff,timeout --dir {d}"),
+        format!("concept grep retry,backoff,timeout --dir {d}"),
+        format!(r#"["game","grep","retry,backoff,timeout","--dir",{dir_json}]"#),
+        format!(r#"["concept","grep","retry,backoff,timeout","--dir",{dir_json}]"#),
+    ];
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        for l in &lines {
+            writeln!(stdin, "{l}").expect("write request");
+        }
+        writeln!(stdin).expect("a blank line ends the session");
+    }
+    let out = child.wait_with_output().expect("serve exits");
+    let _ = std::fs::remove_dir_all(&dir);
+    let answers: Vec<Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not an envelope ({e}): {l}")))
+        .collect();
+    // The banner, then one answer per request line.
+    assert_eq!(answers.len(), 1 + lines.len(), "answers: {answers:?}");
+    assert_eq!(answers[0]["meta"]["schema"], "n0xis.serve.ready.v1", "banner: {}", answers[0]);
+    let want = [OLD_ID, NEW_ID, OLD_ID, NEW_ID];
+    let mut bodies = Vec::new();
+    for ((line, answer), id) in lines.iter().zip(&answers[1..]).zip(want) {
+        assert_eq!(answer["ok"], Value::Bool(true), "`{line}` failed: {answer}");
+        assert_eq!(answer["data"]["documents_matched"], 2, "`{line}` lost the planted answer: {answer}");
+        bodies.push(without_schema(answer.clone(), id, line));
+    }
+    assert!(bodies.windows(2).all(|w| w[0] == w[1]), "the four requests answered differently: {bodies:?}");
 }
