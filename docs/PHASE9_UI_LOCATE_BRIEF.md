@@ -32,18 +32,18 @@ those are rejected rather than merely unnecessary.
 ## 2. Why this exists — the failure that motivated it
 
 This is not speculative tooling. It comes from a completed campaign
-(2026-07-20) against a Bitsquid-bundle game, whose full post-mortem
+(2026-07-20) against a Bitsquid-bundle application, whose full post-mortem
 lives in that project's own planning docs (external to this repo). Short version:
 
-The target had an interact mini-game: a terminal shows a row of **direction
-arrows** (`up, down, down, up`), the player types them, a progress counter
+The target had an interactive input check: a terminal shows a row of **direction
+arrows** (`up, down, down, up`), the user types them, a progress counter
 advances. The goal was a solver that reads the required combination and
 inputs it.
 
 That goal **was achieved**, but by *computing* the combination (a template from
-the game's own script bundles + a per-object `seed` read from memory), not by
+the target's own script bundles + a per-object `seed` read from memory), not by
 reading it. The operator then asked the better question: why not just read the
-arrows the game is already drawing? That would work for object types no
+arrows the target is already drawing? That would work for object types no
 catalogue knows, and for both random and fixed combinations.
 
 **Every attempt to find that data failed, and the failures are informative:**
@@ -53,7 +53,7 @@ catalogue knows, and for both random and fixed combinations.
 | Contiguous array of direction enums — `u8`/`u32` `1,3,3,1`, `0,2,2,0`, LuaJIT doubles `1,3,3,1`/`2,4,4,2`, rotation as float radians and degrees | **0 hits**, all six encodings |
 | Same, but differentially: two independent snapshots taken while the window was open, intersected, minus a closed-window snapshot | **0 hits** (this method is rigorous — it survives heap churn, which a single before/after diff does not) |
 | Lua string array (`lua combo`, purpose-built for exactly this) | **0 runs**, even with the window open |
-| Execute breakpoint on the arrow draw function | **crashed the game** — see §7 |
+| Execute breakpoint on the arrow draw function | **crashed the target** — see §7 |
 | Widget AABB init sentinel (`FLT_MAX` ×3) as a byte signature | **0 hits** — the sentinel is transient (§5) |
 
 **The diagnosis that makes the tool obvious**: the arrows are **separate widget
@@ -67,7 +67,7 @@ its own bounding box.
 
 ## 3. What the target already gives us (verified, from decompilation)
 
-All offsets confirmed by decompiling the target game's main executable (image
+All offsets confirmed by decompiling the target's main executable (image
 base `0x140000000`; use `n0x decomp pseudo --file … --addr …`).
 
 `sub_1400ce800` (the arrow/UI vertex-buffer builder) and `sub_1400cc860` (the
@@ -190,7 +190,7 @@ nothing useful, so make the space **observable** rather than assumed.
 Both were considered and rejected on merit:
 
 - **Pixel reading** was already ruled out for this class of problem by the
-  operator: the arrows' on-screen positions shift in multiplayer, so anything
+  operator: the arrows' on-screen positions shift in multi-user sessions, so anything
   keyed to screen appearance is fragile. Reading widget *data* is immune —
   position is exactly what we query by, not what we depend on.
 - **API hooking** (D3D/present interception) adds a rendering dependency, a
@@ -205,7 +205,7 @@ Both were considered and rejected on merit:
 **A conditional breakpoint on a per-frame function will kill the target.** This
 happened: an execute breakpoint on `sub_1400ce800` with `--when r9=4` turned
 every non-matching hit into a full stop/inspect/resume round-trip. On a function
-called many times per frame that is thousands of round-trips — the game runs
+called many times per frame that is thousands of round-trips — the target runs
 effectively single-stepped, and it crashed.
 
 Consequences for this tool:
@@ -249,8 +249,8 @@ The bar is not "it compiles" — it is "it finds a thing we can independently
 confirm."
 
 1. **Static self-test first.** Synthesize a buffer with a known AABB at a known
-   offset and assert the scanner finds it, with correct overlap maths. No game
-   required; this belongs in unit tests. **Done** — synthetic-buffer unit tests
+   offset and assert the scanner finds it, with correct overlap maths. No live
+   target required; this belongs in unit tests. **Done** — synthetic-buffer unit tests
    for the predicate and overlap maths pass in the working tree.
 2. **Live confirmation, non-destructive.** With the target running and a UI
    element clearly visible in a known part of the window, query that rect. Then

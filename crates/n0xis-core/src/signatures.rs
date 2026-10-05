@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! A known-API signature library (ROADMAP Phase 4) — real argument names and
-//! types for the Win32/CRT functions a game binary calls constantly, so a
+//! types for the Win32/CRT functions an application binary calls constantly, so a
 //! call site renders as `CreateFileW(/*lpFileName*/ rcx.0, /*dwDesiredAccess*/
 //! rdx.0)` instead of four generic, unnamed register reads.
 //!
 //! **Single source of truth** (CONCEPT §3 rule 3 / anti-hardcode): one static
 //! table, keyed by bare function name (case-insensitive, no `module!`
 //! prefix) — extend it here, nowhere else. Deliberately small: this is a
-//! floor of the most common calls a Windows game binary makes, not an
+//! floor of the most common calls a Windows application binary makes, not an
 //! attempt to embed the whole Win32 SDK. Anything not listed falls back to
 //! the existing generic 4-register rendering — sound, just less pretty
 //! (CONCEPT §3 rule 6).

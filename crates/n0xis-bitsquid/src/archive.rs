@@ -14,20 +14,20 @@ use crate::BitsquidError;
 
 /// Distinguishes the two `archive::header_t` shapes. Only [`AsciiHeaderKind::Package`]
 /// (an asset bundle) is expected in practice for the bundle files this crate
-/// targets; [`AsciiHeaderKind::Save`] (a save-game archive) is recognized so a
+/// targets; [`AsciiHeaderKind::Save`] (a save-data archive) is recognized so a
 /// caller gets a clear error instead of a misparse, not because this crate
 /// does anything else with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeaderKind {
     /// `04 00 00 F0` magic — an asset bundle; body starts right after it.
     Package,
-    /// `crc32 packed_size unpacked_size`, 12 bytes — a save-game archive.
+    /// `crc32 packed_size unpacked_size`, 12 bytes — a save-data archive.
     Save,
 }
 
 const PACKAGE_MAGIC: [u8; 4] = [0x04, 0x00, 0x00, 0xF0];
 /// The chunk size at which a chunk is stored raw instead of zlib-compressed
-/// (compression bought nothing, so the game just stores it verbatim).
+/// (compression bought nothing, so the producer just stores it verbatim).
 const RAW_CHUNK_SIZE: u32 = 65536;
 
 fn peek_header_kind(bytes: &[u8]) -> Result<HeaderKind, BitsquidError> {

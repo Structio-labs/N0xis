@@ -11,7 +11,7 @@
 //!
 //! Scope (v1): [`GCstr`] discovery/validation only. `GCtab`/the custom
 //! Bitsquid `array` container are a documented follow-on — their element
-//! encoding is still unconfirmed (see the project's `cheats_research.md`),
+//! encoding is still unconfirmed (see the project's research notes),
 //! and this crate should not guess at a layout it hasn't verified.
 //!
 //! Source-agnostic like the rest of n0xis: works over any
@@ -43,13 +43,13 @@ pub fn read_gcstr(src: &dyn MemorySource, addr: Va, layout: LuaLayout) -> Option
 
 /// `GCstr` header layout, offsets from the object's base address.
 ///
-/// Empirically confirmed against a live 64-bit Bitsquid-bundle game
+/// Empirically confirmed against a live 64-bit Bitsquid-bundle application
 /// process: the `len` field sits 0x10 bytes after the object base, with the
 /// string's raw bytes immediately following it. This matches a GC64-mode
 /// LuaJIT build (an 8-byte compressed `GCRef` in the header, vs. 4 bytes in
 /// the classic 32-bit layout) but was *not* independently cross-checked
 /// against LuaJIT's own `lj_obj.h` this session — treat it as a validated
-/// constant for this game/build, not a general LuaJIT-version law. A
+/// constant for this target/build, not a general LuaJIT-version law. A
 /// different build may need a different `GcstrLayout`.
 #[derive(Debug, Clone, Copy)]
 pub struct GcstrLayout {
@@ -58,7 +58,7 @@ pub struct GcstrLayout {
 }
 
 impl GcstrLayout {
-    /// The layout confirmed against a Bitsquid-bundle game (GC64-mode LuaJIT).
+    /// The layout confirmed against a Bitsquid-bundle application (GC64-mode LuaJIT).
     pub const BITSQUID_GC64: GcstrLayout = GcstrLayout { len_offset: 0x10 };
 }
 
@@ -127,7 +127,7 @@ pub fn scan_strings(
 }
 
 /// Printable, non-empty ASCII — good enough to reject the overwhelming
-/// majority of coincidental `len`-shaped 4-byte windows in a game's heap.
+/// majority of coincidental `len`-shaped 4-byte windows in a target's heap.
 fn is_plausible_ascii(bytes: &[u8]) -> bool {
     !bytes.is_empty() && bytes.iter().all(|&b| (0x20..0x7f).contains(&b))
 }

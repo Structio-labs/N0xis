@@ -17,7 +17,7 @@ src-tauri/target/
 .n0x/
 
 # Field tests — capture journals, screenshots and findings from live sessions
-# against specific game targets. Session evidence, not source.
+# against specific targets. Session evidence, not source.
 /field-tests/
 
 # Bundled archive — not source

@@ -4,7 +4,7 @@
 //! LuaJIT object model — `TValue` decoding and `GCtab` (Lua table) traversal,
 //! parameterized by a [`LuaLayout`] so the same logic serves different builds.
 //!
-//! **Why parameterized, not hardcoded.** A Bitsquid-bundle game
+//! **Why parameterized, not hardcoded.** A Bitsquid-bundle application
 //! observed live ships a *patched* LuaJIT 2.0.3 (confirmed via its own live
 //! version/GCstr strings) whose `GCstr` header empirically has `len` at
 //! offset `0x10` / data at `0x14` — 4 bytes past where a stock
@@ -55,7 +55,7 @@ pub struct LuaLayout {
 }
 
 impl LuaLayout {
-    /// Best-hypothesis layout for a Bitsquid-bundle game's patched
+    /// Best-hypothesis layout for a Bitsquid-bundle application's patched
     /// LuaJIT 2.0.3 (8-byte `GCRef`, GC64-style 8-byte `TValue`). The `GCstr`
     /// offset is empirically confirmed; the `GCtab`/`Node` offsets are derived
     /// from the standard 2.0 field order scaled to an 8-byte ref and **need
@@ -133,7 +133,7 @@ const PTR47_MASK: u64 = 0x0000_7FFF_FFFF_FFFF;
 /// Returning *both* candidates and letting the caller intersect with a known
 /// target set is what makes the combo run-finder build-agnostic: only the
 /// encoding actually in use yields an address that's a real interned string.
-/// (One Bitsquid-bundle game's heap sits in low memory — 32-bit
+/// (One Bitsquid-bundle application's heap sits in low memory — 32-bit
 /// `GCRef` — as confirmed live by observed strings landing at `0x30xxxxxx`
 /// addresses.)
 pub fn string_ref_candidates(raw: u64) -> [Option<Va>; 2] {

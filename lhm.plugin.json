@@ -867,7 +867,7 @@
           },
           "hwnd": {
             "default": null,
-            "description": "Specific window HWND (from `ui_windows`); defaults to the best-guess\ngame window for the pid.",
+            "description": "Specific window HWND (from `ui_windows`); defaults to the best-guess\nmain window for the pid.",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -902,7 +902,7 @@
     },
     {
       "name": "ui_windows",
-      "description": "List a target process's top-level windows (title, class, visibility, rects, DPI), best-guess game window first. Read-only. Use it to pick an hwnd for ui_screenshot / ui_focus, or to see why a capture is blank (minimized / cloaked / off-screen). rect_frame is the canonical visible bounds; rect_client is where the game renders.",
+      "description": "List a target process's top-level windows (title, class, visibility, rects, DPI), best-guess main window first. Read-only. Use it to pick an hwnd for ui_screenshot / ui_focus, or to see why a capture is blank (minimized / cloaked / off-screen). rect_frame is the canonical visible bounds; rect_client is where the target renders.",
       "inputSchema": {
         "type": "object",
         "properties": {

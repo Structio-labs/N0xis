@@ -8,7 +8,7 @@
 //! ## Why snapshot-backed
 //!
 //! A naïve first scan that materializes one [`ScanMatch`] per hit falls apart on
-//! a common value (scan i32 `4` in a game → millions of hits). The old
+//! a common value (scan i32 `4` in a live process → millions of hits). The old
 //! implementation "solved" this by capping at 200 000 and `break`-ing out of the
 //! region loop — which silently stopped scanning every higher-address region, so
 //! the real target usually wasn't even looked at, and no rescan could recover it.
@@ -30,7 +30,7 @@
 //!   (see [`ScanState::encode`]), not dumped as fat JSON.
 //!
 //! The canonical "value 4 is too common" flow this enables:
-//! `scan value --criterion unknown` → change it in-game → `scan filter
+//! `scan value --criterion unknown` → change it in the target → `scan filter
 //! --criterion changed`.
 //!
 //! Pure comparison logic over the `MemorySource` seam: region enumeration
@@ -356,7 +356,7 @@ impl ScanState {
     /// Compact, self-describing binary encoding for `.n0x/dumps/scan/`. Little-
     /// endian throughout; dense regions store raw bytes, sparse regions store
     /// `(u32 offset, u64 value-bits)` per slot. Deliberately not JSON: a dense
-    /// `unknown` scan of a live game is region-sized, and base64-in-JSON would
+    /// `unknown` scan of a live process is region-sized, and base64-in-JSON would
     /// bloat it ~2x for no benefit (the state is internal, never shown raw).
     pub fn encode(&self) -> Vec<u8> {
         let mut b = Vec::new();

@@ -23,7 +23,7 @@
 //!   selections.json   # named memory ranges (per-project)
 //!   plugins.json      # registered analysis plugins (name -> spawn command)
 //!   dumps/{ir,pseudo,hex,raw,note}/
-//!   tables/           # .n0xt cheat/analysis tables (CONCEPT §10)
+//!   tables/           # .n0xt analysis tables (CONCEPT §10)
 //!   ir-cache/         # reserved for the PassManager artifact cache (Phase 6)
 //!   n0x.cmd           # generated shim that calls back into the global build
 //! ```

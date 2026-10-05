@@ -5,13 +5,13 @@
 //! (ROADMAP Phase 8, fixes RE_METHOD F4).
 //!
 //! The campaign built, shipped, and believed-working an entire input feature on
-//! `SendInput` that **never once registered in the game** — because the game
+//! `SendInput` that **never once registered in the target** — because the target
 //! filters injected input via the standard `LLKHF_INJECTED` check, and nobody
 //! tested the write half independently before integrating it. A one-key probe
 //! on day one would have caught it.
 //!
 //! This module *is* that probe. It installs its own low-level keyboard hook
-//! (`WH_KEYBOARD_LL`) — the same vantage point a game's anti-injection filter
+//! (`WH_KEYBOARD_LL`) — the same vantage point a target's anti-injection filter
 //! uses — then actuates a benign key through each injection method and reports,
 //! per method, whether the event reached the OS input stack **and whether it
 //! carries `LLKHF_INJECTED`**. That flag is the exact bit an injected-input
@@ -67,7 +67,7 @@ pub struct MethodResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivered: Option<bool>,
     /// Whether the delivered event carried `LLKHF_INJECTED` — the bit a target
-    /// filtering injected input keys off. `Some(true)` means "a game that
+    /// filtering injected input keys off. `Some(true)` means "a target that
     /// filters injected input will ignore this method".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub injected_flag: Option<bool>,
@@ -163,7 +163,7 @@ unsafe fn probe_one(name: &str, vk: u16, timeout: Duration, inject: unsafe fn(u1
     } else if injected {
         (
             "injected-flag-set".to_string(),
-            "delivered but carries LLKHF_INJECTED; a target filtering injected input (the standard game defense) will ignore it (RE_METHOD F4)".to_string(),
+            "delivered but carries LLKHF_INJECTED; a target filtering injected input (the standard anti-injection defense) will ignore it (RE_METHOD F4)".to_string(),
         )
     } else {
         (
@@ -213,7 +213,7 @@ fn detect_interception() -> MethodResult {
     }
 }
 
-/// Raw-HID injection needs a virtual HID device (a gamepad/keyboard emulator
+/// Raw-HID injection needs a virtual HID device (a controller/keyboard emulator
 /// driver). We do not bundle or assume one; report it as needing setup rather
 /// than claiming a capability we can't back.
 fn detect_raw_hid() -> MethodResult {
@@ -223,7 +223,7 @@ fn detect_raw_hid() -> MethodResult {
         delivered: None,
         injected_flag: None,
         verdict: "unavailable".into(),
-        detail: "Raw-HID injection requires a virtual HID device/driver (e.g. ViGEm for a gamepad, or a virtual-keyboard driver). None detected; not exercised.".into(),
+        detail: "Raw-HID injection requires a virtual HID device/driver (e.g. ViGEm for a virtual controller, or a virtual-keyboard driver). None detected; not exercised.".into(),
     }
 }
 

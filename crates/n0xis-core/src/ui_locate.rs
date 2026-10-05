@@ -30,7 +30,7 @@ use crate::{CoreError, Ctx, Pass};
 /// rule): a different engine/build gets a different `AabbLayout`, passed in,
 /// never inlined into the algorithm below. `BITSQUID` is the one verified
 /// layout so far (brief §3, confirmed by decompiling a Bitsquid-bundle
-/// game binary): `min.x` at `+0xa4`, ..., `radius` at `+0xbc`, all `f32`,
+/// application binary): `min.x` at `+0xa4`, ..., `radius` at `+0xbc`, all `f32`,
 /// contiguous.
 #[derive(Clone, Copy, Debug)]
 pub struct AabbLayout {
@@ -153,7 +153,7 @@ fn decode_aabb(values: &[ScanValue]) -> Option<Aabb> {
 /// floats form a plausible AABB — every value finite, `min <= max` on every
 /// axis, coordinates within `bound`, and `radius` order-of-magnitude
 /// consistent with the box's own half-diagonal. That last check is the
-/// strong, cheap filter: the game computes radius as `sqrtf` of the max
+/// strong, cheap filter: the target computes radius as `sqrtf` of the max
 /// squared extent (brief §3), so an unrelated run of floats essentially never
 /// satisfies it by coincidence — unlike the `FLT_MAX` sentinel, which *did*
 /// coincidentally exist but turned out to be transient (brief §5).
@@ -187,7 +187,7 @@ pub fn aabb_plausible(values: &[ScanValue], bound: SpaceBound) -> Option<Aabb> {
     }
 
     let half_diag = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / 2.0;
-    // The strong, cheap filter: the game derives radius from the box's own
+    // The strong, cheap filter: the target derives radius from the box's own
     // extents (brief §3), so an unrelated float run essentially never lands
     // within an order of magnitude of the true half-diagonal by chance.
     if !half_diag.is_normal() || !aabb.radius.is_normal() {

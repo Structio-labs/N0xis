@@ -87,7 +87,7 @@ impl Src {
     /// substring.
     ///
     /// Without this a live IL2CPP target cannot be scanned at all: the main
-    /// module is a thin player executable (measured: 2 exports, 319 functions)
+    /// module is a thin launcher executable (measured: 2 exports, 319 functions)
     /// and every fact worth having is in `GameAssembly.dll` (386 exports,
     /// 277 199). Defaulting to the main module is right for ordinary targets and
     /// exactly wrong for this one, so the caller gets to say which.
@@ -117,7 +117,7 @@ impl Src {
     /// The data-side twin of [`code_ranges_of`](Self::code_ranges_of), and it
     /// exists because fixing only the code side is worse than fixing neither:
     /// pointing `xref string` at `GameAssembly.dll`'s code while it searched
-    /// the *player executable's* `.rdata` scanned 61 MB to find nothing, slowly
+    /// the *launcher executable's* `.rdata` scanned 61 MB to find nothing, slowly
     /// and convincingly.
     pub fn section_range_in(&self, module: Option<&str>, name: &str) -> Option<(Va, u64)> {
         let Some(needle) = module.map(str::to_lowercase) else {
@@ -415,9 +415,9 @@ pub fn resolve(spec: SourceSpec<'_>) -> Result<ResolvedSource, FrontendError> {
 /// The base an RVA is measured from, honoring an explicit module name.
 ///
 /// The main-module default is wrong for the most common real target there is:
-/// in an IL2CPP game the executable is a thin player and every interesting
+/// in an IL2CPP application the executable is a thin launcher and every interesting
 /// address lives in `GameAssembly.dll`. Measured on a live target — an RVA
-/// resolved against the 319-function player EXE landed on unmapped memory when
+/// resolved against the 319-function launcher EXE landed on unmapped memory when
 /// it belonged to a 96 MB DLL loaded elsewhere. Matching is case-insensitive
 /// and accepts a substring, so `gameassembly` is enough.
 pub fn base_for_module(src: &Src, name: Option<&str>) -> Result<Va, String> {

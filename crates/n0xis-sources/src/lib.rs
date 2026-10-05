@@ -7,7 +7,7 @@
 //! come from a **live process**, a **static PE**, a cached **snapshot**, or a
 //! **remote agent** stops being an `if` in the analysis — it becomes a choice
 //! of adapter behind these traits. That is what lets the same SSA→opt→types
-//! pipeline run byte-for-byte identically on a running game and a file on disk
+//! pipeline run byte-for-byte identically on a running process and a file on disk
 //! (CONCEPT §5.1).
 //!
 //! Phase 1 ships only [`Snapshot`], a pure in-memory implementation with **no

@@ -5,7 +5,7 @@
 //! Phase 10 (priority 0) left open.
 //!
 //! [`crate::noreturn`] names the *imports* that never return (`ExitProcess`,
-//! `abort`, …). But a game binary rarely calls those directly: it wraps them in
+//! `abort`, …). But an application binary rarely calls those directly: it wraps them in
 //! its own `FatalError`/`Assert`/`Panic` helper — a stripped `sub_XXXX`, not a
 //! named import — and calls *that* everywhere. Until the wrapper is itself known
 //! to be noreturn, every caller keeps a dead fall-through in its CFG, and the

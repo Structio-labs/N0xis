@@ -95,7 +95,8 @@ fn parse_maps(pid: u32) -> Result<Vec<MapEntry>, SourceError> {
 /// `7f8e0c000000-7f8e0c021000 r-xp 00000000 08:01 1234    /usr/lib/libc.so.6`
 ///
 /// Split on whitespace with a cap of 6 so a pathname containing spaces (common
-/// enough on games shipped in `~/My Games/...`) survives intact.
+/// enough on applications shipped under user directories with spaces in
+/// their names) survives intact.
 fn parse_maps_line(line: &str) -> Option<MapEntry> {
     let mut it = line.splitn(6, char::is_whitespace).filter(|s| !s.is_empty());
     let range = it.next()?;
@@ -118,7 +119,7 @@ fn parse_maps_line(line: &str) -> Option<MapEntry> {
 ///
 /// The name comes from `/proc/<pid>/comm`, which is the 15-char-truncated
 /// thread name; where the full binary name matters (matching `--process
-/// SomeGame.x86_64`) the basename of `/proc/<pid>/exe` is preferred and
+/// SomeApp.x86_64`) the basename of `/proc/<pid>/exe` is preferred and
 /// `comm` is the fallback for processes whose `exe` link is unreadable.
 pub fn list_processes() -> Result<Vec<ProcInfo>, SourceError> {
     let dir = fs::read_dir("/proc").map_err(|e| SourceError::Os(format!("read /proc: {e}")))?;
@@ -147,7 +148,7 @@ pub struct LinuxProcess {
     /// address as unmapped.
     maps: RefCell<Vec<MapEntry>>,
     /// Lazily parsed ELF symbol tables, keyed by module base. Parsing every
-    /// `.so` a game loads at attach time would make attach cost seconds; most
+    /// `.so` a target loads at attach time would make attach cost seconds; most
     /// sessions only ever ask about one or two modules.
     symbols: RefCell<HashMap<u64, std::rc::Rc<Vec<Symbol>>>>,
 }
@@ -536,7 +537,7 @@ mod tests {
         assert!(!e.is_module_backed());
     }
 
-    /// Games do ship under paths with spaces; splitn(6) keeps them whole.
+    /// Applications do ship under paths with spaces; splitn(6) keeps them whole.
     #[test]
     fn a_path_containing_spaces_survives() {
         let e = parse_maps_line("400000-401000 r-xp 00000000 08:01 99 /home/t/My Games/a b.x86_64").unwrap();

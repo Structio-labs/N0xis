@@ -69,7 +69,7 @@ pub enum LuaFormat {
     Source,
     /// Compiled stock Lua (5.1-shaped) bytecode.
     GenericBytecode,
-    /// LuaJIT 2.x bytecode (`\x1bLJ` dump format) — the format the game
+    /// LuaJIT 2.x bytecode (`\x1bLJ` dump format) — the format the target
     /// actually ships with, per the hexpat source's own comment.
     LuaJit2,
     /// An explicitly-reserved "bad/invalid" tag some tooling emits; carries

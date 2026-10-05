@@ -6,7 +6,7 @@
 //! ROADMAP's wording: on the v0 decompiler transcript — "no bare
 //! `rax`/`rcx` in the common path; loads resolved to named locals/fields;
 //! conditions correct under intervening flag writes." We don't have the
-//! original game binary those addresses came from (it was never part of the
+//! original application binary those addresses came from (it was never part of the
 //! repo), so this test reconstructs the *shape* that motivated the rewrite —
 //! a call result whose fields get read twice (`count`/`max` at `+0x68`/
 //! `+0x6C`, exactly like the archived transcript) and a branch separated from

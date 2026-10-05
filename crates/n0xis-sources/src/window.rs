@@ -12,8 +12,8 @@
 //!   `SetForegroundWindow`) — no injection, no messages beyond focus.
 //! - [`screenshot`] captures via GDI (`BitBlt` from the window DC) and
 //!   `PrintWindow(PW_RENDERFULLCONTENT)`. **These return a black frame for
-//!   flip-model / DirectComposition DirectX windows** — which many modern games
-//!   are. So the capture path is wrapped in a *blank-frame contract*
+//!   flip-model / DirectComposition DirectX windows** — which many modern
+//!   graphics-heavy applications are. So the capture path is wrapped in a *blank-frame contract*
 //!   ([`classify_frame`], the pre-flight checks): it never reports success on a
 //!   blank image, and it distinguishes "capture blocked" / "window minimized" /
 //!   "genuinely rendering black" with specific reason codes. The ideal path for
@@ -113,7 +113,7 @@ unsafe fn read_wstr(f: impl Fn(*mut u16, i32) -> i32) -> String {
 }
 
 /// Client area expressed in screen coordinates (`GetClientRect` gives size with
-/// origin 0; `ClientToScreen` maps the origin). This is "where the game
+/// origin 0; `ClientToScreen` maps the origin). This is "where the target
 /// actually renders", shadow- and border-free.
 unsafe fn client_rect_screen(hwnd: HWND) -> Option<RECT> {
     let mut c = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -150,7 +150,7 @@ pub struct WindowInfo {
     /// capture/input. `None` before the window's first show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect_frame: Option<[i32; 4]>,
-    /// Client area in screen coordinates — where the game renders.
+    /// Client area in screen coordinates — where the target renders.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect_client: Option<[i32; 4]>,
     /// Per-window DPI (`GetDpiForWindow`); 96 == 100% scaling.
@@ -178,7 +178,7 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
 
 /// Every top-level window owned by `pid`, largest visible first. Includes
 /// hidden/tool/cloaked windows (flagged), so a caller can see the full picture,
-/// but ordering puts the most likely "the game window" at the front.
+/// but ordering puts the most likely "the main window" at the front.
 pub fn list_windows(pid: u32) -> Vec<WindowInfo> {
     ensure_dpi_aware();
     let mut ctx = EnumCtx { pid, out: Vec::new() };
@@ -233,7 +233,7 @@ pub fn window_pid(hwnd: usize) -> u32 {
     pid
 }
 
-/// Pick the best "the game window" for a pid: the largest visible, non-tool,
+/// Pick the best "the main window" for a pid: the largest visible, non-tool,
 /// non-cloaked, non-minimized window. `None` if the process has no such window.
 pub fn best_window(pid: u32) -> Option<WindowInfo> {
     list_windows(pid)

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! `il2cpp klass` / `il2cpp obj` — read the **runtime** type system of a running
-//! IL2CPP game, with no metadata parser and no external dumper
+//! IL2CPP process, with no metadata parser and no external dumper
 //! (ROADMAP Phase 12, item 4 — the live klass route).
 //!
 //! ## Why the runtime, when there is a metadata file right there
@@ -16,13 +16,13 @@
 //!    computed at run time — the `.dat` alone is not the answer for either.
 //! 3. **It answers the question a scan actually leaves you with.** A scan gives an
 //!    address. `*(void**)addr` is the object's `Il2CppClass*`, and from there the
-//!    class name and every field name and offset follow. Address → `PlayerHealth`
-//!    → `currentHp` at `+0x38`, in one step instead of an afternoon.
+//!    class name and every field name and offset follow. Address → `SessionState`
+//!    → `retryCount` at `+0x38`, in one step instead of an afternoon.
 //!
 //! ## The layout problem, and how this avoids hardcoding it
 //!
-//! `Il2CppClass` and `FieldInfo` shift between Unity versions, and the sub-version
-//! is not recorded anywhere. Hardcoding offsets is what makes every tool in this
+//! `Il2CppClass` and `FieldInfo` shift between IL2CPP runtime versions, and the
+//! sub-version is not recorded anywhere. Hardcoding offsets is what makes every tool in this
 //! space fragile, and the failure is silent: a wrong offset yields a plausible
 //! wrong name.
 //!
@@ -47,9 +47,9 @@
 //! module exists to avoid:
 //!
 //! - **`FieldInfo`'s internal offsets** — `parent` at `+0x10`, `offset` at
-//!   `+0x18` — are fixed, and Unity's headers say they have been in every
-//!   version from v16 to v110. The *stride* is **not** assumed: it is 0x28 on
-//!   pre-Unity-2018.3 builds and 0x20 since, so it is measured per class (see
+//!   `+0x18` — are fixed, and the IL2CPP runtime's own headers say they have
+//!   been in every version from v16 to v110. The *stride* is **not** assumed: it is 0x28 on
+//!   runtimes before 2018.3 and 0x20 since, so it is measured per class (see
 //!   [`FIELD_ENTRY_STRIDES`]) and reported.
 //! - **64-bit, little-endian.** Pointers are read as 8 bytes throughout. A
 //!   32-bit IL2CPP build (Android `armeabi-v7a`, WebGL `wasm32`) halves every
@@ -67,12 +67,12 @@ use crate::{CoreError, Ctx, Pass};
 const DEFAULT_PROBE: usize = 0x120;
 /// `FieldInfo` strides to try, on x64, in preference order.
 ///
-/// **Not one number, because it is not one struct.** Unity's own headers give
-/// three historical shapes, and the middle one is 8 bytes wider:
+/// **Not one number, because it is not one struct.** The IL2CPP runtime's own
+/// headers give three historical shapes, and the middle one is 8 bytes wider:
 ///
 /// - metadata v16 — `{name,type,parent,offset,customAttributeIndex}` = `0x20`
-/// - metadata v19..v24 up to Unity 2018.2 — the same plus `token` = **`0x28`**
-/// - metadata v24.1+ (Unity 2018.3 →) — `customAttributeIndex` dropped = `0x20`
+/// - metadata v19..v24, runtimes up to 2018.2 — the same plus `token` = **`0x28`**
+/// - metadata v24.1+ (runtimes from 2018.3 on) — `customAttributeIndex` dropped = `0x20`
 ///
 /// `parent` and `offset` sit at the same place in all three, so a single entry
 /// decodes correctly under any stride; it is the *walk* that desynchronizes.
@@ -127,13 +127,13 @@ pub struct LayoutEvidence {
     pub fields_offset: Option<usize>,
     /// How many field entries satisfied the `parent == klass` back-reference.
     pub fields_validated: usize,
-    /// Offset of the class's pointer to **itself** — Unity's `klass` field,
+    /// Offset of the class's pointer to **itself** — the runtime's `klass` field,
     /// "points to ourself". Its presence is near-conclusive; its absence means
-    /// a pre-Unity-2018.1 layout, not a refutation.
+    /// a layout from a runtime before 2018.1, not a refutation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_pointer_offset: Option<usize>,
     /// The `FieldInfo` stride that was **measured**, not assumed: `0x28` on
-    /// pre-Unity-2018.3 builds, `0x20` since.
+    /// runtimes before 2018.3, `0x20` since.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field_stride: Option<usize>,
 }
@@ -191,7 +191,7 @@ fn read_name(ctx: &Ctx, at: Va) -> Option<String> {
 
 /// Verdict on how much the layout discovery actually proved.
 ///
-/// Measured against a running game, and it changed the design: an adjacent
+/// Measured against a running IL2CPP process, and it changed the design: an adjacent
 /// string-pointer pair is **not** enough on its own. `Il2CppImage` opens with
 /// `{ const char* name; const char* nameNoExt; }`, so an image matched the name
 /// shape and came back as a class called `mscorlib.mscorlib.dll`; unrelated
@@ -217,16 +217,16 @@ fn slots_of(ctx: &Ctx, base: Va, probe: usize) -> Vec<u64> {
 
 /// The slot holding the class's pointer **to itself**, if there is one.
 ///
-/// Unity's own comment on the field, verbatim in the runtime headers:
+/// The runtime's own comment on the field, verbatim in its headers:
 /// `Il2CppClass* klass; // hack to pretend we are a MonoVTable. Points to
-/// ourself`. Present since Unity 2018.1.0, at `+0x78` on x64.
+/// ourself`. Present in runtimes from 2018.1.0 on, at `+0x78` on x64.
 ///
 /// This is the strongest discriminator available and it costs **nothing**: the
 /// candidate's bytes are already in hand, so it is a comparison, not a read.
 /// Both facts matter.
 ///
 /// - *Correctness*: `Il2CppImage` also opens with two adjacent `const char*`
-///   (`name`, `nameNoExt`, since the same Unity 2018.1.0), which is why a
+///   (`name`, `nameNoExt`, since the same runtime 2018.1.0), which is why a
 ///   name-pair-only scan reported an image as a class called
 ///   `mscorlib.mscorlib.dll`. An image has no pointer to itself in its header.
 /// - *Cost*: rejecting on arithmetic means the overwhelming majority of
@@ -242,7 +242,7 @@ fn self_pointer_index(slots: &[u64], base: Va) -> Option<usize> {
 /// Distance from `name` to the self-pointer, in slots.
 ///
 /// `name` is at `0x10` and `klass` at `0x78` on x64 in **every** layout from
-/// Unity 2018.1.0 through 6000.7 — the two most stable landmarks in the struct.
+/// runtime 2018.1.0 through 6000.7 — the two most stable landmarks in the struct.
 /// So the self-pointer is not merely a filter, it is an **anchor**: find it, and
 /// the name pair's position follows by arithmetic.
 ///
@@ -517,8 +517,8 @@ mod tests {
 
     #[test]
     fn a_structure_that_only_matches_the_name_shape_is_marked_weak() {
-        // Measured on a running game, and it is why the verdict field exists:
-        // an Il2CppImage opens with two adjacent string pointers, so it matched
+        // Measured on a running IL2CPP process, and it is why the verdict field
+        // exists: an Il2CppImage opens with two adjacent string pointers, so it matched
         // the name shape and came back as a class named "mscorlib.mscorlib.dll".
         // It has no FieldInfo array pointing back at it, and that difference is
         // the whole distinction between a fact and a coincidence.
@@ -626,8 +626,8 @@ pub struct ClassScanInput {
     pub limit: usize,
     pub min_hits: usize,
     /// Reject candidates with no pointer to themselves before doing any string
-    /// work. Correct **and** fast on Unity 2018.1+, which is every metadata
-    /// version from 24@2018.1 onward. Turn it off for an older target, where
+    /// work. Correct **and** fast on runtimes from 2018.1 on, which is every
+    /// metadata version from 24@2018.1 onward. Turn it off for an older target, where
     /// the field does not exist and its absence proves nothing.
     pub require_self_pointer: bool,
 }
@@ -661,7 +661,7 @@ pub struct ClassScanArtifact {
     pub weak_rejected: usize,
     /// Candidates skipped for having no self-pointer. A scan where this is the
     /// whole probe count and nothing was found is the signature of a
-    /// pre-Unity-2018.1 target — re-run without the requirement.
+    /// target whose runtime predates 2018.1 — re-run without the requirement.
     pub no_self_pointer: usize,
     pub count: usize,
     pub classes: Vec<ClassSummary>,

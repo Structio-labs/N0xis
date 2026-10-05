@@ -163,7 +163,7 @@ impl SymbolKind {
 /// The identity of the native target an index was imported and validated
 /// against, recorded so the index only auto-attaches to *that* binary.
 ///
-/// Without it a `default` index imported for one game silently binds to any
+/// Without it a `default` index imported for one target silently binds to any
 /// other image whose `.text` happens to cover one of its method addresses — a
 /// single coincidental hit scores 1/1 = 100% confidence and fabricates a
 /// managed name on a binary the dump never described. Provenance is the guard:

@@ -62,7 +62,7 @@ pub struct SeedHit {
 /// Scan `regions` for 4-byte-aligned words that, as an [`Lcg`] seed, generate
 /// `target` (a sequence of `random(0, k-1)` draws, so every element must be
 /// `< k`). Optionally require the seed itself to fall in `[seed_min, seed_max]`
-/// (the game draws its seed from `math.random(1, 2^31-2)`, so a uint31 bound
+/// (the target draws its seed from `math.random(1, 2^31-2)`, so a uint31 bound
 /// cuts the coincidental-match rate hard). Returns every hit; a short `target`
 /// yields many, a long one pins it down.
 pub fn find_seeds(
@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use n0xis_sources::Snapshot;
 
-    // Observed live in a Bitsquid-bundle game (Numerical Recipes).
+    // Observed live in a Bitsquid-bundle application (Numerical Recipes).
     const A: u32 = 1664525;
     const C: u32 = 1013904223;
 

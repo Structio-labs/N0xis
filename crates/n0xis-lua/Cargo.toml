@@ -1,6 +1,6 @@
 [package]
 name = "n0xis-lua"
-description = "Lua/LuaJIT bytecode disassembler: chunk header, prototype, and instruction decoding. A pluggable scripting-format adapter, independent of any single game — n0xis-core never depends on this crate."
+description = "Lua/LuaJIT bytecode disassembler: chunk header, prototype, and instruction decoding. A pluggable scripting-format adapter, independent of any single target — n0xis-core never depends on this crate."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

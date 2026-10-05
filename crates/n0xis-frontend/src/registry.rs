@@ -23,7 +23,7 @@
 //! # use n0xis_frontend::registry::{build_registry};
 //! let reg = build_registry();
 //! let resp = reg.dispatch("decode", &serde_json::json!({
-//!     "file": "game.exe", "addr": "0x140001000", "count": 8
+//!     "file": "app.exe", "addr": "0x140001000", "count": 8
 //! }));
 //! ```
 //!
@@ -1825,7 +1825,7 @@ impl Plugin for AnalysisPasses {
 
         reg.add(Capability::new(
             "aot.symbols",
-            "Recover managed method names for a .NET NativeAOT image (`RVA ↔ Namespace.Type.Method`) from both its stack-trace metadata (framework/generic-heavy) and its reflection InvokeMap (the reflection-registered surface, where a game's own methods live) — each symbol is tagged with its `source`. Works on `--file` and `--pid`. Filter with `name` (case-insensitive substring) or `rva` (hex), and bound the listing with `limit` (default 200); `method_count` reports the full total, with `stacktrace_count`/`invoke_count` breakdown.",
+            "Recover managed method names for a .NET NativeAOT image (`RVA ↔ Namespace.Type.Method`) from both its stack-trace metadata (framework/generic-heavy) and its reflection InvokeMap (the reflection-registered surface, where an application's own methods live) — each symbol is tagged with its `source`. Works on `--file` and `--pid`. Filter with `name` (case-insensitive substring) or `rva` (hex), and bound the listing with `limit` (default 200); `method_count` reports the full total, with `stacktrace_count`/`invoke_count` breakdown.",
             Some(n0xis_contracts::schema::v1::AOT_SYMBOLS),
             Origin::Builtin,
             Box::new(|args| {
@@ -1945,7 +1945,7 @@ impl Plugin for AnalysisPasses {
                 };
                 let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
                 // Which module's code to scan. Live IL2CPP targets need this: the
-                // main module is a thin player and the code is in a DLL.
+                // main module is a thin launcher and the code is in a DLL.
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_start.unwrap_or(Va(0));
                 with_src_ctx(args, base, |ctx, src, region_len, label| {
@@ -2059,7 +2059,7 @@ impl Plugin for AnalysisPasses {
                 // Data window wins as the inline-bytes base: a `--bytes` run of
                 // this capability is looking for the string, not the code.
                 // Which module's code to scan. Live IL2CPP targets need this: the
-                // main module is a thin player and the code is in a DLL.
+                // main module is a thin launcher and the code is in a DLL.
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
                 with_src_ctx(args, base, move |ctx, src, region_len, label| {
@@ -2149,7 +2149,7 @@ impl Plugin for AnalysisPasses {
                 let limit = usize_arg(args, "limit", 200);
                 let max_bytes = usize_arg(args, "max_bytes", 4096);
                 // Which module's code to scan. Live IL2CPP targets need this: the
-                // main module is a thin player and the code is in a DLL.
+                // main module is a thin launcher and the code is in a DLL.
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_start.unwrap_or(Va(0));
                 with_src_ctx(args, base, move |ctx, src, region_len, label| {
@@ -2317,7 +2317,7 @@ impl Plugin for AnalysisPasses {
 
         reg.add(Capability::new(
             "function.noreturn",
-            "Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that flags every function proven never to return — including a game's own `FatalError`/`Assert` wrappers, not just named imports. Feeds correct CFG fall-through pruning (ROADMAP Phase 10, priority 0).",
+            "Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that flags every function proven never to return — including a program's own `FatalError`/`Assert` wrappers, not just named imports. Feeds correct CFG fall-through pruning (ROADMAP Phase 10, priority 0).",
             Some(n0xis_contracts::schema::v1::FUNCTION_NORETURN),
             Origin::Builtin,
             Box::new(|args| {

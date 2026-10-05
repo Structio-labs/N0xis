@@ -130,7 +130,7 @@ So the three entry points are just *which halves are bound*:
 | Entry | Static image | Live process | Use |
 | --- | --- | --- | --- |
 | Analyze a file | ✓ | — | pure decompilation / RE |
-| Attach to a process | (optional, auto-resolve) | ✓ | inspect a running game |
+| Attach to a process | (optional, auto-resolve) | ✓ | inspect a running process |
 | Launch & attach | ✓ | ✓ (spawned) | full static⇄dynamic |
 
 The UI **never says "static mode / dynamic mode."** Dynamic panels are simply
@@ -268,7 +268,7 @@ Long sessions need palette variety — a first-class feature, not an afterthough
 - **Context-aware**: knows the current target, function, selection, and last
   command results.
 - **Three verbs**: *Explain* (this function / line / abbreviation / concept),
-  *Guide me* (walk me through a task, e.g. "find the health value"), *Do it*
+  *Guide me* (walk me through a task, e.g. "find where this value is stored"), *Do it*
   (drive the actual commands with the user watching).
 - Docked right by default (beginner), collapsible/overlay for pros.
 - Grounded in the same JSON surface the GUI uses — it can point at panels

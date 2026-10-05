@@ -9,7 +9,7 @@
 //! metadata* blob so managed exception stacks stay readable — and that blob is
 //! the most direct `method start RVA → fully-qualified name` map in the image.
 //! This module parses it, for any .NET 8 NativeAOT image, with **no hardcode**
-//! for a particular game.
+//! for a particular application.
 //!
 //! The format is documented in-tree (`dotnet/runtime`, release/8.0):
 //! - `ReadyToRunHeader` + `ReadyToRunSectionType` — `Runtime/inc/ModuleHeaders.h`
@@ -95,7 +95,7 @@ pub struct AotSymbol {
     pub display: String,
     /// Which metadata table this name came from: `"stacktrace"` (the
     /// RVA→token map — framework/generic-heavy) or `"invoke"` (the reflection
-    /// InvokeMap — the reflection-registered surface, incl. game methods).
+    /// InvokeMap — the reflection-registered surface, incl. application methods).
     pub source: &'static str,
 }
 
@@ -403,9 +403,9 @@ pub fn parse_aot(src: &dyn MemorySource, image_base: Va) -> Result<AotArtifact, 
     let stacktrace_count = symbols.len();
 
     // The stack-trace map is framework/generic-heavy; the reflection InvokeMap
-    // holds the reflection-registered surface (where a game's own methods live).
+    // holds the reflection-registered surface (where an application's own methods live).
     // Parse it too when present and merge — it is the second, complementary
-    // RVA→name source, and the one that resolves gameplay methods.
+    // RVA→name source, and the one that resolves application-level methods.
     let invoke = find_blob(BLOB_INVOKE_MAP).zip(find_blob(BLOB_COMMON_FIXUPS));
     let invoke_count = if let Some((imap, fixups)) = invoke {
         match parse_invoke_map(src, base, &meta, imap, fixups) {

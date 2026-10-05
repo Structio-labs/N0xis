@@ -7,7 +7,7 @@
 //! LuaJIT 2.0.x actually emits, cross-checked field-for-field against
 //! upstream LuaJIT's own `lj_bcread.c`/`lj_bc.h` at tag `v2.0.3`, and
 //! validated against ~900 real bytecode chunks extracted from a shipped
-//! Bitsquid-bundle game) into a structured, JSON-serializable form: every
+//! Bitsquid-bundle application) into a structured, JSON-serializable form: every
 //! prototype's instructions (mnemonic + resolved operands), string/number/
 //! table constants, and nested-prototype links.
 //!
@@ -20,7 +20,7 @@
 //! layout without dedicated verification would violate this project's
 //! sound-over-complete rule).
 //!
-//! A pluggable scripting-format adapter — independent of any single game;
+//! A pluggable scripting-format adapter — independent of any single target;
 //! `n0xis-core` never depends on this crate (CONCEPT §4's "isolate an
 //! external format behind an adapter" rule, same as `n0xis-bitsquid`).
 

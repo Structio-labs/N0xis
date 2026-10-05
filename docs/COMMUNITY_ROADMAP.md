@@ -113,7 +113,7 @@ executable registered in `.n0x/plugins.json` (name → command/argv, mirroring
 how `--remote-cmd` is just an argv). Given an artifact (a `CfgArtifact`,
 `PseudoFunction`, or `DiscoverArtifact` — whichever the plugin declares it
 handles) as JSON on stdin, it returns additional findings as JSON on stdout:
-extra annotations, vendor-specific signature matches, game-specific heuristics
+extra annotations, vendor-specific signature matches, target-specific heuristics
 — without needing a Rust PR against `n0xis-core` at all. `n0xis-pipeline`
 would gain a `PluginHost` that shells out to registered plugins after a pass
 runs and merges their findings into the response under a `plugins` key,

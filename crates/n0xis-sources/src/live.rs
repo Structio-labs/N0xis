@@ -185,7 +185,7 @@ impl LiveProcess {
     ///
     /// The plural, module-scoped twin of [`section_range_of`](Self::section_range_of),
     /// and the one an IL2CPP target needs: the main module of a running IL2CPP
-    /// game is a thin player executable, while the code is in
+    /// process is a thin launcher executable, while the code is in
     /// `GameAssembly.dll` — so "the code ranges of this process" and "the code
     /// ranges of the module you mean" are different answers.
     pub fn code_ranges_of(&self, module_base: Va) -> Vec<(Va, u64)> {

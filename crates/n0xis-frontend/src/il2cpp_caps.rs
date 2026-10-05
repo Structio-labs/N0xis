@@ -129,10 +129,10 @@ fn target_ranges(args: &Value) -> Result<Option<TargetRanges>, Box<Response<Valu
 
 /// Locate an IL2CPP metadata blob next to `image_path`, if one exists.
 ///
-/// The IL2CPP layout is `<Game>/<Game>_Data/il2cpp_data/Metadata/global-metadata.dat`,
+/// The IL2CPP layout is `<App>/<App>_Data/il2cpp_data/Metadata/global-metadata.dat`,
 /// with the executable and `GameAssembly.dll` beside the `*_Data` directory —
 /// so the search is "any sibling directory ending in `_Data`", never a
-/// hardcoded game name.
+/// hardcoded application name.
 ///
 /// Lives in the frontend rather than in `n0xis-il2cpp` because that crate is
 /// deliberately byte-pure (bytes in, structures out, no filesystem), and in one
@@ -473,7 +473,7 @@ impl Plugin for Il2CppTools {
 
         reg.add(Capability::new(
             "il2cpp.classes",
-            "Enumerate the C# classes a running game has loaded, by the one property every managed object has: its first word is \
+            "Enumerate the C# classes a running process has loaded, by the one property every managed object has: its first word is \
              its Il2CppClass*. Samples heap regions, ranks pointers by how often they repeat, and keeps only candidates whose field \
              array points back at them. Needs no metadata parse and no dumper.",
             Some(schema::v1::IL2CPP_CLASSES),
@@ -518,7 +518,7 @@ impl Plugin for Il2CppTools {
                         max_probe: usize_arg(args, "max_probe").unwrap_or(0),
                         limit: 0,
                         min_hits: usize_arg(args, "min_hits").unwrap_or(0),
-                        // A class points to itself since Unity 2018.1; requiring
+                        // A class points to itself since runtime 2018.1; requiring
                         // that rejects almost everything on arithmetic alone,
                         // before any string read. Off for older targets.
                         require_self_pointer: args.get("any_layout").and_then(Value::as_bool) != Some(true),
@@ -741,7 +741,7 @@ impl Plugin for Il2CppTools {
                 let matched_count = matched.len();
 
                 // The live half: read each slot and report the pointer the
-                // process actually resolved. A zero slot means the game has not
+                // process actually resolved. A zero slot means the target has not
                 // called that icall yet — reported as such, never as an address.
                 let page: Vec<Value> = matched
                     .into_iter()
@@ -815,7 +815,7 @@ impl Plugin for Il2CppTools {
                     "no icall names in the data window and no resolution sites: either not an IL2CPP image, or the wrong module/section was scanned (pass module=GameAssembly.dll on a live target)"
                         .to_string()
                 } else if resolve && resolved.label.starts_with("live:") {
-                    "`function` is what this process has resolved so far: an icall the game has not called yet still has a null slot, and is reported without one rather than as address 0"
+                    "`function` is what this process has resolved so far: an icall the target has not called yet still has a null slot, and is reported without one rather than as address 0"
                         .to_string()
                 } else {
                     "static read: slots hold no pointer until the process resolves them, so `function` is absent. Re-run against a running target to fill it in"
@@ -828,7 +828,7 @@ impl Plugin for Il2CppTools {
             "il2cpp.metadata",
             "Read an IL2CPP global-metadata.dat natively: format version, the tables its header declares, and the string \
              literals — the managed half that needs no external dumper. Pass a target image and the blob is found beside it. \
-             Literals carry a metadata index, not an address: this answers 'is this text in the game', not yet 'who uses it'.",
+             Literals carry a metadata index, not an address: this answers 'is this text in the target', not yet 'who uses it'.",
             Some(schema::v1::IL2CPP_METADATA),
             Origin::Builtin,
             Box::new(|args| {

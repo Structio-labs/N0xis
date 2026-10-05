@@ -24,7 +24,7 @@ pub(crate) const MAX_UNWIND_FRAMES: usize = 128;
 /// How many non-matching conditional hits to tolerate before giving up. Every
 /// miss is a full stop/inspect/resume round-trip for the target thread; on a
 /// per-frame function that is thousands of them and the target effectively runs
-/// single-stepped — enough to kill a game. Past this, bail with a diagnostic
+/// single-stepped — enough to kill the target. Past this, bail with a diagnostic
 /// ("trap site too hot") instead of grinding the target to death. Shared by both
 /// adapters so the budget is one number, not a copy per OS.
 pub(crate) const MAX_CONDITION_MISSES: u32 = 300;

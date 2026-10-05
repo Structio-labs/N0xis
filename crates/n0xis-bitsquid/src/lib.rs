@@ -3,8 +3,8 @@
 
 //! # n0xis-bitsquid — the Bitsquid bundle-format adapter
 //!
-//! Bitsquid bundles (the container format of one engine family) ship game
-//! assets as **archives**: a small header, then a stream of 64 KiB chunks
+//! Bitsquid bundles (the container format of one engine family) ship
+//! application assets as **archives**: a small header, then a stream of 64 KiB chunks
 //! (each either raw or zlib-compressed), which decompress to an **exploded
 //! package** — a flat list of entries (`type_hash` + `path_hash`, both
 //! pre-computed 64-bit values baked into the file, not something this crate
@@ -15,7 +15,7 @@
 //! This is a **pluggable asset-format adapter**, not a core seam: nothing in
 //! `n0xis-core` depends on it, matching the same "isolate an external system
 //! behind an adapter" discipline `n0xis-arch`/`n0xis-sources` hold for ISA/OS
-//! boundaries. A consumer (the CLI, or any future game-specific crate) reads
+//! boundaries. A consumer (the CLI, or any future target-specific crate) reads
 //! bytes off disk and hands them to [`open_bundle`]; this crate never touches
 //! a filesystem or process itself.
 //!

@@ -25,7 +25,7 @@
 //! So the name is static, the pointer is not — it exists only once the process
 //! has resolved it. That makes this pass do something more useful than a table
 //! read: it recovers **name → cache-slot**, statically, and the slot is a stable
-//! module-relative address. Read those slots in a running game and you have the
+//! module-relative address. Read those slots in a running process and you have the
 //! engine's native functions with their real addresses *and* their real names —
 //! on a target whose standing description is "no symbols on `--pid`".
 //!
@@ -51,7 +51,7 @@
 //! matcher with a stated confidence**, not a model of libil2cpp. It recognizes
 //! "load a `Namespace.Type::Method` string, then store `rax` to a data slot
 //! within a few instructions". A name found without a store is still reported —
-//! knowing the game references `Transform::get_position_Injected` is worth
+//! knowing the target references `Transform::get_position_Injected` is worth
 //! something even when the caching shape differs — but it is reported *as*
 //! slotless rather than paired with a guess.
 
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn a_name_with_no_caching_store_is_reported_as_slotless_not_dropped() {
-        // Knowing the game references an engine call is worth reporting even
+        // Knowing the target references an engine call is worth reporting even
         // when the caching shape differs — but it must not be paired with a
         // guessed slot.
         let mut code: Vec<u8> = Vec::new();

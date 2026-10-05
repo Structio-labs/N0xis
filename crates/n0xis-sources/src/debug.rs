@@ -3,7 +3,7 @@
 
 //! Win32 debug API: arm a software breakpoint (`int3`) and block until it
 //! fires — `debug await-hit`. The agent sets the breakpoint, something in the
-//! target triggers it (a human pressing a key in a game, another automated
+//! target triggers it (a human pressing a key in the target, another automated
 //! actor), and this reports back exactly which thread hit it with a full
 //! register + stack snapshot.
 //!
@@ -123,7 +123,7 @@ pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
         // `DBG_EXCEPTION_NOT_HANDLED` delivers an unexpected breakpoint
         // exception to a target that has no handler for it, which crashes the
         // target. This one line was the real cause of the "attaching kills the
-        // game" behaviour we misattributed to anti-debug.
+        // target" behaviour we misattributed to anti-debug.
         let status = if ev.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
             let code = unsafe { ev.u.Exception.ExceptionRecord.ExceptionCode };
             if code == EXCEPTION_BREAKPOINT && !first_bp_seen {
@@ -570,7 +570,7 @@ impl WatchGuard {
             // hardware breakpoint. After we detach, that thread traps again with
             // no debugger attached → an unhandled single-step exception →
             // the target crashes. (This was the observed "watchpoint crashes the
-            // game" bug: the busy worker threads we most want to trap are exactly
+            // target" bug: the busy worker threads we most want to trap are exactly
             // the ones whose DR clear was being dropped.)
             let h = unsafe {
                 OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, 0, tid)
@@ -689,7 +689,7 @@ pub fn await_watchpoint_hit_where(
     let mut hit: Option<BreakpointHit> = None;
     // The first `EXCEPTION_BREAKPOINT` after attach is Windows' attach
     // notification — must be `DBG_CONTINUE`d, not handed back to the target
-    // (doing so crashes it: the cause of the "watchpoint kills the game" bug).
+    // (doing so crashes it: the cause of the "watchpoint kills the target" bug).
     let mut first_bp_seen = false;
     // Budget for non-matching conditional hits — see the bail-out below. The
     // one shared number, not a per-OS copy (`crate::hit`).
@@ -744,7 +744,7 @@ pub fn await_watchpoint_hit_where(
                     // Every miss is a full stop/inspect/resume round-trip for
                     // the target thread. On a per-frame function that is
                     // thousands of them, and the target effectively runs
-                    // single-stepped — enough to kill a game (it did). Bail
+                    // single-stepped — enough to kill the target (it did). Bail
                     // with an explanation instead of grinding it to death:
                     // a condition this rare needs a colder trap site.
                     if misses >= MAX_CONDITION_MISSES {

@@ -482,7 +482,7 @@ pub fn advisories(profile: &ImageProfile, il2cpp_metadata: Option<&str>, live: b
             verdict: "degraded".into(),
             // No borrowed counts here. An advisory fires on *this* target, so
             // quoting another binary's measurement — however real — states a
-            // fact about a game the caller is not looking at. Describe the
+            // fact about a binary the caller is not looking at. Describe the
             // mechanism; let `il2cpp icalls` report this target's own numbers.
             reason: format!(
                 "managed C# literals are in {where_}, not in the image — search them with `il2cpp metadata --query`. \
@@ -775,7 +775,7 @@ mod tests {
         assert!(for_cmd("xref string").unwrap().reason.contains("global-metadata.dat"));
         assert!(for_cmd("xref string").unwrap().reason.contains("ARE in `.rdata`"));
         // An advisory describes *this* target. Quoting a number measured on
-        // another binary states a fact about a game the caller is not looking
+        // another binary states a fact about a binary the caller is not looking
         // at, however real that number was elsewhere.
         assert!(
             !for_cmd("xref string").unwrap().reason.contains("2189"),

@@ -437,7 +437,7 @@ fn export_table(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> Vec
 ///   its exports from, holds named exports only, so on this corpus 853 of
 ///   1216 exported functions were invisible to symbol resolution, discovery
 ///   and cross-references alike; a DLL that exports mostly by ordinal is the
-///   norm for system and shipped-game libraries. A name never yields to one:
+///   norm for system and shipped-application libraries. A name never yields to one:
 ///   the file gives an ordinal, and `Ordinal<n>` says exactly that rather than
 ///   inventing a name.
 /// - A **forwarder** is not a symbol at all. Its table address is the

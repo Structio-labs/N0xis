@@ -21,7 +21,8 @@ build-dir = "target/book"
 
 [output.html]
 # Binds every page title to the project ("CLI Reference - N0xis"), which is what
-# separates this from the unrelated musicians and games that share the name.
+# separates this from the unrelated musicians and entertainment products that
+# share the name.
 git-repository-url = "https://github.com/Structio-labs/N0xis"
 git-repository-icon = "fab-github"
 # Points at the *canonical* file, not the generated copy: the provenance comment

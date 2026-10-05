@@ -660,7 +660,7 @@ what the build gates on and what the repository says about itself.
 
 The decompiler jump: from a Memory-SSA foundation to **readable, source-level
 pseudocode with C++ class recovery**, verified rung by rung on
-real AAA game binaries **and** system libraries (see `ROADMAP.md`). Every
+real large-application binaries **and** system libraries (see `ROADMAP.md`). Every
 item below was confirmed on a real target under the verify-before-✅ rule —
 no ML nondeterminism, sound over complete throughout. 56 commits.
 
@@ -685,7 +685,7 @@ no ML nondeterminism, sound over complete throughout. 56 commits.
 ### C++ RTTI / class recovery (Rung 7a)
 
 - **MSVC RTTI vtable → class recovery.** `rtti scan` walks `.rdata`'s
-  COL→TypeDescriptor chains, validated by the COL self-reference. On a PE/MSVC C++ game binary
+  COL→TypeDescriptor chains, validated by the COL self-reference. On a PE/MSVC C++ application binary
   it recovers **3055** vtables; on a PE/MSVC shipping build, **561**.
 - **Into the decompiler.** A vtable constant renders `&Class::vtable`; a
   constructor's `this` types to its class (`std::exception *rcx`, not
@@ -753,11 +753,11 @@ no ML nondeterminism, sound over complete throughout. 56 commits.
 
 ### Verification breadth
 
-- Beyond games: a final regression sweep decompiled **1000/1000 functions with
-  0 errors** across 9 binaries — a PE/MSVC C++ game binary, the newer-ISA (BMI/BMI2)
-  PE/MSVC shipping build, an ELF/GCC title, and the system
+- Beyond large applications: a final regression sweep decompiled **1000/1000 functions with
+  0 errors** across 9 binaries — a PE/MSVC C++ application binary, the newer-ISA (BMI/BMI2)
+  PE/MSVC shipping build, an ELF/GCC program, and the system
   set `ls`/`openssl`/`libcrypto`/`sqlite3`/`git`/`libc` (avg quality
-  0.960–0.998). The static pipeline is robust well beyond the game corpus.
+  0.960–0.998). The static pipeline is robust well beyond the large-application corpus.
 
 ## [0.1.1] — 2026-08-30
 
