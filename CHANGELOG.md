@@ -5,6 +5,20 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **`decomp pseudo` lists the function's variables** (`data.variables`): each name as
+  printed, the key `annotate var` / `annotate vartype` store it under, and whether it is a
+  parameter, a stack local or another value. The renderer records each variable where it
+  prints it, so a front end renames what the user points at without guessing from the text
+  which words are variables. Only parameters and locals take a type.
+
+### Known
+
+- `annotate var` and `annotate vartype` read no image, so they store a rename for any name,
+  including one that is not a variable (`ok:true`, no effect). Take the name from
+  `variables[].key`.
+
 ## [0.3.3] — 2026-10-05
 
 ### Fixed

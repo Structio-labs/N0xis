@@ -7,7 +7,8 @@
 //! in how a [`MicroExpr`] becomes text. One renderer, one place bugs get
 //! fixed (CONCEPT §3 rule 3).
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 
 use n0xis_arch::{BinOp, CallTarget, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
 use n0xis_contracts::Va;
@@ -99,6 +100,21 @@ pub struct RenderNames {
     /// exactly what you see. Empty unless [`Self::with_user_names`] was given the
     /// function's `annotate var` map.
     user_names: HashMap<String, String>,
+    /// Every variable this renderer turned into text, as it was printed. It is
+    /// recorded at the two places a variable becomes text, so the list is what
+    /// was printed and is not re-read from the text. See [`PrintedVar`].
+    printed: RefCell<BTreeSet<PrintedVar>>,
+}
+
+/// One variable as the renderer printed it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrintedVar {
+    /// The name on the page, after the user's rename.
+    pub shown: String,
+    /// The name before the user's rename: what `annotate var --var` is keyed by.
+    pub key: String,
+    /// Printed at a stack slot, which is a recovered local.
+    pub stack_local: bool,
 }
 
 impl RenderNames {
@@ -126,6 +142,7 @@ impl RenderNames {
             strings: HashMap::new(),
             data_refs: HashMap::new(),
             user_names: HashMap::new(),
+            printed: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -161,6 +178,19 @@ impl RenderNames {
     /// Apply a user rename to a just-computed display name, if one exists.
     fn user_override(&self, display: String) -> String {
         self.user_names.get(&display).cloned().unwrap_or(display)
+    }
+
+    /// The text a variable prints as: `display` with the user's rename applied.
+    /// The pair is recorded, which is what [`Self::printed_vars`] reports.
+    fn shown(&self, display: String, stack_local: bool) -> String {
+        let shown = self.user_override(display.clone());
+        self.printed.borrow_mut().insert(PrintedVar { shown: shown.clone(), key: display, stack_local });
+        shown
+    }
+
+    /// Every variable printed so far, in name order.
+    pub fn printed_vars(&self) -> Vec<PrintedVar> {
+        self.printed.borrow().iter().cloned().collect()
     }
 
     /// Enrich with Phase 4's recovered locals/struct-fields/signature.
@@ -271,7 +301,7 @@ impl RenderNames {
             .get(name)
             .cloned()
             .unwrap_or_else(|| self.spell_register(name));
-        self.user_override(display)
+        self.shown(display, false)
     }
 
     /// A canonical SSA name spelled as the target spells its registers:
@@ -448,7 +478,7 @@ fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> 
     let root = base.split('.').next().unwrap_or(base);
     if is_stack_root(root) {
         let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| format!("local_{:x}", offset.unsigned_abs()));
-        return Some(names.user_override(name));
+        return Some(names.shown(name, true));
     }
     if let Some(fieldmap) = names.structs.get(base) {
         let based = names.display_var(base);

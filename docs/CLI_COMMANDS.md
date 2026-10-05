@@ -241,6 +241,11 @@ Pseudo-C for one function.
 - Plus all `IrArgs` (`--addr`, `--arch`, `--size`, `--no-auto-end`) and the same five sources.
 - Schema: **`n0x.decomp.pseudo.v1`** (archived v0 id, kept for back-compat — the only current
   command that still emits a `n0x.*` schema).
+- `data.variables` lists every variable the page shows: `name` as printed (after any rename),
+  `key` (what `annotate var --var` and `annotate vartype --var` take: the name before the
+  user renamed it) and `kind` (`param`, `local` or `value`). Only a `param` or a `local` takes
+  a type. The list is recorded where the renderer prints a variable, not read back from the
+  text. 0.3.3 and earlier do not send the field.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).
@@ -800,7 +805,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x annotate rm` | Remove all annotations (and history) at an address |
 | `n0x annotate show` | Show the current facts + full history for one address |
 | `n0x annotate type` | Assert (or clear) a type note at an address, e.g. `"int(char*, size_t)"` |
-| `n0x annotate var` | Rename (or clear) one decompiled variable on the function at `--addr`. `--var` is the variable's current displayed name (`local_78`, `rcx`, `v3`) |
+| `n0x annotate var` | Rename (or clear) one decompiled variable on the function at `--addr`. `--var` is the variable's current displayed name (`local_78`, `rcx`, `v3`); take it from `variables[].key` of `decomp pseudo`, because the command has no image to check the name against and stores any name it is given |
 | `n0x annotate vartype` | Set (or clear) the C type of one variable/param/return on the function at `--addr`. `--var` is the variable's displayed name, or `@return` for the return type; `--value` is a C-type string (e.g. `int`, `char *`, `Foo *`) |
 | `n0x plugin add` | Register (or overwrite, by name) a plugin: an executable spawned with an artifact as JSON on stdin, expected to reply with one JSON findings object on stdout |
 | `n0x plugin list` | List registered plugins |

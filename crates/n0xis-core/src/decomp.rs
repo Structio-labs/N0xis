@@ -13,6 +13,8 @@
 //! rather than minting a new one: `--style ssa` is documented as an additive
 //! style on the *same* command, not a new capability.
 
+use std::collections::HashMap;
+
 use n0xis_contracts::Va;
 use serde::Serialize;
 
@@ -140,6 +142,35 @@ pub struct PseudoFunction {
     /// want to act on, not just prettier text.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub devirtualized: Vec<crate::Devirtualized>,
+    /// Every variable `pseudo` shows, with the key a rename or a type is stored
+    /// under. A front end renames what the user points at by looking it up here,
+    /// instead of guessing from the text which words are variables.
+    pub variables: Vec<DecompVar>,
+}
+
+/// One variable of a decompiled function.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct DecompVar {
+    /// The name as `pseudo` prints it, after any rename.
+    pub name: String,
+    /// What `annotate var --var` and `annotate vartype --var` take for this
+    /// variable: its name before the user renamed it.
+    pub key: String,
+    pub kind: VarKind,
+}
+
+/// What a variable is, which decides what can be said about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VarKind {
+    /// A parameter of the recovered signature. Takes a name and a type.
+    Param,
+    /// A recovered stack local. Takes a name and a type.
+    Local,
+    /// Any other variable: a register value or a merged SSA value. Takes a name
+    /// only. A type stored for it changes nothing, because types apply to
+    /// parameters and locals.
+    Value,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -192,14 +223,22 @@ impl Pass for DecompPass {
         // just the body). Keyed by the default displayed name (`local_78`, the
         // register for a parameter); the render-site overlay below then covers the
         // coalesced `vN` / raw SSA names that never pass through `types`.
+        // The names before this rename are the keys renames are stored under;
+        // `renamed_*` maps a shown name back to its key for the variable list.
+        let param_keys: Vec<String> = types.signature.params.iter().map(|p| p.name.clone()).collect();
+        let local_keys: Vec<String> = types.locals.iter().map(|l| l.name.clone()).collect();
+        let mut renamed_params: HashMap<String, String> = HashMap::new();
+        let mut renamed_locals: HashMap<String, String> = HashMap::new();
         if !input.var_names.is_empty() {
             for l in types.locals.iter_mut() {
                 if let Some(u) = input.var_names.get(&l.name) {
+                    renamed_locals.insert(u.clone(), l.name.clone());
                     l.name = u.clone();
                 }
             }
             for p in types.signature.params.iter_mut() {
                 if let Some(u) = input.var_names.get(&p.name) {
+                    renamed_params.insert(u.clone(), p.name.clone());
                     p.name = u.clone();
                 }
             }
@@ -330,13 +369,16 @@ impl Pass for DecompPass {
         );
         let signature = format_signature(cfg.start, &types.signature, own_name.as_deref());
 
-        let (pseudo, has_loop, fallback_count, delta) = match input.style {
+        let (pseudo, has_loop, fallback_count, delta, printed) = match input.style {
             // (the arms below produce `pseudo`; block-label stripping is applied
             // to it after the match, gated on `input.strip_block_labels`)
-            DecompStyle::Goto => (render_goto(&cfg, &ssa.blocks, &names), false, 0, Vec::new()),
+            DecompStyle::Goto => {
+                let lines = render_goto(&cfg, &ssa.blocks, &names);
+                (lines, false, 0, Vec::new(), names.printed_vars())
+            }
             DecompStyle::Structured => {
                 let out = structure(&cfg, &ssa.blocks, &names);
-                (out.lines, out.has_loop, out.fallback_count, Vec::new())
+                (out.lines, out.has_loop, out.fallback_count, Vec::new(), names.printed_vars())
             }
             DecompStyle::Ssa => {
                 // Coalesce SSA-version phi-webs into named variables (Rung 3b/3c),
@@ -349,7 +391,7 @@ impl Pass for DecompPass {
                 let names = names.with_coalescing(var_names);
                 let out = structure(&dcfg, &dblocks, &names);
                 let delta = if input.explain { opt.delta } else { Vec::new() };
-                (out.lines, out.has_loop, out.fallback_count, delta)
+                (out.lines, out.has_loop, out.fallback_count, delta, names.printed_vars())
             }
         };
 
@@ -398,12 +440,20 @@ impl Pass for DecompPass {
             .chain(std::iter::once("}".to_string()))
             .collect();
 
+        let variables = printed_variables(
+            &printed,
+            &types.signature.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            &VarKeys { params: &param_keys, locals: &local_keys, renamed_params: &renamed_params, renamed_locals: &renamed_locals },
+            &body_lines,
+        );
+
         Ok(PseudoFunction {
             address: cfg.start,
             end_address: cfg.end,
             signature,
             style: input.style.as_str(),
             pseudo: body_lines,
+            variables,
             quality,
             flags,
             instruction_count: cfg.insn_count,
@@ -466,6 +516,71 @@ fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> Str
         Some(n) => format!("{ret} {n}({params})"),
         None => format!("{ret} sub_{:x}({params})", va.get()),
     }
+}
+
+/// The keys a function's renames are stored under, and the user's upfront
+/// renames of parameters and locals mapped back to them.
+struct VarKeys<'a> {
+    params: &'a [String],
+    locals: &'a [String],
+    renamed_params: &'a HashMap<String, String>,
+    renamed_locals: &'a HashMap<String, String>,
+}
+
+/// The variables a decompiled function shows. `printed` is what the renderer
+/// printed; `shown_params` are the signature's parameter names as printed,
+/// which appear on the signature line even when the body never reads them.
+/// Only names that are on the page are kept: a render that was discarded must
+/// not leave a variable nobody can see.
+fn printed_variables(printed: &[crate::render::PrintedVar], shown_params: &[String], keys: &VarKeys<'_>, body: &[String]) -> Vec<DecompVar> {
+    let text = body.join("\n");
+    let kind_of = |key: &str, stack_local: bool| {
+        if keys.params.iter().any(|k| k == key) {
+            VarKind::Param
+        } else if stack_local || keys.locals.iter().any(|k| k == key) {
+            VarKind::Local
+        } else {
+            VarKind::Value
+        }
+    };
+    let mut out = std::collections::BTreeSet::new();
+    for v in printed {
+        let renamed = if v.stack_local { keys.renamed_locals } else { keys.renamed_params };
+        let key = renamed.get(&v.key).cloned().unwrap_or_else(|| v.key.clone());
+        let kind = kind_of(&key, v.stack_local);
+        out.insert(DecompVar { name: v.shown.clone(), key, kind });
+    }
+    for (shown, key) in shown_params.iter().zip(keys.params) {
+        out.insert(DecompVar { name: shown.clone(), key: key.clone(), kind: VarKind::Param });
+    }
+    out.into_iter().filter(|v| shows_as_name(&text, &v.name)).collect()
+}
+
+/// `name` appears in `text` as a whole name: not inside a longer identifier
+/// (`v1` in `v10`) and not as the stem of a versioned SSA name (`rsi` in
+/// `rsi.2`).
+fn shows_as_name(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(i) = text[from..].find(name) {
+        let start = from + i;
+        let end = start + name.len();
+        let before = text[..start].chars().next_back().is_none_or(|c| !ident(c) && c != '.');
+        let mut rest = text[end..].chars();
+        let after = match rest.next() {
+            None => true,
+            Some('.') => !rest.next().is_some_and(|d| d.is_ascii_digit()),
+            Some(c) => !ident(c),
+        };
+        if before && after {
+            return true;
+        }
+        from = start + text[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// The typed-locals declaration lines for a function's body — one
@@ -974,6 +1089,86 @@ mod tests {
         // `goto` style stays a flat listing — no declaration preamble.
         let goto = decomp(code, DecompStyle::Goto);
         assert!(!goto.pseudo.iter().any(|l| l.contains("local_8;") && !l.contains('=')), "goto should not declare locals: {:#?}", goto.pseudo);
+    }
+
+    fn decomp_with(code: Vec<u8>, style: DecompStyle, renames: &[(&str, &str)], types: &[(&str, &str)]) -> PseudoFunction {
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        let map = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        DecompPass.run(&ctx, DecompInput { cfg, style, explain: false, strip_block_labels: true, var_names: map(renames), var_types: map(types), struct_defs: Default::default() }).unwrap()
+    }
+
+    fn decomp_renamed(code: Vec<u8>, style: DecompStyle, renames: &[(&str, &str)]) -> PseudoFunction {
+        decomp_with(code, style, renames, &[])
+    }
+
+    /// `mov [rsp+8], rcx ; mov eax, [rsp+8] ; ret`: one parameter, one stack local.
+    const PARAM_AND_LOCAL: [u8; 10] = [0x48, 0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0xc3];
+
+    #[test]
+    fn the_variable_list_is_what_the_page_shows() {
+        for style in [DecompStyle::Goto, DecompStyle::Structured, DecompStyle::Ssa] {
+            let f = decomp_renamed(PARAM_AND_LOCAL.to_vec(), style, &[]);
+            let text = f.pseudo.join("\n");
+            assert!(!f.variables.is_empty(), "{style:?}: no variables listed for {text}");
+            for v in &f.variables {
+                assert!(shows_as_name(&text, &v.name), "{style:?}: {v:?} is not on the page: {text}");
+            }
+            let param = f.variables.iter().find(|v| v.kind == VarKind::Param);
+            assert_eq!(param.map(|v| v.key.as_str()), Some("rcx"), "{style:?}: {:?}\n{text}", f.variables);
+        }
+        let ssa = decomp_renamed(PARAM_AND_LOCAL.to_vec(), DecompStyle::Ssa, &[]);
+        assert!(
+            ssa.variables.iter().any(|v| v.kind == VarKind::Local && v.key == "local_8" && v.name == "local_8"),
+            "{:?}\n{}",
+            ssa.variables,
+            ssa.pseudo.join("\n")
+        );
+    }
+
+    #[test]
+    fn a_renamed_variable_keeps_the_key_its_rename_is_stored_under() {
+        let f = decomp_renamed(PARAM_AND_LOCAL.to_vec(), DecompStyle::Ssa, &[("rcx", "input"), ("local_8", "saved")]);
+        let text = f.pseudo.join("\n");
+        assert!(text.contains("input") && text.contains("saved"), "{text}");
+        assert!(f.variables.contains(&DecompVar { name: "input".into(), key: "rcx".into(), kind: VarKind::Param }), "{:?}\n{text}", f.variables);
+        assert!(f.variables.contains(&DecompVar { name: "saved".into(), key: "local_8".into(), kind: VarKind::Local }), "{:?}\n{text}", f.variables);
+        assert!(!f.variables.iter().any(|v| v.name == "rcx" || v.name == "local_8"), "an old name is listed: {:?}", f.variables);
+        assert!(!f.variables.iter().any(|v| v.key == "input" || v.key == "saved"), "a user's name used as a key: {:?}", f.variables);
+    }
+
+    /// `mov [rsp+8], rcx ; mov eax, [rsp+8] ; test rdx, rdx ; je +4 ; add rax, 1 ;
+    /// ret`: two parameters, a stack local, and a value the two paths merge into.
+    const EVERY_KIND: [u8; 19] = [
+        0x48, 0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0x48, 0x85, 0xd2, 0x74, 0x04, 0x48, 0x83, 0xc0, 0x01, 0xc3,
+    ];
+
+    #[test]
+    fn only_a_param_or_a_local_takes_a_type() {
+        let plain = decomp_with(EVERY_KIND.to_vec(), DecompStyle::Ssa, &[], &[]);
+        let text = plain.pseudo.join("\n");
+        for kind in [VarKind::Param, VarKind::Local, VarKind::Value] {
+            assert!(plain.variables.iter().any(|v| v.kind == kind), "no {kind:?} to test with: {:?}\n{text}", plain.variables);
+        }
+        for v in &plain.variables {
+            let typed = decomp_with(EVERY_KIND.to_vec(), DecompStyle::Ssa, &[], &[(v.key.as_str(), "struct Probe *")]);
+            let changed = typed.pseudo != plain.pseudo;
+            assert_eq!(changed, v.kind != VarKind::Value, "{v:?}: a type {} the text\n{text}", if changed { "changed" } else { "did not change" });
+        }
+    }
+
+    #[test]
+    fn a_name_counts_only_as_a_whole_name() {
+        assert!(shows_as_name("v1 = 0;", "v1"));
+        assert!(!shows_as_name("v10 = 0;", "v1"));
+        assert!(!shows_as_name("rsi.2 = 0;", "rsi"));
+        assert!(shows_as_name("return rsi;", "rsi"));
+        assert!(shows_as_name("x = (rsi.2 + 1.5);", "rsi.2"));
+        assert!(shows_as_name("лічильник = 1;", "лічильник"));
+        assert!(!shows_as_name("мій_лічильник = 1;", "лічильник"));
+        assert!(!shows_as_name("anything", ""));
     }
 
     #[test]
