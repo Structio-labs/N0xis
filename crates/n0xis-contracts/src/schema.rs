@@ -52,6 +52,8 @@ pub mod v1 {
     pub const XREF_STRING: &str = "n0xis.xref.string.v1";
     /// Memory read (`mem read`).
     pub const MEM_READ: &str = "n0xis.mem.read.v1";
+    /// Every readable stretch of a window, gaps left as gaps (`mem span`).
+    pub const MEM_SPAN: &str = "n0xis.mem.span.v1";
     /// Memory write (`mem write`).
     pub const MEM_WRITE: &str = "n0xis.mem.write.v1";
     /// Address-space region map (`mem map`).

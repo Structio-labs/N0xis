@@ -144,6 +144,12 @@ impl MemorySource for StaticImage {
             StaticImage::Elf(e) => e.contains(va),
         }
     }
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        match self {
+            StaticImage::Pe(p) => p.next_readable(va, end),
+            StaticImage::Elf(e) => e.next_readable(va, end),
+        }
+    }
     fn code_range(&self) -> Option<(Va, u64)> {
         match self {
             StaticImage::Pe(p) => p.code_range(),

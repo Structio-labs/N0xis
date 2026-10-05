@@ -553,6 +553,11 @@ impl MemorySource for LiveProcess {
             .unwrap_or(false)
     }
 
+    /// A process maps whole pages, so a readable stretch starts on one.
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        crate::next_readable_at(self, va, end, crate::page_bounds(va, end))
+    }
+
     fn write(&self, va: Va, bytes: &[u8]) -> Result<(), SourceError> {
         // Fast path: the page is already writable.
         if wpm(self.handle, va, bytes) {

@@ -1564,6 +1564,9 @@ struct DumpRmArgs {
 enum MemCmd {
     /// Read bytes (live process, static PE, or inline).
     Read(MemReadArgs),
+    /// Read every readable stretch of a window, as runs: a gap (an unmapped
+    /// address, a zero-fill tail) lies between two runs instead of ending the read.
+    Span(MemSpanArgs),
     /// Write bytes to a live process (flips page protection as needed).
     Write(MemWriteArgs),
     /// Dump the address-space region map of a live process.
@@ -1575,6 +1578,27 @@ struct MemReadArgs {
     #[arg(long)]
     addr: String,
     #[arg(long, default_value_t = 64, value_parser = parse_hex_or_decimal_usize)]
+    size: usize,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+}
+
+#[derive(Args)]
+struct MemSpanArgs {
+    #[arg(long)]
+    addr: String,
+    /// Bytes in the window; at most `MAX_SPAN` (65536).
+    #[arg(long, default_value_t = n0xis_frontend::registry::DEFAULT_SPAN, value_parser = parse_hex_or_decimal_usize)]
     size: usize,
     #[arg(long)]
     pid: Option<u32>,
@@ -3004,6 +3028,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Xref(XrefCmd::String(a)) => cmd_xref_string(a, pretty),
         Command::Rtti(RttiCmd::Scan(a)) => cmd_rtti_scan(a, pretty),
         Command::Mem(MemCmd::Read(a)) => cmd_mem_read(a, pretty),
+        Command::Mem(MemCmd::Span(a)) => cmd_mem_span(a, pretty),
         Command::Mem(MemCmd::Write(a)) => cmd_mem_write(a, pretty),
         Command::Mem(MemCmd::Map(a)) => cmd_mem_map(a, pretty),
         Command::Patch(c) => cmd_patch(c, pretty),
@@ -4443,6 +4468,22 @@ fn cmd_xref_string(a: XrefStringArgs, pretty: bool) -> bool {
 fn cmd_mem_read(a: MemReadArgs, pretty: bool) -> bool {
     run_capability(
         "mem.read",
+        json!({
+            "addr": a.addr,
+            "size": a.size,
+            "pid": a.pid,
+            "file": a.file,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+        }),
+        pretty,
+    )
+}
+
+fn cmd_mem_span(a: MemSpanArgs, pretty: bool) -> bool {
+    run_capability(
+        "mem.span",
         json!({
             "addr": a.addr,
             "size": a.size,

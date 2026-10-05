@@ -91,6 +91,11 @@ impl MemorySource for Snapshot {
         self.region_for(va.0).is_some()
     }
 
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        let bounds = self.regions.iter().flat_map(|r| [r.base, r.end()]);
+        crate::next_readable_at(self, va, end, bounds)
+    }
+
     fn label(&self) -> String {
         self.label.clone()
     }

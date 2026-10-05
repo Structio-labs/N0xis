@@ -4355,6 +4355,7 @@ phase from its first mistake on.
 | `il2cpp obj` | IL2CPP managed layer | **not checkable here** — needs a running IL2CPP runtime |
 | `il2cpp classes` | IL2CPP managed layer | **not checkable here** — needs a running IL2CPP runtime |
 | `mem read` | Live memory | `/proc/<pid>/mem` — byte-identical (re-checked) |
+| `mem span` | Live memory | `readelf -SW` and `llvm-readobj --sections` on an ELF and a PE fixture — every stretch and every gap where those tables put them, bytes identical to the files' own; and a live process that unmapped the middle of three pages it filled — both stretches, the hole skipped, the bytes it wrote |
 | `mem write` | Live memory | `/proc/<pid>/mem` — the four bytes it reported writing are the four bytes there |
 | `mem map` | Live memory | `/proc/<pid>/maps` — every region, none missing (re-checked) |
 | `patch dry-run` | Live memory | `/proc/<pid>/mem` before and after — the current bytes it reports are the ELF's, and memory is unchanged |

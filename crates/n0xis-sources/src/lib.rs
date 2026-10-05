@@ -205,6 +205,94 @@ pub trait MemorySource {
     fn abi_name(&self) -> &'static str {
         "win64"
     }
+
+    /// The first address in `[va, end)` where [`read`](MemorySource::read)
+    /// gives at least one byte, or `None` when none there does — so a caller
+    /// stepping through a range crosses a gap, or a section's zero-fill tail,
+    /// without guessing how long it is. A failure other than an unmapped
+    /// address is returned, never stepped over as if it were a gap.
+    ///
+    /// Default: asks `read` one address at a time. That is right for every
+    /// source by construction and costs one read per byte of gap, so a source
+    /// that knows where its readable stretches can start answers through
+    /// [`next_readable_at`] instead.
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        first_with_a_byte(self, va.0..end.0)
+    }
+}
+
+/// The first of `at` where `read` gives a byte. An unmapped address and an
+/// empty read are "no byte"; any other failure ends the search and is returned.
+fn first_with_a_byte<S: MemorySource + ?Sized>(src: &S, at: impl IntoIterator<Item = u64>) -> Result<Option<Va>, SourceError> {
+    for a in at {
+        match src.read(Va(a), 1) {
+            Ok(bytes) if !bytes.is_empty() => return Ok(Some(Va(a))),
+            Ok(_) | Err(SourceError::Unmapped(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
+/// [`MemorySource::next_readable`] for a source whose readable bytes can
+/// start only at `va` or at one of `bounds`: between two bounds, what `read`
+/// gives is a prefix (a section's file bytes, then its zero-fill tail) or
+/// nothing. So the answer is the first of those addresses `read` gives a byte
+/// at, and `read` itself decides — the source's map is not restated here.
+pub fn next_readable_at<S: MemorySource + ?Sized>(
+    src: &S,
+    va: Va,
+    end: Va,
+    bounds: impl IntoIterator<Item = u64>,
+) -> Result<Option<Va>, SourceError> {
+    let mut at: Vec<u64> = bounds.into_iter().filter(|&b| b > va.0 && b < end.0).collect();
+    at.push(va.0);
+    at.sort_unstable();
+    at.dedup();
+    first_with_a_byte(src, at.into_iter().filter(|&a| a < end.0))
+}
+
+/// The page boundaries in `(va, end)`. A process maps whole pages, so these
+/// are the [`next_readable_at`] bounds of a live source. Four KiB is the
+/// smallest page any supported system uses; a larger page is a multiple of it.
+pub fn page_bounds(va: Va, end: Va) -> impl Iterator<Item = u64> {
+    const PAGE: u64 = 0x1000;
+    let first = (va.0 / PAGE).saturating_add(1).saturating_mul(PAGE);
+    (0..).map(move |i| first.saturating_add(i * PAGE)).take_while(move |&p| p < end.0 && p > va.0)
+}
+
+/// Every readable stretch of `[va, va + len)` in address order, as `(start,
+/// bytes)`; stretches that touch are one run. What lies between two runs —
+/// an unmapped address or a zero-fill tail — is not filled in. An error other
+/// than an unmapped address ends the read and is returned, so a failure is
+/// never shown as a gap.
+pub fn read_runs<S: MemorySource + ?Sized>(src: &S, va: Va, len: usize) -> Result<Vec<(Va, Vec<u8>)>, SourceError> {
+    let end = va.0.saturating_add(len as u64);
+    let mut runs: Vec<(Va, Vec<u8>)> = Vec::new();
+    let mut at = va.0;
+    while at < end {
+        let bytes = match src.read(Va(at), (end - at) as usize) {
+            Ok(bytes) => bytes,
+            Err(SourceError::Unmapped(_)) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        if bytes.is_empty() {
+            match src.next_readable(Va(at + 1), Va(end))? {
+                Some(next) => at = next.0,
+                None => break,
+            }
+            continue;
+        }
+        // A source never gives more than it was asked for; one that did would
+        // otherwise run the window past `end`.
+        let take = bytes.len().min((end - at) as usize);
+        match runs.last_mut() {
+            Some((start, run)) if start.0 + run.len() as u64 == at => run.extend_from_slice(&bytes[..take]),
+            _ => runs.push((Va(at), bytes[..take].to_vec())),
+        }
+        at += take as u64;
+    }
+    Ok(runs)
 }
 
 /// Resolve symbols by address (exports, imports, IAT slots, recovered names).

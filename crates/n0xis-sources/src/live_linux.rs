@@ -377,6 +377,10 @@ impl MemorySource for LinuxProcess {
         self.entry_containing(va.0).is_some_and(|e| e.readable())
     }
 
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        crate::next_readable_at(self, va, end, crate::page_bounds(va, end))
+    }
+
     fn code_range(&self) -> Option<(Va, u64)> {
         LiveTarget::text_range(self)
     }

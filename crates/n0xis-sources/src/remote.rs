@@ -191,6 +191,11 @@ impl MemorySource for RemoteAgent {
         from_hex(resp["hex"].as_str().unwrap_or("")).ok_or_else(|| SourceError::Os("malformed hex in remote response".to_string()))
     }
 
+    /// A remote source is a process: its readable stretches start on pages.
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        crate::next_readable_at(self, va, end, crate::page_bounds(va, end))
+    }
+
     fn contains(&self, va: Va) -> bool {
         self.roundtrip(&json!({ "op": "contains", "va": va.to_string() }))
             .ok()

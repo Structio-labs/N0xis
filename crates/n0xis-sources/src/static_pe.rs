@@ -325,6 +325,13 @@ impl MemorySource for StaticPe {
         FileView { bytes: &self.bytes, sections: &self.sections }.contains(va)
     }
 
+    /// A readable stretch starts where a section (or the headers) starts or
+    /// another ends.
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        let bounds = self.sections.iter().flat_map(|s| [s.va_start, s.va_end]);
+        crate::next_readable_at(self, va, end, bounds)
+    }
+
     fn code_range(&self) -> Option<(Va, u64)> {
         self.text_range()
     }

@@ -305,6 +305,24 @@ pub struct MemReadRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemSpanRequest {
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
+    pub addr: String,
+    /// Bytes in the window (default 256, at most 65536).
+    #[serde(default)]
+    pub size: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemWriteRequest {
     /// Live-process only (writing a static file's on-disk bytes isn't a thing).
     pub pid: u32,
@@ -804,6 +822,21 @@ impl N0xisServer {
     fn mem_read(&self, Parameters(a): Parameters<MemReadRequest>) -> String {
         emit(n0xis_frontend::build_registry().dispatch(
             "mem.read",
+            &json!({
+                "addr": a.addr,
+                "size": a.size,
+                "pid": a.pid,
+                "file": a.file,
+                "snapshot": a.snapshot,
+                "remote_cmd": a.remote_cmd,
+            }),
+        ))
+    }
+
+    #[tool(description = "Read every readable stretch of a window as runs; a gap (unmapped, or a zero-fill tail) lies between two runs instead of ending the read.")]
+    fn mem_span(&self, Parameters(a): Parameters<MemSpanRequest>) -> String {
+        emit(n0xis_frontend::build_registry().dispatch(
+            "mem.span",
             &json!({
                 "addr": a.addr,
                 "size": a.size,

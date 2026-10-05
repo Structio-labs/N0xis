@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **114 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **115 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -304,7 +304,24 @@ registered surface, where an application's own methods live); each symbol is tag
 Read bytes (live process, static PE, or inline).
 - `--addr` (required); `--size` (default 64).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
+- Reads up to `--size` bytes and stops where the stretch holding `--addr` ends; an address in a
+  gap is refused (`read-failed`). For a whole window, gaps included, use `mem span`.
 - Schema: `n0xis.mem.read.v1`
+
+### `mem span --addr <hex>`
+Read every readable stretch of a window, as runs: a gap (an unmapped address, a zero-fill tail)
+lies between two runs instead of ending the read.
+- `--addr` (required); `--size` (default 256, at most 65536).
+- Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
+- `data`: `address`, `size`, `read` (bytes across all runs), `runs: [{address, read, hex}]` in
+  address order. Runs that touch are one run. A window with nothing readable is `read: 0` and no
+  runs, which is an answer, not a failure.
+- A failure other than an unmapped address (a process that exits mid-read) is returned as an
+  error, never shown as a gap.
+- Where a stretch can start: a static image answers from its section table; a process, a remote
+  agent and a snapshot from their pages or regions. A source with no such map is probed one
+  address at a time, which is why the window is bounded.
+- Schema: `n0xis.mem.span.v1`
 
 ### `mem write --addr <hex> --bytes "<hex>" --pid <u32>`
 Write bytes to a live process (flips page protection as needed).
@@ -719,7 +736,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**114 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**115 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -774,7 +791,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x xref string` | Find a string literal and who references it via `lea` |
 | `n0x xref to` | Who references `--addr` |
 
-### Live memory (31)
+### Live memory (32)
 
 | Command | What it does |
 |---|---|
@@ -787,6 +804,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x dump show` | Print a dump's contents (text kinds) or a hex preview (`raw`/`hex`) |
 | `n0x mem map` | Dump the address-space region map of a live process |
 | `n0x mem read` | Read bytes (live process, static PE, or inline) |
+| `n0x mem span` | Read every readable stretch of a window, as runs: a gap (an unmapped address, a zero-fill tail) lies between two runs instead of ending the read |
 | `n0x mem write` | Write bytes to a live process (flips page protection as needed) |
 | `n0x patch apply` | Apply a patch and journal the undo record under `.n0x/patches/` |
 | `n0x patch detour` | Install a detour/trampoline hook: allocate a code cave, relocate the hook site's bytes into it with a jump back, redirect the hook site into the cave. The hook-site overwrite is journaled like any other `patch apply` (`patch undo` restores the original code); the cave itself is not freed on undo (documented scope limit) |
@@ -916,6 +934,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.xref.string.v1` | xref string |
 | `n0xis.diff.v1` | diff functions |
 | `n0xis.mem.read.v1` | mem read |
+| `n0xis.mem.span.v1` | mem span |
 | `n0xis.mem.write.v1` | mem write |
 | `n0xis.mem.map.v1` | mem map |
 | `n0xis.patch.v1` | patch dry-run/apply/list/show/undo/detour |
@@ -964,5 +983,5 @@ optimization delta; inlined into `decomp pseudo --style ssa`, and exposed standa
 
 Source of truth for this reference: `crates/n0xis-cli/src/main.rs` (clap enums + `main()`
 dispatch), `crates/n0xis-contracts/src/schema.rs` (mod `v1` / mod `v0`), cross-checked against
-`n0x guide --pretty` from this binary (`command_count: 114`). When in doubt, run `n0x
+`n0x guide --pretty` from this binary (`command_count: 115`). When in doubt, run `n0x
 guide` or `n0x <cmd> --help` — those are generated from the binary and never drift.

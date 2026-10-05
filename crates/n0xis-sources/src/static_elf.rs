@@ -488,6 +488,12 @@ impl MemorySource for StaticElf {
         self.section_for(va.0).is_some()
     }
 
+    /// A readable stretch starts where a section starts or another ends.
+    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
+        let bounds = self.sections.iter().filter(|s| s.in_image).flat_map(|s| [s.va_start, s.va_end]);
+        crate::next_readable_at(self, va, end, bounds)
+    }
+
     fn code_range(&self) -> Option<(Va, u64)> {
         self.text_range()
     }

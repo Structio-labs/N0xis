@@ -386,6 +386,15 @@ fn pe_image_base(src: &Src) -> Option<n0xis_contracts::Va> {
 /// source for it.
 pub const DEFAULT_DECODE_COUNT: usize = 20;
 
+/// How many bytes `mem span` reads when not told, for the same reason as
+/// [`DEFAULT_DECODE_COUNT`]: the CLI and the capability take it from here.
+pub const DEFAULT_SPAN: usize = 256;
+
+/// The most `mem span` reads at once. A source that cannot say where its
+/// readable stretches start is probed one address at a time across a gap, so
+/// the window bounds that work as well as the answer's size.
+pub const MAX_SPAN: usize = 64 * 1024;
+
 /// Vtable address → class name for an ELF, from its own `_ZTV` symbols.
 ///
 /// The recovery itself is [`n0xis_core::scan_itanium_rtti`], which `analyze`
@@ -1490,6 +1499,46 @@ impl Plugin for AnalysisPasses {
                         json!({ "address": addr, "requested": size, "read": bytes.len(), "hex": to_hex_spaced(&bytes) }),
                         &resolved.label,
                     ),
+                    Err(e) => Response::error("read-failed", e.to_string()),
+                }
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "mem.span",
+            "Every readable stretch of `size` bytes from `addr`, as runs. A gap (an unmapped address, a zero-fill tail) lies between two runs instead of ending the read.",
+            Some(n0xis_contracts::schema::v1::MEM_SPAN),
+            Origin::Builtin,
+            Box::new(|args| {
+                let addr = match required_addr(args, "addr") {
+                    Ok(v) => v,
+                    Err((c, m)) => return Response::error(c, m),
+                };
+                let size = usize_arg(args, "size", DEFAULT_SPAN);
+                if size > MAX_SPAN {
+                    return Response::error("bad-arg", format!("a span reads at most {MAX_SPAN} bytes; {size} were asked for"));
+                }
+                let mut spec = spec_of(args);
+                if spec.bytes_base.is_none() {
+                    spec.bytes_base = Some(addr);
+                }
+                let resolved = match resolve(spec) {
+                    Ok(r) => r,
+                    Err((c, m)) => return Response::error(&c, m),
+                };
+                match n0xis_sources::read_runs(resolved.src.as_mem(), addr, size) {
+                    Ok(runs) => {
+                        let read: usize = runs.iter().map(|(_, b)| b.len()).sum();
+                        let runs: Vec<Value> = runs
+                            .iter()
+                            .map(|(va, bytes)| json!({ "address": va, "read": bytes.len(), "hex": to_hex_spaced(bytes) }))
+                            .collect();
+                        ok_json(
+                            n0xis_contracts::schema::v1::MEM_SPAN,
+                            json!({ "address": addr, "size": size, "read": read, "runs": runs }),
+                            &resolved.label,
+                        )
+                    }
                     Err(e) => Response::error("read-failed", e.to_string()),
                 }
             }),

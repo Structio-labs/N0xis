@@ -13,6 +13,13 @@ All notable changes to N0xis are recorded here. Versions follow
   (`ProjectRoot::derived_caches`). A test plants cache files of known size beside the user's
   names; the report and the clear match the planted bytes, and the names survive byte for byte.
 
+- **`mem span --addr --size`**: every readable stretch of a window, as runs, with the gaps
+  between them left as gaps. `mem read` stops where the first stretch ends and refuses an
+  address in a gap, so a byte view of a window that crosses a section boundary had to guess.
+  Sources say where a stretch can start (sections for an image, pages for a process, regions
+  for a snapshot); a failure other than an unmapped address is an error, never a gap. Checked
+  on an ELF and a PE fixture against `readelf` and `llvm-readobj` section tables.
+
 - **`decomp pseudo` lists the function's variables** (`data.variables`): each name as
   printed, the key `annotate var` / `annotate vartype` store it under, and whether it is a
   parameter, a stack local or another value. The renderer records each variable where it
