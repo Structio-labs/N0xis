@@ -11,8 +11,13 @@
 //! signature names and propagated types to class layouts and the warm-up,
 //! skipped the functions it missed.
 //!
+//! It drifted again on a PE: `analyze` took `.pdata` alone there and counted
+//! 2 949 functions on the Windows test binary where `function discover` listed
+//! 3 198 (6 681 against 8 258 on a cross-built Windows binary).
+//!
 //! One helper now answers for both. The fixture is this test binary's own
-//! executable, a real image with an unwind table, needing no compiler.
+//! executable, a real image with an unwind table, needing no compiler: an ELF
+//! on Linux and a PE on Windows, so each CI job holds one format.
 
 use std::process::Command;
 

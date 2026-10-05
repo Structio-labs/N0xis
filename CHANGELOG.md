@@ -60,7 +60,11 @@ All notable changes to N0xis are recorded here. Versions follow
   take one list from one helper: every executable range, not only `.text`, with the declared
   functions. Checked against the images' own `.eh_frame`: every FDE start is listed on all
   three images. A test fails if the two commands count differently, and it failed before the
-  fix (1 569 against 2 069 on its own binary).
+  fix (1 569 against 2 069 on its own binary). On a PE the first version of this fix still
+  took `.pdata` alone, before the helper: 2 949 against 3 198 on the Windows test binary, where
+  the same test caught it, and 6 681 against 8 258 on a cross-built Windows binary. Now the
+  helper is the only list on both formats, with `.pdata` and the exports among the functions
+  the image declares, and a failed scan is an error instead of zero functions.
 - **Re-opening an image scanned its functions again.** The scan of a file is now also kept in
   `.n0x/discover-cache/`, keyed by the analyzer generation and the code bytes. On the same
   library a new session lists everything in 0.5 s instead of 10.9 s. A test changes one byte of

@@ -3936,7 +3936,8 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
 }
 
 /// `analyze` — one whole-program pass that materializes the `.n0x/` summary
-/// layer with visible phases: discover functions (`.pdata`), recover MSVC RTTI
+/// layer with visible phases: discover functions (the list `function discover`
+/// gives), recover MSVC RTTI
 /// class names, build the reverse-xref index, and warm the IR cache. Streams
 /// `[n0x] {phase,done,total}` JSON lines to stderr (silenced by `--quiet`); the
 /// content-addressed caches make a re-run skip work already done, so it resumes
@@ -3966,24 +3967,20 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     };
     let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref());
 
-    // Phase 1 — discover every function. `.pdata` is exact and free when present,
-    // but it is a PE construct: on an ELF it yields nothing, which used to leave
-    // `analyze` reporting zero functions on any Linux target. Fall back to the
-    // prologue scan over the image's executable ranges.
+    // Phase 1 — every function, as `function discover` lists them: the one
+    // helper, over the image's executable ranges, with the functions the image
+    // declares (`.pdata` and exports on a PE, `.eh_frame` on an ELF). A list of
+    // its own here drifted twice: without the declared functions it found 4 130
+    // on an ELF whose unwind table declares 6 730, and taking `.pdata` alone on
+    // a PE it counted 6 681 where `function discover` lists 8 258.
     progress("discovering", 0, 0);
-    let mut funcs = n0xis_core::discover_pdata(ctx.source, base).unwrap_or_default();
-    if funcs.is_empty() {
-        // The list `function discover` gives, from the same helper, with the
-        // functions the image declares. A discovery of its own here, without
-        // them, found 4 130 functions where the image's unwind table declares
-        // 6 730, and everything below skipped the rest.
-        let stated = n0xis_frontend::stated_functions(&src);
-        let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated);
-        let ranges = n0xis_frontend::discovered::image_code_ranges(&src, pe.text_range(), region_len, None, None, Va(0));
-        if let Ok(found) = n0xis_frontend::discovered::discovered_ranges(&dctx, &src, &label, &ranges) {
-            funcs = found.page(&dctx, 0, 0).functions;
-        }
-    }
+    let stated = n0xis_frontend::stated_functions(&src);
+    let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated);
+    let ranges = n0xis_frontend::discovered::image_code_ranges(&src, pe.text_range(), region_len, None, None, Va(0));
+    let funcs = match n0xis_frontend::discovered::discovered_ranges(&dctx, &src, &label, &ranges) {
+        Ok(found) => found.page(&dctx, 0, 0).functions,
+        Err(e) => return ir_err("discover-failed", &e.to_string(), pretty),
+    };
     let total = funcs.len();
     progress("discovering", total, total);
 
