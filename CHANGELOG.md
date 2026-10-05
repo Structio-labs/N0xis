@@ -5,6 +5,31 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-10-05
+
+### Fixed
+
+- **`profile --exports` listed forwarded exports as code.** An export whose table
+  entry points inside the export directory is a `MODULE.Function` string; it now
+  carries `forwarder`, the image reports `forwarded_count`, and the address
+  figures count only exports with code here. One export-table reader serves the
+  loader and `profile`, so forwarders no longer reach the symbol map or `sig gen`
+  (measured against an independent reader on nine PE images: all 591 forwarders
+  marked, no other export).
+- **In a `serve` session, `find --bytes` searched the wrong file** (the pattern was
+  taken for an inline-bytes source) **and `dump save` stored the session's image.**
+  A session now decides whether a request names its own source from the
+  command's argument ids, and a command that would read stdin inside a session is
+  refused instead of hanging it.
+
+### Changed
+
+- `game grep` is now `concept grep`, and `table freeze` is now `table pin`. The old
+  spellings still parse to the same commands and still answer with their old
+  schema ids, so scripts written against them keep working.
+- `serve` reads JSON argument arrays as well as text lines, and its banner lists
+  the forms it reads.
+
 ### Removed
 
 - The companion-window crate was removed from the workspace.
