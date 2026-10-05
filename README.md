@@ -1,8 +1,8 @@
 # N0xis
 
-**From a hardware watchpoint in a live process to the exact decompiled statement that changed the value.**
+**From a hardware watchpoint in a live process to the decompiled statement that wrote the value.**
 
-Memory scanners find the *address*. Decompilers explain the *code*. **N0xis connects them.**
+Memory scanners find the *address*. Decompilers explain the *code*. **N0xis takes you from one to the other in one scriptable loop.**
 
 ![A live run: scan for a value, narrow it after a hit, then a hardware watchpoint returns the decompiled statement that wrote it](docs/assets/provenance.gif)
 
@@ -19,13 +19,14 @@ $ n0x provenance trace --pid 9348 --addr 0x7ff68bef3010 --kind write
 ]
 ```
 
-That is the source's `hp -= 1;`, recovered from a running process — the watched address
-appears in the statement. Verified on Windows **and** Linux.
+In the source this line is `hp -= 1;`. The output names the address, not `hp`: names of
+globals and functions from the binary's symbols are not carried into this answer yet. Verified
+on Windows **and** Linux.
 
-A "find what accesses this" scan normally stops at a raw disassembly line, and a
-decompiler normally has no live-watchpoint input at all. This is the two halves
-joined: the watchpoint hit is resolved through the same SSA pipeline that
-decompiles the file.
+The watchpoint hit is resolved through the same SSA pipeline that decompiles the file, so
+the answer is the statement that wrote the value and the function it sits in, as JSON a
+script can act on. It is meant to sit next to the disassembler and decompiler you already
+use, not to replace them.
 
 ## Install
 
@@ -71,7 +72,7 @@ fails the build if this number does.
   complete SSA destruction, exact branch conditions) whose **optimizer reports every rewrite it
   made** (`--explain`: which sub-pass changed what, at which address), not a black-box answer.
 - **Scan live memory** — value/pointer/AOB scanning with snapshot-backed narrowing, freeze,
-  code-cave hooks. the full scan → narrow → freeze → patch loop.
+  code-cave hooks: the full scan → narrow → freeze → patch loop.
 - **Watch & explain** — software / hardware / conditional breakpoints and a real cross-process
   unwound call stack; the raw material provenance is built on.
 - **Recover names** — C++ classes from RTTI on both ABIs (MSVC `.rdata` chains and Itanium
