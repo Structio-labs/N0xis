@@ -2298,14 +2298,13 @@ impl Plugin for AnalysisPasses {
                 let limit = usize_arg(args, "limit", 64);
                 let offset = usize_arg(args, "offset", 0);
                 with_src_ctx(args, explicit_start.unwrap_or(Va(0)), move |ctx, src, region_len, label| {
-                    let Some((start, size)) =
-                        crate::source::scan_range(src.text_range(), region_len, explicit_start, explicit_size)
-                    else {
+                    let ranges = crate::discovered::image_code_ranges(src, src.text_range(), region_len, explicit_start, explicit_size, Va(0));
+                    if ranges.is_empty() {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
-                    };
+                    }
                     // The scan is kept for an image that cannot change, so paging
                     // through a long list costs it once; names are attached per page.
-                    match crate::discovered::discovered(ctx, src, label, start, size) {
+                    match crate::discovered::discovered_ranges(ctx, src, label, &ranges) {
                         Ok(found) => {
                             let page = found.page(ctx, offset, limit);
                             let returned = page.count;

@@ -21,6 +21,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`analyze` missed the functions an image declares.** It ran a discovery of its own without
+  them: 4 130 functions on a Rust binary whose unwind table declares 6 730, 116 331 on a C++
+  library declaring 123 192. Everything it builds from that list (signature names, propagated
+  types, class layouts, the warm-up) skipped the rest. `analyze` and `function discover` now
+  take one list from one helper: every executable range, not only `.text`, with the declared
+  functions. Checked against the images' own `.eh_frame`: every FDE start is listed on all
+  three images. A test fails if the two commands count differently, and it failed before the
+  fix (1 569 against 2 069 on its own binary).
 - **Re-opening an image scanned its functions again.** The scan of a file is now also kept in
   `.n0x/discover-cache/`, keyed by the analyzer generation and the code bytes. On the same
   library a new session lists everything in 0.5 s instead of 10.9 s. A test changes one byte of

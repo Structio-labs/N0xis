@@ -172,10 +172,13 @@ fn the_kept_scan_is_on_disk_and_keyed_by_the_code_bytes() {
     std::fs::copy(std::env::current_exe().expect("test exe"), &target).expect("copy the fixture");
     let page = || vec!["function discover --limit 40".to_string()];
 
+    // One kept entry per code window scanned (`.text`, and `.init` and the
+    // others where the image has them).
     let first = serve_file(&project, &target, &page());
-    assert_eq!(kept_entries(&project), 1, "the first session keeps its scan");
+    let kept = kept_entries(&project);
+    assert!(kept >= 1, "the first session keeps its scan");
     let second = serve_file(&project, &target, &page());
-    assert_eq!(kept_entries(&project), 1, "the second session on the same bytes reads it, writing nothing new");
+    assert_eq!(kept_entries(&project), kept, "the second session on the same bytes reads it, writing nothing new");
     assert_eq!(functions(&first[1]), functions(&second[1]), "and answers the same");
 
     // Find the code of a listed function in the file by its bytes, and change one.
@@ -192,6 +195,6 @@ fn the_kept_scan_is_on_disk_and_keyed_by_the_code_bytes() {
     image[at] ^= 0xff;
     std::fs::write(&target, &image).expect("write the changed copy");
     serve_file(&project, &target, &page());
-    assert_eq!(kept_entries(&project), 2, "changed code bytes are a different key, not a stale hit");
+    assert_eq!(kept_entries(&project), kept + 1, "changed code bytes are a different key, not a stale hit");
     let _ = std::fs::remove_dir_all(&project);
 }

@@ -3805,8 +3805,9 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         Src::Live(l) => l.text_range(),
         Src::Snap(_) | Src::Remote(_) => None,
     };
-    let (start, size) = scan_range(default_text, region_len, explicit_start, a.size, bytes_base);
-    if size == 0 {
+    // Every executable range, not only `.text`: the same windows `analyze` scans.
+    let ranges = n0xis_frontend::discovered::image_code_ranges(&src, default_text, region_len, explicit_start, a.size, bytes_base);
+    if ranges.is_empty() {
         return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
     }
 
@@ -3815,7 +3816,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         // returned), so the total is known and reported. It is kept for an image
         // that cannot change: a session paging through a long list pays for it
         // once, and names are attached per page, so a rename still shows.
-        match n0xis_frontend::discovered::discovered(ctx, &src, &label, start, size) {
+        match n0xis_frontend::discovered::discovered_ranges(ctx, &src, &label, &ranges) {
             Ok(found) => {
                 let art = found.page(ctx, a.offset, a.limit);
                 let returned = art.count;
@@ -3903,7 +3904,7 @@ fn cmd_ir_manifest(a: ManifestArgs, pretty: bool) -> bool {
 /// make it worthwhile (exact discovery, RTTI, a stable xref index) assume an
 /// immutable on-disk image.
 fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
-    let (src, label, _) = match build_source(a.pid, a.file.as_deref(), None, a.snapshot.as_deref(), a.remote_cmd.as_deref(), Va(0)) {
+    let (src, label, region_len) = match build_source(a.pid, a.file.as_deref(), None, a.snapshot.as_deref(), a.remote_cmd.as_deref(), Va(0)) {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
@@ -3930,20 +3931,18 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // `analyze` reporting zero functions on any Linux target. Fall back to the
     // prologue scan over the image's executable ranges.
     progress("discovering", 0, 0);
-    let code_ranges = src.code_ranges_of(None);
     let mut funcs = n0xis_core::discover_pdata(ctx.source, base).unwrap_or_default();
     if funcs.is_empty() {
-        for (start, size) in &code_ranges {
-            if let Ok(art) = n0xis_core::Pass::run(
-                &n0xis_core::DiscoverPass,
-                &ctx,
-                n0xis_core::DiscoverInput { start: *start, size: *size as usize, limit: 0, offset: 0 },
-            ) {
-                funcs.extend(art.functions);
-            }
+        // The list `function discover` gives, from the same helper, with the
+        // functions the image declares. A discovery of its own here, without
+        // them, found 4 130 functions where the image's unwind table declares
+        // 6 730, and everything below skipped the rest.
+        let stated = n0xis_frontend::stated_functions(&src);
+        let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated);
+        let ranges = n0xis_frontend::discovered::image_code_ranges(&src, pe.text_range(), region_len, None, None, Va(0));
+        if let Ok(found) = n0xis_frontend::discovered::discovered_ranges(&dctx, &src, &label, &ranges) {
+            funcs = found.page(&dctx, 0, 0).functions;
         }
-        funcs.sort_by_key(|f| f.va.0);
-        funcs.dedup_by_key(|f| f.va.0);
     }
     let total = funcs.len();
     progress("discovering", total, total);
@@ -4128,7 +4127,10 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     }
 
     // Phase 3 — build/persist the reverse-xref index (makes `xref to` instant).
+    // Over the ranges `xref to` itself indexes: the key of the stored index
+    // names them, so the session finds it only if they are the same.
     progress("indexing-xrefs", 0, 0);
+    let code_ranges = src.code_ranges_of(None);
     let idx = n0xis_pipeline::xref_index_for(&ctx, &code_ranges, &label);
     let xref_targets = idx.edges.len();
     progress("indexing-xrefs", xref_targets, xref_targets);
