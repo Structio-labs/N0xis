@@ -146,7 +146,7 @@ const WINE_LOADERS: [&str; 4] = ["wine-preloader", "wine64-preloader", "wine", "
 /// the first word of its command line (`argv0`) and its `comm`.
 ///
 /// `exe` comes first: it is the binary's full name, where `comm` is cut at 15
-/// bytes, and the full name is what `--process SomeApp.x86_64` matches. A
+/// bytes, and the full name is what `process ps --filter SomeApp.x86_64` finds. A
 /// Windows program run by Wine is the exception: its `exe` is the loader, so
 /// every such program would be called `wine-preloader`. Its name is the last
 /// part of its command line's first word, which Wine leaves as the program's

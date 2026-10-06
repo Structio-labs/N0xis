@@ -5,7 +5,7 @@
 //!
 //! Every such program's `/proc/<pid>/exe` is Wine's loader, so a listing that
 //! names processes by that link calls them all `wine-preloader`, and
-//! `--process app.exe` finds none of them. This builds a program whose name
+//! `process ps --filter app.exe` finds none of them. This builds a program whose name
 //! is longer than the 15 bytes `comm` keeps, runs it under Wine, and looks
 //! for it in the list by its full name. The kernel is the independent side:
 //! its `exe` link says the process runs the loader, and its `comm` says the
