@@ -1,0 +1,11 @@
+[package]
+name = "n0xis-pdb"
+description = "Program databases (PDB): what a Windows image's debug information says about its functions, read through one adapter so the reader underneath can change. A PDB is untrusted input: a malformed one is an error, never a crash or an unbounded allocation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pdb2 = { workspace = true }
+thiserror = { workspace = true }

@@ -30,6 +30,11 @@ clap = { version = "4", features = ["derive"] }
 iced-x86 = "1"
 dirs = "6"
 goblin = "0.10"
+# Program databases (PDB). Behind `n0xis-pdb`'s own types and nowhere else, so
+# the reader can be replaced without touching a consumer. Chosen 2026-10-04 by
+# measurement (VERIFICATION-LOG): it survived 1 500 mutated files where the
+# other candidate aborted on an untrusted length while opening one.
+pdb2 = "0.10.2"
 # The Unix side of the live adapter: process_vm_readv/writev, kill(pid, 0).
 # Target-gated at the crate that uses it, exactly as windows-sys is — this is
 # the OS seam's second implementation, not a new global dependency.
@@ -78,7 +83,18 @@ n0xis-luajit = { path = "crates/n0xis-luajit" }
 # The IL2CPP managed layer (Phase 12). Same adapter rule: a format parser the
 # analysis core must never reach for.
 n0xis-il2cpp = { path = "crates/n0xis-il2cpp" }
+# Program databases (PDB), gap-closing item 1. Same adapter rule: a format
+# parser the analysis core must never reach for.
+n0xis-pdb = { path = "crates/n0xis-pdb" }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The PDB reader adds sizes it reads from the file without checking, and a
+# release build would wrap the sum silently and read on from the wrong place:
+# confident wrong addresses from a corrupted file. With the check on it stops,
+# as a debug build does, and `n0xis-pdb` turns the stop into an error. Found by
+# `crates/n0xis-pdb/tests/mutated.rs` on its first run (2026-10-07).
+[profile.release.package.pdb2]
+overflow-checks = true
