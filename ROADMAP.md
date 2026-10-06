@@ -1321,6 +1321,50 @@ outside this codebase that can prove it wrong.
    Phase 15, almost entirely unbuilt.
 9. ⬜ **GUI and a plugin ecosystem.** Deliberately deferred, not ruled out; the
    JSON/MCP surface is the seam it would be built over.
+10. ⬜ **Language-aware analysis — the runtime's own tables first.** Recorded
+    2026-10-07. Each language leaves facts in its binaries that a pipeline built
+    around C reads as anonymous code: a Go program keeps every function's name
+    and start in its own function table even when stripped, because its runtime
+    needs them; a Rust program's panic locations name its source files and its
+    dependencies with their versions. Measured here on stripped binaries: two Go
+    programs (5.3 MB and 39.9 MB), 5 074 and 43 235 functions found and 3 named in
+    each (C-interop exports only), where their own function tables name 4 934 and
+    42 939; two Rust programs (3.2 MB and 3.5 MB), 3 558 and 4 048 functions found
+    and none named, while the panic locations of one name 18 dependencies with
+    exact versions and 225 of its own source files. In order of cost:
+    - **Go's function table** (`.gopclntab`, documented in the Go source): a name
+      and a start for every function. A reader of a documented format, fuzzed from
+      its first commit, the same shape as the PDB reader.
+      **Done when:** on a Go program built here from known source, every function
+      the source defines is named at the address the Go toolchain's own
+      `go tool nm` gives, and on the two stripped programs above those names reach
+      the function list.
+    - **A Rust program's inventory:** the crates and versions it was built with
+      and its own source files, read from its panic locations, and the compiler's
+      commit where the path was not remapped.
+      **Done when:** on a program built here, the inventory equals its
+      `Cargo.lock`.
+    - **Strings as these languages hold them:** a pointer and a length with no
+      terminator, literals laid end to end, so a length must come from the code or
+      the data that refers to the text, never from where the next text begins.
+      **Done when:** on a program built here, every literal of the source is one
+      string and none is merged with its neighbour.
+    - **Go's register calling convention** (since Go 1.17: integer arguments in
+      RAX, RBX, RCX, RDI, RSI and R8 to R11, not the platform's registers), as
+      part of item 4.
+      **Done when:** a Go function built here decompiles with the parameters its
+      source declares.
+    - **The Rust standard library recognised by signature,** generated locally
+      from a toolchain's own library (MIT/Apache-2.0, so fingerprinting it is
+      allowed; see item 7). Generic code, instantiated once per type, is the hard
+      part, and a refusal is counted rather than guessed.
+      **Done when:** on a program built here and stripped, every matched name
+      agrees with its symbolized build.
+    - **Output in the language's own terms** (Rust's enums, `match`, `?` and
+      formatting macros; Go's `defer`): research-grade and expensive, not
+      scheduled. When it is, an independent Rust-level decompiler run locally is
+      the differential oracle for it.
+    - **Swift** waits on Mach-O (item 5).
 
 **The one thing to hold on to while working through this list:** items 1, 3, 6
 and 7 are *acquisition* — a reader, a specification set, a rule at a time, a
