@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-10-07
+
 ### Added
 
 - **`project cache [--clear]`**: how much disk the project's caches take, per kind
@@ -103,6 +105,15 @@ All notable changes to N0xis are recorded here. Versions follow
   later pages stop reading current names. The prologue-scan path also reports `meta.total`
   now. The scan always covered the whole range, so the total was there to report.
 
+
+- **`process ps` named every Windows program run by Wine `wine-preloader`.** Such a
+  program's `/proc/<pid>/exe` is Wine's loader, so the list gave each of them the loader's
+  name, and `--filter` with the program's name found none of them. A process whose `exe` is
+  one of Wine's or Proton's loaders is now named by the last part of the first word of its
+  command line, which Wine leaves as the program's path; every other process keeps the
+  binary's full name. A test (`oracle` feature) builds a program whose name is longer than
+  the 15 bytes the kernel keeps in `comm`, runs it under Wine 10 and finds it in the list by
+  its full name; before the fix it found the program listed as `wine-preloader`.
 
 ## [0.3.3] — 2026-10-05
 

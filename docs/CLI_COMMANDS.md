@@ -262,7 +262,7 @@ Pseudo-C for one function.
   `key` (what `annotate var --var` and `annotate vartype --var` take: the name before the
   user renamed it) and `kind` (`param`, `local` or `value`). Only a `param` or a `local` takes
   a type. The list is recorded where the renderer prints a variable, not read back from the
-  text. 0.3.3 and earlier do not send the field.
+  text. 0.3.4 is the first release that sends the field.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).
