@@ -59,7 +59,25 @@ pub struct StaticPe {
     /// permissively — so a caller can say "the import table did not parse"
     /// instead of reporting an empty one as fact. See [`StaticPe::load`].
     degraded: Option<String>,
+    /// Which PDB was built with this image, as its debug directory says.
+    codeview: Option<CodeView>,
 }
+
+/// An image's CodeView record: which program database (PDB) the linker wrote
+/// beside it. The GUID and the age are what a PDB must carry to belong to this
+/// image; the path is only where it was written, on the machine that built it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeView {
+    /// The 16 bytes as the record holds them (the first three fields little-endian).
+    pub guid: [u8; 16],
+    pub age: u32,
+    /// The PDB's path as the linker wrote it, up to its first NUL.
+    pub pdb_path: String,
+}
+
+/// The longest PDB path kept from a CodeView record; past it the record is
+/// not believed to be a path at all.
+const MAX_PDB_PATH: usize = 4096;
 
 impl StaticPe {
     /// Preferred image base from the optional header.
@@ -227,6 +245,11 @@ impl StaticPe {
 
         let pdata = parse_pdata(&bytes, &sections, image_base);
 
+        let codeview = pe.debug_data.as_ref().and_then(|d| d.codeview_pdb70_debug_info.as_ref()).and_then(|cv| {
+            let path = cv.filename.split(|&b| b == 0).next().unwrap_or_default();
+            (path.len() <= MAX_PDB_PATH).then(|| CodeView { guid: cv.signature, age: cv.age, pdb_path: String::from_utf8_lossy(path).into_owned() })
+        });
+
         Ok(StaticPe {
             id: SourceId::of(&bytes),
             bytes,
@@ -239,7 +262,13 @@ impl StaticPe {
             is_64,
             pdata,
             degraded,
+            codeview,
         })
+    }
+
+    /// Which PDB was built with this image, when its debug directory says.
+    pub fn codeview(&self) -> Option<&CodeView> {
+        self.codeview.as_ref()
     }
 
     /// Why a strict parse refused this image, when it had to be opened

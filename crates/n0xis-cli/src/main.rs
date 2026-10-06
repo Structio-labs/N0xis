@@ -131,6 +131,9 @@ enum Command {
     /// Project introspection.
     #[command(subcommand)]
     Project(ProjectCmd),
+    /// Program databases (PDB) for the project's images.
+    #[command(subcommand)]
+    Symbols(SymbolsCmd),
     /// Live process inspection.
     #[command(subcommand)]
     Process(ProcessCmd),
@@ -2827,6 +2830,25 @@ enum ProjectCmd {
     Cache(ProjectCacheArgs),
 }
 
+#[derive(Subcommand)]
+enum SymbolsCmd {
+    /// Keep a PDB in the project's symbol store, after checking that it belongs
+    /// to the image: its GUID and age must equal the image's CodeView record.
+    /// A PDB beside the image is found without this; the store is for one kept
+    /// anywhere else.
+    Add(SymbolsAddArgs),
+}
+
+#[derive(Args)]
+struct SymbolsAddArgs {
+    /// The image the PDB belongs to.
+    #[arg(long)]
+    file: String,
+    /// The PDB to keep.
+    #[arg(long)]
+    pdb: String,
+}
+
 #[derive(Args)]
 struct ProjectCacheArgs {
     /// Remove every cache entry, then report what was freed.
@@ -3024,6 +3046,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Init(a) => cmd_init(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
         Command::Project(ProjectCmd::Cache(a)) => cmd_project_cache(a, pretty),
+        Command::Symbols(SymbolsCmd::Add(a)) => cmd_symbols_add(a, pretty),
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
@@ -3155,7 +3178,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -3423,6 +3446,11 @@ fn cmd_project_cache(a: ProjectCacheArgs, pretty: bool) -> bool {
         "failures": failures,
     });
     emit(&Response::success(schema::v1::PROJECT_CACHE, data), pretty)
+}
+
+/// `symbols add`: through the registry, so `serve` and an agent reach the same check.
+fn cmd_symbols_add(a: SymbolsAddArgs, pretty: bool) -> bool {
+    run_capability("symbols.add", json!({ "file": a.file, "pdb": a.pdb }), pretty)
 }
 
 fn cmd_project_info(pretty: bool) -> bool {
@@ -3732,6 +3760,11 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
         return emit(&Response::success(schema::v1::PROFILE, data).with_source(label.clone()), pretty);
     }
 
+    // Which PDB the image names, where it was looked for, and what a match brought.
+    let debug_info = match &src {
+        Src::Static(img) => n0xis_frontend::pdb_syms::report(img.as_ref()),
+        _ => serde_json::Value::Null,
+    };
     let run = |ctx: &Ctx| -> bool {
         match n0xis_core::profile_image(ctx.source, ctx.arch, base, a.exports).map(|mut p| {
             // A permissive parse is a fact about the *image*, and triage is
@@ -3748,6 +3781,7 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
                         "metadata_path": p,
                         "metadata_version": metadata_version,
                     })),
+                    "debug_info": debug_info,
                     "advisories": advisories,
                 });
                 emit(&Response::success(schema::v1::PROFILE, data).with_source(label.clone()), pretty)
@@ -3862,23 +3896,14 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
                 let flirt = flirt_db
                     .as_ref()
                     .map(|(db, fp)| n0xis_frontend::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
-                let base_holder;
-                let chain: &dyn n0xis_sources::SymbolProvider = match flirt.as_ref() {
-                    Some(f) => {
-                        base_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
-                        &base_holder
-                    }
-                    None => pe.as_ref(),
-                };
-                let managed_holder;
-                let chain: &dyn n0xis_sources::SymbolProvider = match managed {
-                    Some(m) => {
-                        managed_holder = n0xis_sources::ChainedSymbols::new(m, chain);
-                        &managed_holder
-                    }
-                    None => chain,
-                };
-                let full = n0xis_sources::ChainedSymbols::new(&local, chain);
+                let pdb = n0xis_frontend::pdb_syms::lookup(pe.as_ref());
+                let full = n0xis_frontend::static_names::StaticNames::new(
+                    &local,
+                    pdb.symbols(),
+                    managed,
+                    pe.as_ref(),
+                    flirt.as_ref().map(|f| f as &dyn n0xis_sources::SymbolProvider),
+                );
                 run_pdata(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full))
             }
             Src::Live(l) => run_pdata(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
@@ -3929,23 +3954,14 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
             let flirt = flirt_db
                 .as_ref()
                 .map(|(db, fp)| n0xis_frontend::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
-            let base_holder;
-            let chain: &dyn n0xis_sources::SymbolProvider = match flirt.as_ref() {
-                Some(f) => {
-                    base_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
-                    &base_holder
-                }
-                None => pe.as_ref(),
-            };
-            let managed_holder;
-            let chain: &dyn n0xis_sources::SymbolProvider = match managed {
-                Some(m) => {
-                    managed_holder = n0xis_sources::ChainedSymbols::new(m, chain);
-                    &managed_holder
-                }
-                None => chain,
-            };
-            let full = n0xis_sources::ChainedSymbols::new(&local, chain);
+            let pdb = n0xis_frontend::pdb_syms::lookup(pe.as_ref());
+            let full = n0xis_frontend::static_names::StaticNames::new(
+                &local,
+                pdb.symbols(),
+                managed,
+                pe.as_ref(),
+                flirt.as_ref().map(|f| f as &dyn n0xis_sources::SymbolProvider),
+            );
             // The starts the image declares outright — see `Ctx::functions`.
             // Shared with the registry rather than reimplemented: a second copy
             // of this is how the two front doors came to disagree about how
@@ -4143,7 +4159,9 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // one that sees the names, because a method's class is read off its own
     // symbol and most of those symbols are the ones RTTI had just persisted.
     let local = n0xis_frontend::annotation_syms::LocalNames::load();
-    let named = n0xis_sources::ChainedSymbols::new(&local, pe.as_ref());
+    // The image's PDB, when one matches, names everything RTTI and FLIRT did not.
+    let pdb = n0xis_frontend::pdb_syms::lookup(pe.as_ref());
+    let named = n0xis_frontend::static_names::StaticNames::new(&local, pdb.symbols(), None, pe.as_ref(), None);
     let vtables = std::sync::Arc::new(n0xis_frontend::annotation_syms::persisted_vtable_map());
     let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables);
 

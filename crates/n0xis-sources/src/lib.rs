@@ -37,7 +37,7 @@ pub use plugin::{call_once as plugin_call_once, PluginSession};
 #[cfg(feature = "static-pe")]
 mod static_pe;
 #[cfg(feature = "static-pe")]
-pub use static_pe::StaticPe;
+pub use static_pe::{CodeView, StaticPe};
 #[cfg(feature = "static-pe")]
 mod static_elf;
 #[cfg(feature = "static-pe")]

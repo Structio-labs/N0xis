@@ -5,6 +5,25 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **Names and function lengths from a PDB.** A PE image whose CodeView record names a program
+  database is named from a matching one in every command: each function's name, and its
+  length where a procedure record states it, so a static function with no export, no public
+  name and no unwind entry is named and bounded. A PDB matches when its information stream's
+  GUID and its debug-information stream's age equal the image's record. The information
+  stream's own age is not the one: on five system DLLs and their vendor's public PDBs it says
+  2 to 4 where every image says 1, so matching on it would have refused all five. A PDB of
+  another build is never used. It is looked for beside the image, at the path the linker
+  wrote, and in the project's symbol store (`.n0x/symbols/`, a symbol server's layout);
+  `symbols add` keeps one there after checking it, and `profile` says which was used or where
+  it looked. Checked on a PE and PDB built here from known source (every name, address and
+  stated length exact) and on those five DLLs against `llvm-pdbutil`: all 18 927 function
+  addresses listed, each named as `llvm-undname` reads it but for spelling (59, each
+  inspected). A corrupted PDB is an error, never a crash: the tests read 2 000 corrupted
+  copies, and the first run caught the reader panicking on 9 (unchecked arithmetic on sizes
+  read from the file; it now builds with overflow checks and every call into it is guarded).
+
 ## [0.3.4] — 2026-10-07
 
 ### Added

@@ -133,7 +133,7 @@ fn a_corrupted_pdb_is_an_error_or_a_partial_answer_never_a_crash() {
         LARGEST.store(0, Ordering::Relaxed);
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let outcome = std::panic::catch_unwind(|| n0xis_pdb::read(bytes).map(|contents| contents.functions.len()));
+            let outcome = std::panic::catch_unwind(|| n0xis_pdb::read(&bytes).map(|contents| contents.functions.len()));
             let _ = send.send(outcome);
         });
         match receive.recv_timeout(DEADLINE) {

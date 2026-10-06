@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **116 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **117 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -121,6 +121,12 @@ results.
   `pdata_present` / `pdata_functions`, and `engine_hints` with the evidence for each.
 - `data.il2cpp` — metadata path and format version, read from the blob header, when an
   IL2CPP layout is found beside the image.
+- `data.debug_info` — on a PE whose CodeView record names a PDB: its file name, the path the
+  linker wrote, `guid`, `age`, the symbol store's `store_key`, and either `matched` (the PDB
+  used: `path`, `functions`, `with_length`, `outside_code`, `skipped`) or `null`; `looked`
+  lists each place tried before it and what was there (`nothing`, `the PDB of another build`
+  with its own `guid`/`age`, `an unreadable file` with `why`). `null` when no PDB is named.
+  See *Program databases (PDB)* below.
 - `data.advisories` — per-command `{command, verdict: ineffective|degraded, reason}`.
   Every entry is derived from the evidence above, never a static list.
 - `--exports` — include the full export table (name → address → branch target); off by
@@ -173,6 +179,26 @@ Serve a live process over the remote-agent stdio protocol — the remote-side ha
 ---
 
 ## Static analysis & decompilation
+
+### Program databases (PDB)
+A PE image whose CodeView record names a PDB is named from a matching one, in every command:
+function names (decorated in the PDB, shown demangled) and, where a procedure record states
+it, each function's length. A PDB matches when its information stream's GUID and its
+debug-information stream's age equal the image's record; the information stream's own age is
+not compared, because rewriting a PDB (stripping it to its public part) raises it. A PDB of
+another build is never used. Looked for, in order: beside the image under the file name the
+linker wrote; the path the linker wrote; the project's symbol store,
+`.n0x/symbols/<name>/<GUID><age>/<name>` (the layout a symbol server uses). A function the PDB
+places outside the image's executable sections, or running past their end, is left out and
+counted. `profile` says which PDB was used, or where it looked and what was there.
+
+### `symbols add --file <image> --pdb <path>`
+Keep a PDB in the project's symbol store, where the lookup above finds it. Refused unless its
+GUID and age equal the image's CodeView record (`pdb-mismatch`, naming both) and it reads
+whole (`pdb-unreadable`); an image with no record is `no-codeview`.
+- `data.stored` — where it is kept; `is_local` (`false`: the global project), `guid`, `age`,
+  `functions`, `with_length`, `skipped` (`streams`, `unplaced`, `names`).
+- Schema: `n0xis.symbols.add.v1`
 
 ### `module list`
 List modules of a live process (`--pid`) or a single PE (`--file`).
@@ -766,7 +792,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**116 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**117 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -814,6 +840,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x module list` | List modules of a live process (`--pid`) or a single PE (`--file`) |
 | `n0x rtti scan` | Scan `.rdata` for MSVC RTTI vtables and recover each one's class name |
 | `n0x strings` | Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `--section`, `--all-sections`, or `--start`/`--size` for others. `--contains` filters (any case); `--limit`/`--offset` page |
+| `n0x symbols add` | Keep a PDB in the project's symbol store, after checking that it belongs to the image: its GUID and age must equal the image's CodeView record |
 | `n0x type enum` | Define (or replace) an enum. Repeat `--member "NAME=VALUE"` |
 | `n0x type list` | List every defined struct and enum |
 | `n0x type rm` | Remove a struct or enum by name |
@@ -964,6 +991,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.xref.v1` | xref to, xref from |
 | `n0xis.xref.string.v1` | xref string |
 | `n0xis.strings.v1` | strings |
+| `n0xis.symbols.add.v1` | symbols add |
 | `n0xis.diff.v1` | diff functions |
 | `n0xis.mem.read.v1` | mem read |
 | `n0xis.mem.span.v1` | mem span |
@@ -1015,5 +1043,5 @@ optimization delta; inlined into `decomp pseudo --style ssa`, and exposed standa
 
 Source of truth for this reference: `crates/n0xis-cli/src/main.rs` (clap enums + `main()`
 dispatch), `crates/n0xis-contracts/src/schema.rs` (mod `v1` / mod `v0`), cross-checked against
-`n0x guide --pretty` from this binary (`command_count: 116`). When in doubt, run `n0x
+`n0x guide --pretty` from this binary (`command_count: 117`). When in doubt, run `n0x
 guide` or `n0x <cmd> --help` — those are generated from the binary and never drift.

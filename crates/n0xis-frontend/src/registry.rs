@@ -497,7 +497,7 @@ fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
 
 /// Everything the image states about where its functions are, as
 /// `Ctx::functions` wants it: `.eh_frame` FDEs on an ELF, the `.pdata` table on
-/// a PE, and every exported entry point. Shares `eh_map`'s memo, so asking for
+/// a PE, the functions of a PE's matching PDB, and every exported entry point. Shares `eh_map`'s memo, so asking for
 /// this costs one scan per binary.
 ///
 /// A pair with `end <= start` is a declared *start* of unknown length.
@@ -513,6 +513,13 @@ fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
 pub fn stated_functions(src: &Src) -> Vec<(Va, Va)> {
     let mut out: Vec<(Va, Va)> = eh_map(src).iter().map(|f| (f.start, f.end)).collect();
     if let Src::Static(img) = src {
+        // The PDB's functions, where the image's own table states no extent: a
+        // leaf function has no unwind entry, and a static has no export. Where
+        // the image states one, its own table stands.
+        let extents: std::collections::HashSet<u64> = out.iter().filter(|(s, e)| e.0 > s.0).map(|(s, _)| s.0).collect();
+        if let Some(pdb) = crate::pdb_syms::lookup(img).symbols() {
+            out.extend(pdb.functions().into_iter().filter(|(s, _)| !extents.contains(&s.0)));
+        }
         out.extend(img.declared_entry_points().into_iter().map(|va| (va, va)));
     }
     out.sort_unstable();
@@ -739,27 +746,14 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
             let flirt = flirt_db
                 .as_ref()
                 .map(|(db, fp)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
-            // Build the binary-derived chain (managed index ▸ PE exports ▸ FLIRT)
-            // into holders that outlive the borrow, then wrap it with `local`.
-            let base_holder;
-            let chain_holder;
-            let fallback: &dyn n0xis_sources::SymbolProvider = match (managed, flirt.as_ref()) {
-                (Some(m), Some(f)) => {
-                    base_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                    chain_holder = n0xis_sources::ChainedSymbols::new(&base_holder, f);
-                    &chain_holder
-                }
-                (Some(m), None) => {
-                    chain_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                    &chain_holder
-                }
-                (None, Some(f)) => {
-                    chain_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
-                    &chain_holder
-                }
-                (None, None) => pe.as_ref(),
-            };
-            let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
+            let pdb = crate::pdb_syms::lookup(pe.as_ref());
+            let full = crate::static_names::StaticNames::new(
+                &local,
+                pdb.symbols(),
+                managed,
+                pe.as_ref(),
+                flirt.as_ref().map(|f| f as &dyn n0xis_sources::SymbolProvider),
+            );
             let stated = stated_functions(&resolved.src);
             work(
                 &n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
@@ -868,25 +862,14 @@ fn with_src_ctx(
             let flirt = flirt_db
                 .as_ref()
                 .map(|(db, fp)| crate::flirt_syms::FlirtSymbols::new(db, pe.as_ref(), &label, fp.clone()));
-            let base_holder;
-            let chain_holder;
-            let fallback: &dyn n0xis_sources::SymbolProvider = match (managed, flirt.as_ref()) {
-                (Some(m), Some(f)) => {
-                    base_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                    chain_holder = n0xis_sources::ChainedSymbols::new(&base_holder, f);
-                    &chain_holder
-                }
-                (Some(m), None) => {
-                    chain_holder = n0xis_sources::ChainedSymbols::new(m, pe.as_ref());
-                    &chain_holder
-                }
-                (None, Some(f)) => {
-                    chain_holder = n0xis_sources::ChainedSymbols::new(pe.as_ref(), f);
-                    &chain_holder
-                }
-                (None, None) => pe.as_ref(),
-            };
-            let full = n0xis_sources::ChainedSymbols::new(&local, fallback);
+            let pdb = crate::pdb_syms::lookup(pe.as_ref());
+            let full = crate::static_names::StaticNames::new(
+                &local,
+                pdb.symbols(),
+                managed,
+                pe.as_ref(),
+                flirt.as_ref().map(|f| f as &dyn n0xis_sources::SymbolProvider),
+            );
             // The extents the image declares — the whole-program passes that
             // run through here (`function summary`, `function typeflow`) each
             // build a CFG per function, and without these the extent heuristic
@@ -2530,6 +2513,7 @@ pub fn build_registry() -> Registry {
     reg.add_plugin(&crate::method_caps::MethodTools);
     reg.add_plugin(&crate::il2cpp_caps::Il2CppTools);
     reg.add_plugin(&crate::strings_caps::StringTools);
+    reg.add_plugin(&crate::symbols_caps::SymbolTools);
     reg.add_plugin(&ProcessPlugins);
     reg
 }

@@ -136,6 +136,14 @@ impl ProjectRoot {
     pub fn il2cpp_dir(&self) -> PathBuf {
         self.dir.join("il2cpp")
     }
+
+    /// The project's symbol store: program databases kept in the layout a
+    /// symbol server uses, `<name>/<GUID><age>/<name>`. What it holds was
+    /// fetched or handed over and cannot be rebuilt from the image, so it is
+    /// not among [`ProjectRoot::derived_caches`].
+    pub fn symbols_dir(&self) -> PathBuf {
+        self.dir.join("symbols")
+    }
     pub fn shim_path(&self) -> PathBuf {
         self.dir.join(SHIM_NAME)
     }

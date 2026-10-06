@@ -159,7 +159,7 @@ impl From<pdb2::Error> for Error {
 }
 
 /// The identity alone: what to compare before reading anything else.
-pub fn identity(bytes: Vec<u8>) -> Result<Identity, Error> {
+pub fn identity(bytes: &[u8]) -> Result<Identity, Error> {
     guarded(|| {
         let mut pdb = pdb2::PDB::open(Cursor::new(bytes))?;
         identity_of(&mut pdb)
@@ -194,11 +194,11 @@ struct AtAddress {
 }
 
 /// Everything the PDB says about the image's functions.
-pub fn read(bytes: Vec<u8>) -> Result<Contents, Error> {
+pub fn read(bytes: &[u8]) -> Result<Contents, Error> {
     guarded(|| read_unguarded(bytes))
 }
 
-fn read_unguarded(bytes: Vec<u8>) -> Result<Contents, Error> {
+fn read_unguarded(bytes: &[u8]) -> Result<Contents, Error> {
     let mut pdb = pdb2::PDB::open(Cursor::new(bytes))?;
     let identity = identity_of(&mut pdb)?;
     let map = pdb.address_map()?;

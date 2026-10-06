@@ -35,10 +35,13 @@ pub mod flirt_syms;
 pub mod il2cpp_caps;
 pub mod method_caps;
 pub mod parse;
+pub mod pdb_syms;
 pub mod project_caps;
 pub mod registry;
 pub mod source;
+pub mod static_names;
 pub mod strings_caps;
+pub mod symbols_caps;
 
 pub use arch::{pick_arch, pick_arch_for, resolve_arch};
 pub use registry::{Capability, Origin, Plugin, Registry, build_registry, stated_functions};

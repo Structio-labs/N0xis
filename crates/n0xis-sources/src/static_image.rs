@@ -41,6 +41,14 @@ impl StaticImage {
         }
     }
 
+    /// Which PDB was built with this image. An ELF carries none.
+    pub fn codeview(&self) -> Option<&crate::CodeView> {
+        match self {
+            StaticImage::Pe(p) => p.codeview(),
+            StaticImage::Elf(_) => None,
+        }
+    }
+
     pub fn image_base(&self) -> Va {
         match self {
             StaticImage::Pe(p) => p.image_base(),

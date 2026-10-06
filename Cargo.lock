@@ -669,6 +669,7 @@ dependencies = [
  "n0xis-core",
  "n0xis-flirt",
  "n0xis-il2cpp",
+ "n0xis-pdb",
  "n0xis-pipeline",
  "n0xis-project",
  "n0xis-sources",

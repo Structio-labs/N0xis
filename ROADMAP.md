@@ -1223,6 +1223,17 @@ outside this codebase that can prove it wrong.
      [the ledger](docs/VERIFICATION.md#open).
 
    Milestones, each closed by its own measurement:
+   - **M1, local half done (2026-10-07).** `n0xis-pdb` holds the reader behind its
+     own types, fuzzed from its first commit (2 000 corrupted copies; the first
+     run found the reader adding sizes from the file unchecked, now fenced). The
+     identity is the information stream's GUID with the debug-information
+     stream's age, measured: the information stream's age differs from the
+     image's on all five public PDBs tried. Found beside the image, at the
+     written path, or in the project's store (`symbols add`); names and lengths
+     reach every command through one name chain. Measured on those five DLLs:
+     all 18 927 function addresses listed and named as `llvm-undname` reads them
+     but for spelling. **Open in M1:** fetching from a symbol server on request,
+     which needs a network client the engine does not have yet.
    - **M1** the reader behind an adapter, fuzzed from its first commit, giving
      names and authoritative function extents. A PDB is accepted only when its
      GUID and age equal the image's own CodeView record; a symbol server is
@@ -4345,7 +4356,7 @@ replaces.
 #### Every command, and what its answer was checked against
 
 The claim "all sixty closed" is only checkable if the list is written down, so
-here is the whole surface — all **114** commands, not only the sixty, since the
+here is the whole surface — all **117** commands, not only the sixty, since the
 sixty are a subset and this way none of them can be missing by omission. Every
 row names the source its answer was checked against, and none of those sources
 is n0xis. Two rows say **not checkable here**, and each says why; three say
@@ -4468,6 +4479,7 @@ phase from its first mistake on.
 | `xref from` | Static analysis & decompilation | objdump, at instruction level |
 | `xref string` | Static analysis & decompilation | objdump — four literals at the exact `lea` sites the source predicts |
 | `strings` | Static analysis & decompilation | `nm` and `readelf` on a fixture whose strings are planted — each at its symbol's address, in its encoding, and the one too short left out; binutils `strings` (`-e s` and `-e l`) on four system images — 15 304 of its strings compared (14 UTF-16), every one inside one of ours, every ASCII one of ours, cut at line breaks, exactly one of its; an independent disassembler's string search on five ELF and PE images — 22 822 of its strings each inside one of ours, our 20 371 ASCII strings each exactly one of its. Text past ASCII has no oracle |
+| `symbols add` | Static analysis & decompilation | a PE and PDB built here from known source: kept at `<name>/<GUID><age>/<name>`, the key a vendor's symbol server answered to for five system DLLs' PDBs; a copy of the image with one byte of its CodeView GUID, or its age, changed is refused (`pdb-mismatch`); a kept PDB names and bounds the static function only its module stream holds |
 | `rtti scan` | Static analysis & decompilation | the image's own type-descriptor strings — 97 of 97, none invented |
 | `analyze` | Static analysis & decompilation | the counts every other reader gives for the same image |
 | `find` | Static analysis & decompilation | the byte offsets computed in Python and DWARF |
