@@ -158,6 +158,8 @@ alone; names, comments, types, patches, tables and recovered names are never tou
 ### `process ps [--filter <str>]`
 List running processes.
 - `--filter` — case-insensitive substring filter on the process name.
+- The name is the binary's full file name (on Linux, from `/proc/<pid>/exe`). A Windows
+  program run by Wine or Proton is named for itself (`app.exe`), not for Wine's loader.
 - Schema: `n0xis.process.ps.v1`
 
 ### `remote-serve --pid <u32>`

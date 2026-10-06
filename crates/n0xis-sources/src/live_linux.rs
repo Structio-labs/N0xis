@@ -115,28 +115,55 @@ fn parse_maps_line(line: &str) -> Option<MapEntry> {
     })
 }
 
-/// Enumerate running processes (pid + image name) by walking `/proc`.
-///
-/// The name comes from `/proc/<pid>/comm`, which is the 15-char-truncated
-/// thread name; where the full binary name matters (matching `--process
-/// SomeApp.x86_64`) the basename of `/proc/<pid>/exe` is preferred and
-/// `comm` is the fallback for processes whose `exe` link is unreadable.
+/// Enumerate running processes (pid + image name) by walking `/proc`; each
+/// is named as [`process_name`] says.
 pub fn list_processes() -> Result<Vec<ProcInfo>, SourceError> {
     let dir = fs::read_dir("/proc").map_err(|e| SourceError::Os(format!("read /proc: {e}")))?;
     let mut out = Vec::new();
     for entry in dir.flatten() {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
-        let name = fs::read_link(format!("/proc/{pid}/exe"))
-            .ok()
-            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
-            .or_else(|| fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string()))
-            .unwrap_or_default();
-        if !name.is_empty() {
+        let exe = fs::read_link(format!("/proc/{pid}/exe")).ok().and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()));
+        // Read only where it decides the name: a command line can be long.
+        let argv0 = || {
+            let line = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            let first = line.split(|&b| b == 0).next()?;
+            Some(String::from_utf8_lossy(first).into_owned())
+        };
+        let comm = || fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string());
+        if let Some(name) = process_name(exe, argv0, comm) {
             out.push(ProcInfo { pid, name });
         }
     }
     out.sort_by_key(|p| p.pid);
     Ok(out)
+}
+
+/// What Wine and Proton start every Windows program with, under these names.
+/// The program's `/proc/<pid>/exe` is the loader, so it names the loader.
+const WINE_LOADERS: [&str; 4] = ["wine-preloader", "wine64-preloader", "wine", "wine64"];
+
+/// A process's name, from the basename of its `/proc/<pid>/exe` (`exe`),
+/// the first word of its command line (`argv0`) and its `comm`.
+///
+/// `exe` comes first: it is the binary's full name, where `comm` is cut at 15
+/// bytes, and the full name is what `--process SomeApp.x86_64` matches. A
+/// Windows program run by Wine is the exception: its `exe` is the loader, so
+/// every such program would be called `wine-preloader`. Its name is the last
+/// part of its command line's first word, which Wine leaves as the program's
+/// path (`C:\windows\system32\services.exe`, or `./app.exe` as it was
+/// started); its `comm` is that name cut at 15 bytes. `comm` is also the
+/// answer for a process whose `exe` cannot be read.
+fn process_name(exe: Option<String>, argv0: impl FnOnce() -> Option<String>, comm: impl FnOnce() -> Option<String>) -> Option<String> {
+    let name = match exe {
+        Some(loader) if WINE_LOADERS.contains(&loader.as_str()) => argv0()
+            .and_then(|path| path.rsplit(['/', '\\']).next().map(str::to_string))
+            .filter(|program| !program.is_empty())
+            .or_else(comm)
+            .unwrap_or(loader),
+        Some(exe) => exe,
+        None => comm()?,
+    };
+    (!name.is_empty()).then_some(name)
 }
 
 /// An attached, live Linux/Android process address space.
@@ -634,5 +661,27 @@ mod tests {
         let procs = list_processes().expect("walk /proc");
         assert!(procs.iter().any(|p| p.pid == std::process::id()));
         assert!(procs.iter().all(|p| !p.name.is_empty()));
+    }
+
+    /// The `/proc` values of real processes, read under Wine 10.0
+    /// (`tests/wine_process_names.rs` runs one live).
+    #[test]
+    fn a_windows_program_under_wine_is_named_for_itself_not_the_loader() {
+        let name = |exe: Option<&str>, argv0: Option<&str>, comm: Option<&str>| {
+            process_name(exe.map(str::to_string), || argv0.map(str::to_string), || comm.map(str::to_string))
+        };
+        let wine = Some("wine-preloader");
+        // Started as `wine ./n0xis-wine-name-probe.exe`: `comm` lost the end.
+        assert_eq!(name(wine, Some("./n0xis-wine-name-probe.exe"), Some("n0xis-wine-name")).as_deref(), Some("n0xis-wine-name-probe.exe"));
+        // Started by Wine itself.
+        assert_eq!(name(wine, Some("C:\\windows\\system32\\services.exe"), Some("services.exe")).as_deref(), Some("services.exe"));
+        assert_eq!(name(Some("wine64-preloader"), Some("Z:\\games\\App-Win64-Shipping.exe"), None).as_deref(), Some("App-Win64-Shipping.exe"));
+        // A loader whose command line cannot be read keeps the best left.
+        assert_eq!(name(wine, None, Some("services.exe")).as_deref(), Some("services.exe"));
+        assert_eq!(name(wine, Some(""), None).as_deref(), Some("wine-preloader"));
+        // Anything else keeps the binary's full name; `comm` without one.
+        assert_eq!(name(Some("python3.12"), Some("python3"), Some("python3")).as_deref(), Some("python3.12"));
+        assert_eq!(name(None, None, Some("kthreadd")).as_deref(), Some("kthreadd"));
+        assert_eq!(name(None, None, Some("")), None);
     }
 }
