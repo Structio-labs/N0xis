@@ -1158,8 +1158,10 @@ with the measurement that established it. Nothing here is a comparison.
 - **Architecture breadth.** N0xis: x64 (mature), i386, AArch64 (early), AArch32
   (new). MIPS, PowerPC, RISC-V, SPARC and the long tail are absent. See the
   strategy below — this is a *seam* question, not a rewrite.
-- **File formats.** PE + ELF today; no Mach-O, no firmware loaders. A format
-  seam (Phase 15 debt) closes this the same way `trait Arch` closed the ISA one.
+- **File formats.** PE + ELF today; no Mach-O, no firmware loaders, and no
+  reader for .NET or Java bytecode (of managed code, only NativeAOT method names
+  are read). A format seam (Phase 15 debt) closes this the same way `trait Arch`
+  closed the ISA one.
 - **Maturity on adversarial / varied code**, and the absence of a
   plugin/type-library ecosystem. N0xis is young; `sound over complete` keeps it
   honest, but idiom/edge-case coverage is thin and there is no shipped
@@ -1258,8 +1260,40 @@ outside this codebase that can prove it wrong.
    this.
    **Done when:** a function with a non-default convention recovers its real
    prototype, and stack arrays render as arrays.
-5. ⬜ **File-format breadth.** PE and ELF only. No Mach-O, no firmware loaders.
-   A format seam closes it the way `trait Arch` closed the ISA one.
+5. ⬜ **File-format breadth.** PE and ELF only. A format seam closes it the way
+   `trait Arch` closed the ISA one. Four formats are recorded (2026-10-07), each
+   with what makes it done. Every reader is built under the hostile-input rule
+   (see *Hostile and corrupted input* below): fuzzed from its first commit,
+   cross-checked against the image, never trusted on its own.
+   - **Mach-O** (macOS, iOS): segments and sections, symbols, the dynamic
+     loader's bind and export information, and universal files with the
+     architecture chosen explicitly. x86-64 code runs through today's pipeline;
+     arm64 code waits on item 3. Attaching to a live process on macOS is a
+     separate adapter, not part of this item.
+     **Done when:** a Mach-O built here from known sources lists the functions
+     and symbols it was built with, and its section and symbol tables agree with
+     an independent reader (`llvm-readobj`, `llvm-objdump`).
+   - **Firmware:** an image with no container (a raw flash dump, Intel HEX,
+     S-record), loaded at a base the user gives or its vector table implies, with
+     a memory map of regions (flash, RAM, peripherals); the reset and interrupt
+     vectors as entry points; peripheral register names from a device description
+     where its license allows. Decompiling it needs the AArch32/Thumb lift, which
+     is decode-only today (item 3).
+     **Done when:** a firmware built here for a Cortex-M target and stripped to a
+     raw image lists the functions its own ELF names (rung 1), entered where the
+     linker's vector table says.
+   - **.NET assemblies:** the CLI metadata (types, methods, fields, strings) and
+     IL method bodies, lifted into the pipeline.
+     **Done when:** assemblies compiled here from known C# list every type,
+     method and field the compiler emitted, in agreement with an independent
+     metadata reader, and decompiled methods return what their source returns on
+     tested inputs (run, not read).
+   - **Java:** class files and JARs (constant pool, classes, methods, fields,
+     bytecode), lifted the same way; Android's DEX carries the same language and
+     comes after it.
+     **Done when:** classes compiled here with `javac` list what the compiler
+     emitted, in agreement with the JDK's own `javap`, and decompiled methods
+     return what their source returns on tested inputs.
 6. ⬜ **The compiler-idiom library.** Continuous, never "done" — each idiom is
    independent and individually cheap. The differential oracle is the natural
    source of candidates: an idiom this decompiler leaves as raw arithmetic and
