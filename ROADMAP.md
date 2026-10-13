@@ -1285,11 +1285,36 @@ outside this codebase that can prove it wrong.
    text exceptions. The lifted forms (extends, bitfields, pack, halfword
    multiplies) agree with qemu's user-mode ARM emulation on 8 352 of 8 352
    answers.
-   **Still open:** a definition read only by an instruction left as `asm` is
-   dropped as dead, and the signature loses the parameter behind it. That holds
-   on every architecture (`mov r8, r9; crc32 eax, r8b` on x64 reads as
-   `sub(void)`) and shows most on A32, where byte, halfword and dual loads and
-   stores, and `ldm`/`stm` beyond push and pop, are still `asm`. A32 reads of
+   **What `asm` hid (closed the same evening).** An instruction left as `asm`
+   stated neither the registers it read nor what it did to memory, on every
+   architecture: a definition only it read was dropped and the parameter behind
+   it left the signature (`mov r8, r9; crc32 eax, r8b` on x64 read as
+   `sub(void)`), and a store it made did not stop forwarding (`mov [rcx],edx;
+   movnti [rcx],r8d; mov eax,[rcx]` returned `rdx`). It now states both, and
+   every pass honours them; over x64 libc no signature loses a parameter, 72
+   gain one or more (none past its prototype), and trimming trailing call
+   arguments by the recovered parameter set rather than by a proxy removes
+   phantom arguments at 334 call sites; each of the 334 was checked against the
+   callee's parameter count in libc's own debug information, and every dropped
+   argument sat at a position the callee does not have. An independent check of
+   the first cut found one call site where the old output was right and the new
+   one was not (an indirect call in `clock_getres` gained `rdx`); that was fixed
+   before commit. Three call sites carry one phantom trailing argument more than
+   before, all three already wrong (`posix_fallocate` twice, and `sigqueue`
+   calling `getpid`), and phantom trailing arguments stay common where nothing
+   trims them (`sysconf` called with four for its one); seven forwarded
+   arguments are missing (`secure_getenv` calls `getenv()`). Bounding a call's
+   arguments by its callee's recovered arity, or letting an argument be
+   unknown, is the open design question. The same work found, still open: x64
+   `syscall`
+   writes `rax` but the lift says nothing about it, so a system-call wrapper
+   compares the call number, not the result, with `-0x1000`; arm64 instruction
+   classes the access table does not model write nothing (`mrs x0, tpidr_el0`
+   keeps an older `x0`); stack slots at `+8` and `-8` render under one name
+   (312 of 2 323 libc functions declare a local twice); A32 `push` and `pop`
+   carry no memory effect.
+   **Still open on A32:** byte, halfword and dual loads and stores, and
+   `ldm`/`stm` beyond push and pop, are still `asm`. A32 reads of
    `pc` lift as an unknown `pc.0` instead of the instruction's address plus 8,
    so a literal-pool load shows as `pc.0->field_0x18c`. the decoder is not told
    the ISA version, so ARMv7-only encodings are accepted in ARMv6 code; the unconditional `cps` forms are
