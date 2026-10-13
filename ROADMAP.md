@@ -1264,6 +1264,26 @@ outside this codebase that can prove it wrong.
    `.sla` specifications pays it once for ~40 ISAs.
    **Done when:** a non-x86 binary decompiles end to end and its lift is checked
    against emulation of the real bytes.
+   **AArch32 against LLVM (2026-10-13).** Compared word by word with LLVM's
+   disassembler, the decoder crate's 0.4 line put a phantom operand, an
+   encoding field the processor ignores, into every shifted move, every
+   compare (`cmp`, `cmn`, `tst`, `teq`) and every `mvn` with an immediate, and
+   rejected moves shifted by a register. The lift read the phantom:
+   `cmp r4, #0; beq` decompiled as `if (r0 == 0)`, `mvn r0, #0` as `~r0`, and
+   `lsl r0, r1, #2` lost its result. Its 0.5 line fixes most shapes and panics
+   on 1 474 560 of the 2^32 A32 words (`ldrd`/`strd` with Rt = 15, which LLVM
+   calls invalid), where 0.4 panicked on none. Now the lift accepts only the
+   operand shapes it expects, and no panic crosses the decoder boundary
+   (checked over all 2^32 words). The corrected lift was checked on those
+   forms and on functions compiled here from known source.
+   **Still open:** the ARMv6 media instructions (`uxtb`, `uxth`, `sxth`, `sxtb`,
+   `uxtah`, `rev16`, `smulbb`) are unimplemented in the decoder crate, each cutting a
+   function short; the decoder is not told the ISA version, so it accepts
+   ARMv7-only encodings in ARMv6 code; Thumb `cbz`/`cbnz` are not branches in the CFG; A32 results
+   are not cut back to 32 bits in emulation; Thumb was decoded by the 0.4 line
+   until now, whose successor's changelog lists a dozen Thumb-2 decode fixes, so
+   the earlier Thumb check is due again; and nothing on AArch32 is checked
+   against a processor yet.
 4. ⬜ **Calling conventions and an explicit stack-frame model.** Today: arity and
    return only, the convention *assumed* from the ABI. No `thiscall`,
    `vectorcall` or variadic detection; no frame model, no frame-pointer-omission
@@ -1284,12 +1304,26 @@ outside this codebase that can prove it wrong.
      **Done when:** a Mach-O built here from known sources lists the functions
      and symbols it was built with, and its section and symbol tables agree with
      an independent reader (`llvm-readobj`, `llvm-objdump`).
+     **Old images too (recorded 2026-10-13).** An image built before the
+     dynamic loader's info commands has no bind information at all: no
+     `LC_DYLD_INFO`, its entry point in `LC_UNIXTHREAD`, and its imports only
+     in the classic symbol and indirect-symbol tables, each naming its library
+     through the two-level namespace. Objective-C metadata names methods as
+     `-[Class selector:]` the way RTTI names a C++ class. So the reader takes
+     the classic tables as well as the bind opcodes, and reads the Objective-C
+     classes, methods, selectors, categories and protocols. 32-bit ARM code
+     runs through the AArch32 path of item 3. Today `n0x` refuses a Mach-O at
+     the first step: `not a PE (MZ) or ELF (\x7fELF) image`.
+     **Done when (old images):** an image planted by a committed generator,
+     with its imports only in the classic tables, lists every import grouped by
+     the library it comes from, and its Objective-C classes and methods agree
+     with `llvm-objdump --objc-meta-data`.
    - **Firmware:** an image with no container (a raw flash dump, Intel HEX,
      S-record), loaded at a base the user gives or its vector table implies, with
      a memory map of regions (flash, RAM, peripherals); the reset and interrupt
      vectors as entry points; peripheral register names from a device description
      where its license allows. Decompiling it needs the AArch32/Thumb lift, which
-     is decode-only today (item 3).
+     covers part of A32 today and is not yet checked against a processor (item 3).
      **Done when:** a firmware built here for a Cortex-M target and stripped to a
      raw image lists the functions its own ELF names (rung 1), entered where the
      linker's vector table says.
@@ -1365,6 +1399,30 @@ outside this codebase that can prove it wrong.
       scheduled. When it is, an independent Rust-level decompiler run locally is
       the differential oracle for it.
     - **Swift** waits on Mach-O (item 5).
+11. ⬜ **Static recompilation — a whole program translated into C that compiles
+    and runs.** Recorded 2026-10-13.
+    Decompiled pseudo-C is not the input for this. It is written for a reader
+    and approximates by design, and one wrong line breaks the program without
+    an error; the measurement that recorded this item found exactly such a line
+    (the AArch32 shift entry under item 3). Recompilation needs the lift taken
+    to exactness and emitted mechanically: every instruction becomes a C
+    statement over a register file and the program's own 32-bit address space,
+    and the C compiler does the optimizing. The pieces:
+    - the **exact lift** of the ISA, flags included, with nothing left as
+      `asm`;
+    - **every function entry** known (symbols, discovery), and a dispatch table
+      from a guest address to its translated function for indirect calls and
+      jumps (virtual calls, function pointers, jump tables);
+    - a **memory model** that keeps the guest's 32-bit pointers on a 64-bit
+      host;
+    - the **platform boundary** as a declared list: every import a runtime must
+      provide, grouped by library. Writing that runtime is not this item.
+
+    **Done when:** functions of a program built here are translated, compiled
+    for a different architecture, and return the same results as the original
+    running on its own processor over randomized inputs. That is rung 1, the
+    processor as the oracle; a 32-bit ARM board can run A32 code natively. After
+    that, a whole program reaches its first frame.
 
 **The one thing to hold on to while working through this list:** items 1, 3, 6
 and 7 are *acquisition* — a reader, a specification set, a rule at a time, a
@@ -7226,14 +7284,14 @@ through plain syscalls — no signed driver, no code-integrity fight:
    `decomp pseudo` emits `// asm:` nodes and a `/*cond(b.c)*/` placeholder instead of recovered
    expressions and conditions (`flags: ["ssa","low-coverage"]`). So the optimized decompiler
    stays x64-only until an AArch64 lift lands; that is the remaining ARM64 work, not the
-   decoder. *(The **x96 mini** was tried and rejected as a target: it is a 32-bit `armv7l`
+   decoder. *(A cheap 32-bit ARM TV box was tried and rejected as a target: it is an `armv7l`
    device — no AArch64 userland — so it cannot exercise the AArch64 track at all; 32-bit ARM is
    out of scope, see below.)* **Minor finding:** AArch64 `stp`/`ldp` immediates print in
    decimal while the rest of the operands (and the x64 path) use hex — a rendering-consistency
    nit worth unifying.
    - **Do we need 32-bit ARM (AArch32)?** ✅ **Yes — reversed by a real target** *(2026-08-30).*
      The earlier "no, declining niche" call assumed no concrete use. But cheap TV boxes are
-     exactly the corpus: the X96 box is `armv7l` (`armeabi-v7a`), its whole userspace is 32-bit
+     exactly the corpus: such a box is `armv7l` (`armeabi-v7a`), its whole userspace is 32-bit
      ARM, and our AArch64 arch (disarm64) cannot read a byte of it. So a **decode-only `Arm32`
      arch** landed: `yaxpeax-arm` (pure Rust, keeps the build C-free like disarm64), A32 +
      Thumb/Thumb-2, the `r0`-`r15` register model and AAPCS32 declared, and a best-effort
