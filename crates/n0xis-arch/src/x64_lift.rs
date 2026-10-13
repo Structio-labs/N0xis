@@ -411,9 +411,22 @@ fn sext_acc(instr: &Instruction, from: Bits, dst: Register, out: &mut Vec<MicroS
 
 /// A BMI2 flag-less shift (`shlx`/`shrx`/`sarx`): `op0 = op1 <shift> op2`, with
 /// no flag side effect (unlike the legacy `shl`/`shr`).
+///
+/// The processor masks the count exactly as it does for the legacy shifts — to
+/// 5 bits for a 32-bit operand, 6 for a 64-bit one — and `sarx` reads its
+/// operand as signed. Both were missing: the IR's shift is defined past the
+/// width (`Shift::apply`: a count of 32 empties the value), so an unmasked
+/// `shlx eax, ecx, edx` with `edx = 33` said 0 where the processor shifts by 1,
+/// and `sarx eax, ecx, edx` on a negative `ecx` shifted a zero-extended,
+/// positive number. Same two rules as [`shift_rmw`], same reasons.
 fn bmi_shift(instr: &Instruction, op: BinOp, out: &mut Vec<MicroStmt>) {
-    let src = read_operand(instr, 1);
-    let count = read_operand(instr, 2);
+    let width = op_bits(instr, 0);
+    let mask = if width >= 64 { 63 } else { 31 };
+    let src = match op {
+        BinOp::Sar => signed_view(read_operand(instr, 1)),
+        _ => read_operand(instr, 1),
+    };
+    let count = MicroExpr::binary(BinOp::And, read_operand(instr, 2), MicroExpr::constant(mask, 8));
     write_operand(instr, 0, MicroExpr::binary(op, src, count), out);
 }
 
@@ -2141,6 +2154,47 @@ mod tests {
         let arch = X64::new();
         let insns = arch.decode_stream(bytes, Va(0x1000), 4);
         arch.lift(&insns[0], "win64")
+    }
+
+    /// The one shift in a lifted statement list, as `(op, operand, count)`.
+    fn the_shift(stmts: &[MicroStmt]) -> Option<(BinOp, MicroExpr, MicroExpr)> {
+        fn find(e: &MicroExpr) -> Option<(BinOp, MicroExpr, MicroExpr)> {
+            match e {
+                MicroExpr::Binary(op @ (BinOp::Shl | BinOp::Shr | BinOp::Sar), l, r) => Some((*op, l.as_ref().clone(), r.as_ref().clone())),
+                MicroExpr::Binary(_, l, r) => find(l).or_else(|| find(r)),
+                MicroExpr::Cast { expr, .. } | MicroExpr::Unary(_, expr) => find(expr),
+                _ => None,
+            }
+        }
+        stmts.iter().find_map(|s| match s {
+            MicroStmt::Assign { value, .. } | MicroStmt::Store { value, .. } => find(value),
+            _ => None,
+        })
+    }
+
+    /// BMI2 shifts mask their count like the legacy shifts (5 bits for a 32-bit
+    /// operand, 6 for 64), and `sarx` reads its operand as signed. Encodings
+    /// from `llvm-mc -triple=x86_64 -show-encoding`.
+    #[test]
+    fn bmi2_shifts_mask_the_count_and_sarx_reads_signed() {
+        // c4 e2 69 f7 c1   shlx eax, ecx, edx
+        let (op, src, count) = the_shift(&lift_one(&[0xc4, 0xe2, 0x69, 0xf7, 0xc1])).expect("shlx lifts to a shift");
+        assert_eq!(op, BinOp::Shl);
+        assert_eq!(count, MicroExpr::binary(BinOp::And, low(32, "rdx"), MicroExpr::constant(31, 8)), "a 32-bit count is masked to 5 bits");
+        assert_eq!(src, low(32, "rcx"));
+        // c4 e2 6a f7 c1   sarx eax, ecx, edx
+        let (op, src, count) = the_shift(&lift_one(&[0xc4, 0xe2, 0x6a, 0xf7, 0xc1])).expect("sarx lifts to a shift");
+        assert_eq!(op, BinOp::Sar);
+        assert_eq!(src, low_signed(32, "rcx"), "a 32-bit sarx reads its operand signed");
+        assert_eq!(count, MicroExpr::binary(BinOp::And, low(32, "rdx"), MicroExpr::constant(31, 8)));
+        // c4 e2 eb f7 c1   shrx rax, rcx, rdx
+        let (op, src, count) = the_shift(&lift_one(&[0xc4, 0xe2, 0xeb, 0xf7, 0xc1])).expect("shrx lifts to a shift");
+        assert_eq!(op, BinOp::Shr);
+        assert_eq!(src, MicroExpr::var("rcx"));
+        assert_eq!(count, MicroExpr::binary(BinOp::And, MicroExpr::var("rdx"), MicroExpr::constant(63, 8)), "a 64-bit count is masked to 6 bits");
+        // c4 e2 ea f7 c1   sarx rax, rcx, rdx — 64-bit: already signed at full width.
+        let (op, src, _) = the_shift(&lift_one(&[0xc4, 0xe2, 0xea, 0xf7, 0xc1])).expect("sarx lifts to a shift");
+        assert_eq!((op, src), (BinOp::Sar, MicroExpr::var("rcx")));
     }
 
     /// The low `bits` of a register, zero-extended — how a **sub-register read**

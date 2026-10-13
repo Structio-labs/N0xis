@@ -678,13 +678,6 @@ fn callee_cleanup_arity(ctx: &Ctx, cfg: &CfgArtifact) -> Option<usize> {
     (bytes > 0 && word > 0 && bytes % word == 0).then(|| (bytes / word) as usize)
 }
 
-/// `word` is the target's register width in bits.
-///
-/// It used to be hardcoded to 64, which is right on x86-64 and wrong on every
-/// 32-bit target: a function that returns in `eax` was given `uint64_t`, and on
-/// one 32-bit system DLL that was 330 of 400 signatures stating a width the
-/// image cannot produce. A default is still a default, but it has to be the
-/// target's.
 /// The scalar floating-point families whose x86 mnemonic carries its operand
 /// type in the last two letters: `…sd` is one `double`, `…ss` is one `float`.
 ///
@@ -1180,6 +1173,11 @@ struct ParamEvidence<'a> {
     own_class: Option<&'a str>,
     /// The SSA name of the `this` parameter — the only one `own_class` types.
     this_param: &'a str,
+    /// The width a parameter with no other evidence is given: the target's
+    /// register width ([`word_bits`]). A field rather than a default so every
+    /// construction has to state it — it was a literal 64, and every A32
+    /// signature read `uint64_t r0` for a 32-bit register.
+    word: Bits,
 }
 
 /// The display type of one register parameter, inferred from how it is used —
@@ -1195,7 +1193,8 @@ struct ParamEvidence<'a> {
 /// 3. a **known-API argument type** (`HANDLE`, `LPCWSTR`, `DWORD`, …),
 /// 4. a plain **`void *`** when the value is dereferenced but no struct/API
 ///    evidence pins a better type,
-/// 5. otherwise the generic `uint64_t` (unchanged from before).
+/// 5. otherwise the generic unsigned integer of the target's register width
+///    (`uint64_t` on x86-64 and AArch64, `uint32_t` on i386 and AArch32).
 fn param_ctype(pname: &str, ev: &ParamEvidence<'_>) -> CType {
     let (ctor_classes, method_classes, ptr_bases, struct_map, api, flow, own_class, this_param) =
         (ev.ctor_classes, ev.method_classes, ev.ptr_bases, ev.struct_map, ev.api, ev.flow, ev.own_class, ev.this_param);
@@ -1234,7 +1233,22 @@ fn param_ctype(pname: &str, ev: &ParamEvidence<'_>) -> CType {
     if ptr_bases.contains(pname) {
         return CType::named("void *");
     }
-    CType::generic(64, false)
+    CType::generic(ev.word, false)
+}
+
+/// The target's register width in bits — the width a value is given when
+/// nothing narrower or wider is known about it: a parameter, a stack argument
+/// slot, a return value.
+///
+/// The return width used to be hardcoded to 64, which is right on x86-64 and
+/// wrong on every 32-bit target: a function that returns in `eax` was given
+/// `uint64_t`, and on one 32-bit system DLL that was 330 of 400 signatures
+/// stating a width the image cannot produce. The register-parameter fallback
+/// kept its literal 64 after that fix, so every A32 signature still read
+/// `uint64_t r0`. A default is still a default, but it has to be the target's
+/// — so it is computed here, once, for all three.
+fn word_bits(ctx: &Ctx) -> Bits {
+    ctx.arch.pointer_size() as Bits * 8
 }
 
 /// The byte window scanned when analyzing a callee's signature — generously
@@ -1496,6 +1510,7 @@ fn infer_with(
         flow: &flow_types,
         own_class: own_class.as_deref(),
         this_param: &this_param,
+        word: word_bits(ctx),
     };
     let params: Vec<ParamInfo> = match stack_arity {
         // Stack arguments have no register to key an SSA name on, so the type
@@ -1506,7 +1521,7 @@ fn infer_with(
             .map(|i| ParamInfo {
                 reg: "",
                 name: format!("arg{i}"),
-                ty: CType::generic(ctx.arch.pointer_size() as Bits * 8, false),
+                ty: CType::generic(word_bits(ctx), false),
             })
             .collect(),
         None if shares => {
@@ -1554,7 +1569,7 @@ fn infer_with(
     let callee_rets = callee_return_types(cfg);
     let entry_ret = crate::ir::abi_return_register(ctx).map(|r| format!("{r}.0"));
     let ret =
-        recover_return_type(blocks, &callee_rets, ctx.arch.pointer_size() as Bits * 8, float_return, entry_ret.as_deref());
+        recover_return_type(blocks, &callee_rets, word_bits(ctx), float_return, entry_ret.as_deref());
     // When the result spans both vector return registers, the type above names
     // its FIRST half. Naming the registers is what keeps that from reading as
     // the whole answer — this model has no name for a two-register aggregate,
@@ -1607,6 +1622,30 @@ mod tests {
         // than the `(void)` it produces.
         let art = infer_code_x86(vec![0x8b, 0x45, 0x08, 0xc3]);
         assert!(art.signature.params.is_empty(), "caller cleanup states no arity");
+    }
+
+    /// A register parameter's width is the target's, not 64 by assumption.
+    ///
+    /// AArch32 registers are 32 bits; the fallback for a parameter with no
+    /// other evidence was a literal 64, so `add r0, r0, r1; bx lr` was
+    /// `uint32_t sub_1000(uint64_t r0, uint64_t r1)`.
+    #[test]
+    fn an_a32_register_parameter_is_32_bits_wide() {
+        // e0800001  llvm-mc: `add r0, r0, r1`;  e12fff1e  `bx lr`
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x01, 0x00, 0x80, 0xe0, 0x1e, 0xff, 0x2f, 0xe1]).build();
+        let arch = n0xis_arch::Arm32::a32();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
+        let opt = OptimizePass.run(&ctx, ssa).unwrap();
+        let art = TypeInferPass
+            .run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair })
+            .unwrap();
+        let params: Vec<(&str, Bits)> = art.signature.params.iter().map(|p| (p.name.as_str(), p.ty.bits)).collect();
+        assert_eq!(params, vec![("r0", 32), ("r1", 32)], "AArch32 registers are 32 bits wide");
+        // The x86-64 fallback stays 64: `mov rax, rcx; ret` (48 89 c8 c3).
+        let art = infer_code(vec![0x48, 0x89, 0xc8, 0xc3]);
+        assert_eq!(art.signature.params.iter().map(|p| p.ty.bits).collect::<Vec<_>>(), vec![64], "an x86-64 register parameter is 64 bits");
     }
 
     /// The return width has to be the target's, not 64 by assumption.
@@ -1939,6 +1978,7 @@ mod tests {
                 flow: &no_map,
                 own_class: None,
                 this_param: "rcx.0",
+                word: 64,
             },
         );
         assert_eq!(ty.name.as_deref(), Some("std::exception *"));
@@ -2107,16 +2147,16 @@ mod tests {
         let no_ctor = BTreeMap::new();
         let no_method = BTreeMap::new();
         // rcx: deref'd struct *and* an API hit *and* a propagated type -> struct wins.
-        assert_eq!(param_ctype("rcx.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0" }).name.as_deref(), Some("struct_rcx_0 *"));
+        assert_eq!(param_ctype("rcx.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0", word: 64 }).name.as_deref(), Some("struct_rcx_0 *"));
         // rdx: an API hit outranks a propagated type.
-        assert_eq!(param_ctype("rdx.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0" }).name.as_deref(), Some("HANDLE"));
+        assert_eq!(param_ctype("rdx.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0", word: 64 }).name.as_deref(), Some("HANDLE"));
         // r8: dereferenced, no local name — the propagated class beats `void *`,
         // because "a QImage *" is strictly more than "a pointer".
-        assert_eq!(param_ctype("r8.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0" }).name.as_deref(), Some("QImage *"));
+        assert_eq!(param_ctype("r8.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0", word: 64 }).name.as_deref(), Some("QImage *"));
         // …and with nothing propagated it is still `void *`.
-        assert_eq!(param_ctype("r8.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &BTreeMap::new(), own_class: None, this_param: "rcx.0" }).name.as_deref(), Some("void *"));
+        assert_eq!(param_ctype("r8.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &BTreeMap::new(), own_class: None, this_param: "rcx.0", word: 64 }).name.as_deref(), Some("void *"));
         // r9: no evidence at all -> generic (name None, renders uint64_t).
-        assert_eq!(param_ctype("r9.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0" }).name, None);
+        assert_eq!(param_ctype("r9.0", &ParamEvidence { ctor_classes: &no_ctor, method_classes: &no_method, ptr_bases: &ptr, struct_map: &structs, api: &api, flow: &flow, own_class: None, this_param: "rcx.0", word: 64 }).name, None);
     }
 
     #[test]

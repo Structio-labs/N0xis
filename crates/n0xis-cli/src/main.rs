@@ -735,6 +735,26 @@ struct ConstIdentifyArgs {
     lua: Option<String>,
 }
 
+// `--arch` help, written once per behaviour. It was one doc comment copied
+// onto every command — "`x64` (default) or `arm64`" — and every copy stayed
+// that way after `x86`, `arm32` and `thumb` became accepted and the image
+// header began to decide. The names are what `n0xis_frontend::resolve_arch`
+// accepts; `arch_help_names_what_the_parser_accepts` holds them to it.
+
+/// For a command that picks its decoder with `Src::pick_arch`/`pick_arch_for`.
+const ARCH_HELP: &str = "Instruction set to decode: `x64`, `x86`, `arm64`, `arm32` (A32) or `thumb` (T32). \
+    Omitted: a file is decoded as its header declares; anything else (a live process, a snapshot, `--bytes`) as `x64`.";
+
+/// For a command that resolves `--arch` with `resolve_arch` alone, so the
+/// header is not consulted and an ARM file decodes as x86-64 unless told.
+const ARCH_HELP_NO_HEADER: &str = "Instruction set to decode: `x64` (the default — this command does not read the image header), \
+    `x86`, `arm64`, `arm32` (A32) or `thumb` (T32).";
+
+/// `patch detour` writes an x86 `jmp rel32` and moves the overwritten code with
+/// `Arch::relocate`, which only the x86 arch implements; the others refuse.
+const ARCH_HELP_DETOUR: &str = "Instruction set of the hook site: `x64` (default) or `x86`. The hook is an x86 `jmp rel32` \
+    and only x86 code can be relocated, so `arm64`, `arm32` and `thumb` are refused.";
+
 #[derive(Subcommand)]
 enum BindingsCmd {
     /// List native bindings by pairing name strings with function pointers.
@@ -778,8 +798,7 @@ struct BindingsListArgs {
     /// Drop bindings below this confidence (0.0..=1.0).
     #[arg(long, default_value_t = 0.0)]
     min_confidence: f32,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -1133,8 +1152,7 @@ struct DiffFunctionsArgs {
     /// `goto` (default: stable/deterministic, best for diffing), `structured`, or `ssa`.
     #[arg(long, value_enum, default_value_t = PseudoStyle::Goto)]
     style: PseudoStyle,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP_NO_HEADER)]
     arch: Option<String>,
 }
 
@@ -1261,8 +1279,7 @@ struct ProvenanceTraceArgs {
     save_to_table: Option<String>,
     #[arg(long)]
     entry: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP_NO_HEADER)]
     arch: Option<String>,
 }
 
@@ -1351,8 +1368,7 @@ struct AnnotateVarArgs {
     snapshot: Option<String>,
     #[arg(long)]
     remote_cmd: Option<String>,
-    /// Instruction set to decode the function with: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -1674,8 +1690,7 @@ struct PatchDetourArgs {
     /// back (the CLI reports the minimum needed if this is too small).
     #[arg(long, default_value_t = 64, value_parser = parse_hex_or_decimal_usize)]
     cave_size: usize,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP_DETOUR)]
     arch: Option<String>,
 }
 
@@ -1786,8 +1801,7 @@ struct FunctionSummaryArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     /// Reload a captured `snapshot dump` by name.
     #[arg(long)]
@@ -1816,8 +1830,7 @@ struct FunctionTypeflowArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     #[arg(long)]
     snapshot: Option<String>,
@@ -1840,8 +1853,7 @@ struct FunctionLayoutArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     #[arg(long)]
     snapshot: Option<String>,
@@ -1913,8 +1925,7 @@ struct FunctionTraceArgs {
     /// Byte window handed to `ir build` for each visited function.
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -1924,8 +1935,7 @@ struct ProfileArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set used to decode export stubs: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     /// Which loaded module to profile (case-insensitive substring). Defaults
     /// to the main module — worth overriding on any target whose real code is
@@ -1946,8 +1956,7 @@ struct FunctionNoreturnArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     /// Inline bytes source; requires `--start` for the base address.
     #[arg(long)]
@@ -1983,8 +1992,7 @@ struct DiscoverArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     /// Inline bytes source; requires `--start` for the base address.
     #[arg(long)]
@@ -2034,8 +2042,7 @@ struct AnalyzeArgs {
     pid: Option<u32>,
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     #[arg(long)]
     snapshot: Option<String>,
@@ -2276,8 +2283,7 @@ struct XrefStringArgs {
     size: Option<usize>,
     #[arg(long, default_value_t = 50)]
     limit: usize,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -2310,8 +2316,7 @@ struct XrefArgs {
     /// Code window size (defaults to the `.text` size).
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -2368,8 +2373,7 @@ struct ManifestArgs {
     /// Byte window handed to `ir build` per candidate.
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
     max_bytes: usize,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     /// FLIRT-class signature database(s) (`.npat`) to name statically-linked
     /// library functions (`memcpy`, `crc32`, …) that carry no symbol. Repeatable:
@@ -2745,8 +2749,7 @@ struct IrArgs {
     /// build (`--addr-module GameAssembly.dll`).
     #[arg(long)]
     addr_module: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
     /// Byte window to analyze (the function's max extent).
     #[arg(long, default_value_t = 4096, value_parser = parse_hex_or_decimal_usize)]
@@ -2873,8 +2876,7 @@ struct DisasmArgs {
     /// PE file on disk (Phase 2 — reserved).
     #[arg(long)]
     file: Option<String>,
-    /// Instruction set to decode: `x64` (default) or `arm64`.
-    #[arg(long)]
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -3369,7 +3371,7 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
         "architectures": [
             "x64 — iced-x86, full pipeline: CFG / SSA / type recovery / optimized decompile. A 32-bit PE32 auto-selects i386 (or force with --arch x86)",
             "arm64 — disarm64, CFG / discover / xref / goto+structured decompile (SSA optimization is x64-only so far); pass --arch arm64",
-            "arm32 / thumb — yaxpeax-arm, AArch32/ARMv7 disassembly (decode-only so far: correct decode + CFG, lift is a follow-on). --arch arm32 (A32) or --arch thumb"
+            "arm32 / thumb — yaxpeax-arm, AArch32/ARMv7: decode, CFG, lift, goto/structured/ssa decompile. Lifted: data-processing (shifted operands included), pre-indexed word ldr/str, cmp/tst, push/pop, bl/bx lr, predication and Thumb IT blocks; everything else (rotates, byte/halfword loads, ldm/stm beyond push/pop, VFP/NEON, Thumb shift instructions) stays asm. The instruction set is chosen up front, not followed across interworking branches. Not yet checked against a processor. --arch arm32 (A32) or --arch thumb (T32)"
         ],
         "categories": categories,
         "command_count": commands.len(),
@@ -7546,6 +7548,38 @@ mod guide_recipe_tests {
 /// old spelling still reaches *this* command with *these* arguments — a hidden
 /// alias that parsed to a neighbour, or dropped an argument on the way, would
 /// turn every old script into a confident wrong answer instead of an error.
+#[cfg(test)]
+mod arch_help_tests {
+    use super::*;
+
+    /// The backticked words of a help string.
+    fn backticked(help: &str) -> Vec<&str> {
+        help.split('`').skip(1).step_by(2).collect()
+    }
+
+    /// Every instruction set the help names is one `resolve_arch` accepts, and
+    /// every one it accepts is named — read off the parser's own refusal, which
+    /// lists them, so adding an architecture there fails here until the help
+    /// says so too. (The detour help names the others to say they are refused,
+    /// which is why it is held to the same list.)
+    #[test]
+    fn arch_help_names_what_the_parser_accepts() {
+        let refusal = n0xis_frontend::resolve_arch(Some("no-such-arch")).err().expect("an unknown arch is refused");
+        let accepted: Vec<&str> = refusal.rsplit("expected ").next().unwrap_or("").split('|').collect();
+        assert!(accepted.len() >= 5, "the refusal lists the accepted names: {refusal}");
+        for (which, help) in [("ARCH_HELP", ARCH_HELP), ("ARCH_HELP_NO_HEADER", ARCH_HELP_NO_HEADER), ("ARCH_HELP_DETOUR", ARCH_HELP_DETOUR)] {
+            // Instruction-set names, not the flags or code the text also quotes.
+            let named: Vec<&str> = backticked(help).into_iter().filter(|w| !w.contains(' ') && !w.starts_with('-')).collect();
+            for name in &named {
+                assert!(n0xis_frontend::resolve_arch(Some(name)).is_ok(), "{which} names `{name}`, which --arch refuses");
+            }
+            for name in &accepted {
+                assert!(named.contains(name), "--arch accepts `{name}` but {which} does not say so: {help}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod concept_alias_tests {
     use super::*;

@@ -900,6 +900,93 @@ mod tests {
         DecompPass.run(&ctx, DecompInput { cfg, style, explain: true, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
     }
 
+    /// A32 bytes through the whole pipeline — lift, SSA, render — in the
+    /// structured style, which keeps every statement.
+    fn decomp_a32(code: Vec<u8>) -> PseudoFunction {
+        decomp_a32_as(code, DecompStyle::Structured)
+    }
+
+    fn decomp_a32_as(code: Vec<u8>, style: DecompStyle) -> PseudoFunction {
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = n0xis_arch::Arm32::a32();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        DecompPass.run(&ctx, DecompInput { cfg, style, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
+    }
+
+    /// Compiled from C (`clang --target=armv6-none-eabi -marm -O2`), so the
+    /// meaning is the source's: `int f(int a) { return a >> 8; }` and
+    /// `int f(int a, int b) { return a < b ? 7 : 9; }`. Both are signed, and
+    /// both printed as operations on `uint32_t` — `(r0 >> 0x8)`, a logical
+    /// shift in C, and `(r0 < r1)`, an unsigned compare.
+    #[test]
+    fn an_a32_signed_shift_and_compare_render_signed() {
+        // e1a00440 asr r0, r0, #8; e12fff1e bx lr
+        let f = decomp_a32_as(words(&[0xe1a00440, 0xe12fff1e]), DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.contains("return ((int32_t)r0 >> 0x8);")), "{:#?}", f.pseudo);
+        // e3a02009 mov r2, #9; e1500001 cmp r0, r1; b3a02007 movlt r2, #7;
+        // e1a00002 mov r0, r2; e12fff1e bx lr
+        let f = decomp_a32_as(words(&[0xe3a02009, 0xe1500001, 0xb3a02007, 0xe1a00002, 0xe12fff1e]), DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.contains("((int32_t)r0 < (int32_t)r1)")), "{:#?}", f.pseudo);
+    }
+
+    fn words(ws: &[u32]) -> Vec<u8> {
+        ws.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// The `if` line of a structured A32 function.
+    fn condition_line(f: &PseudoFunction) -> &str {
+        f.pseudo.iter().find(|l| l.trim_start().starts_with("if ")).unwrap_or_else(|| panic!("no `if` in {:#?}", f.pseudo))
+    }
+
+    // The sequences below are ones the 0.4 decoder's phantom operands lifted
+    // wrong; every word was checked with `llvm-mc --disassemble
+    // -triple=armv6-none-eabi`. Each ends `mov r0, #1; bx lr; mov r0, #2; bx lr`
+    // (e3a00001 e12fff1e e3a00002 e12fff1e) behind a `beq` (0a000001).
+
+    /// `cmp r4, #0; beq` decompiled to `if ((r0 == 0x0))`: the 0.4 decoder put
+    /// the compare's should-be-zero `Rd` field where its first operand belongs.
+    #[test]
+    fn an_a32_compare_branches_on_the_register_it_compares() {
+        let f = decomp_a32(words(&[0xe3540000, 0x0a000001, 0xe3a00001, 0xe12fff1e, 0xe3a00002, 0xe12fff1e]));
+        assert!(condition_line(&f).contains("(r4.0 == 0x0)"), "cmp r4, #0 → r4 == 0: {:#?}", f.pseudo);
+    }
+
+    /// `tst r1, #255; beq` branches on `(r1 & 0xff) == 0`; it used to stay
+    /// `asm` with the branch reading `/*cond(beq)*/`.
+    #[test]
+    fn an_a32_tst_branches_on_the_masked_register() {
+        let f = decomp_a32(words(&[0xe31100ff, 0x0a000001, 0xe3a00001, 0xe12fff1e, 0xe3a00002, 0xe12fff1e]));
+        assert!(condition_line(&f).contains("((r1 & 0xff) == 0x0)"), "tst r1, #255 → (r1 & 0xff) == 0: {:#?}", f.pseudo);
+    }
+
+    /// `cmp r2, #1; teq r1, #1; beq` — the `teq` stays `asm`, and the branch
+    /// must not read the `cmp` it overwrote: a missing condition, not a wrong
+    /// one.
+    #[test]
+    fn an_a32_flag_setter_kept_as_asm_hides_the_earlier_compare() {
+        let f = decomp_a32(words(&[0xe3520001, 0xe3310001, 0x0a000001, 0xe3a00001, 0xe12fff1e, 0xe3a00002, 0xe12fff1e]));
+        let cond = condition_line(&f);
+        assert!(!cond.contains("=="), "the branch must not test the stale `cmp r2, #1`: {cond}");
+        assert!(cond.contains("cond(beq)"), "it states that its condition is unknown: {cond}");
+    }
+
+    /// `mvn r0, #0` returns 0xffffffff; it decompiled to `return ~r0;`.
+    #[test]
+    fn an_a32_move_not_of_an_immediate_returns_the_inverted_immediate() {
+        let f = decomp_a32(words(&[0xe3e00000, 0xe12fff1e]));
+        assert!(f.pseudo.iter().any(|l| l.contains("= 0xffffffff;")), "mvn r0, #0 → 0xffffffff: {:#?}", f.pseudo);
+    }
+
+    /// `ldr r3, [r0, #0x24]; asr r3, r3, #8; str r3, [r1, #0xc]` stored the
+    /// pointer `r0` itself, because the shifted move read the `Rn` field: the
+    /// shift has to be there, applied to the loaded field.
+    #[test]
+    fn an_a32_shifted_move_keeps_the_value_it_shifts() {
+        let f = decomp_a32(words(&[0xe5903024, 0xe1a03443, 0xe581300c, 0xe12fff1e]));
+        assert!(f.pseudo.iter().any(|l| l.contains("((int32_t)r3.1 >> 0x8)")), "asr r3, r3, #8 shifts the loaded value, signed: {:#?}", f.pseudo);
+    }
+
     #[test]
     fn recover_data_refs_names_an_exact_symbol_address_only() {
         use n0xis_contracts::{SymKind, Symbol};

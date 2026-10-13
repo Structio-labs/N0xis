@@ -92,6 +92,66 @@ pub enum BinOp {
     Sge,
 }
 
+/// The three IR shifts — split out of [`BinOp`] so the one definition of what
+/// a shift computes ([`Shift::apply`]) can be a total function of its kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shift {
+    Shl,
+    Shr,
+    Sar,
+}
+
+impl BinOp {
+    /// This operation as a shift, if it is one.
+    pub fn as_shift(self) -> Option<Shift> {
+        match self {
+            BinOp::Shl => Some(Shift::Shl),
+            BinOp::Shr => Some(Shift::Shr),
+            BinOp::Sar => Some(Shift::Sar),
+            _ => None,
+        }
+    }
+}
+
+impl Shift {
+    /// **What an IR shift means**, for every evaluator: the emulator, the
+    /// optimizer's constant fold and the value-set analysis all call this.
+    ///
+    /// `value` is an operand of `width` bits (1..=128; only its low `width`
+    /// bits are read, and `Sar` reads them as signed). A count **at or past the
+    /// width** yields 0 for `Shl`/`Shr` and the sign fill for `Sar`; the result
+    /// is the low `width` bits.
+    ///
+    /// The count is never masked here. An ISA that masks it (x86's legacy and
+    /// BMI2 shifts, AArch64's variable shifts) says so in its lift with an
+    /// explicit `&`; one that does not (A32's register-shifted operands read
+    /// the count's low byte, and 32..=255 really do empty the register) gets
+    /// that meaning from this rule. It used to be three rules: the emulator
+    /// saturated at 64, the fold and the value-set analysis wrapped the count
+    /// modulo 128 — so a count of 128 shifted by nothing in two of them and
+    /// emptied the value in the third.
+    pub fn apply(self, value: u128, count: u128, width: Bits) -> u128 {
+        let width = width.clamp(1, 128);
+        let mask = if width == 128 { u128::MAX } else { (1u128 << width) - 1 };
+        let v = value & mask;
+        let negative = (v >> (width - 1)) & 1 == 1;
+        let out = if count >= u128::from(width) {
+            match self {
+                Shift::Sar if negative => u128::MAX,
+                _ => 0,
+            }
+        } else {
+            let c = count as u32;
+            match self {
+                Shift::Shl => v << c,
+                Shift::Shr => v >> c,
+                Shift::Sar => (((if negative { v | !mask } else { v }) as i128) >> c) as u128,
+            }
+        };
+        out & mask
+    }
+}
+
 /// Which compare-family instruction defined a `"flags"` value. Distinguishes
 /// `cmp` (result discarded, flags from `lhs - rhs`) from `test` (flags from
 /// `lhs & rhs`) since they render different conditions for the same mnemonic

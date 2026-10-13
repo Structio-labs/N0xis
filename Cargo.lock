@@ -1362,9 +1362,9 @@ dependencies = [
 
 [[package]]
 name = "yaxpeax-arm"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8aa9155f0d727d10e91e5a94f68f415ec24c7a5faab4eac2386a1069e4a02d7"
+checksum = "79f8d9808ad0b7e434882c66e50704138e7c0bdf3408a9f3159c50603dc3168c"
 dependencies = [
  "bitvec",
  "serde",

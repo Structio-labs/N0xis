@@ -33,7 +33,7 @@ pub use frame::FrameInfo;
 pub use insn::{DecodeError, DecodedInsn, InsnKind};
 pub use microir::{
     BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MicroExpr,
-    MicroStmt, UnOp,
+    MicroStmt, Shift, UnOp,
 };
 pub use switch::{SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};

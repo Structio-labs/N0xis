@@ -180,9 +180,13 @@ fn apply_binop(op: BinOp, l: i128, r: i128) -> Option<i128> {
         BinOp::And => l & r,
         BinOp::Or => l | r,
         BinOp::Xor => l ^ r,
-        BinOp::Shl => l.wrapping_shl(r as u32),
-        BinOp::Shr => ((l as u128).wrapping_shr(r as u32)) as i128,
-        BinOp::Sar => l.wrapping_shr(r as u32),
+        // Values here are unbounded `i128`s, so a shift runs at 128 bits; a
+        // narrower one is narrowed by the cast the lift puts around it. A
+        // negative count reads as huge, past the width — exactly what it is
+        // as an unsigned count.
+        BinOp::Shl | BinOp::Shr | BinOp::Sar => {
+            op.as_shift().map_or(0, |s| s.apply(l as u128, r as u128, 128) as i128)
+        }
         BinOp::Eq => (l == r) as i128,
         BinOp::Ne => (l != r) as i128,
         BinOp::Ult => ((l as u128) < (r as u128)) as i128,

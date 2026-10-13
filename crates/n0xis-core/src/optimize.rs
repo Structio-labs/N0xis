@@ -246,9 +246,16 @@ fn fold_binary(op: BinOp, lhs: i128, rhs: i128, bits: n0xis_arch::Bits) -> Optio
         BinOp::And => l & r,
         BinOp::Or => l | r,
         BinOp::Xor => l ^ r,
-        BinOp::Shl => l.wrapping_shl(r as u32),
-        BinOp::Shr => l.wrapping_shr(r as u32),
-        BinOp::Sar => sl.wrapping_shr(r as u32),
+        // A shift is `Shift::apply`, the definition the emulator and the
+        // value-set analysis share — computed exactly, at 128 bits, so the
+        // check below can refuse a result `bits` cannot hold (the literal's
+        // width is not the operation's: see above). The count is the right
+        // operand as it stands, not masked to the *left* operand's width,
+        // which turned `x >> 256` at 8 bits into `x >> 0`.
+        BinOp::Shl | BinOp::Shr | BinOp::Sar => {
+            let value = if op == BinOp::Sar { sl } else { l };
+            op.as_shift().map_or(0, |s| s.apply(value as u128, rhs as u128, 128) as i128)
+        }
         // Comparisons never reach here — `fold_once` routes them to
         // `fold_compare` (different result width: 1 bit, not `bits`).
         _ => return None,
@@ -1763,5 +1770,123 @@ mod tests {
             _ => false,
         });
         assert!(call_present, "call feeding a live ret must not be removed: {:#?}", art.blocks);
+    }
+}
+
+/// **One meaning of a shift, three evaluators.** The emulator, this pass's
+/// constant fold and the value-set analysis each computed shifts their own way
+/// — saturating at 64, wrapping the count modulo 128, wrapping again — so a
+/// count of 128 shifted by nothing in two of them and emptied the value in the
+/// third. They now share `Shift::apply`; this holds them to it, through each
+/// evaluator's own entry point, on the expression a lift writes for a `w`-bit
+/// shift: `(uint_w)(op((int_w or uint_w)v, count))`.
+#[cfg(test)]
+mod shift_agreement {
+    use super::*;
+    use crate::ssa::{SsaBlock, SsaStmt};
+    use n0xis_arch::{Bits, MicroExpr, MicroStmt};
+    use n0xis_contracts::Va;
+    use std::collections::HashMap;
+
+    const COUNTS: [u128; 11] = [0, 1, 31, 32, 33, 63, 64, 127, 128, 255, 256];
+    const WIDTHS: [Bits; 4] = [8, 16, 32, 64];
+    const OPS: [BinOp; 3] = [BinOp::Shl, BinOp::Shr, BinOp::Sar];
+
+    /// The rule, stated independently of `Shift::apply`: a count at or past the
+    /// width empties the value (`Shl`/`Shr`) or fills it with the sign (`Sar`).
+    fn expected(op: BinOp, v: u128, count: u128, w: Bits) -> u128 {
+        let mask = (1u128 << w) - 1;
+        let v = v & mask;
+        let negative = v >> (w - 1) == 1;
+        if count >= u128::from(w) {
+            return if op == BinOp::Sar && negative { mask } else { 0 };
+        }
+        let c = count as u32;
+        let r = match op {
+            BinOp::Shl => v << c,
+            BinOp::Shr => v >> c,
+            _ => (((if negative { v | !mask } else { v }) as i128) >> c) as u128,
+        };
+        r & mask
+    }
+
+    fn expr(op: BinOp, v: u128, count: u128, w: Bits) -> MicroExpr {
+        let operand = MicroExpr::Cast { signed: op == BinOp::Sar, bits: w, expr: Box::new(MicroExpr::constant(v as i128, w)) };
+        let shift = MicroExpr::binary(op, operand, MicroExpr::constant(count as i128, 64));
+        MicroExpr::Cast { signed: false, bits: w, expr: Box::new(shift) }
+    }
+
+    fn by_emulator(e: &MicroExpr) -> u128 {
+        let block = SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1001),
+            terminator: "ret".to_string(),
+            successors: Vec::new(),
+            phis: Vec::new(),
+            stmts: vec![SsaStmt { va: Va(0x1000), stmt: MicroStmt::Return(Some(e.clone())) }],
+            condition: None,
+        };
+        let blocks = [block];
+        let ret = crate::Emulator::new(&blocks, None).run().expect("the emulator runs a constant expression").ret;
+        u128::from(ret.expect("it returns a value"))
+    }
+
+    /// The fold as the pass applies it — innermost first, until nothing
+    /// changes. `None` when it declines to fold, which it does on purpose for
+    /// a result the literal's width cannot hold (see `fold_binary`).
+    fn by_fold(e: &MicroExpr) -> Option<u128> {
+        fn fold(e: &MicroExpr) -> MicroExpr {
+            let inner = match e {
+                MicroExpr::Binary(op, l, r) => MicroExpr::binary(*op, fold(l), fold(r)),
+                MicroExpr::Cast { signed, bits, expr } => MicroExpr::Cast { signed: *signed, bits: *bits, expr: Box::new(fold(expr)) },
+                other => other.clone(),
+            };
+            fold_once(&inner).unwrap_or(inner)
+        }
+        match fold(e) {
+            MicroExpr::Const { value, bits } => Some((value as u128) & ((1u128 << bits) - 1)),
+            _ => None,
+        }
+    }
+
+    fn by_value_set(e: &MicroExpr, w: Bits) -> u128 {
+        let set = crate::valueset::eval(e, &HashMap::new());
+        (set.as_single().expect("a constant expression has one value") as u128) & ((1u128 << w) - 1)
+    }
+
+    #[test]
+    fn the_emulator_the_fold_and_the_value_set_analysis_shift_alike() {
+        let (mut checked, mut folded) = (0usize, 0usize);
+        for w in WIDTHS {
+            // A negative value, a positive one, and one with only the top bit.
+            let top = 1u128 << (w - 1);
+            for v in [(1u128 << w) - 3, 0x5a & ((1u128 << w) - 1), top] {
+                for op in OPS {
+                    for count in COUNTS {
+                        let want = expected(op, v, count, w);
+                        let e = expr(op, v, count, w);
+                        let at = format!("{op:?} {v:#x} by {count} at {w} bits");
+                        assert_eq!(by_emulator(&e), want, "emulator: {at}");
+                        assert_eq!(by_value_set(&e, w), want, "value set: {at}");
+                        if let Some(got) = by_fold(&e) {
+                            assert_eq!(got, want, "fold: {at}");
+                            folded += 1;
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 4 * 3 * 3 * 11);
+        // The fold declines only a left shift whose exact value outgrows the
+        // literal; everything else it must answer, or the agreement above is
+        // vacuous for it.
+        assert!(folded * 10 >= checked * 7, "the fold answered {folded} of {checked}");
+        // Spot values a reader can check by hand.
+        assert_eq!(expected(BinOp::Sar, 0x80, 7, 8), 0xff);
+        assert_eq!(by_emulator(&expr(BinOp::Sar, 0x8000_0000, 32, 32)), 0xffff_ffff);
+        assert_eq!(by_value_set(&expr(BinOp::Shr, 0xffff_ffff, 128, 32), 32), 0);
+        assert_eq!(by_fold(&expr(BinOp::Shr, 0xff, 256, 8)), Some(0));
     }
 }

@@ -24,6 +24,34 @@ All notable changes to N0xis are recorded here. Versions follow
   copies, and the first run caught the reader panicking on 9 (unchecked arithmetic on sizes
   read from the file; it now builds with overflow checks and every call into it is guarded).
 
+### Fixed
+
+- **32-bit ARM (A32) lifted the wrong registers.** Compared word by word with LLVM's
+  disassembler: the decoder put a phantom operand, an encoding field the processor ignores,
+  into shifted moves, compares and `mvn` with an immediate, and the lift read it.
+  `cmp r4, #0; beq` decompiled as `if (r0 == 0)`, `lsl r0, r1, #2` lost its result and
+  `mvn r0, #0` read `~r0`. The decoder moves to `yaxpeax-arm` 0.5 and the lift accepts only
+  the operand shapes it expects, leaving anything else as `asm`. Moves shifted by a register
+  decode, `lsr #32` and `asr #32` lift to their value, `tst` lifts, an unmodelled flag-setter
+  no longer lets a branch read an older compare, `asr` and the signed conditions read their
+  operands as signed, an invalid opcode is no longer printed as an instruction
+  (`invalidmi`), and A32 register parameters are 32-bit.
+- **A decoder panic could end a command without its JSON.** The 0.5 decoder panics on
+  1 474 560 of the 2^32 A32 words (`ldrd`/`strd` with Rt = 15, invalid per LLVM). The class
+  is refused before decoding and no panic crosses the decoder boundary; an ignored test runs
+  all 2^32 words.
+- **Shifts meant three things.** The emulator, the optimizer's constant folding and the
+  value-set analysis each treated a count at or past the operand width differently; the fold
+  turned `x >> 256` at 8 bits into `x >> 0`. One definition now serves all three: such a count
+  yields 0, or the sign fill for an arithmetic shift, and a test holds the three together.
+- **x64 `shlx`/`shrx`/`sarx` did not mask the count** the way the processor does, and `sarx`
+  read a 32-bit operand as unsigned.
+- **Thumb 16-bit conditional branches pointed 2 bytes past their target** (`beq` at 0x100 to
+  0x106 read as 0x108).
+- **`guide` and `--help` misstated the 32-bit ARM support** ("decode-only"; `--arch` listed
+  only `x64` and `arm64`). They now say what is lifted and what stays `asm`, and a test holds
+  the help to what the parser accepts.
+
 ## [0.3.4] — 2026-10-07
 
 ### Added

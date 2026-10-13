@@ -1605,11 +1605,6 @@ fn extend(v: u128, bits: u32, signed: bool) -> u128 {
 
 fn binop(op: BinOp, a: u64, b: u64, va: Va) -> Result<u64, EmuError> {
     let (sa, sb) = (a as i64, b as i64);
-    // x86 masks the shift count; the IR carries the count unmasked, so a shift
-    // of 64 or more would panic in debug and silently differ in release.
-    // Saturating past the width to a defined all-bits result is what every
-    // language-level shift means, and it never invents a number.
-    let sh = |n: u64| -> u32 { n.min(63) as u32 };
     Ok(match op {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
@@ -1633,13 +1628,10 @@ fn binop(op: BinOp, a: u64, b: u64, va: Va) -> Result<u64, EmuError> {
         BinOp::And => a & b,
         BinOp::Or => a | b,
         BinOp::Xor => a ^ b,
-        BinOp::Shl => {
-            if b >= 64 { 0 } else { a << sh(b) }
-        }
-        BinOp::Shr => {
-            if b >= 64 { 0 } else { a >> sh(b) }
-        }
-        BinOp::Sar => (sa >> sh(b.min(63))) as u64,
+        // A shift is `Shift::apply` at this evaluator's width, 64 — the one
+        // definition the optimizer's fold and the value-set analysis also use.
+        // A narrower shift is narrowed by the cast the lift puts around it.
+        BinOp::Shl | BinOp::Shr | BinOp::Sar => op.as_shift().map_or(0, |s| s.apply(u128::from(a), u128::from(b), 64) as u64),
         BinOp::Eq => u64::from(a == b),
         BinOp::Ne => u64::from(a != b),
         BinOp::Ult => u64::from(a < b),
