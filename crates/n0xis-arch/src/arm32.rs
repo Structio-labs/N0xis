@@ -18,6 +18,12 @@
 //! as `asm` and **soundly invalidate their writes** so no later read reuses a
 //! stale value.
 //!
+//! Two A32 encoding spaces are decoded here rather than by the crate, which
+//! fails on them — the media class and the halfword multiplies; see [`own`].
+//! Of those, the byte/halfword extends, the bitfield instructions, `pkhbt`/
+//! `pkhtb`, `smul<x><y>` and `rev`/`rev16`/`revsh` are lifted exactly; the
+//! SIMD-within-a-register, saturating and accumulating forms stay `asm`.
+//!
 //! **Thumb `IT` blocks are handled soundly.** yaxpeax does not track `IT`
 //! (if-then) blocks, so a post-`IT` conditional Thumb instruction decoded
 //! standalone reads unconditional — lifting it would silently drop its
@@ -31,6 +37,8 @@ use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, RegShiftStyle, ShiftStyle};
 
 use n0xis_contracts::{Reg, Va};
+
+mod own;
 
 use crate::insn::{DecodeError, DecodedInsn, InsnKind};
 use crate::microir::{BinOp, CallTarget, CmpKind, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
@@ -147,12 +155,18 @@ impl Arm32 {
     ///   read `mvn r3, r0, 0x0` for `mvn r3, #0`. The operand is dropped here, so
     ///   the text and the lift both see `[Rd, #imm]`, the shape every other move
     ///   has.
-    fn decode_inst(&self, bytes: &[u8]) -> Option<Instruction> {
-        if !self.thumb
-            && let Some(word) = bytes.first_chunk::<4>().map(|b| u32::from_le_bytes(*b))
-            && a32_rt_pair_overflows(word)
-        {
-            return None;
+    ///
+    /// And the spaces it cannot decode at all are not given to it: a word in
+    /// the A32 media class or the halfword multiplies is decoded by [`own`],
+    /// whatever that answers, so each space has one decoder.
+    fn decode_inst(&self, bytes: &[u8]) -> Option<Inst> {
+        if !self.thumb && let Some(word) = bytes.first_chunk::<4>().map(|b| u32::from_le_bytes(*b)) {
+            if own::owns(word) {
+                return own::decode(word).map(Inst::Own);
+            }
+            if a32_rt_pair_overflows(word) {
+                return None;
+            }
         }
         let decoder = self.decoder();
         let mut reader = U8Reader::new(bytes);
@@ -166,8 +180,19 @@ impl Arm32 {
         {
             inst.operands = [rd, imm, Operand::Nothing, Operand::Nothing];
         }
-        Some(inst)
+        Some(Inst::Crate(inst))
     }
+}
+
+/// What [`Arm32::decode_inst`] hands the rest of this file: an instruction the
+/// crate decoded, or one from a space this file decodes itself. Every consumer
+/// matches both, so a fact about an instruction (its text, its writes, its
+/// flags, its lift) cannot be answered for one decoder and forgotten for the
+/// other.
+#[derive(Clone, Copy, Debug)]
+enum Inst {
+    Crate(Instruction),
+    Own(own::Own),
 }
 
 /// An A32 **hint** — `cond 0011 0010 0000 1111 0000 op2`, the one encoding
@@ -291,7 +316,12 @@ fn reg_name(r: yaxpeax_arm::armv7::Reg) -> String {
 /// The instruction's condition code (`Some("eq")`), or `None` when
 /// unconditional (`AL`).
 fn cond_of(inst: &Instruction) -> Option<String> {
-    let c = format!("{:?}", inst.condition).to_lowercase();
+    cond_name(inst.condition)
+}
+
+/// A condition's name (`Some("eq")`), or `None` for `AL` — for either decoder.
+fn cond_name(c: ConditionCode) -> Option<String> {
+    let c = format!("{c:?}").to_lowercase();
     (c != "al").then_some(c)
 }
 
@@ -540,8 +570,13 @@ fn writes_of(inst: &Instruction) -> Vec<String> {
     if !non_dest0 && let Operand::Reg(r) = inst.operands[0] {
         w.push(reg_name(r));
     }
-    // Multiply-long and `ldrd` write a *second* register (`operand[1]`).
-    if matches!(inst.opcode, UMULL | SMULL | UMLAL | SMLAL | LDRD) && let Operand::Reg(r) = inst.operands[1] {
+    // Multiply-long and `ldrd` write a *second* register (`operand[1]`) — and
+    // so do `umaal` and, in Thumb, the halfword and dual multiply-longs
+    // (`smlal<x><y>`, `smlald`, `smlsld`), all `RdLo, RdHi, …`. Those four were
+    // missing, so their `RdHi` kept its old value through the `asm` fallback.
+    if matches!(inst.opcode, UMULL | SMULL | UMLAL | SMLAL | LDRD | UMAAL | SMLAL_halfword(..) | SMLALD(_) | SMLSLD(_))
+        && let Operand::Reg(r) = inst.operands[1]
+    {
         w.push(reg_name(r));
     }
     for op in &inst.operands {
@@ -558,6 +593,30 @@ fn writes_of(inst: &Instruction) -> Vec<String> {
         w.push("lr".to_string());
     }
     w
+}
+
+/// Does an instruction of this family write the `Q` (saturation) flag or the
+/// `GE` flags? Both live in the APSR beside `N`/`Z`/`C`/`V`, and the lift keeps
+/// the whole APSR as the one `flags` value — so a write to them must end the
+/// value an earlier instruction left, like any other flags write. No branch
+/// condition reads them, so the cost of counting them is a branch after one of
+/// these losing its condition; the cost of missing them would be `sel` (which
+/// reads `GE`) or `mrs` reading a stale value once either is modelled.
+///
+/// One table for both decoders: [`own::Own::opcode`] maps an instruction this
+/// file decodes onto the same families. `GE`: the plain signed and unsigned
+/// parallel add/sub (not the saturating `q`/`uq` or halving `sh`/`uh` forms).
+/// `Q`: the saturating arithmetic and saturate instructions, `smla<x><y>`,
+/// `smlaw<y>`, and the dual multiplies that can overflow (`smlad`, `smlsd`,
+/// `smuad` — `smusd` cannot).
+fn writes_q_or_ge(op: Opcode) -> bool {
+    use Opcode::*;
+    matches!(
+        op,
+        SADD16 | SASX | SSAX | SSUB16 | SADD8 | SSUB8 | UADD16 | UASX | USAX | USUB16 | UADD8 | USUB8
+            | QADD | QSUB | QDADD | QDSUB | SSAT | USAT | SSAT16 | USAT16
+            | SMLA(..) | SMLAW(_) | SMLAD | SMLSD | SMUAD
+    )
 }
 
 /// Map an AArch32 conditional-branch mnemonic (`beq`, `bne.w`, `blt`, …) to its
@@ -611,9 +670,9 @@ fn arm_branch_condition(mnemonic: &str, flags: &MicroExpr) -> MicroExpr {
 }
 
 impl Arm32 {
-    /// Re-decode a neutral `DecodedInsn` back to the yaxpeax instruction for
+    /// Re-decode a neutral `DecodedInsn` back to the decoded instruction for
     /// operand-level lift detail — mirrors `x64_lift::decode_raw`.
-    fn redecode(&self, insn: &DecodedInsn) -> Option<Instruction> {
+    fn redecode(&self, insn: &DecodedInsn) -> Option<Inst> {
         self.decode_inst(&insn.bytes)
     }
 
@@ -623,14 +682,24 @@ impl Arm32 {
     /// branch reuses a stale compare. Without that a `tst` kept as `asm`
     /// between a `cmp` and a `beq` let the branch read the `cmp`.
     fn unlifted(&self, inst: &Instruction, insn: &DecodedInsn) -> Vec<MicroStmt> {
-        let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
-        for w in writes_of(inst) {
-            out.push(assign(w, MicroExpr::Unknown(insn.text.clone())));
+        asm_fallback(insn, writes_of(inst), self.sets_flags(inst, insn))
+    }
+
+    /// The lift of an instruction this file decodes itself: exact where
+    /// [`own::Own::lift`] models it, predicated like any other write, and the
+    /// same `asm` fallback otherwise. None of the modelled forms writes a
+    /// flag; the guard keeps a form that does (a saturating one, say) on the
+    /// fallback, where its flags write is not lost, until that write is
+    /// modelled too.
+    fn lift_own(&self, o: &own::Own, insn: &DecodedInsn) -> Vec<MicroStmt> {
+        match o.lift() {
+            Some((dst, value)) if !writes_q_or_ge(o.opcode()) => {
+                let mut out = Vec::new();
+                pred_assign(dst, value, insn.cond.as_deref().unwrap_or("al"), &mut out);
+                out
+            }
+            _ => asm_fallback(insn, o.writes(), writes_q_or_ge(o.opcode())),
         }
-        if self.sets_flags(inst, insn) {
-            out.push(opaque_flags(insn));
-        }
-        out
     }
 
     /// Does this instruction write the condition flags? A *sound
@@ -647,12 +716,25 @@ impl Arm32 {
     /// reads `AL`) is the inside one.
     fn sets_flags(&self, inst: &Instruction, insn: &DecodedInsn) -> bool {
         use Opcode::*;
-        if matches!(inst.opcode, CMP | CMN | TST | TEQ | MSR) {
+        if matches!(inst.opcode, CMP | CMN | TST | TEQ | MSR) || writes_q_or_ge(inst.opcode) {
             return true;
         }
         let in_it_block = self.thumb && insn.cond.is_some() && cond_of(inst).is_none();
         inst.s() && !(in_it_block && insn.len == 2)
     }
+}
+
+/// `asm`, then every register in `writes` invalidated, then the flags when the
+/// instruction sets them — the one shape of the fallback, for both decoders.
+fn asm_fallback(insn: &DecodedInsn, writes: Vec<String>, sets_flags: bool) -> Vec<MicroStmt> {
+    let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+    for w in writes {
+        out.push(assign(w, MicroExpr::Unknown(insn.text.clone())));
+    }
+    if sets_flags {
+        out.push(opaque_flags(insn));
+    }
+    out
 }
 
 impl Arch for Arm32 {
@@ -677,10 +759,12 @@ impl Arch for Arm32 {
     }
 
     fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
-        let Some(inst) = self.redecode(insn) else {
-            return RegAccess::default();
+        let writes = match self.redecode(insn) {
+            Some(Inst::Crate(inst)) => writes_of(&inst),
+            Some(Inst::Own(o)) => o.writes(),
+            None => return RegAccess::default(),
         };
-        RegAccess { reads: Vec::new(), writes: writes_of(&inst) }
+        RegAccess { reads: Vec::new(), writes }
     }
 
     fn branch_condition(&self, mnemonic: &str, flags_value: &MicroExpr) -> MicroExpr {
@@ -689,8 +773,10 @@ impl Arch for Arm32 {
 
     fn lift(&self, insn: &DecodedInsn, _abi: &str) -> Vec<MicroStmt> {
         use Opcode::*;
-        let Some(inst) = self.redecode(insn) else {
-            return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+        let inst = match self.redecode(insn) {
+            Some(Inst::Crate(inst)) => inst,
+            Some(Inst::Own(o)) => return self.lift_own(&o, insn),
+            None => return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }],
         };
         // The condition comes from the *decoded instruction* (`insn.cond`), not a
         // fresh re-decode: for A32 that is the encoding's condition, and for a
@@ -849,7 +935,16 @@ impl Arch for Arm32 {
     }
 
     fn decode(&self, bytes: &[u8], va: Va) -> Result<DecodedInsn, DecodeError> {
-        let inst = self.decode_inst(bytes).ok_or(DecodeError::Invalid(va))?;
+        let inst = match self.decode_inst(bytes).ok_or(DecodeError::Invalid(va))? {
+            Inst::Crate(inst) => inst,
+            Inst::Own(o) => {
+                // Owned words are A32, four bytes, and `decode_inst` read all
+                // four to get here; none is a direct branch.
+                let text = o.text();
+                let mnemonic = text.split_whitespace().next().unwrap_or("").to_string();
+                return Ok(DecodedInsn { va, len: 4, bytes: bytes[..4].to_vec(), mnemonic, text, kind: o.kind(), target: None, rip_target: None, cond: cond_name(o.cond), stack_adjust: None });
+            }
+        };
         let len = inst.len().to_const() as usize;
         if len == 0 || bytes.len() < len {
             return Err(DecodeError::Truncated(va));
@@ -1509,6 +1604,297 @@ mod tests {
             lift1(&[0x02, 0x01, 0x81, 0xe0]),
             assign_to("r0", MicroExpr::binary(BinOp::Add, MicroExpr::var("r1"), MicroExpr::binary(BinOp::Shl, MicroExpr::var("r2"), c32(2)))),
         );
+    }
+
+    // ---- the encodings this file decodes itself (`own`) ------------------------
+    //
+    // Every encoding below was checked against `llvm-mc --disassemble
+    // -triple=armv7ve-none-eabi`, whose text is quoted per case; the meanings
+    // are the ARM ARM's, and the lifted forms were run against an emulated
+    // processor (`n0xis-core/tests/a32_media_agrees_with_the_processor.rs`).
+    // Under `yaxpeax-arm` 0.5.0 alone every media word here was `(bad)`. The
+    // helpers return the absence rather than unwrapping, so a word that does not
+    // decode fails on the assertion that names it.
+
+    /// The lift of one A32 word, or `None` when it does not decode.
+    fn word_lift(word: u32) -> Option<Vec<MicroStmt>> {
+        let a = Arm32::a32();
+        a.decode(&word.to_le_bytes(), Va(0x1000)).ok().map(|di| a.lift(&di, "aapcs32"))
+    }
+
+    /// The text of one A32 word, or `None` when it does not decode.
+    fn word_text(word: u32) -> Option<String> {
+        Arm32::a32().decode(&word.to_le_bytes(), Va(0x1000)).ok().map(|d| d.text)
+    }
+
+    fn v(name: &str) -> MicroExpr {
+        MicroExpr::var(name)
+    }
+
+    fn cast(signed: bool, bits: u32, e: MicroExpr) -> MicroExpr {
+        MicroExpr::Cast { signed, bits, expr: Box::new(e) }
+    }
+
+    fn bin(op: BinOp, a: MicroExpr, b: MicroExpr) -> MicroExpr {
+        MicroExpr::binary(op, a, b)
+    }
+
+    fn lifted_to(dst: &str, value: MicroExpr) -> Option<Vec<MicroStmt>> {
+        Some(assign_to(dst, value))
+    }
+
+    /// The extends are a cast of the rotated register: a plain cast at
+    /// rotation 0, a right shift where the field lies inside the register, and
+    /// the two halves OR-ed where a halfword wraps. A sign extension is cast
+    /// back to 32 bits, because an A32 register holds nothing above bit 31.
+    #[test]
+    fn the_extends_lift_to_a_cast_of_the_rotated_register() {
+        // e6ef8073  llvm-mc: `uxtb r8, r3`
+        assert_eq!(word_lift(0xe6ef_8073), lifted_to("r8", cast(false, 8, v("r3"))));
+        // e6ef8473  llvm-mc: `uxtb r8, r3, ror #8`
+        assert_eq!(word_lift(0xe6ef_8473), lifted_to("r8", cast(false, 8, bin(BinOp::Shr, v("r3"), c32(8)))));
+        // e6ff1c72  llvm-mc: `uxth r1, r2, ror #24` — bits 24-31, then 0-7.
+        assert_eq!(
+            word_lift(0xe6ff_1c72),
+            lifted_to("r1", cast(false, 16, bin(BinOp::Or, bin(BinOp::Shr, v("r2"), c32(24)), bin(BinOp::Shl, v("r2"), c32(8))))),
+        );
+        // e6af0071  llvm-mc: `sxtb r0, r1`
+        assert_eq!(word_lift(0xe6af_0071), lifted_to("r0", cast(false, 32, cast(true, 8, v("r1")))));
+        // e6bf0871  llvm-mc: `sxth r0, r1, ror #16`
+        assert_eq!(word_lift(0xe6bf_0871), lifted_to("r0", cast(false, 32, cast(true, 16, bin(BinOp::Shr, v("r1"), c32(16))))));
+    }
+
+    /// `uxtab`/`sxtah`: `Rn` plus the extension, the sum held at 32 bits.
+    #[test]
+    fn the_extend_and_add_forms_lift_to_a_sum_held_at_32_bits() {
+        // e6e10072  llvm-mc: `uxtab r0, r1, r2`
+        assert_eq!(word_lift(0xe6e1_0072), lifted_to("r0", cast(false, 32, bin(BinOp::Add, v("r1"), cast(false, 8, v("r2"))))));
+        // e6b10472  llvm-mc: `sxtah r0, r1, r2, ror #8`
+        assert_eq!(
+            word_lift(0xe6b1_0472),
+            lifted_to("r0", cast(false, 32, bin(BinOp::Add, v("r1"), cast(true, 16, bin(BinOp::Shr, v("r2"), c32(8)))))),
+        );
+    }
+
+    /// `ubfx` is `(Rn >> lsb) & mask`; `sbfx` moves the field's top bit to bit
+    /// 31 and shifts it back down arithmetically.
+    #[test]
+    fn the_bitfield_extracts_lift_to_the_field() {
+        // e7e70251  llvm-mc: `ubfx r0, r1, #4, #8`
+        assert_eq!(word_lift(0xe7e7_0251), lifted_to("r0", bin(BinOp::And, bin(BinOp::Shr, v("r1"), c32(4)), c32(0xff))));
+        // e7a70251  llvm-mc: `sbfx r0, r1, #4, #8` — bits 4-11 to 24-31, then >>s 24.
+        assert_eq!(word_lift(0xe7a7_0251), lifted_to("r0", cast(false, 32, bin(BinOp::Sar, s32(bin(BinOp::Shl, v("r1"), c32(20))), c32(24)))));
+    }
+
+    /// `bfi` keeps `Rd` outside the field and takes the field from `Rn`;
+    /// `bfc` clears it.
+    #[test]
+    fn the_bitfield_inserts_lift_to_masks() {
+        // e7cb0411  llvm-mc: `bfi r0, r1, #8, #4`
+        assert_eq!(
+            word_lift(0xe7cb_0411),
+            lifted_to("r0", bin(BinOp::Or, bin(BinOp::And, v("r0"), c32(0xffff_f0ff)), bin(BinOp::And, bin(BinOp::Shl, v("r1"), c32(8)), c32(0xf00)))),
+        );
+        // e7cb041f  llvm-mc: `bfc r0, #8, #4`
+        assert_eq!(word_lift(0xe7cb_041f), lifted_to("r0", bin(BinOp::And, v("r0"), c32(0xffff_f0ff))));
+    }
+
+    /// `pkhbt`: `Rn`'s bottom half, the shifted `Rm`'s top. `pkhtb`: `Rn`'s top
+    /// half, the arithmetically shifted `Rm`'s bottom — and `asr #32` (encoded
+    /// as 0) is the sign fill, never a shift by the width.
+    #[test]
+    fn the_pack_halfword_forms_lift_to_masked_halves() {
+        // e6810812  llvm-mc: `pkhbt r0, r1, r2, lsl #16`
+        assert_eq!(
+            word_lift(0xe681_0812),
+            lifted_to("r0", bin(BinOp::Or, bin(BinOp::And, v("r1"), c32(0xffff)), bin(BinOp::And, bin(BinOp::Shl, v("r2"), c32(16)), c32(0xffff_0000)))),
+        );
+        // e6810852  llvm-mc: `pkhtb r0, r1, r2, asr #16`
+        assert_eq!(
+            word_lift(0xe681_0852),
+            lifted_to("r0", bin(BinOp::Or, bin(BinOp::And, v("r1"), c32(0xffff_0000)), bin(BinOp::And, bin(BinOp::Sar, s32(v("r2")), c32(16)), c32(0xffff)))),
+        );
+        // e6810052  llvm-mc: `pkhtb r0, r1, r2, asr #32`
+        assert_eq!(
+            word_lift(0xe681_0052),
+            lifted_to("r0", bin(BinOp::Or, bin(BinOp::And, v("r1"), c32(0xffff_0000)), bin(BinOp::And, bin(BinOp::Sar, s32(v("r2")), c32(31)), c32(0xffff)))),
+        );
+    }
+
+    /// `smul<x><y>`: the product of the two sign-extended halves, at 32 bits.
+    #[test]
+    fn the_halfword_multiplies_lift_to_a_product_of_signed_halves() {
+        let lo = |r: &str| cast(true, 16, v(r));
+        let hi = |r: &str| cast(true, 16, bin(BinOp::Shr, v(r), c32(16)));
+        // e1630582  llvm-mc: `smulbb r3, r2, r5`
+        assert_eq!(word_lift(0xe163_0582), lifted_to("r3", cast(false, 32, bin(BinOp::Mul, lo("r2"), lo("r5")))));
+        // e16305a2  llvm-mc: `smultb r3, r2, r5`
+        assert_eq!(word_lift(0xe163_05a2), lifted_to("r3", cast(false, 32, bin(BinOp::Mul, hi("r2"), lo("r5")))));
+        // e16305c2  llvm-mc: `smulbt r3, r2, r5`
+        assert_eq!(word_lift(0xe163_05c2), lifted_to("r3", cast(false, 32, bin(BinOp::Mul, lo("r2"), hi("r5")))));
+    }
+
+    /// `rev`/`rev16`/`revsh` are byte moves, which masks and shifts state
+    /// exactly; `revsh` sign-extends the swapped low halfword.
+    #[test]
+    fn the_byte_reversals_lift_to_shifts_and_masks() {
+        let masked = |mask: i128, op: BinOp, k: i128| bin(op, bin(BinOp::And, v("r1"), c32(mask)), c32(k));
+        // e6bf0f31  llvm-mc: `rev r0, r1`
+        assert_eq!(
+            word_lift(0xe6bf_0f31),
+            lifted_to(
+                "r0",
+                bin(
+                    BinOp::Or,
+                    bin(BinOp::Or, masked(0xff, BinOp::Shl, 24), masked(0xff00, BinOp::Shl, 8)),
+                    bin(BinOp::Or, masked(0x00ff_0000, BinOp::Shr, 8), masked(0xff00_0000, BinOp::Shr, 24)),
+                ),
+            ),
+        );
+        // e6bf1fb1  llvm-mc: `rev16 r1, r1`
+        assert_eq!(
+            word_lift(0xe6bf_1fb1),
+            lifted_to("r1", bin(BinOp::Or, masked(0x00ff_00ff, BinOp::Shl, 8), bin(BinOp::And, bin(BinOp::Shr, v("r1"), c32(8)), c32(0x00ff_00ff)))),
+        );
+        // e6ff0fb1  llvm-mc: `revsh r0, r1`
+        assert_eq!(
+            word_lift(0xe6ff_0fb1),
+            lifted_to(
+                "r0",
+                cast(false, 32, cast(true, 16, bin(BinOp::Or, masked(0xff, BinOp::Shl, 8), bin(BinOp::And, bin(BinOp::Shr, v("r1"), c32(8)), c32(0xff))))),
+            ),
+        );
+    }
+
+    /// The text is llvm-mc's, condition suffix included — and where llvm-mc
+    /// prints a field the encoding does not hold, the encoding's fields.
+    #[test]
+    fn the_owned_spaces_decode_to_the_reference_text() {
+        for (word, text) in [
+            (0x06ef_8073u32, "uxtbeq r8, r3"),
+            (0xe6ff_1c72, "uxth r1, r2, ror #24"),
+            (0xe681_0052, "pkhtb r0, r1, r2, asr #32"),
+            (0xe6a1_1013, "ssat r1, #2, r3"),
+            (0xe741_0213, "smlald r0, r1, r3, r2"),
+            // The crate read this `smlawteq r0, r0, r0, r0`.
+            (0x0120_00a0, "smulwbeq r0, r0, r0"),
+            // The crate refused this (RdLo = RdHi; UNPREDICTABLE, executed).
+            (0xe140_0281, "smlalbb r0, r0, r1, r2"),
+            (0xe7f0_00f0, "udf #0"),
+            // llvm-mc: `bfi r0, r0, #16, #1`, a field substituted for the
+            // encoding's lsb 17 > msb 16; GNU objdump spells it like this.
+            (0xe7d0_0890, "bfi r0, r0, (invalid: 17:16)"),
+            // llvm-mc: `trap`, its own alias for this word.
+            (0xe7ff_defe, "udf #65006"),
+        ] {
+            assert_eq!(word_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
+        let udf = Arm32::a32().decode(&0xe7f0_00f0u32.to_le_bytes(), Va(0x1000)).map(|d| d.kind);
+        assert!(matches!(udf, Ok(InsnKind::Int)), "a permanently undefined instruction traps: {udf:?}");
+    }
+
+    /// Words llvm-mc rejects (and the ARM ARM leaves UNDEFINED, or the reference
+    /// refuses outright) are decode errors, not invented instructions.
+    #[test]
+    fn words_the_reference_rejects_stay_decode_errors() {
+        let a = Arm32::a32();
+        for (word, why) in [
+            (0xe600_0010u32, "parallel add/sub with op1 = 00000"),
+            (0xe680_0030, "packing op1 = 000, op2 = 001"),
+            (0xe6b0_1031, "rev with its should-be-one Rn field clear"),
+            (0xe711_0113, "sdiv with bits 15-12 not 1111"),
+            (0xe6a0_0030, "ssat16 with bits 11-8 not 1111"),
+            (0x07f0_00f0, "udf under a condition"),
+            (0xf6ef_8073, "the media pattern in the unconditional space"),
+        ] {
+            assert!(a.decode(&word.to_le_bytes(), Va(0x1000)).is_err(), "{word:#010x} ({why}) is not an instruction");
+        }
+    }
+
+    /// A predicated extend writes only when its condition holds, like any other
+    /// predicated write — and carries its condition for the CFG.
+    #[test]
+    fn a_predicated_extend_is_a_conditional_write() {
+        let a = Arm32::a32();
+        // 06ef8073  llvm-mc: `uxtbeq r8, r3`
+        let di = a.decode(&0x06ef_8073u32.to_le_bytes(), Va(0x1000));
+        assert_eq!(di.as_ref().ok().and_then(|d| d.cond.as_deref()), Some("eq"), "{di:?}");
+        let stmts = di.map(|d| a.lift(&d, "aapcs32")).unwrap_or_default();
+        let select = match stmts.as_slice() {
+            [MicroStmt::Assign { dst, value: MicroExpr::Select { a: then, b: els, .. } }] if dst == "r8" => Some(((**then).clone(), (**els).clone())),
+            _ => None,
+        };
+        assert_eq!(select, Some((cast(false, 8, v("r3")), v("r8"))), "a conditional write of the extension, else the old r8: {stmts:?}");
+    }
+
+    /// A word llvm-mc decodes with a "potentially undefined" warning is shown,
+    /// so the sweep goes on — and never lifted, because UNPREDICTABLE has no
+    /// value to state. Its destination is invalidated like any `asm`.
+    #[test]
+    fn an_unpredictable_word_is_shown_but_not_lifted() {
+        for (word, dst) in [
+            (0xe6ef_f073u32, "pc"), // llvm-mc: `uxtb pc, r3`
+            (0xe6ef_8373, "r8"),    // llvm-mc: `uxtb r8, r3` with bits 9-8 = 11
+            (0xe7ff_0e51, "r0"),    // llvm-mc: `ubfx r0, r1, #28, #32` — past bit 31
+            (0xe7d0_0890, "r0"),    // `bfi` with msb below lsb
+        ] {
+            let stmts = word_lift(word).unwrap_or_default();
+            assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })), "{word:#010x} decodes and stays asm: {stmts:?}");
+            assert_eq!(invalidated(&stmts), vec![dst], "{word:#010x} invalidates its destination");
+        }
+    }
+
+    /// The `RdLo, RdHi` multiplies write two registers, and the `asm` fallback
+    /// must invalidate both — the crate-decoded `umaal` lost its `RdHi` before.
+    #[test]
+    fn the_two_destination_multiplies_invalidate_both_registers() {
+        let a = Arm32::a32();
+        for (word, writes) in [
+            (0xe741_0213u32, ["r0", "r1"]), // llvm-mc: `smlald r0, r1, r3, r2`
+            (0xe141_0382, ["r0", "r1"]),    // llvm-mc: `smlalbb r0, r1, r2, r3`
+            (0xe042_1393, ["r1", "r2"]),    // llvm-mc: `umaal r1, r2, r3, r3` (the crate's)
+        ] {
+            let stmts = word_lift(word).unwrap_or_default();
+            assert_eq!(invalidated(&stmts), writes, "{word:#010x}: {stmts:?}");
+            let access = a.decode(&word.to_le_bytes(), Va(0x1000)).map(|d| a.reg_access(&d).writes);
+            assert_eq!(access.ok(), Some(writes.map(String::from).to_vec()), "{word:#010x}: reg_access agrees with the lift");
+        }
+        // Thumb's are the crate's: c5fb9b32 `smlalbt r3, r2, r5, r11`,
+        // c3fbc201 `smlald r0, r1, r3, r2`, d3fbc201 `smlsld r0, r1, r3, r2`
+        // (llvm-mc, thumbv7) — `RdLo, RdHi` first in each.
+        let t = Arm32::thumb();
+        for (bytes, writes) in [([0xc5, 0xfb, 0x9b, 0x32], ["r3", "r2"]), ([0xc3, 0xfb, 0xc2, 0x01], ["r0", "r1"]), ([0xd3, 0xfb, 0xc2, 0x01], ["r0", "r1"])] {
+            let access = t.decode(&bytes, Va(0x1000)).map(|d| t.reg_access(&d).writes);
+            assert_eq!(access.ok(), Some(writes.map(String::from).to_vec()), "{bytes:02x?}");
+        }
+    }
+
+    /// `GE` and `Q` are APSR bits, and the APSR is the one `flags` value: an
+    /// instruction that writes them ends whatever compare came before. The
+    /// saturating parallel forms write neither, and neither does a lifted form.
+    #[test]
+    fn the_q_and_ge_writers_end_the_flags_value() {
+        for (word, what) in [
+            (0xe651_0f92u32, "uadd8 r0, r1, r2 (GE)"),
+            (0xe6a1_1013, "ssat r1, #2, r3 (Q)"),
+            (0xe102_0051, "qadd r0, r1, r2 (Q; the crate's)"),
+            (0xe100_1382, "smlabb r0, r2, r3, r1 (Q)"),
+        ] {
+            let stmts = word_lift(word).unwrap_or_default();
+            assert!(matches!(flags_of(&stmts), Some(MicroExpr::OpaqueFlags { .. })), "{what} writes the flags: {stmts:?}");
+        }
+        for (word, what) in [(0xe621_0f92u32, "qadd8 r0, r1, r2"), (0xe163_0582, "smulbb r3, r2, r5")] {
+            let stmts = word_lift(word).unwrap_or_default();
+            assert!(!stmts.is_empty() && flags_of(&stmts).is_none(), "{what} leaves the flags alone: {stmts:?}");
+        }
+    }
+
+    /// A linear walk goes through a media instruction instead of stopping at it.
+    #[test]
+    fn a_stream_walks_through_an_extend() {
+        // e6ef8073 `uxtb r8, r3`; e12fff1e `bx lr`.
+        let stream = Arm32::a32().decode_stream(&[0x73, 0x80, 0xef, 0xe6, 0x1e, 0xff, 0x2f, 0xe1], Va(0x1000), 4);
+        assert_eq!(stream.iter().map(|d| d.mnemonic.as_str()).collect::<Vec<_>>(), vec!["uxtb", "bx"]);
     }
 
     #[test]

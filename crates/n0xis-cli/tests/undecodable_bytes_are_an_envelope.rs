@@ -57,3 +57,17 @@ fn a_word_the_a32_decoder_panics_on_still_decompiles_to_an_envelope() {
     let Some(v) = envelope(&["decomp", "pseudo", "--arch", "arm32", "--bytes", "fc fa 00 00", "--addr", "0x1000"]) else { return };
     assert!(v["ok"].is_boolean(), "an envelope either way: {v}");
 }
+
+/// **And a word the crate cannot read, but the processor can, is not `(bad)`.**
+/// `yaxpeax-arm` 0.5.0 returns an error for the whole A32 media class, so each
+/// such word (`uxtb`, `uxth`, `sxth`, …) stopped `disasm`'s linear sweep. `arm32.rs` decodes
+/// the class itself now, so the sweep goes through.
+#[test]
+fn a_media_instruction_does_not_stop_the_linear_sweep() {
+    // e6ef8073 `uxtb r8, r3`, e12fff1e `bx lr` (llvm-mc).
+    let Some(v) = envelope(&["disasm", "--arch", "arm32", "--bytes", "73 80 ef e6 1e ff 2f e1", "--addr", "0x1000", "--count", "4"]) else { return };
+    assert_eq!(v["ok"], Value::Bool(true), "{v}");
+    let insns = v["data"]["insns"].as_array().unwrap_or_else(|| panic!("no instruction list: {v}"));
+    let texts: Vec<&str> = insns.iter().filter_map(|i| i["text"].as_str()).collect();
+    assert_eq!(texts, ["uxtb r8, r3", "bx lr"], "{v}");
+}

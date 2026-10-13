@@ -23,8 +23,19 @@ All notable changes to N0xis are recorded here. Versions follow
   inspected). A corrupted PDB is an error, never a crash: the tests read 2 000 corrupted
   copies, and the first run caught the reader panicking on 9 (unchecked arithmetic on sizes
   read from the file; it now builds with overflow checks and every call into it is guarded).
+- **32-bit ARM media instructions decode and lift.** The decoder crate implements none of the
+  A32 media class, so `uxtb`, `sxth`, `ubfx`, `pkhbt`, the parallel add and subtract and the
+  dual multiplies read `(bad)` and cut a function short. That class and the
+  halfword multiplies are now decoded here, accepted and rejected exactly as llvm-mc does over
+  every word at `AL` and a stratified sample under the other conditions. Extends, bitfields,
+  pack and the halfword multiplies lift, checked against qemu's user-mode ARM emulation
+  (8 352 of 8 352 answers); the rest stays `asm`.
 
 ### Fixed
+
+- **Halfword multiplies read the wrong instruction.** `smulw<y>` decoded as `smlaw<y>` with the
+  other half, `smlal<x><y>` with RdLo = RdHi was refused, and `umaal` and the Thumb
+  two-destination multiplies kept a stale high register through the `asm` fallback.
 
 - **32-bit ARM (A32) lifted the wrong registers.** Compared word by word with LLVM's
   disassembler: the decoder put a phantom operand, an encoding field the processor ignores,
