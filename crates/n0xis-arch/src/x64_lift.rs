@@ -2387,6 +2387,31 @@ mod tests {
         );
     }
 
+    /// `syscall` comes back with the kernel's result in `rax`, the return
+    /// address in `rcx` and RFLAGS in `r11`. Iced lists the last two; the lift
+    /// stated nothing about `rax`, so a wrapper's `cmp rax, -0x1000` compared
+    /// the system-call number. The def-use record and the lift say the same,
+    /// because both read [`crate::X64::access`].
+    #[test]
+    fn a_system_call_replaces_rax_rcx_and_r11() {
+        // 0f 05  syscall (llvm-mc)
+        let stmts = lift_one(&[0x0F, 0x05]);
+        let mut invalidated: Vec<&str> = stmts
+            .iter()
+            .filter_map(|s| match s {
+                MicroStmt::Assign { dst, value: MicroExpr::Unknown(_) } => Some(dst.as_str()),
+                _ => None,
+            })
+            .collect();
+        invalidated.sort();
+        assert_eq!(invalidated, vec!["r11", "rax", "rcx"], "{stmts:?}");
+        let arch = X64::new();
+        let insn = arch.decode(&[0x0F, 0x05], Va(0x1000)).expect("decodes");
+        let mut writes = arch.reg_access(&insn).writes;
+        writes.sort();
+        assert_eq!(writes, vec!["r11", "rax", "rcx"]);
+    }
+
     /// The vector registers an unmodelled instruction touches are the ones the
     /// IR names. `reg_access` spells `xmm0` as `zmm0`, and the fallback used
     /// that spelling for its invalidation — a variable nothing reads — so

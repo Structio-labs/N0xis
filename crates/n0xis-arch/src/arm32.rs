@@ -357,6 +357,78 @@ fn reglist(mask: u16) -> Vec<String> {
     (0u8..16).filter(|i| mask & (1u16 << i) != 0).map(reg_n).collect()
 }
 
+/// The register numbers of the stack pointer and the program counter.
+const SP: u8 = 13;
+const PC: u8 = 15;
+
+/// The 32-bit stack slot `off` bytes above (`add`) or below the register
+/// `base` — the one shape every lifted memory access here uses, so a slot a
+/// `push` writes and one a `str` or `ldr` names compare equal.
+fn slot_addr(base: String, off: u32, add: bool) -> MicroExpr {
+    let b = MicroExpr::var(base);
+    if off == 0 {
+        b
+    } else {
+        MicroExpr::binary(if add { BinOp::Add } else { BinOp::Sub }, b, MicroExpr::constant(i128::from(off), 32))
+    }
+}
+
+/// `push {list}` — `stmdb sp!, {list}`: the lowest-numbered register at the
+/// lowest address, the block ending just below the incoming `sp`, then `sp`
+/// moved down over it (ARM ARM, `STMDB`). `push {r4, lr}` stores `r4` at
+/// `sp - 8` and `lr` at `sp - 4`, then `sp = sp - 8`.
+///
+/// Without the stores, nothing that reasons about memory knew the stack was
+/// written: to store-to-load forwarding a `push` was no store at all, so a
+/// value an earlier `str` left in a slot the `push` overwrites would reach a
+/// load after it — the moment forwarding could key that slot.
+///
+/// `None` — the `asm` fallback — when the list holds `sp` (which value is
+/// stored is UNKNOWN when it is not the lowest register) or `pc` (whose value
+/// is an offset from this instruction's address the lift does not compute).
+fn push_stmts(sp: &str, mask: u16) -> Option<Vec<MicroStmt>> {
+    if mask & ((1 << SP) | (1 << PC)) != 0 || mask == 0 {
+        return None;
+    }
+    let regs = reglist(mask);
+    let bytes = 4 * regs.len() as u32;
+    let mut out: Vec<MicroStmt> = regs
+        .iter()
+        .enumerate()
+        .map(|(i, r)| MicroStmt::Store { addr: slot_addr(sp.to_string(), bytes - 4 * i as u32, false), value: MicroExpr::var(r.clone()), bits: 32 })
+        .collect();
+    out.push(assign(sp.to_string(), slot_addr(sp.to_string(), bytes, false)));
+    Some(out)
+}
+
+/// `pop {list}` — `ldmia sp!, {list}`, the mirror of [`push_stmts`]: each
+/// register loaded from `sp + 4·i` in ascending order, then `sp` moved up over
+/// the block. `pc` in the list is the function's return (`pop {r4, pc}`), its
+/// slot read by the return itself.
+///
+/// The restored values used to be `Unknown`, so a callee-saved register
+/// pushed and popped did not come back as itself.
+///
+/// `None` when the list holds `sp`: the loaded value and the write-back
+/// disagree, and the architecture leaves the result UNKNOWN.
+fn pop_stmts(sp: &str, mask: u16) -> Option<Vec<MicroStmt>> {
+    if mask & (1 << SP) != 0 || mask == 0 {
+        return None;
+    }
+    let regs = reglist(mask);
+    let mut out = Vec::new();
+    for (i, r) in regs.iter().enumerate() {
+        if r != &reg_n(PC) {
+            out.push(assign(r.clone(), MicroExpr::load(slot_addr(sp.to_string(), 4 * i as u32, true), 32, false)));
+        }
+    }
+    out.push(assign(sp.to_string(), slot_addr(sp.to_string(), 4 * regs.len() as u32, true)));
+    if mask & (1 << PC) != 0 {
+        out.push(MicroStmt::Return(Some(MicroExpr::var("r0"))));
+    }
+    Some(out)
+}
+
 /// The binary op for a shift style — `LSL`/`LSR`/`ASR` map to the IR shifts;
 /// `ROR` and `RRX` (rotates; `RRX` also shifts the carry flag in) have no IR op
 /// and return `None`, so their instruction stays `asm` (sound).
@@ -454,12 +526,7 @@ fn deref_addr_of(op: &Operand) -> Option<(MicroExpr, Option<String>)> {
 
 /// The effective address of a `[Rn, #±off]` operand.
 fn deref_addr(base: yaxpeax_arm::armv7::Reg, off: u16, add: bool) -> MicroExpr {
-    let b = MicroExpr::var(reg_name(base));
-    if off == 0 {
-        b
-    } else {
-        MicroExpr::binary(if add { BinOp::Add } else { BinOp::Sub }, b, MicroExpr::constant(off as i128, 32))
-    }
+    slot_addr(reg_name(base), u32::from(off), add)
 }
 
 fn assign(dst: String, value: MicroExpr) -> MicroStmt {
@@ -588,6 +655,12 @@ fn writes_of(inst: &Instruction) -> Vec<String> {
             op => w.extend(writeback_base(op).map(reg_name)),
         }
     }
+    // Thumb's `push`/`pop` name no base operand: the decoder gives them the
+    // list alone, and the `sp` they move is implicit. Left out, a predicated
+    // `push` kept as `asm` inside an `IT` block left `sp` where it was.
+    if matches!(inst.opcode, PUSH | POP) {
+        w.push(reg_n(SP));
+    }
     // A call this lift leaves as `asm` — the conditional `blne`, which is two
     // effects — still clobbers what any call clobbers when it is taken: the
     // return address, and AAPCS32's caller-saved registers, which is where its
@@ -704,6 +777,10 @@ fn reads_of(inst: &Instruction, predicated: bool) -> UnliftedReads {
         for n in names {
             push(n, &mut r);
         }
+    }
+    // The implicit base of Thumb's `push`/`pop` — see [`writes_of`].
+    if matches!(inst.opcode, PUSH | POP) {
+        push(reg_n(SP), &mut r);
     }
     match inst.opcode {
         BL | BLX => {
@@ -1057,35 +1134,31 @@ impl Arch for Arm32 {
                     _ => return self.unlifted(&inst, insn),
                 }
             }
-            // `push {…}` — the prologue's stack allocation. Only its `sp`
-            // decrement is a GPR effect (the listed registers are *saved*, i.e.
-            // read); the memory writes aren't modelled. `pop` is the mirror.
+            // `push {…}` / `pop {…}` — the stores and loads they are, then the
+            // stack-pointer update. A32 spells them `stmdb sp!` / `ldmia sp!`
+            // (the decoder prints the alias); Thumb has `push`/`pop` opcodes
+            // whose only operand is the list.
             STM(..) if cond_al && insn.text.starts_with("push") => match (&ops[0], reglist_mask(&ops[1])) {
-                (Operand::RegWBack(base, true), Some(mask)) => {
-                    let bytes = (mask.count_ones() * 4) as i128;
-                    out.push(assign(reg_name(*base), MicroExpr::binary(BinOp::Sub, MicroExpr::var(reg_name(*base)), MicroExpr::constant(bytes, 32))));
-                }
+                (Operand::RegWBack(base, true), Some(mask)) => match push_stmts(&reg_name(*base), mask) {
+                    Some(stmts) => out = stmts,
+                    None => return self.unlifted(&inst, insn),
+                },
                 _ => return self.unlifted(&inst, insn),
             },
+            PUSH if cond_al => match reglist_mask(&ops[0]).and_then(|mask| push_stmts(&reg_n(SP), mask)) {
+                Some(stmts) => out = stmts,
+                None => return self.unlifted(&inst, insn),
+            },
             LDM(..) if cond_al && insn.text.starts_with("pop") => match (&ops[0], reglist_mask(&ops[1])) {
-                (Operand::RegWBack(base, true), Some(mask)) => {
-                    let regs = reglist(mask);
-                    let has_pc = regs.iter().any(|r| r == "pc");
-                    // Restored callee-saved values come off a stack this IR does
-                    // not track — mark them Unknown (sound), then adjust `sp`.
-                    for r in &regs {
-                        if r != "pc" {
-                            out.push(assign(r.clone(), MicroExpr::Unknown("restored".to_string())));
-                        }
-                    }
-                    let bytes = (mask.count_ones() * 4) as i128;
-                    out.push(assign(reg_name(*base), MicroExpr::binary(BinOp::Add, MicroExpr::var(reg_name(*base)), MicroExpr::constant(bytes, 32))));
-                    // `pop {…, pc}` is the function return.
-                    if has_pc {
-                        out.push(MicroStmt::Return(Some(MicroExpr::var("r0"))));
-                    }
-                }
+                (Operand::RegWBack(base, true), Some(mask)) => match pop_stmts(&reg_name(*base), mask) {
+                    Some(stmts) => out = stmts,
+                    None => return self.unlifted(&inst, insn),
+                },
                 _ => return self.unlifted(&inst, insn),
+            },
+            POP if cond_al => match reglist_mask(&ops[0]).and_then(|mask| pop_stmts(&reg_n(SP), mask)) {
+                Some(stmts) => out = stmts,
+                None => return self.unlifted(&inst, insn),
             },
             B => {
                 // Structural: the CFG carries the edge; a conditional `b` is
@@ -1369,16 +1442,80 @@ mod tests {
 
     #[test]
     fn push_and_pop_move_the_stack_pointer_and_pop_pc_returns() {
-        // e92d4010 push {r4, lr} → sp = sp - 8 (2 regs).
+        // e92d4010 push {r4, lr} → *(sp - 8) = r4, *(sp - 4) = lr, sp = sp - 8.
         let push = lift1(&[0x10, 0x40, 0x2d, 0xe9]);
         assert_eq!(
             push,
-            vec![MicroStmt::Assign { dst: "sp".into(), value: MicroExpr::binary(BinOp::Sub, MicroExpr::var("sp"), MicroExpr::constant(8, 32)) }],
+            vec![
+                MicroStmt::Store { addr: MicroExpr::binary(BinOp::Sub, MicroExpr::var("sp"), MicroExpr::constant(8, 32)), value: MicroExpr::var("r4"), bits: 32 },
+                MicroStmt::Store { addr: MicroExpr::binary(BinOp::Sub, MicroExpr::var("sp"), MicroExpr::constant(4, 32)), value: MicroExpr::var("lr"), bits: 32 },
+                MicroStmt::Assign { dst: "sp".into(), value: MicroExpr::binary(BinOp::Sub, MicroExpr::var("sp"), MicroExpr::constant(8, 32)) },
+            ],
         );
         // e8bd8010 pop {r4, pc} → r4 restored, sp += 8, return.
         let pop = lift1(&[0x10, 0x80, 0xbd, 0xe8]);
         assert!(pop.iter().any(|s| matches!(s, MicroStmt::Assign { dst, .. } if dst == "sp")));
         assert!(pop.iter().any(|s| matches!(s, MicroStmt::Return(_))), "pop {{…,pc}} returns: {pop:?}");
+    }
+
+    /// `push` and `pop` are the stores and loads they are, in both instruction
+    /// sets: the lowest-numbered register at the lowest address, the block
+    /// ending at the incoming `sp` (ARM ARM, `STMDB`/`LDMIA`). They used to
+    /// move `sp` and touch no memory, and Thumb's — whose only operand is the
+    /// list — did not even move `sp`. Every encoding is llvm-mc's.
+    #[test]
+    fn push_stores_its_list_and_pop_loads_it_back() {
+        let sp = |op: BinOp, n: i128| if n == 0 { MicroExpr::var("sp") } else { MicroExpr::binary(op, MicroExpr::var("sp"), MicroExpr::constant(n, 32)) };
+        let store = |off: i128, r: &str| MicroStmt::Store { addr: sp(BinOp::Sub, off), value: MicroExpr::var(r), bits: 32 };
+        let load = |r: &str, off: i128| MicroStmt::Assign { dst: r.into(), value: MicroExpr::load(sp(BinOp::Add, off), 32, false) };
+        let push_r4_lr = vec![store(8, "r4"), store(4, "lr"), MicroStmt::Assign { dst: "sp".into(), value: sp(BinOp::Sub, 8) }];
+        let pop_r4_pc = vec![load("r4", 0), MicroStmt::Assign { dst: "sp".into(), value: sp(BinOp::Add, 8) }, MicroStmt::Return(Some(MicroExpr::var("r0")))];
+        let thumb = |bytes: &[u8]| {
+            let t = Arm32::thumb();
+            let di = t.decode(bytes, Va(0x1000)).unwrap();
+            t.lift(&di, "aapcs32")
+        };
+        // e92d4010 push {r4, lr}; e8bd8010 pop {r4, pc}
+        assert_eq!(lift1(&[0x10, 0x40, 0x2d, 0xe9]), push_r4_lr);
+        assert_eq!(lift1(&[0x10, 0x80, 0xbd, 0xe8]), pop_r4_pc);
+        // Thumb: b510 push {r4, lr}; bd10 pop {r4, pc}
+        assert_eq!(thumb(&[0x10, 0xb5]), push_r4_lr);
+        assert_eq!(thumb(&[0x10, 0xbd]), pop_r4_pc);
+        // e8bd4010 pop {r4, lr} — no `pc`, so no return.
+        assert_eq!(
+            lift1(&[0x10, 0x40, 0xbd, 0xe8]),
+            vec![load("r4", 0), load("lr", 4), MicroStmt::Assign { dst: "sp".into(), value: sp(BinOp::Add, 8) }]
+        );
+        // Thumb-2: e92d 4110 push.w {r4, r8, lr}
+        assert_eq!(
+            thumb(&[0x2d, 0xe9, 0x10, 0x41]),
+            vec![store(12, "r4"), store(8, "r8"), store(4, "lr"), MicroStmt::Assign { dst: "sp".into(), value: sp(BinOp::Sub, 12) }]
+        );
+        // e92d2001 push {r0, sp} and e92d8001 push {r0, pc} store a value this
+        // lift does not compute, so they stay `asm` — writing memory and `sp`.
+        for bytes in [[0x01, 0x20, 0x2d, 0xe9], [0x01, 0x80, 0x2d, 0xe9]] {
+            let stmts = lift1(&bytes);
+            assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { mem: MemEffect::Write, .. })), "{stmts:?}");
+            assert!(invalidated(&stmts).contains(&"sp"), "{stmts:?}");
+        }
+    }
+
+    /// A predicated Thumb `push` inside an `IT` block stays `asm`, and the
+    /// `sp` it moves is implicit — the decoder gives it the register list
+    /// alone. The fallback has to name it anyway, as written and as read.
+    #[test]
+    fn a_predicated_thumb_push_kept_as_asm_still_moves_sp() {
+        let t = Arm32::thumb();
+        // bf18 it ne; b510 pushne {r4, lr}; bf18 it ne; bd10 popne {r4, pc}
+        let stream = t.decode_stream(&[0x18, 0xbf, 0x10, 0xb5, 0x18, 0xbf, 0x10, 0xbd], Va(0x1000), 4);
+        for di in [&stream[1], &stream[3]] {
+            assert_eq!(di.cond.as_deref(), Some("ne"), "{}", di.text);
+            let stmts = t.lift(di, "aapcs32");
+            assert!(invalidated(&stmts).contains(&"sp"), "{}: {stmts:?}", di.text);
+            let Some(MicroStmt::Unlifted { reads, .. }) = stmts.first() else { panic!("{stmts:?}") };
+            assert!(reads.regs().iter().any(|r| r == "sp"), "{}: {stmts:?}", di.text);
+            assert!(t.reg_access(di).writes.iter().any(|r| r == "sp"), "{}", di.text);
+        }
     }
 
     #[test]

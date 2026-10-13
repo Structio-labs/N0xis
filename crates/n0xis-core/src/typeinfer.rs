@@ -253,8 +253,32 @@ fn root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
-fn is_stack_root(r: &str) -> bool {
+/// Whether `base + off` with this root names a stack slot — the one answer the
+/// local declarations here and the renderer's `local_*` text both read.
+pub(crate) fn is_stack_root(r: &str) -> bool {
     r == "rsp" || r == "rbp"
+}
+
+/// The name of the stack slot `offset` bytes from the stack or frame register
+/// its address is formed from — the **one** place it is computed. The
+/// declarations (`recover_locals`) and every use in the body
+/// (`render::field_or_local_text`) both call this, because when they computed
+/// it separately the two could disagree, and the scheme both copies shared
+/// could not tell a slot from its mirror.
+///
+/// The offset is signed and the name has to be too: `local_{:x}` of the
+/// magnitude gave `rsp + 8` and `rsp - 8` the same name, and 322 of 2 323
+/// functions of one C library declared a local twice. Non-negative offsets keep
+/// `local_<hex>`; negative ones are `local_neg_<hex>`, the spelling a negative
+/// struct-field offset already has (`field_neg_0x8`).
+///
+/// The sign is relative to the **register the address used**, not to the
+/// function's entry stack pointer: `rsp + 0x20` after `sub rsp, 0x28` is a slot
+/// below the entry `sp`, and `rbp - 4` is one too. Neither name claims which
+/// side of the entry frame a slot lies on, because nothing here knows it.
+pub(crate) fn stack_local_name(offset: i64) -> String {
+    let (prefix, magnitude) = if offset < 0 { ("local_neg_", offset.unsigned_abs()) } else { ("local_", offset.unsigned_abs()) };
+    format!("{prefix}{magnitude:x}")
 }
 
 /// Recognize `Var(base) + Const(offset)` (either operand order) or a bare
@@ -445,7 +469,7 @@ fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>) -> Vec<Loc
         .into_iter()
         .map(|(offset, (bits, signed, count))| LocalVar {
             offset,
-            name: format!("local_{:x}", offset.unsigned_abs()),
+            name: stack_local_name(offset),
             size_bits: bits,
             // A signed use (compared with `jl`, divided with `idiv`, …) is
             // evidence the load encoding alone misses.
@@ -2039,6 +2063,17 @@ mod tests {
         let locals = recover_locals(&acc, &signed);
         assert_eq!(locals.len(), 1);
         assert!(locals[0].signed, "the compared-signed local should render signed");
+    }
+
+    /// Two slots at `+8` and `-8` from the stack pointer are two declarations
+    /// under two names. Both were `local_8`.
+    #[test]
+    fn a_slot_and_its_mirror_are_declared_under_two_names() {
+        let acc = |offset| MemAccess { base: "rsp.1".into(), offset, bits: 64, signed: false };
+        let locals = recover_locals(&[acc(8), acc(-8)], &BTreeSet::new());
+        let mut names: Vec<&str> = locals.iter().map(|l| l.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["local_8", "local_neg_8"]);
     }
 
     #[test]

@@ -33,6 +33,23 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A system-call wrapper tested the call number, not the result.** x64 `syscall` returns in
+  `rax` and overwrites `rcx` and `r11`, but the lift said nothing of `rax`, so `cmp rax,
+  -0x1000` after it compared the number just loaded. Over x64 libc, reads of that number after
+  a `syscall` go from 329 to 0; `kill`, `sigpending`, `renameat`, `umask` and `unlink`, read
+  against objdump, now test and return the result.
+- **Two stack slots shared one name.** A local was named from the size of its offset, so the
+  slots at `+8` and `-8` were both `local_8`, and 322 of 2 323 libc functions declared a name
+  twice; now none does. A negative offset is `local_neg_<hex>`, as fields already were, and
+  one function names every local, held there by a test.
+- **arm64 instructions outside the access table wrote nothing.** `mov x0,#5; mrs x0,
+  tpidr_el0; ret` returned 5; `fmov x0, d0`, the status register of `stxr`, the second
+  register of `ldxp`/`stxp` and SIMD post-index write-back were lost the same way. Their writes
+  now come from the decoder's operands, over-approximated where it cannot tell.
+- **A32 `push` and `pop` moved the stack pointer but stored and loaded nothing,** so a value
+  pushed and popped did not round-trip and a slot a `push` overwrote could look unchanged.
+  They are the stores and loads they are now, Thumb's too; and store-to-load forwarding
+  recognises `base - k`, which is how the A32 lift writes every negative offset.
 - **An instruction left as `asm` hid what it read and what it did to memory, on every
   architecture.** A definition only it read was dropped as dead, and the parameter behind it
   left the signature: `mov r8, r9; crc32 eax, r8b` on x64 read as `sub(void)`. A store it made

@@ -212,3 +212,37 @@ fn a_function_entrys_name_has_one_answer() {
         bad.join("\n  ")
     );
 }
+
+/// A stack local's name has one spelling rule, `typeinfer::stack_local_name`.
+/// The declarations and the body computed it separately (`local_{:x}` of the
+/// offset's magnitude, written twice), and that shared rule gave `rsp + 8` and
+/// `rsp - 8` one name: 322 of 2 323 functions of one C library declared a local
+/// twice. A second copy is how the next disagreement starts — between the name
+/// a variable is declared under and the one its uses print.
+///
+/// Every product line that spells the prefix as a string literal has to be in
+/// `typeinfer.rs`, and the renderer has to ask that function.
+#[test]
+fn a_stack_locals_name_is_spelled_in_one_place() {
+    let mut bad = Vec::new();
+    for (path, text) in workspace_sources() {
+        if path.ends_with("typeinfer.rs") {
+            continue;
+        }
+        for (n, line) in product_lines(&text) {
+            if line.contains("\"local_") {
+                bad.push(format!("{}:{n}: {}", path.display(), line.trim()));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "a stack local is named by `typeinfer::stack_local_name`; these spell the name themselves:\n  {}",
+        bad.join("\n  ")
+    );
+    let render = std::fs::read_to_string(crate_src().join("render.rs")).expect("render.rs");
+    assert!(
+        product_lines(&render).iter().any(|(_, l)| l.contains("stack_local_name(")),
+        "the renderer names stack locals without `typeinfer::stack_local_name`"
+    );
+}

@@ -643,6 +643,15 @@ fn mem_key(addr: &MicroExpr) -> Option<(String, i128)> {
             (MicroExpr::Const { value, .. }, MicroExpr::Var(name)) => Some((name.clone(), *value)),
             _ => None,
         },
+        // `base - k` is the slot `k` bytes below `base` — how the A32 lift
+        // spells every negative offset (`str r3, [sp, #-8]`, the slots a
+        // `push` writes). Without this arm none of those was a location at all,
+        // so no store to one was ever forwarded, and a store to one was an
+        // unknown-address store to everything else.
+        MicroExpr::Binary(BinOp::Sub, l, r) => match (l.as_ref(), r.as_ref()) {
+            (MicroExpr::Var(name), MicroExpr::Const { value, .. }) => Some((name.clone(), value.checked_neg()?)),
+            _ => None,
+        },
         _ => None,
     }
 }

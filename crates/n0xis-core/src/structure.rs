@@ -977,9 +977,10 @@ mod tests {
         // The pre-fix bug wired the found edge to the loop's `-1` exit with a
         // `break;`, dropping the `return i` (it became dead code after the loop).
         assert!(!text.contains("break;"), "the found exit must not collapse to a break:\n{text}");
-        // The found value (`local_4`, i.e. `i`) is loaded onto the return path
-        // INSIDE the loop, before the exhaustion sentinel `0xffffffff`.
-        let found = pos(&text, "rax.8 = (uint32_t)local_4;");
+        // The found value (`local_neg_4`, i.e. `i` at `[rbp-0x4]`) is loaded
+        // onto the return path INSIDE the loop, before the exhaustion sentinel
+        // `0xffffffff`.
+        let found = pos(&text, "rax.8 = (uint32_t)local_neg_4;");
         let sentinel = pos(&text, "0xffffffff");
         assert!(found < sentinel, "the found index must be returned before the sentinel:\n{text}");
         assert_eq!(out.fallback_count, 0, "should structure cleanly:\n{text}");

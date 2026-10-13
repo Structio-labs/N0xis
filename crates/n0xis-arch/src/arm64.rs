@@ -10,13 +10,13 @@
 //!
 //! **Deliberately scoped, honestly incomplete** (CONCEPT §3 rule 6: sound
 //! over complete). This is not the full AArch64 ISA:
-//! - [`Arch::reg_access`] is implemented for the base integer ISA a compiler
+//! - [`Arch::reg_access`] is exact for the base integer ISA a compiler
 //!   actually emits for ordinary functions (data-processing, loads/stores,
-//!   branches) — SIMD/FP/SVE/SME/crypto/system-register/atomic classes
-//!   report no reads/writes, the same sound-but-empty default the trait
-//!   itself defines for an ISA with no override. def-use tracking is
-//!   therefore accurate for typical scalar code and silent (not wrong) for
-//!   vector/crypto code.
+//!   branches). For the SIMD/FP/SVE/SME/crypto/system-register/atomic
+//!   classes it reports the general registers the instruction's operands may
+//!   write — an over-approximation read off the decoder's definition — and no
+//!   reads. An empty write set there was never "silent": `mrs x0, tpidr_el0`
+//!   left the old `x0` readable, and a later read took it.
 //! - [`Arch::lift`] and [`Arch::branch_condition`] cover the **base integer
 //!   families a compiler emits for scalar code** and nothing else — see
 //!   [`crate::arm64_lift`], which owns the lowering and lists exactly what is
@@ -30,7 +30,7 @@
 
 use disarm64::registers::get_int_reg_name;
 use disarm64::{InsnDisplay, InsnOpcode, decoder};
-use disarm64_defn::{InsnClass, InsnOperandKind};
+use disarm64_defn::{InsnClass, InsnFlags, InsnOperandKind};
 use n0xis_contracts::{Reg, Va};
 
 use crate::frame::FrameInfo;
@@ -349,6 +349,11 @@ fn has_operand_kind(op: &decoder::Opcode, kind: InsnOperandKind) -> bool {
 ///   00/01/10. Both are `imm7 << (2 + (opc >> if V {0} else {1}))`.
 /// - `LDST_IMM10` (PAuth `ldraa`/`ldrab`): writeback **iff** the `W` bit (bit
 ///   11) is set. `imm10` = `S`(bit 22):`imm9`(bits 20:12), signed, scaled ×8.
+/// - `ASISDLSEP`/`ASISDLSOP` (the SIMD structure loads and stores, `ld1 {v0.16b},
+///   [x1], #16`, `ld1 {v0.d}[1], [x1], x5`): **always** writeback. `Rm` (bits
+///   20:16) names the register added to the base, and `Rm` = 31 is the
+///   immediate form, whose amount is not encoded at all: it is the number of
+///   bytes the instruction transfers ([`simd_structure_bytes`]).
 /// - every other load/store class updates no base: `None`.
 ///
 /// The base register is named `gpr_name(bits, Rn, false)` — reg 31 spells `sp`,
@@ -356,13 +361,30 @@ fn has_operand_kind(op: &decoder::Opcode, kind: InsnOperandKind) -> bool {
 pub(crate) struct Writeback {
     /// The base register the writeback updates, spelled as the base *read* is.
     pub base: String,
-    /// Signed byte delta: the instruction performs `base := base + delta`.
-    pub delta: i64,
+    /// What is added: the instruction performs `base := base + amount`.
+    pub amount: WbAmount,
+}
+
+/// What a writeback adds to its base. Two shapes and no third: a SIMD
+/// structure access post-indexed by a register (`[x2], x3`) adds that
+/// register, everything else adds a constant the encoding fixes.
+pub(crate) enum WbAmount {
+    /// A signed byte delta.
+    Bytes(i64),
+    /// The register's value, canonically named.
+    Reg(String),
 }
 
 pub(crate) fn writeback(op: &decoder::Opcode) -> Option<Writeback> {
     let bits = op.bits();
-    let delta = match op.definition().class {
+    let base = || gpr_name(bits, bitrange(bits, 9, 5), false);
+    let class = op.definition().class;
+    if matches!(class, InsnClass::ASISDLSEP | InsnClass::ASISDLSOP) {
+        let rm = bitrange(bits, 20, 16);
+        let amount = if rm == 31 { WbAmount::Bytes(simd_structure_bytes(class, bits)?) } else { WbAmount::Reg(gpr_name(bits, rm, true)) };
+        return Some(Writeback { base: base(), amount });
+    }
+    let delta = match class {
         InsnClass::LDST_IMM9 => sign_extend(bitrange(bits, 20, 12), 9),
         InsnClass::LDSTPAIR_INDEXED => {
             let imm7 = bitrange(bits, 21, 15);
@@ -382,7 +404,44 @@ pub(crate) fn writeback(op: &decoder::Opcode) -> Option<Writeback> {
         }
         _ => return None,
     };
-    Some(Writeback { base: gpr_name(bits, bitrange(bits, 9, 5), false), delta })
+    Some(Writeback { base: base(), amount: WbAmount::Bytes(delta) })
+}
+
+/// The bytes a SIMD structure load or store transfers — which is what its
+/// immediate post-index form adds to the base (`ld1 {v0.16b}, [x1], #16`), the
+/// assembler accepting no other immediate. From the ARM ARM's decode of the two
+/// classes; `None` for an `opcode` the multiple-structure table leaves
+/// unallocated.
+///
+/// - `ASISDLSEP`, multiple structures: `opcode` (bits 15:12) fixes how many
+///   registers are transferred, each 16 bytes when `Q` (bit 30) is set and 8
+///   otherwise.
+/// - `ASISDLSOP`, one structure or a replicate: `selem` = `opcode<0>`:`R` + 1
+///   (bits 13 and 21) elements of one size — from `opcode<2:1>` (bits 15:14):
+///   a byte, a halfword, a word or a doubleword by `size<0>` (bit 10), and for
+///   the replicate forms (`ld1r`…`ld4r`, `opcode<2:1>` = 3) `1 << size`.
+fn simd_structure_bytes(class: InsnClass, bits: u32) -> Option<i64> {
+    let bytes = if class == InsnClass::ASISDLSEP {
+        let regs = match bitrange(bits, 15, 12) {
+            0b0000 | 0b0010 => 4,
+            0b0100 | 0b0110 => 3,
+            0b1000 | 0b1010 => 2,
+            0b0111 => 1,
+            _ => return None,
+        };
+        regs * if bitrange(bits, 30, 30) == 1 { 16 } else { 8 }
+    } else {
+        let selem = ((bitrange(bits, 13, 13) << 1) | bitrange(bits, 21, 21)) + 1;
+        let esize = match bitrange(bits, 15, 14) {
+            0 => 1,
+            1 => 2,
+            2 if bitrange(bits, 10, 10) == 0 => 4,
+            2 => 8,
+            _ => 1 << bitrange(bits, 11, 10),
+        };
+        selem * esize
+    };
+    Some(i64::from(bytes))
 }
 
 /// Whether [`Arm64::modelled_access`]'s answer is everything the instruction
@@ -550,10 +609,17 @@ impl Arm64 {
             InsnClass::LDST_IMM9 | InsnClass::LDST_IMM10 | InsnClass::LDST_POS
             | InsnClass::LDST_UNSCALED | InsnClass::LDST_UNPRIV | InsnClass::LDSTEXCL => {
                 access.reads.push(gpr_name(bits, rn, false));
+                // The exclusive pairs (`ldxp x0, x1, [x2]`, `stxp w3, x0, x1,
+                // [x2]`) are in this class and transfer a second register,
+                // `Rt2`. Reading only `Rt` recorded `ldxp` as writing `x0`
+                // alone — exactly, so nothing invalidated `x1`.
+                let rt2 = has_operand_kind(&op, InsnOperandKind::Rt2).then(|| gpr_name(bits, rt2_ra, true));
                 if gpr_rt && mnemonic.starts_with("st") {
                     access.reads.push(gpr_name(bits, rd_rt, true));
+                    access.reads.extend(rt2);
                 } else if gpr_rt && mnemonic.starts_with("ld") {
                     access.writes.push(gpr_name(bits, rd_rt, true));
+                    access.writes.extend(rt2);
                 }
             }
             InsnClass::LDST_REGOFF => {
@@ -624,8 +690,104 @@ impl Arm64 {
         if let Some(wb) = writeback(&op) {
             access.writes.push(wb.base);
         }
+        // Where the table is not the instruction's whole answer, what it wrote
+        // may be missing too: `mrs x0, tpidr_el0`, `fmov x0, d0`, the status
+        // register of `stxr`, and the base of a SIMD post-indexed load wrote
+        // nothing as far as this record said, so `mov x0, #5; mrs x0,
+        // tpidr_el0; ret` returned 5. The definition names every register
+        // operand, and [`named_gpr_writes`] reads the writes off it.
+        if coverage == Coverage::Partial {
+            for w in named_gpr_writes(&op) {
+                if !access.writes.contains(&w) {
+                    access.writes.push(w);
+                }
+            }
+        }
         Some((coverage, access))
     }
+}
+
+/// The general registers an instruction may write, read off the operands its
+/// definition names — the answer for an instruction the per-class table in
+/// [`Arm64::modelled_access`] does not cover. A *sound over-approximation*,
+/// as `arm32::writes_of` is: a write left out lets a later read take a value
+/// from before the instruction, which is a wrong answer; an extra one costs a
+/// value that was still good, which is a visible gap.
+///
+/// The decoder states no operand's direction, so the rule is the operand
+/// **kind**. A source-only kind — `Rn`, `Rm` and their shifted, extended and
+/// `sp` forms, `Ra` — is never written, so it is left alone. Every other
+/// general-register kind is a destination in at least one instruction (`Rd`,
+/// `Rt`, `Rt2`, `Rs` — the status of `stxr` and the old value of `cas` —, the
+/// pair halves, the memory-copy operands) and is counted as written, except
+/// where the definition itself says it is read:
+///
+/// - the transfer registers (`Rt`, `Rt2`, `Rt_SP`, `Rt_LS64`) of a store — the
+///   rule the table above already applies to the classes it names;
+/// - a register of a system instruction that is not its first operand (`msr
+///   tpidr_el0, x0`, `sys #3, c7, c4, #1, x0` — which is `dc zva`), and any
+///   register of one the decoder marks as writing a system register. The
+///   destination of a system read is always first: `mrs x0, …`, `sysl x0, …`;
+/// - the second register of a pair takes the role of the first.
+///
+/// What remains over-approximate is every register those rules cannot tell is
+/// only read — an LSE atomic's addend (`ldadd`) or new value (`cas`), for one.
+///
+/// Address operands that write their base back are counted too: the SIMD
+/// post-index (whose exact update [`writeback`] states) and the RCPC3 pre- and
+/// post-index forms, whose amount this file does not model.
+fn named_gpr_writes(op: &decoder::Opcode) -> Vec<String> {
+    use InsnOperandKind::*;
+    let def = op.definition();
+    let bits = op.bits();
+    let store = def.mnemonic.starts_with("st");
+    let system = def.class == InsnClass::IC_SYSTEM;
+    let sys_write = def.flags.contains(InsnFlags::IS_SYS_WRITE);
+    let number = |o: &disarm64_defn::defn::InsnOperand| {
+        o.bit_fields.first().map(|f| bitrange(bits, u32::from(f.lsb) + u32::from(f.width) - 1, u32::from(f.lsb)))
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |name: String| {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    };
+    // The previous register operand — its number and whether it was counted as
+    // written — for the pair kinds, which encode no field of their own.
+    let mut prev: Option<(u32, bool)> = None;
+    for (i, o) in def.operands.iter().enumerate() {
+        match o.kind {
+            Rd | Rd_SP | Rs | X16 | MOPS_ADDR_Rd | MOPS_ADDR_Rs | MOPS_WB_Rn => {
+                let Some(n) = number(o) else { continue };
+                push(gpr_name(bits, n, !matches!(o.kind, Rd_SP)));
+                prev = Some((n, true));
+            }
+            Rt | Rt2 | Rt_SP | Rt_SYS | Rt_LS64 | Rt_IN_SYS_ALIASES | LSE128_Rt | LSE128_Rt2 => {
+                let Some(n) = number(o) else { continue };
+                let transfer = matches!(o.kind, Rt | Rt2 | Rt_SP | Rt_LS64);
+                let read = (store && transfer) || (system && (sys_write || i > 0));
+                prev = Some((n, !read));
+                if read {
+                    continue;
+                }
+                // `ld64b` loads eight consecutive registers from `Rt`.
+                let last = if o.kind == Rt_LS64 { (n + 7).min(30).max(n) } else { n };
+                for k in n..=last {
+                    push(gpr_name(bits, k, o.kind != Rt_SP));
+                }
+            }
+            PAIRREG | PAIRREG_OR_XZR => {
+                let Some((n, written)) = prev else { continue };
+                if written {
+                    push(gpr_name(bits, if n == 31 { 31 } else { n + 1 }, true));
+                }
+            }
+            SIMD_ADDR_POST | RCPC3_ADDR_PREIND_WB | RCPC3_ADDR_POSTIND | RCPC3_ADDR_OPT_PREIND_WB
+            | RCPC3_ADDR_OPT_POSTIND => push(gpr_name(bits, bitrange(bits, 9, 5), false)),
+            _ => {}
+        }
+    }
+    out
 }
 
 impl Arch for Arm64 {
@@ -713,8 +875,8 @@ impl Arch for Arm64 {
             // keeps the LDSTPAIR-64 ×8 scaling a *single* fact, shared with the
             // lift and `reg_access`, instead of a second copy here. On a decode
             // failure `frame_size` keeps its default (0), as before.
-            if let Some(wb) = decoder::decode(bits).and_then(|op| writeback(&op)) {
-                frame.frame_size = (-wb.delta) as u64;
+            if let Some(Writeback { amount: WbAmount::Bytes(delta), .. }) = decoder::decode(bits).and_then(|op| writeback(&op)) {
+                frame.frame_size = (-delta) as u64;
             }
             frame.spilled_regs.push("x29".to_string());
             frame.spilled_regs.push("x30".to_string());

@@ -16,7 +16,7 @@ use n0xis_contracts::Va;
 use crate::demangle::demangle;
 use crate::ir::Callsite;
 use crate::signatures::{known_signature, KnownSignature};
-use crate::typeinfer::TypeArtifact;
+use crate::typeinfer::{is_stack_root, stack_local_name, TypeArtifact};
 
 /// Resolves a call target address to a human name, when known (from the
 /// function's own `CfgArtifact::callsites`, which already went through the
@@ -478,23 +478,20 @@ fn as_base_offset(addr: &MicroExpr) -> Option<(&str, i128)> {
     }
 }
 
-fn is_stack_root(root: &str) -> bool {
-    root == "rsp" || root == "rbp"
-}
-
 /// The display text for a `Load`/`Store` address when it resolves to a named
-/// local (`local_18`) or a recovered struct field (`base->field_0x68`) —
-/// `None` if the address doesn't match that shape at all, in which case the
-/// caller falls back to the generic `*(type*)(addr)` rendering. Stack-local
-/// naming works even without [`RenderNames::with_types`] (same ad hoc
-/// `local_XX` scheme `typeinfer.rs` also produces, so the two never
-/// disagree); struct-field naming only fires once [`TypeArtifact`] recovered
+/// local (`local_18`, `local_neg_8`) or a recovered struct field
+/// (`base->field_0x68`) — `None` if the address doesn't match that shape at
+/// all, in which case the caller falls back to the generic `*(type*)(addr)`
+/// rendering. Stack-local naming works even without
+/// [`RenderNames::with_types`]: the name is `typeinfer::stack_local_name`'s,
+/// the same function the declarations take theirs from, so the two cannot
+/// disagree. Struct-field naming only fires once [`TypeArtifact`] recovered
 /// that base pointer.
 fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> {
     let (base, offset) = as_base_offset(addr)?;
     let root = base.split('.').next().unwrap_or(base);
     if is_stack_root(root) {
-        let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| format!("local_{:x}", offset.unsigned_abs()));
+        let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| stack_local_name(offset as i64));
         return Some(names.shown(name, true));
     }
     if let Some(fieldmap) = names.structs.get(base) {
@@ -1104,6 +1101,20 @@ mod tests {
         let names = RenderNames::new(&[]);
         let expr = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)), 64, false);
         assert_eq!(render_expr(&expr, &names), "local_20");
+    }
+
+    /// A slot and its mirror across the base register are two locals, and the
+    /// body names each the way its declaration does. `local_{:x}` of the
+    /// magnitude named `rsp + 8` and `rsp - 8` alike, so a function could
+    /// declare `local_8` twice and use both under one name.
+    #[test]
+    fn a_slot_and_its_mirror_render_as_two_names_the_declarations_share() {
+        let names = RenderNames::new(&[]);
+        let at = |off: i128| {
+            render_expr(&MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp.1"), MicroExpr::constant(off, 64)), 64, false), &names)
+        };
+        assert_ne!(at(8), at(-8));
+        assert_eq!((at(8), at(-8)), (stack_local_name(8), stack_local_name(-8)));
     }
 
     /// The lift sprays every argument register at every call. Inside a function

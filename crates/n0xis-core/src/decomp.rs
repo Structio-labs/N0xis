@@ -1087,6 +1087,29 @@ mod tests {
         assert!(!f.signature.contains("rcx"), "an unknown read is not a parameter: {}", f.signature);
     }
 
+    /// The shape of every system-call wrapper in a C library (`renameat`,
+    /// `kill`, …): `mov eax, NR; syscall; cmp rax, -0x1000; ja error; ret`.
+    /// The kernel returns in `rax`, and nothing said so — the test compared the
+    /// call number `0x108` with the error range, and the success path returned
+    /// it.
+    #[test]
+    fn a_system_call_wrapper_tests_the_result_not_the_call_number() {
+        // b8 08 01 00 00 mov eax, 0x108; 0f 05 syscall; 48 3d 00 f0 ff ff
+        // cmp rax, -0x1000; 77 01 ja +1; c3 ret; f7 d8 neg eax; c3 ret (llvm-mc)
+        let f = decomp(
+            vec![0xb8, 0x08, 0x01, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x3d, 0x00, 0xf0, 0xff, 0xff, 0x77, 0x01, 0xc3, 0xf7, 0xd8, 0xc3],
+            DecompStyle::Ssa,
+        );
+        let cond = f.pseudo.iter().map(|l| l.trim()).find(|l| l.starts_with("if ")).unwrap_or_else(|| panic!("no `if` in {:#?}", f.pseudo));
+        let called = f.pseudo.iter().position(|l| l.trim() == "rax.1 = 0x108;").unwrap_or_else(|| panic!("{:#?}", f.pseudo));
+        assert!(!cond.contains("rax.1 "), "the test reads what the kernel returned, not the number: {cond}\n{:#?}", f.pseudo);
+        assert!(
+            !f.pseudo[called + 1..].iter().any(|l| l.contains("rax.1;") || l.contains("rax.1)")),
+            "the call number is not read after the system call: {:#?}",
+            f.pseudo
+        );
+    }
+
     /// The shape of `clock_getres` in a C library, on Win64's registers: an
     /// indirect call that passes the first two arguments through, a third
     /// argument register the code never touches, and a `syscall` reachable
@@ -1138,6 +1161,28 @@ mod tests {
         assert_ne!(return_line(&f), "return r1;", "{:#?}", f.pseudo);
     }
 
+    /// `str r3, [sp, #-8]; push {r4, lr}; ldr r0, [sp]; pop {r4, pc}` returns
+    /// `r4`: the `push` overwrote the slot the `str` wrote. With no stores on
+    /// the `push`, the load was forwarded the `str`'s `r3`.
+    #[test]
+    fn a_slot_a_push_overwrites_is_not_forwarded_from_before_it() {
+        // e50d3008 str r3, [sp, #-8]; e92d4010 push {r4, lr};
+        // e59d0000 ldr r0, [sp]; e8bd8010 pop {r4, pc} (llvm-mc)
+        let f = decomp_a32_as(words(&[0xe50d3008, 0xe92d4010, 0xe59d0000, 0xe8bd8010]), DecompStyle::Ssa);
+        assert_eq!(return_line(&f), "return r4.0;", "{:#?}", f.pseudo);
+    }
+
+    /// `push {r4, lr}; mov r4, #9; pop {r4, lr}; mov r0, r4; bx lr` returns
+    /// the `r4` it was called with: a callee-saved register comes back off the
+    /// stack as itself. The `pop` used to restore an unknown.
+    #[test]
+    fn a_register_pushed_and_popped_comes_back_as_itself() {
+        // e92d4010 push {r4, lr}; e3a04009 mov r4, #9; e8bd4010 pop {r4, lr};
+        // e1a00004 mov r0, r4; e12fff1e bx lr (llvm-mc)
+        let f = decomp_a32_as(words(&[0xe92d4010, 0xe3a04009, 0xe8bd4010, 0xe1a00004, 0xe12fff1e]), DecompStyle::Ssa);
+        assert_eq!(return_line(&f), "return r4.0;", "{:#?}", f.pseudo);
+    }
+
     /// `mov r0, #5; cmp r1, #0; blne f; bx lr` — when the call is taken `r0`
     /// is its result, so the function does not return 5. And the call's
     /// argument registers keep their definitions alive without becoming
@@ -1159,6 +1204,66 @@ mod tests {
         // d28000a0 mov x0, #5; fd400020 ldr d0, [x1]; d65f03c0 ret
         let f = decomp_arm64(words(&[0xd28000a0, 0xfd400020, 0xd65f03c0]));
         assert!(f.pseudo.iter().any(|l| l.contains("= 0x5;")) && return_line(&f) == "return x0.1;", "{:#?}", f.pseudo);
+    }
+
+    /// The register a `mov _, #5` defined, if the function still states it.
+    fn defined_as_five(f: &PseudoFunction) -> Option<String> {
+        f.pseudo.iter().find_map(|l| l.trim().strip_suffix(" = 0x5;").map(str::to_string))
+    }
+
+    /// Whether `line` names the SSA variable `var` (`x2.1`) as a whole token —
+    /// not `x2.10`, not `x12.1`.
+    fn names_var(line: &str, var: &str) -> bool {
+        line.match_indices(var).any(|(i, _)| {
+            let before = line[..i].chars().next_back();
+            let after = line[i + var.len()..].chars().next();
+            !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_ascii_digit())
+        })
+    }
+
+    /// AArch64 instructions the access table had no row for wrote no register
+    /// as far as the IR knew, so the value from before them stayed readable:
+    /// each of these returned 5. Every word is llvm-mc's (`-triple=aarch64`).
+    #[test]
+    fn an_arm64_instruction_outside_the_table_replaces_what_it_writes() {
+        let cases: &[(&str, &[u32])] = &[
+            // d28000a0 mov x0, #5; d53bd040 mrs x0, tpidr_el0
+            ("mrs", &[0xd28000a0, 0xd53bd040]),
+            // 9e660000 fmov x0, d0
+            ("fmov x0, d0", &[0xd28000a0, 0x9e660000]),
+            // 0e0c3c20 mov w0, v1.s[1] (umov)
+            ("umov", &[0xd28000a0, 0x0e0c3c20]),
+            // d28000a2 mov x2, #5; c8027c83 stxr w2, x3, [x4]; aa0203e0 mov x0, x2
+            ("stxr status", &[0xd28000a2, 0xc8027c83, 0xaa0203e0]),
+            // d28000a5 mov x5, #5; c805fce6 stlxr w5, x6, [x7]; aa0503e0 mov x0, x5
+            ("stlxr status", &[0xd28000a5, 0xc805fce6, 0xaa0503e0]),
+            // d28000a1 mov x1, #5; c87f0440 ldxp x0, x1, [x2]; aa0103e0 mov x0, x1
+            ("ldxp second register", &[0xd28000a1, 0xc87f0440, 0xaa0103e0]),
+        ];
+        let mut stale = Vec::new();
+        for (what, body) in cases {
+            let mut code = body.to_vec();
+            code.push(0xd65f03c0); // ret
+            let f = decomp_arm64(words(&code));
+            let ret = return_line(&f);
+            if defined_as_five(&f).is_some_and(|v| names_var(ret, &v)) || ret.contains("0x5") {
+                stale.push(format!("{what}: {ret}"));
+            }
+        }
+        assert!(stale.is_empty(), "the value from before the instruction is returned:\n  {}", stale.join("\n  "));
+    }
+
+    /// A SIMD structure load post-indexed writes its base back: by the bytes it
+    /// transferred for the immediate form, by `Xm` for the register form. The
+    /// lift returned the old base for both.
+    #[test]
+    fn an_arm64_simd_post_indexed_load_writes_its_base_back() {
+        // 4cdf7020 ld1 {v0.16b}, [x1], #16; aa0103e0 mov x0, x1; d65f03c0 ret
+        let f = decomp_arm64(words(&[0x4cdf7020, 0xaa0103e0, 0xd65f03c0]));
+        assert!(return_line(&f).contains("(x1 + 0x10)"), "{:#?}", f.pseudo);
+        // 4cc3a840 ld1 {v0.4s, v1.4s}, [x2], x3; aa0203e0 mov x0, x2; d65f03c0 ret
+        let f = decomp_arm64(words(&[0x4cc3a840, 0xaa0203e0, 0xd65f03c0]));
+        assert!(return_line(&f).contains("(x2 + x3)"), "{:#?}", f.pseudo);
     }
 
     #[test]

@@ -122,6 +122,12 @@ static SYSV_CC: CallConv = CallConv {
 /// whose `name` matches the target's ABI (`MemorySource::abi_name`).
 static X64_CCS: &[CallConv] = &[WIN64_CC, SYSV_CC];
 
+/// What an x86-64 `syscall` leaves changed when control comes back: the result
+/// (`rax`, under the Linux and the Windows kernel ABI alike), and the two
+/// registers the instruction itself overwrites — `rcx` with the return address,
+/// `r11` with RFLAGS. See [`X64::access`].
+static SYSCALL_WRITES: &[Reg] = &[x64reg::RAX, x64reg::RCX, x64reg::R11];
+
 // 32-bit i386 **cdecl**: all integer arguments are pushed on the stack (no
 // argument *registers*), the result comes back in `eax`, and `eax`/`ecx`/`edx`
 // are caller-saved. With an empty `int_args`, register-based argument recovery
@@ -416,6 +422,23 @@ impl X64 {
                     push_unique(&mut access.writes, name);
                 }
                 _ => {}
+            }
+        }
+        // What the kernel hands back. Iced lists what `syscall` does itself —
+        // `rcx` takes the return address, `r11` the saved RFLAGS — and not the
+        // result, which is a convention of the code on the other side: both the
+        // Linux and the Windows x86-64 kernel ABIs return it in `rax`. Without
+        // the write, every system-call wrapper (`mov eax, NR; syscall; cmp
+        // rax, -0x1000`) tested the call *number* against the error range,
+        // since the `mov` was the last definition of `rax` anyone stated.
+        // 64-bit only: that is the ABI the decision was made for, and a
+        // 32-bit image enters the kernel by other instructions with other
+        // conventions.
+        if self.bitness == 64 && instr.mnemonic() == Mnemonic::Syscall {
+            for r in SYSCALL_WRITES {
+                if let Some(name) = self.regfile.name(*r) {
+                    push_unique(&mut access.writes, name.to_string());
+                }
             }
         }
 

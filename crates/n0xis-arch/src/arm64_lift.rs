@@ -46,7 +46,7 @@ use disarm64::decoder::{self, InsnId, Opcode};
 use disarm64_defn::defn::{Insn, InsnOpcode};
 use disarm64_defn::{InsnBitField, InsnFlags, InsnOperandKind};
 
-use crate::arm64::{Arm64, bitrange, gpr_name, sign_extend};
+use crate::arm64::{Arm64, WbAmount, bitrange, gpr_name, sign_extend};
 use crate::insn::DecodedInsn;
 use crate::microir::{
     BinOp, Bits, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MicroExpr, MicroStmt, UnOp,
@@ -550,8 +550,9 @@ fn lift_opaque(arch: &Arm64, insn: &DecodedInsn) -> Vec<MicroStmt> {
     // A pre-/post-indexed load/store updates its base register by a delta that
     // is fully known from the encoding, even though the memory transfer stays
     // opaque. `reg_access` reports that base among its writes; emit the *precise*
-    // `base := base + K` for it here, so the base is not lost to the `Unknown`
-    // below. Only the base is modelled — the loaded value (`Rt`/`Rt2`) and the
+    // `base := base + K` for it here — or `base := base + Xm` for a SIMD
+    // structure access post-indexed by a register — so the base is not lost to
+    // the `Unknown` below. Only the base is modelled — the loaded value (`Rt`/`Rt2`) and the
     // transfer itself remain opaque. `arm64::writeback` is the same source
     // `reg_access` used, so the two agree on which register is the base.
     let wb = raw(insn).and_then(decoder::decode).and_then(|op| crate::arm64::writeback(&op));
@@ -563,14 +564,16 @@ fn lift_opaque(arch: &Arm64, insn: &DecodedInsn) -> Vec<MicroStmt> {
             continue;
         }
         match &wb {
-            Some(wb) if wb.base == w => out.push(MicroStmt::Assign {
-                dst: w,
-                value: MicroExpr::binary(
-                    BinOp::Add,
-                    MicroExpr::var(wb.base.as_str()),
-                    MicroExpr::constant(i128::from(wb.delta), WORD_BITS),
-                ),
-            }),
+            Some(wb) if wb.base == w => {
+                let amount = match &wb.amount {
+                    WbAmount::Bytes(delta) => MicroExpr::constant(i128::from(*delta), WORD_BITS),
+                    WbAmount::Reg(r) => MicroExpr::var(r.as_str()),
+                };
+                out.push(MicroStmt::Assign {
+                    dst: w,
+                    value: MicroExpr::binary(BinOp::Add, MicroExpr::var(wb.base.as_str()), amount),
+                })
+            }
             _ => out
                 .push(MicroStmt::Assign { dst: w, value: MicroExpr::Unknown(insn.text.clone()) }),
         }
@@ -1784,5 +1787,104 @@ mod tests {
             "nothing is written to x0: {stmts:?}"
         );
         assert_eq!(unlifted_of(&stmts), (true, vec!["x1".to_string()], crate::MemEffect::Read));
+    }
+
+    /// The general registers a lift invalidates with `Unknown`, sorted.
+    fn invalidated(stmts: &[MicroStmt]) -> Vec<String> {
+        let mut v: Vec<String> = stmts
+            .iter()
+            .filter_map(|s| match s {
+                MicroStmt::Assign { dst, value: MicroExpr::Unknown(_) } => Some(dst.clone()),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// **An instruction outside the access table writes what its operands
+    /// name.** Each of these wrote a general register and was recorded as
+    /// writing nothing, so the value from before it stayed readable. Both
+    /// directions are pinned: the destination is invalidated, and a register
+    /// the instruction only reads is not — `msr`, `sys` (`dc zva` is one), the
+    /// `fmov` into a vector register and the stored register of `stxr` keep
+    /// their values. Every word is llvm-mc's (`-triple=aarch64`).
+    #[test]
+    fn an_instruction_outside_the_table_invalidates_the_registers_its_operands_write() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let table: &[(u32, &str, &[&str])] = &[
+            (0xd53bd040, "mrs x0, tpidr_el0", &["x0"]),
+            (0xd5287500, "sysl x0, #0, c7, c5, #0", &["x0"]),
+            (0x9e660000, "fmov x0, d0", &["x0"]),
+            (0x1e260041, "fmov w1, s2", &["x1"]),
+            (0x9e780000, "fcvtzs x0, d0", &["x0"]),
+            (0x0e0c3c20, "mov w0, v1.s[1]", &["x0"]),
+            (0x4e022c20, "smov x0, v1.h[0]", &["x0"]),
+            (0xdac01820, "ctz x0, x1", &["x0"]),
+            (0xc8027c83, "stxr w2, x3, [x4]", &["x2"]),
+            (0xc805fce6, "stlxr w5, x6, [x7]", &["x5"]),
+            (0xc8230440, "stxp w3, x0, x1, [x2]", &["x3"]),
+            (0xc87f0440, "ldxp x0, x1, [x2]", &["x0", "x1"]),
+            (0xd52b7720, "gcspopm x0", &["x0"]),
+            (0xd51bd040, "msr tpidr_el0, x0", &[]),
+            (0xd5087500, "sys #0, c7, c5, #0, x0", &[]),
+            (0xd50b7420, "dc zva, x0", &[]),
+            (0x9e670020, "fmov d0, x1", &[]),
+            (0x4e040c20, "dup v0.4s, w1", &[]),
+        ];
+        let wrong: Vec<String> = table
+            .iter()
+            .filter_map(|&(word, text, expected)| {
+                let got = invalidated(&lift_word(word));
+                (got != s(expected)).then(|| format!("[{word:08x}] {text}: {got:?}, expected {expected:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "\n  {}", wrong.join("\n  "));
+        // c8a07c41  cas x0, x1, [x2] — `x0` receives the old memory value. The
+        // new value `x1` is only read, but nothing in the definition says so:
+        // it is invalidated too, which costs a value and never states a wrong
+        // one.
+        assert!(invalidated(&lift_word(0xc8a07c41)).contains(&"x0".to_string()));
+        // f8200041  ldadd x0, x1, [x2] — `x1` receives the old memory value.
+        assert!(invalidated(&lift_word(0xf8200041)).contains(&"x1".to_string()));
+        // 48207c82  casp x0, x1, x2, x3, [x4] — the compare pair is written.
+        let casp = invalidated(&lift_word(0x48207c82));
+        assert!(casp.contains(&"x0".to_string()) && casp.contains(&"x1".to_string()), "{casp:?}");
+        // f83fd020  ld64b x0, [x1] — eight consecutive registers.
+        assert_eq!(invalidated(&lift_word(0xf83fd020)), s(&["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"]));
+        // 19010440  cpyfp [x0]!, [x1]!, x2! — all three are updated.
+        assert_eq!(invalidated(&lift_word(0x19010440)), s(&["x0", "x1", "x2"]));
+    }
+
+    /// **The base a SIMD structure access writes back, against llvm-mc.** The
+    /// immediate post-index form adds the bytes transferred — an amount the
+    /// encoding does not carry, so it is computed from the register count, the
+    /// element size and `Q`, and each row is the immediate llvm-mc printed for
+    /// that word. The register form adds `Xm`.
+    #[test]
+    fn a_simd_structure_writeback_adds_what_the_assembler_prints() {
+        let table: &[(u32, &str, i128)] = &[
+            (0x4cdf7020, "x1", 16), // ld1 { v0.16b }, [x1], #16
+            (0x4c9f7020, "x1", 16), // st1 { v0.16b }, [x1], #16
+            (0x4cdf8820, "x1", 32), // ld2 { v0.4s, v1.4s }, [x1], #32
+            (0x0cdf6020, "x1", 24), // ld1 { v0.8b, v1.8b, v2.8b }, [x1], #24
+            (0x4cdf23e0, "sp", 64), // ld1 { v0.16b, v1.16b, v2.16b, v3.16b }, [sp], #64
+            (0x0ddf2c20, "x1", 3),  // ld3 { v0.b, v1.b, v2.b }[3], [x1], #3
+            (0x0dbf5020, "x1", 4),  // st2 { v0.h, v1.h }[2], [x1], #4
+            (0x0ddf9020, "x1", 4),  // ld1 { v0.s }[1], [x1], #4
+            (0x4ddfc820, "x1", 4),  // ld1r { v0.4s }, [x1], #4
+            (0x4dffec20, "x1", 32), // ld4r { v0.2d, v1.2d, v2.2d, v3.2d }, [x1], #32
+        ];
+        for &(word, base, expected) in table {
+            let stmts = lift_word(word);
+            assert!(
+                stmts.contains(&assign(base, MicroExpr::binary(BinOp::Add, MicroExpr::var(base), MicroExpr::constant(expected, 64)))),
+                "[{word:08x}] {base} += {expected}: {stmts:?}"
+            );
+        }
+        // 4dc58420  ld1 { v0.d }[1], [x1], x5
+        assert!(lift_word(0x4dc58420).contains(&assign("x1", MicroExpr::binary(BinOp::Add, MicroExpr::var("x1"), MicroExpr::var("x5")))));
+        // 4cc3a840  ld1 { v0.4s, v1.4s }, [x2], x3
+        assert!(lift_word(0x4cc3a840).contains(&assign("x2", MicroExpr::binary(BinOp::Add, MicroExpr::var("x2"), MicroExpr::var("x3")))));
     }
 }
