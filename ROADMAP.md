@@ -1305,14 +1305,20 @@ outside this codebase that can prove it wrong.
    trims them (`sysconf` called with four for its one); seven forwarded
    arguments are missing (`secure_getenv` calls `getenv()`). Bounding a call's
    arguments by its callee's recovered arity, or letting an argument be
-   unknown, is the open design question. The same work found, still open: x64
-   `syscall`
-   writes `rax` but the lift says nothing about it, so a system-call wrapper
-   compares the call number, not the result, with `-0x1000`; arm64 instruction
-   classes the access table does not model write nothing (`mrs x0, tpidr_el0`
-   keeps an older `x0`); stack slots at `+8` and `-8` render under one name
-   (312 of 2 323 libc functions declare a local twice); A32 `push` and `pop`
-   carry no memory effect.
+   unknown, is the open design question. The same work found four more wrong
+   answers, closed the same night: x64 `syscall` did not write `rax`, so a
+   system-call wrapper compared the call number with `-0x1000` (329 such reads
+   in libc, now 0); arm64 instructions outside the access table wrote nothing
+   (`mrs x0, tpidr_el0` kept an older `x0`); stack slots at `+8` and `-8`
+   shared a name (322 libc functions declared one twice, now 0); A32 `push`
+   and `pop` stored and loaded nothing. Still open from it: arm64 `svc #0`
+   does not write `x0`; a system-call wrapper's parameters are not recovered
+   (`kill(void)`), since nothing says which registers a given call number
+   reads; a stack local is named from the offset off whichever SSA version of
+   the stack pointer it used, not off the entry frame, so one name can cover
+   several slots; a saved rename keyed by an old local name needs a bridge to
+   the new names; MTE `stg` write-back is not scaled; and an A32
+   single-register `pop` (`ldr r4, [sp], #4`) stays `asm`.
    **Still open on A32:** byte, halfword and dual loads and stores, and
    `ldm`/`stm` beyond push and pop, are still `asm`. A32 reads of
    `pc` lift as an unknown `pc.0` instead of the instruction's address plus 8,
