@@ -538,8 +538,15 @@ pub(crate) fn lift(arch: &Arm64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt
 /// reconstructs against a compare some `ccmp` or `fcmp` had already replaced,
 /// and a missing condition costs less than a wrong one. Same policy as
 /// `x64_lift::lift_opaque`, which is where it was decided.
+///
+/// What it **reads** and does to **memory** is stated on the statement, from
+/// [`Arm64::unlifted_effect`]. That matters more here than on any other
+/// architecture: every load and store is in this fallback, so without it a
+/// value computed only to be stored was deleted as dead, and the store itself
+/// was invisible to everything that reasons about memory.
 fn lift_opaque(arch: &Arm64, insn: &DecodedInsn) -> Vec<MicroStmt> {
-    let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+    let (reads, mem) = arch.unlifted_effect(insn);
+    let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone(), reads, mem }];
     // A pre-/post-indexed load/store updates its base register by a delta that
     // is fully known from the encoding, even though the memory transfer stays
     // opaque. `reg_access` reports that base among its writes; emit the *precise*
@@ -1725,5 +1732,57 @@ mod tests {
             let printed_w = insn.text.contains(" w") || insn.text.contains("\tw");
             assert_eq!(printed_w, expect == 32, "{}", insn.text);
         }
+    }
+
+    /// The `Unlifted` statement of a lift: whether its reads are exact, the
+    /// reads sorted, and its memory effect.
+    fn unlifted_of(stmts: &[MicroStmt]) -> (bool, Vec<String>, crate::MemEffect) {
+        let Some(MicroStmt::Unlifted { reads, mem, .. }) = stmts.iter().find(|s| matches!(s, MicroStmt::Unlifted { .. })) else {
+            panic!("no unlifted statement in {stmts:?}");
+        };
+        let mut regs = reads.regs().to_vec();
+        regs.sort();
+        (reads.exact().is_some(), regs, *mem)
+    }
+
+    /// Every load and store is `asm` in this lift, so this is where the read
+    /// set and the memory effect carry the most: what a store consumes and that
+    /// it writes memory are stated on the statement. Encodings are llvm-mc's
+    /// (`-triple=aarch64 -mattr=+lse`).
+    #[test]
+    fn an_unlifted_instruction_states_its_reads_and_its_memory_effect() {
+        use crate::MemEffect;
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // f9000022  str x2, [x1] — the stored register and the base.
+        assert_eq!(unlifted_of(&lift_word(0xf9000022)), (true, s(&["x1", "x2"]), MemEffect::Write));
+        // 1e622820  fadd d0, d1, d2 — no general register and no memory: the
+        // IR names no floating-point register, so there is nothing to read.
+        assert_eq!(unlifted_of(&lift_word(0x1e622820)), (true, s(&[]), MemEffect::NoAccess));
+        // 4e040c20  dup v0.4s, w1 — reads `w1`, in a class the access table
+        // does not model: unknown, never an exact list that might miss it.
+        let stmts = lift_word(0x4e040c20);
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { reads: crate::UnliftedReads::Unknown, mem: MemEffect::NoAccess, .. })),
+            "{stmts:?}"
+        );
+        // f8210002  ldadd x1, x2, [x0] — an atomic reads and writes memory.
+        assert_eq!(unlifted_of(&lift_word(0xf8210002)).2, MemEffect::ReadWrite);
+        // c8007c41  stxr w0, x1, [x2] — the status register is an operand the
+        // table does not read, so the reads are not exact.
+        assert!(!unlifted_of(&lift_word(0xc8007c41)).0);
+    }
+
+    /// `ldr d0, [x1]` names register 0 in the transfer field as `Ft`, a
+    /// floating-point register. Read as a general register it invalidated
+    /// `x0`: `mov x0, #5; ldr d0, [x1]; ret` returned an unknown instead of 5.
+    #[test]
+    fn a_floating_point_load_does_not_touch_the_general_register_of_the_same_number() {
+        // fd400020  ldr d0, [x1]
+        let stmts = lift_word(0xfd400020);
+        assert!(
+            !stmts.iter().any(|s| matches!(s, MicroStmt::Assign { dst, .. } if dst == "x0")),
+            "nothing is written to x0: {stmts:?}"
+        );
+        assert_eq!(unlifted_of(&stmts), (true, vec!["x1".to_string()], crate::MemEffect::Read));
     }
 }

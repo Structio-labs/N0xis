@@ -23,6 +23,7 @@ use crate::insn::DecodedInsn;
 use crate::microir::{
     BinOp, Bits, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MicroExpr, MicroStmt, UnOp,
 };
+use crate::x64::ir_reg_name;
 use crate::flags::signed_view;
 use crate::{Arch, CallConv, RegisterFile};
 
@@ -286,7 +287,7 @@ fn read_operand(instr: &Instruction, idx: u32) -> MicroExpr {
 /// misleading here: a legacy `movaps`/`movdqu` only touches the low 128-bit
 /// lane, so it should read as `xmm6`, not imply a full 512-bit `zmm6` write.
 fn vector_reg_name(r: Register) -> String {
-    reg_name(r).replacen("zmm", "xmm", 1)
+    ir_reg_name(&reg_name(r))
 }
 
 /// One operand of a vector move as an rvalue: an xmm register var, or a load of
@@ -855,7 +856,7 @@ fn call_target(instr: &Instruction, insn: &DecodedInsn) -> CallTarget {
 /// so nothing in this frame can observe a clobbered register afterwards.
 pub(crate) fn lift_tail_call(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
     let Some(instr) = decode_raw(insn, arch.bitness()) else {
-        return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+        return vec![MicroStmt::unlifted_unknown(insn.va, &insn.text)];
     };
     let cc = cc_for(arch, abi);
     let ret = ret_reg(arch.regs(), cc);
@@ -920,7 +921,7 @@ pub(crate) fn lift_named_call(insn: &DecodedInsn, callee: &str) -> Option<Vec<Mi
 
 pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
     let Some(instr) = decode_raw(insn, arch.bitness()) else {
-        return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+        return vec![MicroStmt::unlifted_unknown(insn.va, &insn.text)];
     };
     let mut out: Vec<MicroStmt> = Vec::new();
     let mn = instr.mnemonic();
@@ -2117,10 +2118,21 @@ fn lift_locked(arch: &crate::X64, insn: &DecodedInsn, instr: &Instruction, mn: M
 /// invalidate everything it might have written, using the arch's own
 /// register-access info so a later read can't reuse a stale SSA value across an
 /// instruction we don't understand.
+///
+/// The statement also carries what the instruction **reads** and what it does
+/// to **memory**, from the same iced decode ([`crate::X64::access`]): without
+/// the reads, `mov r8, r9; crc32 eax, r8b` lost `r8 = r9` as dead and `r9` as a
+/// parameter; without the memory effect, `mov [rcx],edx; movnti [rcx],r8d;
+/// mov eax,[rcx]` returned `edx`.
 fn lift_opaque(arch: &crate::X64, insn: &DecodedInsn, mn: Mnemonic, out: &mut Vec<MicroStmt>) {
-    out.push(MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() });
-    for w in &arch.reg_access(insn).writes {
-        out.push(MicroStmt::Assign { dst: w.clone(), value: MicroExpr::Unknown(insn.text.clone()) });
+    let Some((regs, reads, mem)) = arch.access(insn) else {
+        out.push(MicroStmt::unlifted_unknown(insn.va, &insn.text));
+        out.push(opaque_flags(mn));
+        return;
+    };
+    out.push(MicroStmt::Unlifted { va: insn.va, text: insn.text.clone(), reads, mem });
+    for w in &regs.writes {
+        out.push(MicroStmt::Assign { dst: ir_reg_name(w), value: MicroExpr::Unknown(insn.text.clone()) });
     }
     out.push(opaque_flags(mn));
 }
@@ -2334,6 +2346,62 @@ mod tests {
             vec![MicroStmt::Assign { dst: "xmm0".into(), value: MicroExpr::load(MicroExpr::var("rax"), 256, false) }],
             "the width comes from the ymm operand; the name stays the one SSA name this model gives a vector register"
         );
+    }
+
+    /// The `Unlifted` statement of a lift, as its reads (sorted, for a
+    /// comparison that does not depend on iced's order) and memory effect.
+    fn unlifted_of(stmts: &[MicroStmt]) -> (bool, Vec<String>, crate::MemEffect) {
+        let Some(MicroStmt::Unlifted { reads, mem, .. }) = stmts.iter().find(|s| matches!(s, MicroStmt::Unlifted { .. })) else {
+            panic!("no unlifted statement in {stmts:?}");
+        };
+        let mut regs = reads.regs().to_vec();
+        regs.sort();
+        (reads.exact().is_some(), regs, *mem)
+    }
+
+    /// An instruction the lift leaves as `asm` states what it reads and what it
+    /// does to memory, from iced's own decode. Every encoding is llvm-mc's.
+    #[test]
+    fn an_unlifted_instruction_states_its_reads_and_its_memory_effect() {
+        use crate::{MemEffect, UnliftedReads};
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // f2 45 0f 38 f0 c8  crc32 r9d, r8b — reads its accumulator and its
+        // source, and has no memory operand.
+        assert_eq!(unlifted_of(&lift_one(&[0xF2, 0x45, 0x0F, 0x38, 0xF0, 0xC8])), (true, s(&["r8", "r9"]), MemEffect::NoAccess));
+        // 44 0f c3 01  movnti dword ptr [rcx], r8d — a store: the address
+        // register and the stored one.
+        assert_eq!(unlifted_of(&lift_one(&[0x44, 0x0F, 0xC3, 0x01])), (true, s(&["r8", "rcx"]), MemEffect::Write));
+        // f3 aa  rep stosb — every operand implicit: `al` stored at `[rdi]`,
+        // `rcx` times.
+        assert_eq!(unlifted_of(&lift_one(&[0xF3, 0xAA])), (true, s(&["rax", "rcx", "rdi"]), MemEffect::Write));
+        // d9 e5  fxam — reads the x87 stack top, which is a position and not a
+        // register: after `fld` it is a different value under the same name,
+        // and the IR models neither.
+        assert_eq!(unlifted_of(&lift_one(&[0xD9, 0xE5])), (true, s(&[]), MemEffect::NoAccess));
+        // 0f 05  syscall — what runs next reads the arguments and may write
+        // any memory, and iced records neither.
+        let stmts = lift_one(&[0x0F, 0x05]);
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { reads: UnliftedReads::Unknown, mem: MemEffect::Unknown, .. })),
+            "a system call may read any register and touch any memory: {stmts:?}"
+        );
+    }
+
+    /// The vector registers an unmodelled instruction touches are the ones the
+    /// IR names. `reg_access` spells `xmm0` as `zmm0`, and the fallback used
+    /// that spelling for its invalidation — a variable nothing reads — so
+    /// `movsd xmm0,[rsi]; aesenc xmm0,xmm1; movsd [rdi],xmm0` stored the value
+    /// from before the `aesenc`.
+    #[test]
+    fn an_unlifted_vector_instruction_invalidates_and_reads_the_xmm_registers() {
+        // 66 0f 38 dc c1  aesenc xmm0, xmm1
+        let stmts = lift_one(&[0x66, 0x0F, 0x38, 0xDC, 0xC1]);
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Assign { dst, value: MicroExpr::Unknown(_) } if dst == "xmm0")),
+            "the destination is invalidated under the IR's name: {stmts:?}"
+        );
+        let (_, regs, _) = unlifted_of(&stmts);
+        assert_eq!(regs, vec!["xmm0".to_string(), "xmm1".to_string()]);
     }
 
     #[test]

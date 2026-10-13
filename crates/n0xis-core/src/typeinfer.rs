@@ -602,7 +602,12 @@ fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
                     }
                 }
                 MicroStmt::Return(Some(e)) => walk(e, &mut out),
-                MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+                // An unlifted instruction's operands are its own, like an
+                // intrinsic's — when the decoder named them. A bound names
+                // every register the architecture has, and counting it would
+                // give the function the convention's whole argument list.
+                MicroStmt::Unlifted { reads, .. } => out.extend(reads.exact().unwrap_or_default().iter().cloned()),
+                MicroStmt::Return(None) | MicroStmt::Nop => {}
             }
         }
         if let Some(c) = &b.condition {
@@ -1756,6 +1761,34 @@ mod tests {
     /// A phi input is evidence exactly when the phi's own result is used — so
     /// this asserts both halves on one graph, or it would pass by counting
     /// nothing at all.
+    /// An unlifted instruction's operands are evidence of a parameter when the
+    /// decoder named them, and not when the list is a bound — every register
+    /// the architecture has, or the argument registers a call may consume.
+    /// Both halves on one block, or the test passes by counting nothing.
+    #[test]
+    fn an_unlifted_read_is_parameter_evidence_only_when_it_is_exact() {
+        let unlifted = |reads: n0xis_arch::UnliftedReads| SsaStmt {
+            va: Va(0x1000),
+            stmt: MicroStmt::Unlifted { va: Va(0x1000), text: "asm".into(), reads, mem: n0xis_arch::MemEffect::NoAccess },
+        };
+        let block = SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1008),
+            terminator: "ret".into(),
+            successors: vec![],
+            phis: vec![],
+            stmts: vec![
+                unlifted(n0xis_arch::UnliftedReads::Exact(vec!["r1.0".into()])),
+                unlifted(n0xis_arch::UnliftedReads::Bound(vec!["r2.0".into(), "r3.0".into()])),
+            ],
+            condition: None,
+        };
+        let used = collect_definite_param_regs(std::slice::from_ref(&block));
+        assert!(used.contains("r1.0"), "a register the instruction names is read: {used:?}");
+        assert!(!used.contains("r2.0") && !used.contains("r3.0"), "a bound is not evidence: {used:?}");
+    }
+
     #[test]
     fn a_phi_input_counts_only_when_the_phi_itself_is_used() {
         fn phi(var: &str) -> Phi {

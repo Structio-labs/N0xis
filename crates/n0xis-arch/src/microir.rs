@@ -322,5 +322,143 @@ pub enum MicroStmt {
     Nop,
     /// Explicit "not yet lowered" — preserves the instruction verbatim so no
     /// semantics are silently lost (CONCEPT §3 rule 6).
-    Unlifted { va: Va, text: String },
+    ///
+    /// **And it states what it consumes.** The register *writes* of an
+    /// instruction this statement stands for are separate `Assign … = Unknown`
+    /// statements beside it; its reads and its memory effect have nowhere else
+    /// to live, so they are here, and every lift has to answer both. Without
+    /// them the statement read nothing and touched no memory: a definition only
+    /// it consumed was dead (A32 `mov r8, r3; strb r8, [r1]` lost `r8 = r3`, and
+    /// with it two parameters), and a store it performed was invisible, so a
+    /// later load was forwarded the value from before it (`str r3, [r1]; strb
+    /// r2, [r1]; ldr r0, [r1]` returned `r3`).
+    Unlifted { va: Va, text: String, reads: UnliftedReads, mem: MemEffect },
+}
+
+/// The registers an [`MicroStmt::Unlifted`] instruction reads, normalized the
+/// way [`RegAccess`](crate::RegAccess) normalizes them and spelled the way the
+/// lift names them. After SSA construction each name is the version that
+/// reaches the instruction (`r8.1`).
+///
+/// Three variants because the three answers mean different things, and a
+/// list alone cannot say which it is:
+///
+/// - [`Exact`](UnliftedReads::Exact) — the decoder named the registers, and
+///   the instruction reads each of them. Each one is a real use: it keeps its
+///   definition alive, and an entry version in it is evidence of a parameter.
+/// - [`Bound`](UnliftedReads::Bound) — registers the instruction **may** read,
+///   which is not the same as reads it: the calling convention's reads rather
+///   than the encoding's (a call left as `asm` consumes whichever argument
+///   registers its callee takes). Dead-code elimination and liveness honour
+///   it, so they stay sound; nothing may read it as evidence that any one of
+///   them is read — counted as such, every function with one conditional call
+///   claimed the convention's whole argument list.
+/// - [`Unknown`](UnliftedReads::Unknown) — the decoder could not say (a byte
+///   that does not decode, an encoding class the arch's access model does not
+///   cover, a trap into code that is not here). It may read any register. No
+///   list is written down, because no list the lift could write is wide enough:
+///   a register the architecture's conventions never mention can still hold a
+///   value this function computed. The SSA builder states it as a
+///   [`Bound`](UnliftedReads::Bound) of every variable the function names,
+///   which is every register that has a definition to keep alive.
+///
+/// The register names are pinned to the instruction text: `strb r8, [r1]`
+/// reads `r8`, so no pass may substitute a copy's source for the version it
+/// names — that would leave the text pointing at a register nothing shows a
+/// value for.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "regs", rename_all = "snake_case")]
+pub enum UnliftedReads {
+    Exact(Vec<String>),
+    Bound(Vec<String>),
+    Unknown,
+}
+
+impl UnliftedReads {
+    /// The names, whichever kind of answer they are — none for
+    /// [`Unknown`](UnliftedReads::Unknown), which only exists before SSA.
+    pub fn regs(&self) -> &[String] {
+        match self {
+            UnliftedReads::Exact(r) | UnliftedReads::Bound(r) => r,
+            UnliftedReads::Unknown => &[],
+        }
+    }
+
+    /// The names when the decoder stated them — `None` otherwise. The only
+    /// accessor that may feed a claim about the program (a parameter).
+    pub fn exact(&self) -> Option<&[String]> {
+        match self {
+            UnliftedReads::Exact(r) => Some(r),
+            UnliftedReads::Bound(_) | UnliftedReads::Unknown => None,
+        }
+    }
+
+    /// The same kind of answer with every name rewritten — the SSA renamer's
+    /// entry point. [`Unknown`](UnliftedReads::Unknown) has no names and stays
+    /// what it is; the renamer expands it itself.
+    pub fn map_names(&self, mut f: impl FnMut(&str) -> String) -> UnliftedReads {
+        let go = |r: &[String], f: &mut dyn FnMut(&str) -> String| r.iter().map(|n| f(n)).collect();
+        match self {
+            UnliftedReads::Exact(r) => UnliftedReads::Exact(go(r, &mut f)),
+            UnliftedReads::Bound(r) => UnliftedReads::Bound(go(r, &mut f)),
+            UnliftedReads::Unknown => UnliftedReads::Unknown,
+        }
+    }
+}
+
+impl MicroStmt {
+    /// The [`MicroStmt::Unlifted`] for an instruction nothing could be learned
+    /// about — bytes that did not decode, or an arch with no lift: it may read
+    /// any register and may read and write any memory. One construction, so
+    /// the meaning of "unknown" is written once.
+    pub fn unlifted_unknown(va: Va, text: &str) -> MicroStmt {
+        MicroStmt::Unlifted { va, text: text.to_string(), reads: UnliftedReads::Unknown, mem: MemEffect::Unknown }
+    }
+}
+
+/// What an [`MicroStmt::Unlifted`] instruction does to memory, as far as its
+/// decoder can tell.
+///
+/// The consumers ask two questions — [`may_read`](MemEffect::may_read) and
+/// [`may_write`](MemEffect::may_write) — and the address is never known (the
+/// instruction was not lowered, so neither was its operand). A write is
+/// therefore a store to unknown memory that may alias everything, and a read a
+/// load that may observe any earlier store.
+///
+/// [`NoAccess`](MemEffect::NoAccess) is a claim and must be earned: only where
+/// the decoder shows no memory operand **and** no implicit access (a stack
+/// push, a string instruction, a trap into code that may write anything).
+/// Where it cannot show that, the answer is [`Unknown`](MemEffect::Unknown),
+/// which every consumer treats exactly as [`ReadWrite`](MemEffect::ReadWrite);
+/// the two are kept apart so the record says whether the decoder knew.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemEffect {
+    NoAccess,
+    Read,
+    Write,
+    ReadWrite,
+    Unknown,
+}
+
+impl MemEffect {
+    /// Read and write folded into one answer, for an instruction whose
+    /// accesses are counted one at a time (`movs` reads one operand and writes
+    /// the other).
+    pub fn from_access(read: bool, write: bool) -> MemEffect {
+        match (read, write) {
+            (false, false) => MemEffect::NoAccess,
+            (true, false) => MemEffect::Read,
+            (false, true) => MemEffect::Write,
+            (true, true) => MemEffect::ReadWrite,
+        }
+    }
+
+    pub fn may_read(self) -> bool {
+        matches!(self, MemEffect::Read | MemEffect::ReadWrite | MemEffect::Unknown)
+    }
+
+    pub fn may_write(self) -> bool {
+        matches!(self, MemEffect::Write | MemEffect::ReadWrite | MemEffect::Unknown)
+    }
 }

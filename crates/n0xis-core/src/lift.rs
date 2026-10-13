@@ -72,6 +72,8 @@ impl Pass for LiftPass {
                 // not sink the whole function: re-decoding it here would error.
                 // Emit it as an unlifted marker instead — sound (the byte is
                 // shown verbatim, never dropped) and lets the rest decompile.
+                // Nothing about it is known, so it is stated as reading any
+                // register and touching any memory.
                 let decoded = match ctx.source.read(insn.va, insn.len as usize) {
                     Ok(bytes) => ctx.arch.decode(&bytes, insn.va).ok(),
                     Err(_) => None,
@@ -109,7 +111,7 @@ impl Pass for LiftPass {
                     }
                     None => stmts.push(LiftedStmt {
                         va: insn.va,
-                        stmt: MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() },
+                        stmt: MicroStmt::unlifted_unknown(insn.va, &insn.text),
                     }),
                 }
             }

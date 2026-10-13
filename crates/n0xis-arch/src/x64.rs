@@ -16,7 +16,7 @@ use n0xis_contracts::{Reg, Va};
 use crate::frame::FrameInfo;
 use crate::insn::{DecodeError, DecodedInsn, InsnKind};
 use crate::switch::{SwitchDispatch, SwitchKind};
-use crate::{Arch, CallConv, RegAccess, RegDesc, RegisterFile};
+use crate::{Arch, CallConv, MemEffect, RegAccess, RegDesc, RegisterFile, UnliftedReads};
 
 /// Interned register ids for x86-64. Passes refer to registers *only* through
 /// these ids resolved against the [`RegisterFile`] — never by name literal.
@@ -375,6 +375,114 @@ fn normalize_reg_x64(reg: &str) -> String {
     }
 }
 
+impl X64 {
+    /// What iced says one instruction touches: the registers [`Arch::reg_access`]
+    /// reports, what an unlifted instruction states it reads (in the IR's
+    /// spelling, [`ir_reg_name`]), and its memory effect. One decode answers
+    /// all three, so the halves of an unlifted instruction cannot come from two
+    /// readings of it. `None` when the bytes do not decode.
+    ///
+    /// The memory half is iced's `used_memory`, which lists implicit accesses
+    /// as well as operands — the stack slot a `push` writes, both sides of a
+    /// `movs` — and marks an operand that names memory without touching it
+    /// (`lea`, a prefetch, a multi-byte `nop`) as no access. Iced cannot see
+    /// past a transfer of control, though: what a `syscall`, an `int` or an
+    /// enclave call does to memory is decided by code that is not here, and a
+    /// privileged instruction can invalidate whole caches. Those are
+    /// [`MemEffect::Unknown`], never "no access" — and their reads are
+    /// [`UnliftedReads::Unknown`]: what the code on the other side consumes (a
+    /// system call's arguments) is a convention iced does not record, so an
+    /// exact list would let the arguments' definitions be deleted as dead.
+    pub(crate) fn access(&self, insn: &DecodedInsn) -> Option<(RegAccess, UnliftedReads, MemEffect)> {
+        let mut decoder = Decoder::with_ip(self.bitness, &insn.bytes, insn.va.0, DecoderOptions::NONE);
+        if !decoder.can_decode() {
+            return None;
+        }
+        let instr = decoder.decode();
+        let mut factory = InstructionInfoFactory::new();
+        let info = factory.info(&instr);
+
+        let mut access = RegAccess::default();
+        for u in info.used_registers() {
+            let name = reg_name(u.register());
+            if name.is_empty() {
+                continue;
+            }
+            match u.access() {
+                OpAccess::Read | OpAccess::CondRead => push_unique(&mut access.reads, name),
+                OpAccess::Write | OpAccess::CondWrite => push_unique(&mut access.writes, name),
+                OpAccess::ReadWrite | OpAccess::ReadCondWrite => {
+                    push_unique(&mut access.reads, name.clone());
+                    push_unique(&mut access.writes, name);
+                }
+                _ => {}
+            }
+        }
+
+        let (mut read, mut write) = (false, false);
+        for m in info.used_memory() {
+            match m.access() {
+                OpAccess::None | OpAccess::NoMemAccess => {}
+                OpAccess::Read | OpAccess::CondRead => read = true,
+                OpAccess::Write | OpAccess::CondWrite => write = true,
+                // `ReadWrite`, `ReadCondWrite`, and anything a later iced adds:
+                // an access kind not named here is not evidence of no access.
+                _ => {
+                    read = true;
+                    write = true;
+                }
+            }
+        }
+        let leaves_the_function = matches!(
+            instr.flow_control(),
+            FlowControl::Call
+                | FlowControl::IndirectCall
+                | FlowControl::Return
+                | FlowControl::Interrupt
+                | FlowControl::XbeginXabortXend
+                | FlowControl::Exception
+        );
+        let enclave = matches!(instr.mnemonic(), Mnemonic::Encls | Mnemonic::Enclu | Mnemonic::Enclv);
+        let opaque = leaves_the_function || enclave || instr.is_privileged();
+        // The x87 stack registers are left out of what an unlifted instruction
+        // states it reads. Their names are positions, not registers: `st0` is
+        // whatever the stack top is *now*, and `fld` moves the top without iced
+        // reporting a write to anything. So `fld [rsp+8]; fxam` would state
+        // that `fxam` reads the entry value of `st0`, which is not the value it
+        // reads. Nothing in the IR models the x87 stack, so no definition of
+        // one exists for a read to keep alive.
+        let named: Vec<String> = access.reads.iter().filter(|r| !is_x87_stack(r)).map(|r| ir_reg_name(r)).collect();
+        let (reads, mem) = if opaque {
+            (UnliftedReads::Unknown, MemEffect::Unknown)
+        } else {
+            (UnliftedReads::Exact(named), MemEffect::from_access(read, write))
+        };
+        Some((access, reads, mem))
+    }
+}
+
+/// `st0`…`st7`, the x87 register stack, as `reg_access` spells it.
+fn is_x87_stack(name: &str) -> bool {
+    name.strip_prefix("st").is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+}
+
+/// A register named the way [`Arch::reg_access`] names it (`zmm0`, the widest
+/// view, as the identity of the vector register), respelled the way the lift
+/// names it in the IR (`xmm0`). The GPR spellings already agree.
+///
+/// The two seams are entitled to different spellings; what they may not do is
+/// meet without this. The lift's `asm` fallback invalidated every vector
+/// register an unmodelled instruction wrote under its `zmm` name, which is a
+/// variable nothing in the IR reads — so `movsd xmm0,[rsi]; aesenc xmm0,xmm1;
+/// movsd [rdi],xmm0` decompiled to `*rdi = *rsi`, the `aesenc` silently
+/// skipped.
+pub(crate) fn ir_reg_name(name: &str) -> String {
+    match name.strip_prefix("zmm") {
+        Some(n) => format!("xmm{n}"),
+        None => name.to_string(),
+    }
+}
+
 fn push_unique(v: &mut Vec<String>, s: String) {
     if !v.iter().any(|x| x == &s) {
         v.push(s);
@@ -613,31 +721,7 @@ impl Arch for X64 {
     }
 
     fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
-        let mut decoder = Decoder::with_ip(self.bitness, &insn.bytes, insn.va.0, DecoderOptions::NONE);
-        if !decoder.can_decode() {
-            return RegAccess::default();
-        }
-        let instr = decoder.decode();
-        let mut factory = InstructionInfoFactory::new();
-        let info = factory.info(&instr);
-
-        let mut access = RegAccess::default();
-        for u in info.used_registers() {
-            let name = reg_name(u.register());
-            if name.is_empty() {
-                continue;
-            }
-            match u.access() {
-                OpAccess::Read | OpAccess::CondRead => push_unique(&mut access.reads, name),
-                OpAccess::Write | OpAccess::CondWrite => push_unique(&mut access.writes, name),
-                OpAccess::ReadWrite | OpAccess::ReadCondWrite => {
-                    push_unique(&mut access.reads, name.clone());
-                    push_unique(&mut access.writes, name);
-                }
-                _ => {}
-            }
-        }
-        access
+        self.access(insn).map(|(regs, ..)| regs).unwrap_or_default()
     }
 
     fn lift(&self, insn: &DecodedInsn, abi: &str) -> Vec<crate::MicroStmt> {

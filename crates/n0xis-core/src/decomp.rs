@@ -987,6 +987,180 @@ mod tests {
         assert!(f.pseudo.iter().any(|l| l.contains("((int32_t)r3.1 >> 0x8)")), "asr r3, r3, #8 shifts the loaded value, signed: {:#?}", f.pseudo);
     }
 
+    fn decomp_arm64(code: Vec<u8>) -> PseudoFunction {
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = n0xis_arch::Arm64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        DecompPass.run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
+    }
+
+    /// The `return` line of a decompiled function.
+    fn return_line(f: &PseudoFunction) -> &str {
+        f.pseudo.iter().map(|l| l.trim()).find(|l| l.starts_with("return")).unwrap_or_else(|| panic!("no return in {:#?}", f.pseudo))
+    }
+
+    // An instruction the lift leaves as `asm` still reads registers and may
+    // touch memory. These are the shapes measured wrong before the `Unlifted`
+    // statement said so; every word is llvm-mc's, and each test checks the
+    // optimized style, because dead-code elimination and memory forwarding are
+    // where the two omissions turned into wrong answers.
+
+    /// `mov r8, r3; strb r8, [r1]; bx lr` — the `strb` is `asm`, and it is the
+    /// only reader of `r8`. With no reads on the statement `r8 = r3` was dead,
+    /// and `r1` and `r3` vanished from the signature (`sub_1000(uint32_t r0)`).
+    /// The same with `uxtb r8, r3` in place of the move.
+    #[test]
+    fn a_definition_only_an_unlifted_instruction_reads_is_kept() {
+        // e1a08003 mov r8, r3; e5c18000 strb r8, [r1]; e12fff1e bx lr
+        let f = decomp_a32_as(words(&[0xe1a08003, 0xe5c18000, 0xe12fff1e]), DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.contains("r8.1 = r3;")), "{:#?}", f.pseudo);
+        assert!(f.signature.contains("r1") && f.signature.contains("r3"), "r1 and r3 are read: {}", f.signature);
+        // e6ef8073 uxtb r8, r3
+        let f = decomp_a32_as(words(&[0xe6ef8073, 0xe5c18000, 0xe12fff1e]), DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.contains("r8.1 = (uint8_t)r3;")), "{:#?}", f.pseudo);
+        assert!(f.signature.contains("r1") && f.signature.contains("r3"), "r1 and r3 are read: {}", f.signature);
+    }
+
+    /// x86-64: `mov r8, r9; crc32 eax, r8b; ret`. `r9` is read through the
+    /// copy, so it is a parameter, and the copy stays.
+    #[test]
+    fn a_copy_only_an_unlifted_x64_instruction_reads_is_kept() {
+        // 4d 89 c8 mov r8, r9; f2 41 0f 38 f0 c0 crc32 eax, r8b; c3 ret
+        let f = decomp(vec![0x4d, 0x89, 0xc8, 0xf2, 0x41, 0x0f, 0x38, 0xf0, 0xc0, 0xc3], DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.contains("r8.1 = r9;")), "{:#?}", f.pseudo);
+        assert!(f.signature.contains("r9"), "r9 is read: {}", f.signature);
+    }
+
+    /// `str r3, [r1]; strb r2, [r1]; ldr r0, [r1]; bx lr` — the `strb` is `asm`
+    /// and overwrites the low byte. It was not a store to anything, so the load
+    /// was forwarded the first store's `r3`; the processor returns `r3` with its
+    /// low byte replaced by `r2`'s. Nothing here can compute that, so the load
+    /// has to stay a load.
+    #[test]
+    fn an_unlifted_store_is_not_forwarded_across() {
+        // e5813000 str r3, [r1]; e5c12000 strb r2, [r1]; e5910000 ldr r0, [r1]
+        let f = decomp_a32_as(words(&[0xe5813000, 0xe5c12000, 0xe5910000, 0xe12fff1e]), DecompStyle::Ssa);
+        let ret = return_line(&f);
+        assert!(!ret.contains("r3") && ret.contains("*r1"), "the load reads memory: {ret}");
+        // 89 11 mov [rcx], edx; 44 0f c3 01 movnti [rcx], r8d; 8b 01 mov eax, [rcx]; c3 ret
+        let f = decomp(vec![0x89, 0x11, 0x44, 0x0f, 0xc3, 0x01, 0x8b, 0x01, 0xc3], DecompStyle::Ssa);
+        let ret = return_line(&f);
+        assert!(!ret.contains("rdx") && ret.contains("*rcx"), "the load reads memory: {ret}");
+    }
+
+    /// …and an unlifted instruction that touches no memory does **not** stop
+    /// forwarding: the fix above must not cost every function with one `asm`
+    /// line its forwarded loads.
+    #[test]
+    fn an_unlifted_instruction_without_a_memory_operand_is_forwarded_across() {
+        // e5813000 str r3, [r1]; e1a02162 ror r2, r2, #2; e5910000 ldr r0, [r1]
+        let f = decomp_a32_as(words(&[0xe5813000, 0xe1a02162, 0xe5910000, 0xe12fff1e]), DecompStyle::Ssa);
+        assert_eq!(return_line(&f), "return r3;", "{:#?}", f.pseudo);
+        // 89 11 mov [rcx], edx; f2 45 0f 38 f0 c8 crc32 r9d, r8b; 8b 01 mov eax, [rcx]
+        let f = decomp(vec![0x89, 0x11, 0xf2, 0x45, 0x0f, 0x38, 0xf0, 0xc8, 0x8b, 0x01, 0xc3], DecompStyle::Ssa);
+        let ret = return_line(&f);
+        assert!(ret.contains("rdx") && !ret.contains("*rcx"), "forwarded: {ret}");
+    }
+
+    /// `mov [rsp+8], rcx; crc32 eax, dword ptr [rsp+8]; ret` — the `crc32` is
+    /// `asm` and reads the slot. It was no load to dead-store elimination, so
+    /// the store went, and `rcx` with it: the function read a stack slot
+    /// nothing had written.
+    #[test]
+    fn a_store_an_unlifted_instruction_may_read_is_kept() {
+        // 48 89 4c 24 08 mov [rsp+8], rcx; f2 0f 38 f1 44 24 08 crc32 eax, [rsp+8]; c3 ret
+        let f = decomp(vec![0x48, 0x89, 0x4c, 0x24, 0x08, 0xf2, 0x0f, 0x38, 0xf1, 0x44, 0x24, 0x08, 0xc3], DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.trim().ends_with("= rcx;")), "the store stays: {:#?}", f.pseudo);
+        assert!(f.signature.contains("rcx"), "{}", f.signature);
+    }
+
+    /// `mov edi, 1; mov eax, 60; syscall; ret` — the system call consumes
+    /// `rdi`, which nothing on this side of it records: iced lists no such
+    /// read. Its reads are unknown, so every definition reaching it stays; the
+    /// argument used to be deleted as dead.
+    #[test]
+    fn an_instruction_that_may_read_any_register_keeps_every_definition() {
+        // bf 01 00 00 00 mov edi, 1; b8 3c 00 00 00 mov eax, 60; 0f 05 syscall; c3 ret
+        let f = decomp(vec![0xbf, 0x01, 0x00, 0x00, 0x00, 0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05, 0xc3], DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.contains("rdi.1 = 0x1;")), "the argument stays: {:#?}", f.pseudo);
+        assert!(!f.signature.contains("rcx"), "an unknown read is not a parameter: {}", f.signature);
+    }
+
+    /// The shape of `clock_getres` in a C library, on Win64's registers: an
+    /// indirect call that passes the first two arguments through, a third
+    /// argument register the code never touches, and a `syscall` reachable
+    /// both before and after the call. The syscall may read any register, so
+    /// it keeps every register's phi alive, and the coalescing map then named
+    /// `r8.0` — which the padding test read as "is a parameter". The call
+    /// printed a third argument, `v3`, that does not exist.
+    #[test]
+    fn a_register_only_a_bound_read_keeps_alive_is_not_a_call_argument() {
+        // 48 83 ec 28 sub rsp,0x28; 48 8b 04 25 00 20 00 00 mov rax,[0x2000];
+        // 48 85 c0 test rax,rax; 74 22 je sys; 48 89 54 24 08 mov [rsp+8],rdx;
+        // 89 4c 24 04 mov [rsp+4],ecx; ff d0 call rax; 48 63 d0 movsxd rdx,eax;
+        // 48 83 fa da cmp rdx,-0x26; 8b 4c 24 04 mov ecx,[rsp+4];
+        // 48 8b 54 24 08 mov rdx,[rsp+8]; 74 05 je sys; 48 83 c4 28 add rsp,0x28;
+        // c3 ret; sys: b8 e5 00 00 00 mov eax,0xe5; 0f 05 syscall;
+        // 48 83 c4 28 add rsp,0x28; c3 ret
+        let f = decomp(
+            vec![
+                0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x20, 0x00, 0x00, 0x48, 0x85, 0xc0, 0x74, 0x22,
+                0x48, 0x89, 0x54, 0x24, 0x08, 0x89, 0x4c, 0x24, 0x04, 0xff, 0xd0, 0x48, 0x63, 0xd0, 0x48, 0x83, 0xfa,
+                0xda, 0x8b, 0x4c, 0x24, 0x04, 0x48, 0x8b, 0x54, 0x24, 0x08, 0x74, 0x05, 0x48, 0x83, 0xc4, 0x28, 0xc3,
+                0xb8, 0xe5, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x83, 0xc4, 0x28, 0xc3,
+            ],
+            DecompStyle::Ssa,
+        );
+        let call = f.pseudo.iter().find(|l| l.contains("(*rax")).unwrap_or_else(|| panic!("no call in {:#?}", f.pseudo));
+        assert!(call.trim().ends_with("(*rax.1)(rcx, rdx);"), "exactly the two arguments the code passes: {call}");
+    }
+
+    /// `movsd xmm0,[rsi]; aesenc xmm0,xmm1; movsd [rdi],xmm0` stores what
+    /// `aesenc` computed. The fallback invalidated `zmm0`, a name nothing in
+    /// the IR reads, and the store took the value loaded before it.
+    #[test]
+    fn an_unlifted_vector_instruction_replaces_the_register_it_writes() {
+        let f = decomp(
+            vec![0xf2, 0x0f, 0x10, 0x06, 0x66, 0x0f, 0x38, 0xdc, 0xc1, 0xf2, 0x0f, 0x11, 0x07, 0xc3],
+            DecompStyle::Ssa,
+        );
+        let store = f.pseudo.iter().find(|l| l.contains("*rdi")).unwrap_or_else(|| panic!("no store in {:#?}", f.pseudo));
+        assert!(!store.contains("rsi") && !store.contains("xmm0.1"), "the store is of the aesenc result: {store}");
+    }
+
+    /// `ldr r0, [r1], #4; mov r0, r1; bx lr` returns `r1 + 4` — post-indexing
+    /// writes the base back. It returned the old `r1`.
+    #[test]
+    fn a_post_indexed_load_kept_as_asm_writes_its_base_back() {
+        // e4910004 ldr r0, [r1], #4; e1a00001 mov r0, r1
+        let f = decomp_a32_as(words(&[0xe4910004, 0xe1a00001, 0xe12fff1e]), DecompStyle::Ssa);
+        assert_ne!(return_line(&f), "return r1;", "{:#?}", f.pseudo);
+    }
+
+    /// `mov r0, #5; cmp r1, #0; blne f; bx lr` — when the call is taken `r0`
+    /// is its result, so the function does not return 5. And the call's
+    /// argument registers keep their definitions alive without becoming
+    /// parameters: only `r1` is read by this function.
+    #[test]
+    fn a_conditional_call_kept_as_asm_clobbers_and_claims_no_parameters() {
+        // e3a00005 mov r0, #5; e3510000 cmp r1, #0; 1b000000 blne; e12fff1e bx lr
+        let f = decomp_a32_as(words(&[0xe3a00005, 0xe3510000, 0x1b000000, 0xe12fff1e]), DecompStyle::Ssa);
+        let ret = return_line(&f);
+        assert!(!ret.contains("r0.1") && !ret.contains("0x5"), "r0 is the call's on one path: {ret}");
+        assert!(!f.signature.contains("r2") && !f.signature.contains("r3"), "a call's argument reads are not parameters: {}", f.signature);
+    }
+
+    /// AArch64: `mov x0, #5; ldr d0, [x1]; ret` returns 5. The load's
+    /// transfer register is `d0`; reading its field as a general register
+    /// invalidated `x0`.
+    #[test]
+    fn an_arm64_floating_point_load_leaves_x0_alone() {
+        // d28000a0 mov x0, #5; fd400020 ldr d0, [x1]; d65f03c0 ret
+        let f = decomp_arm64(words(&[0xd28000a0, 0xfd400020, 0xd65f03c0]));
+        assert!(f.pseudo.iter().any(|l| l.contains("= 0x5;")) && return_line(&f) == "return x0.1;", "{:#?}", f.pseudo);
+    }
+
     #[test]
     fn recover_data_refs_names_an_exact_symbol_address_only() {
         use n0xis_contracts::{SymKind, Symbol};

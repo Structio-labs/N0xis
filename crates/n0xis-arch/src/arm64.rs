@@ -385,52 +385,118 @@ pub(crate) fn writeback(op: &decoder::Opcode) -> Option<Writeback> {
     Some(Writeback { base: gpr_name(bits, bitrange(bits, 9, 5), false), delta })
 }
 
-impl Arch for Arm64 {
-    fn name(&self) -> &'static str {
-        "arm64"
-    }
+/// Whether [`Arm64::modelled_access`]'s answer is everything the instruction
+/// touches. [`Arch::reg_access`] returns the registers either way — a partial
+/// record is still the best def-use this file has — but an unlifted
+/// instruction may only state an *exact* read set; a partial one has to be
+/// stated as unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Coverage {
+    Exact,
+    Partial,
+}
 
-    fn decode(&self, bytes: &[u8], va: Va) -> Result<DecodedInsn, DecodeError> {
-        if bytes.len() < 4 {
-            return Err(DecodeError::Truncated(va));
-        }
-        let bits = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let di = build_insn(bits, va);
-        if di.kind == InsnKind::Invalid {
-            return Err(DecodeError::Invalid(va));
-        }
-        Ok(di)
-    }
+/// The load/store classes: the ones whose operands are a transfer register and
+/// an address, and the only ones that touch memory through an operand.
+fn is_ldst_class(class: InsnClass) -> bool {
+    use InsnClass::*;
+    matches!(
+        class,
+        LDST_IMM9 | LDST_IMM10 | LDST_POS | LDST_UNSCALED | LDST_UNPRIV | LDST_REGOFF | LDSTEXCL | LDSTPAIR_OFF
+            | LDSTPAIR_INDEXED | LDSTNAPAIR_OFFS | LOADLIT | ASISDLSE | ASISDLSEP | ASISDLSO | ASISDLSOP
+    )
+}
 
-    fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
-        let mut out = Vec::new();
-        let mut offset = 0usize;
-        while out.len() < max && offset + 4 <= bytes.len() {
-            let bits = u32::from_le_bytes([
-                bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
-            ]);
-            let di = build_insn(bits, Va(va.0 + offset as u64));
-            let invalid = di.kind == InsnKind::Invalid;
-            out.push(di);
-            offset += 4;
-            if invalid {
-                break;
+/// The classes that compute on registers alone — integer and floating-point
+/// data processing, the vector and crypto operations, the conditional and
+/// compare-and-branch forms. No operand names memory and nothing is accessed
+/// implicitly. A call (`bl`, `blr`) is not here: what a callee does to memory
+/// is not the instruction's to say.
+fn computes_on_registers(class: InsnClass) -> bool {
+    use InsnClass::*;
+    matches!(
+        class,
+        ADDSUB_CARRY | ADDSUB_EXT | ADDSUB_IMM | ADDSUB_SHIFT | ASIMDALL | ASIMDDIFF | ASIMDELEM | ASIMDEXT | ASIMDIMM
+            | ASIMDINS | ASIMDMISC | ASIMDPERM | ASIMDSAME | ASIMDSHF | ASIMDTBL | ASISDDIFF | ASISDELEM | ASISDMISC
+            | ASISDONE | ASISDPAIR | ASISDSAME | ASISDSHF | BFLOAT16 | BITFIELD | CONDCMP_IMM | CONDCMP_REG | CONDSEL
+            | CRYPTOAES | CRYPTOSHA2 | CRYPTOSHA3 | CRYPTOSM3 | CRYPTOSM4 | CSSC | DOTPRODUCT | DP_1SRC | DP_2SRC
+            | DP_3SRC | EXTRACT | FLOAT2FIX | FLOAT2INT | FLOATCCMP | FLOATCMP | FLOATDP1 | FLOATDP2 | FLOATDP3
+            | FLOATIMM | FLOATSEL | FPRCVTFLOAT2INT | FPRCVTINT2FLOAT | LOG_IMM | LOG_SHIFT | MOVEWIDE | PCRELADDR
+            | COMPBRANCH | TESTBRANCH | CONDBRANCH
+    )
+}
+
+impl Arm64 {
+    /// What an instruction this file's lift leaves as `asm` reads and does to
+    /// memory, for [`crate::MicroStmt::Unlifted`].
+    ///
+    /// **Reads.** Exact where [`Arm64::modelled_access`] covers the
+    /// instruction. Exact and empty for a register-only operation none of
+    /// whose operands is a general register (`fadd d0, d1, d2`): the IR names
+    /// no floating-point register, so there is nothing it could consume. Every
+    /// other case — a class the table does not model, a vector operation with a
+    /// general-register operand (`dup v0.4s, w1`), a system instruction — is
+    /// [`crate::UnliftedReads::Unknown`]: the general registers' fields are
+    /// known per class here, not per operand, and guessing one wrong would
+    /// delete the definition it reads.
+    ///
+    /// **Memory.** Read for a load, write for a store, both for an atomic and
+    /// for any other access through an address operand (`cas`, a prefetch is
+    /// counted as a read); none for [`computes_on_registers`]; unknown for
+    /// everything else — a call, an exception, a system instruction (`dc zva`
+    /// writes memory and has no address operand at all).
+    pub(crate) fn unlifted_effect(&self, insn: &DecodedInsn) -> (crate::UnliftedReads, crate::MemEffect) {
+        use crate::{MemEffect, UnliftedReads};
+        use disarm64_defn::InsnOperandClass as C;
+        let Some(op) = insn.bytes.first_chunk::<4>().map(|b| u32::from_le_bytes(*b)).and_then(decoder::decode) else {
+            return (UnliftedReads::Unknown, MemEffect::Unknown);
+        };
+        let def = op.definition();
+        let mem = if is_ldst_class(def.class) {
+            if def.mnemonic.starts_with("st") {
+                MemEffect::Write
+            } else if def.mnemonic.starts_with("ld") || def.mnemonic.starts_with("prf") {
+                MemEffect::Read
+            } else {
+                MemEffect::ReadWrite
             }
-        }
-        out
+        } else if matches!(def.class, InsnClass::LSE_ATOMIC | InsnClass::LSE128_ATOMIC) {
+            MemEffect::ReadWrite
+        } else if computes_on_registers(def.class) {
+            MemEffect::NoAccess
+        } else {
+            MemEffect::Unknown
+        };
+        let names_no_gpr = def.operands.iter().all(|o| !matches!(o.class, C::INT_REG | C::MODIFIED_REG | C::ADDRESS));
+        let reads = match self.modelled_access(insn) {
+            Some((Coverage::Exact, access)) => {
+                UnliftedReads::Exact(access.reads.into_iter().filter(|r| r != "xzr").collect())
+            }
+            _ if computes_on_registers(def.class) && names_no_gpr => UnliftedReads::Exact(Vec::new()),
+            _ => UnliftedReads::Unknown,
+        };
+        (reads, mem)
     }
 
-    fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
+    /// The registers one instruction reads and writes, from the per-class
+    /// table this file keeps, and whether that table is the instruction's
+    /// whole answer ([`Coverage`]). `None` when the word does not decode.
+    fn modelled_access(&self, insn: &DecodedInsn) -> Option<(Coverage, RegAccess)> {
         if insn.bytes.len() < 4 {
-            return RegAccess::default();
+            return None;
         }
         let bits = u32::from_le_bytes([insn.bytes[0], insn.bytes[1], insn.bytes[2], insn.bytes[3]]);
-        let Some(op) = decoder::decode(bits) else {
-            return RegAccess::default();
-        };
+        let op = decoder::decode(bits)?;
         let class = op.definition().class;
         let mnemonic = op.definition().mnemonic;
         let mut access = RegAccess::default();
+        let mut coverage = Coverage::Exact;
+        // The transfer register of a load/store is a general register only
+        // when its operand is `Rt`/`Rt2`. `ldr d0, [x1]` names register 0 in
+        // the same field, as `Ft`, and reading that field as a GPR recorded a
+        // write to `x0` — which the lift then invalidated, so a value the
+        // function kept in `x0` across a floating-point load was lost.
+        let gpr_rt = has_operand_kind(&op, InsnOperandKind::Rt);
 
         let rd_rt = bitrange(bits, 4, 0);
         let rn = bitrange(bits, 9, 5);
@@ -484,43 +550,70 @@ impl Arch for Arm64 {
             InsnClass::LDST_IMM9 | InsnClass::LDST_IMM10 | InsnClass::LDST_POS
             | InsnClass::LDST_UNSCALED | InsnClass::LDST_UNPRIV | InsnClass::LDSTEXCL => {
                 access.reads.push(gpr_name(bits, rn, false));
-                if mnemonic.starts_with("st") {
+                if gpr_rt && mnemonic.starts_with("st") {
                     access.reads.push(gpr_name(bits, rd_rt, true));
-                } else if mnemonic.starts_with("ld") {
+                } else if gpr_rt && mnemonic.starts_with("ld") {
                     access.writes.push(gpr_name(bits, rd_rt, true));
                 }
             }
             InsnClass::LDST_REGOFF => {
                 access.reads.push(gpr_name(bits, rn, false));
                 access.reads.push(gpr_name(bits, rm, true));
-                if mnemonic.starts_with("st") {
+                if gpr_rt && mnemonic.starts_with("st") {
                     access.reads.push(gpr_name(bits, rd_rt, true));
-                } else if mnemonic.starts_with("ld") {
+                } else if gpr_rt && mnemonic.starts_with("ld") {
                     access.writes.push(gpr_name(bits, rd_rt, true));
                 }
             }
             InsnClass::LDSTPAIR_OFF | InsnClass::LDSTPAIR_INDEXED | InsnClass::LDSTNAPAIR_OFFS => {
                 access.reads.push(gpr_name(bits, rn, false));
-                if mnemonic.starts_with("st") {
+                if gpr_rt && mnemonic.starts_with("st") {
                     access.reads.push(gpr_name(bits, rd_rt, true));
                     access.reads.push(gpr_name(bits, rt2_ra, true));
-                } else if mnemonic.starts_with("ld") {
+                } else if gpr_rt && mnemonic.starts_with("ld") {
                     access.writes.push(gpr_name(bits, rd_rt, true));
                     access.writes.push(gpr_name(bits, rt2_ra, true));
                 }
             }
             InsnClass::LOADLIT => {
-                access.writes.push(gpr_name(bits, rd_rt, true));
+                if gpr_rt {
+                    access.writes.push(gpr_name(bits, rd_rt, true));
+                }
             }
             InsnClass::COMPBRANCH | InsnClass::TESTBRANCH => {
                 access.reads.push(gpr_name(bits, rd_rt, true));
             }
             InsnClass::BRANCH_REG => {
+                // A branch through a register is a jump or a call, and what a
+                // call consumes (the argument registers, the stack) is the
+                // convention's business, not this table's: it records the
+                // target alone, which is not every register the instruction
+                // reads.
+                coverage = Coverage::Partial;
                 if matches!(mnemonic, "br" | "blr") {
                     access.reads.push(gpr_name(bits, rn, true));
                 }
             }
-            _ => {}
+            _ => coverage = Coverage::Partial,
+        }
+        // A load/store's table above names the transfer and address registers
+        // by fixed field. That is all the instruction reads only when every
+        // operand of its definition is one of those: the exclusive-store status
+        // register (`stxr w0, …`), the second register of an exclusive pair,
+        // the compare register of a `cas`, an MTE tag form whose register can
+        // be `sp` — each is an operand kind this table does not read, and an
+        // answer that leaves one out is not exact.
+        if is_ldst_class(class)
+            && !op.definition().operands.iter().all(|o| {
+                use InsnOperandKind::*;
+                matches!(
+                    o.kind,
+                    Rt | Rt2 | Ft | Ft2 | ADDR_SIMPLE | ADDR_SIMM7 | ADDR_SIMM9 | ADDR_SIMM10 | ADDR_UIMM12
+                        | ADDR_REGOFF | ADDR_PCREL19 | PRFOP
+                )
+            })
+        {
+            coverage = Coverage::Partial;
         }
         // A pre-/post-indexed load/store also *writes* its base register: the
         // same `Rn` it read to form the address is updated by the writeback
@@ -531,7 +624,47 @@ impl Arch for Arm64 {
         if let Some(wb) = writeback(&op) {
             access.writes.push(wb.base);
         }
-        access
+        Some((coverage, access))
+    }
+}
+
+impl Arch for Arm64 {
+    fn name(&self) -> &'static str {
+        "arm64"
+    }
+
+    fn decode(&self, bytes: &[u8], va: Va) -> Result<DecodedInsn, DecodeError> {
+        if bytes.len() < 4 {
+            return Err(DecodeError::Truncated(va));
+        }
+        let bits = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let di = build_insn(bits, va);
+        if di.kind == InsnKind::Invalid {
+            return Err(DecodeError::Invalid(va));
+        }
+        Ok(di)
+    }
+
+    fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        while out.len() < max && offset + 4 <= bytes.len() {
+            let bits = u32::from_le_bytes([
+                bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
+            ]);
+            let di = build_insn(bits, Va(va.0 + offset as u64));
+            let invalid = di.kind == InsnKind::Invalid;
+            out.push(di);
+            offset += 4;
+            if invalid {
+                break;
+            }
+        }
+        out
+    }
+
+    fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
+        self.modelled_access(insn).map(|(_, access)| access).unwrap_or_default()
     }
 
     fn lift(&self, insn: &DecodedInsn, abi: &str) -> Vec<crate::MicroStmt> {

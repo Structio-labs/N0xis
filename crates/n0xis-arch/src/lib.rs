@@ -32,8 +32,8 @@ pub use arm64::{Arm64, arm64reg};
 pub use frame::FrameInfo;
 pub use insn::{DecodeError, DecodedInsn, InsnKind};
 pub use microir::{
-    BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MicroExpr,
-    MicroStmt, Shift, UnOp,
+    BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MemEffect,
+    MicroExpr, MicroStmt, Shift, UnOp, UnliftedReads,
 };
 pub use switch::{SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};
@@ -304,7 +304,7 @@ pub trait Arch {
     /// emits no calls, so it ignores `abi`.
     fn lift(&self, insn: &DecodedInsn, abi: &str) -> Vec<MicroStmt> {
         let _ = abi;
-        vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }]
+        vec![MicroStmt::unlifted_unknown(insn.va, &insn.text)]
     }
 
     /// Lower a **tail call** — a branch the CFG determined leaves the current

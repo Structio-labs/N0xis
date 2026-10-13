@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use n0xis_arch::{Arch, CallTarget, CmpKind, MicroExpr, MicroStmt, FLAGS_VAR};
+use n0xis_arch::{Arch, CallTarget, CmpKind, MicroExpr, MicroStmt, UnliftedReads, FLAGS_VAR, JUMP_TARGET_VAR};
 use n0xis_contracts::Va;
 use serde::Serialize;
 
@@ -181,7 +181,11 @@ fn collect_stmt_vars(stmt: &MicroStmt, out: &mut BTreeSet<String>) {
             }
         }
         MicroStmt::Return(Some(e)) => collect_expr_vars(e, out),
-        MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+        // An unlifted instruction's reads are variables like any other: each
+        // needs an entry version, or a read of a register nothing in the
+        // function writes would have no name to be renamed to.
+        MicroStmt::Unlifted { reads, .. } => out.extend(reads.regs().iter().cloned()),
+        MicroStmt::Return(None) | MicroStmt::Nop => {}
     }
 }
 
@@ -327,7 +331,28 @@ fn rename_stmt(
         }
         MicroStmt::Return(e) => MicroStmt::Return(e.as_ref().map(|x| rename_expr(x, stacks))),
         MicroStmt::Nop => MicroStmt::Nop,
-        MicroStmt::Unlifted { va, text } => MicroStmt::Unlifted { va: *va, text: text.clone() },
+        // The reads take the version reaching the instruction, exactly as an
+        // expression's variables do — this is what makes them *uses* to every
+        // pass downstream (DCE, liveness, parameter recovery).
+        //
+        // An instruction that may read anything reads, here, the reaching
+        // version of every variable the function names: the widest set that
+        // matters, since a register nothing in the function mentions has no
+        // definition to keep alive. Stated as a bound, so it keeps those
+        // definitions without being evidence that any one of them is read.
+        // The pseudo-variables (`flags`, the jump target) are not registers.
+        MicroStmt::Unlifted { va, text, reads, mem } => MicroStmt::Unlifted {
+            va: *va,
+            text: text.clone(),
+            reads: match reads {
+                UnliftedReads::Unknown => {
+                    let every: BTreeSet<&String> = stacks.keys().filter(|v| *v != FLAGS_VAR && *v != JUMP_TARGET_VAR).collect();
+                    UnliftedReads::Bound(every.into_iter().filter_map(|v| stacks[v].last().cloned()).collect())
+                }
+                known => known.map_names(|n| stacks.get(n).and_then(|s| s.last()).cloned().unwrap_or_else(|| n.to_string())),
+            },
+            mem: *mem,
+        },
     }
 }
 
@@ -442,7 +467,10 @@ fn stmt_uses(stmt: &MicroStmt, out: &mut BTreeSet<String>) {
                 collect_expr_vars(a, out);
             }
         }
-        MicroStmt::Return(_) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+        // An unlifted instruction consumes what it reads — a bound included:
+        // "may consume" is enough to stop a value from being called unread.
+        MicroStmt::Unlifted { reads, .. } => out.extend(reads.regs().iter().cloned()),
+        MicroStmt::Return(_) | MicroStmt::Nop => {}
     }
 }
 

@@ -169,7 +169,13 @@ fn map_stmt_exprs(stmt: &MicroStmt, f: &mut impl FnMut(MicroExpr) -> MicroExpr) 
         }
         MicroStmt::Return(e) => MicroStmt::Return(e.as_ref().map(|x| map_expr(x, f))),
         MicroStmt::Nop => MicroStmt::Nop,
-        MicroStmt::Unlifted { va, text } => MicroStmt::Unlifted { va: *va, text: text.clone() },
+        // An unlifted instruction has no expressions, and its reads are not
+        // one: they are pinned to the registers its text names (`strb r8,
+        // [r1]` reads *`r8`*). Substituting a copy's source for one of them —
+        // what copy propagation would do — leaves the text naming a register
+        // that no longer has a value shown anywhere, and lets DCE delete the
+        // copy the instruction actually consumed.
+        MicroStmt::Unlifted { .. } => stmt.clone(),
     }
 }
 
@@ -525,9 +531,16 @@ fn expr_prop_round(
 }
 
 /// Statements that must not be crossed when sinking a definition forward:
-/// both have side effects/ordering the optimizer doesn't model precisely.
+/// all have side effects/ordering the optimizer doesn't model precisely. An
+/// unlifted instruction is one when it touches memory at all — a load sunk
+/// past one that writes reads the wrong value, and a call sunk past one that
+/// reads lets the instruction observe memory from before the call.
 fn stmt_is_barrier(stmt: &MicroStmt) -> bool {
-    matches!(stmt, MicroStmt::Call { .. } | MicroStmt::Store { .. })
+    match stmt {
+        MicroStmt::Call { .. } | MicroStmt::Store { .. } => true,
+        MicroStmt::Unlifted { mem, .. } => mem.may_read() || mem.may_write(),
+        MicroStmt::Assign { .. } | MicroStmt::Return(_) | MicroStmt::Nop => false,
+    }
 }
 
 fn stmt_read_exprs(stmt: &MicroStmt) -> Vec<&MicroExpr> {
@@ -597,7 +610,8 @@ fn expr_contains_var(e: &MicroExpr, name: &str) -> bool {
 //     its variables are stable between the store and the load;
 //   - and the availability map is conservatively **cleared on any `Call` or
 //     store through an unknown address, and any store to a different base**
-//     — either could alias the slot, so nothing is forwarded across it.
+//     — either could alias the slot, so nothing is forwarded across it; an
+//     unlifted instruction that may write memory clears it outright.
 // A points-to oracle (priority 2) is what later relaxes the "different base
 // clobbers everything" rule; until then this never forwards an unsound value.
 // ---------------------------------------------------------------------
@@ -861,7 +875,12 @@ fn escape_info(blocks: &[SsaBlock], win64: bool) -> Escape {
                     }
                 }
                 MicroStmt::Return(Some(e)) => visit_escape(e, true, &mut esc),
-                MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+                // Every register an unlifted instruction reads escapes: its
+                // address arithmetic, if it has any, is not in the IR, so a base
+                // it reads may be turned into any address at all — and so may a
+                // value it copies into a register it writes.
+                MicroStmt::Unlifted { reads, .. } => esc.bases.extend(reads.regs().iter().cloned()),
+                MicroStmt::Return(None) | MicroStmt::Nop => {}
             }
         }
         if let Some(c) = &b.condition {
@@ -922,7 +941,14 @@ fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
         MicroStmt::Call { .. } => {
             avail.retain(|a| esc.call_safe(&a.base, a.off) && !call_clobbers_frame_slot(&a.base, a.off, esc.win64))
         }
-        _ => {}
+        // An unlifted instruction that may write memory is a store to an
+        // address nothing here knows, and it may alias every slot: escape
+        // analysis cannot exempt even a call-safe one, because the instruction's
+        // address need not be built from the slot's own SSA base — it can be
+        // any other version of the stack pointer, at any offset. Without this
+        // `str r3,[r1]; strb r2,[r1]; ldr r0,[r1]` returned `r3`.
+        MicroStmt::Unlifted { mem, .. } if mem.may_write() => avail.clear(),
+        MicroStmt::Assign { .. } | MicroStmt::Return(_) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
     }
 }
 
@@ -1129,6 +1155,17 @@ fn collect_load_slots(e: &MicroExpr, out: &mut Vec<(String, i128, n0xis_arch::Bi
 }
 
 fn dead_store_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, win64: bool) -> bool {
+    // An unlifted instruction that may read memory is a load from an address
+    // nothing here knows: it may read any slot, so no store in the function is
+    // provably never read. Function-wide because this pass is — it asks "is the
+    // slot loaded anywhere", not "after this store".
+    let unlifted_reader = blocks
+        .iter()
+        .flat_map(|b| &b.stmts)
+        .any(|s| matches!(&s.stmt, MicroStmt::Unlifted { mem, .. } if mem.may_read()));
+    if unlifted_reader {
+        return false;
+    }
     let esc = escape_info(blocks, win64);
 
     // Every slot loaded anywhere in the function. A non-escaping slot can only
@@ -1202,6 +1239,14 @@ fn count_uses(blocks: &[SsaBlock]) -> HashMap<String, usize> {
         for s in &b.stmts {
             for e in stmt_read_exprs(&s.stmt) {
                 bump(e, &mut counts);
+            }
+            // An unlifted instruction's reads are names, not expressions, and
+            // each is a use: this is what keeps `r8 = r3` alive in front of
+            // `strb r8, [r1]`.
+            if let MicroStmt::Unlifted { reads, .. } = &s.stmt {
+                for r in reads.regs() {
+                    *counts.entry(r.clone()).or_insert(0) += 1;
+                }
             }
         }
         if let Some(cond) = &b.condition {

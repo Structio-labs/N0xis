@@ -39,7 +39,7 @@ use yaxpeax_arm::armv7::{ConditionCode, Opcode, ShiftStyle};
 
 use super::{imm_shift, reg_n, shift};
 use crate::insn::InsnKind;
-use crate::microir::{BinOp, MicroExpr};
+use crate::microir::{BinOp, MemEffect, MicroExpr};
 
 /// A general-purpose register field (4 bits, so 0..=15 by construction).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -520,6 +520,60 @@ impl Own {
             | Op::Bfi { d, .. }
             | Op::HalfMul { d, .. }
             | Op::HalfMulWide { d, .. } => vec![d.name()],
+        }
+    }
+
+    /// The registers this instruction reads: every register field but the
+    /// write-only destination — which every owned form has, except `bfi`/`bfc`
+    /// (the bits outside the field are kept, so `Rd` is read) and the
+    /// accumulating long multiplies (`RdLo`/`RdHi` are the accumulator).
+    /// `predicated` makes the destination a read too: a failed condition leaves
+    /// the old value in place. Exact, like [`Own::writes`] — no owned form has
+    /// a write-back, a list or an implicit register.
+    pub(super) fn reads(&self, predicated: bool) -> Vec<String> {
+        let write_only: Vec<R> = match self.op {
+            _ if predicated => Vec::new(),
+            Op::Bfi { .. } | Op::DualLong { .. } | Op::HalfMulLong { .. } | Op::Udf { .. } => Vec::new(),
+            Op::Parallel { d, .. }
+            | Op::Extend { d, .. }
+            | Op::Pkh { d, .. }
+            | Op::Sat { d, .. }
+            | Op::Sat16 { d, .. }
+            | Op::Sel { d, .. }
+            | Op::Reverse { d, .. }
+            | Op::Dual { d, .. }
+            | Op::MostSig { d, .. }
+            | Op::Div { d, .. }
+            | Op::Usad { d, .. }
+            | Op::Bfx { d, .. }
+            | Op::HalfMul { d, .. }
+            | Op::HalfMulWide { d, .. } => vec![d],
+        };
+        // A register named twice (`uxtab r0, r0, r1` reads `r0` as `Rn`) is
+        // still a read through the field that reads it, so the write-only test
+        // is on the field, not the register: `Rd` is skipped once, and
+        // `registers` lists it first, so the occurrence skipped is its own.
+        let mut skip = write_only;
+        let mut out: Vec<String> = Vec::new();
+        for r in self.registers() {
+            if let Some(i) = skip.iter().position(|&w| w == r) {
+                skip.remove(i);
+                continue;
+            }
+            let name = r.name();
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
+    }
+
+    /// What this instruction does to memory. Every owned form computes on
+    /// registers alone, except `udf`, which traps into code that is not here.
+    pub(super) fn mem(&self) -> MemEffect {
+        match self.op {
+            Op::Udf { .. } => MemEffect::Unknown,
+            _ => MemEffect::NoAccess,
         }
     }
 

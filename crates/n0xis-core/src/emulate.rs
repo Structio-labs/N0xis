@@ -788,7 +788,7 @@ impl<'a> Emulator<'a> {
                         };
                     }
                     MicroStmt::Nop => {}
-                    MicroStmt::Unlifted { va, text } => {
+                    MicroStmt::Unlifted { va, text, .. } => {
                         return Err(EmuError::Unlifted { va: *va, text: text.clone() });
                     }
                 }

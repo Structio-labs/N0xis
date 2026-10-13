@@ -41,7 +41,7 @@ use n0xis_contracts::{Reg, Va};
 mod own;
 
 use crate::insn::{DecodeError, DecodedInsn, InsnKind};
-use crate::microir::{BinOp, CallTarget, CmpKind, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
+use crate::microir::{BinOp, CallTarget, CmpKind, MemEffect, MicroExpr, MicroStmt, UnOp, UnliftedReads, FLAGS_VAR};
 use crate::{Arch, CallConv, RegAccess, RegDesc, RegisterFile};
 
 /// Interned register ids for AArch32. `r13`=`sp`, `r14`=`lr`, `r15`=`pc`.
@@ -582,17 +582,188 @@ fn writes_of(inst: &Instruction) -> Vec<String> {
     for op in &inst.operands {
         match op {
             // `ldm`/`pop` writes its whole register list; `stm`/`push` reads it.
-            Operand::RegList(mask) if matches!(inst.opcode, LDM(..)) => w.extend(reglist(*mask)),
+            Operand::RegList(mask) if matches!(inst.opcode, LDM(..) | POP) => w.extend(reglist(*mask)),
             // Write-back updates the base register.
             Operand::RegWBack(base, true) => w.push(reg_name(*base)),
-            Operand::RegDerefPreindexOffset(base, _, _, true) => w.push(reg_name(*base)),
-            _ => {}
+            op => w.extend(writeback_base(op).map(reg_name)),
         }
     }
+    // A call this lift leaves as `asm` — the conditional `blne`, which is two
+    // effects — still clobbers what any call clobbers when it is taken: the
+    // return address, and AAPCS32's caller-saved registers, which is where its
+    // result comes back. Invalidating only `lr` let a later read of `r0` take
+    // the value from before the call.
     if matches!(inst.opcode, BL | BLX) {
         w.push("lr".to_string());
+        w.extend(names_of(AAPCS32_VOLATILE));
     }
     w
+}
+
+/// Register ids of this architecture by name, through its register file.
+fn names_of(regs: &[Reg]) -> Vec<String> {
+    let file = RegisterFile::new(ARM32_REGS);
+    regs.iter().filter_map(|&r| file.name(r)).map(str::to_string).collect()
+}
+
+/// The base register a memory operand writes back, if it does.
+///
+/// A **post-indexed** access always updates its base — that is what
+/// post-indexing is (`ldr r0, [r1], #4` is `r0 = *r1; r1 += 4`). The decoder
+/// carries a write-back flag on those forms too, and leaves it `false`: reading
+/// the flag let the fallback keep `r1`'s old value, so `ldr r0, [r1], #4; mov
+/// r0, r1` returned `r1` instead of `r1 + 4`. A pre-indexed access updates it
+/// only when its `!` flag is set. The unindexed form (`RegDeref`) never does.
+fn writeback_base(op: &Operand) -> Option<yaxpeax_arm::armv7::Reg> {
+    match *op {
+        Operand::RegDerefPostindexOffset(base, ..)
+        | Operand::RegDerefPostindexReg(base, ..)
+        | Operand::RegDerefPostindexRegShift(base, ..) => Some(base),
+        Operand::RegDerefPreindexOffset(base, _, _, wb)
+        | Operand::RegDerefPreindexReg(base, _, _, wb)
+        | Operand::RegDerefPreindexRegShift(base, _, _, wb) => wb.then_some(base),
+        _ => None,
+    }
+}
+
+/// The operand positions of an instruction that are **written and not read**:
+/// the destinations whose old value the instruction never consults. Every
+/// other register operand is a read.
+///
+/// A list of what is known to be write-only, rather than of what is known to
+/// be read, because the two mistakes are not equal. Calling a source a
+/// destination drops a read, and a dropped read is the defect
+/// [`reads_of`] exists to close: the definition it consumed is deleted as dead.
+/// Calling a destination a source only keeps one definition alive that need
+/// not be. So an opcode not named here reads every register it mentions —
+/// `movt` (keeps the low half), `bfi`, the accumulating long multiplies, the
+/// stores and compares, and anything this list has not been taught.
+fn write_only_operands(op: Opcode) -> &'static [usize] {
+    use Opcode::*;
+    match op {
+        UMULL | SMULL | LDRD | LDREXD | LDAEXD => &[0, 1],
+        AND | EOR | SUB | RSB | ADD | ADC | SBC | RSC | ORR | MOV | BIC | MVN | ORN | LSL | LSR | ASR
+        | RRX | ROR | ADR | MRS | CLZ | RBIT | REV | REV16 | REVSH | MUL | MLA | MLS | SDIV | UDIV
+        | SMUL(..) | SMLA(..) | SMLAW(_) | SMULW(_) | SMMUL | SMMLA | SMMLAR | SMMLS | SMMLSR | SMUAD
+        | SMUSD | SMLAD | SMLSD | USAD8 | USADA8 | QADD | QSUB | QDADD | QDSUB | SXTH | UXTH | SXTB16
+        | UXTB16 | SXTB | UXTB | SXTAH | UXTAH | SXTAB16 | UXTAB16 | SXTAB | UXTAB | PKHTB | PKHBT
+        | SSAT | SSAT16 | USAT | USAT16 | SBFX | UBFX | SEL | SADD16 | QADD16 | SHADD16 | SASX | QASX
+        | SHASX | SSAX | QSAX | SHSAX | SSUB16 | QSUB16 | SHSUB16 | SADD8 | QADD8 | SHADD8 | SSUB8
+        | QSUB8 | SHSUB8 | UADD16 | UQADD16 | UHADD16 | UASX | UQASX | UHASX | USAX | UQSAX | UHSAX
+        | USUB16 | UQSUB16 | UHSUB16 | UADD8 | UQADD8 | UHADD8 | USUB8 | UQSUB8 | UHSUB8 | LDR | LDRB
+        | LDRH | LDRSH | LDRSB | LDRT | LDRBT | LDRHT | LDRSHT | LDRSBT | LDREX | LDREXB | LDREXH | LDA
+        | LDAB | LDAH | LDAEX | LDAEXB | LDAEXH | STREX | STREXB | STREXH | STREXD | STLEX | STLEXB
+        | STLEXH | STLEXD | SWP | SWPB => &[0],
+        _ => &[],
+    }
+}
+
+/// The registers an instruction **reads** — a *sound over-approximation*, the
+/// mirror of [`writes_of`]: every register in every operand except the
+/// write-only destinations ([`write_only_operands`]); the address registers of
+/// every memory operand; the list a `stm`/`push` stores.
+///
+/// `predicated` (a condition other than `AL`) makes the destinations reads as
+/// well: when the condition fails the register keeps its old value, so the
+/// value after the instruction may be the one from before it.
+///
+/// A conditional call or return left as `asm` reads what the lifted forms read:
+/// a call consumes AAPCS32's argument registers and the stack pointer, a `bx
+/// lr` the return register — or the values a caller passed and a function
+/// computed would be deleted on the path where the condition holds. Those are
+/// the *convention's* reads, not the encoding's, and the callee may take none
+/// of them, so the answer is then a [`UnliftedReads::Bound`]: it keeps the
+/// definitions alive without saying the function has four parameters. Stated
+/// exactly, every function with a `blne` claimed `r0`-`r3`.
+fn reads_of(inst: &Instruction, predicated: bool) -> UnliftedReads {
+    use Opcode::*;
+    let mut r: Vec<String> = Vec::new();
+    let push = |n: String, r: &mut Vec<String>| {
+        if !r.contains(&n) {
+            r.push(n);
+        }
+    };
+    let write_only = if predicated { &[][..] } else { write_only_operands(inst.opcode) };
+    for (i, op) in inst.operands.iter().enumerate() {
+        let names: Vec<String> = match *op {
+            Operand::Reg(reg) if !write_only.contains(&i) => vec![reg_name(reg)],
+            Operand::RegWBack(base, _) | Operand::RegDeref(base) => vec![reg_name(base)],
+            Operand::RegList(mask) if !matches!(inst.opcode, LDM(..) | POP) => reglist(mask),
+            Operand::RegShift(rs) => shift_regs(rs),
+            Operand::RegDerefPostindexOffset(base, ..) | Operand::RegDerefPreindexOffset(base, ..) => vec![reg_name(base)],
+            Operand::RegDerefPostindexReg(base, idx, ..) | Operand::RegDerefPreindexReg(base, idx, ..) => {
+                vec![reg_name(base), reg_name(idx)]
+            }
+            Operand::RegDerefPostindexRegShift(base, rs, ..) | Operand::RegDerefPreindexRegShift(base, rs, ..) => {
+                let mut v = vec![reg_name(base)];
+                v.extend(shift_regs(rs));
+                v
+            }
+            _ => Vec::new(),
+        };
+        for n in names {
+            push(n, &mut r);
+        }
+    }
+    match inst.opcode {
+        BL | BLX => {
+            for n in names_of(AAPCS32_INT_ARGS) {
+                push(n, &mut r);
+            }
+            push("sp".to_string(), &mut r);
+            UnliftedReads::Bound(r)
+        }
+        BX | BXJ if matches!(inst.operands[0], Operand::Reg(lr) if lr.number() == 14) => {
+            push("r0".to_string(), &mut r);
+            UnliftedReads::Bound(r)
+        }
+        _ => UnliftedReads::Exact(r),
+    }
+}
+
+/// The registers a shifted-register operand reads: the shiftee, and the
+/// shifting register when the count is in one.
+fn shift_regs(rs: yaxpeax_arm::armv7::RegShift) -> Vec<String> {
+    match rs.into_shift() {
+        RegShiftStyle::RegImm(s) => vec![reg_name(s.shiftee())],
+        RegShiftStyle::RegReg(s) => vec![reg_name(s.shiftee()), reg_name(s.shifter())],
+    }
+}
+
+/// What an instruction does to memory, by opcode — one table for the whole
+/// crate-decoded space, [`MemEffect::NoAccess`] only for the families that
+/// provably name no memory: data processing, the multiplies and media
+/// operations, branches, hints and barriers. A barrier orders accesses and
+/// changes no value, which is all the forwarding that reads this asks about.
+///
+/// Everything not named — a supervisor or hypervisor call (whatever runs next
+/// may write anything), a coprocessor operation (cache maintenance is one),
+/// `msr`/`cps`/`setend`, a breakpoint — is [`MemEffect::Unknown`].
+fn mem_of(op: Opcode) -> MemEffect {
+    use Opcode::*;
+    match op {
+        STR | STRB | STRH | STRD | STRT | STRBT | STRHT | STM(..) | PUSH | STREX | STREXB | STREXH
+        | STREXD | STL | STLB | STLH | STLEX | STLEXB | STLEXH | STLEXD | STC(..) | STCL(..) | SRS(..) => {
+            MemEffect::Write
+        }
+        LDR | LDRB | LDRH | LDRSH | LDRSB | LDRD | LDRT | LDRBT | LDRHT | LDRSHT | LDRSBT | LDM(..) | POP
+        | LDREX | LDREXB | LDREXH | LDREXD | LDA | LDAB | LDAH | LDAEX | LDAEXB | LDAEXH | LDAEXD
+        | LDC(..) | LDCL(..) | RFE(..) | TBB | TBH | PLD | PLI => MemEffect::Read,
+        SWP | SWPB => MemEffect::ReadWrite,
+        AND | EOR | SUB | RSB | ADD | ADC | SBC | RSC | TST | TEQ | CMP | CMN | ORR | MOV | BIC | MVN
+        | ORN | LSL | LSR | ASR | RRX | ROR | ADR | CLZ | RBIT | REV | REV16 | REVSH | MOVT | MUL | MLA
+        | MLS | UMAAL | UMULL | UMLAL | SMULL | SMLAL | SMUL(..) | SMLA(..) | SMLAL_halfword(..)
+        | SMAL(..) | SMLAW(_) | SMULW(_) | SMMUL | SMMLA | SMMLAR | SMMLS | SMMLSR | SMUAD | SMUSD
+        | SMLAD | SMLSD | SMLALD(_) | SMLSLD(_) | SDIV | UDIV | USAD8 | USADA8 | QADD | QSUB | QDADD
+        | QDSUB | SXTH | UXTH | SXTB16 | UXTB16 | SXTB | UXTB | SXTAH | UXTAH | SXTAB16 | UXTAB16 | SXTAB
+        | UXTAB | PKHTB | PKHBT | SSAT | SSAT16 | USAT | USAT16 | SBFX | UBFX | BFI | BFC | SEL | SADD16
+        | QADD16 | SHADD16 | SASX | QASX | SHASX | SSAX | QSAX | SHSAX | SSUB16 | QSUB16 | SHSUB16 | SADD8
+        | QADD8 | SHADD8 | SSUB8 | QSUB8 | SHSUB8 | UADD16 | UQADD16 | UHADD16 | UASX | UQASX | UHASX
+        | USAX | UQSAX | UHSAX | USUB16 | UQSUB16 | UHSUB16 | UADD8 | UQADD8 | UHADD8 | USUB8 | UQSUB8
+        | UHSUB8 | B | BX | BXJ | CBZ | CBNZ | IT | NOP | HINT | YIELD | WFE | WFI | SEV | CSDB | DMB | DSB
+        | ISB | CLREX => MemEffect::NoAccess,
+        _ => MemEffect::Unknown,
+    }
 }
 
 /// Does an instruction of this family write the `Q` (saturation) flag or the
@@ -682,7 +853,7 @@ impl Arm32 {
     /// branch reuses a stale compare. Without that a `tst` kept as `asm`
     /// between a `cmp` and a `beq` let the branch read the `cmp`.
     fn unlifted(&self, inst: &Instruction, insn: &DecodedInsn) -> Vec<MicroStmt> {
-        asm_fallback(insn, writes_of(inst), self.sets_flags(inst, insn))
+        asm_fallback(insn, writes_of(inst), reads_of(inst, insn.cond.is_some()), mem_of(inst.opcode), self.sets_flags(inst, insn))
     }
 
     /// The lift of an instruction this file decodes itself: exact where
@@ -698,7 +869,13 @@ impl Arm32 {
                 pred_assign(dst, value, insn.cond.as_deref().unwrap_or("al"), &mut out);
                 out
             }
-            _ => asm_fallback(insn, o.writes(), writes_q_or_ge(o.opcode())),
+            _ => asm_fallback(
+                insn,
+                o.writes(),
+                UnliftedReads::Exact(o.reads(insn.cond.is_some())),
+                o.mem(),
+                writes_q_or_ge(o.opcode()),
+            ),
         }
     }
 
@@ -724,10 +901,11 @@ impl Arm32 {
     }
 }
 
-/// `asm`, then every register in `writes` invalidated, then the flags when the
-/// instruction sets them — the one shape of the fallback, for both decoders.
-fn asm_fallback(insn: &DecodedInsn, writes: Vec<String>, sets_flags: bool) -> Vec<MicroStmt> {
-    let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }];
+/// `asm` stating what it reads and does to memory, then every register in
+/// `writes` invalidated, then the flags when the instruction sets them — the
+/// one shape of the fallback, for both decoders.
+fn asm_fallback(insn: &DecodedInsn, writes: Vec<String>, reads: UnliftedReads, mem: MemEffect, sets_flags: bool) -> Vec<MicroStmt> {
+    let mut out = vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone(), reads, mem }];
     for w in writes {
         out.push(assign(w, MicroExpr::Unknown(insn.text.clone())));
     }
@@ -758,13 +936,17 @@ impl Arch for Arm32 {
         ARM32_CCS
     }
 
+    /// The same two answers the `asm` fallback states, from the same
+    /// functions — so a def-use record and the IR cannot disagree about what an
+    /// instruction touches. `reads` was always empty here, which said every
+    /// A32 instruction consumed nothing.
     fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
-        let writes = match self.redecode(insn) {
-            Some(Inst::Crate(inst)) => writes_of(&inst),
-            Some(Inst::Own(o)) => o.writes(),
-            None => return RegAccess::default(),
-        };
-        RegAccess { reads: Vec::new(), writes }
+        let predicated = insn.cond.is_some();
+        match self.redecode(insn) {
+            Some(Inst::Crate(inst)) => RegAccess { reads: reads_of(&inst, predicated).regs().to_vec(), writes: writes_of(&inst) },
+            Some(Inst::Own(o)) => RegAccess { reads: o.reads(predicated), writes: o.writes() },
+            None => RegAccess::default(),
+        }
     }
 
     fn branch_condition(&self, mnemonic: &str, flags_value: &MicroExpr) -> MicroExpr {
@@ -776,7 +958,7 @@ impl Arch for Arm32 {
         let inst = match self.redecode(insn) {
             Some(Inst::Crate(inst)) => inst,
             Some(Inst::Own(o)) => return self.lift_own(&o, insn),
-            None => return vec![MicroStmt::Unlifted { va: insn.va, text: insn.text.clone() }],
+            None => return vec![MicroStmt::unlifted_unknown(insn.va, &insn.text)],
         };
         // The condition comes from the *decoded instruction* (`insn.cond`), not a
         // fresh re-decode: for A32 that is the encoding's condition, and for a
@@ -1895,6 +2077,71 @@ mod tests {
         // e6ef8073 `uxtb r8, r3`; e12fff1e `bx lr`.
         let stream = Arm32::a32().decode_stream(&[0x73, 0x80, 0xef, 0xe6, 0x1e, 0xff, 0x2f, 0xe1], Va(0x1000), 4);
         assert_eq!(stream.iter().map(|d| d.mnemonic.as_str()).collect::<Vec<_>>(), vec!["uxtb", "bx"]);
+    }
+
+    /// The `Unlifted` statement of a lift: whether its reads are exact, the
+    /// reads sorted, and its memory effect.
+    fn unlifted_of(stmts: &[MicroStmt]) -> (bool, Vec<String>, MemEffect) {
+        let Some(MicroStmt::Unlifted { reads, mem, .. }) = stmts.iter().find(|s| matches!(s, MicroStmt::Unlifted { .. })) else {
+            panic!("no unlifted statement in {stmts:?}");
+        };
+        let mut regs = reads.regs().to_vec();
+        regs.sort();
+        (reads.exact().is_some(), regs, *mem)
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// An instruction kept as `asm` states what it reads and does to memory —
+    /// for both decoders. Without the reads, `mov r8, r3; strb r8, [r1]` lost
+    /// `r8 = r3` as dead; without the memory effect, a `strb` between a store
+    /// and a load was invisible to forwarding. Every word is llvm-mc's
+    /// (`-triple=armv7`).
+    #[test]
+    fn an_unlifted_instruction_states_its_reads_and_its_memory_effect() {
+        // e5c18000  strb r8, [r1] — the stored register and the base.
+        assert_eq!(unlifted_of(&lift1(&[0x00, 0x80, 0xc1, 0xe5])), (true, names(&["r1", "r8"]), MemEffect::Write));
+        // e1a00162  ror r0, r2, #2 — registers only, and the destination is
+        // not read…
+        assert_eq!(unlifted_of(&lift1(&[0x62, 0x01, 0xa0, 0xe1])), (true, names(&["r2"]), MemEffect::NoAccess));
+        // 11a00162  rorne r0, r2, #2 — …unless the instruction is predicated:
+        // a failed condition leaves the old `r0` as the result.
+        assert_eq!(unlifted_of(&lift1(&[0x62, 0x01, 0xa0, 0x11])), (true, names(&["r0", "r2"]), MemEffect::NoAccess));
+        // e4910004  ldr r0, [r1], #4 — reads the base, not its destination.
+        assert_eq!(unlifted_of(&lift1(&[0x04, 0x00, 0x91, 0xe4])), (true, names(&["r1"]), MemEffect::Read));
+        // e68f0071  sxtb16 r0, r1 (this file's own decoder) — the source alone…
+        assert_eq!(unlifted_of(&lift1(&[0x71, 0x00, 0x8f, 0xe6])), (true, names(&["r1"]), MemEffect::NoAccess));
+        // 168f0071  sxtb16ne r0, r1 — …and predicated, the destination too.
+        assert_eq!(unlifted_of(&lift1(&[0x71, 0x00, 0x8f, 0x16])), (true, names(&["r0", "r1"]), MemEffect::NoAccess));
+        // e7410312  smlald r0, r1, r2, r3 — the accumulator pair is read.
+        assert_eq!(unlifted_of(&lift1(&[0x12, 0x03, 0x41, 0xe7])), (true, names(&["r0", "r1", "r2", "r3"]), MemEffect::NoAccess));
+    }
+
+    /// A post-indexed access always writes back its base; the decoder's flag
+    /// for it says `false`, and the fallback believed it: `ldr r0, [r1], #4;
+    /// mov r0, r1` returned the old `r1`.
+    #[test]
+    fn a_post_indexed_access_invalidates_its_base() {
+        // e4910004  ldr r0, [r1], #4
+        assert_eq!(invalidated(&lift1(&[0x04, 0x00, 0x91, 0xe4])), vec!["r0", "r1"]);
+    }
+
+    /// A conditional call stays `asm`. When it is taken it clobbers what any
+    /// call does, and it consumes the argument registers — which are the
+    /// convention's reads, not the encoding's, so they are a bound: they keep
+    /// the definitions alive without claiming the function takes four
+    /// parameters.
+    #[test]
+    fn a_conditional_call_kept_as_asm_reads_and_clobbers_what_a_call_does() {
+        // 1b000000  blne
+        let stmts = lift1(&[0x00, 0x00, 0x00, 0x1b]);
+        let (exact, regs, mem) = unlifted_of(&stmts);
+        assert!(!exact, "a call's argument reads are a bound: {regs:?}");
+        assert_eq!(regs, names(&["r0", "r1", "r2", "r3", "sp"]));
+        assert_eq!(mem, MemEffect::Unknown);
+        assert_eq!(invalidated(&stmts), vec!["lr", "r0", "r1", "r2", "r3", "r12"]);
     }
 
     #[test]

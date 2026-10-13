@@ -8,7 +8,7 @@
 //! fixed (CONCEPT §3 rule 3).
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use n0xis_arch::{BinOp, CallTarget, MicroExpr, MicroStmt, UnOp, FLAGS_VAR};
 use n0xis_contracts::Va;
@@ -46,6 +46,20 @@ pub struct RenderNames {
     /// without conflating anything: `rcx.1`/`rcx.2` keep their subscripts, and
     /// there is never a bare `rcx` for this to collide with.
     param_names: HashMap<String, String>,
+    /// The entry SSA versions of the **recovered parameters** (`"rdi.0"`), as
+    /// type recovery decided them — and only those.
+    ///
+    /// Kept apart from `param_names`, which [`Self::with_coalescing`] replaces
+    /// with the whole coalescing map: that map also names every entry version
+    /// sitting in a phi web, and a web can be live for reasons that are no
+    /// evidence of anything. An instruction that may read any register (a
+    /// `syscall`) keeps every register's definitions alive as a bound, so the
+    /// web of an argument register the function never uses got a name, and the
+    /// argument-padding test read "has a name" as "is a parameter": `clock_getres`
+    /// passed its indirect callee a third argument, `rdx.0`, that the code never
+    /// sets. Whether a register is a parameter is decided once, by
+    /// `typeinfer::collect_definite_param_regs`, and read from here.
+    params: HashSet<String>,
     /// This ISA's stack-pointer name, when the caller knows it. Frame
     /// bookkeeping (`rsp.1 = rsp.0 - 0x90`) is not a statement the program
     /// performs — it is how the prologue is spelled, and the frame is already
@@ -133,6 +147,7 @@ impl RenderNames {
             locals: HashMap::new(),
             structs: HashMap::new(),
             param_names: HashMap::new(),
+            params: HashSet::new(),
             display_regs: &[],
             stack_var: None,
             entry_return_var: None,
@@ -198,6 +213,7 @@ impl RenderNames {
         self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
         self.structs = types.structs.iter().map(|s| (s.base_var.clone(), std::collections::BTreeMap::new())).collect();
         self.param_names = types.signature.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
+        self.params = types.signature.params.iter().map(|p| format!("{}.0", p.reg)).collect();
         // Only a *measured* void suppresses the return line; an unknown one
         // must not, or a value the function does return disappears.
         self.void_return = types.signature.ret.is_void();
@@ -296,12 +312,13 @@ impl RenderNames {
     /// unchanged. Single source of truth so every render site — bare `Var`,
     /// struct-field base, store target — agrees.
     fn display_var(&self, name: &str) -> String {
-        let display = self
-            .param_names
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| self.spell_register(name));
-        self.shown(display, false)
+        self.shown(self.var_display(name), false)
+    }
+
+    /// [`Self::display_var`] without recording the variable as printed — for a
+    /// caller that has to see the text before deciding whether to print it.
+    fn var_display(&self, name: &str) -> String {
+        self.param_names.get(name).cloned().unwrap_or_else(|| self.spell_register(name))
     }
 
     /// A canonical SSA name spelled as the target spells its registers:
@@ -730,10 +747,11 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
 /// register that is not a recovered parameter of the current function. Such a
 /// value is the uninitialized incoming register, injected only because the
 /// Win64 lift passes four argument registers at every call — never a real
-/// argument. A recovered parameter's entry version is in `param_names` (the
-/// coalescing/parameter map), so it is *not* padding.
+/// argument. A recovered parameter's entry version is in `params`, so it is
+/// *not* padding; being named by the coalescing map is not the same thing (see
+/// there).
 fn is_padding_arg(a: &MicroExpr, names: &RenderNames) -> bool {
-    matches!(a, MicroExpr::Var(n) if n.ends_with(".0") && !names.param_names.contains_key(n))
+    matches!(a, MicroExpr::Var(n) if n.ends_with(".0") && !names.params.contains(n))
 }
 
 /// How many arguments a **constructor or destructor** really takes, read off its
@@ -974,7 +992,28 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
         }
         MicroStmt::Return(None) => "return;".to_string(),
         MicroStmt::Nop => return None,
-        MicroStmt::Unlifted { text, .. } => format!("// asm: {text}"),
+        MicroStmt::Unlifted { text, reads, .. } => {
+            // Which value each register the instruction names holds, where the
+            // text alone does not say: `strb r8, [r1]` after `r8.1 = r3;` reads
+            // `r8.1`, and nothing else on the line connects the two. A register
+            // shown under its own name (a parameter named for it) needs no
+            // note. Reads that are only a bound say nothing about any one
+            // register, so they get none.
+            let notes: Vec<String> = reads
+                .exact()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|n| {
+                    let reg = names.spell_register(n.split('.').next().unwrap_or(n));
+                    (names.user_override(names.var_display(n)) != reg).then(|| format!("{reg} = {}", names.display_var(n)))
+                })
+                .collect();
+            if notes.is_empty() {
+                format!("// asm: {text}")
+            } else {
+                format!("// asm: {text}  ({})", notes.join(", "))
+            }
+        }
     })
 }
 

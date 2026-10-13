@@ -33,10 +33,26 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **An instruction left as `asm` hid what it read and what it did to memory, on every
+  architecture.** A definition only it read was dropped as dead, and the parameter behind it
+  left the signature: `mov r8, r9; crc32 eax, r8b` on x64 read as `sub(void)`. A store it made
+  was not a store, so an earlier value was forwarded across it: `mov [rcx],edx;
+  movnti [rcx],r8d; mov eax,[rcx]` returned `rdx`. Such an instruction now states the
+  registers it reads (exactly, bounded by the calling convention, or unknown, which keeps every
+  definition alive) and its memory effect (unknown is read-and-write), and every pass honours
+  both; a bounded or unknown read keeps a definition alive but is never evidence of a
+  parameter. Over x64 libc, 76 signatures change: none loses a parameter, 72 gain one or more
+  and none exceeds its prototype in the system headers (system-call wrappers such as
+  `renameat` go from `(void)` to their four parameters). Trailing call arguments are now
+  trimmed by the recovered parameter set itself rather than by a proxy for it, which removes
+  phantom arguments at 334 call sites (`perror` called `fileno_unlocked` with six; it is one).
+  Fixed in the same fallbacks: x64 invalidated `zmm` where the IR reads `xmm`, so
+  `movsd xmm0,[rsi]; aesenc xmm0,xmm1; movsd [rdi],xmm0` read `*rdi = *rsi`; A32 ignored
+  post-index write-back, and a conditional call kept as `asm` clobbered only `lr`; arm64
+  recorded `ldr d0,[x1]` as writing `x0`.
 - **Halfword multiplies read the wrong instruction.** `smulw<y>` decoded as `smlaw<y>` with the
   other half, `smlal<x><y>` with RdLo = RdHi was refused, and `umaal` and the Thumb
   two-destination multiplies kept a stale high register through the `asm` fallback.
-
 - **32-bit ARM (A32) lifted the wrong registers.** Compared word by word with LLVM's
   disassembler: the decoder put a phantom operand, an encoding field the processor ignores,
   into shifted moves, compares and `mvn` with an immediate, and the lift read it.

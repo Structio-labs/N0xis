@@ -102,7 +102,10 @@ fn stmt_uses(stmt: &MicroStmt, out: &mut HashSet<String>) {
             }
         }
         MicroStmt::Return(Some(e)) => expr_vars(e, out),
-        MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
+        // What an unlifted instruction reads is live up to it: two versions it
+        // reads and another assigns must not share a name.
+        MicroStmt::Unlifted { reads, .. } => out.extend(reads.regs().iter().cloned()),
+        MicroStmt::Return(None) | MicroStmt::Nop => {}
     }
 }
 
