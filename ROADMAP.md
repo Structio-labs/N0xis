@@ -1276,14 +1276,29 @@ outside this codebase that can prove it wrong.
    operand shapes it expects, and no panic crosses the decoder boundary
    (checked over all 2^32 words). The corrected lift was checked on those
    forms and on functions compiled here from known source.
-   **Still open:** the ARMv6 media instructions (`uxtb`, `uxth`, `sxth`, `sxtb`,
-   `uxtah`, `rev16`, `smulbb`) are unimplemented in the decoder crate, each cutting a
-   function short; the decoder is not told the ISA version, so it accepts
-   ARMv7-only encodings in ARMv6 code; Thumb `cbz`/`cbnz` are not branches in the CFG; A32 results
-   are not cut back to 32 bits in emulation; Thumb was decoded by the 0.4 line
-   until now, whose successor's changelog lists a dozen Thumb-2 decode fixes, so
-   the earlier Thumb check is due again; and nothing on AArch32 is checked
-   against a processor yet.
+   **The media class (later the same day).** The decoder crate implements none
+   of the A32 media class (`uxtb`, `sxth`, `ubfx`, `pkhbt`, the parallel add and
+   subtract, the dual multiplies) and misreads the halfword multiplies (`smulwb`
+   as `smlawt`); both encoding spaces are now decoded here. Over every word of
+   both at `AL`, and a stratified sample under every other condition, the words
+   accepted and rejected are exactly llvm-mc's (`armv7ve`), with two recorded
+   text exceptions. The lifted forms (extends, bitfields, pack, halfword
+   multiplies) agree with qemu's user-mode ARM emulation on 8 352 of 8 352
+   answers.
+   **Still open:** a definition read only by an instruction left as `asm` is
+   dropped as dead, and the signature loses the parameter behind it. That holds
+   on every architecture (`mov r8, r9; crc32 eax, r8b` on x64 reads as
+   `sub(void)`) and shows most on A32, where byte, halfword and dual loads and
+   stores, and `ldm`/`stm` beyond push and pop, are still `asm`. A32 reads of
+   `pc` lift as an unknown `pc.0` instead of the instruction's address plus 8,
+   so a literal-pool load shows as `pc.0->field_0x18c`. the decoder is not told
+   the ISA version, so ARMv7-only encodings are accepted in ARMv6 code; the unconditional `cps` forms are
+   still rejected; the crate's register spelling (`sb`, `ip`) and this decoder's
+   (`r9`, `r12`) differ within one listing; Thumb `cbz`/`cbnz` are not branches
+   in the CFG; A32 results are not cut back to 32 bits in emulation. Thumb was
+   decoded by the 0.4 line until today, whose successor's changelog lists a
+   dozen Thumb-2 decode fixes, so the earlier Thumb check is due again. Nothing
+   on AArch32 is checked against a physical processor yet.
 4. ⬜ **Calling conventions and an explicit stack-frame model.** Today: arity and
    return only, the convention *assumed* from the ABI. No `thiscall`,
    `vectorcall` or variadic detection; no frame model, no frame-pointer-omission
