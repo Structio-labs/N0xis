@@ -1316,9 +1316,12 @@ outside this codebase that can prove it wrong.
    (`kill(void)`), since nothing says which registers a given call number
    reads; a stack local is named from the offset off whichever SSA version of
    the stack pointer it used, not off the entry frame, so one name can cover
-   several slots; a saved rename keyed by an old local name needs a bridge to
-   the new names; MTE `stg` write-back is not scaled; and an A32
-   single-register `pop` (`ldr r4, [sp], #4`) stays `asm`.
+   several slots; MTE `stg` write-back is not scaled; and an A32
+   single-register `pop` (`ldr r4, [sp], #4`) stays `asm`. Saved renames keyed
+   by the earlier local names are bridged (the store records its key naming;
+   an ambiguous old key is applied to neither slot and says so); an earlier
+   value can only be discarded with the whole record, and the in-process
+   engine tests still read the user's global annotation store.
    **Still open on A32:** byte, halfword and dual loads and stores, and
    `ldm`/`stm` beyond push and pop, are still `asm`. A32 reads of
    `pc` lift as an unknown `pc.0` instead of the instruction's address plus 8,
