@@ -1009,15 +1009,16 @@ mod tests {
     /// `mov r8, r3; strb r8, [r1]; bx lr` — the `strb` is `asm`, and it is the
     /// only reader of `r8`. With no reads on the statement `r8 = r3` was dead,
     /// and `r1` and `r3` vanished from the signature (`sub_1000(uint32_t r0)`).
-    /// The same with `uxtb r8, r3` in place of the move.
+    /// The same with `uxtb r8, r3` in place of the move. Checked with `strbne`,
+    /// which stays `asm`; the unconditional `strb` is lifted.
     #[test]
     fn a_definition_only_an_unlifted_instruction_reads_is_kept() {
-        // e1a08003 mov r8, r3; e5c18000 strb r8, [r1]; e12fff1e bx lr
-        let f = decomp_a32_as(words(&[0xe1a08003, 0xe5c18000, 0xe12fff1e]), DecompStyle::Ssa);
+        // e1a08003 mov r8, r3; 15c18000 strbne r8, [r1]; e12fff1e bx lr
+        let f = decomp_a32_as(words(&[0xe1a08003, 0x15c18000, 0xe12fff1e]), DecompStyle::Ssa);
         assert!(f.pseudo.iter().any(|l| l.contains("r8.1 = r3;")), "{:#?}", f.pseudo);
         assert!(f.signature.contains("r1") && f.signature.contains("r3"), "r1 and r3 are read: {}", f.signature);
         // e6ef8073 uxtb r8, r3
-        let f = decomp_a32_as(words(&[0xe6ef8073, 0xe5c18000, 0xe12fff1e]), DecompStyle::Ssa);
+        let f = decomp_a32_as(words(&[0xe6ef8073, 0x15c18000, 0xe12fff1e]), DecompStyle::Ssa);
         assert!(f.pseudo.iter().any(|l| l.contains("r8.1 = (uint8_t)r3;")), "{:#?}", f.pseudo);
         assert!(f.signature.contains("r1") && f.signature.contains("r3"), "r1 and r3 are read: {}", f.signature);
     }

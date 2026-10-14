@@ -2238,16 +2238,18 @@ mod tests {
     /// (`-triple=armv7`).
     #[test]
     fn an_unlifted_instruction_states_its_reads_and_its_memory_effect() {
-        // e5c18000  strb r8, [r1] — the stored register and the base.
-        assert_eq!(unlifted_of(&lift1(&[0x00, 0x80, 0xc1, 0xe5])), (true, names(&["r1", "r8"]), MemEffect::Write));
+        // 15c18000  strbne r8, [r1] — the stored register and the base. (A
+        // predicated store stays `asm`; the unconditional `strb` is lifted.)
+        assert_eq!(unlifted_of(&lift1(&[0x00, 0x80, 0xc1, 0x15])), (true, names(&["r1", "r8"]), MemEffect::Write));
         // e1a00162  ror r0, r2, #2 — registers only, and the destination is
         // not read…
         assert_eq!(unlifted_of(&lift1(&[0x62, 0x01, 0xa0, 0xe1])), (true, names(&["r2"]), MemEffect::NoAccess));
         // 11a00162  rorne r0, r2, #2 — …unless the instruction is predicated:
         // a failed condition leaves the old `r0` as the result.
         assert_eq!(unlifted_of(&lift1(&[0x62, 0x01, 0xa0, 0x11])), (true, names(&["r0", "r2"]), MemEffect::NoAccess));
-        // e4910004  ldr r0, [r1], #4 — reads the base, not its destination.
-        assert_eq!(unlifted_of(&lift1(&[0x04, 0x00, 0x91, 0xe4])), (true, names(&["r1"]), MemEffect::Read));
+        // e4b10004  ldrt r0, [r1], #4 — reads the base, not its destination.
+        // (The unprivileged form stays `asm`; `ldr r0, [r1], #4` is lifted.)
+        assert_eq!(unlifted_of(&lift1(&[0x04, 0x00, 0xb1, 0xe4])), (true, names(&["r1"]), MemEffect::Read));
         // e68f0071  sxtb16 r0, r1 (this file's own decoder) — the source alone…
         assert_eq!(unlifted_of(&lift1(&[0x71, 0x00, 0x8f, 0xe6])), (true, names(&["r1"]), MemEffect::NoAccess));
         // 168f0071  sxtb16ne r0, r1 — …and predicated, the destination too.
@@ -2258,11 +2260,12 @@ mod tests {
 
     /// A post-indexed access always writes back its base; the decoder's flag
     /// for it says `false`, and the fallback believed it: `ldr r0, [r1], #4;
-    /// mov r0, r1` returned the old `r1`.
+    /// mov r0, r1` returned the old `r1`. Checked on a post-indexed form that
+    /// stays `asm` — `ldr r0, [r1], #4` itself is lifted, write-back and all.
     #[test]
     fn a_post_indexed_access_invalidates_its_base() {
-        // e4910004  ldr r0, [r1], #4
-        assert_eq!(invalidated(&lift1(&[0x04, 0x00, 0x91, 0xe4])), vec!["r0", "r1"]);
+        // e4b10004  ldrt r0, [r1], #4 (llvm-mc)
+        assert_eq!(invalidated(&lift1(&[0x04, 0x00, 0xb1, 0xe4])), vec!["r0", "r1"]);
     }
 
     /// A conditional call stays `asm`. When it is taken it clobbers what any
