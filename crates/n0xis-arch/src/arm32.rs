@@ -9,14 +9,17 @@
 //! decoder for them (A32 by default, Thumb via [`Arm32::thumb`]) with
 //! control-flow classification + resolved branch targets for the CFG, plus a
 //! **semantic lift for A32**: data-processing (`mov`/`add`/`sub`/`and`/`orr`/
-//! `eor`/`bic`/`mvn`/`mul`), simple `ldr`/`str`, `cmp` + the AArch32 branch
-//! conditions, `push`/`pop`, `bl`/`bx lr` under AAPCS32, and **predication**
+//! `eor`/`bic`/`mvn`/`mul`, `adr`), every single load and store (`ldr`/`ldrb`/
+//! `ldrh`/`ldrsb`/`ldrsh`/`ldrd` and the stores, in every addressing mode),
+//! `ldm`/`stm` in all four modes (`push`/`pop` among them), `cmp` + the
+//! AArch32 branch conditions, `bl`/`bx lr` under AAPCS32, and **predication**
 //! (`addne` → `dst = cond ? effect : dst`, via the same `Select` + reaching-flags
 //! resolver x64 uses for `cmovcc`). Shifted-register operands lift to the
-//! shift (`lsl`/`lsr`/`asr`, by an immediate or a register). Unmodelled forms
-//! (rotates — `ror`/`rrx` — `ldm`/`stm` beyond push/pop, FP/SIMD) are preserved
-//! as `asm` and **soundly invalidate their writes** so no later read reuses a
-//! stale value.
+//! shift (`lsl`/`lsr`/`asr`, by an immediate or a register). A read of `pc` is
+//! the constant the processor sees ([`PcView`]). Unmodelled forms (rotates —
+//! `ror`/`rrx` — FP/SIMD, a predicated store or write-back, the UNPREDICTABLE
+//! register choices) are preserved as `asm` and **soundly invalidate their
+//! writes** so no later read reuses a stale value.
 //!
 //! Two A32 encoding spaces are decoded here rather than by the crate, which
 //! fails on them — the media class and the halfword multiplies; see [`own`].
@@ -236,6 +239,39 @@ fn a32_rt_pair_overflows(word: u32) -> bool {
     word >> 28 != 0b1111 && word & FIXED_MASK == FIXED_BITS && (word >> 12) & 0xf == 15
 }
 
+/// The decoder's text for an A32 instruction, corrected where it names a
+/// different instruction than the word holds — checked against llvm-mc
+/// (`-triple=armv6-none-eabi`):
+///
+/// * an increment-before block transfer printed as `ldmia`/`stmia`, the name
+///   of the increment-after mode (`e9900006` is `ldmib r0, {r1, r2}`). The
+///   mnemonic is rebuilt from [`block_mode`], the mode the lift uses;
+/// * the user-bank / exception-return `^` was not printed at all (`e8d00006`
+///   is `ldm r0, {r1, r2} ^`);
+/// * `sub rd, pc, #imm` printed as `adr rd, pc, #imm`, the same text as the
+///   adding form — see [`adr`].
+fn a32_text(inst: &Instruction, bytes: &[u8], text: String) -> String {
+    match inst.opcode {
+        Opcode::LDM(..) | Opcode::STM(..) => {
+            let mnemonic = if matches!(inst.opcode, Opcode::LDM(..)) { "ldm" } else { "stm" };
+            let (first, rest) = text.split_once(' ').unwrap_or((text.as_str(), ""));
+            let mut out = match (first.strip_prefix(mnemonic), block_mode(bytes, false)) {
+                (Some(suffixed), Some(mode)) => {
+                    let cond = ["ia", "ib", "da", "db"].iter().find_map(|s| suffixed.strip_prefix(s)).unwrap_or(suffixed);
+                    format!("{mnemonic}{}{cond} {rest}", mode.suffix())
+                }
+                _ => text.clone(),
+            };
+            if a32_user_bank(bytes) {
+                out.push_str(" ^");
+            }
+            out
+        }
+        Opcode::ADR if a32_adr_adds(bytes) == Some(false) => text.replacen("adr", "sub", 1),
+        _ => text,
+    }
+}
+
 impl Default for Arm32 {
     fn default() -> Self {
         Arm32::a32()
@@ -357,8 +393,10 @@ fn reglist(mask: u16) -> Vec<String> {
     (0u8..16).filter(|i| mask & (1u16 << i) != 0).map(reg_n).collect()
 }
 
-/// The register numbers of the stack pointer and the program counter.
+/// The register numbers of the stack pointer, the link register and the
+/// program counter.
 const SP: u8 = 13;
+const LR: u8 = 14;
 const PC: u8 = 15;
 
 /// The 32-bit stack slot `off` bytes above (`add`) or below the register
@@ -373,57 +411,143 @@ fn slot_addr(base: String, off: u32, add: bool) -> MicroExpr {
     }
 }
 
-/// `push {list}` — `stmdb sp!, {list}`: the lowest-numbered register at the
-/// lowest address, the block ending just below the incoming `sp`, then `sp`
-/// moved down over it (ARM ARM, `STMDB`). `push {r4, lr}` stores `r4` at
-/// `sp - 8` and `lr` at `sp - 4`, then `sp = sp - 8`.
-///
-/// Without the stores, nothing that reasons about memory knew the stack was
-/// written: to store-to-load forwarding a `push` was no store at all, so a
-/// value an earlier `str` left in a slot the `push` overwrites would reach a
-/// load after it — the moment forwarding could key that slot.
-///
-/// `None` — the `asm` fallback — when the list holds `sp` (which value is
-/// stored is UNKNOWN when it is not the lowest register) or `pc` (whose value
-/// is an offset from this instruction's address the lift does not compute).
-fn push_stmts(sp: &str, mask: u16) -> Option<Vec<MicroStmt>> {
-    if mask & ((1 << SP) | (1 << PC)) != 0 || mask == 0 {
-        return None;
-    }
-    let regs = reglist(mask);
-    let bytes = 4 * regs.len() as u32;
-    let mut out: Vec<MicroStmt> = regs
-        .iter()
-        .enumerate()
-        .map(|(i, r)| MicroStmt::Store { addr: slot_addr(sp.to_string(), bytes - 4 * i as u32, false), value: MicroExpr::var(r.clone()), bits: 32 })
-        .collect();
-    out.push(assign(sp.to_string(), slot_addr(sp.to_string(), bytes, false)));
-    Some(out)
+/// The four addressing modes of a block transfer (`ldm`/`stm`): whether the
+/// block lies above (`Increment`) or below (`Decrement`) the base, and whether
+/// the first word is the base itself (`After`) or one word past it (`Before`).
+/// `push` is `stmdb sp!`, `pop` is `ldmia sp!`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockMode {
+    IncrementAfter,
+    IncrementBefore,
+    DecrementAfter,
+    DecrementBefore,
 }
 
-/// `pop {list}` — `ldmia sp!, {list}`, the mirror of [`push_stmts`]: each
-/// register loaded from `sp + 4·i` in ascending order, then `sp` moved up over
-/// the block. `pc` in the list is the function's return (`pop {r4, pc}`), its
-/// slot read by the return itself.
-///
-/// The restored values used to be `Unknown`, so a callee-saved register
-/// pushed and popped did not come back as itself.
-///
-/// `None` when the list holds `sp`: the loaded value and the write-back
-/// disagree, and the architecture leaves the result UNKNOWN.
-fn pop_stmts(sp: &str, mask: u16) -> Option<Vec<MicroStmt>> {
-    if mask & (1 << SP) != 0 || mask == 0 {
-        return None;
-    }
-    let regs = reglist(mask);
-    let mut out = Vec::new();
-    for (i, r) in regs.iter().enumerate() {
-        if r != &reg_n(PC) {
-            out.push(assign(r.clone(), MicroExpr::load(slot_addr(sp.to_string(), 4 * i as u32, true), 32, false)));
+impl BlockMode {
+    /// The mode from the encoding's `P` (before) and `U` (increment) bits.
+    fn from_pu(before: bool, increment: bool) -> BlockMode {
+        match (increment, before) {
+            (true, false) => BlockMode::IncrementAfter,
+            (true, true) => BlockMode::IncrementBefore,
+            (false, false) => BlockMode::DecrementAfter,
+            (false, true) => BlockMode::DecrementBefore,
         }
     }
-    out.push(assign(sp.to_string(), slot_addr(sp.to_string(), 4 * regs.len() as u32, true)));
-    if mask & (1 << PC) != 0 {
+
+    /// The A32 suffix, as the ARM ARM and llvm-mc spell it — `ia` is the
+    /// default and is not printed.
+    fn suffix(self) -> &'static str {
+        match self {
+            BlockMode::IncrementAfter => "",
+            BlockMode::IncrementBefore => "ib",
+            BlockMode::DecrementAfter => "da",
+            BlockMode::DecrementBefore => "db",
+        }
+    }
+
+    /// Where the `i`-th of `n` registers goes, as an offset from the base
+    /// (`true` = above it): the lowest-numbered register at the lowest
+    /// address, always (ARM ARM, `LDM`/`STM`).
+    fn slot(self, i: u32, n: u32) -> (u32, bool) {
+        match self {
+            BlockMode::IncrementAfter => (4 * i, true),
+            BlockMode::IncrementBefore => (4 * (i + 1), true),
+            BlockMode::DecrementAfter => (4 * (n - 1 - i), false),
+            BlockMode::DecrementBefore => (4 * (n - i), false),
+        }
+    }
+
+    fn increments(self) -> bool {
+        matches!(self, BlockMode::IncrementAfter | BlockMode::IncrementBefore)
+    }
+}
+
+/// The addressing mode of a block transfer, **read from the encoding**, never
+/// from the decoder's opcode. yaxpeax 0.5.0 carries an `(add, pre, …)` tuple
+/// that is right for A32 and wrong for Thumb's 16-bit `stmia`, which it builds
+/// as `pre = true`; and it *prints* the A32 increment-before forms as `ldmia`/
+/// `stmia` — the name of the other mode (llvm-mc: `e9900006` is `ldmib r0,
+/// {r1, r2}`; the decoder said `ldmia`). So the mode is this function's answer,
+/// for the text and the lift alike.
+///
+/// A32: `P` bit 24, `U` bit 23. Thumb: every 16-bit form is increment-after;
+/// a 32-bit one is `1110 100 op 0 W L Rn` with `op` 01 = increment-after and
+/// 10 = decrement-before (ARM ARM A6.3.5). `None` for anything else.
+fn block_mode(bytes: &[u8], thumb: bool) -> Option<BlockMode> {
+    if !thumb {
+        let word = u32::from_le_bytes(*bytes.first_chunk::<4>()?);
+        return Some(BlockMode::from_pu(word & (1 << 24) != 0, word & (1 << 23) != 0));
+    }
+    let hw1 = u16::from_le_bytes(*bytes.first_chunk::<2>()?);
+    if hw1 >> 11 == 0b11000 || hw1 >> 11 == 0b11001 {
+        return Some(BlockMode::IncrementAfter);
+    }
+    match (hw1 >> 9 == 0b111_0100, (hw1 >> 7) & 0b11) {
+        (true, 0b01) => Some(BlockMode::IncrementAfter),
+        (true, 0b10) => Some(BlockMode::DecrementBefore),
+        _ => None,
+    }
+}
+
+/// An A32 block transfer's `S` bit (22): the user-bank registers, or — with
+/// `pc` in an `ldm` list — an exception return that also restores the CPSR.
+/// Neither is an ordinary load or store. The decoder carries it as the
+/// opcode's fourth field, which in Thumb it sets for every form, so it is read
+/// from the word.
+fn a32_user_bank(bytes: &[u8]) -> bool {
+    bytes.first_chunk::<4>().is_some_and(|b| u32::from_le_bytes(*b) & (1 << 22) != 0)
+}
+
+/// A block transfer — `ldm`/`stm`, `push`/`pop` — as the stores or loads it
+/// performs, then the base write-back: the lowest-numbered register at the
+/// lowest address ([`BlockMode::slot`]), the block `4·n` bytes long. `push
+/// {r4, lr}` (`stmdb sp!`) stores `r4` at `sp - 8` and `lr` at `sp - 4`, then
+/// `sp = sp - 8`; `pop {r4, pc}` (`ldmia sp!`) loads `r4` from `sp`, moves `sp`
+/// up by 8 and returns — `pc` in a loaded list is the return, its slot read by
+/// the return itself, as the CFG classifies it.
+///
+/// Without the stores, nothing that reasons about memory knew the stack was
+/// written: to store-to-load forwarding a `push` was no store at all. Without
+/// the loads, a callee-saved register pushed and popped did not come back as
+/// itself.
+///
+/// `None` — the `asm` fallback — for an empty list (UNPREDICTABLE); for `sp`
+/// in the list (a stored `sp` is UNKNOWN unless it is the lowest register, a
+/// loaded one disagrees with the write-back); for `pc` in a stored list (the
+/// value stored is IMPLEMENTATION DEFINED, `PCStoreValue()`); and for the base
+/// in the list with write-back (the stored value or the final base is
+/// UNKNOWN). A loaded base without write-back is loaded last, so every address
+/// before it is computed from the base the instruction started with.
+fn block_stmts(base: &str, mode: BlockMode, load: bool, wback: bool, mask: u16) -> Option<Vec<MicroStmt>> {
+    let regs = reglist(mask);
+    let has = |r: &str| regs.iter().any(|x| x == r);
+    if regs.is_empty() || has(&reg_n(SP)) || base == reg_n(PC) || (!load && has(&reg_n(PC))) || (wback && has(base)) {
+        return None;
+    }
+    let n = regs.len() as u32;
+    let slot = |i: usize| {
+        let (off, up) = mode.slot(i as u32, n);
+        slot_addr(base.to_string(), off, up)
+    };
+    let mut out = Vec::new();
+    if load {
+        let mut base_load = None;
+        for (i, r) in regs.iter().enumerate() {
+            let stmt = assign(r.clone(), MicroExpr::load(slot(i), 32, false));
+            match r.as_str() {
+                "pc" => {}
+                r if r == base => base_load = Some(stmt),
+                _ => out.push(stmt),
+            }
+        }
+        out.extend(base_load);
+    } else {
+        out.extend(regs.iter().enumerate().map(|(i, r)| MicroStmt::Store { addr: slot(i), value: MicroExpr::var(r.clone()), bits: 32 }));
+    }
+    if wback {
+        out.push(assign(base.to_string(), slot_addr(base.to_string(), 4 * n, mode.increments())));
+    }
+    if load && has(&reg_n(PC)) {
         out.push(MicroStmt::Return(Some(MicroExpr::var("r0"))));
     }
     Some(out)
@@ -485,48 +609,183 @@ fn signed32(e: MicroExpr) -> MicroExpr {
     }
 }
 
+/// What one instruction reads when it reads `pc` (ARM ARM, "Use of the PC"):
+/// its own address plus 8 in A32, plus 4 in Thumb — the pipeline offset the
+/// architecture fixes — and, for a `pc`-relative memory operand and `adr`, that
+/// value rounded down to a word (`Align(PC, 4)`), which in Thumb is not the
+/// same number.
+///
+/// Before this, `pc` was an ordinary register with no definition, so every
+/// literal-pool load read an unknown entry value: `ldr r0, [pc, #0x18c]` at
+/// 0x2000 rendered as `pc.0->field_0x18c`, where the processor loads the word
+/// at 0x2194.
+#[derive(Clone, Copy, Debug)]
+struct PcView {
+    /// What a register operand `pc` reads as, or `None` where that read is
+    /// UNPREDICTABLE or not one this lift knows — the instruction then stays
+    /// `asm`. A32 allows it in data processing with an immediate or
+    /// immediate-shifted operand; Thumb only in a 16-bit `mov` (and in `adr`,
+    /// which is [`PcView::literal_base`]'s).
+    operand: Option<u64>,
+    /// `Align(PC, 4)`: the base of a literal load and of `adr`.
+    literal_base: u64,
+}
+
+impl PcView {
+    fn a32(va: Va) -> PcView {
+        let pc = va.0.wrapping_add(8) & 0xffff_ffff;
+        PcView { operand: Some(pc), literal_base: pc & !3 }
+    }
+
+    /// Thumb's: `va + 4`, which a register operand reads only where `operand`
+    /// says so — the 16-bit `mov rd, pc`, or the base of `addw`/`subw`, the
+    /// two 32-bit `adr` encodings, which read `Align(PC, 4)`.
+    fn thumb(va: Va, operand: ThumbPcOperand) -> PcView {
+        let pc = va.0.wrapping_add(4) & 0xffff_ffff;
+        let operand = match operand {
+            ThumbPcOperand::Refused => None,
+            ThumbPcOperand::Pc => Some(pc),
+            ThumbPcOperand::Aligned => Some(pc & !3),
+        };
+        PcView { operand, literal_base: pc & !3 }
+    }
+}
+
+/// Which value a Thumb instruction's register operand `pc` reads — see
+/// [`PcView::thumb`].
+#[derive(Clone, Copy, Debug)]
+enum ThumbPcOperand {
+    Refused,
+    Pc,
+    Aligned,
+}
+
+/// A register read as an rvalue: its variable, or for `pc` the constant the
+/// processor reads — `None` where [`PcView::operand`] refuses it.
+fn reg_rvalue(r: yaxpeax_arm::armv7::Reg, pc: Option<u64>) -> Option<MicroExpr> {
+    if r.number() == PC {
+        pc.map(|v| MicroExpr::constant(i128::from(v), 32))
+    } else {
+        Some(MicroExpr::var(reg_name(r)))
+    }
+}
+
 /// A second-operand as an rvalue: a register, an immediate, or a **shifted
 /// register** (`r2, lsl #3` → `(r2 << 3)`; `r2, lsr r7` → `(r2 >>u r7)`).
 /// Derefs, reg-lists and rotates (`ror`/`rrx`) return `None` (not modelled
-/// here).
-fn op_rvalue(op: &Operand) -> Option<MicroExpr> {
+/// here). `pc` reads as `pc` says ([`PcView::operand`]); a register-shifted
+/// register naming `pc` anywhere is UNPREDICTABLE and returns `None`.
+fn op_rvalue(op: &Operand, pc: Option<u64>) -> Option<MicroExpr> {
     match op {
-        Operand::Reg(r) => Some(MicroExpr::var(reg_name(*r))),
+        Operand::Reg(r) => reg_rvalue(*r, pc),
         Operand::Imm32(v) => Some(MicroExpr::constant(*v as i128, 32)),
         Operand::RegShift(rs) => match rs.into_shift() {
-            RegShiftStyle::RegImm(s) => imm_shift(s.stype(), MicroExpr::var(reg_name(s.shiftee())), s.imm()),
+            RegShiftStyle::RegImm(s) => imm_shift(s.stype(), reg_rvalue(s.shiftee(), pc)?, s.imm()),
             // The count is the **low byte** of the shifting register (ARM ARM,
             // "Shifts applied to a register"); 32..=255 empty the register, or
             // fill it with the sign for `asr`, which is exactly what the IR's
             // shift means past the width (`Shift::apply`).
-            RegShiftStyle::RegReg(s) => shift_op(s.stype()).map(|op| {
-                let count = MicroExpr::binary(BinOp::And, MicroExpr::var(reg_name(s.shifter())), MicroExpr::constant(0xff, 32));
-                shift(op, MicroExpr::var(reg_name(s.shiftee())), count)
-            }),
+            RegShiftStyle::RegReg(s) => {
+                if s.shiftee().number() == PC || s.shifter().number() == PC {
+                    return None;
+                }
+                shift_op(s.stype()).map(|op| {
+                    let count = MicroExpr::binary(BinOp::And, MicroExpr::var(reg_name(s.shifter())), MicroExpr::constant(0xff, 32));
+                    shift(op, MicroExpr::var(reg_name(s.shiftee())), count)
+                })
+            }
         },
         _ => None,
     }
 }
 
-/// The effective address of a `ldr`/`str` memory operand and, when it
-/// write-backs, the base register it updates. Handles both `[Rn, #±off]` and the
-/// **shifted-register index** `[Rn, Rm, lsl #k]` / `[Rn, Rm]`. `None` for an
-/// addressing form (or a `ror` index) not modelled.
-fn deref_addr_of(op: &Operand) -> Option<(MicroExpr, Option<String>)> {
-    match op {
-        Operand::RegDerefPreindexOffset(base, off, add, wb) => Some((deref_addr(*base, *off, *add), wb.then(|| reg_name(*base)))),
-        Operand::RegDerefPreindexRegShift(base, rs, add, wb) => {
-            let idx = op_rvalue(&Operand::RegShift(*rs))?;
-            let addr = MicroExpr::binary(if *add { BinOp::Add } else { BinOp::Sub }, MicroExpr::var(reg_name(*base)), idx);
-            Some((addr, wb.then(|| reg_name(*base))))
-        }
-        _ => None,
-    }
+/// How a single load or store finds its address: an immediate, a register, or
+/// an immediate-shifted register, added to or subtracted from the base.
+#[derive(Clone, Copy, Debug)]
+enum Index {
+    Imm(u16),
+    Reg(yaxpeax_arm::armv7::Reg),
+    Shifted(yaxpeax_arm::armv7::RegShift),
 }
 
-/// The effective address of a `[Rn, #±off]` operand.
-fn deref_addr(base: yaxpeax_arm::armv7::Reg, off: u16, add: bool) -> MicroExpr {
-    slot_addr(reg_name(base), u32::from(off), add)
+/// A single load/store's memory operand, from whichever of the decoder's six
+/// shapes it came as. `pre` — the address is `base ± index`, else `base` alone
+/// (post-indexed); `wback` — the base is updated to `base ± index` afterwards.
+///
+/// A **post-indexed** access always updates its base — that is what
+/// post-indexing is (`ldr r0, [r1], #4` is `r0 = *r1; r1 += 4`). The decoder
+/// carries a write-back flag on those forms too, and leaves it `false`:
+/// reading the flag let the `asm` fallback keep `r1`'s old value, so `ldr r0,
+/// [r1], #4; mov r0, r1` returned `r1` instead of `r1 + 4`. A pre-indexed
+/// access updates it only when its `!` flag is set.
+#[derive(Clone, Copy, Debug)]
+struct MemOperand {
+    base: yaxpeax_arm::armv7::Reg,
+    index: Index,
+    add: bool,
+    pre: bool,
+    wback: bool,
+}
+
+impl MemOperand {
+    fn of(op: &Operand) -> Option<MemOperand> {
+        let (base, index, add, pre, wback) = match *op {
+            Operand::RegDerefPreindexOffset(b, off, add, wb) => (b, Index::Imm(off), add, true, wb),
+            Operand::RegDerefPreindexReg(b, r, add, wb) => (b, Index::Reg(r), add, true, wb),
+            Operand::RegDerefPreindexRegShift(b, rs, add, wb) => (b, Index::Shifted(rs), add, true, wb),
+            Operand::RegDerefPostindexOffset(b, off, add, _) => (b, Index::Imm(off), add, false, true),
+            Operand::RegDerefPostindexReg(b, r, add, _) => (b, Index::Reg(r), add, false, true),
+            Operand::RegDerefPostindexRegShift(b, rs, add, _) => (b, Index::Shifted(rs), add, false, true),
+            _ => return None,
+        };
+        Some(MemOperand { base, index, add, pre, wback })
+    }
+
+    /// The registers the index reads.
+    fn index_regs(&self) -> Vec<u8> {
+        match self.index {
+            Index::Imm(_) => Vec::new(),
+            Index::Reg(r) => vec![r.number()],
+            Index::Shifted(rs) => match rs.into_shift() {
+                RegShiftStyle::RegImm(s) => vec![s.shiftee().number()],
+                RegShiftStyle::RegReg(s) => vec![s.shiftee().number(), s.shifter().number()],
+            },
+        }
+    }
+
+    /// `base ± index`, with a `pc` base read as `Align(PC, 4)` and an
+    /// immediate folded into it — a literal load names the address it reads,
+    /// `*0x2194`, not `*(0x2188 + 0xc)`. `None` for an index the lift does not
+    /// model (a rotate) and for an index register `pc` (UNPREDICTABLE in every
+    /// single load and store).
+    fn offset_address(&self, pc: PcView) -> Option<MicroExpr> {
+        let base_pc = self.base.number() == PC;
+        let index = match self.index {
+            Index::Imm(off) if base_pc => {
+                let at = if self.add { pc.literal_base.wrapping_add(u64::from(off)) } else { pc.literal_base.wrapping_sub(u64::from(off)) };
+                return Some(MicroExpr::constant(i128::from(at & 0xffff_ffff), 32));
+            }
+            Index::Imm(off) => return Some(slot_addr(reg_name(self.base), u32::from(off), self.add)),
+            _ if self.index_regs().contains(&PC) => return None,
+            Index::Reg(r) => MicroExpr::var(reg_name(r)),
+            Index::Shifted(rs) => op_rvalue(&Operand::RegShift(rs), None)?,
+        };
+        Some(MicroExpr::binary(if self.add { BinOp::Add } else { BinOp::Sub }, self.base_value(pc), index))
+    }
+
+    /// The base as an rvalue — `Align(PC, 4)` for `pc`.
+    fn base_value(&self, pc: PcView) -> MicroExpr {
+        if self.base.number() == PC {
+            MicroExpr::constant(i128::from(pc.literal_base), 32)
+        } else {
+            MicroExpr::var(reg_name(self.base))
+        }
+    }
+
+    /// The address the access reads or writes.
+    fn address(&self, pc: PcView) -> Option<MicroExpr> {
+        if self.pre { self.offset_address(pc) } else { Some(self.base_value(pc)) }
+    }
 }
 
 fn assign(dst: String, value: MicroExpr) -> MicroStmt {
@@ -579,8 +838,10 @@ fn move_operands(ops: &[Operand; 4]) -> Option<(yaxpeax_arm::armv7::Reg, &Operan
 /// A data-processing instruction's destination and result, for the forms the
 /// lift models: the moves (via [`move_operands`]) and `add`/`sub`/`and`/`orr`/
 /// `eor`/`bic`/`mul` as `[Rd, Rn, op2]`. `None` for any other shape (Thumb's
-/// two-operand `adds r0, r1` among them) — the caller keeps it `asm`.
-fn data_processing(inst: &Instruction) -> Option<(String, MicroExpr)> {
+/// two-operand `adds r0, r1` among them) — the caller keeps it `asm`. A
+/// register operand `pc` reads as `pc` says ([`PcView::operand`]); in a
+/// multiply it is UNPREDICTABLE, and the multiply stays `asm`.
+fn data_processing(inst: &Instruction, pc: Option<u64>) -> Option<(String, MicroExpr)> {
     use Opcode::*;
     let ops = &inst.operands;
     if matches!(inst.opcode, MOV | MVN) {
@@ -589,15 +850,16 @@ fn data_processing(inst: &Instruction) -> Option<(String, MicroExpr)> {
             // `mvn rd, #imm` is a constant; state it as one (`mvn r0, #0` is
             // 0xffffffff, not `~0x0` left for a reader to evaluate).
             (MVN, Operand::Imm32(v)) => MicroExpr::constant(!*v as i128, 32),
-            (MVN, src) => MicroExpr::unary(UnOp::Not, op_rvalue(src)?),
-            (_, src) => op_rvalue(src)?,
+            (MVN, src) => MicroExpr::unary(UnOp::Not, op_rvalue(src, pc)?),
+            (_, src) => op_rvalue(src, pc)?,
         };
         return Some((reg_name(rd), value));
     }
     let [Operand::Reg(rd), a, b, Operand::Nothing] = ops else {
         return None;
     };
-    let (a, b) = (op_rvalue(a)?, op_rvalue(b)?);
+    let pc = if inst.opcode == MUL { None } else { pc };
+    let (a, b) = (op_rvalue(a, pc)?, op_rvalue(b, pc)?);
     let value = match inst.opcode {
         ADD => MicroExpr::binary(BinOp::Add, a, b),
         SUB => MicroExpr::binary(BinOp::Sub, a, b),
@@ -612,9 +874,36 @@ fn data_processing(inst: &Instruction) -> Option<(String, MicroExpr)> {
     Some((reg_name(*rd), value))
 }
 
-fn reglist_mask(op: &Operand) -> Option<u16> {
-    match op {
-        Operand::RegList(m) => Some(*m),
+/// `adr rd, label` — `Align(PC, 4) ± imm`, a constant. Thumb's 16-bit form
+/// arrives as `[Rd, #imm]` and only adds. A32's arrives as `[Rd, pc, #imm]`
+/// for **both** of its encodings, `add rd, pc, #imm` (A1) and `sub rd, pc,
+/// #imm` (A2): the decoder drops which one it was, so the direction is read
+/// from the word's opcode field, bits 24-21 — `0100` adds, `0010` subtracts
+/// (llvm-mc: `e28f0010` is `adr r0, #16`, `e24f0010` is `sub r0, pc, #16`).
+/// Read from the operands alone, every backwards `adr` pointed forwards.
+fn adr(inst: &Instruction, bytes: &[u8], thumb: bool, pc: PcView) -> Option<(String, MicroExpr)> {
+    let (rd, imm, add) = match inst.operands {
+        [Operand::Reg(rd), Operand::Imm32(imm), Operand::Nothing, Operand::Nothing] if thumb => (rd, imm, true),
+        [Operand::Reg(rd), Operand::Reg(base), Operand::Imm32(imm), Operand::Nothing] if !thumb && base.number() == PC => {
+            (rd, imm, a32_adr_adds(bytes)?)
+        }
+        _ => return None,
+    };
+    // `adr pc, label` is a branch, not a value written to a register.
+    if rd.number() == PC {
+        return None;
+    }
+    let at = if add { pc.literal_base.wrapping_add(u64::from(imm)) } else { pc.literal_base.wrapping_sub(u64::from(imm)) };
+    Some((reg_name(rd), MicroExpr::constant(i128::from(at & 0xffff_ffff), 32)))
+}
+
+/// Whether an A32 `adr` word adds (`Some(true)`, opcode `0100`) or subtracts
+/// (`Some(false)`, `0010`) — see [`adr`]. `None` for any other opcode field.
+fn a32_adr_adds(bytes: &[u8]) -> Option<bool> {
+    let word = u32::from_le_bytes(*bytes.first_chunk::<4>()?);
+    match (word >> 21) & 0xf {
+        0b0100 => Some(true),
+        0b0010 => Some(false),
         _ => None,
     }
 }
@@ -679,24 +968,12 @@ fn names_of(regs: &[Reg]) -> Vec<String> {
     regs.iter().filter_map(|&r| file.name(r)).map(str::to_string).collect()
 }
 
-/// The base register a memory operand writes back, if it does.
-///
-/// A **post-indexed** access always updates its base — that is what
-/// post-indexing is (`ldr r0, [r1], #4` is `r0 = *r1; r1 += 4`). The decoder
-/// carries a write-back flag on those forms too, and leaves it `false`: reading
-/// the flag let the fallback keep `r1`'s old value, so `ldr r0, [r1], #4; mov
-/// r0, r1` returned `r1` instead of `r1 + 4`. A pre-indexed access updates it
-/// only when its `!` flag is set. The unindexed form (`RegDeref`) never does.
+/// The base register a memory operand writes back, if it does — the one
+/// answer [`MemOperand`] gives the lift, so the `asm` fallback and the lifted
+/// form cannot disagree (post-indexing always writes back). The unindexed form
+/// (`RegDeref`) never does.
 fn writeback_base(op: &Operand) -> Option<yaxpeax_arm::armv7::Reg> {
-    match *op {
-        Operand::RegDerefPostindexOffset(base, ..)
-        | Operand::RegDerefPostindexReg(base, ..)
-        | Operand::RegDerefPostindexRegShift(base, ..) => Some(base),
-        Operand::RegDerefPreindexOffset(base, _, _, wb)
-        | Operand::RegDerefPreindexReg(base, _, _, wb)
-        | Operand::RegDerefPreindexRegShift(base, _, _, wb) => wb.then_some(base),
-        _ => None,
-    }
+    MemOperand::of(op).filter(|m| m.wback).map(|m| m.base)
 }
 
 /// The operand positions of an instruction that are **written and not read**:
@@ -976,6 +1253,221 @@ impl Arm32 {
         let in_it_block = self.thumb && insn.cond.is_some() && cond_of(inst).is_none();
         inst.s() && !(in_it_block && insn.len == 2)
     }
+
+    /// What this instruction reads from `pc` — see [`PcView`]. In Thumb a
+    /// register operand `pc` is defined in two places only: the 16-bit `mov`
+    /// (`va + 4`), and `addw`/`subw` (`11110 i 1 … Rn=1111`, bit 9 of the first
+    /// halfword set), which are `adr`'s 32-bit encodings and read `Align(PC,
+    /// 4)`. Everywhere else it is UNPREDICTABLE or a different instruction.
+    fn pc_view(&self, inst: &Instruction, insn: &DecodedInsn) -> PcView {
+        if !self.thumb {
+            return PcView::a32(insn.va);
+        }
+        let hw1 = insn.bytes.first_chunk::<2>().map_or(0, |b| u16::from_le_bytes(*b));
+        let plain_immediate = hw1 >> 11 == 0b11110 && hw1 & (1 << 9) != 0;
+        // `adr.w` into `sp` or `pc` is UNPREDICTABLE (llvm-mc warns on it too).
+        let rd_sp_or_pc = matches!(inst.operands[0], Operand::Reg(rd) if rd.number() == SP || rd.number() == PC);
+        let operand = match (inst.opcode, insn.len) {
+            (Opcode::MOV, 2) => ThumbPcOperand::Pc,
+            (Opcode::ADD | Opcode::SUB, 4) if plain_immediate && !rd_sp_or_pc => ThumbPcOperand::Aligned,
+            _ => ThumbPcOperand::Refused,
+        };
+        PcView::thumb(insn.va, operand)
+    }
+
+    /// A single load or store — `ldr`/`ldrb`/`ldrh`/`ldrsb`/`ldrsh`/`ldrd` and
+    /// `str`/`strb`/`strh`/`strd` — in every addressing mode: an immediate, a
+    /// register or a shifted-register index, added or subtracted, pre-indexed
+    /// with or without write-back, post-indexed (which always writes back).
+    /// The loaded value is held as a 32-bit register holds it: a byte or
+    /// halfword zero-extended, or sign-extended and cast back to 32 bits, as
+    /// the extends are. `ldrd`/`strd` are two words, the first register at the
+    /// lower address.
+    ///
+    /// `None` — the `asm` fallback — for what is not one plain transfer:
+    ///
+    /// * a load into `pc` is a branch, and a store of `pc` stores
+    ///   `PCStoreValue()`, which is IMPLEMENTATION DEFINED. The one load into
+    ///   `pc` lifted is `ldr pc, [sp], #4` — `pop {pc}` — when the CFG
+    ///   classified it as the return, which it then is;
+    /// * the register choices the ARM ARM makes UNPREDICTABLE: write-back with
+    ///   the base `pc` or one of the transferred registers; an index register
+    ///   `pc`; an `ldrd`/`strd` pair that is not two different registers (A32:
+    ///   an even register and the next); in Thumb, `sp` as a byte/halfword or
+    ///   pair register or as an index, and a store or register-indexed load
+    ///   based on `pc` (UNDEFINED; only the literal loads may name it);
+    /// * a word the decoder accepts and the architecture does not define as
+    ///   this instruction: an A32 register-indexed halfword/dual form with its
+    ///   should-be-zero bits set ([`a32_extra_sbz_set`]), a malformed 32-bit
+    ///   Thumb one ([`thumb_single_transfer_well_formed`]) — both found by
+    ///   `tests/a32_memory_agrees_with_llvm_mc.rs`;
+    /// * a written-back load whose index register is also loaded (`ldr r0, [r1],
+    ///   r0`): the IR has no temporary for the old index, and the write-back
+    ///   would read the loaded value;
+    /// * a predicated store or write-back — two conditional effects. A
+    ///   predicated load without write-back is a conditional write, as any
+    ///   other.
+    fn lift_transfer(&self, inst: &Instruction, insn: &DecodedInsn, pc: PcView) -> Option<Vec<MicroStmt>> {
+        use Opcode::*;
+        let (bits, signed, load, pair) = match inst.opcode {
+            LDR => (32, false, true, false),
+            LDRB => (8, false, true, false),
+            LDRH => (16, false, true, false),
+            LDRSB => (8, true, true, false),
+            LDRSH => (16, true, true, false),
+            LDRD => (32, false, true, true),
+            STR => (32, false, false, false),
+            STRB => (8, false, false, false),
+            STRH => (16, false, false, false),
+            STRD => (32, false, false, true),
+            _ => return None,
+        };
+        let (regs, mem) = match (pair, &inst.operands) {
+            (false, [Operand::Reg(rt), m, Operand::Nothing, Operand::Nothing]) => (vec![rt.number()], MemOperand::of(m)?),
+            (true, [Operand::Reg(rt), Operand::Reg(rt2), m, Operand::Nothing]) => (vec![rt.number(), rt2.number()], MemOperand::of(m)?),
+            _ => return None,
+        };
+        let cond_al = insn.cond.is_none();
+        let base = mem.base.number();
+        if regs.contains(&PC) {
+            let pop_pc = inst.opcode == LDR
+                && base == SP
+                && !mem.pre
+                && mem.add
+                && matches!(mem.index, Index::Imm(4))
+                && insn.kind == InsnKind::Ret
+                && cond_al;
+            return if pop_pc { block_stmts(&reg_n(SP), BlockMode::IncrementAfter, true, true, 1 << PC) } else { None };
+        }
+        let index_regs = mem.index_regs();
+        let unpredictable = (mem.wback && (base == PC || regs.contains(&base)))
+            || index_regs.contains(&PC)
+            || (pair && (regs[0] == regs[1] || index_regs.iter().any(|r| regs.contains(r))))
+            || (pair && !self.thumb && (regs[0] % 2 != 0 || regs[1] != regs[0] + 1))
+            || (self.thumb && index_regs.contains(&SP))
+            || (self.thumb && base == PC && (!index_regs.is_empty() || !load))
+            || (self.thumb && (pair || bits < 32) && regs.contains(&SP))
+            || (!self.thumb && a32_extra_sbz_set(&insn.bytes))
+            || (self.thumb && !thumb_single_transfer_well_formed(&insn.bytes));
+        let ordering = load && mem.wback && index_regs.iter().any(|r| regs.contains(r));
+        if unpredictable || ordering || (!cond_al && (!load || mem.wback)) {
+            return None;
+        }
+        let addr = mem.address(pc)?;
+        let new_base = if mem.wback { Some(mem.offset_address(pc)?) } else { None };
+        let addrs: Vec<MicroExpr> = if pair { vec![addr.clone(), plus_four(addr)] } else { vec![addr] };
+        let mut out = Vec::new();
+        if load {
+            let value = |a: &MicroExpr| {
+                let l = MicroExpr::load(a.clone(), bits, signed);
+                if signed { MicroExpr::Cast { signed: false, bits: 32, expr: Box::new(l) } } else { l }
+            };
+            // A loaded base is loaded last, so the other address is computed
+            // from the base the instruction started with (`ldrd r0, r1, [r0]`).
+            let mut order: Vec<usize> = (0..regs.len()).collect();
+            order.sort_by_key(|&i| regs[i] == base);
+            let cond_lc = insn.cond.as_deref().unwrap_or("al");
+            for i in order {
+                pred_assign(reg_n(regs[i]), value(&addrs[i]), cond_lc, &mut out);
+            }
+        } else {
+            for (r, a) in regs.iter().zip(addrs) {
+                out.push(MicroStmt::Store { addr: a, value: MicroExpr::var(reg_n(*r)), bits });
+            }
+        }
+        if let Some(nb) = new_base {
+            out.push(assign(reg_name(mem.base), nb));
+        }
+        Some(out)
+    }
+
+    /// `ldm`/`stm` in any of the four modes, and `push`/`pop` — see
+    /// [`block_stmts`] for what is refused. The mode is the encoding's
+    /// ([`block_mode`]); an A32 user-bank or exception-return form (`^`) and a
+    /// predicated one stay `asm`.
+    fn lift_block(&self, inst: &Instruction, insn: &DecodedInsn) -> Option<Vec<MicroStmt>> {
+        use Opcode::*;
+        if insn.cond.is_some() {
+            return None;
+        }
+        let (load, base, wback, mask, mode) = match (inst.opcode, &inst.operands) {
+            (PUSH, [Operand::RegList(mask), ..]) => (false, SP, true, *mask, BlockMode::DecrementBefore),
+            (POP, [Operand::RegList(mask), ..]) => (true, SP, true, *mask, BlockMode::IncrementAfter),
+            (LDM(..) | STM(..), [Operand::RegWBack(base, wback), Operand::RegList(mask), Operand::Nothing, Operand::Nothing]) => {
+                if !self.thumb && a32_user_bank(&insn.bytes) {
+                    return None;
+                }
+                (matches!(inst.opcode, LDM(..)), base.number(), *wback, *mask, block_mode(&insn.bytes, self.thumb)?)
+            }
+            _ => return None,
+        };
+        // Thumb's 32-bit forms: fewer than two registers, or a loaded list
+        // holding both `lr` and `pc`, is UNPREDICTABLE (ARM ARM, `LDM`/`STM`/
+        // `PUSH`/`POP` encodings T2) — the decoder builds them anyway; llvm-mc
+        // reads the one-register `pop.w {r2}` as `ldm.w sp!, {r2}` and warns.
+        let both_lr_pc = mask & (1 << LR | 1 << PC) == (1 << LR | 1 << PC);
+        if self.thumb && insn.len == 4 && (mask.count_ones() < 2 || (load && both_lr_pc)) {
+            return None;
+        }
+        block_stmts(&reg_n(base), mode, load, wback, mask)
+    }
+}
+
+/// Whether a 32-bit Thumb single load/store word is one the architecture
+/// defines — the checks the decoder skips. Its `1111 100x` first halfwords
+/// hold, for a base other than `pc` and bit 7 clear, two forms told apart by
+/// bit 11 of the second halfword (ARM ARM A6.3.10, `LDR`/`STR` T3 and T4 and
+/// their byte and halfword siblings):
+///
+/// * `Rt 1 P U W imm8`, where `P = 0, W = 0` is UNDEFINED — the decoder read
+///   it as a post-indexed access (`strb.w r1, [r0], #-0`, which llvm-mc
+///   rejects);
+/// * `Rt 0 00000 imm2 Rm`, the register form, whose bits 10-6 must be zero —
+///   the decoder read any value there as the same instruction.
+///
+/// Every other Thumb word passes; a 16-bit one has no such field.
+fn thumb_single_transfer_well_formed(bytes: &[u8]) -> bool {
+    let (Some(hw1), Some(hw2)) = (bytes.first_chunk::<2>().map(|b| u16::from_le_bytes(*b)), bytes.get(2..4).map(|b| u16::from_le_bytes([b[0], b[1]]))) else {
+        return true;
+    };
+    let single = hw1 >> 9 == 0b111_1100 && hw1 & (1 << 7) == 0 && hw1 & 0xf != 0xf;
+    if !single {
+        return true;
+    }
+    if hw2 & (1 << 11) != 0 {
+        let (p, w) = (hw2 & (1 << 10) != 0, hw2 & (1 << 8) != 0);
+        p || w
+    } else {
+        (hw2 >> 6) & 0x1f == 0
+    }
+}
+
+/// An A32 "extra" load/store with a register index — `ldrh`/`strh`/`ldrsb`/
+/// `ldrsh`/`ldrd`/`strd`, `I` (bit 22) clear — whose bits 11-8, which should
+/// be zero, are not. The decoder reads past them, and so does llvm-mc, which
+/// prints such a word as if they were clear; the ARM ARM leaves it
+/// UNPREDICTABLE, so the lift does not state a value for it.
+fn a32_extra_sbz_set(bytes: &[u8]) -> bool {
+    let Some(word) = bytes.first_chunk::<4>().map(|b| u32::from_le_bytes(*b)) else { return false };
+    let extra = word & 0x0e00_0090 == 0x0000_0090 && word & 0x60 != 0;
+    extra && word & (1 << 22) == 0 && word & 0x0f00 != 0
+}
+
+/// `addr + 4`, kept in the `base ± k` shape the forwarding pass keys stack
+/// slots by — the second word of an `ldrd`/`strd`.
+fn plus_four(addr: MicroExpr) -> MicroExpr {
+    match addr {
+        MicroExpr::Const { value, bits } => MicroExpr::constant((value + 4) & 0xffff_ffff, bits),
+        MicroExpr::Binary(BinOp::Add, b, k) if matches!(*k, MicroExpr::Const { .. }) => {
+            let MicroExpr::Const { value, bits } = *k else { unreachable!() };
+            MicroExpr::binary(BinOp::Add, *b, MicroExpr::constant(value + 4, bits))
+        }
+        MicroExpr::Binary(BinOp::Sub, b, k) if matches!(*k, MicroExpr::Const { value, .. } if value >= 4) => {
+            let MicroExpr::Const { value, bits } = *k else { unreachable!() };
+            if value == 4 { *b } else { MicroExpr::binary(BinOp::Sub, *b, MicroExpr::constant(value - 4, bits)) }
+        }
+        other => MicroExpr::binary(BinOp::Add, other, MicroExpr::constant(4, 32)),
+    }
 }
 
 /// `asm` stating what it reads and does to memory, then every register in
@@ -1048,10 +1540,12 @@ impl Arch for Arm32 {
         let cond_lc = insn.cond.as_deref().unwrap_or("al").to_string();
         let cond_al = cond_lc == "al";
         let ops = &inst.operands;
+        let pc = self.pc_view(&inst, insn);
         let mut out = Vec::new();
         match inst.opcode {
-            MOV | MVN | ADD | SUB | AND | ORR | EOR | BIC | MUL => {
-                let Some((rd, value)) = data_processing(&inst) else {
+            MOV | MVN | ADD | SUB | AND | ORR | EOR | BIC | MUL | ADR => {
+                let result = if inst.opcode == ADR { adr(&inst, &insn.bytes, self.thumb, pc) } else { data_processing(&inst, pc.operand) };
+                let Some((rd, value)) = result else {
                     return self.unlifted(&inst, insn);
                 };
                 if !self.sets_flags(&inst, insn) {
@@ -1078,38 +1572,17 @@ impl Arch for Arm32 {
                     out.push(opaque_flags(insn));
                 }
             }
-            LDR => match (&ops[0], deref_addr_of(&ops[1])) {
-                (Operand::Reg(rd), Some((addr, wb))) => {
-                    if let Some(base) = wb {
-                        // A conditional write-back is two conditional effects —
-                        // not modelled; the unconditional form is exact.
-                        if !cond_al {
-                            return self.unlifted(&inst, insn);
-                        }
-                        out.push(assign(reg_name(*rd), MicroExpr::load(addr.clone(), 32, false)));
-                        out.push(assign(base, addr));
-                    } else {
-                        pred_assign(reg_name(*rd), MicroExpr::load(addr, 32, false), &cond_lc, &mut out);
-                    }
-                }
-                _ => return self.unlifted(&inst, insn),
+            LDR | LDRB | LDRH | LDRSB | LDRSH | LDRD | STR | STRB | STRH | STRD => match self.lift_transfer(&inst, insn, pc) {
+                Some(stmts) => out = stmts,
+                None => return self.unlifted(&inst, insn),
             },
             // A conditional store/compare/call/return is more than one predicated
             // register write; those stay `asm` (sound) until modelled.
-            STR if cond_al => match (&ops[0], deref_addr_of(&ops[1])) {
-                (Operand::Reg(rs), Some((addr, wb))) => {
-                    out.push(MicroStmt::Store { addr: addr.clone(), value: MicroExpr::var(reg_name(*rs)), bits: 32 });
-                    if let Some(base) = wb {
-                        out.push(assign(base, addr));
-                    }
-                }
-                _ => return self.unlifted(&inst, insn),
-            },
             TST if cond_al => match ops {
                 // `tst Rn, op2` sets `Z` from `Rn & op2` — the `Test` compare
                 // kind; see `arm_branch_condition` for which conditions that
                 // answers on this architecture.
-                [rn @ Operand::Reg(_), op2, Operand::Nothing, Operand::Nothing] => match (op_rvalue(rn), op_rvalue(op2)) {
+                [rn @ Operand::Reg(_), op2, Operand::Nothing, Operand::Nothing] => match (op_rvalue(rn, pc.operand), op_rvalue(op2, pc.operand)) {
                     (Some(l), Some(r)) => out.push(assign(FLAGS_VAR.to_string(), MicroExpr::compare(CmpKind::Test, l, r))),
                     _ => return self.unlifted(&inst, insn),
                 },
@@ -1123,7 +1596,7 @@ impl Arch for Arm32 {
                 // `cmp r3, #5` into a compare of `r0`. Any other shape is not a
                 // form this lift knows, so it stays `asm`.
                 let (lhs, rhs) = match ops {
-                    [lhs @ Operand::Reg(_), rhs, Operand::Nothing, Operand::Nothing] => (op_rvalue(lhs), op_rvalue(rhs)),
+                    [lhs @ Operand::Reg(_), rhs, Operand::Nothing, Operand::Nothing] => (op_rvalue(lhs, pc.operand), op_rvalue(rhs, pc.operand)),
                     _ => return self.unlifted(&inst, insn),
                 };
                 match (lhs, rhs) {
@@ -1134,29 +1607,12 @@ impl Arch for Arm32 {
                     _ => return self.unlifted(&inst, insn),
                 }
             }
-            // `push {…}` / `pop {…}` — the stores and loads they are, then the
-            // stack-pointer update. A32 spells them `stmdb sp!` / `ldmia sp!`
-            // (the decoder prints the alias); Thumb has `push`/`pop` opcodes
-            // whose only operand is the list.
-            STM(..) if cond_al && insn.text.starts_with("push") => match (&ops[0], reglist_mask(&ops[1])) {
-                (Operand::RegWBack(base, true), Some(mask)) => match push_stmts(&reg_name(*base), mask) {
-                    Some(stmts) => out = stmts,
-                    None => return self.unlifted(&inst, insn),
-                },
-                _ => return self.unlifted(&inst, insn),
-            },
-            PUSH if cond_al => match reglist_mask(&ops[0]).and_then(|mask| push_stmts(&reg_n(SP), mask)) {
-                Some(stmts) => out = stmts,
-                None => return self.unlifted(&inst, insn),
-            },
-            LDM(..) if cond_al && insn.text.starts_with("pop") => match (&ops[0], reglist_mask(&ops[1])) {
-                (Operand::RegWBack(base, true), Some(mask)) => match pop_stmts(&reg_name(*base), mask) {
-                    Some(stmts) => out = stmts,
-                    None => return self.unlifted(&inst, insn),
-                },
-                _ => return self.unlifted(&inst, insn),
-            },
-            POP if cond_al => match reglist_mask(&ops[0]).and_then(|mask| pop_stmts(&reg_n(SP), mask)) {
+            // `ldm`/`stm` in all four modes, `push`/`pop` among them — the
+            // stores and loads they are, then the base update. A32 spells
+            // `push`/`pop` `stmdb sp!` / `ldmia sp!` (the decoder prints the
+            // alias); Thumb has `push`/`pop` opcodes whose only operand is the
+            // list.
+            LDM(..) | STM(..) | PUSH | POP => match self.lift_block(&inst, insn) {
                 Some(stmts) => out = stmts,
                 None => return self.unlifted(&inst, insn),
             },
@@ -1204,7 +1660,7 @@ impl Arch for Arm32 {
         if len == 0 || bytes.len() < len {
             return Err(DecodeError::Truncated(va));
         }
-        let text = format!("{inst}");
+        let text = if self.thumb { format!("{inst}") } else { a32_text(&inst, bytes, format!("{inst}")) };
         // The formatted first word is a clean mnemonic (`pop`, `beq`, `bx`) —
         // the `Opcode` debug carries encoding tuples (`LDM(true, …)`) we don't
         // want in the mnemonic.
@@ -2282,6 +2738,256 @@ mod tests {
         assert_eq!(regs, names(&["r0", "r1", "r2", "r3", "sp"]));
         assert_eq!(mem, MemEffect::Unknown);
         assert_eq!(invalidated(&stmts), vec!["lr", "r0", "r1", "r2", "r3", "r12"]);
+    }
+
+    // ---- single loads and stores, block transfers, reads of `pc` --------------
+    //
+    // Every encoding below is llvm-mc's (`-triple=armv6-none-eabi`, Thumb:
+    // `thumbv7-none-eabi`), quoted per case; the meanings are the ARM ARM's,
+    // and the lifted forms were run against an emulated processor
+    // (`n0xis-core/tests/a32_memory_agrees_with_the_processor.rs`). Before
+    // these, every form here but the pre-indexed word `ldr`/`str` and
+    // `push`/`pop` was `asm`.
+
+    /// The lift of one A32 word at `va`.
+    fn lift_at(word: u32, va: u64) -> Vec<MicroStmt> {
+        let a = Arm32::a32();
+        a.decode(&word.to_le_bytes(), Va(va)).map(|di| a.lift(&di, "aapcs32")).unwrap_or_default()
+    }
+
+    /// The lift of one Thumb instruction at `va`.
+    fn thumb_at(bytes: &[u8], va: u64) -> Vec<MicroStmt> {
+        let t = Arm32::thumb();
+        t.decode(bytes, Va(va)).map(|di| t.lift(&di, "aapcs32")).unwrap_or_default()
+    }
+
+    fn set(dst: &str, value: MicroExpr) -> MicroStmt {
+        MicroStmt::Assign { dst: dst.into(), value }
+    }
+
+    /// A load as an A32 register holds it: zero-extended, or sign-extended and
+    /// cast back to 32 bits.
+    fn ld(bits: u32, signed: bool, addr: MicroExpr) -> MicroExpr {
+        let l = MicroExpr::load(addr, bits, signed);
+        if signed { cast(false, 32, l) } else { l }
+    }
+
+    fn st(addr: MicroExpr, r: &str, bits: u32) -> MicroStmt {
+        MicroStmt::Store { addr, value: v(r), bits }
+    }
+
+    fn plus(r: &str, k: i128) -> MicroExpr {
+        bin(BinOp::Add, v(r), c32(k))
+    }
+
+    fn minus(r: &str, k: i128) -> MicroExpr {
+        bin(BinOp::Sub, v(r), c32(k))
+    }
+
+    /// Each width, each extension, each addressing mode: immediate and
+    /// (shifted-)register index, added and subtracted, pre-indexed with and
+    /// without write-back, post-indexed.
+    #[test]
+    fn every_single_load_and_store_form_lifts_to_the_access_it_makes() {
+        let w32 = |a| ld(32, false, a);
+        for (word, text, expected) in [
+            (0xe5d1_0003u32, "ldrb r0, [r1, #3]", vec![set("r0", ld(8, false, plus("r1", 3)))]),
+            (0xe571_0003, "ldrb r0, [r1, #-3]!", vec![set("r0", ld(8, false, minus("r1", 3))), set("r1", minus("r1", 3))]),
+            (0xe4d1_0003, "ldrb r0, [r1], #3", vec![set("r0", ld(8, false, v("r1"))), set("r1", plus("r1", 3))]),
+            (0xe7d1_0002, "ldrb r0, [r1, r2]", vec![set("r0", ld(8, false, bin(BinOp::Add, v("r1"), v("r2"))))]),
+            (
+                0xe771_0102,
+                "ldrb r0, [r1, -r2, lsl #2]!",
+                vec![
+                    set("r0", ld(8, false, bin(BinOp::Sub, v("r1"), bin(BinOp::Shl, v("r2"), c32(2))))),
+                    set("r1", bin(BinOp::Sub, v("r1"), bin(BinOp::Shl, v("r2"), c32(2)))),
+                ],
+            ),
+            (
+                0xe6d1_00c2,
+                "ldrb r0, [r1], r2, asr #1",
+                vec![set("r0", ld(8, false, v("r1"))), set("r1", bin(BinOp::Add, v("r1"), bin(BinOp::Sar, s32(v("r2")), c32(1))))],
+            ),
+            (0xe441_0001, "strb r0, [r1], #-1", vec![st(v("r1"), "r0", 8), set("r1", minus("r1", 1))]),
+            (0xe171_00b6, "ldrh r0, [r1, #-6]!", vec![set("r0", ld(16, false, minus("r1", 6))), set("r1", minus("r1", 6))]),
+            (0xe011_00b2, "ldrh r0, [r1], -r2", vec![set("r0", ld(16, false, v("r1"))), set("r1", bin(BinOp::Sub, v("r1"), v("r2")))]),
+            (
+                0xe1a1_00b2,
+                "strh r0, [r1, r2]!",
+                vec![st(bin(BinOp::Add, v("r1"), v("r2")), "r0", 16), set("r1", bin(BinOp::Add, v("r1"), v("r2")))],
+            ),
+            (0xe1d1_00d1, "ldrsb r0, [r1, #1]", vec![set("r0", ld(8, true, plus("r1", 1)))]),
+            (0xe0d1_00f2, "ldrsh r0, [r1], #2", vec![set("r0", ld(16, true, v("r1"))), set("r1", plus("r1", 2))]),
+            (0xe1c1_20d8, "ldrd r2, r3, [r1, #8]", vec![set("r2", w32(plus("r1", 8))), set("r3", w32(plus("r1", 12)))]),
+            (0xe0c1_20d8, "ldrd r2, r3, [r1], #8", vec![set("r2", w32(v("r1"))), set("r3", w32(plus("r1", 4))), set("r1", plus("r1", 8))]),
+            (0xe161_20f8, "strd r2, r3, [r1, #-8]!", vec![st(minus("r1", 8), "r2", 32), st(minus("r1", 4), "r3", 32), set("r1", minus("r1", 8))]),
+            // The base is loaded last, so the second word's address is still
+            // computed from the base the instruction started with.
+            (0xe1c4_40d0, "ldrd r4, r5, [r4]", vec![set("r5", w32(plus("r4", 4))), set("r4", w32(v("r4")))]),
+            (
+                0xe611_0182,
+                "ldr r0, [r1], -r2, lsl #3",
+                vec![set("r0", w32(v("r1"))), set("r1", bin(BinOp::Sub, v("r1"), bin(BinOp::Shl, v("r2"), c32(3))))],
+            ),
+            // `pop {r4}`: the single-register pop is a post-indexed `ldr`.
+            (0xe49d_4004, "ldr r4, [sp], #4", vec![set("r4", w32(v("sp"))), set("sp", plus("sp", 4))]),
+            // A predicated load without write-back is a conditional write.
+            (
+                0x1151_00d1,
+                "ldrsbne r0, [r1, #-1]",
+                vec![set("r0", MicroExpr::select(MicroExpr::OpaqueFlags { mnemonic: "setcc:bne".into() }, ld(8, true, minus("r1", 1)), v("r0")))],
+            ),
+        ] {
+            assert_eq!(lift_at(word, 0x1000), expected, "{word:#010x} {text}");
+        }
+    }
+
+    /// What is not one plain transfer stays `asm`: a load into `pc` (a branch)
+    /// and a store of it (an IMPLEMENTATION DEFINED value); the UNPREDICTABLE
+    /// register choices; a written-back load whose index it overwrites; a
+    /// predicated store or write-back; the unprivileged forms.
+    #[test]
+    fn a_transfer_that_is_not_one_plain_access_stays_asm() {
+        for (word, text) in [
+            (0xe5b0_0004u32, "ldr r0, [r0, #4]! (write-back into the loaded register)"),
+            (0xe590_f000, "ldr pc, [r0] (a branch)"),
+            (0x979f_f100, "ldrls pc, [pc, r0, lsl #2] (a switch dispatch)"),
+            (0xe580_f000, "str pc, [r0] (PCStoreValue)"),
+            (0xe691_0000, "ldr r0, [r1], r0 (the write-back reads the loaded index)"),
+            (0xe791_000f, "ldr r0, [r1, pc] (index pc)"),
+            (0x1581_0000, "strne r0, [r1]"),
+            (0x1491_0004, "ldrne r0, [r1], #4"),
+            (0xe1c0_10d0, "ldrd r1, r2, [r0] (odd first register)"),
+            (0xe182_00d0, "ldrd r0, r1, [r2, r0] (index is a loaded register)"),
+            (0xe4b1_0004, "ldrt r0, [r1], #4 (unprivileged)"),
+        ] {
+            let stmts = lift_at(word, 0x1000);
+            assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })), "{word:#010x} {text}: {stmts:?}");
+        }
+    }
+
+    /// `pop {pc}` spelled as the single-register `ldr pc, [sp], #4` is the
+    /// return the CFG classifies it as, exactly as `pop {r4, pc}` is.
+    #[test]
+    fn a_single_register_pop_of_pc_is_the_return() {
+        // e49df004  llvm-mc: `pop {pc}`
+        let a = Arm32::a32();
+        let di = a.decode(&0xe49d_f004u32.to_le_bytes(), Va(0x1000)).expect("decodes");
+        assert_eq!(di.kind, InsnKind::Ret, "{}", di.text);
+        assert_eq!(a.lift(&di, "aapcs32"), vec![set("sp", plus("sp", 4)), MicroStmt::Return(Some(v("r0")))]);
+    }
+
+    /// A read of `pc` is the constant the processor reads: `va + 8` in A32;
+    /// `va + 4` in Thumb, rounded down to a word for a literal load and `adr`.
+    /// A literal-pool load is a load from a known address.
+    #[test]
+    fn a_read_of_pc_is_the_address_the_processor_reads() {
+        // e59f018c  ldr r0, [pc, #396] at 0x2000 — the word at 0x2194.
+        assert_eq!(lift_at(0xe59f_018c, 0x2000), vec![set("r0", ld(32, false, c32(0x2194)))]);
+        // e51f0008  ldr r0, [pc, #-8] at 0x1000 — its own address.
+        assert_eq!(lift_at(0xe51f_0008, 0x1000), vec![set("r0", ld(32, false, c32(0x1000)))]);
+        // e79fc00c  ldr r12, [pc, r12] at 0x3000.
+        assert_eq!(lift_at(0xe79f_c00c, 0x3000), vec![set("r12", ld(32, false, bin(BinOp::Add, c32(0x3008), v("r12"))))]);
+        // e08fc00c  add r12, pc, r12 at 0x3100.
+        assert_eq!(lift_at(0xe08f_c00c, 0x3100), vec![set("r12", bin(BinOp::Add, c32(0x3108), v("r12")))]);
+        // e1df00b4  ldrh r0, [pc, #4]; e1cf00d8  ldrd r0, r1, [pc, #8]
+        assert_eq!(lift_at(0xe1df_00b4, 0x1000), vec![set("r0", ld(16, false, c32(0x100c)))]);
+        assert_eq!(lift_at(0xe1cf_00d8, 0x1000), vec![set("r0", ld(32, false, c32(0x1010))), set("r1", ld(32, false, c32(0x1014)))]);
+        // e28f0010  adr r0, #16; e24f0010  sub r0, pc, #16 — the two `adr`
+        // encodings, which the decoder hands over with the same operands.
+        assert_eq!(lift_at(0xe28f_0010, 0x1000), vec![set("r0", c32(0x1018))]);
+        assert_eq!(lift_at(0xe24f_0010, 0x1000), vec![set("r0", c32(0x0ff8))]);
+        // e1a0000f  mov r0, pc
+        assert_eq!(lift_at(0xe1a0_000f, 0x1000), vec![set("r0", c32(0x1008))]);
+        // Thumb at 0x1002, where `va + 4` is not a word: 4802 `ldr r0, [pc,
+        // #8]` and a002 `adr r0, #8` read Align(0x1006, 4) + 8 …
+        assert_eq!(thumb_at(&[0x02, 0x48], 0x1002), vec![set("r0", ld(32, false, c32(0x100c)))]);
+        assert_eq!(thumb_at(&[0x02, 0xa0], 0x1002), vec![set("r0", c32(0x100c))]);
+        // … f85f 0008 `ldr.w r0, [pc, #-8]` and f2af 0008 `subw r0, pc, #8`
+        // (`adr.w`) read the same aligned base …
+        assert_eq!(thumb_at(&[0x5f, 0xf8, 0x08, 0x00], 0x1002), vec![set("r0", ld(32, false, c32(0x0ffc)))]);
+        assert_eq!(thumb_at(&[0xaf, 0xf2, 0x08, 0x00], 0x1002), vec![set("r0", bin(BinOp::Sub, c32(0x1004), c32(8)))]);
+        // … while 4678 `mov r0, pc` reads `va + 4` itself.
+        assert_eq!(thumb_at(&[0x78, 0x46], 0x1002), vec![set("r0", c32(0x1006))]);
+        // 4478 `add r0, pc` is a form this lift does not model: `asm`.
+        assert!(matches!(thumb_at(&[0x78, 0x44], 0x1002).first(), Some(MicroStmt::Unlifted { .. })));
+    }
+
+    /// `ldm`/`stm` in all four modes, with and without write-back, the lowest
+    /// register at the lowest address — and the mode comes from the encoding:
+    /// the decoder builds Thumb's 16-bit `stmia` as increment-before.
+    #[test]
+    fn ldm_and_stm_lift_in_all_four_modes() {
+        let w = |a| ld(32, false, a);
+        for (word, text, expected) in [
+            (0xe890_0006u32, "ldm r0, {r1, r2}", vec![set("r1", w(v("r0"))), set("r2", w(plus("r0", 4)))]),
+            (0xe8b0_0006, "ldm r0!, {r1, r2}", vec![set("r1", w(v("r0"))), set("r2", w(plus("r0", 4))), set("r0", plus("r0", 8))]),
+            (0xe990_0006, "ldmib r0, {r1, r2}", vec![set("r1", w(plus("r0", 4))), set("r2", w(plus("r0", 8)))]),
+            (0xe830_0006, "ldmda r0!, {r1, r2}", vec![set("r1", w(minus("r0", 4))), set("r2", w(v("r0"))), set("r0", minus("r0", 8))]),
+            (0xe910_0006, "ldmdb r0, {r1, r2}", vec![set("r1", w(minus("r0", 8))), set("r2", w(minus("r0", 4)))]),
+            (0xe880_0006, "stm r0, {r1, r2}", vec![st(v("r0"), "r1", 32), st(plus("r0", 4), "r2", 32)]),
+            (0xe9a0_0006, "stmib r0!, {r1, r2}", vec![st(plus("r0", 4), "r1", 32), st(plus("r0", 8), "r2", 32), set("r0", plus("r0", 8))]),
+            (0xe800_0006, "stmda r0, {r1, r2}", vec![st(minus("r0", 4), "r1", 32), st(v("r0"), "r2", 32)]),
+            (0xe920_0006, "stmdb r0!, {r1, r2}", vec![st(minus("r0", 8), "r1", 32), st(minus("r0", 4), "r2", 32), set("r0", minus("r0", 8))]),
+            // The base in the list, no write-back: loaded last.
+            (0xe890_0003, "ldm r0, {r0, r1}", vec![set("r1", w(plus("r0", 4))), set("r0", w(v("r0")))]),
+            // `pc` in the list is the return.
+            (
+                0xe931_8030,
+                "ldmdb r1!, {r4, r5, pc}",
+                vec![set("r4", w(minus("r1", 12))), set("r5", w(minus("r1", 8))), set("r1", minus("r1", 12)), MicroStmt::Return(Some(v("r0")))],
+            ),
+        ] {
+            assert_eq!(lift_at(word, 0x1000), expected, "{word:#010x} {text}");
+        }
+        for (bytes, text, expected) in [
+            (&[0x06, 0xc8][..], "ldm r0!, {r1, r2}", vec![set("r1", w(v("r0"))), set("r2", w(plus("r0", 4))), set("r0", plus("r0", 8))]),
+            (&[0x03, 0xc8][..], "ldm r0, {r0, r1}", vec![set("r1", w(plus("r0", 4))), set("r0", w(v("r0")))]),
+            (&[0x06, 0xc0][..], "stm r0!, {r1, r2}", vec![st(v("r0"), "r1", 32), st(plus("r0", 4), "r2", 32), set("r0", plus("r0", 8))]),
+            (
+                &[0x30, 0xe9, 0x06, 0x00][..],
+                "ldmdb r0!, {r1, r2}",
+                vec![set("r1", w(minus("r0", 8))), set("r2", w(minus("r0", 4))), set("r0", minus("r0", 8))],
+            ),
+            (&[0x00, 0xe9, 0x06, 0x00][..], "stmdb r0, {r1, r2}", vec![st(minus("r0", 8), "r1", 32), st(minus("r0", 4), "r2", 32)]),
+            (&[0x90, 0xe8, 0x02, 0x80][..], "ldm.w r0, {r1, pc}", vec![set("r1", w(v("r0"))), MicroStmt::Return(Some(v("r0")))]),
+        ] {
+            assert_eq!(thumb_at(bytes, 0x1000), expected, "{bytes:02x?} {text}");
+        }
+        // UNKNOWN or not a plain transfer: the base written back and in the
+        // list, the user-bank `^`, `pc` stored, `sp` in the list, and a
+        // predicated one.
+        for (word, text) in [
+            (0xe8b0_0003u32, "ldm r0!, {r0, r1}"),
+            (0xe8d0_0006, "ldm r0, {r1, r2} ^"),
+            (0xe880_8002, "stm r0, {r1, pc}"),
+            (0xe890_2002, "ldm r0, {r1, sp}"),
+            (0x1994_000a, "ldmibne r4, {r1, r3}"),
+        ] {
+            let stmts = lift_at(word, 0x1000);
+            assert!(matches!(stmts.first(), Some(MicroStmt::Unlifted { .. })), "{word:#010x} {text} stays asm: {stmts:?}");
+        }
+    }
+
+    /// The text names the instruction the word holds (llvm-mc's spelling of
+    /// the mnemonic): the decoder printed `ldmib` as `ldmia`, dropped the
+    /// `^`, and printed `sub rd, pc, #imm` as `adr`.
+    #[test]
+    fn a_block_transfer_and_an_adr_print_what_the_word_holds() {
+        for (word, text) in [
+            (0xe990_0006u32, "ldmib r0, {r1, r2}"),
+            (0xe9a0_0006, "stmib r0!, {r1, r2}"),
+            (0x1994_000a, "ldmibne r4, {r1, r3}"),
+            (0xe8d0_0006, "ldm r0, {r1, r2} ^"),
+            (0xe24f_0010, "sub r0, pc, 0x10"),
+            // Unchanged where they were right.
+            (0xe890_0006, "ldm r0, {r1, r2}"),
+            (0xe830_0006, "ldmda r0!, {r1, r2}"),
+            (0xe28f_0010, "adr r0, pc, 0x10"),
+            (0xe92d_4010, "push {r4, lr}"),
+        ] {
+            assert_eq!(word_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
     }
 
     #[test]
