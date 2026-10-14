@@ -1284,7 +1284,10 @@ outside this codebase that can prove it wrong.
    accepted and rejected are exactly llvm-mc's (`armv7ve`), with two recorded
    text exceptions. The lifted forms (extends, bitfields, pack, halfword
    multiplies) agree with qemu's user-mode ARM emulation on 8 352 of 8 352
-   answers.
+   answers. **Still open:** no VFP instruction decodes on A32, and a walk stops at
+   the first it reaches. A reference disassembler has to be given the target's
+   extensions (`--mattr=+vfp2`): without them it lists VFP instructions as
+   `.long` data, and a comparison counts them as words both sides reject.
    **What `asm` hid (closed the same evening).** An instruction left as `asm`
    stated neither the registers it read nor what it did to memory, on every
    architecture: a definition only it read was dropped and the parameter behind
