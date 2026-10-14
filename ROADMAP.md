@@ -1322,11 +1322,22 @@ outside this codebase that can prove it wrong.
    an ambiguous old key is applied to neither slot and says so); an earlier
    value can only be discarded with the whole record, and the in-process
    engine tests still read the user's global annotation store.
-   **Still open on A32:** byte, halfword and dual loads and stores, and
-   `ldm`/`stm` beyond push and pop, are still `asm`. A32 reads of
-   `pc` lift as an unknown `pc.0` instead of the instruction's address plus 8,
-   so a literal-pool load shows as `pc.0->field_0x18c`. the decoder is not told
-   the ISA version, so ARMv7-only encodings are accepted in ARMv6 code; the unconditional `cps` forms are
+   **Loads, stores and `pc` (2026-10-14).** Every A32 and Thumb single load and
+   store, `ldm`/`stm` in all four modes and reads of `pc` lift, checked against
+   llvm-mc over every lifted form and against qemu on 101 functions (4 040 of
+   4 040 answers). Loads from read-only image data are not resolved to their
+   values: a literal-pool load is a load from a known address.
+   **Still open on A32:** results are not held at 32 bits, so in emulation
+   `add r0, r0, r12` with `r12 = 0xffffffff` gives `0x1fffffffe` and a negative
+   index register makes a 64-bit address (the i386 lift closed this class; the
+   processor oracle avoids such inputs for now); `ldr pc, …`, `ldrls pc, [pc,
+   rX, lsl #2]` jump tables and `mov lr, pc; ldr pc, [rX]` calls are sequential
+   in the CFG, so the walk falls into jump-table data, and data processing that
+   writes `pc` still writes a register named pc; predicated stores (`strne`)
+   stay `asm` (the IR has no conditional store), now the largest class left;
+   `rsb`, `cmn`, `mla`, `smull`, conditional `bx` and the hints stay `asm`. The
+   decoder is not told the ISA version, so ARMv7-only encodings are accepted in
+   ARMv6 code; the unconditional `cps` forms are
    still rejected; the crate's register spelling (`sb`, `ip`) and this decoder's
    (`r9`, `r12`) differ within one listing; Thumb `cbz`/`cbnz` are not branches
    in the CFG; A32 results are not cut back to 32 bits in emulation. Thumb was

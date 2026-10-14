@@ -7,6 +7,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Added
 
+- **32-bit ARM loads, stores and `pc` lift.** Every A32 and Thumb single load and store (each
+  width and sign, every addressing mode, `ldrd`/`strd`), `ldm`/`stm` in all four modes, and
+  reads of `pc` (the instruction's address plus 8 in A32, plus 4 in Thumb, aligned for literal
+  loads and `adr`) are now lifted, where they were `asm`. A literal-pool load reads as a load
+  from its address (`*(uint32_t*)(0x2194)` for `ldr r0, [pc, #0x18c]` at 0x2000, not
+  `pc.0->field_0x18c`). Checked against llvm-mc
+  over every form that lifts (0 rejected, 0 different), and against qemu's ARM emulation on
+  101 functions (4 040 of 4 040 answers).
 - **Names and function lengths from a PDB.** A PE image whose CodeView record names a program
   database is named from a matching one in every command: each function's name, and its
   length where a procedure record states it, so a static function with no export, no public
@@ -33,6 +41,12 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A32 `ldr pc, …` was a plain write to a register named `pc`,** and `ldr r0, [r0, #4]!`
+  wrote `r0` twice; both stay `asm` now. `ldmib` read as `ldmia`, the sub form of `adr` as the
+  add form, and Thumb's 16-bit `stmia` as increment-before; each now comes from the encoding.
+- **arm64 `svc` left `x0` untouched,** where the kernel returns; and memory-tagging stores with
+  write-back (`stg`, `stzg`, `st2g`, `stz2g`, `stgp`) moved the base by 1 (or 4) instead of the
+  16-byte granule, on all 14 encodings checked against llvm-mc.
 - **A saved variable name could land on another variable after the stack-slot rename.** Names
   and types are stored under a variable's synthesized name, and `local_8` used to mean either
   `+8` or `-8`. The store now records which naming its keys were written under
