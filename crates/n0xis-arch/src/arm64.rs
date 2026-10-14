@@ -30,7 +30,7 @@
 
 use disarm64::registers::get_int_reg_name;
 use disarm64::{InsnDisplay, InsnOpcode, decoder};
-use disarm64_defn::{InsnClass, InsnFlags, InsnOperandKind};
+use disarm64_defn::{InsnClass, InsnFeatureSet, InsnFlags, InsnOperandKind};
 use n0xis_contracts::{Reg, Va};
 
 use crate::frame::FrameInfo;
@@ -144,6 +144,11 @@ static AAPCS64_CC: CallConv = CallConv {
     float_args: &[],
     float_args_share_position: false,
 };
+
+/// What an AArch64 `svc` leaves changed when control comes back: the result,
+/// in `x0` under the Linux kernel ABI, which preserves every other register.
+/// See [`Arm64::modelled_access`].
+static SVC_WRITES: &[Reg] = &[arm64reg::X0];
 
 /// A handful of exact `stp x29, x30, [sp, #-N]!` prologs — the standard
 /// frame-establishing first instruction GCC/Clang emit, for the frame sizes
@@ -356,6 +361,14 @@ fn has_operand_kind(op: &decoder::Opcode, kind: InsnOperandKind) -> bool {
 ///   bytes the instruction transfers ([`simd_structure_bytes`]).
 /// - every other load/store class updates no base: `None`.
 ///
+/// **The memory-tagging stores are the exception to both scales.** `stg`,
+/// `stzg`, `st2g`, `stz2g` (in `LDST_IMM9`) and `stgp` (in
+/// `LDSTPAIR_INDEXED`) count their immediate in tag granules, 16 bytes each
+/// (`LOG2_TAG_GRANULE` = 4) — not in bytes, and not in the pair's access size.
+/// Read by the class rule, `stg x0, [x1], #16` (`d9201420`) moved `x1` by 1 and
+/// `stgp x0, x1, [x2], #32` by 8. Checked against llvm-mc (`-triple=aarch64
+/// -mattr=+mte`) for every one of the five, pre- and post-indexed.
+///
 /// The base register is named `gpr_name(bits, Rn, false)` — reg 31 spells `sp`,
 /// exactly the spelling `reg_access` uses when it reads the same base.
 pub(crate) struct Writeback {
@@ -375,6 +388,10 @@ pub(crate) enum WbAmount {
     Reg(String),
 }
 
+/// The bytes one memory tag covers — the unit the tag stores' immediates count
+/// in (ARM ARM, `LOG2_TAG_GRANULE` = 4).
+const TAG_GRANULE: i64 = 16;
+
 pub(crate) fn writeback(op: &decoder::Opcode) -> Option<Writeback> {
     let bits = op.bits();
     let base = || gpr_name(bits, bitrange(bits, 9, 5), false);
@@ -384,7 +401,11 @@ pub(crate) fn writeback(op: &decoder::Opcode) -> Option<Writeback> {
         let amount = if rm == 31 { WbAmount::Bytes(simd_structure_bytes(class, bits)?) } else { WbAmount::Reg(gpr_name(bits, rm, true)) };
         return Some(Writeback { base: base(), amount });
     }
+    // A tag granule is 16 bytes; see the memory-tagging note above.
+    let tag_store = op.definition().feature_set == InsnFeatureSet::MEMTAG;
     let delta = match class {
+        InsnClass::LDST_IMM9 if tag_store => sign_extend(bitrange(bits, 20, 12), 9) * TAG_GRANULE,
+        InsnClass::LDSTPAIR_INDEXED if tag_store => sign_extend(bitrange(bits, 21, 15), 7) * TAG_GRANULE,
         InsnClass::LDST_IMM9 => sign_extend(bitrange(bits, 20, 12), 9),
         InsnClass::LDSTPAIR_INDEXED => {
             let imm7 = bitrange(bits, 21, 15);
@@ -648,6 +669,19 @@ impl Arm64 {
             }
             InsnClass::COMPBRANCH | InsnClass::TESTBRANCH => {
                 access.reads.push(gpr_name(bits, rd_rt, true));
+            }
+            // `svc` comes back with the kernel's result in `x0` (the Linux
+            // AArch64 system-call ABI; every other register is preserved), and
+            // the instruction names no register, so the operand rule below
+            // finds nothing: `mov x0, #5; svc #0; ret` returned 5, and every
+            // system-call wrapper tested the number it had just loaded. What
+            // the kernel reads is not this table's to say, so the answer stays
+            // partial — its reads unknown, as x86-64 `syscall`'s are. Any
+            // `svc`, not only `#0`: another kernel ABI may write more, never
+            // less.
+            InsnClass::EXCEPTION if mnemonic == "svc" => {
+                coverage = Coverage::Partial;
+                access.writes.extend(SVC_WRITES.iter().filter_map(|&r| self.regfile.name(r)).map(str::to_string));
             }
             InsnClass::BRANCH_REG => {
                 // A branch through a register is a jump or a call, and what a

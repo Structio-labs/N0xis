@@ -1887,4 +1887,63 @@ mod tests {
         // 4cc3a840  ld1 { v0.4s, v1.4s }, [x2], x3
         assert!(lift_word(0x4cc3a840).contains(&assign("x2", MicroExpr::binary(BinOp::Add, MicroExpr::var("x2"), MicroExpr::var("x3")))));
     }
+
+    /// **The memory-tagging stores count their immediate in 16-byte tag
+    /// granules.** Each row is a word llvm-mc assembled (`-triple=aarch64
+    /// -mattr=+mte`) and the immediate it prints, which is the amount the base
+    /// moves. Read as bytes, `stg x0, [x1], #16` moved `x1` by 1; read with
+    /// the pair's scale, `stgp x0, x1, [x2], #32` moved `x2` by 8.
+    #[test]
+    fn a_tag_store_writes_back_in_granules() {
+        let table: &[(u32, &str, i128, &str)] = &[
+            (0xd9201420, "x1", 16, "stg x0, [x1], #16"),
+            (0xd93fec20, "x1", -32, "stg x0, [x1, #-32]!"),
+            (0xd92ffc20, "x1", 4080, "stg x0, [x1, #4080]!"),
+            (0xd9300420, "x1", -4096, "stg x0, [x1], #-4096"),
+            (0xd92017e0, "sp", 16, "stg x0, [sp], #16"),
+            (0xd9601420, "x1", 16, "stzg x0, [x1], #16"),
+            (0xd97fec20, "x1", -32, "stzg x0, [x1, #-32]!"),
+            (0xd9a02420, "x1", 32, "st2g x0, [x1], #32"),
+            (0xd9bffc20, "x1", -16, "st2g x0, [x1, #-16]!"),
+            (0xd9e03420, "x1", 48, "stz2g x0, [x1], #48"),
+            (0xd9ffcc20, "x1", -64, "stz2g x0, [x1, #-64]!"),
+            (0x68810440, "x2", 32, "stgp x0, x1, [x2], #32"),
+            (0x69be0440, "x2", -64, "stgp x0, x1, [x2, #-64]!"),
+            (0x699f8440, "x2", 1008, "stgp x0, x1, [x2, #1008]!"),
+        ];
+        let wrong: Vec<String> = table
+            .iter()
+            .filter_map(|&(word, base, expected, text)| {
+                let stmts = lift_word(word);
+                let want = assign(base, MicroExpr::binary(BinOp::Add, MicroExpr::var(base), MicroExpr::constant(expected, 64)));
+                (!stmts.contains(&want)).then(|| format!("[{word:08x}] {text}: {base} += {expected}, lifted {stmts:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "\n  {}", wrong.join("\n  "));
+        // The forms without write-back move nothing: 69018440 `stgp x0, x1,
+        // [x2, #48]`, d9201820 `stg x0, [x1, #16]`.
+        for (word, base) in [(0x6901_8440u32, "x2"), (0xd920_1820, "x1")] {
+            assert!(!lift_word(word).iter().any(|s| matches!(s, MicroStmt::Assign { dst, .. } if dst == base)), "[{word:08x}]");
+        }
+    }
+
+    /// **`svc` returns in `x0`.** The Linux AArch64 system-call ABI hands the
+    /// kernel's result back in `x0` and preserves every other register; the
+    /// instruction names no register, so nothing said `x0` changed, and `mov
+    /// x0, #5; svc #0; ret` returned 5. Its reads and its memory effect stay
+    /// unknown — what the kernel consumes and touches is not the encoding's to
+    /// say. As x86-64 `syscall` writes `rax`.
+    #[test]
+    fn a_supervisor_call_returns_in_x0() {
+        // d4000001  svc #0 (llvm-mc)
+        let stmts = lift_word(0xd4000001);
+        assert_eq!(invalidated(&stmts), vec!["x0".to_string()], "{stmts:?}");
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Unlifted { reads: crate::UnliftedReads::Unknown, mem: crate::MemEffect::Unknown, .. })),
+            "{stmts:?}"
+        );
+        let arch = Arm64::new();
+        let insn = arch.decode(&le(0xd4000001), Va(0x1000)).expect("decodes");
+        assert_eq!(arch.reg_access(&insn).writes, vec!["x0".to_string()], "reg_access and the lift agree");
+    }
 }
