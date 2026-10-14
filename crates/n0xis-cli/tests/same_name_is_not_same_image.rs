@@ -20,6 +20,8 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -31,7 +33,7 @@ fn n0xis_exe() -> PathBuf {
 
 /// What a fresh process answers.
 fn fresh(cwd: &Path, args: &[&str]) -> Value {
-    let out = Command::new(n0xis_exe()).current_dir(cwd).args(args).output().expect("run n0xis");
+    let out = support::isolated(Command::new(n0xis_exe())).current_dir(cwd).args(args).output().expect("run n0xis");
     serde_json::from_slice(&out.stdout).expect("one envelope")
 }
 

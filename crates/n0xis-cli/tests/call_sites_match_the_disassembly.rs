@@ -35,6 +35,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -97,7 +99,7 @@ fn transfers(binary: &str) -> Vec<(u64, String, u64)> {
 }
 
 fn callsites(binary: &str, at: u64) -> Option<BTreeSet<(u64, u64)>> {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["ir", "build", "--quiet", "--addr", &format!("{at:#x}"), "--file", binary])
         .output()
         .ok()?;
@@ -157,7 +159,7 @@ fn every_branch_target_inside_a_function_begins_a_block() {
         if !(2..=12).contains(&want.len()) {
             continue;
         }
-        let out = Command::new(n0xis_exe())
+        let out = support::isolated(Command::new(n0xis_exe()))
             .args(["ir", "build", "--quiet", "--addr", &format!("{lo:#x}"), "--file", &binary])
             .output()
             .expect("run n0xis");

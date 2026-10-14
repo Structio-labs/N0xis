@@ -33,6 +33,20 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A saved variable name could land on another variable after the stack-slot rename.** Names
+  and types are stored under a variable's synthesized name, and `local_8` used to mean either
+  `+8` or `-8`. The store now records which naming its keys were written under
+  (`"var_key_version": 2`); a key from the earlier naming is kept apart and placed only where it
+  can mean one slot. In a function that has both, it is applied to neither and the answer says
+  so, naming both and how to re-apply it. A write moves each key that settles to its current
+  name and never overwrites an earlier value; an old file nobody writes is never rewritten.
+  A build older than this one ignores those earlier keys, and drops them if it then writes.
+- **An unreadable annotation store was silent.** Every answer now carries a note when
+  `annotations.json` cannot be read, and the decompile still renders; `annotate show` and
+  `list` return the error, and no write can overwrite a store that did not load.
+- **The test suite wrote to the user's own store.** Three test binaries left cache files in
+  `~/.local/share/n0x`. Every test that starts the CLI or the MCP server now gives it its own
+  data directory, and a test fails when a new one does not; a full run changes 0 files there.
 - **A system-call wrapper tested the call number, not the result.** x64 `syscall` returns in
   `rax` and overwrites `rcx` and `r11`, but the lift said nothing of `rax`, so `cmp rax,
   -0x1000` after it compared the number just loaded. Over x64 libc, reads of that number after

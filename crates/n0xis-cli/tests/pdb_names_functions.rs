@@ -14,6 +14,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 const HELPER: &str = "0x140001660";
 const MAIN: &str = "0x1400015d0";
 
@@ -44,7 +46,7 @@ fn codeview(image: &[u8]) -> usize {
 }
 
 fn run(cwd: &Path, args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).current_dir(cwd).args(args).arg("--quiet").output().expect("run n0xis");
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).current_dir(cwd).args(args).arg("--quiet").output().expect("run n0xis");
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("one envelope from {args:?}: {e}"))
 }
 

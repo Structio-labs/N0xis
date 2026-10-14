@@ -33,6 +33,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
@@ -104,7 +106,7 @@ fn objdump_boundaries(binary: &Path) -> Option<BTreeMap<u64, usize>> {
 }
 
 fn n0xis_boundaries(binary: &Path, start: u64, count: usize) -> Option<BTreeMap<u64, usize>> {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["disasm", "--quiet", "--count", &count.to_string(), "--addr", &format!("{start:#x}"), "--file"])
         .arg(binary)
         .output()
@@ -258,7 +260,7 @@ fn the_arm64_decoder_names_the_same_instructions_as_llvm() {
 
     let bytes = std::fs::read(&bin).expect("read .text");
     let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["disasm", "--quiet", "--arch", "arm64", "--addr", "0x0", "--count", "9000", "--bytes", &hex.join(" ")])
         .output()
         .expect("run n0xis");

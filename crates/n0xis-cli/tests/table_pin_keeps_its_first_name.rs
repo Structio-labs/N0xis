@@ -22,8 +22,10 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn run_in(dir: &Path, args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).args(args).current_dir(dir).output().expect("run n0xis");
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).args(args).current_dir(dir).output().expect("run n0xis");
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("`n0xis {}` printed no envelope ({e}); stderr: {}", args.join(" "), String::from_utf8_lossy(&out.stderr)))
 }

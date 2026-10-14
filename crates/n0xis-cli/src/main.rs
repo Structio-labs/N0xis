@@ -1317,7 +1317,7 @@ enum AnnotateCmd {
     /// List every annotated address.
     List,
     /// Remove all annotations (and history) at an address.
-    Rm(AnnotateShowArgs),
+    Rm(AnnotateRmArgs),
 }
 
 #[derive(Args)]
@@ -1333,6 +1333,52 @@ struct AnnotateSetArgs {
 struct AnnotateShowArgs {
     #[arg(long)]
     addr: String,
+    #[command(flatten)]
+    image: AnnotateImageArgs,
+}
+
+#[derive(Args)]
+struct AnnotateRmArgs {
+    #[arg(long)]
+    addr: String,
+}
+
+// The image an `annotate` command decompiles the function at `--addr` from,
+// to check what it stores or shows against the function's own variables. A
+// plain comment, not a doc comment: a flattened struct's doc could reach the
+// help of the command it is flattened into.
+#[derive(Args)]
+struct AnnotateImageArgs {
+    /// The image the function is in. With one (a `serve` session supplies its
+    /// own), a variable is checked against the function's variables: `var` and
+    /// `vartype` refuse a name that is not one and store a name the page shows
+    /// under its key; a saved name or type keyed by the earlier stack-local
+    /// naming (`local_8` was both +8 and -8) is placed on the slot it means, or
+    /// named in the note when it cannot be. Without one nothing is checked, and
+    /// the answer says so.
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    #[arg(long, help = ARCH_HELP)]
+    arch: Option<String>,
+}
+
+impl AnnotateImageArgs {
+    /// The capability arguments these name, beside `addr` and the rest in `args`.
+    fn into_json(self, mut args: serde_json::Value) -> serde_json::Value {
+        let AnnotateImageArgs { file, pid, snapshot, remote_cmd, arch } = self;
+        args["file"] = json!(file);
+        args["pid"] = json!(pid);
+        args["snapshot"] = json!(snapshot);
+        args["remote_cmd"] = json!(remote_cmd);
+        args["arch"] = json!(arch);
+        args
+    }
 }
 
 #[derive(Args)]
@@ -1356,20 +1402,8 @@ struct AnnotateVarArgs {
     /// New name; omit to clear the rename (revert to the synthesized name).
     #[arg(long)]
     value: Option<String>,
-    /// The image the function is in. With one (a `serve` session supplies its
-    /// own), `--var` is checked against the function's variables: a name that
-    /// is not one is refused, and a name the page shows is stored under its
-    /// key. Without one nothing is checked, and the answer says so.
-    #[arg(long)]
-    file: Option<String>,
-    #[arg(long)]
-    pid: Option<u32>,
-    #[arg(long)]
-    snapshot: Option<String>,
-    #[arg(long)]
-    remote_cmd: Option<String>,
-    #[arg(long, help = ARCH_HELP)]
-    arch: Option<String>,
+    #[command(flatten)]
+    image: AnnotateImageArgs,
 }
 
 #[derive(Subcommand)]
@@ -5388,19 +5422,16 @@ fn cmd_annotate_set(field: &str, a: AnnotateSetArgs, pretty: bool) -> bool {
     run_capability("annotate.set", json!({ "field": field, "addr": a.addr, "value": a.value }), pretty)
 }
 
-fn annotate_var_json(a: &AnnotateVarArgs) -> serde_json::Value {
-    json!({
-        "addr": a.addr, "var": a.var, "value": a.value,
-        "file": a.file, "pid": a.pid, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd, "arch": a.arch,
-    })
+fn annotate_var_json(a: AnnotateVarArgs) -> serde_json::Value {
+    a.image.into_json(json!({ "addr": a.addr, "var": a.var, "value": a.value }))
 }
 
 fn cmd_annotate_var(a: AnnotateVarArgs, pretty: bool) -> bool {
-    run_capability("annotate.var", annotate_var_json(&a), pretty)
+    run_capability("annotate.var", annotate_var_json(a), pretty)
 }
 
 fn cmd_annotate_vartype(a: AnnotateVarArgs, pretty: bool) -> bool {
-    run_capability("annotate.vartype", annotate_var_json(&a), pretty)
+    run_capability("annotate.vartype", annotate_var_json(a), pretty)
 }
 
 fn cmd_annotate_bookmark(a: AnnotateBookmarkArgs, pretty: bool) -> bool {
@@ -5408,14 +5439,14 @@ fn cmd_annotate_bookmark(a: AnnotateBookmarkArgs, pretty: bool) -> bool {
 }
 
 fn cmd_annotate_show(a: AnnotateShowArgs, pretty: bool) -> bool {
-    run_capability("annotate.show", json!({ "addr": a.addr }), pretty)
+    run_capability("annotate.show", a.image.into_json(json!({ "addr": a.addr })), pretty)
 }
 
 fn cmd_annotate_list(pretty: bool) -> bool {
     run_capability("annotate.list", json!({}), pretty)
 }
 
-fn cmd_annotate_rm(a: AnnotateShowArgs, pretty: bool) -> bool {
+fn cmd_annotate_rm(a: AnnotateRmArgs, pretty: bool) -> bool {
     run_capability("annotate.rm", json!({ "addr": a.addr }), pretty)
 }
 

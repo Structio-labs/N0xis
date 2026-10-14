@@ -45,6 +45,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -90,7 +92,7 @@ fn llvm_accepts(word: u32) -> Option<bool> {
 
 fn n0xis_accepts(word: u32) -> Option<bool> {
     let hex = word.to_le_bytes().iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["disasm", "--quiet", "--arch", "arm64", "--addr", "0x0", "--count", "1", "--bytes", &hex])
         .output()
         .ok()?;

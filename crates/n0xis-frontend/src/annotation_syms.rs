@@ -165,7 +165,9 @@ fn memoized(memo: &Mutex<Option<(u64, Arc<NameMap>)>>, sig: u64, build: fn() -> 
     data
 }
 
-/// User renames from `annotations.json`. Non-fatal: any failure yields no names.
+/// User renames from `annotations.json`. Non-fatal: a store that cannot be
+/// read yields no names, and [`unreadable_store_note`] — which every registry
+/// answer carries — says why.
 fn build_user() -> NameMap {
     let mut map = NameMap::new();
     if let Ok(records) = n0xis_project::annotate::list() {
@@ -176,6 +178,34 @@ fn build_user() -> NameMap {
         }
     }
     map
+}
+
+/// The last `annotations.json` checked, by its file signature, and why it could
+/// not be read (`None`: it could).
+static STORE_ERROR_MEMO: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None);
+
+/// Why the project's annotation store cannot be read, as the note an answer
+/// carries — `None` when it can (or there is none). Re-checked only when the
+/// file's signature changes, so the cost per command is one `stat`.
+///
+/// Every reader of the store renders without it when it fails (a decompile
+/// with no saved names is still a decompile), and every writer refuses, so a
+/// file this build cannot read is never overwritten. This is how the reader's
+/// side is never silent.
+pub fn unreadable_store_note() -> Option<String> {
+    let dir = n0xis_project::resolve().ok().map(|r| r.dir);
+    let sig = file_signature(dir.as_deref(), "annotations.json");
+    let mut guard = STORE_ERROR_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached, note)) = guard.as_ref()
+        && *cached == sig
+    {
+        return note.clone();
+    }
+    let note = n0xis_project::annotate::list().err().map(|e| {
+        format!("the project's annotations could not be read ({e:#}); nothing saved in them — names, comments, variable names and types — is shown, and writes to them are refused")
+    });
+    *guard = Some((sig, note.clone()));
+    note
 }
 
 /// Recovered RTTI names from `rtti-symbols.json`. Non-fatal.

@@ -25,6 +25,9 @@ use std::process::{Child, Command, Stdio};
 
 use serde_json::{Value, json};
 
+#[path = "../../n0xis-cli/tests/support/mod.rs"]
+mod support;
+
 const TARGET_SRC: &str = r#"
 fn main() {
     let mut total: u64 = 0;
@@ -102,7 +105,7 @@ impl Drop for McpClient {
 
 impl McpClient {
     fn spawn(project_dir: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_n0xis-mcp"))
+        let mut child = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis-mcp")))
             .current_dir(project_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

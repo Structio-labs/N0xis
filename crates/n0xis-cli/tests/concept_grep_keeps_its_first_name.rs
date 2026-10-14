@@ -26,8 +26,10 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+mod support;
+
 fn run(args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).args(args).output().expect("run n0xis");
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).args(args).output().expect("run n0xis");
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("`n0xis {}` printed no envelope ({e}); stderr: {}", args.join(" "), String::from_utf8_lossy(&out.stderr)))
 }
@@ -135,7 +137,7 @@ fn inside_a_session_each_line_answers_under_its_own_spelling() {
     let d = dir.to_string_lossy().to_string();
     // The session needs an image to load; this test's own executable is one.
     let image = std::env::current_exe().expect("test exe");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_n0xis"))
+    let mut child = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
         .args(["serve", "--quiet", "--file"])
         .arg(&image)
         .stdin(Stdio::piped())

@@ -34,6 +34,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn oracle_dir() -> PathBuf {
     // crates/n0xis-cli -> repo root
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("oracle")
@@ -231,7 +233,7 @@ fn build(shape: &Value, out_dir: &Path) -> Option<PathBuf> {
 /// is a failure and never a false pass.
 #[cfg(feature = "oracle")]
 fn entry_addresses(binary: &Path) -> Vec<(String, String)> {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["function", "discover", "--quiet", "--file"])
         .arg(binary)
         .output()
@@ -258,7 +260,7 @@ fn same_function(discovered: &str, wanted: &str) -> bool {
 
 #[cfg(feature = "oracle")]
 fn signature_at(binary: &Path, va: &str) -> Option<String> {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["decomp", "pseudo", "--quiet", "--addr", va, "--file"])
         .arg(binary)
         .output()

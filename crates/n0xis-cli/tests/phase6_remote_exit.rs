@@ -22,6 +22,8 @@ use std::process::{Child, Command, Stdio};
 
 use serde_json::Value;
 
+mod support;
+
 const TARGET_SRC: &str = r#"
 fn main() {
     println!("pid={}", std::process::id());
@@ -75,7 +77,7 @@ fn spawn_target(exe: &CompiledTarget) -> (DisposableProcess, u32) {
 }
 
 fn run_n0xis(args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).args(args).output().expect("run n0xis");
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).args(args).output().expect("run n0xis");
     assert!(out.status.success(), "n0xis {args:?} exited non-zero: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("n0xis {args:?} did not print JSON: {e}: {}", String::from_utf8_lossy(&out.stdout)))
 }

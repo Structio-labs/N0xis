@@ -32,6 +32,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
@@ -82,13 +84,13 @@ fn value_for(flag: &str, target: &str, addr: &str) -> Option<String> {
 }
 
 fn commands() -> Vec<Value> {
-    let out = Command::new(n0xis_exe()).args(["guide", "--quiet"]).output().expect("run guide");
+    let out = support::isolated(Command::new(n0xis_exe())).args(["guide", "--quiet"]).output().expect("run guide");
     let v: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("guide envelope");
     v["data"]["commands"].as_array().cloned().unwrap_or_default()
 }
 
 fn first_function(target: &str) -> Option<String> {
-    let out = Command::new(n0xis_exe()).args(["function", "discover", "--quiet", "--file", target]).output().ok()?;
+    let out = support::isolated(Command::new(n0xis_exe())).args(["function", "discover", "--quiet", "--file", target]).output().ok()?;
     let v: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()?;
     v["data"]["functions"].as_array()?.get(2)?["va"].as_str().map(str::to_string)
 }
@@ -137,7 +139,7 @@ fn sweep(target: &str) -> (usize, Vec<String>) {
             }
         }
         args.push("--quiet".into());
-        let Ok(out) = Command::new(n0xis_exe()).args(&args).output() else { continue };
+        let Ok(out) = support::isolated(Command::new(n0xis_exe())).args(&args).output() else { continue };
         ran += 1;
         let err = String::from_utf8_lossy(&out.stderr);
         if let Some(line) = err.lines().find(|l| l.contains("panicked at")) {

@@ -27,6 +27,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
@@ -83,7 +85,7 @@ fn both_msvc_rtti_dialects_are_read() {
                 continue;
             }
         }
-        let scan = Command::new(n0xis_exe())
+        let scan = support::isolated(Command::new(n0xis_exe()))
             .args(["rtti", "scan", "--quiet", "--file"])
             .arg(&out)
             .output()

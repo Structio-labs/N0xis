@@ -35,6 +35,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -115,7 +117,7 @@ struct Tally {
 }
 
 fn compare(path: &Path, cwd: &Path, encoding: Encoding) -> Tally {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .current_dir(cwd)
         .args(["strings", "--encoding", encoding.ours(), "--limit", "0", "--file"])
         .arg(path)

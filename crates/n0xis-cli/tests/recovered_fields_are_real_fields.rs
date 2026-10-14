@@ -27,6 +27,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
@@ -86,7 +88,7 @@ fn exported_functions(binary: &Path) -> Vec<(String, u64)> {
 
 /// Offsets rendered as `field_0xNN` in a function's pseudocode.
 fn recovered_offsets(binary: &Path, at: u64) -> BTreeSet<u64> {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["decomp", "pseudo", "--quiet", "--addr", &format!("{at:#x}"), "--file"])
         .arg(binary)
         .output()

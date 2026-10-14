@@ -34,6 +34,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 /// The fixture's image base, matching `native_pe.dll` (verified with
 /// `objdump -p`: `ImageBase 0000000140000000`). `rva_of` converts a reported VA
 /// back to an RVA against it.
@@ -77,7 +79,7 @@ impl Scratch {
     /// Run the real binary **with the scratch directory as its cwd**, so `.n0x/`
     /// resolves there.
     fn run(&self, args: &[&str]) -> (Value, bool) {
-        let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).args(args).current_dir(&self.0).output().expect("run n0xis");
+        let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).args(args).current_dir(&self.0).output().expect("run n0xis");
         let text = String::from_utf8_lossy(&out.stdout);
         let value: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("stdout was not one JSON envelope ({e}):\n{text}"));
         (value, out.status.success())

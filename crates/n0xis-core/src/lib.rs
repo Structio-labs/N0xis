@@ -126,7 +126,7 @@ pub use rtti::{demangle_rtti_name, rtti_symbol_map, scan_itanium_rtti, scan_msvc
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, ReturnType,
-    TypeArtifact, TypeInferInput, TypeInferPass, abi_arg_registers,
+    TypeArtifact, TypeInferInput, TypeInferPass, abi_arg_registers, earlier_stack_local_slots,
 };
 pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};

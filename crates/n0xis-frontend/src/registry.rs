@@ -121,11 +121,21 @@ impl Registry {
     }
 
     /// Run a capability by name, or return the standard not-found envelope.
+    /// Run capability `name` on `args`.
+    ///
+    /// When the project's annotation store cannot be read, every answer says
+    /// so first. The analysis commands read it for the user's names, comments
+    /// and variable annotations, and render without them rather than fail;
+    /// before this, each read swallowed the error, so a store this build cannot
+    /// read (a record of a newer version, a damaged file) showed every function
+    /// unrenamed, with no word. One place covers every consumer behind the
+    /// registry, including the ones that only look a name up.
     pub fn dispatch(&self, name: &str, args: &Value) -> Response<Value> {
-        match self.get(name) {
+        let resp = match self.get(name) {
             Some(c) => c.run(args),
             None => Response::error("unknown-capability", format!("no capability named '{name}'; list them with `capability list`")),
-        }
+        };
+        add_note(resp, crate::annotation_syms::unreadable_store_note())
     }
 
     /// The machine-readable catalog: what exists, where it came from, what it
@@ -176,7 +186,9 @@ fn spec_of(args: &Value) -> SourceSpec<'_> {
 /// implementations is one command with two answers.
 ///
 /// Silent (never an error) when there is no project or nothing is commented, so
-/// a `--bytes` source or a directory outside a project simply carries none.
+/// a `--bytes` source or a directory outside a project simply carries none. A
+/// store that cannot be read carries none too, and `Registry::dispatch` puts
+/// the reason on the answer.
 fn attach_comments(val: &mut Value) {
     let Ok(records) = n0xis_project::annotate::list() else { return };
     let comments: std::collections::BTreeMap<u64, String> = records
@@ -643,6 +655,58 @@ fn spelled(arch: &dyn n0xis_arch::Arch, mut resp: Response<Value>) -> Response<V
             }
             _ => {}
         }
+    }
+}
+
+/// The decompiler's styles by the name a request gives them. Each style names
+/// its own variables, so the variables a function has are every style's.
+pub(crate) const DECOMP_STYLES: [(&str, n0xis_core::DecompStyle); 3] = [
+    ("ssa", n0xis_core::DecompStyle::Ssa),
+    ("structured", n0xis_core::DecompStyle::Structured),
+    ("goto", n0xis_core::DecompStyle::Goto),
+];
+
+fn decomp_style(name: &str) -> Option<n0xis_core::DecompStyle> {
+    DECOMP_STYLES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+}
+
+/// The keys of every variable the function at `input` shows in any style —
+/// what a saved variable annotation is placed among
+/// (`AnnotationRecord::placed_vars`), by the decompile and by every
+/// `annotate` command alike, so a rename lands on the same slot whichever of
+/// them asks.
+///
+/// Read from decompiles with no renames or types applied: a key is a
+/// variable's name before any rename, so renames cannot change the set, and
+/// the set is what decides where a saved rename goes — it cannot depend on one.
+fn function_var_keys(
+    ctx: &n0xis_core::Ctx,
+    input: n0xis_core::CfgInput,
+    struct_defs: &std::collections::HashMap<String, BTreeMap<i64, String>>,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let none = std::collections::HashMap::new();
+    let mut keys = std::collections::BTreeSet::new();
+    for (_, style) in DECOMP_STYLES {
+        let (pf, _) = n0xis_pipeline::decomp_cached(ctx, input, style, &none, &none, struct_defs).map_err(|e| e.to_string())?;
+        let vars = pf.get("variables").and_then(|v| v.as_array()).ok_or_else(|| "the decompiler listed no variables".to_string())?;
+        keys.extend(vars.iter().filter_map(|v| v.get("key").and_then(|k| k.as_str())).map(str::to_string));
+    }
+    Ok(keys)
+}
+
+/// [`function_var_keys`] for the function a request names (`addr` and an
+/// image, as `decomp.pseudo` reads them).
+pub(crate) fn function_var_keys_at(args: &Value) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut keys = None;
+    let answer = with_cfg_ctx(args, |ctx, input, _| {
+        let struct_defs = n0xis_project::types_db::field_maps().into_iter().collect();
+        keys = Some(function_var_keys(ctx, input, &struct_defs));
+        Response::success("", Value::Null)
+    });
+    match (answer, keys) {
+        (_, Some(keys)) => keys,
+        (Response::Err(f), None) => Err(format!("{}: {}", f.error.code, f.error.message)),
+        (Response::Ok(_), None) => Err("the function could not be decompiled".to_string()),
     }
 }
 
@@ -1395,27 +1459,35 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v0::DECOMP_PSEUDO),
             Origin::Builtin,
             Box::new(|args| {
-                let style = match args.get("style").and_then(|v| v.as_str()).unwrap_or("ssa").to_ascii_lowercase().as_str() {
-                    "goto" => n0xis_core::DecompStyle::Goto,
-                    "structured" => n0xis_core::DecompStyle::Structured,
-                    "ssa" => n0xis_core::DecompStyle::Ssa,
-                    other => return Response::error("bad-style", format!("unknown style '{other}', expected goto|structured|ssa")),
+                let requested = args.get("style").and_then(|v| v.as_str()).unwrap_or("ssa").to_ascii_lowercase();
+                let Some(style) = decomp_style(&requested) else {
+                    return Response::error("bad-style", format!("unknown style '{requested}', expected goto|structured|ssa"));
                 };
                 let explain = bool_arg(args, "explain");
                 with_cfg_ctx(args, |ctx, input, label| {
                     let fn_start = input.start;
-                    // The function's annotation record carries both its variable
-                    // renames (fed into the pass / cache key) and its comment
-                    // (rendered as a header after). Loaded once from `.n0x/`.
-                    let rec = n0xis_project::annotate::get(fn_start).ok().flatten();
-                    let var_names: std::collections::HashMap<String, String> =
-                        rec.as_ref().map(|r| r.var_names.clone().into_iter().collect()).unwrap_or_default();
-                    let var_types: std::collections::HashMap<String, String> =
-                        rec.as_ref().map(|r| r.var_types.clone().into_iter().collect()).unwrap_or_default();
                     // The project's struct catalog (field names) — the decompiler
                     // also synthesizes `vftable@0` for RTTI classes on its own.
                     let struct_defs: std::collections::HashMap<String, std::collections::BTreeMap<i64, String>> =
                         n0xis_project::types_db::field_maps().into_iter().collect();
+                    // The function's annotation record carries both its variable
+                    // renames (fed into the pass / cache key) and its comment
+                    // (rendered as a header after). Loaded once from `.n0x/`.
+                    // Its variable keys are placed among the function's own
+                    // variables first: a key saved under the earlier stack-local
+                    // naming may mean either of two slots, and is applied only
+                    // where the function has one of them.
+                    //
+                    // A store that cannot be read renders the function without
+                    // it; `Registry::dispatch` puts the reason on the answer.
+                    let rec = n0xis_project::annotate::get(fn_start).unwrap_or(None);
+                    let placed = match rec.as_ref().map(|r| r.placed_vars(|| function_var_keys(ctx, input, &struct_defs).map(Some))) {
+                        None => n0xis_project::annotate::PlacedVars::default(),
+                        Some(Ok(placed)) => placed,
+                        Some(Err(e)) => return Response::error("decomp-failed", format!("the function's variables could not be listed to place its saved renames: {e}")),
+                    };
+                    let var_names: std::collections::HashMap<String, String> = placed.var_names.clone().into_iter().collect();
+                    let var_types: std::collections::HashMap<String, String> = placed.var_types.clone().into_iter().collect();
                     // The display case goes through the content-addressed decomp
                     // cache (instant re-view). `explain` (the large opt-delta) is
                     // rare and re-viewed rarely, so it runs uncached.
@@ -1449,11 +1521,13 @@ impl Plugin for AnalysisPasses {
                         *arr = lines;
                     }
                     let resp = ok_json(n0xis_contracts::schema::v0::DECOMP_PSEUDO, val, label);
+                    // What became of a rename saved under the earlier naming is
+                    // said first: applied or not, the page alone cannot tell.
+                    let mut notes = placed.notes();
                     if style == n0xis_core::DecompStyle::Ssa && !explain {
-                        resp.with_note("optimizer delta omitted (it measured larger than the pseudocode); pass explain:true, or use `ir.explain`")
-                    } else {
-                        resp
+                        notes.push("optimizer delta omitted (it measured larger than the pseudocode); pass explain:true, or use `ir.explain`".to_string());
                     }
+                    if notes.is_empty() { resp } else { resp.with_note(notes.join("; ")) }
                 })
             }),
         ));

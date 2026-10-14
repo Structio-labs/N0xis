@@ -40,6 +40,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+mod support;
+
 /// The disposable target. Every value exists so a check can be objective.
 const TARGET_SRC: &str = r##"
 #![allow(static_mut_refs)]
@@ -135,7 +137,7 @@ impl Target {
     }
 
     fn n0x(&self, args: &[&str]) -> Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_n0xis"))
+        let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
             .args(args)
             .current_dir(&self.dir)
             .output()

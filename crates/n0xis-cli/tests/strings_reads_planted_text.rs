@@ -12,6 +12,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -31,7 +33,7 @@ fn fixture() -> PathBuf {
 }
 
 fn strings(cwd: &Path, extra: &[&str]) -> Value {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .current_dir(cwd)
         .args(["strings", "--file"])
         .arg(fixture())

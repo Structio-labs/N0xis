@@ -38,6 +38,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -117,7 +119,7 @@ fn literals(bytes: &[u8], h: &Header) -> Vec<Vec<u8>> {
 }
 
 fn run(args: &[&str]) -> Value {
-    let out = Command::new(n0xis_exe()).args(args).output().expect("n0xis runs");
+    let out = support::isolated(Command::new(n0xis_exe())).args(args).output().expect("n0xis runs");
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!("not JSON: {e}\nstdout: {}", String::from_utf8_lossy(&out.stdout))
     })

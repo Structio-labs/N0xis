@@ -35,6 +35,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 /// The image base of `n0xis.exe`, and the RVAs of four real functions inside
 /// its `.text` (taken from `function discover` on the MSVC build). These are
 /// n0xis's OWN build artifact, which is why this file is `#![cfg(windows)]`.
@@ -68,7 +70,7 @@ impl Scratch {
     /// Run the real binary **with the scratch directory as its cwd**, so `.n0x/`
     /// resolves there.
     fn run(&self, args: &[&str]) -> (Value, bool) {
-        let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).args(args).current_dir(&self.0).output().expect("run n0xis");
+        let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).args(args).current_dir(&self.0).output().expect("run n0xis");
         let text = String::from_utf8_lossy(&out.stdout);
         let value: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("stdout was not one JSON envelope ({e}):\n{text}"));
         (value, out.status.success())

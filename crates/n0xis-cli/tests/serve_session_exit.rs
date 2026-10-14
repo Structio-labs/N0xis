@@ -18,6 +18,8 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> std::path::PathBuf {
     // `target/<profile>/deps/<test>` → `target/<profile>/n0xis`
     let mut p = std::env::current_exe().expect("test exe");
@@ -44,7 +46,7 @@ fn serve_in(cwd: Option<&std::path::Path>, lines: &[&str]) -> Vec<Value> {
         return Vec::new();
     }
     let fixture = std::env::current_exe().expect("test exe");
-    let mut cmd = Command::new(&exe);
+    let mut cmd = support::isolated(Command::new(&exe));
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -143,7 +145,7 @@ fn both_front_doors_onto_a_linear_disassembly_agree() {
     let fixture = std::env::current_exe().expect("test exe");
     let f = fixture.to_string_lossy().to_string();
     let run = |args: Vec<String>| -> Value {
-        let out = Command::new(&exe).args(&args).output().expect("run n0xis");
+        let out = support::isolated(Command::new(&exe)).args(&args).output().expect("run n0xis");
         serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
     };
 

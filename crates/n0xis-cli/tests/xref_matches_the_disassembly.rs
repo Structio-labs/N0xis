@@ -27,6 +27,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -88,7 +90,7 @@ fn direct_branches(binary: &str) -> BTreeMap<u64, BTreeSet<u64>> {
 }
 
 fn refs_to(binary: &str, target: u64) -> Option<BTreeSet<u64>> {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["xref", "to", "--quiet", "--addr", &format!("{target:#x}"), "--file", binary])
         .output()
         .ok()?;

@@ -31,6 +31,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 /// Binary A — the *reference*: it is compiled with symbols and never stripped,
 /// and its statically-linked libc is what the signatures are learned from.
 const SRC_REFERENCE: &str = r#"
@@ -89,7 +91,7 @@ fn build_static(dir: &Path, name: &str, src: &str) -> Option<PathBuf> {
 
 /// Run `n0xis` with cwd = `dir`, and parse its JSON envelope.
 fn n0xis(dir: &Path, args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis")).args(args).current_dir(dir).output().expect("run n0xis");
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis"))).args(args).current_dir(dir).output().expect("run n0xis");
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("n0xis {args:?} did not emit JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)))
 }

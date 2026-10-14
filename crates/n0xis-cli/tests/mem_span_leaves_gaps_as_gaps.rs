@@ -15,6 +15,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -44,7 +46,7 @@ struct Run {
 }
 
 fn span(cwd: &Path, target: &Path, addr: u64, size: usize) -> Value {
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .current_dir(cwd)
         .args(["mem", "span", "--file"])
         .arg(target)
@@ -130,7 +132,7 @@ fn a_window_with_nothing_readable_says_none_was_read() {
     assert_eq!(got["data"]["read"], 0, "{got}");
     assert_eq!(got["data"]["runs"].as_array().map(Vec::len), Some(0), "{got}");
     // And `mem read` at the same place refuses, as it always has.
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .current_dir(&cwd)
         .args(["mem", "read", "--file"])
         .arg(fixture(ELF))

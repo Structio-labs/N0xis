@@ -32,6 +32,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
@@ -100,7 +102,7 @@ fn json_fill(template: &str, target: &str, entry: &str) -> String {
 }
 
 fn run(args: &[String]) -> Option<Value> {
-    let out = Command::new(n0xis_exe()).args(args).output().ok()?;
+    let out = support::isolated(Command::new(n0xis_exe())).args(args).output().ok()?;
     serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()
 }
 

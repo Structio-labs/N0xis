@@ -15,6 +15,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> std::path::PathBuf {
     // `target/<profile>/deps/<test>` → `target/<profile>/n0xis`
     let mut p = std::env::current_exe().expect("test exe");
@@ -32,7 +34,7 @@ fn envelope(args: &[&str]) -> Option<Value> {
         eprintln!("skipping: {} not built", exe.display());
         return None;
     }
-    let out = Command::new(&exe).args(args).output().expect("run n0xis");
+    let out = support::isolated(Command::new(&exe)).args(args).output().expect("run n0xis");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_ne!(out.status.code(), Some(101), "the process panicked; stderr: {stderr}");

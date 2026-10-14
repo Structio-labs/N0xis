@@ -1,0 +1,62 @@
+{
+  "0x1000": {
+    "va": "0x1000",
+    "var_names": {
+      "local_8": "planted_both"
+    },
+    "history": [
+      {
+        "field": "var:local_8",
+        "new": "planted_both",
+        "unix": 1791989770
+      }
+    ]
+  },
+  "0x100b": {
+    "va": "0x100b",
+    "var_names": {
+      "local_8": "planted_below"
+    },
+    "var_types": {
+      "local_8": "int64_t"
+    },
+    "history": [
+      {
+        "field": "var:local_8",
+        "new": "planted_below",
+        "unix": 1791989770
+      },
+      {
+        "field": "vartype:local_8",
+        "new": "int64_t",
+        "unix": 1791989770
+      }
+    ]
+  },
+  "0x1011": {
+    "va": "0x1011",
+    "var_names": {
+      "local_8": "planted_above"
+    },
+    "history": [
+      {
+        "field": "var:local_8",
+        "new": "planted_above",
+        "unix": 1791989770
+      }
+    ]
+  },
+  "0x1017": {
+    "va": "0x1017",
+    "var_names": {
+      "local_8": "planted_none"
+    },
+    "history": [
+      {
+        "field": "var:local_8",
+        "new": "planted_none",
+        "unix": 1791989770
+      }
+    ]
+  }
+}

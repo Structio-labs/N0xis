@@ -407,6 +407,24 @@ pub struct AnnotateSetRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnnotateShowRequest {
     pub addr: String,
+    /// The image the function is in. With one, a variable name or type stored
+    /// under a key of the earlier stack-local naming (`local_8` was both +8 and
+    /// -8) is checked against the function's variables, and one that cannot be
+    /// placed is named in the note; without one the note says which saved keys
+    /// depend on the function.
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
+    /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1003,29 +1021,24 @@ impl N0xisServer {
         };
         match result {
             Ok(rec) => emit(Response::success(schema::v1::ANNOTATION, rec)),
-            Err(e) => err("annotate-failed", e.to_string()),
+            Err(e) => err("annotate-failed", format!("{e:#}")),
         }
     }
 
     #[tool(description = "The current name/type/comment + full history recorded at an address, if any.")]
     fn annotate_get(&self, Parameters(a): Parameters<AnnotateShowRequest>) -> String {
-        let va = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        match n0xis_project::annotate::get(va) {
-            Ok(Some(rec)) => emit(Response::success(schema::v1::ANNOTATION, rec)),
-            Ok(None) => err("not-found", format!("no annotations recorded at {va}")),
-            Err(e) => err("annotate-failed", e.to_string()),
-        }
+        // Dispatched through the shared registry — the same `annotate.show` the
+        // CLI runs, so a variable rename saved under the earlier stack-local
+        // naming is noted here exactly as it is there.
+        emit(n0xis_frontend::build_registry().dispatch(
+            "annotate.show",
+            &json!({ "addr": a.addr, "file": a.file, "pid": a.pid, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd, "arch": a.arch }),
+        ))
     }
 
     #[tool(description = "Every annotated address, va-sorted.")]
     fn annotate_list(&self) -> String {
-        match n0xis_project::annotate::list() {
-            Ok(records) => emit(Response::success(schema::v1::ANNOTATION, json!({ "count": records.len(), "records": records }))),
-            Err(e) => err("annotate-failed", e.to_string()),
-        }
+        emit(n0xis_frontend::build_registry().dispatch("annotate.list", &json!({})))
     }
 
     #[tool(description = "Every registered analysis plugin (name -> spawn command + declared artifact kinds), from .n0x/plugins.json.")]

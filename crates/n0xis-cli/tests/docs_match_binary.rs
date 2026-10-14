@@ -22,6 +22,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn repo_root() -> PathBuf {
     // crates/n0xis-cli/ → the workspace root.
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf()
@@ -29,7 +31,7 @@ fn repo_root() -> PathBuf {
 
 /// Every leaf command path, straight from the binary's own catalog.
 fn leaf_commands() -> Vec<String> {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis"))
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
         .args(["guide", "--brief"])
         .output()
         .expect("run n0xis guide");
@@ -221,7 +223,7 @@ fn stated_crate_counts(line: &str) -> Vec<(String, usize)> {
 /// visible rather than silent.
 #[test]
 fn every_registry_capability_is_named_by_a_front_door() {
-    let out = Command::new(env!("CARGO_BIN_EXE_n0xis"))
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
         .args(["capability", "list"])
         .output()
         .expect("run n0xis capability list");
@@ -266,7 +268,7 @@ fn both_front_doors_discover_the_same_functions() {
     std::fs::create_dir_all(&dir).expect("scratch dir");
 
     let run = |args: &[&str]| -> Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_n0xis"))
+        let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
             .args(args)
             .current_dir(&dir)
             .output()

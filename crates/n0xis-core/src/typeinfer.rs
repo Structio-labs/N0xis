@@ -281,6 +281,40 @@ pub(crate) fn stack_local_name(offset: i64) -> String {
     format!("{prefix}{magnitude:x}")
 }
 
+/// Every slot a key spelled by the **earlier** stack-local naming could mean,
+/// by the name [`stack_local_name`] gives it now — `None` for a key that naming
+/// never produced.
+///
+/// That naming was `local_{:x}` of the offset's magnitude, so `local_8` was
+/// both `+8` and `-8` and is now either `local_8` or `local_neg_8`. A user's
+/// rename stored under it before the split cannot say which it meant; the
+/// project store keeps the naming each key was written under and asks here what
+/// the candidates are. `local_0` has one candidate (zero has no sign), and so
+/// does the magnitude `2^63`, which only a negative offset reaches. Anything the
+/// earlier rule could not have printed — `local_neg_8`, `local_08`, `local_A` —
+/// is not one of its keys, and answers `None`.
+///
+/// It lives beside [`stack_local_name`] because it is the same fact, one
+/// version older: the spelling rule is stated here and nowhere else.
+pub fn earlier_stack_local_slots(key: &str) -> Option<Vec<String>> {
+    let hex = key.strip_prefix("local_")?;
+    let magnitude = u64::from_str_radix(hex, 16).ok()?;
+    // `from_str_radix` also takes `+8`, `08` and `A`; the earlier rule printed
+    // none of them.
+    if format!("{magnitude:x}") != hex {
+        return None;
+    }
+    let mut slots: Vec<String> = [i64::try_from(magnitude).ok(), i64::try_from(-i128::from(magnitude)).ok()]
+        .into_iter()
+        .flatten()
+        .map(stack_local_name)
+        .collect();
+    slots.dedup();
+    // A magnitude past `2^63` is no `i64` offset's: the earlier rule never
+    // printed one.
+    (!slots.is_empty()).then_some(slots)
+}
+
 /// Recognize `Var(base) + Const(offset)` (either operand order) or a bare
 /// `Var(base)` (offset 0) — the one address shape both locals and struct
 /// fields key off. Anything else (a nested/compound address — e.g. a call
@@ -2074,6 +2108,20 @@ mod tests {
         let mut names: Vec<&str> = locals.iter().map(|l| l.name.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["local_8", "local_neg_8"]);
+    }
+
+    /// A key the earlier naming wrote stands for every slot that naming gave
+    /// it, spelled as slots are spelled now — and a key it never wrote stands
+    /// for nothing, so it is never reinterpreted.
+    #[test]
+    fn an_earlier_stack_local_key_names_the_slots_it_could_have_meant() {
+        assert_eq!(earlier_stack_local_slots("local_8"), Some(vec![stack_local_name(8), stack_local_name(-8)]));
+        assert_eq!(earlier_stack_local_slots("local_1f0"), Some(vec![stack_local_name(0x1f0), stack_local_name(-0x1f0)]));
+        assert_eq!(earlier_stack_local_slots("local_0"), Some(vec![stack_local_name(0)]), "zero has no sign");
+        assert_eq!(earlier_stack_local_slots("local_8000000000000000"), Some(vec![stack_local_name(i64::MIN)]));
+        for never in ["local_neg_8", "local_08", "local_A", "local_+8", "local_", "local_8000000000000001", "rcx", "v3", "@return"] {
+            assert_eq!(earlier_stack_local_slots(never), None, "{never}");
+        }
     }
 
     #[test]

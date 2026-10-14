@@ -584,6 +584,19 @@ Assert (or clear) a free-text comment at an address.
 
 ### `annotate show --addr <hex>`
 Show the current facts + full history for one address.
+- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
+  session supplies its own. Stack locals were once named by the offset's magnitude (`local_8`
+  was both `+8` and `-8`; now `local_8` / `local_neg_8`). A variable name or type stored under
+  a key of that naming is kept apart, in `earlier_var_names` / `earlier_var_types`, and is never
+  read as a current key: it applies only where the function has exactly one of the slots it
+  could mean, and `meta.note` says what became of it — with the image, applied, ambiguous, or
+  absent; without one, the slots it could mean. The next variable write to that function with
+  the image stores a key that lands on one slot under that slot's name. A file from before
+  `var_key_version` reads unchanged and is only rewritten by a write; every record written now
+  carries `var_key_version: 2`.
+- An annotation store this build cannot read (a damaged file, a record of a newer
+  `var_key_version`) is an error here and for every write, which never overwrites it; every
+  other command still answers and names the error in `meta.note`.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate list`

@@ -20,6 +20,8 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+mod support;
+
 fn n0xis_exe() -> std::path::PathBuf {
     // `target/<profile>/deps/<test>` → `target/<profile>/n0xis`
     let mut p = std::env::current_exe().expect("test exe");
@@ -42,7 +44,7 @@ fn serve_in(cwd: &std::path::Path, lines: &[String]) -> Vec<Value> {
         return Vec::new();
     }
     let fixture = std::env::current_exe().expect("test exe");
-    let mut child = Command::new(&exe)
+    let mut child = support::isolated(Command::new(&exe))
         .current_dir(cwd)
         .args(["serve", "--quiet", "--file"])
         .arg(&fixture)
@@ -130,7 +132,7 @@ fn pages_laid_end_to_end_are_the_one_list_and_names_stay_current() {
 /// One `serve` session on `file` in `cwd`.
 fn serve_file(cwd: &std::path::Path, file: &std::path::Path, lines: &[String]) -> Vec<Value> {
     let exe = n0xis_exe();
-    let mut child = Command::new(&exe)
+    let mut child = support::isolated(Command::new(&exe))
         .current_dir(cwd)
         .args(["serve", "--quiet", "--file"])
         .arg(file)

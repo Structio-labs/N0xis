@@ -36,6 +36,9 @@ use std::process::{Child, Command, Stdio};
 
 use serde_json::{Value, json};
 
+#[path = "../../n0xis-cli/tests/support/mod.rs"]
+mod support;
+
 /// The disposable C fixture: a handful of tiny named leaf functions plus a
 /// loop, so `function discover` has real symbols to carry and `disasm` has a
 /// known first instruction at `add`.
@@ -162,7 +165,7 @@ impl Drop for McpClient {
 }
 impl McpClient {
     fn spawn(cwd: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_n0xis-mcp"))
+        let mut child = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis-mcp")))
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -206,7 +209,7 @@ impl McpClient {
 /// Run the CLI binary in `cwd` and parse its stdout envelope (progress goes to
 /// stderr, which we discard).
 fn cli(cli_bin: &Path, cwd: &Path, args: &[&str]) -> Value {
-    let out = Command::new(cli_bin)
+    let out = support::isolated(Command::new(cli_bin))
         .current_dir(cwd)
         .args(args)
         .stderr(Stdio::null())

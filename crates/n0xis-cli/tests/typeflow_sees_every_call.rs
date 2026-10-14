@@ -22,6 +22,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 fn n0xis_exe() -> PathBuf {
     let mut p = std::env::current_exe().expect("test exe");
     p.pop();
@@ -169,7 +171,7 @@ fn type_propagation_walks_every_call_the_disassembly_shows() {
     // exported functions so `LD_PRELOAD` can interpose. Counting only the corpus
     // left room for unrelated CRT edges to satisfy the floor while every corpus
     // edge was missing, which is what a first version of this test did.
-    let out = Command::new(n0xis_exe())
+    let out = support::isolated(Command::new(n0xis_exe()))
         .args(["function", "typeflow", "--file"])
         .arg(&so)
         .arg("--quiet")
