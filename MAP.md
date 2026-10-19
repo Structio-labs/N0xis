@@ -33,7 +33,7 @@ source adapter  →  arch decode  →  core analysis passes  →  project (.n0x/
 Analysis commands take **exactly one** target source, or fall back to the `.n0x/` session default:
 `--pid` (live process) · `--file` (static PE) · `--snapshot <name>` (reloaded capture) · `--remote-cmd "<argv>"` (SSH/Tailscale remote agent) · `--bytes "<hex>"` (inline, some commands). Same passes run against any of them.
 
-### The 15 crates (Cargo workspace, members = `crates/*`)
+### The 16 crates (Cargo workspace, members = `crates/*`)
 | Crate | Role | Depended on by core? |
 |---|---|---|
 | `n0xis-contracts` | All wire schemas (`n0xis.*.vN`) + shared value types (`Va`, `Symbol`, `Reg`). Single source of truth. | — |
@@ -50,6 +50,7 @@ Analysis commands take **exactly one** target source, or fall back to the `.n0x/
 | `n0xis-lua` | Offline LuaJIT 2.0 bytecode disassembler/patcher. | **No** |
 | `n0xis-luajit` | Live LuaJIT VM introspection (GCstr discovery in a running process). | **No** |
 | `n0xis-pdb` | Program databases (PDB): what a PE's debug information says about its functions (names, stated lengths) and which image it belongs to (GUID and the debug-information stream's age), behind its own types with the reader (`pdb2`) inside. Untrusted input: fuzzed from its first commit. | **No** |
+| `n0xis-wasm` | WebAssembly modules: every section of the core binary format (with the name section) and every instruction of the core set, SIMD and the `0xFC` space included, read into its own types with no I/O. Untrusted input: thousands of corrupted copies per fixture, from its first commit. A reader only for now; nothing in the pipeline uses it yet. | **No** |
 | `n0xis-il2cpp` | IL2CPP managed layer (Phase 12): imported managed symbol indices served through `SymbolProvider`, plus a native `global-metadata.dat` reader and live runtime-type discovery (`il2cpp metadata` / `icalls` / `classes` / `obj`). Address spaces are explicit, so an IL2CPP WebGL dump can never bind to a native PE. | **No** |
 
 One layer is deliberately **not** in this table: the WARP interoperability

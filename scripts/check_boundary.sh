@@ -36,8 +36,10 @@ PURE_CRATES="${PURE_CRATES:-n0xis-contracts n0xis-arch n0xis-core}"
 #   n0xis-pdb, pdb2               — program databases (PDB): a format parser
 #                                   behind its own adapter, listed the day it
 #                                   landed (2026-10-07).
+#   n0xis-wasm                    — WebAssembly modules: a format parser,
+#                                   listed the day it landed (2026-10-19).
 # One regex, anchored, matched against bare package names.
-FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp|n0xis-pdb|pdb2)$'
+FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp|n0xis-pdb|pdb2|n0xis-wasm)$'
 
 status=0
 

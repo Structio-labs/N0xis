@@ -1,0 +1,18 @@
+[package]
+name = "n0xis-wasm"
+description = "WebAssembly modules: every section of the core binary format and every instruction of the core instruction set, SIMD included, read into this crate's own types. A module is untrusted input: a malformed one is a typed error or a finding, never a crash or an allocation sized by a count it states."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[features]
+# Tests that run the independent tools (wasm-tools, wabt, clang) on this
+# machine: they rebuild the fixtures and re-record what those tools say, then
+# compare. Off by default, like every toolchain-spawning test in the workspace:
+# the tools' versions are not pinned on a CI runner. The recorded outputs the
+# default tests compare against are checked in beside the fixtures.
+oracle = []

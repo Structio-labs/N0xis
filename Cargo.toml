@@ -86,6 +86,11 @@ n0xis-il2cpp = { path = "crates/n0xis-il2cpp" }
 # Program databases (PDB), gap-closing item 1. Same adapter rule: a format
 # parser the analysis core must never reach for.
 n0xis-pdb = { path = "crates/n0xis-pdb" }
+# WebAssembly modules. Same adapter rule: a format parser the analysis core
+# must never reach for. Nothing depends on it yet; the pipeline seam it plugs
+# into (an image for `.wasm`, an architecture for its stack machine) is not
+# decided.
+n0xis-wasm = { path = "crates/n0xis-wasm" }
 
 [profile.release]
 lto = "thin"
@@ -97,4 +102,11 @@ codegen-units = 1
 # as a debug build does, and `n0xis-pdb` turns the stop into an error. Found by
 # `crates/n0xis-pdb/tests/mutated.rs` on its first run (2026-10-07).
 [profile.release.package.pdb2]
+overflow-checks = true
+
+# The WebAssembly reader adds offsets and counts it reads from the file. It
+# bounds each before using it, and with the check on a sum it missed stops (as
+# a debug build does, and `read` reports the stop as an internal error) instead
+# of wrapping and reading on from the wrong place.
+[profile.release.package.n0xis-wasm]
 overflow-checks = true

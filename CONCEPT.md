@@ -177,7 +177,7 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
                  (depended on by every crate above)
 ```
 
-### Crates (Cargo workspace — 15 members, `crates/*`)
+### Crates (Cargo workspace — 16 members, `crates/*`)
 
 | Crate | Responsibility | Depends on | Never touches |
 |---|---|---|---|
