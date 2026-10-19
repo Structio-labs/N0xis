@@ -240,59 +240,136 @@ fn run(bytes: &[u8]) -> Outcome {
     if m.findings().is_empty() { Outcome::Clean } else { Outcome::WithFindings }
 }
 
+/// `n` as a LEB128 padded to exactly five bytes.
+fn padded5(n: usize) -> Vec<u8> {
+    let n = u32::try_from(n).expect("a size that fits u32");
+    (0..5).map(|i| ((n >> (7 * i)) & 0x7f) as u8 | if i < 4 { 0x80 } else { 0 }).collect()
+}
+
+/// The one-byte LEB128 at `at` set to 2^32 - 1 (five bytes), with the size of
+/// the body and of the section around it grown to match, so the framing still
+/// holds and the reader meets the value where it stands. `None` outside a
+/// section's contents (the preamble, a section's own id and size).
+fn with_extreme_at(original: &[u8], m: &n0xis_wasm::Module, at: usize) -> Option<Vec<u8>> {
+    let (i, section) = m.sections().iter().enumerate().find(|(_, s)| s.contents.contains(&at))?;
+    let (header, _) = section_starts(m)[i];
+    let mut bytes = original.to_vec();
+    // From the end of the file backwards, so each edit leaves the earlier
+    // positions where they were.
+    splice(&mut bytes, at, 1, EXTREME_LEBS[0]);
+    let mut grown = EXTREME_LEBS[0].len() - 1;
+    if let Some(body) = m.bodies().iter().find(|b| b.contains(&at)) {
+        // The body's size ends just before it; its earlier bytes continue it.
+        let mut start = body.start - 1;
+        while original[start - 1] & 0x80 != 0 {
+            start -= 1;
+        }
+        let size = padded5(body.len() + grown);
+        grown += size.len() - (body.start - start);
+        splice(&mut bytes, start, body.start - start, &size);
+    }
+    let size = padded5(section.contents.len() + grown);
+    splice(&mut bytes, header + 1, section.contents.start - header - 1, &size);
+    Some(bytes)
+}
+
+/// What the cases of one fixture came to.
+#[derive(Default)]
+struct Tally {
+    clean: usize,
+    found: usize,
+    refused: usize,
+    failures: Vec<String>,
+    worst_ratio: f64,
+}
+
+impl Tally {
+    /// Read `bytes` on its own thread under the deadline, and record what came
+    /// of it and the largest single allocation the reader made.
+    fn check(&mut self, label: &str, bytes: Vec<u8>) {
+        let per_byte = 2 * std::mem::size_of::<n0xis_wasm::Located>();
+        let len = bytes.len();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // Measured around the reader alone, on its own thread: the thread
+            // and the channel allocate too, and are not the reader.
+            LARGEST.store(0, Ordering::Relaxed);
+            let outcome = std::panic::catch_unwind(|| run(&bytes));
+            let largest = LARGEST.load(Ordering::Relaxed);
+            let _ = send.send((outcome, largest));
+        });
+        let largest = match receive.recv_timeout(DEADLINE) {
+            Ok((outcome, largest)) => {
+                match outcome {
+                    Ok(Outcome::Clean) => self.clean += 1,
+                    Ok(Outcome::WithFindings) => self.found += 1,
+                    Ok(Outcome::Refused) => self.refused += 1,
+                    Ok(Outcome::Inconsistent(what)) => self.failures.push(format!("{label}: {what}")),
+                    Ok(Outcome::Internal(why)) => self.failures.push(format!("{label}: the reader stopped: {why}")),
+                    Err(_) => self.failures.push(format!("{label}: a panic escaped the reader")),
+                }
+                largest
+            }
+            Err(_) => {
+                self.failures.push(format!("{label}: no answer within {DEADLINE:?}"));
+                LARGEST.load(Ordering::Relaxed)
+            }
+        };
+        self.worst_ratio = self.worst_ratio.max(largest as f64 / len.max(1) as f64);
+        if largest > per_byte * len {
+            self.failures.push(format!("{label}: asked for {largest} bytes at once, {len} of input"));
+        }
+    }
+}
+
 #[test]
 fn a_corrupted_module_is_an_error_or_a_finding_never_a_crash() {
-    let per_byte = 2 * std::mem::size_of::<n0xis_wasm::Located>();
     let mut failures = Vec::new();
     let mut worst_ratio = 0.0f64;
+    let mut total = 0;
     for stem in common::FIXTURES {
         let original = common::bytes(stem);
         let m = common::module(stem);
-        let (mut clean, mut found, mut refused) = (0, 0, 0);
+        let mut tally = Tally::default();
         for case in 0..CASES {
-            let bytes = corrupt(&original, &m, case);
-            let cap = per_byte * bytes.len();
-            let (send, receive) = std::sync::mpsc::channel();
-            let input = bytes.clone();
-            std::thread::spawn(move || {
-                // Measured around the reader alone, on its own thread: the
-                // thread and the channel allocate too, and are not the reader.
-                LARGEST.store(0, Ordering::Relaxed);
-                let outcome = std::panic::catch_unwind(|| run(&input));
-                let largest = LARGEST.load(Ordering::Relaxed);
-                let _ = send.send((outcome, largest));
-            });
-            let largest = match receive.recv_timeout(DEADLINE) {
-                Ok((outcome, largest)) => {
-                    match outcome {
-                        Ok(Outcome::Clean) => clean += 1,
-                        Ok(Outcome::WithFindings) => found += 1,
-                        Ok(Outcome::Refused) => refused += 1,
-                        Ok(Outcome::Inconsistent(what)) => failures.push(format!("{stem} case {case}: {what}")),
-                        Ok(Outcome::Internal(why)) => {
-                            failures.push(format!("{stem} case {case}: the reader stopped: {why}"))
-                        }
-                        Err(_) => failures.push(format!("{stem} case {case}: a panic escaped the reader")),
-                    }
-                    largest
-                }
-                Err(_) => {
-                    failures.push(format!("{stem} case {case}: no answer within {DEADLINE:?}"));
-                    LARGEST.load(Ordering::Relaxed)
-                }
-            };
-            worst_ratio = worst_ratio.max(largest as f64 / bytes.len().max(1) as f64);
-            if largest > cap {
-                failures.push(format!("{stem} case {case}: asked for {largest} bytes at once, {} of input", bytes.len()));
-            }
+            tally.check(&format!("{stem} case {case}"), corrupt(&original, &m, case));
         }
-        eprintln!("{stem}: {CASES} corrupted copies: {clean} read clean, {found} read with findings, {refused} refused");
+        let random = (tally.clean, tally.found, tally.refused);
+        // Every one-byte LEB128 of the file (a byte below 0x80 that does not
+        // continue a longer one) set to 2^32 - 1, one position per case: a
+        // count anywhere, at any depth (name maps, segment items, branch
+        // tables, locals), meets the largest value it can state. The numbered
+        // cases above reach the counts at a section's start; these reach the
+        // rest.
+        let mut extreme = 0;
+        for at in 0..original.len() {
+            if original[at] >= 0x80 || (at > 0 && original[at - 1] >= 0x80) {
+                continue;
+            }
+            let Some(bytes) = with_extreme_at(&original, &m, at) else { continue };
+            tally.check(&format!("{stem} with 2^32 - 1 at {at:#x}"), bytes);
+            extreme += 1;
+        }
+        eprintln!(
+            "{stem}: {CASES} corrupted copies: {} read clean, {} read with findings, {} refused; \
+             {extreme} with one LEB128 set to 2^32 - 1: {} clean, {} with findings, {} refused",
+            random.0,
+            random.1,
+            random.2,
+            tally.clean - random.0,
+            tally.found - random.1,
+            tally.refused - random.2,
+        );
         // The corruptions reached the reader every way: some still read, some
         // read with a finding, some were refused. All of one kind would mean
         // the cases test nothing. (`simd` has one body and no name section, so
         // a finding there is a body that broke.)
-        assert!(clean > 0 && found > 0 && refused > 0, "{stem}: clean {clean}, findings {found}, refused {refused}");
+        assert!(random.0 > 0 && random.1 > 0 && random.2 > 0, "{stem}: {random:?}");
+        total += CASES as usize + extreme;
+        worst_ratio = worst_ratio.max(tally.worst_ratio);
+        failures.extend(tally.failures);
     }
-    eprintln!("largest single allocation: {worst_ratio:.1} times the input's length (bound {per_byte})");
+    let per_byte = 2 * std::mem::size_of::<n0xis_wasm::Located>();
+    eprintln!("{total} cases; largest single allocation {worst_ratio:.1} times the input's length (bound {per_byte})");
     assert!(failures.is_empty(), "{} cases failed:\n{}", failures.len(), failures.join("\n"));
 }
