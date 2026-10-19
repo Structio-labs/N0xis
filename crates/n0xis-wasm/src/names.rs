@@ -45,16 +45,21 @@ pub enum NameProblem {
     /// A subsection whose id is not above the previous one: each appears at
     /// most once, in increasing order. Left out.
     SubsectionOrder { id: u8, after: u8 },
-    /// A subsection id this reader does not know. Left out.
-    UnknownSubsection { id: u8 },
+    /// A subsection id not read here: 10 (field names) and 11 (tag names)
+    /// name types of proposals this crate does not read, and no other id is
+    /// defined. Left out.
+    SubsectionNotRead { id: u8 },
     /// A subsection that could not be read, or whose contents do not fill its
     /// stated size. Left out whole.
     Subsection { id: u8, error: Error },
     /// The subsections' own framing broke (a size past the section's end);
     /// nothing after this point was read.
     Framing { error: Error },
-    /// Two names for one index in one map; the first is kept.
-    Duplicate { subsection: u8, index: u32 },
+    /// An index not above the one listed before it in its map (`within` names
+    /// the function for a map of locals or labels): the format lists each index
+    /// once, in increasing order. A name for an index already named is left
+    /// out, so the first stays; any other is kept.
+    IndexOrder { subsection: u8, within: Option<u32>, index: u32 },
 }
 
 /// A name and where it was found, before being placed in a map.
@@ -82,19 +87,32 @@ fn indirect_name_map(r: &mut Reader) -> Result<Vec<(u32, Vec<Assoc>)>, Error> {
     Ok(out)
 }
 
+/// Whether `index` breaks the increasing order after `previous`; recorded if so.
+fn out_of_order(
+    previous: &mut Option<u32>,
+    index: u32,
+    subsection: u8,
+    within: Option<u32>,
+    problems: &mut Vec<NameProblem>,
+) {
+    if previous.is_some_and(|p| index <= p) {
+        problems.push(NameProblem::IndexOrder { subsection, within, index });
+    }
+    *previous = Some(index);
+}
+
 fn place<K: Ord>(
     map: &mut BTreeMap<K, String>,
     entries: Vec<Assoc>,
     key: impl Fn(u32) -> K,
     subsection: u8,
+    within: Option<u32>,
     problems: &mut Vec<NameProblem>,
 ) {
+    let mut previous = None;
     for (index, name) in entries {
-        if let std::collections::btree_map::Entry::Vacant(slot) = map.entry(key(index)) {
-            slot.insert(name);
-        } else {
-            problems.push(NameProblem::Duplicate { subsection, index });
-        }
+        out_of_order(&mut previous, index, subsection, within, problems);
+        map.entry(key(index)).or_insert(name);
     }
 }
 
@@ -106,20 +124,24 @@ fn place_indirect<K: Ord, L: Ord>(
     subsection: u8,
     problems: &mut Vec<NameProblem>,
 ) {
+    let mut previous = None;
     for (index, names) in entries {
+        out_of_order(&mut previous, index, subsection, None, problems);
         if map.contains_key(&outer(index)) {
-            problems.push(NameProblem::Duplicate { subsection, index });
             continue;
         }
         let mut inner_map = BTreeMap::new();
-        place(&mut inner_map, names, inner, subsection, problems);
+        place(&mut inner_map, names, inner, subsection, Some(index), problems);
         map.insert(outer(index), inner_map);
     }
 }
 
-/// The highest subsection id read here: 0 module, 1 functions, 2 locals,
-/// 3 labels, 4 types, 5 tables, 6 memories, 7 globals, 8 element segments,
-/// 9 data segments.
+/// The highest subsection id read here. 0 module, 1 functions, 2 locals and
+/// 4 types are the core specification's (its appendix on custom sections);
+/// 3 labels, 5 tables, 6 memories, 7 globals, 8 element segments and 9 data
+/// segments are the extended name section's, which wasm-tools writes. The
+/// specification's 10 (field names) and 11 (tag names) name structure fields
+/// and exception tags, which this crate does not read.
 const LAST_KNOWN_SUBSECTION: u8 = 9;
 
 /// Read a `name` section's contents into `names`.
@@ -146,7 +168,7 @@ pub(crate) fn read(mut r: Reader, names: &mut Names, problems: &mut Vec<NameProb
         }
         last = Some(id);
         if id > LAST_KNOWN_SUBSECTION {
-            problems.push(NameProblem::UnknownSubsection { id });
+            problems.push(NameProblem::SubsectionNotRead { id });
             continue;
         }
         if let Err(error) = subsection(id, size, &mut sub, names, problems) {
@@ -184,14 +206,14 @@ fn subsection(id: u8, size: u32, r: &mut Reader, names: &mut Names, problems: &m
             let m = name_map(r)?;
             filled(r)?;
             match id {
-                1 => place(&mut names.functions, m, FuncIdx, id, problems),
-                4 => place(&mut names.types, m, TypeIdx, id, problems),
-                5 => place(&mut names.tables, m, TableIdx, id, problems),
-                6 => place(&mut names.memories, m, MemIdx, id, problems),
-                7 => place(&mut names.globals, m, GlobalIdx, id, problems),
-                8 => place(&mut names.elements, m, ElemIdx, id, problems),
+                1 => place(&mut names.functions, m, FuncIdx, id, None, problems),
+                4 => place(&mut names.types, m, TypeIdx, id, None, problems),
+                5 => place(&mut names.tables, m, TableIdx, id, None, problems),
+                6 => place(&mut names.memories, m, MemIdx, id, None, problems),
+                7 => place(&mut names.globals, m, GlobalIdx, id, None, problems),
+                8 => place(&mut names.elements, m, ElemIdx, id, None, problems),
                 // 9, the last id read here: the caller left out the rest.
-                _ => place(&mut names.data, m, DataIdx, id, problems),
+                _ => place(&mut names.data, m, DataIdx, id, None, problems),
             }
         }
     }

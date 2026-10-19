@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+pub mod planted;
+
 /// Every fixture, by the stem of its file names.
 pub const FIXTURES: [&str; 5] = ["ctarget-O0", "ctarget-O2", "core", "simd", "shapes"];
 
