@@ -29,6 +29,7 @@
 *.dylib binary
 *.bin binary
 *.dat binary
+*.wasm binary
 
 # Generated / vendored: keep them out of diff noise and language stats.
 Cargo.lock -diff linguist-generated

@@ -1,0 +1,199 @@
+
+ctarget-O2.wasm:	file format wasm 0x1
+module name: <ctarget-O2.wasm>
+
+Section Details:
+
+Type[13]:
+ - type[0] (i32, i32) -> i32
+ - type[1] (i32, i64) -> nil
+ - type[2] (f64) -> f64
+ - type[3] () -> nil
+ - type[4] (i32, i32, i32) -> i32
+ - type[5] (i32, i32, i32, i32) -> i32
+ - type[6] (i64, i64, i64) -> i64
+ - type[7] (f64, f32, i64, i32) -> f64
+ - type[8] (i32, i32) -> i64
+ - type[9] (i32) -> i32
+ - type[10] (i32) -> i64
+ - type[11] (i32, i64, f64) -> nil
+ - type[12] (i32, i32, i32) -> nil
+Import[2]:
+ - func[0] sig=1 <host_report> <- host.report
+ - func[1] sig=2 <host_scale> <- host.scale
+Function[24]:
+ - func[2] sig=3 <__wasm_call_ctors>
+ - func[3] sig=0 <add>
+ - func[4] sig=0 <subtract>
+ - func[5] sig=0 <multiply>
+ - func[6] sig=4 <apply>
+ - func[7] sig=5 <mix32>
+ - func[8] sig=6 <mix64>
+ - func[9] sig=7 <mixf>
+ - func[10] sig=8 <sum>
+ - func[11] sig=9 <chain_length>
+ - func[12] sig=10 <read_all>
+ - func[13] sig=10 <widen_signed8>
+ - func[14] sig=10 <widen_unsigned8>
+ - func[15] sig=10 <widen_signed16>
+ - func[16] sig=10 <widen_unsigned16>
+ - func[17] sig=10 <widen_signed32>
+ - func[18] sig=10 <widen_unsigned32>
+ - func[19] sig=11 <write_all>
+ - func[20] sig=5 <narrow_reads>
+ - func[21] sig=12 <narrow_writes>
+ - func[22] sig=1 <narrow8>
+ - func[23] sig=1 <narrow16>
+ - func[24] sig=1 <narrow32>
+ - func[25] sig=4 <dispatch>
+Table[1]:
+ - table[0] type=funcref initial=4 max=4
+Memory[1]:
+ - memory[0] pages: initial=2
+Global[19]:
+ - global[0] i32 mutable=1 <__stack_pointer> - init i32=65536
+ - global[1] i32 mutable=0 <__memory_base> - init i32=0
+ - global[2] i32 mutable=0 <__table_base> - init i32=1
+ - global[3] i32 mutable=0 <__tls_base> - init i32=65536
+ - global[4] i32 mutable=0 <operations> - init i32=65560
+ - global[5] i32 mutable=0 <counter> - init i32=65536
+ - global[6] i32 mutable=0 <big_total> - init i32=65544
+ - global[7] i32 mutable=0 <accumulated> - init i32=65552
+ - global[8] i32 mutable=0 <pool> - init i32=65584
+ - global[9] i32 mutable=0 <__dso_handle> - init i32=65536
+ - global[10] i32 mutable=0 <__data_end> - init i32=65776
+ - global[11] i32 mutable=0 <__rodata_start> - init i32=0
+ - global[12] i32 mutable=0 <__rodata_end> - init i32=0
+ - global[13] i32 mutable=0 <__stack_low> - init i32=0
+ - global[14] i32 mutable=0 <__stack_high> - init i32=65536
+ - global[15] i32 mutable=0 <__global_base> - init i32=65536
+ - global[16] i32 mutable=0 <__heap_base> - init i32=65776
+ - global[17] i32 mutable=0 <__heap_end> - init i32=131072
+ - global[18] i32 mutable=0 <__wasm_first_page_end> - init i32=65536
+Export[45]:
+ - memory[0] -> "memory"
+ - func[2] <__wasm_call_ctors> -> "__wasm_call_ctors"
+ - global[0] -> "__stack_pointer"
+ - func[3] <add> -> "add"
+ - func[4] <subtract> -> "subtract"
+ - func[5] <multiply> -> "multiply"
+ - func[6] <apply> -> "apply"
+ - global[4] -> "operations"
+ - table[0] -> "__indirect_function_table"
+ - func[7] <mix32> -> "mix32"
+ - func[8] <mix64> -> "mix64"
+ - func[9] <mixf> -> "mixf"
+ - func[10] <sum> -> "sum"
+ - func[11] <chain_length> -> "chain_length"
+ - func[12] <read_all> -> "read_all"
+ - func[13] <widen_signed8> -> "widen_signed8"
+ - func[14] <widen_unsigned8> -> "widen_unsigned8"
+ - func[15] <widen_signed16> -> "widen_signed16"
+ - func[16] <widen_unsigned16> -> "widen_unsigned16"
+ - func[17] <widen_signed32> -> "widen_signed32"
+ - func[18] <widen_unsigned32> -> "widen_unsigned32"
+ - func[19] <write_all> -> "write_all"
+ - func[20] <narrow_reads> -> "narrow_reads"
+ - func[21] <narrow_writes> -> "narrow_writes"
+ - func[22] <narrow8> -> "narrow8"
+ - func[23] <narrow16> -> "narrow16"
+ - func[24] <narrow32> -> "narrow32"
+ - func[25] <dispatch> -> "dispatch"
+ - global[5] -> "counter"
+ - global[6] -> "big_total"
+ - global[7] -> "accumulated"
+ - global[8] -> "pool"
+ - global[9] -> "__dso_handle"
+ - global[10] -> "__data_end"
+ - global[11] -> "__rodata_start"
+ - global[12] -> "__rodata_end"
+ - global[13] -> "__stack_low"
+ - global[14] -> "__stack_high"
+ - global[15] -> "__global_base"
+ - global[16] -> "__heap_base"
+ - global[17] -> "__heap_end"
+ - global[1] -> "__memory_base"
+ - global[2] -> "__table_base"
+ - global[18] -> "__wasm_first_page_end"
+ - global[3] -> "__tls_base"
+Elem[1]:
+ - segment[0] flags=0 table=0 count=3 - init i32=1
+  - elem[1] = ref.func:3 <add>
+  - elem[2] = ref.func:4 <subtract>
+  - elem[3] = ref.func:5 <multiply>
+Code[24]:
+ - func[2] size=2 <__wasm_call_ctors>
+ - func[3] size=7 <add>
+ - func[4] size=7 <subtract>
+ - func[5] size=7 <multiply>
+ - func[6] size=32 <apply>
+ - func[7] size=77 <mix32>
+ - func[8] size=56 <mix64>
+ - func[9] size=54 <mixf>
+ - func[10] size=182 <sum>
+ - func[11] size=39 <chain_length>
+ - func[12] size=53 <read_all>
+ - func[13] size=7 <widen_signed8>
+ - func[14] size=7 <widen_unsigned8>
+ - func[15] size=7 <widen_signed16>
+ - func[16] size=7 <widen_unsigned16>
+ - func[17] size=7 <widen_signed32>
+ - func[18] size=7 <widen_unsigned32>
+ - func[19] size=60 <write_all>
+ - func[20] size=25 <narrow_reads>
+ - func[21] size=16 <narrow_writes>
+ - func[22] size=9 <narrow8>
+ - func[23] size=9 <narrow16>
+ - func[24] size=9 <narrow32>
+ - func[25] size=243 <dispatch>
+Data[1]:
+ - segment[0] <.data> memory=0 size=36 - init i32=65536
+  - 0010000: 0700 0000 0000 0000 efcd ab89 6745 2301  ............gE#.
+  - 0010010: 0000 0000 0000 f83f 0100 0000 0200 0000  .......?........
+  - 0010020: 0300 0000                                ....
+Custom:
+ - name: "name"
+ - module <ctarget-O2.wasm>
+ - func[0] <host_report>
+ - func[1] <host_scale>
+ - func[2] <__wasm_call_ctors>
+ - func[3] <add>
+ - func[4] <subtract>
+ - func[5] <multiply>
+ - func[6] <apply>
+ - func[7] <mix32>
+ - func[8] <mix64>
+ - func[9] <mixf>
+ - func[10] <sum>
+ - func[11] <chain_length>
+ - func[12] <read_all>
+ - func[13] <widen_signed8>
+ - func[14] <widen_unsigned8>
+ - func[15] <widen_signed16>
+ - func[16] <widen_unsigned16>
+ - func[17] <widen_signed32>
+ - func[18] <widen_unsigned32>
+ - func[19] <write_all>
+ - func[20] <narrow_reads>
+ - func[21] <narrow_writes>
+ - func[22] <narrow8>
+ - func[23] <narrow16>
+ - func[24] <narrow32>
+ - func[25] <dispatch>
+ - global[0] <__stack_pointer>
+ - global[1] <__memory_base>
+ - global[2] <__table_base>
+ - global[3] <__tls_base>
+ - dataseg[0] <.data>
+Custom:
+ - name: "producers"
+Custom:
+ - name: "target_features"
+  - [+] bulk-memory
+  - [+] bulk-memory-opt
+  - [+] call-indirect-overlong
+  - [+] multivalue
+  - [+] mutable-globals
+  - [+] nontrapping-fptoint
+  - [+] reference-types
+  - [+] sign-ext

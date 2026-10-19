@@ -1,0 +1,118 @@
+
+shapes.wasm:	file format wasm 0x1
+module name: <shapes>
+
+Section Details:
+
+Type[4]:
+ - type[0] (i32) -> (i32, i64)
+ - type[1] () -> nil
+ - type[2] (f64) -> f64
+ - type[3] (i64) -> i32
+Import[6]:
+ - func[0] sig=0 <imported_pair> <- env.pair
+ - func[1] sig=2 <imported_unary> <- env.unary
+ - table[0] type=funcref initial=4 max=16 <- env.table
+ - memory[0] pages: initial=1 <- env.memory
+ - global[0] i64 mutable=1 <- env.counter
+ - global[1] f32 mutable=0 <- env.scale
+Function[3]:
+ - func[2] sig=1 <init>
+ - func[3] sig=0 <multi>
+ - func[4] sig=3 <wide_access>
+Table[2]:
+ - table[1] type=externref initial=3 <refs>
+ - table[2] type=funcref initial=2 max=8 <wide_table> i64
+Memory[2]:
+ - memory[1] pages: initial=1 max=65536 i64
+ - memory[2] pages: initial=2
+Global[4]:
+ - global[2] i32 mutable=1 <state> - init i32=42
+ - global[3] v128 mutable=0 <vector> - init i32=0
+ - global[4] funcref mutable=0 <entry> - init ref.func:3 <multi>
+ - global[5] externref mutable=0 <nothing> - init ref.null externref
+Export[5]:
+ - func[3] <multi> -> "multi"
+ - table[1] -> "refs"
+ - memory[1] -> "wide"
+ - global[2] -> "state"
+ - func[0] <imported_pair> -> "imported_again"
+Start:
+ - start function: 2 <init>
+Elem[8]:
+ - segment[0] flags=0 table=0 count=2 - init i32=0
+  - elem[0] = ref.func:3 <multi>
+  - elem[1] = ref.func:2 <init>
+ - segment[1] flags=1 table=0 count=1
+  - elem[0] = ref.func:3 <multi>
+ - segment[2] flags=2 table=2 count=1 - init i64=1
+  - elem[1] = ref.func:2 <init>
+ - segment[3] flags=3 table=0 count=1
+  - elem[1] = ref.func:4 <wide_access>
+ - segment[4] flags=4 table=0 count=2 - init i32=2
+  - elem[2] = ref.func:3 <multi>
+  - elem[3] = ref.null funcref
+ - segment[5] flags=5 table=0 count=2
+  - elem[2] = ref.func:2 <init>
+  - elem[3] = ref.null funcref
+ - segment[6] flags=6 table=1 count=1 - init i32=0
+  - elem[0] = ref.null externref
+ - segment[7] flags=7 table=0 count=1
+  - elem[0] = ref.func:2 <init>
+DataCount:
+ - data count: 4
+Code[3]:
+ - func[2] size=6 <init>
+ - func[3] size=30 <multi>
+ - func[4] size=132 <wide_access>
+Data[4]:
+ - segment[0] <form0_data> memory=0 size=3 - init i32=8
+  - 0000008: 6162 63                                  abc
+ - segment[1] <passive_data> passive size=7
+  - 0000008: 7061 7373 6976 65                        passive
+ - segment[2] <second_data> memory=2 size=3 - init i32=16
+  - 0000010: 7879 7a                                  xyz
+ - segment[3] <far_data> memory=1 size=3 - init i64=4294967300
+  - 100000004: 6661 72                                  far
+Custom:
+ - name: "name"
+ - module <shapes>
+ - func[0] <imported_pair>
+ - func[1] <imported_unary>
+ - func[2] <init>
+ - func[3] <multi>
+ - func[4] <wide_access>
+ - func[3] local[0] <seed>
+ - func[3] local[1] <wide_local>
+ - func[3] local[2] <vec>
+ - func[4] local[0] <address>
+ - func[4] local[1] <sum>
+ - func[4] local[2] <lanes>
+ - type[0] <pair>
+ - type[1] <none>
+ - type[2] <unary>
+ - type[3] <addr64>
+ - table[0] <imported_table>
+ - table[1] <refs>
+ - table[2] <wide_table>
+ - memory[0] <imported_memory>
+ - memory[1] <wide>
+ - memory[2] <second>
+ - global[0] <imported_counter>
+ - global[1] <imported_scale>
+ - global[2] <state>
+ - global[3] <vector>
+ - global[4] <entry>
+ - global[5] <nothing>
+ - elemseg[0] <form0>
+ - elemseg[1] <form1>
+ - elemseg[2] <form2>
+ - elemseg[3] <form3>
+ - elemseg[4] <form4>
+ - elemseg[5] <form5>
+ - elemseg[6] <form6>
+ - elemseg[7] <form7>
+ - dataseg[0] <form0_data>
+ - dataseg[1] <passive_data>
+ - dataseg[2] <second_data>
+ - dataseg[3] <far_data>

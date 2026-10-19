@@ -1,0 +1,43 @@
+
+core.wasm:	file format wasm 0x1
+
+Section Details:
+
+Type[4]:
+ - type[0] () -> nil
+ - type[1] (i32) -> (i32, i32)
+ - type[2] (i32, i32) -> i32
+ - type[3] (i32, i64, f32, f64) -> nil
+Function[5]:
+ - func[0] sig=2
+ - func[1] sig=2
+ - func[2] sig=3
+ - func[3] sig=3
+ - func[4] sig=0
+Table[2]:
+ - table[0] type=funcref initial=4 max=8
+ - table[1] type=externref initial=2
+Memory[1]:
+ - memory[0] pages: initial=1 max=2
+Global[2]:
+ - global[0] i32 mutable=1 - init i32=0
+ - global[1] i64 mutable=1 - init i64=0
+Elem[2]:
+ - segment[0] flags=0 table=0 count=2 - init i32=0
+  - elem[0] = ref.func:1
+  - elem[1] = ref.func:2
+ - segment[1] flags=1 table=0 count=1
+  - elem[0] = ref.func:1
+DataCount:
+ - data count: 2
+Code[5]:
+ - func[0] size=167
+ - func[1] size=7
+ - func[2] size=907
+ - func[3] size=193
+ - func[4] size=80
+Data[2]:
+ - segment[0] memory=0 size=4 - init i32=0
+  - 0000000: 0001 0203                                ....
+ - segment[1] passive size=7
+  - 0000000: 7061 7373 6976 65                        passive

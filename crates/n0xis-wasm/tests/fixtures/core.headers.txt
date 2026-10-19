@@ -1,0 +1,14 @@
+
+core.wasm:	file format wasm 0x1
+
+Sections:
+
+     Type start=0x0000000a end=0x00000021 (size=0x00000017) count: 4
+ Function start=0x00000023 end=0x00000029 (size=0x00000006) count: 5
+    Table start=0x0000002b end=0x00000033 (size=0x00000008) count: 2
+   Memory start=0x00000035 end=0x00000039 (size=0x00000004) count: 1
+   Global start=0x0000003b end=0x00000046 (size=0x0000000b) count: 2
+     Elem start=0x00000048 end=0x00000054 (size=0x0000000c) count: 2
+DataCount start=0x00000056 end=0x00000057 (size=0x00000001) count: 2
+     Code start=0x0000005a end=0x000005ad (size=0x00000553) count: 5
+     Data start=0x000005af end=0x000005c2 (size=0x00000013) count: 2

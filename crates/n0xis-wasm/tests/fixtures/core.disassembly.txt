@@ -1,0 +1,784 @@
+
+core.wasm:	file format wasm 0x1
+
+Code Disassembly:
+
+00005d func[0]:
+ 00005e: 02 40                      | block
+ 000060: 01                         |   nop
+ 000061: 0b                         | end
+ 000062: 02 7f                      | block i32
+ 000064: 41 01                      |   i32.const 1
+ 000066: 0b                         | end
+ 000067: 1a                         | drop
+ 000068: 20 00                      | local.get 0
+ 00006a: 02 01                      | block type[1]
+ 00006c: 41 06                      |   i32.const 6
+ 00006e: 0b                         | end
+ 00006f: 1a                         | drop
+ 000070: 1a                         | drop
+ 000071: 03 40                      | loop
+ 000073: 20 00                      |   local.get 0
+ 000075: 0d 00                      |   br_if 0
+ 000077: 0b                         | end
+ 000078: 03 7e                      | loop i64
+ 00007a: 42 00                      |   i64.const 0
+ 00007c: 0b                         | end
+ 00007d: 1a                         | drop
+ 00007e: 20 00                      | local.get 0
+ 000080: 04 40                      | if
+ 000082: 01                         |   nop
+ 000083: 05                         | else
+ 000084: 01                         |   nop
+ 000085: 0b                         | end
+ 000086: 20 00                      | local.get 0
+ 000088: 04 7f                      | if i32
+ 00008a: 41 01                      |   i32.const 1
+ 00008c: 05                         | else
+ 00008d: 41 02                      |   i32.const 2
+ 00008f: 0b                         | end
+ 000090: 1a                         | drop
+ 000091: 20 01                      | local.get 1
+ 000093: 20 00                      | local.get 0
+ 000095: 04 01                      | if type[1]
+ 000097: 41 03                      |   i32.const 3
+ 000099: 05                         | else
+ 00009a: 41 04                      |   i32.const 4
+ 00009c: 0b                         | end
+ 00009d: 1a                         | drop
+ 00009e: 1a                         | drop
+ 00009f: 20 00                      | local.get 0
+ 0000a1: 04 40                      | if
+ 0000a3: 00                         |   unreachable
+ 0000a4: 0b                         | end
+ 0000a5: 02 40                      | block
+ 0000a7: 02 40                      |   block
+ 0000a9: 02 40                      |     block
+ 0000ab: 20 00                      |       local.get 0
+ 0000ad: 0e 03 00 01 02 01          |       br_table 0 1 2 1
+ 0000b3: 0b                         |     end
+ 0000b4: 0c 01                      |     br 1
+ 0000b6: 0b                         |   end
+ 0000b7: 0c 00                      |   br 0
+ 0000b9: 0b                         | end
+ 0000ba: 02 40                      | block
+ 0000bc: 20 00                      |   local.get 0
+ 0000be: 0e 00 00                   |   br_table 0
+ 0000c1: 0b                         | end
+ 0000c2: 20 00                      | local.get 0
+ 0000c4: 20 01                      | local.get 1
+ 0000c6: 10 01                      | call 1
+ 0000c8: 1a                         | drop
+ 0000c9: 20 00                      | local.get 0
+ 0000cb: 20 01                      | local.get 1
+ 0000cd: 41 00                      | i32.const 0
+ 0000cf: 11 02 00                   | call_indirect 0 (type 2)
+ 0000d2: 1a                         | drop
+ 0000d3: 41 07                      | i32.const 7
+ 0000d5: 41 08                      | i32.const 8
+ 0000d7: 20 00                      | local.get 0
+ 0000d9: 1b                         | select
+ 0000da: 1a                         | drop
+ 0000db: 42 07                      | i64.const 7
+ 0000dd: 42 08                      | i64.const 8
+ 0000df: 20 00                      | local.get 0
+ 0000e1: 1c 01 7e                   | select i64
+ 0000e4: 1a                         | drop
+ 0000e5: d0 6f                      | ref.null extern
+ 0000e7: d0 6f                      | ref.null extern
+ 0000e9: 20 00                      | local.get 0
+ 0000eb: 1c 01 6f                   | select externref
+ 0000ee: 1a                         | drop
+ 0000ef: 20 00                      | local.get 0
+ 0000f1: 21 01                      | local.set 1
+ 0000f3: 20 01                      | local.get 1
+ 0000f5: 22 00                      | local.tee 0
+ 0000f7: 1a                         | drop
+ 0000f8: 23 00                      | global.get 0
+ 0000fa: 24 00                      | global.set 0
+ 0000fc: 23 01                      | global.get 1
+ 0000fe: 24 01                      | global.set 1
+ 000100: 20 00                      | local.get 0
+ 000102: 0f                         | return
+ 000103: 0b                         | end
+000105 func[1]:
+ 000106: 20 00                      | local.get 0
+ 000108: 20 01                      | local.get 1
+ 00010a: 6a                         | i32.add
+ 00010b: 0b                         | end
+00010e func[2]:
+ 00010f: 41 00                      | i32.const 0
+ 000111: 1a                         | drop
+ 000112: 41 7f                      | i32.const 4294967295
+ 000114: 1a                         | drop
+ 000115: 41 3f                      | i32.const 63
+ 000117: 1a                         | drop
+ 000118: 41 40                      | i32.const 4294967232
+ 00011a: 1a                         | drop
+ 00011b: 41 c0 00                   | i32.const 64
+ 00011e: 1a                         | drop
+ 00011f: 41 80 80 80 80 78          | i32.const 2147483648
+ 000125: 1a                         | drop
+ 000126: 41 ff ff ff ff 07          | i32.const 2147483647
+ 00012c: 1a                         | drop
+ 00012d: 42 00                      | i64.const 0
+ 00012f: 1a                         | drop
+ 000130: 42 7f                      | i64.const 18446744073709551615
+ 000132: 1a                         | drop
+ 000133: 42 80 80 80 80 80 80 80 80 | i64.const 9223372036854775808
+ 00013c: 80 7f                      | 
+ 00013e: 1a                         | drop
+ 00013f: 42 ff ff ff ff ff ff ff ff | i64.const 9223372036854775807
+ 000148: ff 00                      | 
+ 00014a: 1a                         | drop
+ 00014b: 42 ef 9b af cd f8 ac d1 91 | i64.const 81985529216486895
+ 000154: 01                         | 
+ 000155: 1a                         | drop
+ 000156: 43 00 00 c0 3f             | f32.const 0x1.8p+0
+ 00015b: 1a                         | drop
+ 00015c: 43 00 00 00 80             | f32.const -0x0p+0
+ 000161: 1a                         | drop
+ 000162: 43 00 00 00 00             | f32.const 0x0p+0
+ 000167: 1a                         | drop
+ 000168: 43 01 00 00 00             | f32.const 0x1.p-149
+ 00016d: 1a                         | drop
+ 00016e: 43 ff ff 7f 00             | f32.const 0x1.fffffcp-127
+ 000173: 1a                         | drop
+ 000174: 43 ff ff 7f 7f             | f32.const 0x1.fffffep+127
+ 000179: 1a                         | drop
+ 00017a: 43 00 00 80 7f             | f32.const inf
+ 00017f: 1a                         | drop
+ 000180: 43 00 00 80 ff             | f32.const -inf
+ 000185: 1a                         | drop
+ 000186: 43 00 00 c0 7f             | f32.const nan
+ 00018b: 1a                         | drop
+ 00018c: 43 01 00 80 ff             | f32.const -nan:0x1
+ 000191: 1a                         | drop
+ 000192: 44 00 00 00 00 00 00 f0 3f | f64.const 0x1p+0
+ 00019b: 1a                         | drop
+ 00019c: 44 18 2d 44 54 fb 21 09 c0 | f64.const -0x1.921fb54442d18p+1
+ 0001a5: 1a                         | drop
+ 0001a6: 44 01 00 00 00 00 00 00 00 | f64.const 0x1.p-1074
+ 0001af: 1a                         | drop
+ 0001b0: 44 ff ff ff ff ff ff ef 7f | f64.const 0x1.fffffffffffffp+1023
+ 0001b9: 1a                         | drop
+ 0001ba: 44 00 00 00 00 00 00 f0 ff | f64.const -inf
+ 0001c3: 1a                         | drop
+ 0001c4: 44 00 00 00 00 00 00 f8 7f | f64.const nan
+ 0001cd: 1a                         | drop
+ 0001ce: 44 ff ff ff ff ff ff ff ff | f64.const -nan:0xfffffffffffff
+ 0001d7: 1a                         | drop
+ 0001d8: 20 00                      | local.get 0
+ 0001da: 45                         | i32.eqz
+ 0001db: 1a                         | drop
+ 0001dc: 20 00                      | local.get 0
+ 0001de: 20 00                      | local.get 0
+ 0001e0: 46                         | i32.eq
+ 0001e1: 1a                         | drop
+ 0001e2: 20 00                      | local.get 0
+ 0001e4: 20 00                      | local.get 0
+ 0001e6: 47                         | i32.ne
+ 0001e7: 1a                         | drop
+ 0001e8: 20 00                      | local.get 0
+ 0001ea: 20 00                      | local.get 0
+ 0001ec: 48                         | i32.lt_s
+ 0001ed: 1a                         | drop
+ 0001ee: 20 00                      | local.get 0
+ 0001f0: 20 00                      | local.get 0
+ 0001f2: 49                         | i32.lt_u
+ 0001f3: 1a                         | drop
+ 0001f4: 20 00                      | local.get 0
+ 0001f6: 20 00                      | local.get 0
+ 0001f8: 4a                         | i32.gt_s
+ 0001f9: 1a                         | drop
+ 0001fa: 20 00                      | local.get 0
+ 0001fc: 20 00                      | local.get 0
+ 0001fe: 4b                         | i32.gt_u
+ 0001ff: 1a                         | drop
+ 000200: 20 00                      | local.get 0
+ 000202: 20 00                      | local.get 0
+ 000204: 4c                         | i32.le_s
+ 000205: 1a                         | drop
+ 000206: 20 00                      | local.get 0
+ 000208: 20 00                      | local.get 0
+ 00020a: 4d                         | i32.le_u
+ 00020b: 1a                         | drop
+ 00020c: 20 00                      | local.get 0
+ 00020e: 20 00                      | local.get 0
+ 000210: 4e                         | i32.ge_s
+ 000211: 1a                         | drop
+ 000212: 20 00                      | local.get 0
+ 000214: 20 00                      | local.get 0
+ 000216: 4f                         | i32.ge_u
+ 000217: 1a                         | drop
+ 000218: 20 01                      | local.get 1
+ 00021a: 50                         | i64.eqz
+ 00021b: 1a                         | drop
+ 00021c: 20 01                      | local.get 1
+ 00021e: 20 01                      | local.get 1
+ 000220: 51                         | i64.eq
+ 000221: 1a                         | drop
+ 000222: 20 01                      | local.get 1
+ 000224: 20 01                      | local.get 1
+ 000226: 52                         | i64.ne
+ 000227: 1a                         | drop
+ 000228: 20 01                      | local.get 1
+ 00022a: 20 01                      | local.get 1
+ 00022c: 53                         | i64.lt_s
+ 00022d: 1a                         | drop
+ 00022e: 20 01                      | local.get 1
+ 000230: 20 01                      | local.get 1
+ 000232: 54                         | i64.lt_u
+ 000233: 1a                         | drop
+ 000234: 20 01                      | local.get 1
+ 000236: 20 01                      | local.get 1
+ 000238: 55                         | i64.gt_s
+ 000239: 1a                         | drop
+ 00023a: 20 01                      | local.get 1
+ 00023c: 20 01                      | local.get 1
+ 00023e: 56                         | i64.gt_u
+ 00023f: 1a                         | drop
+ 000240: 20 01                      | local.get 1
+ 000242: 20 01                      | local.get 1
+ 000244: 57                         | i64.le_s
+ 000245: 1a                         | drop
+ 000246: 20 01                      | local.get 1
+ 000248: 20 01                      | local.get 1
+ 00024a: 58                         | i64.le_u
+ 00024b: 1a                         | drop
+ 00024c: 20 01                      | local.get 1
+ 00024e: 20 01                      | local.get 1
+ 000250: 59                         | i64.ge_s
+ 000251: 1a                         | drop
+ 000252: 20 01                      | local.get 1
+ 000254: 20 01                      | local.get 1
+ 000256: 5a                         | i64.ge_u
+ 000257: 1a                         | drop
+ 000258: 20 02                      | local.get 2
+ 00025a: 20 02                      | local.get 2
+ 00025c: 5b                         | f32.eq
+ 00025d: 1a                         | drop
+ 00025e: 20 02                      | local.get 2
+ 000260: 20 02                      | local.get 2
+ 000262: 5c                         | f32.ne
+ 000263: 1a                         | drop
+ 000264: 20 02                      | local.get 2
+ 000266: 20 02                      | local.get 2
+ 000268: 5d                         | f32.lt
+ 000269: 1a                         | drop
+ 00026a: 20 02                      | local.get 2
+ 00026c: 20 02                      | local.get 2
+ 00026e: 5e                         | f32.gt
+ 00026f: 1a                         | drop
+ 000270: 20 02                      | local.get 2
+ 000272: 20 02                      | local.get 2
+ 000274: 5f                         | f32.le
+ 000275: 1a                         | drop
+ 000276: 20 02                      | local.get 2
+ 000278: 20 02                      | local.get 2
+ 00027a: 60                         | f32.ge
+ 00027b: 1a                         | drop
+ 00027c: 20 03                      | local.get 3
+ 00027e: 20 03                      | local.get 3
+ 000280: 61                         | f64.eq
+ 000281: 1a                         | drop
+ 000282: 20 03                      | local.get 3
+ 000284: 20 03                      | local.get 3
+ 000286: 62                         | f64.ne
+ 000287: 1a                         | drop
+ 000288: 20 03                      | local.get 3
+ 00028a: 20 03                      | local.get 3
+ 00028c: 63                         | f64.lt
+ 00028d: 1a                         | drop
+ 00028e: 20 03                      | local.get 3
+ 000290: 20 03                      | local.get 3
+ 000292: 64                         | f64.gt
+ 000293: 1a                         | drop
+ 000294: 20 03                      | local.get 3
+ 000296: 20 03                      | local.get 3
+ 000298: 65                         | f64.le
+ 000299: 1a                         | drop
+ 00029a: 20 03                      | local.get 3
+ 00029c: 20 03                      | local.get 3
+ 00029e: 66                         | f64.ge
+ 00029f: 1a                         | drop
+ 0002a0: 20 00                      | local.get 0
+ 0002a2: 67                         | i32.clz
+ 0002a3: 1a                         | drop
+ 0002a4: 20 00                      | local.get 0
+ 0002a6: 68                         | i32.ctz
+ 0002a7: 1a                         | drop
+ 0002a8: 20 00                      | local.get 0
+ 0002aa: 69                         | i32.popcnt
+ 0002ab: 1a                         | drop
+ 0002ac: 20 00                      | local.get 0
+ 0002ae: 20 00                      | local.get 0
+ 0002b0: 6a                         | i32.add
+ 0002b1: 1a                         | drop
+ 0002b2: 20 00                      | local.get 0
+ 0002b4: 20 00                      | local.get 0
+ 0002b6: 6b                         | i32.sub
+ 0002b7: 1a                         | drop
+ 0002b8: 20 00                      | local.get 0
+ 0002ba: 20 00                      | local.get 0
+ 0002bc: 6c                         | i32.mul
+ 0002bd: 1a                         | drop
+ 0002be: 20 00                      | local.get 0
+ 0002c0: 20 00                      | local.get 0
+ 0002c2: 6d                         | i32.div_s
+ 0002c3: 1a                         | drop
+ 0002c4: 20 00                      | local.get 0
+ 0002c6: 20 00                      | local.get 0
+ 0002c8: 6e                         | i32.div_u
+ 0002c9: 1a                         | drop
+ 0002ca: 20 00                      | local.get 0
+ 0002cc: 20 00                      | local.get 0
+ 0002ce: 6f                         | i32.rem_s
+ 0002cf: 1a                         | drop
+ 0002d0: 20 00                      | local.get 0
+ 0002d2: 20 00                      | local.get 0
+ 0002d4: 70                         | i32.rem_u
+ 0002d5: 1a                         | drop
+ 0002d6: 20 00                      | local.get 0
+ 0002d8: 20 00                      | local.get 0
+ 0002da: 71                         | i32.and
+ 0002db: 1a                         | drop
+ 0002dc: 20 00                      | local.get 0
+ 0002de: 20 00                      | local.get 0
+ 0002e0: 72                         | i32.or
+ 0002e1: 1a                         | drop
+ 0002e2: 20 00                      | local.get 0
+ 0002e4: 20 00                      | local.get 0
+ 0002e6: 73                         | i32.xor
+ 0002e7: 1a                         | drop
+ 0002e8: 20 00                      | local.get 0
+ 0002ea: 20 00                      | local.get 0
+ 0002ec: 74                         | i32.shl
+ 0002ed: 1a                         | drop
+ 0002ee: 20 00                      | local.get 0
+ 0002f0: 20 00                      | local.get 0
+ 0002f2: 75                         | i32.shr_s
+ 0002f3: 1a                         | drop
+ 0002f4: 20 00                      | local.get 0
+ 0002f6: 20 00                      | local.get 0
+ 0002f8: 76                         | i32.shr_u
+ 0002f9: 1a                         | drop
+ 0002fa: 20 00                      | local.get 0
+ 0002fc: 20 00                      | local.get 0
+ 0002fe: 77                         | i32.rotl
+ 0002ff: 1a                         | drop
+ 000300: 20 00                      | local.get 0
+ 000302: 20 00                      | local.get 0
+ 000304: 78                         | i32.rotr
+ 000305: 1a                         | drop
+ 000306: 20 01                      | local.get 1
+ 000308: 79                         | i64.clz
+ 000309: 1a                         | drop
+ 00030a: 20 01                      | local.get 1
+ 00030c: 7a                         | i64.ctz
+ 00030d: 1a                         | drop
+ 00030e: 20 01                      | local.get 1
+ 000310: 7b                         | i64.popcnt
+ 000311: 1a                         | drop
+ 000312: 20 01                      | local.get 1
+ 000314: 20 01                      | local.get 1
+ 000316: 7c                         | i64.add
+ 000317: 1a                         | drop
+ 000318: 20 01                      | local.get 1
+ 00031a: 20 01                      | local.get 1
+ 00031c: 7d                         | i64.sub
+ 00031d: 1a                         | drop
+ 00031e: 20 01                      | local.get 1
+ 000320: 20 01                      | local.get 1
+ 000322: 7e                         | i64.mul
+ 000323: 1a                         | drop
+ 000324: 20 01                      | local.get 1
+ 000326: 20 01                      | local.get 1
+ 000328: 7f                         | i64.div_s
+ 000329: 1a                         | drop
+ 00032a: 20 01                      | local.get 1
+ 00032c: 20 01                      | local.get 1
+ 00032e: 80                         | i64.div_u
+ 00032f: 1a                         | drop
+ 000330: 20 01                      | local.get 1
+ 000332: 20 01                      | local.get 1
+ 000334: 81                         | i64.rem_s
+ 000335: 1a                         | drop
+ 000336: 20 01                      | local.get 1
+ 000338: 20 01                      | local.get 1
+ 00033a: 82                         | i64.rem_u
+ 00033b: 1a                         | drop
+ 00033c: 20 01                      | local.get 1
+ 00033e: 20 01                      | local.get 1
+ 000340: 83                         | i64.and
+ 000341: 1a                         | drop
+ 000342: 20 01                      | local.get 1
+ 000344: 20 01                      | local.get 1
+ 000346: 84                         | i64.or
+ 000347: 1a                         | drop
+ 000348: 20 01                      | local.get 1
+ 00034a: 20 01                      | local.get 1
+ 00034c: 85                         | i64.xor
+ 00034d: 1a                         | drop
+ 00034e: 20 01                      | local.get 1
+ 000350: 20 01                      | local.get 1
+ 000352: 86                         | i64.shl
+ 000353: 1a                         | drop
+ 000354: 20 01                      | local.get 1
+ 000356: 20 01                      | local.get 1
+ 000358: 87                         | i64.shr_s
+ 000359: 1a                         | drop
+ 00035a: 20 01                      | local.get 1
+ 00035c: 20 01                      | local.get 1
+ 00035e: 88                         | i64.shr_u
+ 00035f: 1a                         | drop
+ 000360: 20 01                      | local.get 1
+ 000362: 20 01                      | local.get 1
+ 000364: 89                         | i64.rotl
+ 000365: 1a                         | drop
+ 000366: 20 01                      | local.get 1
+ 000368: 20 01                      | local.get 1
+ 00036a: 8a                         | i64.rotr
+ 00036b: 1a                         | drop
+ 00036c: 20 02                      | local.get 2
+ 00036e: 8b                         | f32.abs
+ 00036f: 1a                         | drop
+ 000370: 20 02                      | local.get 2
+ 000372: 8c                         | f32.neg
+ 000373: 1a                         | drop
+ 000374: 20 02                      | local.get 2
+ 000376: 8d                         | f32.ceil
+ 000377: 1a                         | drop
+ 000378: 20 02                      | local.get 2
+ 00037a: 8e                         | f32.floor
+ 00037b: 1a                         | drop
+ 00037c: 20 02                      | local.get 2
+ 00037e: 8f                         | f32.trunc
+ 00037f: 1a                         | drop
+ 000380: 20 02                      | local.get 2
+ 000382: 90                         | f32.nearest
+ 000383: 1a                         | drop
+ 000384: 20 02                      | local.get 2
+ 000386: 91                         | f32.sqrt
+ 000387: 1a                         | drop
+ 000388: 20 02                      | local.get 2
+ 00038a: 20 02                      | local.get 2
+ 00038c: 92                         | f32.add
+ 00038d: 1a                         | drop
+ 00038e: 20 02                      | local.get 2
+ 000390: 20 02                      | local.get 2
+ 000392: 93                         | f32.sub
+ 000393: 1a                         | drop
+ 000394: 20 02                      | local.get 2
+ 000396: 20 02                      | local.get 2
+ 000398: 94                         | f32.mul
+ 000399: 1a                         | drop
+ 00039a: 20 02                      | local.get 2
+ 00039c: 20 02                      | local.get 2
+ 00039e: 95                         | f32.div
+ 00039f: 1a                         | drop
+ 0003a0: 20 02                      | local.get 2
+ 0003a2: 20 02                      | local.get 2
+ 0003a4: 96                         | f32.min
+ 0003a5: 1a                         | drop
+ 0003a6: 20 02                      | local.get 2
+ 0003a8: 20 02                      | local.get 2
+ 0003aa: 97                         | f32.max
+ 0003ab: 1a                         | drop
+ 0003ac: 20 02                      | local.get 2
+ 0003ae: 20 02                      | local.get 2
+ 0003b0: 98                         | f32.copysign
+ 0003b1: 1a                         | drop
+ 0003b2: 20 03                      | local.get 3
+ 0003b4: 99                         | f64.abs
+ 0003b5: 1a                         | drop
+ 0003b6: 20 03                      | local.get 3
+ 0003b8: 9a                         | f64.neg
+ 0003b9: 1a                         | drop
+ 0003ba: 20 03                      | local.get 3
+ 0003bc: 9b                         | f64.ceil
+ 0003bd: 1a                         | drop
+ 0003be: 20 03                      | local.get 3
+ 0003c0: 9c                         | f64.floor
+ 0003c1: 1a                         | drop
+ 0003c2: 20 03                      | local.get 3
+ 0003c4: 9d                         | f64.trunc
+ 0003c5: 1a                         | drop
+ 0003c6: 20 03                      | local.get 3
+ 0003c8: 9e                         | f64.nearest
+ 0003c9: 1a                         | drop
+ 0003ca: 20 03                      | local.get 3
+ 0003cc: 9f                         | f64.sqrt
+ 0003cd: 1a                         | drop
+ 0003ce: 20 03                      | local.get 3
+ 0003d0: 20 03                      | local.get 3
+ 0003d2: a0                         | f64.add
+ 0003d3: 1a                         | drop
+ 0003d4: 20 03                      | local.get 3
+ 0003d6: 20 03                      | local.get 3
+ 0003d8: a1                         | f64.sub
+ 0003d9: 1a                         | drop
+ 0003da: 20 03                      | local.get 3
+ 0003dc: 20 03                      | local.get 3
+ 0003de: a2                         | f64.mul
+ 0003df: 1a                         | drop
+ 0003e0: 20 03                      | local.get 3
+ 0003e2: 20 03                      | local.get 3
+ 0003e4: a3                         | f64.div
+ 0003e5: 1a                         | drop
+ 0003e6: 20 03                      | local.get 3
+ 0003e8: 20 03                      | local.get 3
+ 0003ea: a4                         | f64.min
+ 0003eb: 1a                         | drop
+ 0003ec: 20 03                      | local.get 3
+ 0003ee: 20 03                      | local.get 3
+ 0003f0: a5                         | f64.max
+ 0003f1: 1a                         | drop
+ 0003f2: 20 03                      | local.get 3
+ 0003f4: 20 03                      | local.get 3
+ 0003f6: a6                         | f64.copysign
+ 0003f7: 1a                         | drop
+ 0003f8: 20 01                      | local.get 1
+ 0003fa: a7                         | i32.wrap_i64
+ 0003fb: 1a                         | drop
+ 0003fc: 20 02                      | local.get 2
+ 0003fe: a8                         | i32.trunc_f32_s
+ 0003ff: 1a                         | drop
+ 000400: 20 02                      | local.get 2
+ 000402: a9                         | i32.trunc_f32_u
+ 000403: 1a                         | drop
+ 000404: 20 03                      | local.get 3
+ 000406: aa                         | i32.trunc_f64_s
+ 000407: 1a                         | drop
+ 000408: 20 03                      | local.get 3
+ 00040a: ab                         | i32.trunc_f64_u
+ 00040b: 1a                         | drop
+ 00040c: 20 00                      | local.get 0
+ 00040e: ac                         | i64.extend_i32_s
+ 00040f: 1a                         | drop
+ 000410: 20 00                      | local.get 0
+ 000412: ad                         | i64.extend_i32_u
+ 000413: 1a                         | drop
+ 000414: 20 02                      | local.get 2
+ 000416: ae                         | i64.trunc_f32_s
+ 000417: 1a                         | drop
+ 000418: 20 02                      | local.get 2
+ 00041a: af                         | i64.trunc_f32_u
+ 00041b: 1a                         | drop
+ 00041c: 20 03                      | local.get 3
+ 00041e: b0                         | i64.trunc_f64_s
+ 00041f: 1a                         | drop
+ 000420: 20 03                      | local.get 3
+ 000422: b1                         | i64.trunc_f64_u
+ 000423: 1a                         | drop
+ 000424: 20 00                      | local.get 0
+ 000426: b2                         | f32.convert_i32_s
+ 000427: 1a                         | drop
+ 000428: 20 00                      | local.get 0
+ 00042a: b3                         | f32.convert_i32_u
+ 00042b: 1a                         | drop
+ 00042c: 20 01                      | local.get 1
+ 00042e: b4                         | f32.convert_i64_s
+ 00042f: 1a                         | drop
+ 000430: 20 01                      | local.get 1
+ 000432: b5                         | f32.convert_i64_u
+ 000433: 1a                         | drop
+ 000434: 20 03                      | local.get 3
+ 000436: b6                         | f32.demote_f64
+ 000437: 1a                         | drop
+ 000438: 20 00                      | local.get 0
+ 00043a: b7                         | f64.convert_i32_s
+ 00043b: 1a                         | drop
+ 00043c: 20 00                      | local.get 0
+ 00043e: b8                         | f64.convert_i32_u
+ 00043f: 1a                         | drop
+ 000440: 20 01                      | local.get 1
+ 000442: b9                         | f64.convert_i64_s
+ 000443: 1a                         | drop
+ 000444: 20 01                      | local.get 1
+ 000446: ba                         | f64.convert_i64_u
+ 000447: 1a                         | drop
+ 000448: 20 02                      | local.get 2
+ 00044a: bb                         | f64.promote_f32
+ 00044b: 1a                         | drop
+ 00044c: 20 02                      | local.get 2
+ 00044e: bc                         | i32.reinterpret_f32
+ 00044f: 1a                         | drop
+ 000450: 20 03                      | local.get 3
+ 000452: bd                         | i64.reinterpret_f64
+ 000453: 1a                         | drop
+ 000454: 20 00                      | local.get 0
+ 000456: be                         | f32.reinterpret_i32
+ 000457: 1a                         | drop
+ 000458: 20 01                      | local.get 1
+ 00045a: bf                         | f64.reinterpret_i64
+ 00045b: 1a                         | drop
+ 00045c: 20 00                      | local.get 0
+ 00045e: c0                         | i32.extend8_s
+ 00045f: 1a                         | drop
+ 000460: 20 00                      | local.get 0
+ 000462: c1                         | i32.extend16_s
+ 000463: 1a                         | drop
+ 000464: 20 01                      | local.get 1
+ 000466: c2                         | i64.extend8_s
+ 000467: 1a                         | drop
+ 000468: 20 01                      | local.get 1
+ 00046a: c3                         | i64.extend16_s
+ 00046b: 1a                         | drop
+ 00046c: 20 01                      | local.get 1
+ 00046e: c4                         | i64.extend32_s
+ 00046f: 1a                         | drop
+ 000470: 20 02                      | local.get 2
+ 000472: fc 00                      | i32.trunc_sat_f32_s
+ 000474: 1a                         | drop
+ 000475: 20 02                      | local.get 2
+ 000477: fc 01                      | i32.trunc_sat_f32_u
+ 000479: 1a                         | drop
+ 00047a: 20 03                      | local.get 3
+ 00047c: fc 02                      | i32.trunc_sat_f64_s
+ 00047e: 1a                         | drop
+ 00047f: 20 03                      | local.get 3
+ 000481: fc 03                      | i32.trunc_sat_f64_u
+ 000483: 1a                         | drop
+ 000484: 20 02                      | local.get 2
+ 000486: fc 04                      | i64.trunc_sat_f32_s
+ 000488: 1a                         | drop
+ 000489: 20 02                      | local.get 2
+ 00048b: fc 05                      | i64.trunc_sat_f32_u
+ 00048d: 1a                         | drop
+ 00048e: 20 03                      | local.get 3
+ 000490: fc 06                      | i64.trunc_sat_f64_s
+ 000492: 1a                         | drop
+ 000493: 20 03                      | local.get 3
+ 000495: fc 07                      | i64.trunc_sat_f64_u
+ 000497: 1a                         | drop
+ 000498: 0b                         | end
+00049b func[3]:
+ 00049c: 20 00                      | local.get 0
+ 00049e: 28 02 00                   | i32.load 2 0
+ 0004a1: 1a                         | drop
+ 0004a2: 20 00                      | local.get 0
+ 0004a4: 29 03 08                   | i64.load 3 8
+ 0004a7: 1a                         | drop
+ 0004a8: 20 00                      | local.get 0
+ 0004aa: 2a 00 10                   | f32.load 0 16
+ 0004ad: 1a                         | drop
+ 0004ae: 20 00                      | local.get 0
+ 0004b0: 2b 03 18                   | f64.load 3 24
+ 0004b3: 1a                         | drop
+ 0004b4: 20 00                      | local.get 0
+ 0004b6: 2c 00 01                   | i32.load8_s 0 1
+ 0004b9: 1a                         | drop
+ 0004ba: 20 00                      | local.get 0
+ 0004bc: 2d 00 ff ff ff ff 0f       | i32.load8_u 0 4294967295
+ 0004c3: 1a                         | drop
+ 0004c4: 20 00                      | local.get 0
+ 0004c6: 2e 01 02                   | i32.load16_s 1 2
+ 0004c9: 1a                         | drop
+ 0004ca: 20 00                      | local.get 0
+ 0004cc: 2f 00 03                   | i32.load16_u 0 3
+ 0004cf: 1a                         | drop
+ 0004d0: 20 00                      | local.get 0
+ 0004d2: 30 00 04                   | i64.load8_s 0 4
+ 0004d5: 1a                         | drop
+ 0004d6: 20 00                      | local.get 0
+ 0004d8: 31 00 05                   | i64.load8_u 0 5
+ 0004db: 1a                         | drop
+ 0004dc: 20 00                      | local.get 0
+ 0004de: 32 01 06                   | i64.load16_s 1 6
+ 0004e1: 1a                         | drop
+ 0004e2: 20 00                      | local.get 0
+ 0004e4: 33 00 07                   | i64.load16_u 0 7
+ 0004e7: 1a                         | drop
+ 0004e8: 20 00                      | local.get 0
+ 0004ea: 34 02 08                   | i64.load32_s 2 8
+ 0004ed: 1a                         | drop
+ 0004ee: 20 00                      | local.get 0
+ 0004f0: 35 01 09                   | i64.load32_u 1 9
+ 0004f3: 1a                         | drop
+ 0004f4: 20 00                      | local.get 0
+ 0004f6: 20 00                      | local.get 0
+ 0004f8: 36 00 0a                   | i32.store 0 10
+ 0004fb: 20 00                      | local.get 0
+ 0004fd: 20 01                      | local.get 1
+ 0004ff: 37 03 0b                   | i64.store 3 11
+ 000502: 20 00                      | local.get 0
+ 000504: 20 02                      | local.get 2
+ 000506: 38 02 0c                   | f32.store 2 12
+ 000509: 20 00                      | local.get 0
+ 00050b: 20 03                      | local.get 3
+ 00050d: 39 01 0d                   | f64.store 1 13
+ 000510: 20 00                      | local.get 0
+ 000512: 20 00                      | local.get 0
+ 000514: 3a 00 0e                   | i32.store8 0 14
+ 000517: 20 00                      | local.get 0
+ 000519: 20 00                      | local.get 0
+ 00051b: 3b 01 0f                   | i32.store16 1 15
+ 00051e: 20 00                      | local.get 0
+ 000520: 20 01                      | local.get 1
+ 000522: 3c 00 10                   | i64.store8 0 16
+ 000525: 20 00                      | local.get 0
+ 000527: 20 01                      | local.get 1
+ 000529: 3d 00 11                   | i64.store16 0 17
+ 00052c: 20 00                      | local.get 0
+ 00052e: 20 01                      | local.get 1
+ 000530: 3e 02 12                   | i64.store32 2 18
+ 000533: 3f 00                      | memory.size 0
+ 000535: 1a                         | drop
+ 000536: 41 01                      | i32.const 1
+ 000538: 40 00                      | memory.grow 0
+ 00053a: 1a                         | drop
+ 00053b: 20 00                      | local.get 0
+ 00053d: 41 00                      | i32.const 0
+ 00053f: 41 04                      | i32.const 4
+ 000541: fc 0b 00                   | memory.fill 0
+ 000544: 20 00                      | local.get 0
+ 000546: 41 00                      | i32.const 0
+ 000548: 41 04                      | i32.const 4
+ 00054a: fc 0a 00 00                | memory.copy 0 0
+ 00054e: 20 00                      | local.get 0
+ 000550: 41 00                      | i32.const 0
+ 000552: 41 04                      | i32.const 4
+ 000554: fc 08 01 00                | memory.init 1 0
+ 000558: fc 09 01                   | data.drop 1
+ 00055b: 0b                         | end
+00055d func[4]:
+ 00055e: 41 00                      | i32.const 0
+ 000560: 25 00                      | table.get 0
+ 000562: 1a                         | drop
+ 000563: 41 00                      | i32.const 0
+ 000565: d0 70                      | ref.null func
+ 000567: 26 00                      | table.set 0
+ 000569: 41 01                      | i32.const 1
+ 00056b: 25 01                      | table.get 1
+ 00056d: 1a                         | drop
+ 00056e: fc 10 00                   | table.size 0
+ 000571: 1a                         | drop
+ 000572: d0 70                      | ref.null func
+ 000574: 41 01                      | i32.const 1
+ 000576: fc 0f 00                   | table.grow 0
+ 000579: 1a                         | drop
+ 00057a: 41 00                      | i32.const 0
+ 00057c: d0 70                      | ref.null func
+ 00057e: 41 01                      | i32.const 1
+ 000580: fc 11 00                   | table.fill 0
+ 000583: 41 00                      | i32.const 0
+ 000585: 41 01                      | i32.const 1
+ 000587: 41 01                      | i32.const 1
+ 000589: fc 0e 00 00                | table.copy 0 0
+ 00058d: 41 00                      | i32.const 0
+ 00058f: 41 01                      | i32.const 1
+ 000591: 41 01                      | i32.const 1
+ 000593: fc 0e 01 01                | table.copy 1 1
+ 000597: 41 00                      | i32.const 0
+ 000599: 41 00                      | i32.const 0
+ 00059b: 41 01                      | i32.const 1
+ 00059d: fc 0c 01 00                | table.init 1 0
+ 0005a1: fc 0d 01                   | elem.drop 1
+ 0005a4: d2 01                      | ref.func 1
+ 0005a6: d1                         | ref.is_null
+ 0005a7: 1a                         | drop
+ 0005a8: d0 6f                      | ref.null extern
+ 0005aa: d1                         | ref.is_null
+ 0005ab: 1a                         | drop
+ 0005ac: 0b                         | end

@@ -1,0 +1,19 @@
+
+shapes.wasm:	file format wasm 0x1
+module name: <shapes>
+
+Sections:
+
+     Type start=0x0000000a end=0x0000001e (size=0x00000014) count: 4
+   Import start=0x00000020 end=0x00000071 (size=0x00000051) count: 6
+ Function start=0x00000073 end=0x00000077 (size=0x00000004) count: 3
+    Table start=0x00000079 end=0x00000081 (size=0x00000008) count: 2
+   Memory start=0x00000083 end=0x0000008b (size=0x00000008) count: 2
+   Global start=0x0000008d end=0x000000b2 (size=0x00000025) count: 4
+   Export start=0x000000b4 end=0x000000e4 (size=0x00000030) count: 5
+    Start start=0x000000e6 end=0x000000e7 (size=0x00000001) start: 2
+     Elem start=0x000000e9 end=0x00000125 (size=0x0000003c) count: 8
+DataCount start=0x00000127 end=0x00000128 (size=0x00000001) count: 4
+     Code start=0x0000012b end=0x000001d8 (size=0x000000ad) count: 3
+     Data start=0x000001da end=0x00000202 (size=0x00000028) count: 4
+   Custom start=0x00000205 end=0x000003a6 (size=0x000001a1) "name"

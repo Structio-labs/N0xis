@@ -1,0 +1,791 @@
+(module
+(;@b     ;)  (type (;0;) (func))
+(;@e     ;)  (type (;1;) (func (param i32) (result i32 i32)))
+(;@14    ;)  (type (;2;) (func (param i32 i32) (result i32)))
+(;@1a    ;)  (type (;3;) (func (param i32 i64 f32 f64)))
+(;@2c    ;)  (table (;0;) 4 8 funcref)
+(;@30    ;)  (table (;1;) 2 externref)
+(;@36    ;)  (memory (;0;) 1 2)
+(;@3c    ;)  (global (;0;) (mut i32) i32.const 0)
+(;@41    ;)  (global (;1;) (mut i64) i64.const 0)
+(;@49    ;)  (elem (;0;) (i32.const 0) func 1 2)
+(;@50    ;)  (elem (;1;) func 1)
+(;@5d    ;)  (func (;0;) (type 2) (param i32 i32) (result i32)
+(;@5e    ;)    block ;; label = @1
+(;@60    ;)      nop
+(;@61    ;)    end
+(;@62    ;)    block (result i32) ;; label = @1
+(;@64    ;)      i32.const 1
+(;@66    ;)    end
+(;@67    ;)    drop
+(;@68    ;)    local.get 0
+(;@6a    ;)    block (type 1) (param i32) (result i32 i32) ;; label = @1
+(;@6c    ;)      i32.const 6
+(;@6e    ;)    end
+(;@6f    ;)    drop
+(;@70    ;)    drop
+(;@71    ;)    loop ;; label = @1
+(;@73    ;)      local.get 0
+(;@75    ;)      br_if 0 (;@1;)
+(;@77    ;)    end
+(;@78    ;)    loop (result i64) ;; label = @1
+(;@7a    ;)      i64.const 0
+(;@7c    ;)    end
+(;@7d    ;)    drop
+(;@7e    ;)    local.get 0
+(;@80    ;)    if ;; label = @1
+(;@82    ;)      nop
+(;@83    ;)    else
+(;@84    ;)      nop
+(;@85    ;)    end
+(;@86    ;)    local.get 0
+(;@88    ;)    if (result i32) ;; label = @1
+(;@8a    ;)      i32.const 1
+(;@8c    ;)    else
+(;@8d    ;)      i32.const 2
+(;@8f    ;)    end
+(;@90    ;)    drop
+(;@91    ;)    local.get 1
+(;@93    ;)    local.get 0
+(;@95    ;)    if (type 1) (param i32) (result i32 i32) ;; label = @1
+(;@97    ;)      i32.const 3
+(;@99    ;)    else
+(;@9a    ;)      i32.const 4
+(;@9c    ;)    end
+(;@9d    ;)    drop
+(;@9e    ;)    drop
+(;@9f    ;)    local.get 0
+(;@a1    ;)    if ;; label = @1
+(;@a3    ;)      unreachable
+(;@a4    ;)    end
+(;@a5    ;)    block ;; label = @1
+(;@a7    ;)      block ;; label = @2
+(;@a9    ;)        block ;; label = @3
+(;@ab    ;)          local.get 0
+(;@ad    ;)          br_table 0 (;@3;) 1 (;@2;) 2 (;@1;) 1 (;@2;)
+(;@b3    ;)        end
+(;@b4    ;)        br 1 (;@1;)
+(;@b6    ;)      end
+(;@b7    ;)      br 0 (;@1;)
+(;@b9    ;)    end
+(;@ba    ;)    block ;; label = @1
+(;@bc    ;)      local.get 0
+(;@be    ;)      br_table 0 (;@1;)
+(;@c1    ;)    end
+(;@c2    ;)    local.get 0
+(;@c4    ;)    local.get 1
+(;@c6    ;)    call 1
+(;@c8    ;)    drop
+(;@c9    ;)    local.get 0
+(;@cb    ;)    local.get 1
+(;@cd    ;)    i32.const 0
+(;@cf    ;)    call_indirect (type 2)
+(;@d2    ;)    drop
+(;@d3    ;)    i32.const 7
+(;@d5    ;)    i32.const 8
+(;@d7    ;)    local.get 0
+(;@d9    ;)    select
+(;@da    ;)    drop
+(;@db    ;)    i64.const 7
+(;@dd    ;)    i64.const 8
+(;@df    ;)    local.get 0
+(;@e1    ;)    select (result i64)
+(;@e4    ;)    drop
+(;@e5    ;)    ref.null extern
+(;@e7    ;)    ref.null extern
+(;@e9    ;)    local.get 0
+(;@eb    ;)    select (result externref)
+(;@ee    ;)    drop
+(;@ef    ;)    local.get 0
+(;@f1    ;)    local.set 1
+(;@f3    ;)    local.get 1
+(;@f5    ;)    local.tee 0
+(;@f7    ;)    drop
+(;@f8    ;)    global.get 0
+(;@fa    ;)    global.set 0
+(;@fc    ;)    global.get 1
+(;@fe    ;)    global.set 1
+(;@100   ;)    local.get 0
+(;@102   ;)    return
+(;@103   ;)  )
+(;@105   ;)  (func (;1;) (type 2) (param i32 i32) (result i32)
+(;@106   ;)    local.get 0
+(;@108   ;)    local.get 1
+(;@10a   ;)    i32.add
+(;@10b   ;)  )
+(;@10e   ;)  (func (;2;) (type 3) (param i32 i64 f32 f64)
+(;@10f   ;)    i32.const 0
+(;@111   ;)    drop
+(;@112   ;)    i32.const -1
+(;@114   ;)    drop
+(;@115   ;)    i32.const 63
+(;@117   ;)    drop
+(;@118   ;)    i32.const -64
+(;@11a   ;)    drop
+(;@11b   ;)    i32.const 64
+(;@11e   ;)    drop
+(;@11f   ;)    i32.const -2147483648
+(;@125   ;)    drop
+(;@126   ;)    i32.const 2147483647
+(;@12c   ;)    drop
+(;@12d   ;)    i64.const 0
+(;@12f   ;)    drop
+(;@130   ;)    i64.const -1
+(;@132   ;)    drop
+(;@133   ;)    i64.const -9223372036854775808
+(;@13e   ;)    drop
+(;@13f   ;)    i64.const 9223372036854775807
+(;@14a   ;)    drop
+(;@14b   ;)    i64.const 81985529216486895
+(;@155   ;)    drop
+(;@156   ;)    f32.const 0x1.8p+0 (;=1.5;)
+(;@15b   ;)    drop
+(;@15c   ;)    f32.const -0x0p+0 (;=-0;)
+(;@161   ;)    drop
+(;@162   ;)    f32.const 0x0p+0 (;=0;)
+(;@167   ;)    drop
+(;@168   ;)    f32.const 0x1.p-149 (;=0.000000000000000000000000000000000000000000001;)
+(;@16d   ;)    drop
+(;@16e   ;)    f32.const 0x1.fffffcp-127 (;=0.000000000000000000000000000000000000011754942;)
+(;@173   ;)    drop
+(;@174   ;)    f32.const 0x1.fffffep+127 (;=340282350000000000000000000000000000000;)
+(;@179   ;)    drop
+(;@17a   ;)    f32.const inf (;=inf;)
+(;@17f   ;)    drop
+(;@180   ;)    f32.const -inf (;=-inf;)
+(;@185   ;)    drop
+(;@186   ;)    f32.const nan (;=NaN;)
+(;@18b   ;)    drop
+(;@18c   ;)    f32.const -nan:0x1 (;=NaN;)
+(;@191   ;)    drop
+(;@192   ;)    f64.const 0x1p+0 (;=1;)
+(;@19b   ;)    drop
+(;@19c   ;)    f64.const -0x1.921fb54442d18p+1 (;=-3.141592653589793;)
+(;@1a5   ;)    drop
+(;@1a6   ;)    f64.const 0x1.p-1074 (;=0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005;)
+(;@1af   ;)    drop
+(;@1b0   ;)    f64.const 0x1.fffffffffffffp+1023 (;=179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000;)
+(;@1b9   ;)    drop
+(;@1ba   ;)    f64.const -inf (;=-inf;)
+(;@1c3   ;)    drop
+(;@1c4   ;)    f64.const nan (;=NaN;)
+(;@1cd   ;)    drop
+(;@1ce   ;)    f64.const -nan:0xfffffffffffff (;=NaN;)
+(;@1d7   ;)    drop
+(;@1d8   ;)    local.get 0
+(;@1da   ;)    i32.eqz
+(;@1db   ;)    drop
+(;@1dc   ;)    local.get 0
+(;@1de   ;)    local.get 0
+(;@1e0   ;)    i32.eq
+(;@1e1   ;)    drop
+(;@1e2   ;)    local.get 0
+(;@1e4   ;)    local.get 0
+(;@1e6   ;)    i32.ne
+(;@1e7   ;)    drop
+(;@1e8   ;)    local.get 0
+(;@1ea   ;)    local.get 0
+(;@1ec   ;)    i32.lt_s
+(;@1ed   ;)    drop
+(;@1ee   ;)    local.get 0
+(;@1f0   ;)    local.get 0
+(;@1f2   ;)    i32.lt_u
+(;@1f3   ;)    drop
+(;@1f4   ;)    local.get 0
+(;@1f6   ;)    local.get 0
+(;@1f8   ;)    i32.gt_s
+(;@1f9   ;)    drop
+(;@1fa   ;)    local.get 0
+(;@1fc   ;)    local.get 0
+(;@1fe   ;)    i32.gt_u
+(;@1ff   ;)    drop
+(;@200   ;)    local.get 0
+(;@202   ;)    local.get 0
+(;@204   ;)    i32.le_s
+(;@205   ;)    drop
+(;@206   ;)    local.get 0
+(;@208   ;)    local.get 0
+(;@20a   ;)    i32.le_u
+(;@20b   ;)    drop
+(;@20c   ;)    local.get 0
+(;@20e   ;)    local.get 0
+(;@210   ;)    i32.ge_s
+(;@211   ;)    drop
+(;@212   ;)    local.get 0
+(;@214   ;)    local.get 0
+(;@216   ;)    i32.ge_u
+(;@217   ;)    drop
+(;@218   ;)    local.get 1
+(;@21a   ;)    i64.eqz
+(;@21b   ;)    drop
+(;@21c   ;)    local.get 1
+(;@21e   ;)    local.get 1
+(;@220   ;)    i64.eq
+(;@221   ;)    drop
+(;@222   ;)    local.get 1
+(;@224   ;)    local.get 1
+(;@226   ;)    i64.ne
+(;@227   ;)    drop
+(;@228   ;)    local.get 1
+(;@22a   ;)    local.get 1
+(;@22c   ;)    i64.lt_s
+(;@22d   ;)    drop
+(;@22e   ;)    local.get 1
+(;@230   ;)    local.get 1
+(;@232   ;)    i64.lt_u
+(;@233   ;)    drop
+(;@234   ;)    local.get 1
+(;@236   ;)    local.get 1
+(;@238   ;)    i64.gt_s
+(;@239   ;)    drop
+(;@23a   ;)    local.get 1
+(;@23c   ;)    local.get 1
+(;@23e   ;)    i64.gt_u
+(;@23f   ;)    drop
+(;@240   ;)    local.get 1
+(;@242   ;)    local.get 1
+(;@244   ;)    i64.le_s
+(;@245   ;)    drop
+(;@246   ;)    local.get 1
+(;@248   ;)    local.get 1
+(;@24a   ;)    i64.le_u
+(;@24b   ;)    drop
+(;@24c   ;)    local.get 1
+(;@24e   ;)    local.get 1
+(;@250   ;)    i64.ge_s
+(;@251   ;)    drop
+(;@252   ;)    local.get 1
+(;@254   ;)    local.get 1
+(;@256   ;)    i64.ge_u
+(;@257   ;)    drop
+(;@258   ;)    local.get 2
+(;@25a   ;)    local.get 2
+(;@25c   ;)    f32.eq
+(;@25d   ;)    drop
+(;@25e   ;)    local.get 2
+(;@260   ;)    local.get 2
+(;@262   ;)    f32.ne
+(;@263   ;)    drop
+(;@264   ;)    local.get 2
+(;@266   ;)    local.get 2
+(;@268   ;)    f32.lt
+(;@269   ;)    drop
+(;@26a   ;)    local.get 2
+(;@26c   ;)    local.get 2
+(;@26e   ;)    f32.gt
+(;@26f   ;)    drop
+(;@270   ;)    local.get 2
+(;@272   ;)    local.get 2
+(;@274   ;)    f32.le
+(;@275   ;)    drop
+(;@276   ;)    local.get 2
+(;@278   ;)    local.get 2
+(;@27a   ;)    f32.ge
+(;@27b   ;)    drop
+(;@27c   ;)    local.get 3
+(;@27e   ;)    local.get 3
+(;@280   ;)    f64.eq
+(;@281   ;)    drop
+(;@282   ;)    local.get 3
+(;@284   ;)    local.get 3
+(;@286   ;)    f64.ne
+(;@287   ;)    drop
+(;@288   ;)    local.get 3
+(;@28a   ;)    local.get 3
+(;@28c   ;)    f64.lt
+(;@28d   ;)    drop
+(;@28e   ;)    local.get 3
+(;@290   ;)    local.get 3
+(;@292   ;)    f64.gt
+(;@293   ;)    drop
+(;@294   ;)    local.get 3
+(;@296   ;)    local.get 3
+(;@298   ;)    f64.le
+(;@299   ;)    drop
+(;@29a   ;)    local.get 3
+(;@29c   ;)    local.get 3
+(;@29e   ;)    f64.ge
+(;@29f   ;)    drop
+(;@2a0   ;)    local.get 0
+(;@2a2   ;)    i32.clz
+(;@2a3   ;)    drop
+(;@2a4   ;)    local.get 0
+(;@2a6   ;)    i32.ctz
+(;@2a7   ;)    drop
+(;@2a8   ;)    local.get 0
+(;@2aa   ;)    i32.popcnt
+(;@2ab   ;)    drop
+(;@2ac   ;)    local.get 0
+(;@2ae   ;)    local.get 0
+(;@2b0   ;)    i32.add
+(;@2b1   ;)    drop
+(;@2b2   ;)    local.get 0
+(;@2b4   ;)    local.get 0
+(;@2b6   ;)    i32.sub
+(;@2b7   ;)    drop
+(;@2b8   ;)    local.get 0
+(;@2ba   ;)    local.get 0
+(;@2bc   ;)    i32.mul
+(;@2bd   ;)    drop
+(;@2be   ;)    local.get 0
+(;@2c0   ;)    local.get 0
+(;@2c2   ;)    i32.div_s
+(;@2c3   ;)    drop
+(;@2c4   ;)    local.get 0
+(;@2c6   ;)    local.get 0
+(;@2c8   ;)    i32.div_u
+(;@2c9   ;)    drop
+(;@2ca   ;)    local.get 0
+(;@2cc   ;)    local.get 0
+(;@2ce   ;)    i32.rem_s
+(;@2cf   ;)    drop
+(;@2d0   ;)    local.get 0
+(;@2d2   ;)    local.get 0
+(;@2d4   ;)    i32.rem_u
+(;@2d5   ;)    drop
+(;@2d6   ;)    local.get 0
+(;@2d8   ;)    local.get 0
+(;@2da   ;)    i32.and
+(;@2db   ;)    drop
+(;@2dc   ;)    local.get 0
+(;@2de   ;)    local.get 0
+(;@2e0   ;)    i32.or
+(;@2e1   ;)    drop
+(;@2e2   ;)    local.get 0
+(;@2e4   ;)    local.get 0
+(;@2e6   ;)    i32.xor
+(;@2e7   ;)    drop
+(;@2e8   ;)    local.get 0
+(;@2ea   ;)    local.get 0
+(;@2ec   ;)    i32.shl
+(;@2ed   ;)    drop
+(;@2ee   ;)    local.get 0
+(;@2f0   ;)    local.get 0
+(;@2f2   ;)    i32.shr_s
+(;@2f3   ;)    drop
+(;@2f4   ;)    local.get 0
+(;@2f6   ;)    local.get 0
+(;@2f8   ;)    i32.shr_u
+(;@2f9   ;)    drop
+(;@2fa   ;)    local.get 0
+(;@2fc   ;)    local.get 0
+(;@2fe   ;)    i32.rotl
+(;@2ff   ;)    drop
+(;@300   ;)    local.get 0
+(;@302   ;)    local.get 0
+(;@304   ;)    i32.rotr
+(;@305   ;)    drop
+(;@306   ;)    local.get 1
+(;@308   ;)    i64.clz
+(;@309   ;)    drop
+(;@30a   ;)    local.get 1
+(;@30c   ;)    i64.ctz
+(;@30d   ;)    drop
+(;@30e   ;)    local.get 1
+(;@310   ;)    i64.popcnt
+(;@311   ;)    drop
+(;@312   ;)    local.get 1
+(;@314   ;)    local.get 1
+(;@316   ;)    i64.add
+(;@317   ;)    drop
+(;@318   ;)    local.get 1
+(;@31a   ;)    local.get 1
+(;@31c   ;)    i64.sub
+(;@31d   ;)    drop
+(;@31e   ;)    local.get 1
+(;@320   ;)    local.get 1
+(;@322   ;)    i64.mul
+(;@323   ;)    drop
+(;@324   ;)    local.get 1
+(;@326   ;)    local.get 1
+(;@328   ;)    i64.div_s
+(;@329   ;)    drop
+(;@32a   ;)    local.get 1
+(;@32c   ;)    local.get 1
+(;@32e   ;)    i64.div_u
+(;@32f   ;)    drop
+(;@330   ;)    local.get 1
+(;@332   ;)    local.get 1
+(;@334   ;)    i64.rem_s
+(;@335   ;)    drop
+(;@336   ;)    local.get 1
+(;@338   ;)    local.get 1
+(;@33a   ;)    i64.rem_u
+(;@33b   ;)    drop
+(;@33c   ;)    local.get 1
+(;@33e   ;)    local.get 1
+(;@340   ;)    i64.and
+(;@341   ;)    drop
+(;@342   ;)    local.get 1
+(;@344   ;)    local.get 1
+(;@346   ;)    i64.or
+(;@347   ;)    drop
+(;@348   ;)    local.get 1
+(;@34a   ;)    local.get 1
+(;@34c   ;)    i64.xor
+(;@34d   ;)    drop
+(;@34e   ;)    local.get 1
+(;@350   ;)    local.get 1
+(;@352   ;)    i64.shl
+(;@353   ;)    drop
+(;@354   ;)    local.get 1
+(;@356   ;)    local.get 1
+(;@358   ;)    i64.shr_s
+(;@359   ;)    drop
+(;@35a   ;)    local.get 1
+(;@35c   ;)    local.get 1
+(;@35e   ;)    i64.shr_u
+(;@35f   ;)    drop
+(;@360   ;)    local.get 1
+(;@362   ;)    local.get 1
+(;@364   ;)    i64.rotl
+(;@365   ;)    drop
+(;@366   ;)    local.get 1
+(;@368   ;)    local.get 1
+(;@36a   ;)    i64.rotr
+(;@36b   ;)    drop
+(;@36c   ;)    local.get 2
+(;@36e   ;)    f32.abs
+(;@36f   ;)    drop
+(;@370   ;)    local.get 2
+(;@372   ;)    f32.neg
+(;@373   ;)    drop
+(;@374   ;)    local.get 2
+(;@376   ;)    f32.ceil
+(;@377   ;)    drop
+(;@378   ;)    local.get 2
+(;@37a   ;)    f32.floor
+(;@37b   ;)    drop
+(;@37c   ;)    local.get 2
+(;@37e   ;)    f32.trunc
+(;@37f   ;)    drop
+(;@380   ;)    local.get 2
+(;@382   ;)    f32.nearest
+(;@383   ;)    drop
+(;@384   ;)    local.get 2
+(;@386   ;)    f32.sqrt
+(;@387   ;)    drop
+(;@388   ;)    local.get 2
+(;@38a   ;)    local.get 2
+(;@38c   ;)    f32.add
+(;@38d   ;)    drop
+(;@38e   ;)    local.get 2
+(;@390   ;)    local.get 2
+(;@392   ;)    f32.sub
+(;@393   ;)    drop
+(;@394   ;)    local.get 2
+(;@396   ;)    local.get 2
+(;@398   ;)    f32.mul
+(;@399   ;)    drop
+(;@39a   ;)    local.get 2
+(;@39c   ;)    local.get 2
+(;@39e   ;)    f32.div
+(;@39f   ;)    drop
+(;@3a0   ;)    local.get 2
+(;@3a2   ;)    local.get 2
+(;@3a4   ;)    f32.min
+(;@3a5   ;)    drop
+(;@3a6   ;)    local.get 2
+(;@3a8   ;)    local.get 2
+(;@3aa   ;)    f32.max
+(;@3ab   ;)    drop
+(;@3ac   ;)    local.get 2
+(;@3ae   ;)    local.get 2
+(;@3b0   ;)    f32.copysign
+(;@3b1   ;)    drop
+(;@3b2   ;)    local.get 3
+(;@3b4   ;)    f64.abs
+(;@3b5   ;)    drop
+(;@3b6   ;)    local.get 3
+(;@3b8   ;)    f64.neg
+(;@3b9   ;)    drop
+(;@3ba   ;)    local.get 3
+(;@3bc   ;)    f64.ceil
+(;@3bd   ;)    drop
+(;@3be   ;)    local.get 3
+(;@3c0   ;)    f64.floor
+(;@3c1   ;)    drop
+(;@3c2   ;)    local.get 3
+(;@3c4   ;)    f64.trunc
+(;@3c5   ;)    drop
+(;@3c6   ;)    local.get 3
+(;@3c8   ;)    f64.nearest
+(;@3c9   ;)    drop
+(;@3ca   ;)    local.get 3
+(;@3cc   ;)    f64.sqrt
+(;@3cd   ;)    drop
+(;@3ce   ;)    local.get 3
+(;@3d0   ;)    local.get 3
+(;@3d2   ;)    f64.add
+(;@3d3   ;)    drop
+(;@3d4   ;)    local.get 3
+(;@3d6   ;)    local.get 3
+(;@3d8   ;)    f64.sub
+(;@3d9   ;)    drop
+(;@3da   ;)    local.get 3
+(;@3dc   ;)    local.get 3
+(;@3de   ;)    f64.mul
+(;@3df   ;)    drop
+(;@3e0   ;)    local.get 3
+(;@3e2   ;)    local.get 3
+(;@3e4   ;)    f64.div
+(;@3e5   ;)    drop
+(;@3e6   ;)    local.get 3
+(;@3e8   ;)    local.get 3
+(;@3ea   ;)    f64.min
+(;@3eb   ;)    drop
+(;@3ec   ;)    local.get 3
+(;@3ee   ;)    local.get 3
+(;@3f0   ;)    f64.max
+(;@3f1   ;)    drop
+(;@3f2   ;)    local.get 3
+(;@3f4   ;)    local.get 3
+(;@3f6   ;)    f64.copysign
+(;@3f7   ;)    drop
+(;@3f8   ;)    local.get 1
+(;@3fa   ;)    i32.wrap_i64
+(;@3fb   ;)    drop
+(;@3fc   ;)    local.get 2
+(;@3fe   ;)    i32.trunc_f32_s
+(;@3ff   ;)    drop
+(;@400   ;)    local.get 2
+(;@402   ;)    i32.trunc_f32_u
+(;@403   ;)    drop
+(;@404   ;)    local.get 3
+(;@406   ;)    i32.trunc_f64_s
+(;@407   ;)    drop
+(;@408   ;)    local.get 3
+(;@40a   ;)    i32.trunc_f64_u
+(;@40b   ;)    drop
+(;@40c   ;)    local.get 0
+(;@40e   ;)    i64.extend_i32_s
+(;@40f   ;)    drop
+(;@410   ;)    local.get 0
+(;@412   ;)    i64.extend_i32_u
+(;@413   ;)    drop
+(;@414   ;)    local.get 2
+(;@416   ;)    i64.trunc_f32_s
+(;@417   ;)    drop
+(;@418   ;)    local.get 2
+(;@41a   ;)    i64.trunc_f32_u
+(;@41b   ;)    drop
+(;@41c   ;)    local.get 3
+(;@41e   ;)    i64.trunc_f64_s
+(;@41f   ;)    drop
+(;@420   ;)    local.get 3
+(;@422   ;)    i64.trunc_f64_u
+(;@423   ;)    drop
+(;@424   ;)    local.get 0
+(;@426   ;)    f32.convert_i32_s
+(;@427   ;)    drop
+(;@428   ;)    local.get 0
+(;@42a   ;)    f32.convert_i32_u
+(;@42b   ;)    drop
+(;@42c   ;)    local.get 1
+(;@42e   ;)    f32.convert_i64_s
+(;@42f   ;)    drop
+(;@430   ;)    local.get 1
+(;@432   ;)    f32.convert_i64_u
+(;@433   ;)    drop
+(;@434   ;)    local.get 3
+(;@436   ;)    f32.demote_f64
+(;@437   ;)    drop
+(;@438   ;)    local.get 0
+(;@43a   ;)    f64.convert_i32_s
+(;@43b   ;)    drop
+(;@43c   ;)    local.get 0
+(;@43e   ;)    f64.convert_i32_u
+(;@43f   ;)    drop
+(;@440   ;)    local.get 1
+(;@442   ;)    f64.convert_i64_s
+(;@443   ;)    drop
+(;@444   ;)    local.get 1
+(;@446   ;)    f64.convert_i64_u
+(;@447   ;)    drop
+(;@448   ;)    local.get 2
+(;@44a   ;)    f64.promote_f32
+(;@44b   ;)    drop
+(;@44c   ;)    local.get 2
+(;@44e   ;)    i32.reinterpret_f32
+(;@44f   ;)    drop
+(;@450   ;)    local.get 3
+(;@452   ;)    i64.reinterpret_f64
+(;@453   ;)    drop
+(;@454   ;)    local.get 0
+(;@456   ;)    f32.reinterpret_i32
+(;@457   ;)    drop
+(;@458   ;)    local.get 1
+(;@45a   ;)    f64.reinterpret_i64
+(;@45b   ;)    drop
+(;@45c   ;)    local.get 0
+(;@45e   ;)    i32.extend8_s
+(;@45f   ;)    drop
+(;@460   ;)    local.get 0
+(;@462   ;)    i32.extend16_s
+(;@463   ;)    drop
+(;@464   ;)    local.get 1
+(;@466   ;)    i64.extend8_s
+(;@467   ;)    drop
+(;@468   ;)    local.get 1
+(;@46a   ;)    i64.extend16_s
+(;@46b   ;)    drop
+(;@46c   ;)    local.get 1
+(;@46e   ;)    i64.extend32_s
+(;@46f   ;)    drop
+(;@470   ;)    local.get 2
+(;@472   ;)    i32.trunc_sat_f32_s
+(;@474   ;)    drop
+(;@475   ;)    local.get 2
+(;@477   ;)    i32.trunc_sat_f32_u
+(;@479   ;)    drop
+(;@47a   ;)    local.get 3
+(;@47c   ;)    i32.trunc_sat_f64_s
+(;@47e   ;)    drop
+(;@47f   ;)    local.get 3
+(;@481   ;)    i32.trunc_sat_f64_u
+(;@483   ;)    drop
+(;@484   ;)    local.get 2
+(;@486   ;)    i64.trunc_sat_f32_s
+(;@488   ;)    drop
+(;@489   ;)    local.get 2
+(;@48b   ;)    i64.trunc_sat_f32_u
+(;@48d   ;)    drop
+(;@48e   ;)    local.get 3
+(;@490   ;)    i64.trunc_sat_f64_s
+(;@492   ;)    drop
+(;@493   ;)    local.get 3
+(;@495   ;)    i64.trunc_sat_f64_u
+(;@497   ;)    drop
+(;@498   ;)  )
+(;@49b   ;)  (func (;3;) (type 3) (param i32 i64 f32 f64)
+(;@49c   ;)    local.get 0
+(;@49e   ;)    i32.load
+(;@4a1   ;)    drop
+(;@4a2   ;)    local.get 0
+(;@4a4   ;)    i64.load offset=8
+(;@4a7   ;)    drop
+(;@4a8   ;)    local.get 0
+(;@4aa   ;)    f32.load offset=16 align=1
+(;@4ad   ;)    drop
+(;@4ae   ;)    local.get 0
+(;@4b0   ;)    f64.load offset=24
+(;@4b3   ;)    drop
+(;@4b4   ;)    local.get 0
+(;@4b6   ;)    i32.load8_s offset=1
+(;@4b9   ;)    drop
+(;@4ba   ;)    local.get 0
+(;@4bc   ;)    i32.load8_u offset=4294967295
+(;@4c3   ;)    drop
+(;@4c4   ;)    local.get 0
+(;@4c6   ;)    i32.load16_s offset=2
+(;@4c9   ;)    drop
+(;@4ca   ;)    local.get 0
+(;@4cc   ;)    i32.load16_u offset=3 align=1
+(;@4cf   ;)    drop
+(;@4d0   ;)    local.get 0
+(;@4d2   ;)    i64.load8_s offset=4
+(;@4d5   ;)    drop
+(;@4d6   ;)    local.get 0
+(;@4d8   ;)    i64.load8_u offset=5
+(;@4db   ;)    drop
+(;@4dc   ;)    local.get 0
+(;@4de   ;)    i64.load16_s offset=6
+(;@4e1   ;)    drop
+(;@4e2   ;)    local.get 0
+(;@4e4   ;)    i64.load16_u offset=7 align=1
+(;@4e7   ;)    drop
+(;@4e8   ;)    local.get 0
+(;@4ea   ;)    i64.load32_s offset=8
+(;@4ed   ;)    drop
+(;@4ee   ;)    local.get 0
+(;@4f0   ;)    i64.load32_u offset=9 align=2
+(;@4f3   ;)    drop
+(;@4f4   ;)    local.get 0
+(;@4f6   ;)    local.get 0
+(;@4f8   ;)    i32.store offset=10 align=1
+(;@4fb   ;)    local.get 0
+(;@4fd   ;)    local.get 1
+(;@4ff   ;)    i64.store offset=11
+(;@502   ;)    local.get 0
+(;@504   ;)    local.get 2
+(;@506   ;)    f32.store offset=12
+(;@509   ;)    local.get 0
+(;@50b   ;)    local.get 3
+(;@50d   ;)    f64.store offset=13 align=2
+(;@510   ;)    local.get 0
+(;@512   ;)    local.get 0
+(;@514   ;)    i32.store8 offset=14
+(;@517   ;)    local.get 0
+(;@519   ;)    local.get 0
+(;@51b   ;)    i32.store16 offset=15
+(;@51e   ;)    local.get 0
+(;@520   ;)    local.get 1
+(;@522   ;)    i64.store8 offset=16
+(;@525   ;)    local.get 0
+(;@527   ;)    local.get 1
+(;@529   ;)    i64.store16 offset=17 align=1
+(;@52c   ;)    local.get 0
+(;@52e   ;)    local.get 1
+(;@530   ;)    i64.store32 offset=18
+(;@533   ;)    memory.size
+(;@535   ;)    drop
+(;@536   ;)    i32.const 1
+(;@538   ;)    memory.grow
+(;@53a   ;)    drop
+(;@53b   ;)    local.get 0
+(;@53d   ;)    i32.const 0
+(;@53f   ;)    i32.const 4
+(;@541   ;)    memory.fill
+(;@544   ;)    local.get 0
+(;@546   ;)    i32.const 0
+(;@548   ;)    i32.const 4
+(;@54a   ;)    memory.copy
+(;@54e   ;)    local.get 0
+(;@550   ;)    i32.const 0
+(;@552   ;)    i32.const 4
+(;@554   ;)    memory.init 1
+(;@558   ;)    data.drop 1
+(;@55b   ;)  )
+(;@55d   ;)  (func (;4;) (type 0)
+(;@55e   ;)    i32.const 0
+(;@560   ;)    table.get 0
+(;@562   ;)    drop
+(;@563   ;)    i32.const 0
+(;@565   ;)    ref.null func
+(;@567   ;)    table.set 0
+(;@569   ;)    i32.const 1
+(;@56b   ;)    table.get 1
+(;@56d   ;)    drop
+(;@56e   ;)    table.size 0
+(;@571   ;)    drop
+(;@572   ;)    ref.null func
+(;@574   ;)    i32.const 1
+(;@576   ;)    table.grow 0
+(;@579   ;)    drop
+(;@57a   ;)    i32.const 0
+(;@57c   ;)    ref.null func
+(;@57e   ;)    i32.const 1
+(;@580   ;)    table.fill 0
+(;@583   ;)    i32.const 0
+(;@585   ;)    i32.const 1
+(;@587   ;)    i32.const 1
+(;@589   ;)    table.copy
+(;@58d   ;)    i32.const 0
+(;@58f   ;)    i32.const 1
+(;@591   ;)    i32.const 1
+(;@593   ;)    table.copy 1 1
+(;@597   ;)    i32.const 0
+(;@599   ;)    i32.const 0
+(;@59b   ;)    i32.const 1
+(;@59d   ;)    table.init 1
+(;@5a1   ;)    elem.drop 1
+(;@5a4   ;)    ref.func 1
+(;@5a6   ;)    ref.is_null
+(;@5a7   ;)    drop
+(;@5a8   ;)    ref.null extern
+(;@5aa   ;)    ref.is_null
+(;@5ab   ;)    drop
+(;@5ac   ;)  )
+(;@5b0   ;)  (data (;0;) (i32.const 0) "\00\01\02\03")
+(;@5b9   ;)  (data (;1;) "passive")
+(;@5c2   ;))

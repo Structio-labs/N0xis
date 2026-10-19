@@ -1,0 +1,19 @@
+
+ctarget-O2.wasm:	file format wasm 0x1
+module name: <ctarget-O2.wasm>
+
+Sections:
+
+     Type start=0x0000000a end=0x00000058 (size=0x0000004e) count: 13
+   Import start=0x0000005a end=0x00000076 (size=0x0000001c) count: 2
+ Function start=0x00000078 end=0x00000091 (size=0x00000019) count: 24
+    Table start=0x00000093 end=0x00000098 (size=0x00000005) count: 1
+   Memory start=0x0000009a end=0x0000009d (size=0x00000003) count: 1
+   Global start=0x0000009f end=0x0000011b (size=0x0000007c) count: 19
+   Export start=0x0000011e end=0x00000385 (size=0x00000267) count: 45
+     Elem start=0x00000387 end=0x00000390 (size=0x00000009) count: 1
+     Code start=0x00000393 end=0x0000074f (size=0x000003bc) count: 24
+     Data start=0x00000751 end=0x0000077d (size=0x0000002c) count: 1
+   Custom start=0x00000780 end=0x00000912 (size=0x00000192) "name"
+   Custom start=0x00000914 end=0x0000093a (size=0x00000026) "producers"
+   Custom start=0x0000093d end=0x000009d1 (size=0x00000094) "target_features"

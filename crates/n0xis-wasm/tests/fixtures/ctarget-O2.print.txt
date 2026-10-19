@@ -1,0 +1,569 @@
+(module
+(;@b     ;)  (type (;0;) (func (param i32 i32) (result i32)))
+(;@11    ;)  (type (;1;) (func (param i32 i64)))
+(;@16    ;)  (type (;2;) (func (param f64) (result f64)))
+(;@1b    ;)  (type (;3;) (func))
+(;@1e    ;)  (type (;4;) (func (param i32 i32 i32) (result i32)))
+(;@25    ;)  (type (;5;) (func (param i32 i32 i32 i32) (result i32)))
+(;@2d    ;)  (type (;6;) (func (param i64 i64 i64) (result i64)))
+(;@34    ;)  (type (;7;) (func (param f64 f32 i64 i32) (result f64)))
+(;@3c    ;)  (type (;8;) (func (param i32 i32) (result i64)))
+(;@42    ;)  (type (;9;) (func (param i32) (result i32)))
+(;@47    ;)  (type (;10;) (func (param i32) (result i64)))
+(;@4c    ;)  (type (;11;) (func (param i32 i64 f64)))
+(;@52    ;)  (type (;12;) (func (param i32 i32 i32)))
+(;@5b    ;)  (import "host" "report" (func (;0;) (type 1) (param i32 i64)))
+(;@69    ;)  (import "host" "scale" (func (;1;) (type 2) (param f64) (result f64)))
+(;@94    ;)  (table (;0;) 4 4 funcref)
+(;@9b    ;)  (memory (;0;) 2)
+(;@a0    ;)  (global (;0;) (mut i32) i32.const 65536)
+(;@a7    ;)  (global (;1;) i32 i32.const 0)
+(;@ac    ;)  (global (;2;) i32 i32.const 1)
+(;@b1    ;)  (global (;3;) i32 i32.const 65536)
+(;@b8    ;)  (global (;4;) i32 i32.const 65560)
+(;@bf    ;)  (global (;5;) i32 i32.const 65536)
+(;@c6    ;)  (global (;6;) i32 i32.const 65544)
+(;@cd    ;)  (global (;7;) i32 i32.const 65552)
+(;@d4    ;)  (global (;8;) i32 i32.const 65584)
+(;@db    ;)  (global (;9;) i32 i32.const 65536)
+(;@e2    ;)  (global (;10;) i32 i32.const 65776)
+(;@e9    ;)  (global (;11;) i32 i32.const 0)
+(;@ee    ;)  (global (;12;) i32 i32.const 0)
+(;@f3    ;)  (global (;13;) i32 i32.const 0)
+(;@f8    ;)  (global (;14;) i32 i32.const 65536)
+(;@ff    ;)  (global (;15;) i32 i32.const 65536)
+(;@106   ;)  (global (;16;) i32 i32.const 65776)
+(;@10d   ;)  (global (;17;) i32 i32.const 131072)
+(;@114   ;)  (global (;18;) i32 i32.const 65536)
+(;@11f   ;)  (export "memory" (memory 0))
+(;@128   ;)  (export "__wasm_call_ctors" (func 2))
+(;@13c   ;)  (export "__stack_pointer" (global 0))
+(;@14e   ;)  (export "add" (func 3))
+(;@154   ;)  (export "subtract" (func 4))
+(;@15f   ;)  (export "multiply" (func 5))
+(;@16a   ;)  (export "apply" (func 6))
+(;@172   ;)  (export "operations" (global 4))
+(;@17f   ;)  (export "__indirect_function_table" (table 0))
+(;@19b   ;)  (export "mix32" (func 7))
+(;@1a3   ;)  (export "mix64" (func 8))
+(;@1ab   ;)  (export "mixf" (func 9))
+(;@1b2   ;)  (export "sum" (func 10))
+(;@1b8   ;)  (export "chain_length" (func 11))
+(;@1c7   ;)  (export "read_all" (func 12))
+(;@1d2   ;)  (export "widen_signed8" (func 13))
+(;@1e2   ;)  (export "widen_unsigned8" (func 14))
+(;@1f4   ;)  (export "widen_signed16" (func 15))
+(;@205   ;)  (export "widen_unsigned16" (func 16))
+(;@218   ;)  (export "widen_signed32" (func 17))
+(;@229   ;)  (export "widen_unsigned32" (func 18))
+(;@23c   ;)  (export "write_all" (func 19))
+(;@248   ;)  (export "narrow_reads" (func 20))
+(;@257   ;)  (export "narrow_writes" (func 21))
+(;@267   ;)  (export "narrow8" (func 22))
+(;@271   ;)  (export "narrow16" (func 23))
+(;@27c   ;)  (export "narrow32" (func 24))
+(;@287   ;)  (export "dispatch" (func 25))
+(;@292   ;)  (export "counter" (global 5))
+(;@29c   ;)  (export "big_total" (global 6))
+(;@2a8   ;)  (export "accumulated" (global 7))
+(;@2b6   ;)  (export "pool" (global 8))
+(;@2bd   ;)  (export "__dso_handle" (global 9))
+(;@2cc   ;)  (export "__data_end" (global 10))
+(;@2d9   ;)  (export "__rodata_start" (global 11))
+(;@2ea   ;)  (export "__rodata_end" (global 12))
+(;@2f9   ;)  (export "__stack_low" (global 13))
+(;@307   ;)  (export "__stack_high" (global 14))
+(;@316   ;)  (export "__global_base" (global 15))
+(;@326   ;)  (export "__heap_base" (global 16))
+(;@334   ;)  (export "__heap_end" (global 17))
+(;@341   ;)  (export "__memory_base" (global 1))
+(;@351   ;)  (export "__table_base" (global 2))
+(;@360   ;)  (export "__wasm_first_page_end" (global 18))
+(;@378   ;)  (export "__tls_base" (global 3))
+(;@388   ;)  (elem (;0;) (i32.const 1) func 3 4 5)
+(;@395   ;)  (func (;2;) (type 3)
+(;@396   ;)  )
+(;@398   ;)  (func (;3;) (type 0) (param i32 i32) (result i32)
+(;@399   ;)    local.get 1
+(;@39b   ;)    local.get 0
+(;@39d   ;)    i32.add
+(;@39e   ;)  )
+(;@3a0   ;)  (func (;4;) (type 0) (param i32 i32) (result i32)
+(;@3a1   ;)    local.get 0
+(;@3a3   ;)    local.get 1
+(;@3a5   ;)    i32.sub
+(;@3a6   ;)  )
+(;@3a8   ;)  (func (;5;) (type 0) (param i32 i32) (result i32)
+(;@3a9   ;)    local.get 1
+(;@3ab   ;)    local.get 0
+(;@3ad   ;)    i32.mul
+(;@3ae   ;)  )
+(;@3b0   ;)  (func (;6;) (type 4) (param i32 i32 i32) (result i32)
+(;@3b1   ;)    local.get 1
+(;@3b3   ;)    local.get 2
+(;@3b5   ;)    local.get 0
+(;@3b7   ;)    i32.const 3
+(;@3b9   ;)    i32.rem_u
+(;@3ba   ;)    i32.const 2
+(;@3bc   ;)    i32.shl
+(;@3bd   ;)    i32.load offset=65560
+(;@3c4   ;)    call_indirect (type 0)
+(;@3cf   ;)  )
+(;@3d1   ;)  (func (;7;) (type 5) (param i32 i32 i32 i32) (result i32)
+(;@3d2   ;)    (local i32 i32 i32)
+(;@3d4   ;)    local.get 2
+(;@3d6   ;)    local.get 3
+(;@3d8   ;)    i32.const 1
+(;@3da   ;)    i32.or
+(;@3db   ;)    local.tee 4
+(;@3dd   ;)    i32.div_u
+(;@3de   ;)    local.tee 5
+(;@3e0   ;)    local.get 1
+(;@3e2   ;)    local.get 0
+(;@3e4   ;)    i32.mul
+(;@3e5   ;)    local.get 0
+(;@3e7   ;)    i32.const 3
+(;@3e9   ;)    i32.shr_s
+(;@3ea   ;)    i32.xor
+(;@3eb   ;)    local.get 2
+(;@3ed   ;)    local.get 3
+(;@3ef   ;)    i32.const 7
+(;@3f1   ;)    i32.and
+(;@3f2   ;)    i32.shr_u
+(;@3f3   ;)    i32.xor
+(;@3f4   ;)    i32.add
+(;@3f5   ;)    local.get 0
+(;@3f7   ;)    local.get 0
+(;@3f9   ;)    local.get 1
+(;@3fb   ;)    i32.const 1
+(;@3fd   ;)    i32.or
+(;@3fe   ;)    local.tee 3
+(;@400   ;)    i32.div_s
+(;@401   ;)    local.tee 6
+(;@403   ;)    local.get 3
+(;@405   ;)    i32.mul
+(;@406   ;)    i32.sub
+(;@407   ;)    i32.add
+(;@408   ;)    local.get 2
+(;@40a   ;)    local.get 5
+(;@40c   ;)    local.get 4
+(;@40e   ;)    i32.mul
+(;@40f   ;)    i32.sub
+(;@410   ;)    i32.add
+(;@411   ;)    local.get 6
+(;@413   ;)    i32.sub
+(;@414   ;)    local.get 0
+(;@416   ;)    local.get 1
+(;@418   ;)    i32.const -1
+(;@41a   ;)    i32.xor
+(;@41b   ;)    i32.and
+(;@41c   ;)    i32.or
+(;@41d   ;)  )
+(;@41f   ;)  (func (;8;) (type 6) (param i64 i64 i64) (result i64)
+(;@420   ;)    (local i64 i64)
+(;@422   ;)    local.get 0
+(;@424   ;)    local.get 1
+(;@426   ;)    i64.const 1
+(;@428   ;)    i64.or
+(;@429   ;)    local.tee 3
+(;@42b   ;)    i64.div_s
+(;@42c   ;)    local.tee 4
+(;@42e   ;)    local.get 2
+(;@430   ;)    local.get 3
+(;@432   ;)    i64.div_u
+(;@433   ;)    i64.add
+(;@434   ;)    local.get 0
+(;@436   ;)    local.get 4
+(;@438   ;)    local.get 3
+(;@43a   ;)    i64.mul
+(;@43b   ;)    i64.sub
+(;@43c   ;)    i64.add
+(;@43d   ;)    local.get 1
+(;@43f   ;)    local.get 0
+(;@441   ;)    i64.mul
+(;@442   ;)    local.get 0
+(;@444   ;)    i64.const 7
+(;@446   ;)    i64.shr_s
+(;@447   ;)    i64.add
+(;@448   ;)    local.get 2
+(;@44a   ;)    i64.const 9
+(;@44c   ;)    i64.shr_u
+(;@44d   ;)    i64.sub
+(;@44e   ;)    i64.xor
+(;@44f   ;)    local.get 2
+(;@451   ;)    i64.const 1000
+(;@454   ;)    i64.rem_u
+(;@455   ;)    i64.add
+(;@456   ;)  )
+(;@458   ;)  (func (;9;) (type 7) (param f64 f32 i64 i32) (result f64)
+(;@459   ;)    (local f64)
+(;@45b   ;)    local.get 0
+(;@45d   ;)    local.get 1
+(;@45f   ;)    f64.promote_f32
+(;@460   ;)    f64.mul
+(;@461   ;)    local.get 2
+(;@463   ;)    f64.convert_i64_s
+(;@464   ;)    f64.const 0x1.8p+1 (;=3;)
+(;@46d   ;)    f64.div
+(;@46e   ;)    f64.add
+(;@46f   ;)    local.get 3
+(;@471   ;)    f64.convert_i32_u
+(;@472   ;)    f64.sub
+(;@473   ;)    local.tee 4
+(;@475   ;)    local.get 4
+(;@477   ;)    f32.demote_f64
+(;@478   ;)    local.get 1
+(;@47a   ;)    f32.mul
+(;@47b   ;)    local.get 2
+(;@47d   ;)    f32.convert_i64_s
+(;@47e   ;)    f32.sub
+(;@47f   ;)    f64.promote_f32
+(;@480   ;)    f64.add
+(;@481   ;)    local.get 0
+(;@483   ;)    i64.trunc_sat_f64_s
+(;@485   ;)    f64.convert_i64_s
+(;@486   ;)    f64.add
+(;@487   ;)    local.get 1
+(;@489   ;)    i32.trunc_sat_f32_u
+(;@48b   ;)    f64.convert_i32_u
+(;@48c   ;)    f64.add
+(;@48d   ;)  )
+(;@490   ;)  (func (;10;) (type 8) (param i32 i32) (result i64)
+(;@491   ;)    (local i32 i64 i32 i32)
+(;@497   ;)    block ;; label = @1
+(;@499   ;)      local.get 1
+(;@49b   ;)      i32.const 1
+(;@49d   ;)      i32.ge_s
+(;@49e   ;)      br_if 0 (;@1;)
+(;@4a0   ;)      i64.const 0
+(;@4a2   ;)      return
+(;@4a3   ;)    end
+(;@4a4   ;)    local.get 1
+(;@4a6   ;)    i32.const 3
+(;@4a8   ;)    i32.and
+(;@4a9   ;)    local.set 2
+(;@4ab   ;)    block ;; label = @1
+(;@4ad   ;)      block ;; label = @2
+(;@4af   ;)        block ;; label = @3
+(;@4b1   ;)          local.get 1
+(;@4b3   ;)          i32.const 4
+(;@4b5   ;)          i32.ge_u
+(;@4b6   ;)          br_if 0 (;@3;)
+(;@4b8   ;)          i64.const 0
+(;@4ba   ;)          local.set 3
+(;@4bc   ;)          i32.const 0
+(;@4be   ;)          local.set 4
+(;@4c0   ;)          br 1 (;@2;)
+(;@4c2   ;)        end
+(;@4c3   ;)        local.get 1
+(;@4c5   ;)        i32.const 2147483644
+(;@4cb   ;)        i32.and
+(;@4cc   ;)        local.set 5
+(;@4ce   ;)        i64.const 0
+(;@4d0   ;)        local.set 3
+(;@4d2   ;)        i32.const 0
+(;@4d4   ;)        local.set 4
+(;@4d6   ;)        local.get 0
+(;@4d8   ;)        local.set 1
+(;@4da   ;)        loop ;; label = @3
+(;@4dc   ;)          local.get 3
+(;@4de   ;)          local.get 1
+(;@4e0   ;)          i64.load32_s
+(;@4e3   ;)          i64.add
+(;@4e4   ;)          local.get 1
+(;@4e6   ;)          i32.const 4
+(;@4e8   ;)          i32.add
+(;@4e9   ;)          i64.load32_s
+(;@4ec   ;)          i64.add
+(;@4ed   ;)          local.get 1
+(;@4ef   ;)          i32.const 8
+(;@4f1   ;)          i32.add
+(;@4f2   ;)          i64.load32_s
+(;@4f5   ;)          i64.add
+(;@4f6   ;)          local.get 1
+(;@4f8   ;)          i32.const 12
+(;@4fa   ;)          i32.add
+(;@4fb   ;)          i64.load32_s
+(;@4fe   ;)          i64.add
+(;@4ff   ;)          local.set 3
+(;@501   ;)          local.get 1
+(;@503   ;)          i32.const 16
+(;@505   ;)          i32.add
+(;@506   ;)          local.set 1
+(;@508   ;)          local.get 5
+(;@50a   ;)          local.get 4
+(;@50c   ;)          i32.const 4
+(;@50e   ;)          i32.add
+(;@50f   ;)          local.tee 4
+(;@511   ;)          i32.ne
+(;@512   ;)          br_if 0 (;@3;)
+(;@514   ;)        end
+(;@515   ;)        local.get 2
+(;@517   ;)        i32.eqz
+(;@518   ;)        br_if 1 (;@1;)
+(;@51a   ;)      end
+(;@51b   ;)      local.get 0
+(;@51d   ;)      local.get 4
+(;@51f   ;)      i32.const 2
+(;@521   ;)      i32.shl
+(;@522   ;)      i32.add
+(;@523   ;)      local.set 1
+(;@525   ;)      loop ;; label = @2
+(;@527   ;)        local.get 3
+(;@529   ;)        local.get 1
+(;@52b   ;)        i64.load32_s
+(;@52e   ;)        i64.add
+(;@52f   ;)        local.set 3
+(;@531   ;)        local.get 1
+(;@533   ;)        i32.const 4
+(;@535   ;)        i32.add
+(;@536   ;)        local.set 1
+(;@538   ;)        local.get 2
+(;@53a   ;)        i32.const -1
+(;@53c   ;)        i32.add
+(;@53d   ;)        local.tee 2
+(;@53f   ;)        br_if 0 (;@2;)
+(;@541   ;)      end
+(;@542   ;)    end
+(;@543   ;)    local.get 3
+(;@545   ;)  )
+(;@547   ;)  (func (;11;) (type 9) (param i32) (result i32)
+(;@548   ;)    (local i32)
+(;@54a   ;)    block ;; label = @1
+(;@54c   ;)      local.get 0
+(;@54e   ;)      br_if 0 (;@1;)
+(;@550   ;)      i32.const 0
+(;@552   ;)      return
+(;@553   ;)    end
+(;@554   ;)    i32.const 0
+(;@556   ;)    local.set 1
+(;@558   ;)    loop ;; label = @1
+(;@55a   ;)      local.get 1
+(;@55c   ;)      i32.const 1
+(;@55e   ;)      i32.add
+(;@55f   ;)      local.set 1
+(;@561   ;)      local.get 0
+(;@563   ;)      i32.load offset=40
+(;@566   ;)      local.tee 0
+(;@568   ;)      br_if 0 (;@1;)
+(;@56a   ;)    end
+(;@56b   ;)    local.get 1
+(;@56d   ;)  )
+(;@56f   ;)  (func (;12;) (type 10) (param i32) (result i64)
+(;@570   ;)    local.get 0
+(;@572   ;)    i64.load8_u offset=1
+(;@575   ;)    local.get 0
+(;@577   ;)    i64.load8_s
+(;@57a   ;)    i64.add
+(;@57b   ;)    local.get 0
+(;@57d   ;)    i64.load16_s offset=2
+(;@580   ;)    i64.add
+(;@581   ;)    local.get 0
+(;@583   ;)    i64.load16_u offset=4
+(;@586   ;)    i64.add
+(;@587   ;)    local.get 0
+(;@589   ;)    i64.load32_s offset=8
+(;@58c   ;)    i64.add
+(;@58d   ;)    local.get 0
+(;@58f   ;)    i64.load offset=16
+(;@592   ;)    i64.add
+(;@593   ;)    local.get 0
+(;@595   ;)    f32.load offset=24
+(;@598   ;)    i64.trunc_sat_f32_s
+(;@59a   ;)    i64.add
+(;@59b   ;)    local.get 0
+(;@59d   ;)    f64.load offset=32
+(;@5a0   ;)    i64.trunc_sat_f64_s
+(;@5a2   ;)    i64.add
+(;@5a3   ;)  )
+(;@5a5   ;)  (func (;13;) (type 10) (param i32) (result i64)
+(;@5a6   ;)    local.get 0
+(;@5a8   ;)    i64.load8_s
+(;@5ab   ;)  )
+(;@5ad   ;)  (func (;14;) (type 10) (param i32) (result i64)
+(;@5ae   ;)    local.get 0
+(;@5b0   ;)    i64.load8_u
+(;@5b3   ;)  )
+(;@5b5   ;)  (func (;15;) (type 10) (param i32) (result i64)
+(;@5b6   ;)    local.get 0
+(;@5b8   ;)    i64.load16_s
+(;@5bb   ;)  )
+(;@5bd   ;)  (func (;16;) (type 10) (param i32) (result i64)
+(;@5be   ;)    local.get 0
+(;@5c0   ;)    i64.load16_u
+(;@5c3   ;)  )
+(;@5c5   ;)  (func (;17;) (type 10) (param i32) (result i64)
+(;@5c6   ;)    local.get 0
+(;@5c8   ;)    i64.load32_s
+(;@5cb   ;)  )
+(;@5cd   ;)  (func (;18;) (type 10) (param i32) (result i64)
+(;@5ce   ;)    local.get 0
+(;@5d0   ;)    i64.load32_u
+(;@5d3   ;)  )
+(;@5d5   ;)  (func (;19;) (type 11) (param i32 i64 f64)
+(;@5d6   ;)    (local i32)
+(;@5d8   ;)    local.get 0
+(;@5da   ;)    local.get 2
+(;@5dc   ;)    f64.store offset=32
+(;@5df   ;)    local.get 0
+(;@5e1   ;)    local.get 1
+(;@5e3   ;)    i64.store offset=16
+(;@5e6   ;)    local.get 0
+(;@5e8   ;)    local.get 1
+(;@5ea   ;)    i64.store8
+(;@5ed   ;)    local.get 0
+(;@5ef   ;)    local.get 2
+(;@5f1   ;)    f32.demote_f64
+(;@5f2   ;)    f32.store offset=24
+(;@5f5   ;)    local.get 0
+(;@5f7   ;)    local.get 1
+(;@5f9   ;)    i32.wrap_i64
+(;@5fa   ;)    local.tee 3
+(;@5fc   ;)    i32.store offset=8
+(;@5ff   ;)    local.get 0
+(;@601   ;)    local.get 3
+(;@603   ;)    i32.store offset=2 align=2
+(;@606   ;)    local.get 0
+(;@608   ;)    local.get 1
+(;@60a   ;)    i64.const 8
+(;@60c   ;)    i64.shr_u
+(;@60d   ;)    i64.store8 offset=1
+(;@610   ;)  )
+(;@612   ;)  (func (;20;) (type 5) (param i32 i32 i32 i32) (result i32)
+(;@613   ;)    local.get 1
+(;@615   ;)    i32.load8_u
+(;@618   ;)    local.get 0
+(;@61a   ;)    i32.load8_s
+(;@61d   ;)    i32.add
+(;@61e   ;)    local.get 2
+(;@620   ;)    i32.load16_s
+(;@623   ;)    i32.add
+(;@624   ;)    local.get 3
+(;@626   ;)    i32.load16_u
+(;@629   ;)    i32.add
+(;@62a   ;)  )
+(;@62c   ;)  (func (;21;) (type 12) (param i32 i32 i32)
+(;@62d   ;)    local.get 0
+(;@62f   ;)    local.get 2
+(;@631   ;)    i32.store8
+(;@634   ;)    local.get 1
+(;@636   ;)    local.get 2
+(;@638   ;)    i32.store16
+(;@63b   ;)  )
+(;@63d   ;)  (func (;22;) (type 1) (param i32 i64)
+(;@63e   ;)    local.get 0
+(;@640   ;)    local.get 1
+(;@642   ;)    i64.store8
+(;@645   ;)  )
+(;@647   ;)  (func (;23;) (type 1) (param i32 i64)
+(;@648   ;)    local.get 0
+(;@64a   ;)    local.get 1
+(;@64c   ;)    i64.store16
+(;@64f   ;)  )
+(;@651   ;)  (func (;24;) (type 1) (param i32 i64)
+(;@652   ;)    local.get 0
+(;@654   ;)    local.get 1
+(;@656   ;)    i64.store32
+(;@659   ;)  )
+(;@65c   ;)  (func (;25;) (type 4) (param i32 i32 i32) (result i32)
+(;@65d   ;)    (local i32 i64 f64)
+(;@663   ;)    i32.const -1
+(;@665   ;)    local.set 3
+(;@667   ;)    block ;; label = @1
+(;@669   ;)      block ;; label = @2
+(;@66b   ;)        block ;; label = @3
+(;@66d   ;)          block ;; label = @4
+(;@66f   ;)            block ;; label = @5
+(;@671   ;)              block ;; label = @6
+(;@673   ;)                block ;; label = @7
+(;@675   ;)                  block ;; label = @8
+(;@677   ;)                    local.get 0
+(;@679   ;)                    br_table 0 (;@8;) 1 (;@7;) 2 (;@6;) 3 (;@5;) 4 (;@4;) 5 (;@3;) 6 (;@2;) 7 (;@1;)
+(;@683   ;)                  end
+(;@684   ;)                  i32.const 0
+(;@686   ;)                  i32.const 0
+(;@688   ;)                  i32.load offset=65536
+(;@68f   ;)                  local.get 1
+(;@691   ;)                  i32.add
+(;@692   ;)                  local.tee 3
+(;@694   ;)                  i32.store offset=65536
+(;@69b   ;)                  local.get 3
+(;@69d   ;)                  return
+(;@69e   ;)                end
+(;@69f   ;)                i32.const 1
+(;@6a1   ;)                local.get 1
+(;@6a3   ;)                i64.extend_i32_s
+(;@6a4   ;)                call 0
+(;@6aa   ;)                local.get 1
+(;@6ac   ;)                local.get 2
+(;@6ae   ;)                i32.sub
+(;@6af   ;)                return
+(;@6b0   ;)              end
+(;@6b1   ;)              local.get 2
+(;@6b3   ;)              i32.const 2
+(;@6b5   ;)              local.get 1
+(;@6b7   ;)              i32.const 3
+(;@6b9   ;)              i32.rem_u
+(;@6ba   ;)              i32.const 2
+(;@6bc   ;)              i32.shl
+(;@6bd   ;)              i32.load offset=65560
+(;@6c4   ;)              call_indirect (type 0)
+(;@6cf   ;)              return
+(;@6d0   ;)            end
+(;@6d1   ;)            i32.const 0
+(;@6d3   ;)            i32.const 0
+(;@6d5   ;)            i64.load offset=65544
+(;@6dc   ;)            local.get 2
+(;@6de   ;)            i64.extend_i32_s
+(;@6df   ;)            i64.add
+(;@6e0   ;)            local.tee 4
+(;@6e2   ;)            i64.store offset=65544
+(;@6e9   ;)            local.get 4
+(;@6eb   ;)            i32.wrap_i64
+(;@6ec   ;)            return
+(;@6ed   ;)          end
+(;@6ee   ;)          i32.const 0
+(;@6f0   ;)          i32.const 0
+(;@6f2   ;)          f64.load offset=65552
+(;@6f9   ;)          call 1
+(;@6ff   ;)          local.tee 5
+(;@701   ;)          f64.store offset=65552
+(;@708   ;)          local.get 5
+(;@70a   ;)          i32.trunc_sat_f64_s
+(;@70c   ;)          return
+(;@70d   ;)        end
+(;@70e   ;)        local.get 1
+(;@710   ;)        i32.const 3
+(;@712   ;)        i32.and
+(;@713   ;)        i32.const 48
+(;@715   ;)        i32.mul
+(;@716   ;)        local.get 2
+(;@718   ;)        i32.store offset=65592
+(;@71f   ;)        local.get 2
+(;@721   ;)        return
+(;@722   ;)      end
+(;@723   ;)      local.get 2
+(;@725   ;)      i32.const 3
+(;@727   ;)      i32.and
+(;@728   ;)      i32.const 48
+(;@72a   ;)      i32.mul
+(;@72b   ;)      i32.const 65584
+(;@731   ;)      i32.add
+(;@732   ;)      local.set 0
+(;@734   ;)      i32.const 0
+(;@736   ;)      local.set 3
+(;@738   ;)      loop ;; label = @2
+(;@73a   ;)        local.get 3
+(;@73c   ;)        i32.const 1
+(;@73e   ;)        i32.add
+(;@73f   ;)        local.set 3
+(;@741   ;)        local.get 0
+(;@743   ;)        i32.load offset=40
+(;@746   ;)        local.tee 0
+(;@748   ;)        br_if 0 (;@2;)
+(;@74a   ;)      end
+(;@74b   ;)    end
+(;@74c   ;)    local.get 3
+(;@74e   ;)  )
+(;@752   ;)  (data (;0;) (i32.const 65536) "\07\00\00\00\00\00\00\00\ef\cd\ab\89gE#\01\00\00\00\00\00\00\f8?\01\00\00\00\02\00\00\00\03\00\00\00")
+(;@77d   ;))

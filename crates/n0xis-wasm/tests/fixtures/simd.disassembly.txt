@@ -1,0 +1,864 @@
+
+simd.wasm:	file format wasm 0x1
+
+Code Disassembly:
+
+000022 func[0]:
+ 000023: 20 00                      | local.get 0
+ 000025: fd 00 00 10                | v128.load 0 16
+ 000029: 1a                         | drop
+ 00002a: 20 00                      | local.get 0
+ 00002c: fd 01 03 20                | v128.load8x8_s 3 32
+ 000030: 1a                         | drop
+ 000031: 20 00                      | local.get 0
+ 000033: fd 02 00 30                | v128.load8x8_u 0 48
+ 000037: 1a                         | drop
+ 000038: 20 00                      | local.get 0
+ 00003a: fd 03 03 40                | v128.load16x4_s 3 64
+ 00003e: 1a                         | drop
+ 00003f: 20 00                      | local.get 0
+ 000041: fd 04 00 50                | v128.load16x4_u 0 80
+ 000045: 1a                         | drop
+ 000046: 20 00                      | local.get 0
+ 000048: fd 05 03 60                | v128.load32x2_s 3 96
+ 00004c: 1a                         | drop
+ 00004d: 20 00                      | local.get 0
+ 00004f: fd 06 00 70                | v128.load32x2_u 0 112
+ 000053: 1a                         | drop
+ 000054: 20 00                      | local.get 0
+ 000056: fd 07 00 80 01             | v128.load8_splat 0 128
+ 00005b: 1a                         | drop
+ 00005c: 20 00                      | local.get 0
+ 00005e: fd 08 00 90 01             | v128.load16_splat 0 144
+ 000063: 1a                         | drop
+ 000064: 20 00                      | local.get 0
+ 000066: fd 09 02 a0 01             | v128.load32_splat 2 160
+ 00006b: 1a                         | drop
+ 00006c: 20 00                      | local.get 0
+ 00006e: fd 0a 00 b0 01             | v128.load64_splat 0 176
+ 000073: 1a                         | drop
+ 000074: 20 00                      | local.get 0
+ 000076: 20 04                      | local.get 4
+ 000078: fd 0b 04 c0 01             | v128.store 4 192
+ 00007d: fd 0c 00 01 02 03 04 05 06 | v128.const 0x03020100 0x07060504 0x0b0a0908 0x0f0e0d0c
+ 000086: 07 08 09 0a 0b 0c 0d 0e 0f | 
+ 00008f: 1a                         | drop
+ 000090: fd 0c ff ff ff ff 00 00 00 | v128.const 0xffffffff 0x80000000 0x00000000 0x7fffffff
+ 000099: 80 00 00 00 00 ff ff ff 7f | 
+ 0000a2: 1a                         | drop
+ 0000a3: 20 04                      | local.get 4
+ 0000a5: 20 04                      | local.get 4
+ 0000a7: fd 0d 00 11 02 13 04 15 06 | i8x16.shuffle 0x13021100 0x17061504 0x1b0a1908 0x1f0e1d0c
+ 0000b0: 17 08 19 0a 1b 0c 1d 0e 1f | 
+ 0000b9: 1a                         | drop
+ 0000ba: 20 04                      | local.get 4
+ 0000bc: 20 04                      | local.get 4
+ 0000be: fd 0e                      | i8x16.swizzle
+ 0000c0: 1a                         | drop
+ 0000c1: 20 00                      | local.get 0
+ 0000c3: fd 0f                      | i8x16.splat
+ 0000c5: 1a                         | drop
+ 0000c6: 20 00                      | local.get 0
+ 0000c8: fd 10                      | i16x8.splat
+ 0000ca: 1a                         | drop
+ 0000cb: 20 00                      | local.get 0
+ 0000cd: fd 11                      | i32x4.splat
+ 0000cf: 1a                         | drop
+ 0000d0: 20 01                      | local.get 1
+ 0000d2: fd 12                      | i64x2.splat
+ 0000d4: 1a                         | drop
+ 0000d5: 20 02                      | local.get 2
+ 0000d7: fd 13                      | f32x4.splat
+ 0000d9: 1a                         | drop
+ 0000da: 20 03                      | local.get 3
+ 0000dc: fd 14                      | f64x2.splat
+ 0000de: 1a                         | drop
+ 0000df: 20 04                      | local.get 4
+ 0000e1: fd 15 0e                   | i8x16.extract_lane_s 14
+ 0000e4: 1a                         | drop
+ 0000e5: 20 04                      | local.get 4
+ 0000e7: fd 16 03                   | i8x16.extract_lane_u 3
+ 0000ea: 1a                         | drop
+ 0000eb: 20 04                      | local.get 4
+ 0000ed: 20 00                      | local.get 0
+ 0000ef: fd 17 08                   | i8x16.replace_lane 8
+ 0000f2: 1a                         | drop
+ 0000f3: 20 04                      | local.get 4
+ 0000f5: fd 18 05                   | i16x8.extract_lane_s 5
+ 0000f8: 1a                         | drop
+ 0000f9: 20 04                      | local.get 4
+ 0000fb: fd 19 02                   | i16x8.extract_lane_u 2
+ 0000fe: 1a                         | drop
+ 0000ff: 20 04                      | local.get 4
+ 000101: 20 00                      | local.get 0
+ 000103: fd 1a 07                   | i16x8.replace_lane 7
+ 000106: 1a                         | drop
+ 000107: 20 04                      | local.get 4
+ 000109: fd 1b 00                   | i32x4.extract_lane 0
+ 00010c: 1a                         | drop
+ 00010d: 20 04                      | local.get 4
+ 00010f: 20 00                      | local.get 0
+ 000111: fd 1c 01                   | i32x4.replace_lane 1
+ 000114: 1a                         | drop
+ 000115: 20 04                      | local.get 4
+ 000117: fd 1d 00                   | i64x2.extract_lane 0
+ 00011a: 1a                         | drop
+ 00011b: 20 04                      | local.get 4
+ 00011d: 20 01                      | local.get 1
+ 00011f: fd 1e 01                   | i64x2.replace_lane 1
+ 000122: 1a                         | drop
+ 000123: 20 04                      | local.get 4
+ 000125: fd 1f 00                   | f32x4.extract_lane 0
+ 000128: 1a                         | drop
+ 000129: 20 04                      | local.get 4
+ 00012b: 20 02                      | local.get 2
+ 00012d: fd 20 01                   | f32x4.replace_lane 1
+ 000130: 1a                         | drop
+ 000131: 20 04                      | local.get 4
+ 000133: fd 21 00                   | f64x2.extract_lane 0
+ 000136: 1a                         | drop
+ 000137: 20 04                      | local.get 4
+ 000139: 20 03                      | local.get 3
+ 00013b: fd 22 01                   | f64x2.replace_lane 1
+ 00013e: 1a                         | drop
+ 00013f: 20 04                      | local.get 4
+ 000141: 20 04                      | local.get 4
+ 000143: fd 23                      | i8x16.eq
+ 000145: 1a                         | drop
+ 000146: 20 04                      | local.get 4
+ 000148: 20 04                      | local.get 4
+ 00014a: fd 24                      | i8x16.ne
+ 00014c: 1a                         | drop
+ 00014d: 20 04                      | local.get 4
+ 00014f: 20 04                      | local.get 4
+ 000151: fd 25                      | i8x16.lt_s
+ 000153: 1a                         | drop
+ 000154: 20 04                      | local.get 4
+ 000156: 20 04                      | local.get 4
+ 000158: fd 26                      | i8x16.lt_u
+ 00015a: 1a                         | drop
+ 00015b: 20 04                      | local.get 4
+ 00015d: 20 04                      | local.get 4
+ 00015f: fd 27                      | i8x16.gt_s
+ 000161: 1a                         | drop
+ 000162: 20 04                      | local.get 4
+ 000164: 20 04                      | local.get 4
+ 000166: fd 28                      | i8x16.gt_u
+ 000168: 1a                         | drop
+ 000169: 20 04                      | local.get 4
+ 00016b: 20 04                      | local.get 4
+ 00016d: fd 29                      | i8x16.le_s
+ 00016f: 1a                         | drop
+ 000170: 20 04                      | local.get 4
+ 000172: 20 04                      | local.get 4
+ 000174: fd 2a                      | i8x16.le_u
+ 000176: 1a                         | drop
+ 000177: 20 04                      | local.get 4
+ 000179: 20 04                      | local.get 4
+ 00017b: fd 2b                      | i8x16.ge_s
+ 00017d: 1a                         | drop
+ 00017e: 20 04                      | local.get 4
+ 000180: 20 04                      | local.get 4
+ 000182: fd 2c                      | i8x16.ge_u
+ 000184: 1a                         | drop
+ 000185: 20 04                      | local.get 4
+ 000187: 20 04                      | local.get 4
+ 000189: fd 2d                      | i16x8.eq
+ 00018b: 1a                         | drop
+ 00018c: 20 04                      | local.get 4
+ 00018e: 20 04                      | local.get 4
+ 000190: fd 2e                      | i16x8.ne
+ 000192: 1a                         | drop
+ 000193: 20 04                      | local.get 4
+ 000195: 20 04                      | local.get 4
+ 000197: fd 2f                      | i16x8.lt_s
+ 000199: 1a                         | drop
+ 00019a: 20 04                      | local.get 4
+ 00019c: 20 04                      | local.get 4
+ 00019e: fd 30                      | i16x8.lt_u
+ 0001a0: 1a                         | drop
+ 0001a1: 20 04                      | local.get 4
+ 0001a3: 20 04                      | local.get 4
+ 0001a5: fd 31                      | i16x8.gt_s
+ 0001a7: 1a                         | drop
+ 0001a8: 20 04                      | local.get 4
+ 0001aa: 20 04                      | local.get 4
+ 0001ac: fd 32                      | i16x8.gt_u
+ 0001ae: 1a                         | drop
+ 0001af: 20 04                      | local.get 4
+ 0001b1: 20 04                      | local.get 4
+ 0001b3: fd 33                      | i16x8.le_s
+ 0001b5: 1a                         | drop
+ 0001b6: 20 04                      | local.get 4
+ 0001b8: 20 04                      | local.get 4
+ 0001ba: fd 34                      | i16x8.le_u
+ 0001bc: 1a                         | drop
+ 0001bd: 20 04                      | local.get 4
+ 0001bf: 20 04                      | local.get 4
+ 0001c1: fd 35                      | i16x8.ge_s
+ 0001c3: 1a                         | drop
+ 0001c4: 20 04                      | local.get 4
+ 0001c6: 20 04                      | local.get 4
+ 0001c8: fd 36                      | i16x8.ge_u
+ 0001ca: 1a                         | drop
+ 0001cb: 20 04                      | local.get 4
+ 0001cd: 20 04                      | local.get 4
+ 0001cf: fd 37                      | i32x4.eq
+ 0001d1: 1a                         | drop
+ 0001d2: 20 04                      | local.get 4
+ 0001d4: 20 04                      | local.get 4
+ 0001d6: fd 38                      | i32x4.ne
+ 0001d8: 1a                         | drop
+ 0001d9: 20 04                      | local.get 4
+ 0001db: 20 04                      | local.get 4
+ 0001dd: fd 39                      | i32x4.lt_s
+ 0001df: 1a                         | drop
+ 0001e0: 20 04                      | local.get 4
+ 0001e2: 20 04                      | local.get 4
+ 0001e4: fd 3a                      | i32x4.lt_u
+ 0001e6: 1a                         | drop
+ 0001e7: 20 04                      | local.get 4
+ 0001e9: 20 04                      | local.get 4
+ 0001eb: fd 3b                      | i32x4.gt_s
+ 0001ed: 1a                         | drop
+ 0001ee: 20 04                      | local.get 4
+ 0001f0: 20 04                      | local.get 4
+ 0001f2: fd 3c                      | i32x4.gt_u
+ 0001f4: 1a                         | drop
+ 0001f5: 20 04                      | local.get 4
+ 0001f7: 20 04                      | local.get 4
+ 0001f9: fd 3d                      | i32x4.le_s
+ 0001fb: 1a                         | drop
+ 0001fc: 20 04                      | local.get 4
+ 0001fe: 20 04                      | local.get 4
+ 000200: fd 3e                      | i32x4.le_u
+ 000202: 1a                         | drop
+ 000203: 20 04                      | local.get 4
+ 000205: 20 04                      | local.get 4
+ 000207: fd 3f                      | i32x4.ge_s
+ 000209: 1a                         | drop
+ 00020a: 20 04                      | local.get 4
+ 00020c: 20 04                      | local.get 4
+ 00020e: fd 40                      | i32x4.ge_u
+ 000210: 1a                         | drop
+ 000211: 20 04                      | local.get 4
+ 000213: 20 04                      | local.get 4
+ 000215: fd 41                      | f32x4.eq
+ 000217: 1a                         | drop
+ 000218: 20 04                      | local.get 4
+ 00021a: 20 04                      | local.get 4
+ 00021c: fd 42                      | f32x4.ne
+ 00021e: 1a                         | drop
+ 00021f: 20 04                      | local.get 4
+ 000221: 20 04                      | local.get 4
+ 000223: fd 43                      | f32x4.lt
+ 000225: 1a                         | drop
+ 000226: 20 04                      | local.get 4
+ 000228: 20 04                      | local.get 4
+ 00022a: fd 44                      | f32x4.gt
+ 00022c: 1a                         | drop
+ 00022d: 20 04                      | local.get 4
+ 00022f: 20 04                      | local.get 4
+ 000231: fd 45                      | f32x4.le
+ 000233: 1a                         | drop
+ 000234: 20 04                      | local.get 4
+ 000236: 20 04                      | local.get 4
+ 000238: fd 46                      | f32x4.ge
+ 00023a: 1a                         | drop
+ 00023b: 20 04                      | local.get 4
+ 00023d: 20 04                      | local.get 4
+ 00023f: fd 47                      | f64x2.eq
+ 000241: 1a                         | drop
+ 000242: 20 04                      | local.get 4
+ 000244: 20 04                      | local.get 4
+ 000246: fd 48                      | f64x2.ne
+ 000248: 1a                         | drop
+ 000249: 20 04                      | local.get 4
+ 00024b: 20 04                      | local.get 4
+ 00024d: fd 49                      | f64x2.lt
+ 00024f: 1a                         | drop
+ 000250: 20 04                      | local.get 4
+ 000252: 20 04                      | local.get 4
+ 000254: fd 4a                      | f64x2.gt
+ 000256: 1a                         | drop
+ 000257: 20 04                      | local.get 4
+ 000259: 20 04                      | local.get 4
+ 00025b: fd 4b                      | f64x2.le
+ 00025d: 1a                         | drop
+ 00025e: 20 04                      | local.get 4
+ 000260: 20 04                      | local.get 4
+ 000262: fd 4c                      | f64x2.ge
+ 000264: 1a                         | drop
+ 000265: 20 04                      | local.get 4
+ 000267: fd 4d                      | v128.not
+ 000269: 1a                         | drop
+ 00026a: 20 04                      | local.get 4
+ 00026c: 20 04                      | local.get 4
+ 00026e: fd 4e                      | v128.and
+ 000270: 1a                         | drop
+ 000271: 20 04                      | local.get 4
+ 000273: 20 04                      | local.get 4
+ 000275: fd 4f                      | v128.andnot
+ 000277: 1a                         | drop
+ 000278: 20 04                      | local.get 4
+ 00027a: 20 04                      | local.get 4
+ 00027c: fd 50                      | v128.or
+ 00027e: 1a                         | drop
+ 00027f: 20 04                      | local.get 4
+ 000281: 20 04                      | local.get 4
+ 000283: fd 51                      | v128.xor
+ 000285: 1a                         | drop
+ 000286: 20 04                      | local.get 4
+ 000288: 20 04                      | local.get 4
+ 00028a: 20 04                      | local.get 4
+ 00028c: fd 52                      | v128.bitselect
+ 00028e: 1a                         | drop
+ 00028f: 20 04                      | local.get 4
+ 000291: fd 53                      | v128.any_true
+ 000293: 1a                         | drop
+ 000294: 20 00                      | local.get 0
+ 000296: 20 04                      | local.get 4
+ 000298: fd 54 00 d0 0a 0f          | v128.load8_lane 0 1360 15
+ 00029e: 1a                         | drop
+ 00029f: 20 00                      | local.get 0
+ 0002a1: 20 04                      | local.get 4
+ 0002a3: fd 55 01 e0 0a 02          | v128.load16_lane 1 1376 2
+ 0002a9: 1a                         | drop
+ 0002aa: 20 00                      | local.get 0
+ 0002ac: 20 04                      | local.get 4
+ 0002ae: fd 56 00 f0 0a 01          | v128.load32_lane 0 1392 1
+ 0002b4: 1a                         | drop
+ 0002b5: 20 00                      | local.get 0
+ 0002b7: 20 04                      | local.get 4
+ 0002b9: fd 57 03 80 0b 00          | v128.load64_lane 3 1408 0
+ 0002bf: 1a                         | drop
+ 0002c0: 20 00                      | local.get 0
+ 0002c2: 20 04                      | local.get 4
+ 0002c4: fd 58 00 90 0b 0b          | v128.store8_lane 0 1424 11
+ 0002ca: 20 00                      | local.get 0
+ 0002cc: 20 04                      | local.get 4
+ 0002ce: fd 59 01 a0 0b 06          | v128.store16_lane 1 1440 6
+ 0002d4: 20 00                      | local.get 0
+ 0002d6: 20 04                      | local.get 4
+ 0002d8: fd 5a 00 b0 0b 01          | v128.store32_lane 0 1456 1
+ 0002de: 20 00                      | local.get 0
+ 0002e0: 20 04                      | local.get 4
+ 0002e2: fd 5b 03 c0 0b 00          | v128.store64_lane 3 1472 0
+ 0002e8: 20 00                      | local.get 0
+ 0002ea: fd 5c 00 d0 0b             | v128.load32_zero 0 1488
+ 0002ef: 1a                         | drop
+ 0002f0: 20 00                      | local.get 0
+ 0002f2: fd 5d 03 e0 0b             | v128.load64_zero 3 1504
+ 0002f7: 1a                         | drop
+ 0002f8: 20 04                      | local.get 4
+ 0002fa: fd 5e                      | f32x4.demote_f64x2_zero
+ 0002fc: 1a                         | drop
+ 0002fd: 20 04                      | local.get 4
+ 0002ff: fd 5f                      | f64x2.promote_low_f32x4
+ 000301: 1a                         | drop
+ 000302: 20 04                      | local.get 4
+ 000304: fd 60                      | i8x16.abs
+ 000306: 1a                         | drop
+ 000307: 20 04                      | local.get 4
+ 000309: fd 61                      | i8x16.neg
+ 00030b: 1a                         | drop
+ 00030c: 20 04                      | local.get 4
+ 00030e: fd 62                      | i8x16.popcnt
+ 000310: 1a                         | drop
+ 000311: 20 04                      | local.get 4
+ 000313: fd 63                      | i8x16.all_true
+ 000315: 1a                         | drop
+ 000316: 20 04                      | local.get 4
+ 000318: fd 64                      | i8x16.bitmask
+ 00031a: 1a                         | drop
+ 00031b: 20 04                      | local.get 4
+ 00031d: 20 04                      | local.get 4
+ 00031f: fd 65                      | i8x16.narrow_i16x8_s
+ 000321: 1a                         | drop
+ 000322: 20 04                      | local.get 4
+ 000324: 20 04                      | local.get 4
+ 000326: fd 66                      | i8x16.narrow_i16x8_u
+ 000328: 1a                         | drop
+ 000329: 20 04                      | local.get 4
+ 00032b: 20 00                      | local.get 0
+ 00032d: fd 6b                      | i8x16.shl
+ 00032f: 1a                         | drop
+ 000330: 20 04                      | local.get 4
+ 000332: 20 00                      | local.get 0
+ 000334: fd 6c                      | i8x16.shr_s
+ 000336: 1a                         | drop
+ 000337: 20 04                      | local.get 4
+ 000339: 20 00                      | local.get 0
+ 00033b: fd 6d                      | i8x16.shr_u
+ 00033d: 1a                         | drop
+ 00033e: 20 04                      | local.get 4
+ 000340: 20 04                      | local.get 4
+ 000342: fd 6e                      | i8x16.add
+ 000344: 1a                         | drop
+ 000345: 20 04                      | local.get 4
+ 000347: 20 04                      | local.get 4
+ 000349: fd 6f                      | i8x16.add_sat_s
+ 00034b: 1a                         | drop
+ 00034c: 20 04                      | local.get 4
+ 00034e: 20 04                      | local.get 4
+ 000350: fd 70                      | i8x16.add_sat_u
+ 000352: 1a                         | drop
+ 000353: 20 04                      | local.get 4
+ 000355: 20 04                      | local.get 4
+ 000357: fd 71                      | i8x16.sub
+ 000359: 1a                         | drop
+ 00035a: 20 04                      | local.get 4
+ 00035c: 20 04                      | local.get 4
+ 00035e: fd 72                      | i8x16.sub_sat_s
+ 000360: 1a                         | drop
+ 000361: 20 04                      | local.get 4
+ 000363: 20 04                      | local.get 4
+ 000365: fd 73                      | i8x16.sub_sat_u
+ 000367: 1a                         | drop
+ 000368: 20 04                      | local.get 4
+ 00036a: 20 04                      | local.get 4
+ 00036c: fd 76                      | i8x16.min_s
+ 00036e: 1a                         | drop
+ 00036f: 20 04                      | local.get 4
+ 000371: 20 04                      | local.get 4
+ 000373: fd 77                      | i8x16.min_u
+ 000375: 1a                         | drop
+ 000376: 20 04                      | local.get 4
+ 000378: 20 04                      | local.get 4
+ 00037a: fd 78                      | i8x16.max_s
+ 00037c: 1a                         | drop
+ 00037d: 20 04                      | local.get 4
+ 00037f: 20 04                      | local.get 4
+ 000381: fd 79                      | i8x16.max_u
+ 000383: 1a                         | drop
+ 000384: 20 04                      | local.get 4
+ 000386: 20 04                      | local.get 4
+ 000388: fd 7b                      | i8x16.avgr_u
+ 00038a: 1a                         | drop
+ 00038b: 20 04                      | local.get 4
+ 00038d: fd 7c                      | i16x8.extadd_pairwise_i8x16_s
+ 00038f: 1a                         | drop
+ 000390: 20 04                      | local.get 4
+ 000392: fd 7d                      | i16x8.extadd_pairwise_i8x16_u
+ 000394: 1a                         | drop
+ 000395: 20 04                      | local.get 4
+ 000397: fd 7e                      | i32x4.extadd_pairwise_i16x8_s
+ 000399: 1a                         | drop
+ 00039a: 20 04                      | local.get 4
+ 00039c: fd 7f                      | i32x4.extadd_pairwise_i16x8_u
+ 00039e: 1a                         | drop
+ 00039f: 20 04                      | local.get 4
+ 0003a1: fd 80 01                   | i16x8.abs
+ 0003a4: 1a                         | drop
+ 0003a5: 20 04                      | local.get 4
+ 0003a7: fd 81 01                   | i16x8.neg
+ 0003aa: 1a                         | drop
+ 0003ab: 20 04                      | local.get 4
+ 0003ad: 20 04                      | local.get 4
+ 0003af: fd 82 01                   | i16x8.q15mulr_sat_s
+ 0003b2: 1a                         | drop
+ 0003b3: 20 04                      | local.get 4
+ 0003b5: fd 83 01                   | i16x8.all_true
+ 0003b8: 1a                         | drop
+ 0003b9: 20 04                      | local.get 4
+ 0003bb: fd 84 01                   | i16x8.bitmask
+ 0003be: 1a                         | drop
+ 0003bf: 20 04                      | local.get 4
+ 0003c1: 20 04                      | local.get 4
+ 0003c3: fd 85 01                   | i16x8.narrow_i32x4_s
+ 0003c6: 1a                         | drop
+ 0003c7: 20 04                      | local.get 4
+ 0003c9: 20 04                      | local.get 4
+ 0003cb: fd 86 01                   | i16x8.narrow_i32x4_u
+ 0003ce: 1a                         | drop
+ 0003cf: 20 04                      | local.get 4
+ 0003d1: fd 87 01                   | i16x8.extend_low_i8x16_s
+ 0003d4: 1a                         | drop
+ 0003d5: 20 04                      | local.get 4
+ 0003d7: fd 88 01                   | i16x8.extend_high_i8x16_s
+ 0003da: 1a                         | drop
+ 0003db: 20 04                      | local.get 4
+ 0003dd: fd 89 01                   | i16x8.extend_low_i8x16_u
+ 0003e0: 1a                         | drop
+ 0003e1: 20 04                      | local.get 4
+ 0003e3: fd 8a 01                   | i16x8.extend_high_i8x16_u
+ 0003e6: 1a                         | drop
+ 0003e7: 20 04                      | local.get 4
+ 0003e9: 20 00                      | local.get 0
+ 0003eb: fd 8b 01                   | i16x8.shl
+ 0003ee: 1a                         | drop
+ 0003ef: 20 04                      | local.get 4
+ 0003f1: 20 00                      | local.get 0
+ 0003f3: fd 8c 01                   | i16x8.shr_s
+ 0003f6: 1a                         | drop
+ 0003f7: 20 04                      | local.get 4
+ 0003f9: 20 00                      | local.get 0
+ 0003fb: fd 8d 01                   | i16x8.shr_u
+ 0003fe: 1a                         | drop
+ 0003ff: 20 04                      | local.get 4
+ 000401: 20 04                      | local.get 4
+ 000403: fd 8e 01                   | i16x8.add
+ 000406: 1a                         | drop
+ 000407: 20 04                      | local.get 4
+ 000409: 20 04                      | local.get 4
+ 00040b: fd 8f 01                   | i16x8.add_sat_s
+ 00040e: 1a                         | drop
+ 00040f: 20 04                      | local.get 4
+ 000411: 20 04                      | local.get 4
+ 000413: fd 90 01                   | i16x8.add_sat_u
+ 000416: 1a                         | drop
+ 000417: 20 04                      | local.get 4
+ 000419: 20 04                      | local.get 4
+ 00041b: fd 91 01                   | i16x8.sub
+ 00041e: 1a                         | drop
+ 00041f: 20 04                      | local.get 4
+ 000421: 20 04                      | local.get 4
+ 000423: fd 92 01                   | i16x8.sub_sat_s
+ 000426: 1a                         | drop
+ 000427: 20 04                      | local.get 4
+ 000429: 20 04                      | local.get 4
+ 00042b: fd 93 01                   | i16x8.sub_sat_u
+ 00042e: 1a                         | drop
+ 00042f: 20 04                      | local.get 4
+ 000431: 20 04                      | local.get 4
+ 000433: fd 95 01                   | i16x8.mul
+ 000436: 1a                         | drop
+ 000437: 20 04                      | local.get 4
+ 000439: 20 04                      | local.get 4
+ 00043b: fd 96 01                   | i16x8.min_s
+ 00043e: 1a                         | drop
+ 00043f: 20 04                      | local.get 4
+ 000441: 20 04                      | local.get 4
+ 000443: fd 97 01                   | i16x8.min_u
+ 000446: 1a                         | drop
+ 000447: 20 04                      | local.get 4
+ 000449: 20 04                      | local.get 4
+ 00044b: fd 98 01                   | i16x8.max_s
+ 00044e: 1a                         | drop
+ 00044f: 20 04                      | local.get 4
+ 000451: 20 04                      | local.get 4
+ 000453: fd 99 01                   | i16x8.max_u
+ 000456: 1a                         | drop
+ 000457: 20 04                      | local.get 4
+ 000459: 20 04                      | local.get 4
+ 00045b: fd 9b 01                   | i16x8.avgr_u
+ 00045e: 1a                         | drop
+ 00045f: 20 04                      | local.get 4
+ 000461: 20 04                      | local.get 4
+ 000463: fd 9c 01                   | i16x8.extmul_low_i8x16_s
+ 000466: 1a                         | drop
+ 000467: 20 04                      | local.get 4
+ 000469: 20 04                      | local.get 4
+ 00046b: fd 9d 01                   | i16x8.extmul_high_i8x16_s
+ 00046e: 1a                         | drop
+ 00046f: 20 04                      | local.get 4
+ 000471: 20 04                      | local.get 4
+ 000473: fd 9e 01                   | i16x8.extmul_low_i8x16_u
+ 000476: 1a                         | drop
+ 000477: 20 04                      | local.get 4
+ 000479: 20 04                      | local.get 4
+ 00047b: fd 9f 01                   | i16x8.extmul_high_i8x16_u
+ 00047e: 1a                         | drop
+ 00047f: 20 04                      | local.get 4
+ 000481: fd a0 01                   | i32x4.abs
+ 000484: 1a                         | drop
+ 000485: 20 04                      | local.get 4
+ 000487: fd a1 01                   | i32x4.neg
+ 00048a: 1a                         | drop
+ 00048b: 20 04                      | local.get 4
+ 00048d: fd a3 01                   | i32x4.all_true
+ 000490: 1a                         | drop
+ 000491: 20 04                      | local.get 4
+ 000493: fd a4 01                   | i32x4.bitmask
+ 000496: 1a                         | drop
+ 000497: 20 04                      | local.get 4
+ 000499: fd a7 01                   | i32x4.extend_low_i16x8_s
+ 00049c: 1a                         | drop
+ 00049d: 20 04                      | local.get 4
+ 00049f: fd a8 01                   | i32x4.extend_high_i16x8_s
+ 0004a2: 1a                         | drop
+ 0004a3: 20 04                      | local.get 4
+ 0004a5: fd a9 01                   | i32x4.extend_low_i16x8_u
+ 0004a8: 1a                         | drop
+ 0004a9: 20 04                      | local.get 4
+ 0004ab: fd aa 01                   | i32x4.extend_high_i16x8_u
+ 0004ae: 1a                         | drop
+ 0004af: 20 04                      | local.get 4
+ 0004b1: 20 00                      | local.get 0
+ 0004b3: fd ab 01                   | i32x4.shl
+ 0004b6: 1a                         | drop
+ 0004b7: 20 04                      | local.get 4
+ 0004b9: 20 00                      | local.get 0
+ 0004bb: fd ac 01                   | i32x4.shr_s
+ 0004be: 1a                         | drop
+ 0004bf: 20 04                      | local.get 4
+ 0004c1: 20 00                      | local.get 0
+ 0004c3: fd ad 01                   | i32x4.shr_u
+ 0004c6: 1a                         | drop
+ 0004c7: 20 04                      | local.get 4
+ 0004c9: 20 04                      | local.get 4
+ 0004cb: fd ae 01                   | i32x4.add
+ 0004ce: 1a                         | drop
+ 0004cf: 20 04                      | local.get 4
+ 0004d1: 20 04                      | local.get 4
+ 0004d3: fd b1 01                   | i32x4.sub
+ 0004d6: 1a                         | drop
+ 0004d7: 20 04                      | local.get 4
+ 0004d9: 20 04                      | local.get 4
+ 0004db: fd b5 01                   | i32x4.mul
+ 0004de: 1a                         | drop
+ 0004df: 20 04                      | local.get 4
+ 0004e1: 20 04                      | local.get 4
+ 0004e3: fd b6 01                   | i32x4.min_s
+ 0004e6: 1a                         | drop
+ 0004e7: 20 04                      | local.get 4
+ 0004e9: 20 04                      | local.get 4
+ 0004eb: fd b7 01                   | i32x4.min_u
+ 0004ee: 1a                         | drop
+ 0004ef: 20 04                      | local.get 4
+ 0004f1: 20 04                      | local.get 4
+ 0004f3: fd b8 01                   | i32x4.max_s
+ 0004f6: 1a                         | drop
+ 0004f7: 20 04                      | local.get 4
+ 0004f9: 20 04                      | local.get 4
+ 0004fb: fd b9 01                   | i32x4.max_u
+ 0004fe: 1a                         | drop
+ 0004ff: 20 04                      | local.get 4
+ 000501: 20 04                      | local.get 4
+ 000503: fd ba 01                   | i32x4.dot_i16x8_s
+ 000506: 1a                         | drop
+ 000507: 20 04                      | local.get 4
+ 000509: 20 04                      | local.get 4
+ 00050b: fd bc 01                   | i32x4.extmul_low_i16x8_s
+ 00050e: 1a                         | drop
+ 00050f: 20 04                      | local.get 4
+ 000511: 20 04                      | local.get 4
+ 000513: fd bd 01                   | i32x4.extmul_high_i16x8_s
+ 000516: 1a                         | drop
+ 000517: 20 04                      | local.get 4
+ 000519: 20 04                      | local.get 4
+ 00051b: fd be 01                   | i32x4.extmul_low_i16x8_u
+ 00051e: 1a                         | drop
+ 00051f: 20 04                      | local.get 4
+ 000521: 20 04                      | local.get 4
+ 000523: fd bf 01                   | i32x4.extmul_high_i16x8_u
+ 000526: 1a                         | drop
+ 000527: 20 04                      | local.get 4
+ 000529: fd c0 01                   | i64x2.abs
+ 00052c: 1a                         | drop
+ 00052d: 20 04                      | local.get 4
+ 00052f: fd c1 01                   | i64x2.neg
+ 000532: 1a                         | drop
+ 000533: 20 04                      | local.get 4
+ 000535: fd c3 01                   | i64x2.all_true
+ 000538: 1a                         | drop
+ 000539: 20 04                      | local.get 4
+ 00053b: fd c4 01                   | i64x2.bitmask
+ 00053e: 1a                         | drop
+ 00053f: 20 04                      | local.get 4
+ 000541: fd c7 01                   | i64x2.extend_low_i32x4_s
+ 000544: 1a                         | drop
+ 000545: 20 04                      | local.get 4
+ 000547: fd c8 01                   | i64x2.extend_high_i32x4_s
+ 00054a: 1a                         | drop
+ 00054b: 20 04                      | local.get 4
+ 00054d: fd c9 01                   | i64x2.extend_low_i32x4_u
+ 000550: 1a                         | drop
+ 000551: 20 04                      | local.get 4
+ 000553: fd ca 01                   | i64x2.extend_high_i32x4_u
+ 000556: 1a                         | drop
+ 000557: 20 04                      | local.get 4
+ 000559: 20 00                      | local.get 0
+ 00055b: fd cb 01                   | i64x2.shl
+ 00055e: 1a                         | drop
+ 00055f: 20 04                      | local.get 4
+ 000561: 20 00                      | local.get 0
+ 000563: fd cc 01                   | i64x2.shr_s
+ 000566: 1a                         | drop
+ 000567: 20 04                      | local.get 4
+ 000569: 20 00                      | local.get 0
+ 00056b: fd cd 01                   | i64x2.shr_u
+ 00056e: 1a                         | drop
+ 00056f: 20 04                      | local.get 4
+ 000571: 20 04                      | local.get 4
+ 000573: fd ce 01                   | i64x2.add
+ 000576: 1a                         | drop
+ 000577: 20 04                      | local.get 4
+ 000579: 20 04                      | local.get 4
+ 00057b: fd d1 01                   | i64x2.sub
+ 00057e: 1a                         | drop
+ 00057f: 20 04                      | local.get 4
+ 000581: 20 04                      | local.get 4
+ 000583: fd d5 01                   | i64x2.mul
+ 000586: 1a                         | drop
+ 000587: 20 04                      | local.get 4
+ 000589: 20 04                      | local.get 4
+ 00058b: fd d6 01                   | i64x2.eq
+ 00058e: 1a                         | drop
+ 00058f: 20 04                      | local.get 4
+ 000591: 20 04                      | local.get 4
+ 000593: fd d7 01                   | i64x2.ne
+ 000596: 1a                         | drop
+ 000597: 20 04                      | local.get 4
+ 000599: 20 04                      | local.get 4
+ 00059b: fd d8 01                   | i64x2.lt_s
+ 00059e: 1a                         | drop
+ 00059f: 20 04                      | local.get 4
+ 0005a1: 20 04                      | local.get 4
+ 0005a3: fd d9 01                   | i64x2.gt_s
+ 0005a6: 1a                         | drop
+ 0005a7: 20 04                      | local.get 4
+ 0005a9: 20 04                      | local.get 4
+ 0005ab: fd da 01                   | i64x2.le_s
+ 0005ae: 1a                         | drop
+ 0005af: 20 04                      | local.get 4
+ 0005b1: 20 04                      | local.get 4
+ 0005b3: fd db 01                   | i64x2.ge_s
+ 0005b6: 1a                         | drop
+ 0005b7: 20 04                      | local.get 4
+ 0005b9: 20 04                      | local.get 4
+ 0005bb: fd dc 01                   | i64x2.extmul_low_i32x4_s
+ 0005be: 1a                         | drop
+ 0005bf: 20 04                      | local.get 4
+ 0005c1: 20 04                      | local.get 4
+ 0005c3: fd dd 01                   | i64x2.extmul_high_i32x4_s
+ 0005c6: 1a                         | drop
+ 0005c7: 20 04                      | local.get 4
+ 0005c9: 20 04                      | local.get 4
+ 0005cb: fd de 01                   | i64x2.extmul_low_i32x4_u
+ 0005ce: 1a                         | drop
+ 0005cf: 20 04                      | local.get 4
+ 0005d1: 20 04                      | local.get 4
+ 0005d3: fd df 01                   | i64x2.extmul_high_i32x4_u
+ 0005d6: 1a                         | drop
+ 0005d7: 20 04                      | local.get 4
+ 0005d9: fd 67                      | f32x4.ceil
+ 0005db: 1a                         | drop
+ 0005dc: 20 04                      | local.get 4
+ 0005de: fd 68                      | f32x4.floor
+ 0005e0: 1a                         | drop
+ 0005e1: 20 04                      | local.get 4
+ 0005e3: fd 69                      | f32x4.trunc
+ 0005e5: 1a                         | drop
+ 0005e6: 20 04                      | local.get 4
+ 0005e8: fd 6a                      | f32x4.nearest
+ 0005ea: 1a                         | drop
+ 0005eb: 20 04                      | local.get 4
+ 0005ed: fd 74                      | f64x2.ceil
+ 0005ef: 1a                         | drop
+ 0005f0: 20 04                      | local.get 4
+ 0005f2: fd 75                      | f64x2.floor
+ 0005f4: 1a                         | drop
+ 0005f5: 20 04                      | local.get 4
+ 0005f7: fd 7a                      | f64x2.trunc
+ 0005f9: 1a                         | drop
+ 0005fa: 20 04                      | local.get 4
+ 0005fc: fd 94 01                   | f64x2.nearest
+ 0005ff: 1a                         | drop
+ 000600: 20 04                      | local.get 4
+ 000602: fd e0 01                   | f32x4.abs
+ 000605: 1a                         | drop
+ 000606: 20 04                      | local.get 4
+ 000608: fd e1 01                   | f32x4.neg
+ 00060b: 1a                         | drop
+ 00060c: 20 04                      | local.get 4
+ 00060e: fd e3 01                   | f32x4.sqrt
+ 000611: 1a                         | drop
+ 000612: 20 04                      | local.get 4
+ 000614: 20 04                      | local.get 4
+ 000616: fd e4 01                   | f32x4.add
+ 000619: 1a                         | drop
+ 00061a: 20 04                      | local.get 4
+ 00061c: 20 04                      | local.get 4
+ 00061e: fd e5 01                   | f32x4.sub
+ 000621: 1a                         | drop
+ 000622: 20 04                      | local.get 4
+ 000624: 20 04                      | local.get 4
+ 000626: fd e6 01                   | f32x4.mul
+ 000629: 1a                         | drop
+ 00062a: 20 04                      | local.get 4
+ 00062c: 20 04                      | local.get 4
+ 00062e: fd e7 01                   | f32x4.div
+ 000631: 1a                         | drop
+ 000632: 20 04                      | local.get 4
+ 000634: 20 04                      | local.get 4
+ 000636: fd e8 01                   | f32x4.min
+ 000639: 1a                         | drop
+ 00063a: 20 04                      | local.get 4
+ 00063c: 20 04                      | local.get 4
+ 00063e: fd e9 01                   | f32x4.max
+ 000641: 1a                         | drop
+ 000642: 20 04                      | local.get 4
+ 000644: 20 04                      | local.get 4
+ 000646: fd ea 01                   | f32x4.pmin
+ 000649: 1a                         | drop
+ 00064a: 20 04                      | local.get 4
+ 00064c: 20 04                      | local.get 4
+ 00064e: fd eb 01                   | f32x4.pmax
+ 000651: 1a                         | drop
+ 000652: 20 04                      | local.get 4
+ 000654: fd ec 01                   | f64x2.abs
+ 000657: 1a                         | drop
+ 000658: 20 04                      | local.get 4
+ 00065a: fd ed 01                   | f64x2.neg
+ 00065d: 1a                         | drop
+ 00065e: 20 04                      | local.get 4
+ 000660: fd ef 01                   | f64x2.sqrt
+ 000663: 1a                         | drop
+ 000664: 20 04                      | local.get 4
+ 000666: 20 04                      | local.get 4
+ 000668: fd f0 01                   | f64x2.add
+ 00066b: 1a                         | drop
+ 00066c: 20 04                      | local.get 4
+ 00066e: 20 04                      | local.get 4
+ 000670: fd f1 01                   | f64x2.sub
+ 000673: 1a                         | drop
+ 000674: 20 04                      | local.get 4
+ 000676: 20 04                      | local.get 4
+ 000678: fd f2 01                   | f64x2.mul
+ 00067b: 1a                         | drop
+ 00067c: 20 04                      | local.get 4
+ 00067e: 20 04                      | local.get 4
+ 000680: fd f3 01                   | f64x2.div
+ 000683: 1a                         | drop
+ 000684: 20 04                      | local.get 4
+ 000686: 20 04                      | local.get 4
+ 000688: fd f4 01                   | f64x2.min
+ 00068b: 1a                         | drop
+ 00068c: 20 04                      | local.get 4
+ 00068e: 20 04                      | local.get 4
+ 000690: fd f5 01                   | f64x2.max
+ 000693: 1a                         | drop
+ 000694: 20 04                      | local.get 4
+ 000696: 20 04                      | local.get 4
+ 000698: fd f6 01                   | f64x2.pmin
+ 00069b: 1a                         | drop
+ 00069c: 20 04                      | local.get 4
+ 00069e: 20 04                      | local.get 4
+ 0006a0: fd f7 01                   | f64x2.pmax
+ 0006a3: 1a                         | drop
+ 0006a4: 20 04                      | local.get 4
+ 0006a6: fd f8 01                   | i32x4.trunc_sat_f32x4_s
+ 0006a9: 1a                         | drop
+ 0006aa: 20 04                      | local.get 4
+ 0006ac: fd f9 01                   | i32x4.trunc_sat_f32x4_u
+ 0006af: 1a                         | drop
+ 0006b0: 20 04                      | local.get 4
+ 0006b2: fd fa 01                   | f32x4.convert_i32x4_s
+ 0006b5: 1a                         | drop
+ 0006b6: 20 04                      | local.get 4
+ 0006b8: fd fb 01                   | f32x4.convert_i32x4_u
+ 0006bb: 1a                         | drop
+ 0006bc: 20 04                      | local.get 4
+ 0006be: fd fc 01                   | i32x4.trunc_sat_f64x2_s_zero
+ 0006c1: 1a                         | drop
+ 0006c2: 20 04                      | local.get 4
+ 0006c4: fd fd 01                   | i32x4.trunc_sat_f64x2_u_zero
+ 0006c7: 1a                         | drop
+ 0006c8: 20 04                      | local.get 4
+ 0006ca: fd fe 01                   | f64x2.convert_low_i32x4_s
+ 0006cd: 1a                         | drop
+ 0006ce: 20 04                      | local.get 4
+ 0006d0: fd ff 01                   | f64x2.convert_low_i32x4_u
+ 0006d3: 1a                         | drop
+ 0006d4: 0b                         | end
