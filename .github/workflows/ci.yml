@@ -41,7 +41,7 @@ jobs:
       # they compile out of CI: their result depends on the runner's unpinned
       # compiler version. They are LOCAL verification instruments — run them
       # where the toolchain is pinned with
-      # `cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle`.
+      # `cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle,n0xis-wasm/oracle`.
       - name: Pure crates build and test with zero OS deps
         run: cargo test -p n0xis-contracts -p n0xis-arch -p n0xis-core
 

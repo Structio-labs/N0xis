@@ -123,7 +123,7 @@ and the test rightly fails. They are **local instruments**, behind
 full ledger locally:
 
 ```sh
-cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle
+cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle,n0xis-wasm/oracle
 ```
 
 A "green CI" therefore means the deterministic suite passed, **not** that every

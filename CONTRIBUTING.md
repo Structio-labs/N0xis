@@ -44,7 +44,7 @@ so they are gated behind a `oracle` feature that is OFF by default and compiled
 out of CI. Run the full verification against your local, pinned toolchain with:
 
 ```
-cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle
+cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle,n0xis-wasm/oracle
 ```
 
 A test whose toolchain is genuinely absent (no `qemu`, no mingw, no `wine`) skips
