@@ -16,13 +16,20 @@
 //! multiple memories. Every standard section, custom sections by name and
 //! range, and the `name` section with the extended name section's
 //! subsections (types, tables, memories, globals, element and data segments).
+//! Where the current specification's binary format reads a field more widely
+//! than 2.0 did (memory arguments' offsets and every limit as `u64`), it is
+//! read as the current one does.
 //!
-//! Not read, and refused by name when met: shared memories and the atomic
+//! Not read, and refused where met: shared memories and the atomic
 //! instructions (threads), tail calls, exception handling, typed function
 //! references, garbage-collected types, relaxed SIMD, the wide-arithmetic
 //! instructions, and the component format (binary version 0x0d). The error
 //! says which byte; it cannot say which proposal, since a byte outside the
-//! set read here may belong to one or to none.
+//! set read here may belong to one or to none. Without typed references a
+//! reference type is `funcref` or `externref`: where the current
+//! specification types an element segment of function indices (forms 0 to 3)
+//! as the non-null `(ref func)`, [`ElementSegment::ty`] says `funcref`, as
+//! 2.0 does.
 //!
 //! ## What is checked
 //!
