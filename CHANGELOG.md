@@ -7,6 +7,13 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Added
 
+- **A WebAssembly reader and instruction decoder,** `n0xis-wasm`: every section, the function,
+  table, memory and global index spaces, the `name` section, and all 437 opcodes of the 2.0 core
+  with SIMD, bulk memory, reference types, memory64 and multiple memories, each instruction with
+  its file offset. Checked on modules built here from C and text against the text itself (1 686
+  instructions) and against `wasm-objdump` and `wasm-tools print` (7 113 comparisons); 20 779
+  corrupted copies end in an error or a finding, never a stop. Library only for now: the module
+  does not yet reach the pipeline or the command line.
 - **32-bit ARM loads, stores and `pc` lift.** Every A32 and Thumb single load and store (each
   width and sign, every addressing mode, `ldrd`/`strd`), `ldm`/`stm` in all four modes, and
   reads of `pc` (the instruction's address plus 8 in A32, plus 4 in Thumb, aligned for literal

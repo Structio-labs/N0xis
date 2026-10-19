@@ -1402,6 +1402,25 @@ outside this codebase that can prove it wrong.
      **Done when:** classes compiled here with `javac` list what the compiler
      emitted, in agreement with the JDK's own `javap`, and decompiled methods
      return what their source returns on tested inputs.
+   - **WebAssembly** (recorded 2026-10-19): a module format and a stack-machine
+     instruction set at once, so it crosses both seams. Stage 1 is done: a crate
+     of its own, `n0xis-wasm`, reads every section, the index spaces and the
+     `name` section, and decodes all 437 opcodes of the 2.0 core with SIMD,
+     bulk memory, reference types, memory64 and multiple memories, behind our
+     own types and under the hostile-input contract. Checked on modules built
+     here from C and from text: every instruction the text states (1 686, none
+     different, all 437 opcodes used), 7 113 comparisons with `wasm-objdump` and
+     `wasm-tools print` (two differences, both the first tool's own printing
+     faults: a memory64 offset cut to 32 bits, a `v128` global's initial value),
+     and 20 779 corrupted copies without a stop or a runaway allocation. Not yet
+     read: threads (a `shared` memory is refused, so `-pthread` output does not
+     load), exception handling, tail calls, typed function references, GC and
+     relaxed SIMD. Stages 2 and 3 (the module as an image, the stack machine
+     lifted into the IR) wait on the format seam and the IR decisions; then a
+     module read live from a browser page.
+     **Done when:** a module built here from C decompiles through the pipeline
+     and its functions return what they return under `wasmtime` on randomized
+     inputs.
 6. ⬜ **The compiler-idiom library.** Continuous, never "done" — each idiom is
    independent and individually cheap. The differential oracle is the natural
    source of candidates: an idiom this decompiler leaves as raw arithmetic and
