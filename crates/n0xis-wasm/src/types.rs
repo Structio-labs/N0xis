@@ -164,45 +164,43 @@ impl FuncType {
     }
 }
 
-/// The size bounds of a table or a memory, in elements or pages. The width
-/// of the bounds is the width of the addresses (memory64 and table64 use 64).
+/// The width of the addresses of a memory or a table: 32 bits, or 64 with
+/// memory64 and table64.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Limits {
-    I32 { min: u32, max: Option<u32> },
-    I64 { min: u64, max: Option<u64> },
+pub enum AddressType {
+    I32,
+    I64,
+}
+
+/// The size bounds of a table or a memory, in elements or pages, as the file
+/// states them.
+///
+/// The bounds are `u64` LEB128 for either address type: the specification's
+/// current binary format reads them so, and wasm-tools and wabt both accept a
+/// 32-bit memory whose bound is padded past five bytes (measured 2026-10-19;
+/// WebAssembly 2.0 read them as `u32` and called that malformed). Whether a
+/// bound fits its address type is validation, not checked here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Limits {
+    pub address: AddressType,
+    pub min: u64,
+    pub max: Option<u64>,
 }
 
 impl Limits {
     pub(crate) fn read(r: &mut Reader) -> Result<Self, Error> {
         let at = r.offset();
         let flags = r.byte()?;
-        // Bit 0: a maximum follows. Bit 2: 64-bit bounds. Bit 1 (shared, the
+        // Bit 0: a maximum follows. Bit 2: 64-bit addresses. Bit 1 (shared, the
         // threads proposal) is not read here, and no other bit is defined.
-        match flags {
-            0x00 => Ok(Limits::I32 { min: r.u32()?, max: None }),
-            0x01 => Ok(Limits::I32 { min: r.u32()?, max: Some(r.u32()?) }),
-            0x04 => Ok(Limits::I64 { min: r.u64()?, max: None }),
-            0x05 => Ok(Limits::I64 { min: r.u64()?, max: Some(r.u64()?) }),
-            _ => Err(r.error(at, Problem::UnknownLimitsFlags(flags))),
-        }
-    }
-
-    pub fn min(&self) -> u64 {
-        match *self {
-            Limits::I32 { min, .. } => u64::from(min),
-            Limits::I64 { min, .. } => min,
-        }
-    }
-
-    pub fn max(&self) -> Option<u64> {
-        match *self {
-            Limits::I32 { max, .. } => max.map(u64::from),
-            Limits::I64 { max, .. } => max,
-        }
-    }
-
-    pub fn is_64(&self) -> bool {
-        matches!(self, Limits::I64 { .. })
+        let address = match flags {
+            0x00 | 0x01 => AddressType::I32,
+            0x04 | 0x05 => AddressType::I64,
+            _ => return Err(r.error(at, Problem::UnknownLimitsFlags(flags))),
+        };
+        let min = r.u64()?;
+        let max = if flags & 1 != 0 { Some(r.u64()?) } else { None };
+        Ok(Limits { address, min, max })
     }
 }
 

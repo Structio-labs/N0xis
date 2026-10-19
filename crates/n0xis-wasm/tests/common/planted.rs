@@ -28,6 +28,9 @@ pub enum Tool {
     /// Accepts: the bytes are well formed in a proposal this crate does not
     /// read, so its refusal is a limit of scope, not a verdict on the file.
     AcceptsOutsideScope,
+    /// Rejects, by validation: the bytes are well formed and break a rule of
+    /// validation, which this crate does not check.
+    RejectsByValidation,
 }
 
 pub struct Case {
@@ -226,6 +229,13 @@ pub fn cases() -> Vec<Case> {
         ),
         case("a shared memory", module(&[section(5, &vector(&[vec![0x03, 1, 1]]))]), Refused(P::UnknownLimitsFlags(3)), AcceptsOutsideScope),
         case("a 64-bit memory", module(&[section(5, &vector(&[vec![0x05, 1, 2]]))]), Reads, Accepts),
+        // The bounds of a 32-bit memory or table are u64 LEB128 in the current
+        // binary format: padding past five bytes is well formed, and a bound
+        // past 2^32 is a matter for validation.
+        case("a 32-bit memory bound padded to six bytes", module(&[section(5, &vector(&[vec![0x00, 0x81, 0x80, 0x80, 0x80, 0x80, 0x00]]))]), Reads, Accepts),
+        case("a 32-bit table bound padded to six bytes", module(&[section(4, &vector(&[vec![0x70, 0x00, 0x81, 0x80, 0x80, 0x80, 0x80, 0x00]]))]), Reads, Accepts),
+        case("a 32-bit memory bound of 2^32 pages", module(&[section(5, &vector(&[vec![0x00, 0x80, 0x80, 0x80, 0x80, 0x10]]))]), Reads, RejectsByValidation),
+        case("a memory bound of eleven bytes", module(&[section(5, &vector(&[vec![0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00]]))]), Refused(P::LebTooLong { bits: 64 }), Rejects),
         case(
             "an export name that is not UTF-8",
             module(&[types(), functions(), section(7, &vector(&[[name(&[0xff]), vec![0, 0]].concat()])), code(&[0], &[end])]),

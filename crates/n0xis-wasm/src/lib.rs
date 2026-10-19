@@ -71,7 +71,7 @@ pub use module::{
 };
 pub use names::{NameProblem, Names};
 pub use types::{
-    BlockType, DataIdx, ElemIdx, FuncIdx, FuncType, GlobalIdx, GlobalType, LabelIdx, Limits, LocalIdx, MemIdx, RefType,
+    AddressType, BlockType, DataIdx, ElemIdx, FuncIdx, FuncType, GlobalIdx, GlobalType, LabelIdx, Limits, LocalIdx, MemIdx, RefType,
     TableIdx, TableType, TypeIdx, ValType,
 };
 

@@ -398,8 +398,8 @@ fn headers(m: &Module) -> Vec<String> {
 }
 
 fn limits_text(l: &Limits) -> String {
-    let mut s = format!("initial={}", l.min());
-    if let Some(max) = l.max() {
+    let mut s = format!("initial={}", l.min);
+    if let Some(max) = l.max {
         write!(s, " max={max}").unwrap();
     }
     s
@@ -481,14 +481,14 @@ fn details(m: &Module) -> Vec<(String, Vec<String>)> {
             }
             SectionKind::Table => {
                 for (i, t) in m.tables().iter().enumerate().filter(|(_, t)| t.origin == Origin::Defined) {
-                    let wide = if t.ty.limits.is_64() { " i64" } else { "" };
+                    let wide = if t.ty.limits.address == n0xis_wasm::AddressType::I64 { " i64" } else { "" };
                     let name = named(names.tables.get(&n0xis_wasm::TableIdx(i as u32)));
                     lines.push(format!(" - table[{i}] type={} {}{name}{wide}", t.ty.element, limits_text(&t.ty.limits)));
                 }
             }
             SectionKind::Memory => {
                 for (i, mm) in m.memories().iter().enumerate().filter(|(_, mm)| mm.origin == Origin::Defined) {
-                    let wide = if mm.limits.is_64() { " i64" } else { "" };
+                    let wide = if mm.limits.address == n0xis_wasm::AddressType::I64 { " i64" } else { "" };
                     lines.push(format!(" - memory[{i}] pages: {}{wide}", limits_text(&mm.limits)));
                 }
             }

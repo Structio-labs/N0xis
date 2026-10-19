@@ -98,7 +98,7 @@ fn the_planted_answers_are_the_ones_independent_validators_give() {
     for (i, case) in cases.iter().enumerate() {
         let path = dir.join(format!("case{i}.wasm"));
         std::fs::write(&path, &case.bytes).expect("written");
-        let want = !matches!(case.tool, Tool::Rejects);
+        let want = matches!(case.tool, Tool::Accepts | Tool::AcceptsOutsideScope);
         for (tool, args) in validators {
             asked += 1;
             let got = accepts(tool, args, &path);
