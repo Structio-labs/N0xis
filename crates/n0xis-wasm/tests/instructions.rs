@@ -149,3 +149,17 @@ fn the_c_fixture_holds_what_its_source_declares() {
         }
     }
 }
+
+/// The label names: the one subsection of the name section neither recorded
+/// tool shows. `shapes.wat` names one label, `$outer`, the first block of
+/// `$multi` (function 3).
+#[test]
+fn label_names_are_the_ones_the_text_gives() {
+    use n0xis_wasm::FuncIdx;
+    let m = common::module("shapes");
+    let names = m.names().expect("a name section");
+    let labels: Vec<(u32, u32, &str)> =
+        names.labels.iter().flat_map(|(f, ls)| ls.iter().map(move |(l, n)| (f.0, *l, n.as_str()))).collect();
+    assert_eq!(labels, [(3, 0, "outer")]);
+    assert_eq!(names.functions.get(&FuncIdx(3)).map(String::as_str), Some("multi"));
+}
