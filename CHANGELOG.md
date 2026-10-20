@@ -7,13 +7,23 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Added
 
-- **A WebAssembly reader and instruction decoder,** `n0xis-wasm`: every section, the function,
-  table, memory and global index spaces, the `name` section, and all 437 opcodes of the 2.0 core
-  with SIMD, bulk memory, reference types, memory64 and multiple memories, each instruction with
-  its file offset. Checked on modules built here from C and text against the text itself (1 686
-  instructions) and against `wasm-objdump` and `wasm-tools print` (7 113 comparisons); 20 779
-  corrupted copies end in an error or a finding, never a stop. Library only for now: the module
-  does not yet reach the pipeline or the command line.
+- **A WebAssembly reader and instruction decoder,** `n0xis-wasm`: every section, index space and
+  instruction of the WebAssembly 3.0 binary format (typed references; garbage-collected types with
+  recursion groups, subtypes, structures and arrays of packed fields; tail calls; exception handling
+  with `exnref`, `try_table` and the tag section; relaxed SIMD; memory64 and multiple memories), the
+  threads proposal (shared memories and the 67 atomic instructions) and legacy exception handling
+  (`try`, `catch`, `delegate`, `rethrow`), and the `name` section with its field and tag names: 571
+  opcodes, each instruction with its file offset. What `clang -pthread` and `clang++
+  -fwasm-exceptions` (both exception encodings) emit reads without a finding. Checked on 14 modules
+  built here from C, C++ and text: every instruction the text states (2 947, none different; every
+  opcode used, and every immediate of two indices stated with two different values); 12 292
+  comparisons with `wasm-objdump` and `wasm-tools print` and 5 496 with V8's disassembler, every
+  disagreement (15 and 3) a printing fault of the tool, settled by a third source; 96 planted modules
+  judged by three validators and a decoding-only judge; 10 496 modules putting every byte at each
+  module-level decision point, where the reader, `wasm-tools` and V8 agree except on proposals the
+  reader does not read; and 52 198 corrupted copies with no stop and no single allocation above 96
+  times the input's length. Library only for now: the module does not yet reach the pipeline or the
+  command line.
 - **32-bit ARM loads, stores and `pc` lift.** Every A32 and Thumb single load and store (each
   width and sign, every addressing mode, `ldrd`/`strd`), `ldm`/`stm` in all four modes, and
   reads of `pc` (the instruction's address plus 8 in A32, plus 4 in Thumb, aligned for literal

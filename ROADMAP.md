@@ -1403,21 +1403,24 @@ outside this codebase that can prove it wrong.
      emitted, in agreement with the JDK's own `javap`, and decompiled methods
      return what their source returns on tested inputs.
    - **WebAssembly** (recorded 2026-10-19): a module format and a stack-machine
-     instruction set at once, so it crosses both seams. Stage 1 is done: a crate
-     of its own, `n0xis-wasm`, reads every section, the index spaces and the
-     `name` section, and decodes all 437 opcodes of the 2.0 core with SIMD,
-     bulk memory, reference types, memory64 and multiple memories, behind our
-     own types and under the hostile-input contract. Checked on modules built
-     here from C and from text: every instruction the text states (1 686, none
-     different, all 437 opcodes used), 7 113 comparisons with `wasm-objdump` and
-     `wasm-tools print` (two differences, both the first tool's own printing
-     faults: a memory64 offset cut to 32 bits, a `v128` global's initial value),
-     and 20 779 corrupted copies without a stop or a runaway allocation. Not yet
-     read: threads (a `shared` memory is refused, so `-pthread` output does not
-     load), exception handling, tail calls, typed function references, GC and
-     relaxed SIMD. Stages 2 and 3 (the module as an image, the stack machine
-     lifted into the IR) wait on the format seam and the IR decisions; then a
-     module read live from a browser page.
+     instruction set at once, so it crosses both seams; the design and its
+     decisions are [`docs/design/WASM.md`](docs/design/WASM.md). Stage 1 is
+     done: a crate of its own, `n0xis-wasm`, reads the WebAssembly 3.0 binary
+     format with threads and legacy exception handling (571 opcodes), behind
+     our own types and under the hostile-input contract. Checked on 14 modules
+     built here from C, C++ and text: against the text itself (2 947
+     instructions, none different), against `wasm-objdump` and `wasm-tools
+     print` (12 292 comparisons) and against V8's disassembler (5 496), every
+     difference a printing fault of the tool settled by a third source; by
+     three validators on 96 planted modules; by a sweep of 10 496 modules that
+     puts every byte at each module-level decision point; and by 52 198
+     corrupted copies without a stop or a runaway allocation. Not read, and
+     refused with the byte named: shared-everything threads, stack switching,
+     wide arithmetic, custom page sizes, and the component format. Stages 2
+     and 3 (the module as an image, the stack machine lifted into the IR)
+     wait on the format seam and the IR changes their documents decide; then a
+     module read live from a browser page, through a bridge process outside
+     the engine.
      **Done when:** a module built here from C decompiles through the pipeline
      and its functions return what they return under `wasmtime` on randomized
      inputs.
@@ -1500,11 +1503,19 @@ outside this codebase that can prove it wrong.
     - the **platform boundary** as a declared list: every import a runtime must
       provide, grouped by library. Writing that runtime is not this item.
 
+    The design, with its decisions, is
+    [`docs/design/RECOMPILER.md`](docs/design/RECOMPILER.md).
+
     **Done when:** functions of a program built here are translated, compiled
-    for a different architecture, and return the same results as the original
-    running on its own processor over randomized inputs. That is rung 1, the
-    processor as the oracle; a 32-bit ARM board can run A32 code natively. After
-    that, a whole program reaches its first frame.
+    for a different architecture, and leave the same guest state as the
+    original running on its own processor over randomized inputs: every
+    register, the callee-saved ones included, the flags, and the memory written
+    (the return value alone passes a translation that clobbers a callee-saved
+    register). That is rung 1, the processor as the oracle: qemu with the
+    guest's CPU model named, and a physical board where one exists; a 32-bit ARM
+    board can run A32 code natively. After that, a whole program built here,
+    translated entirely, produces the same output as the original for the same
+    input.
 
 **The one thing to hold on to while working through this list:** items 1, 3, 6
 and 7 are *acquisition* — a reader, a specification set, a rule at a time, a
