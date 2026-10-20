@@ -1,6 +1,6 @@
 [package]
 name = "n0xis-mcp"
-description = "MCP frontend — agent-native tools over the same core API as the CLI (ROADMAP Phase 5)."
+description = "The MCP front end over the same core API as the CLI (ROADMAP Phase 5)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

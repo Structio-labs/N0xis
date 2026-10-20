@@ -402,8 +402,8 @@ Goal: fuse the two worlds (CONCEPT §11).
   silently truncating the scan to 4096 bytes; generalized `LiveProcess::section_range`
   into `section_range_of` (any module, not just the main one) to fix it.
 
-## Phase 5 — MCP frontend (the moat) 🎯 ✅
-Goal: agent-native interface as a first-class citizen (PRODUCT_POLICY §3: "Powerful CLI *and* MCP").
+## Phase 5 — MCP frontend 🎯 ✅
+Goal: a scriptable interface, CLI and MCP, as a first-class citizen (PRODUCT_POLICY §3: "Powerful CLI *and* MCP").
 - ✅ `n0xis-mcp` server exposing the same `n0xis-core`/`n0xis-sources` capabilities the
   CLI drives, as MCP tools, built on the official [`rmcp`](https://docs.rs/rmcp) SDK's
   macro pattern (`#[tool_router]`/`#[tool_handler(router = self.tool_router)]`) over
@@ -6559,12 +6559,13 @@ plugin protocol, not a separate product. (These three extra crates —
 
 ---
 
-## Phase 11 — Agent consumability 🎯 ✅
+## Phase 11 — Machine-readable output 🎯 ✅
 
 Derived, like Phase 8, from a post-mortem rather than a wish list — this time from an
 agent's session log against an IL2CPP target, with every claim re-measured against
-the real binary before anything was built. The thesis of this project is *agent-native*;
-these are the places the output was quietly hostile to its primary consumer.
+the real binary before anything was built. A scriptable interface, CLI and MCP, is a
+first-class citizen here; these are the places the output was quietly hostile to a program
+reading it.
 
 - ✅ **Truncation is part of the contract** (`n0xis-contracts::Meta`) — `returned` /
   `total` / `truncated`, plus `note` for a *successful* result that reads as something it
@@ -7466,7 +7467,7 @@ through plain syscalls — no signed driver, no code-integrity fight:
     only its first `rel32` call/jmp encodings with x64, then desyncs at the first
     differently-encoded opcode (`A1 mov moffs` — 4 address bytes vs 8; `0x40` = `inc eax`
     vs a REX prefix) and produced confident garbage returned as `ok:true` — the worst
-    outcome for an agent-native tool. First shipped a **fail-loud** guard (never silent
+    outcome for a tool whose answers a script acts on. First shipped a **fail-loud** guard (never silent
     garbage), then the real fix: **i386 decode**. `X64` is now bitness-parameterized
     (`X64::x86()`), threading 32-bit through every `iced` decode site; `StaticPe` detects
     PE32 (`goblin` `is_64`), reports 4-byte pointers and the `cdecl` ABI, and the frontend

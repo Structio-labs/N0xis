@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Tymofii Kosovskyi
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! # n0xis-mcp — the agent-native frontend (Phase 5)
+//! # n0xis-mcp — the MCP front end over the same core API as the CLI (Phase 5)
 //!
 //! An MCP (Model Context Protocol) server exposing the same
 //! `n0xis-core`/`n0xis-sources` capabilities the CLI drives, as MCP tools
 //! returning the **same `ok/data/meta` envelope and schema ids** as
 //! `n0xis-cli` (CONCEPT §3 rule 5 — CLI and MCP are equal frontends, no
-//! analysis logic lives in either). An agent parses a tool's JSON content the
+//! analysis logic lives in either). A client parses a tool's JSON content the
 //! same way whether it called the CLI or MCP.
 //!
 //! Built on the official [`rmcp`] SDK's macro-based server pattern

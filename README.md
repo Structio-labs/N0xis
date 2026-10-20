@@ -1,19 +1,23 @@
 # N0xis
 
-**From a hardware watchpoint in a live process to the decompiled statement that wrote the value.**
+A reverse-engineering toolkit: disassembler, SSA decompiler, C++ class recovery and live-process
+analysis for PE and ELF. Static files and running processes go through one pipeline, and every
+answer is JSON a script can act on.
 
-Memory scanners find the *address*. Decompilers explain the *code*. **N0xis takes you from one to the other in one scriptable loop.**
+Three front ends share that core: the CLI, where a command answers with one JSON object (a `serve` session with a ready envelope, then one per request); a
+desktop GUI in its own repository, **[n0xis-gui](https://github.com/Structio-labs/n0xis-gui)**; and
+an MCP server, `n0xis-mcp` — 27 tools returning the same envelope over JSON-RPC on stdio.
 
 ![A live run: find a program's decrypted settings in its memory, watch them with a hardware watchpoint, and get the decompiled loop that wrote them](docs/assets/live-loop.gif)
 
 <sub>A real run of [`examples/config-demo`](examples/config-demo): a program keeps its settings encrypted and decrypts them into memory; find the plaintext, arm a hardware watchpoint on it, and get the decompiled code that wrote it. Rerun it yourself with `demo.sh`.</sub>
 
 ```console
-$ n0x provenance trace --pid 181529 --addr 0x564e32cb7060 --kind write
+$ n0xis provenance trace --pid 181529 --addr 0x564e32cb7060 --kind write
 ```
 ```jsonc
 "instruction_va": "0x564e32cb4266",   // the byte store that wrote the watched address
-"function_va": "0x564e32cb4230",      // the function it sits in, auto-resolved
+"function_va": "0x564e32cb4230",      // the function it sits in, on this build (see below)
 "decompiled_context": [
   "rcx.3 = (uint32_t)((uint32_t)(uint32_t)*(uint8_t*)((rsi.1 + v2)) ^ (uint32_t)v1);",
   "*(uint8_t*)((rdi.1 + v2)) = (uint8_t)rcx.3;",   // ← the write
@@ -23,184 +27,126 @@ $ n0x provenance trace --pid 181529 --addr 0x564e32cb7060 --kind write
 ]
 ```
 
-In the source this is the loop `config[i] = sealed[i] ^ key; key = key * 13 + 7;`: the
-decompiled key update, `v1 + (v1 * 2) * 4 + 7`, is the same `key * 13 + 7`. The answer gives
-addresses, not the names `config` and `decrypt_config`: names of globals and functions from the
-binary's symbols are not carried into it yet. The run above is on Linux; the live loop runs on
-Windows too.
+In the source this is `config[i] = sealed[i] ^ key; key = key * 13 + 7;`: the two statements
+`rcx.4 = v1 + v1 * 2` and `v1 = v1 + rcx.4 * 4 + 7` together are `v1 * 13 + 7`. The answer gives
+addresses, not the names `config` and `decrypt_config`: names from the binary's symbols are not
+carried into it yet. This build is gcc `-O2`, where `function_va` is the function's start; on clang
+`-O2` and gcc `-O1` builds of the same source it is the loop head, answered `ok:true` with no note.
+This run is on Linux; the last Windows run of `provenance trace` is in the [ledger](docs/VERIFICATION.md).
 
-The watchpoint hit is resolved through the same SSA pipeline that decompiles the file, so
-the answer is the statement that wrote the value and the function it sits in, as JSON a
-script can act on. It is meant to sit next to the disassembler and decompiler you already
-use, not to replace them.
+## What runs where
+
+**yes**: every check agreed · **partial**: usable, with the gaps below · **wrong**: `ok:true` with wrong
+results on measured inputs · **refused**: a typed error · **not yet**: no code path. Measured in October
+2026 on programs built from known source, against the processor and independent tools.
+
+| Format | Static file | Live process |
+| --- | --- | --- |
+| PE32+, PE32 (x86-64, x86, ARM64) | partial: the gaps and wrong answers below | Windows: not measured for this table |
+| ELF64, ELF32 (x86-64, x86, AArch64, ARMv7) | partial: the gaps and wrong answers below; big-endian: decompile and RTTI refused | Linux x86-64: partial: the live entries below; other ISAs not measured |
+| Mach-O, thin and universal | refused (`load-failed`) | not yet |
+| WebAssembly | refused (`load-failed`); its reader is a library crate, not wired to `--file` yet | not yet |
+| Raw bytes (`--bytes`) | disassemble, cross-references, strings with a range; discover and decompile partial; `profile` and `rtti scan` refused | — |
+
+| ISA | Disassemble | Discover functions | Decompile |
+| --- | --- | --- | --- |
+| x86-64 | yes | yes with unwind tables; partial without | partial |
+| x86 (i386) | yes | partial: even with `.eh_frame`, GCC's padding and `.plt` listed as functions, dots in names rewritten, an end missing | partial |
+| AArch64, little- and big-endian | yes | little-endian yes with `.eh_frame`; big-endian partial: misses functions `.eh_frame` declares; partial without; on PE `--pdata` is wrong | partial; big-endian refused |
+| ARMv7 A32 | partial: no NEON, data in code decoded as code | partial | wrong: jump tables, tail calls |
+| ARMv7 Thumb-2 (`--arch thumb`) | wrong: branch targets, IT conditions | partial: no names or ends | wrong: an IT-predicated return ends the function |
+
+- **Wrong with `ok:true`**: Itanium RTTI in a MinGW PE (reported absent), `--pdata` on ARM64 PE, long
+  MinGW section names in `profile` (`/4`), the export list of an ELF shared object and the
+  `.localalias` names it gives that object's functions, GCC's i386 padding and `.plt` block listed as
+  functions, dots in symbol names printed as underscores (`__x86_get_pc_thunk_bx` for
+  `__x86.get_pc_thunk.bx`), and big-endian AArch64 discovery missing functions its `.eh_frame` declares.
+  The decompiler drops pass-through arguments, prints arithmetic shifts unsigned and 64-bit multiplies
+  as 32-bit, can switch on or read a register it never assigns, on AArch64 can name the wrong string,
+  on A32 (and in the same shape on AArch64) runs a countdown loop one iteration short, and on 32-bit
+  x86 loses stack arguments and the high half of 64-bit results. Its `quality` field is not a
+  correctness score. The full list, with counts, is in the [ledger](docs/VERIFICATION.md).
+- **Missed, answered `ok` with less**: without unwind tables, functions reached only through vtables,
+  the MSVC-ABI entry point and most of an ELF shared object; references held in absolute immediates,
+  AArch64 `adrp`+`add` or `adr`, or the i386 GOT; Itanium secondary vtables, and every Itanium class
+  of a stripped image; names that only the COFF symbol table holds. A PDB beside an x64 PE gave every
+  start, name and end on the two lld-link images measured (35 of 35, 18 of 18).
+- **Live** (Linux): `provenance trace` prints a written address as a string literal when the bytes
+  there happen to be printable, and on some builds names the loop head as the function (above); the
+  byte-pattern scan (`scan aob`) needs `--start`/`--size` to get past an unreadable region;
+  `scan dissect` guesses field types; Windows-only commands refuse elsewhere.
 
 ## Install
 
-Prebuilt binaries for Linux and Windows — **[latest release](https://github.com/Structio-labs/N0xis/releases/latest)**.
+Prebuilt binaries for Linux and Windows, the MCP server and `sha256sums.txt`: **[latest release](https://github.com/Structio-labs/N0xis/releases/latest)**.
 
 ```sh
 curl -LO https://github.com/Structio-labs/N0xis/releases/latest/download/n0xis-linux-x86_64
-chmod +x n0xis-linux-x86_64 && ./n0xis-linux-x86_64 --version
+curl -LO https://github.com/Structio-labs/N0xis/releases/latest/download/sha256sums.txt
+sha256sum -c --ignore-missing sha256sums.txt
+chmod +x n0xis-linux-x86_64 && mv n0xis-linux-x86_64 n0xis && ./n0xis --version
 ```
 
-Or build it: `cargo build --workspace --release` (Windows and Linux; no MSVC Build Tools
-needed — `rust-toolchain.toml` pins the gnu host).
+Or build it with stable Rust, on Linux or Windows: `cargo build --workspace --release`. `rust-toolchain.toml`
+pins the channel only, and says how to build on Windows without the MSVC Build Tools.
 
 ## Quickstart
 
-Every command prints **one** JSON object — argument errors included: `{"ok":true,"data":…,"meta":…}` or
-`{"ok":false,"error":…}`. Add `--pretty` to read it; the exit code is non-zero on failure.
+Every command prints **one** JSON object, argument errors included: `{"ok":true,"data":…,"meta":…}` or
+`{"ok":false,"error":…}`. The two session servers are the exception: `serve` prints one envelope per
+line, a ready envelope and then one for each request of its session, and `remote-serve` speaks its own line-by-line protocol to
+the `--remote-cmd` side. Add `--pretty` to read it; the exit code is non-zero on failure. Only `--help` and
+`--version` print plain text. The reference docs call the binary `n0x` (`ln -s n0xis n0x`).
 
 ```sh
-n0x doctor                                                    # environment check
-n0x profile --file app.exe                                    # triage: sections, exports, runtime hints
-n0x function discover --file app.exe --pdata                 # exact .pdata discovery
-n0x decomp pseudo --file app.exe --addr 0x140012a00 --style ssa --pretty
-n0x provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty
+n0xis doctor                                         # environment check
+n0xis profile --file app.exe                         # triage: sections, exports, runtime hints
+n0xis function discover --file app.exe --pdata       # functions from the x64 unwind table
+n0xis decomp pseudo --file app.exe --addr 0x140012a00 --style ssa --pretty
+n0xis xref to --file app.exe --addr 0x140012a00      # what calls or references it
+n0xis rtti scan --file app.exe                       # C++ classes from RTTI
+n0xis provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty   # live: what wrote it
 ```
 
-The same commands run on a live `--pid`, a static `--file`, a captured `--snapshot`, or a
-remote process over SSH. It is ordinary Unix plumbing —
-`n0x function discover --file app.exe --pdata | jq -r '.data.functions[].va'` feeds the next
-command. `n0x guide` lists all 117 commands, generated from the binary so it never drifts — and a test
-fails the build if this number does.
-
-**From an agent:** point any MCP client at `n0xis-mcp` — 27 tools returning the identical
-`{ok,data,meta}` envelope, JSON-RPC over stdio.
-
-```json
-{ "mcpServers": { "n0xis": { "command": "/path/to/n0xis-mcp" } } }
-```
+A command names its target with `--file`, `--pid`, `--snapshot`, `--remote-cmd` or `--bytes`; its `--help`
+lists the ones it takes. Output is Unix plumbing: `n0xis function discover --file app.exe --pdata | jq -r '.data.functions[].va'`
+feeds the next command. `n0xis guide` lists all 117 commands, generated from the binary, and a test fails the
+build if this README, `MAP.md`, `CONCEPT.md` or `docs/CLI_COMMANDS.md` states another count. On Linux, with Yama `ptrace_scope=1`, reading another process needs
+root or `CAP_SYS_PTRACE` unless it allows tracing, as `config-demo` does.
 
 ## What it does
 
-- **Decompile** — an optimizing SSA decompiler (Memory-SSA, phi-web variable coalescing,
-  complete SSA destruction, exact branch conditions) whose **optimizer reports every rewrite it
-  made** (`--explain`: which sub-pass changed what, at which address), not a black-box answer.
-- **Scan live memory** — value/pointer/AOB scanning with snapshot-backed narrowing, freeze,
-  code-cave hooks: the full scan → narrow → freeze → patch loop.
-- **Watch & explain** — software / hardware / conditional breakpoints and a real cross-process
-  unwound call stack; the raw material provenance is built on.
-- **Recover names** — C++ classes from RTTI on both ABIs (MSVC `.rdata` chains and Itanium
-  `_ZTV` symbols), .NET NativeAOT `RVA ↔ Namespace.Type.Method`, and a few runtime formats
-  (LuaJIT bytecode, Bitsquid, IL2CPP), so a stripped image reads as source, not `sub_XXXX`.
-- **Persist & diff** — `.n0xt` tables, versioned annotations, content-addressed caching,
-  function/version diffing.
+- **Read an image**: disassembly, function discovery, cross-references, strings, section and export triage.
+- **Decompile**: SSA, structured C-like output; `--explain` lists the rewrites it records, each with the
+  pass that made it.
+- **Recover names**: C++ classes from MSVC and Itanium RTTI, PDBs, exports, ELF symbols, .NET NativeAOT method
+  maps, and a few runtime formats, LuaJIT 2.0 bytecode among them.
+- **Work on a running process**: read, write and map memory; search it for values, byte patterns, structures
+  and pointer paths, narrowing as values change; patch it through a journal that can undo each change.
+- **Watch and explain**: software and hardware breakpoints, a cross-process call stack (Linux), and
+  `provenance trace`, from a watchpoint hit to the statement that wrote the value.
+- **Keep the work**: `.n0xt` tables, versioned annotations, a content-addressed cache, function and version diffing.
 
-Windows **and** Linux, PE **and** ELF, one pipeline — static files, live processes, snapshots
-and remote targets all flow through the same passes and the same versioned JSON.
+There is no machine-learned component in the core.
 
-There is no ML nondeterminism in the core, ever. A desktop GUI lives in a separate repo:
-**[n0xis-gui](https://github.com/Structio-labs/n0xis-gui)**.
+## How answers are checked
 
-## Status
-
-**Alpha.** Every claim below is a measurement against a source outside the tool — the kernel,
-the image's own tables, or the target process itself. Where there is no such source, it says so,
-because *implemented* and *verified* are not the same claim.
-
-**Live memory**, against a disposable target that plants known values:
-- **Linux — 29 of 31 commands measured against `/proc/<pid>/mem`, one wrong and fixed.** The
-  other two are Windows-only and refuse saying so. The one wrong was `scan dissect`, which
-  chose a field's width before its alignment and so read a struct four bytes out of phase from
-  its first mistake on: one field of six right against a layout known from its own source, five
-  of six after.
-- **Windows 11 — 21 of 23 checks measured, 0 wrong**, with the target itself as the oracle.
-  `ui focus` correctly finds no window on a console target; `stack backtrace` is
-  **Linux-only** — the one place the Linux adapter is ahead.
-
-**The decoder**, against an independent disassembler — the floor everything else stands on,
-and until now checked only by the passes built on top of it, which all read the same stream:
-- x86: instruction **boundaries** compared with `objdump`. Three purpose-built shapes exact,
-  **20 000 instructions of a shared library and 20 000 of a 32-bit system DLL, zero
-  disagreements** and zero boundaries either side had alone. Widened to **60 000 instructions
-  of a 334 MB stripped browser binary: 2 disagreements, both inside an ASCII string embedded
-  in `.text`** where the reference itself decodes `(bad)` — not code, and neither reading is
-  the right one.
-- AArch64: **mnemonics** compared with `llvm-objdump` (fixed-width encodings make boundaries
-  vacuous). See the ARM64 line below.
-- AArch64, **the encoding space rather than compiler output**: 600 deterministic words judged
-  by `llvm-mc --mattr=+all` and by n0xis. 241 both call an instruction, 304 both reject —
-  and **48 (8.0%) are reserved encodings n0xis reads as instructions**, with 7 (1.2%) real
-  instructions it rejects (mostly LSE atomics). Three of the 48 were decoded by hand and are
-  genuinely UNALLOCATED. That gap is **held by a bound that fails if it grows**, and stated
-  here rather than left out: a reserved word read as an instruction turns data into a
-  plausible program.
-
-**Function extents**, against the image's own unwind table and the linker's export list:
-- every FDE's `start..end` from `objdump --dwarf=frames` equal to the recovered extent —
-  **3 787 compared on this machine (10 + libc's 3 777), start and end, exact**; separately
-  measured at 15 467 and 14 355 on two large libraries.
-- **0 exported entry points missed** by the function list: 10 of 10 on the oracle shape and
-  **2 323 of 2 323 inside libc's scanned window**.
-
-**Cross-references and the call graph**, against the disassembly of a source that is not this
-tool:
-- **4 733 references across the six busiest targets of a system C library — none missed and
-  none invented**, in both directions. `call`, tail-call `jmp` and RIP-relative data
-  references are each labelled by `kind`, and each was compared against what `objdump` shows.
-- **304 call sites across 100 functions — none missed and none invented**, with each
-  function's extent taken from the unwind table rather than from a symbol boundary, and a
-  tail call (including a *conditional* one) counted as the call it is.
-- **464 branch targets across 100 functions, every one of them the start of a basic block.**
-  A target the splitter misses leaves two blocks fused, so an edge that exists in the program
-  does not exist in the graph — and nothing above it can notice.
-
-**Recovered struct fields**, against the compiler that laid the struct out:
-- `gcc -g` states every member's offset; **15 recovered field offsets across 10 functions,
-  every one a real member — none invented.** One-directional on purpose: an optimizer folds
-  and drops field accesses, so a member that never appears is the compiler's doing, not a miss.
-
-**Static analysis**, against the extents and tables the image declares:
-- x64 ELF and PE: function extents exact, 0 CFG-invariant violations over 92 001 edges.
-- **ARM64 — decoder and CFG verified, decompiler not.** 2 381 of 2 381 function extents exactly
-  equal to the symbol table, 0 violations across 46 757 CFG edges. The decoder is now checked
-  against **LLVM's own AArch64 disassembler** over compiler output built for the purpose
-  (`oracle/arm64.c` at `-O2`): **147 instructions, 147 shared addresses, 0 failures to decode,
-  and every one of the 28 name differences a documented architecture alias** (`mov`/`orr`,
-  `cmp`/`subs`, `b.hs`/`b.cs`, …), each listed in the test rather than forgiven in bulk. The
-  AArch64 lift/SSA is still not built, so `decomp pseudo` reports `quality: 0.0` and falls back
-  to `asm` nodes. The optimizing decompiler is **x64-only**.
-- 32-bit PE: 422 of 422 exported entry points discovered, 0 violations over 34 149 edges.
-  On a 32-bit image with **no exception table at all**, checked against the 3 889 `.eh_frame`
-  FDEs an independent parser reads out of it: **0 missed, every extent exact, 0 entries interior
-  to a known function.** The rule was written against x64 exception tables and holds on an
-  architecture that has none.
-
-**Recovered signatures**, against targets compiled here whose answer is known before the
-question is asked (`oracle/`):
-- **12 of 12 on both x86-64 ABIs** — parameter count, which register file each parameter
-  arrives in, and return class, including both orders of a mixed integer/floating signature
-  (System V and Win64 count their two argument register files by different rules).
-- 32-bit `cdecl` states no arity on the way out and passes nothing in a register, so the
-  parameter list reads `()` — C for *unspecified* — and not `(void)`, which would be a claim
-  that there are none. The x87 return this lift does not model reads `/*unknown*/`, not `void`.
-  Both gaps are recorded in `oracle/expect.json` with their reason, and the test **fails if one
-  quietly closes**, so a recorded limitation cannot rot into folklore.
-
-**Recovered C++ classes**, against the image's own type-descriptor strings:
-- **93 vtables on a 32-bit C++ runtime (0 before), 97 and 152 on two 64-bit ones, 269 on an
-  ELF through the Itanium path — and every recovered name present in the image's own
-  strings**, so none is invented. Both MSVC dialects have planted regression fixtures
-  (`oracle/rtti32.c`, `oracle/rtti64.S`), because no compiler here emits MSVC RTTI.
-
-**Not verified, and not claimed:** `il2cpp import` / `symbols` need an external dumper's index;
-`il2cpp obj` / `classes` need a live managed process. The versioned JSON contract has not been
-road-tested by outside users — expect shapes to move.
+A claim counts only when a source outside N0xis agrees: a program built from known source and run on the
+processor, the image's own tables, or an independent tool such as `llvm-objdump`, `readelf` or `eu-stack`.
+[docs/VERIFICATION.md](docs/VERIFICATION.md) is the one place the numbers live, open gaps included. Three of
+them, from October 2026:
+- the decoder read 10 498 instructions on 10 PE and ELF images (x86-64, x86, AArch64) as `llvm-objdump` or GNU `objdump` does, every difference a documented alias;
+- on Linux, 19 of 23 live operations matched `/proc/<pid>/mem`, `/proc/<pid>/maps`, `nm`, `objdump`, `eu-stack` or the target's own printed values; the other four are in the live entry above: the string literal in `provenance trace`, `scan aob` on its default regions, `scan dissect`'s types and the Windows-only refusal (the loop head was measured on `config-demo`, not among the 23);
+- the decompiler's C, compiled beside its source and run on the same inputs, was right on 5 to 11 of 14 functions per image on 9 PE and ELF images, a first measurement: 33 of the 126 verdicts were not executed, because the output could not be run (24 read by hand, 9 judged incomplete from the placeholders the text holds), and a second pass did not reproduce the totals.
 
 ## Docs
 
-- **[docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md)** — every command (the inventory is generated
-  from the binary), the schema id each emits, and the caveats behind each claim. Arguments live
-  in `n0x guide` and `--help`, which are generated too.
-- **[oracle/README.md](oracle/README.md)** — the corpus of targets whose answer is known
-  before the question is asked, how the ranking of sources works, and how to add a shape.
-- **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — the verification ledger: every check with
-  its source rung and case count, and what is proven, open, or not claimed — all in one place.
-- **[CONCEPT.md](CONCEPT.md)** — architecture: adapters, passes, seams.
-- **[ROADMAP.md](ROADMAP.md)** — build history and the analysis capabilities still missing.
-- **[MAP.md](MAP.md)** — the 16-crate workspace layout.
-- **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
+- **[docs/CLI_COMMANDS.md](docs/CLI_COMMANDS.md)** — every command and the schema each emits, generated from the
+  binary; arguments are in `n0xis guide` and `--help`, generated too.
+- **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — every check, its source and case count: proven, open, not claimed.
+- **[oracle/README.md](oracle/README.md)** — targets whose answer is known before the question, and how to add one.
+- **[CONCEPT.md](CONCEPT.md)** (architecture) · **[ROADMAP.md](ROADMAP.md)** (history, what is missing) ·
+  **[MAP.md](MAP.md)** (the 16-crate layout) · **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
   **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## License
