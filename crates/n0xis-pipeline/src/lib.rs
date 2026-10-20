@@ -81,6 +81,19 @@ fn cfg_cache_key(source_label: &str, input: CfgInput, probe: &[u8]) -> String {
     format!("{}{:016x}", cfg_cache_generation(), h.finish())
 }
 
+/// What the whole image holds, for the scope of a cache key: a CFG reads jump
+/// tables and a decompile reads vtables and strings from outside the function,
+/// so keyed on the function's own bytes alone, a file changed in place with
+/// the function unchanged was answered from the old file's entry. Measured: a
+/// position-independent executable relinked so that its vtable slots hold
+/// their methods in the file kept `Plugin::drive`'s call unresolved, as it had
+/// been while the slots read zero, until `.n0x/decomp-cache/` was deleted by
+/// hand. A source whose bytes can change (a live process, a remote agent) has
+/// no identity, and its entries stay keyed on the bytes read.
+fn image_identity(ctx: &Ctx) -> String {
+    ctx.source.identity().map(|id| format!("|{id}")).unwrap_or_default()
+}
+
 /// Key prefix shared by every entry this build may read: `cfg-<fingerprint>-`.
 /// Carried *in the key* rather than mixed into the hash so the store can sweep
 /// other generations by name (see [`n0xis_project::ir_cache::retain_prefix`]) —
@@ -148,9 +161,10 @@ pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), Cor
     // for first — an ARM64 image analysed as x64 and then, correctly, as arm64
     // got the x64 garbage both times, with no error and no way to tell.
     let scope = format!(
-        "{}|{}{}",
+        "{}|{}{}{}",
         ctx.source.label(),
         ctx.arch.decoder_id(),
+        image_identity(ctx),
         if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") }
     );
     let key = cfg_cache_key(&scope, input, &probe);
@@ -279,9 +293,10 @@ pub fn decomp_cached(
     // for first — an ARM64 image analysed as x64 and then, correctly, as arm64
     // got the x64 garbage both times, with no error and no way to tell.
     let scope = format!(
-        "{}|{}{}",
+        "{}|{}{}{}",
         ctx.source.label(),
         ctx.arch.decoder_id(),
+        image_identity(ctx),
         if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") }
     );
     let key = decomp_cache_key(&scope, input, &probe, style, var_names, var_types, struct_defs);
