@@ -95,8 +95,9 @@ Status: Open.
 
 ## Plugin system (design + implementation)
 
-**The biggest item on this list.** No implementation exists yet — this is a
-proposed design, open for discussion before (or during) implementation.
+**Half built.** A plugin can be registered, listed and removed from the CLI,
+listed from MCP, and run by name from both; nothing runs one after a pass yet,
+so no command's answer carries plugin findings.
 
 **Why process-based, not dynamic libraries.** Rust has no stable ABI, so a
 `cdylib`-loaded plugin locks a third party to the exact compiler version and
@@ -106,20 +107,22 @@ This project already has a working precedent for a better shape:
 `n0xis-sources::remote`'s newline-JSON-over-stdio protocol
 ([`remote.rs`](../crates/n0xis-sources/src/remote.rs)) and the MCP frontend
 itself are both "a separate process speaks a small JSON protocol over stdio" —
-the same idea a plugin needs, already proven out twice in this codebase.
+the same idea a plugin needs, already proven out twice in this codebase. The
+plugin transport is built on the same line framing and process spawning as
+`remote` ([`linewire.rs`](../crates/n0xis-sources/src/linewire.rs)).
 
-**Proposed first extension point: analysis-result plugins.** A plugin is an
-executable registered in `.n0x/plugins.json` (name → command/argv, mirroring
-how `--remote-cmd` is just an argv). Given an artifact (a `CfgArtifact`,
-`PseudoFunction`, or `DiscoverArtifact` — whichever the plugin declares it
-handles) as JSON on stdin, it returns additional findings as JSON on stdout:
-extra annotations, vendor-specific signature matches, target-specific heuristics
-— without needing a Rust PR against `n0xis-core` at all. `n0xis-pipeline`
-would gain a `PluginHost` that shells out to registered plugins after a pass
-runs and merges their findings into the response under a `plugins` key,
-additive to the existing schema (never replacing core fields — CONCEPT §3
-rule 6 again: a plugin's opinion is additional information, not authoritative
-over the core analysis).
+**The first extension point: analysis-result plugins.** A plugin is an
+executable registered under a name in `.n0x/plugins.json`, with its command
+line (split the same way as `--remote-cmd`) and the artifact kinds it declares
+it handles: `cfg`, `pseudo`, `discover` (`CfgArtifact`, `PseudoFunction`,
+`DiscoverArtifact`; [`plugins.rs:19-32`](../crates/n0xis-project/src/plugins.rs)).
+Given an artifact as JSON on stdin, it returns additional findings as JSON on
+stdout: extra annotations, vendor-specific signature matches, target-specific
+heuristics — without needing a Rust PR against `n0xis-core` at all. The design
+merges those findings into a pass's response under a `plugins` key, additive to
+the existing schema (never replacing core fields — CONCEPT §3 rule 6: a
+plugin's opinion is additional information, not authoritative over the core
+analysis); that merge is the part not built (item 3 below).
 
 **Deliberately not proposed yet: architecture-via-plugin** (a decoder plugin
 receiving raw bytes over stdio instead of a native `impl Arch`). Feasible in
@@ -128,19 +131,69 @@ instruction is a real performance concern for anything beyond prototyping —
 worth a separate design discussion once the analysis-plugin shape is proven,
 not bundled into the first cut.
 
-**Concretely open for whoever picks this up:**
-1. The wire protocol shape (request/response JSON schema, one artifact kind to
-   start with).
-2. `.n0x/plugins.json` registration format + a `plugin list`/`plugin add` CLI
-   surface (mirroring `table`/`selection`'s existing storage pattern).
-3. `n0xis-pipeline::PluginHost` — spawn, send, merge, with the same
-   fail-open-but-visible posture the rest of this project uses (a plugin
-   crashing or timing out degrades to "no plugin findings," never breaks the
-   underlying analysis).
-4. MCP exposure: a `plugin_list`/`plugin_run` tool pair, per Product Policy
-   §3 (every capability, both frontends).
+**What exists:**
+- **The stdio transport**
+  ([`n0xis-sources/src/plugin.rs`](../crates/n0xis-sources/src/plugin.rs)):
+  `call_once` spawns the command, writes one JSON line, reads one JSON line
+  back, then waits up to a timeout for the process to exit (`:34-71`). A
+  persistent `PluginSession`, for many requests to one process, sits beside it
+  (`:78-120`); nothing calls it yet.
+- **Registration**
+  ([`n0xis-project/src/plugins.rs`](../crates/n0xis-project/src/plugins.rs)):
+  add (overwriting by name), list, get, remove and select by kind, over
+  `plugins.json` in the project's `.n0x/` (`:60-129`); outside a project the
+  file is the global directory's (`n0xis-project/src/lib.rs:167-176`).
+- **The CLI** ([`n0xis-cli/src/main.rs`](../crates/n0xis-cli/src/main.rs)):
+  `plugin add --name … --command … --handles …`, `plugin list` and
+  `plugin rm --name …` (`:1522-1558`, run at `:4809-4834`).
+- **The registry**
+  ([`n0xis-frontend/src/registry.rs`](../crates/n0xis-frontend/src/registry.rs)):
+  each registered plugin is a capability named `plugin.<name>`, registered
+  through the same `Plugin` trait as the built-in capabilities (`:2534-2577`,
+  composed with them at `:2591`). `capability list` shows it with its command
+  and its declared kinds, and `capability run plugin.<name> --args '{…}'` sends
+  those arguments as the request and returns the plugin's answer as `data`,
+  under `n0xis.plugin.v1`.
+- **MCP** ([`n0xis-mcp/src/tools.rs`](../crates/n0xis-mcp/src/tools.rs)):
+  `plugin_list`, the same payload as the CLI's `plugin list` (`:1044-1053`;
+  `n0xis-mcp/tests/cross_door_parity.rs:408` compares the two doors), and
+  `plugin_run`, which sends one registered plugin `{kind, artifact}`
+  (`:1055-1072`); `capability_run` reaches `plugin.<name>` as it reaches a
+  built-in.
 
-`A-Plugins` / `D-Complex` / `S-Needs-Design`. Status: Open.
+**Concretely open for whoever picks this up:**
+1. **The wire protocol shape — half done.** One JSON line each way is built;
+   no schema states either side. `plugin_run` and `run_plugins_for` send
+   `{kind, artifact}` (`tools.rs:1067`, `n0xis-pipeline/src/lib.rs:460`),
+   `capability run plugin.<name>` sends its arguments as they are
+   (`registry.rs:2567`), and whatever line comes back is the answer. The two
+   ways to run a plugin also answer in two shapes under one schema:
+   `plugin_run` as `{plugin, findings}` (`tools.rs:1069`), the capability as
+   the plugin's line itself (`registry.rs:2568`).
+2. **`.n0x/plugins.json` registration and a CLI surface — done**, as listed
+   above. Registering and removing a plugin have no MCP tool.
+3. **The plugin host in `n0xis-pipeline` — half done.** `run_plugins_for`
+   (`n0xis-pipeline/src/lib.rs:445-472`) runs every plugin registered for a
+   kind against an artifact and returns one entry per plugin, its findings or
+   its error. Only its own tests call it (`:505, 522, 528, 542`), so no pass
+   merges plugin findings into a response, and `--handles` is declarative
+   only: recorded and shown in `capability list`, dispatched on by nothing
+   (`n0xis-cli/src/main.rs:1542-1549`). The fail-open-but-visible posture
+   holds for a plugin that exits without answering, answers something that is
+   not JSON, or answers and does not exit within 10 s: each is reported as an
+   error, never a panic. It does not hold yet for a plugin that never answers,
+   which nothing bounds, because the timeout starts only once a line has been
+   read (`n0xis-sources/src/plugin.rs:53-69`; measured through
+   `capability run`, a plugin that reads its request and then sleeps had
+   neither an answer nor an error after 30 s), nor for an unreadable
+   `plugins.json`, for which `run_plugins_for` returns no entry at all where
+   its own comment promises one with `error` set
+   (`n0xis-pipeline/src/lib.rs:445-449, 454-456`).
+4. **MCP exposure — done**: the `plugin_list`/`plugin_run` pair, as listed
+   above.
+
+`A-Plugins` / `D-Modest` / `S-Needs-Design`. Status: Open — items 2 and 4
+done, 1 and 3 half done.
 
 ---
 
