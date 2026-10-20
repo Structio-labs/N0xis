@@ -743,7 +743,8 @@ struct ConstIdentifyArgs {
 
 /// For a command that picks its decoder with `Src::pick_arch`/`pick_arch_for`.
 const ARCH_HELP: &str = "Instruction set to decode: `x64`, `x86`, `arm64`, `arm32` (A32) or `thumb` (T32). \
-    Omitted: a file is decoded as its header declares; anything else (a live process, a snapshot, `--bytes`) as `x64`.";
+    Omitted: a file is decoded as its header declares, and refused if it declares a machine this build does not decode; \
+    anything else (a live process, a snapshot, `--bytes`) as `x64`.";
 
 /// For a command that resolves `--arch` with `resolve_arch` alone, so the
 /// header is not consulted and an ARM file decodes as x86-64 unless told.
@@ -4093,19 +4094,28 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // Two ABIs: MSVC RTTI lives in `.rdata`; an ELF's classes come from Itanium
     // `_ZTV…` symbols. Without this branch every Linux C++ target reported zero
     // classes and persisted no symbol map, so the decompiler never saw them.
-    let itanium: Option<Vec<n0xis_core::RttiVtable>> = match &src {
-        Src::Static(img) => match img.as_ref() {
-            n0xis_sources::StaticImage::Elf(elf) => {
-                Some(n0xis_core::scan_itanium_rtti(src.as_mem(), &elf.data_symbols(), src.text_range()))
-            }
-            _ => None,
-        },
-        _ => None,
+    //
+    // An image whose RTTI is refused (big-endian) fails `analyze` here with the
+    // refusal's error, rather than answering `rtti_classes: 0` as though it had
+    // no classes.
+    let itanium = match src.itanium_vtables() {
+        Ok(scan) => scan,
+        Err(refused) => return ir_err(refused.code(), &refused.message(), pretty),
     };
+    // Counted rather than dropped: a class not reported and a slot not named
+    // are answers too (see `n0xis_core::VtableRefusal`, `VtableSlots`).
+    let (mut refused_virtual_bases, mut refused_first_slot_not_code, mut refused_first_slot_empty, mut thumb_slots_refused) =
+        (0usize, 0usize, 0usize, 0usize);
     let classes = match (itanium, src.section_range_in(None, ".rdata")) {
-        (Some(vts), _) => {
+        (Some(scan), _) => {
+            refused_virtual_bases = scan.count_refused(n0xis_core::VtableRefusal::VirtualBases);
+            refused_first_slot_not_code = scan.count_refused(n0xis_core::VtableRefusal::FirstSlotNotCode);
+            refused_first_slot_empty = scan.count_refused(n0xis_core::VtableRefusal::FirstSlotEmpty);
+            let vts = scan.vtables;
             let n = vts.len();
-            let (mut functions, data) = n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range());
+            let n0xis_core::RttiSymbols { mut functions, data, thumb_slots_refused: thumb } =
+                n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range(), src.vtable_slots());
+            thumb_slots_refused = thumb;
             functions.retain(|va, _| {
                 ctx.symbols.and_then(|s| s.symbol_at(Va(*va))).is_none_or(|sym| sym.va.0 != *va)
             });
@@ -4119,7 +4129,9 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
             let _ = rd;
             let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size());
             let n = vts.len();
-            let (mut functions, data) = n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range());
+            let n0xis_core::RttiSymbols { mut functions, data, thumb_slots_refused: thumb } =
+                n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range(), src.vtable_slots());
+            thumb_slots_refused = thumb;
             functions.retain(|va, _| {
                 ctx.symbols.and_then(|s| s.symbol_at(Va(*va))).is_none_or(|sym| sym.va.0 != *va)
             });
@@ -4200,7 +4212,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     let pdb = n0xis_frontend::pdb_syms::lookup(pe.as_ref());
     let named = n0xis_frontend::static_names::StaticNames::new(&local, pdb.symbols(), None, pe.as_ref(), None);
     let vtables = std::sync::Arc::new(n0xis_frontend::annotation_syms::persisted_vtable_map());
-    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables);
+    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables, src.vtable_slots());
 
     // Phase 2c — whole-program type propagation, PERSISTED (priority 3b).
     //
@@ -4296,6 +4308,10 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     let data = json!({
         "functions": total,
         "rtti_classes": classes,
+        "rtti_refused_virtual_bases": refused_virtual_bases,
+        "rtti_refused_first_slot_not_code": refused_first_slot_not_code,
+        "rtti_refused_first_slot_empty": refused_first_slot_empty,
+        "rtti_thumb_slots_refused": thumb_slots_refused,
         "flirt_named": flirt_named,
         "typeflow_propagated_params": typeflow_params,
         "layout_classes": layout_classes,
@@ -4410,7 +4426,15 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
-    let arch = match src.pick_arch(a.arch.as_deref()) {
+    // A byte search decodes nothing; the arch only completes the context. So an
+    // image whose declared machine this build does not decode, which
+    // `pick_arch` refuses, is searched all the same; a bad `--arch` is still an
+    // error.
+    let picked = match a.arch.as_deref() {
+        Some(_) => src.pick_arch(a.arch.as_deref()),
+        None => src.pick_arch(None).or_else(|_| n0xis_frontend::resolve_arch(None)),
+    };
+    let arch = match picked {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };

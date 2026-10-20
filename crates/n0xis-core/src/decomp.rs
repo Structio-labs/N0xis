@@ -38,7 +38,7 @@ fn vtable_class_set(ctx: &Ctx) -> std::sync::Arc<std::collections::HashSet<Strin
         format!(
             "{source}|{}|{}",
             ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
-            ctx.vtables.map_or(0, |v| v.len()),
+            ctx.vtables.map_or(0, |v| v.classes.len()),
         )
     });
     if let Some(id) = &id
@@ -48,7 +48,7 @@ fn vtable_class_set(ctx: &Ctx) -> std::sync::Arc<std::collections::HashSet<Strin
     {
         return std::sync::Arc::clone(set);
     }
-    let set: std::collections::HashSet<String> = ctx.vtables.map(|m| m.values().cloned().collect()).unwrap_or_default();
+    let set: std::collections::HashSet<String> = ctx.vtables.map(|v| v.classes.values().cloned().collect()).unwrap_or_default();
     let arc = std::sync::Arc::new(set);
     if let Some(id) = id
         && let Ok(mut memo) = VTABLE_CLASSES.lock()
@@ -327,7 +327,7 @@ impl Pass for DecompPass {
         // on a Qt/MSVC target (the map is one entry per class, not "a handful"),
         // and freeing them showed up as the top destructor in a profile.
         if let Some(vtables) = ctx.vtables {
-            names = names.with_vtables(std::sync::Arc::clone(vtables));
+            names = names.with_vtables(std::sync::Arc::clone(vtables.classes));
         }
         // String-literal recovery: a constant that is the address of a printable
         // NUL-terminated string in the source renders as that C literal

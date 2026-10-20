@@ -345,7 +345,7 @@ fn bool_arg(args: &Value, key: &str) -> bool {
 type VtableMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<std::collections::HashMap<u64, String>>)>;
 static VTABLE_MEMO: std::sync::Mutex<VtableMemo> = std::sync::Mutex::new(None);
 
-type SubclassMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<std::collections::HashSet<String>>)>;
+type SubclassMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<n0xis_core::Subclasses>)>;
 static SUBCLASS_MEMO: std::sync::Mutex<SubclassMemo> = std::sync::Mutex::new(None);
 
 /// Classes that have at least one **subclass in this image**.
@@ -356,10 +356,14 @@ static SUBCLASS_MEMO: std::sync::Mutex<SubclassMemo> = std::sync::Mutex::new(Non
 /// [`n0xis_core::devirtualize`] refuse exactly those and keep the rest.
 ///
 /// Built from the same RTTI scan that recovers the vtables — MSVC's hierarchy
-/// descriptors, or the Itanium `type_info` chain. Memoised per image the way
-/// the vtable map is: the scan is the expensive half and must not run per
-/// decompile.
-fn subclassed_classes(src: &Src) -> std::sync::Arc<std::collections::HashSet<String>> {
+/// descriptors, or the Itanium `type_info` chain — by the one rule
+/// [`n0xis_core::Subclasses::of`] states: where any class's bases are unknown,
+/// every class may have a subclass. Memoised per image the way the vtable map
+/// is: the scan is the expensive half and must not run per decompile.
+///
+/// Asked only where the vtable map was read ([`rtti_vtable_map`]), so a
+/// refused image never gets here with an answer to give.
+fn subclassed_classes(src: &Src) -> std::sync::Arc<n0xis_core::Subclasses> {
     let id = src.as_mem().identity();
     if let Some(id) = id
         && let Ok(memo) = SUBCLASS_MEMO.lock()
@@ -368,20 +372,24 @@ fn subclassed_classes(src: &Src) -> std::sync::Arc<std::collections::HashSet<Str
     {
         return m.clone();
     }
-    let scanned = match (src.module_base(), src.section_range(".rdata")) {
-        (Some(base), Some(_)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size()),
-        _ => match src {
-            Src::Static(img) => match img.as_ref() {
-                n0xis_sources::StaticImage::Elf(elf) => {
-                    n0xis_core::scan_itanium_rtti(src.as_mem(), &elf.data_symbols(), src.text_range())
-                }
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
+    let subclasses = match (src.module_base(), src.section_range(".rdata")) {
+        (Some(base), Some(_)) => n0xis_core::Subclasses::of(
+            &n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size()),
+            0,
+            src.linkage(),
+        ),
+        _ => match src.itanium_vtables() {
+            Ok(Some(scan)) => n0xis_core::Subclasses::of(&scan.vtables, scan.refused.len(), src.linkage()),
+            // No Itanium RTTI to read (a live process, a snapshot, a PE with no
+            // `.rdata`): no class is derived from here because no class is
+            // known here — the vtable map is empty too, and nothing is asked.
+            Ok(None) => n0xis_core::Subclasses::Known(std::collections::HashSet::new()),
+            // Not reached through `with_*_ctx`, which do not ask for this once
+            // the vtable map is refused; were it reached, nothing is known.
+            Err(_) => n0xis_core::Subclasses::Unknown { classes: 0 },
         },
     };
-    let set: std::collections::HashSet<String> = scanned.iter().flat_map(|v| v.bases.iter().cloned()).collect();
-    let arc = std::sync::Arc::new(set);
+    let arc = std::sync::Arc::new(subclasses);
     if let Some(id) = id
         && let Ok(mut memo) = SUBCLASS_MEMO.lock()
     {
@@ -390,14 +398,20 @@ fn subclassed_classes(src: &Src) -> std::sync::Arc<std::collections::HashSet<Str
     arc
 }
 
-fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, String>> {
+/// The vtable map the decompiler is handed, or why the image's RTTI is not
+/// read ([`Src::rtti_refusal`]) — asked first, so a map an `analyze` persisted
+/// cannot stand in for a refused image either.
+fn rtti_vtable_map(src: &Src) -> Result<std::sync::Arc<std::collections::HashMap<u64, String>>, n0xis_core::RttiRefusal> {
+    if let Some(refused) = src.rtti_refusal() {
+        return Err(refused);
+    }
     let id = src.as_mem().identity();
     if let Some(id) = id
         && let Ok(memo) = VTABLE_MEMO.lock()
         && let Some((l, m)) = memo.as_ref()
         && *l == id
     {
-        return m.clone();
+        return Ok(m.clone());
     }
     // Prefer the vtables `analyze` already persisted: the same pairs, already
     // memoised as `Class::vftable` symbols, so no `.rdata` rescan. That scan is
@@ -424,7 +438,7 @@ fn rtti_vtable_map(src: &Src) -> std::sync::Arc<std::collections::HashMap<u64, S
     {
         *memo = Some((id, arc.clone()));
     }
-    arc
+    Ok(arc)
 }
 
 /// Whole-image exception map, memoized per immutable image exactly like the
@@ -476,14 +490,8 @@ pub const MAX_SPAN: usize = 64 * 1024;
 /// the project happened to carry a persisted scan, and a fresh checkout of a
 /// 22 415-function target resolved nothing.
 fn itanium_vtable_map(src: &Src) -> std::collections::HashMap<u64, String> {
-    let Src::Static(img) = src else { return std::collections::HashMap::new() };
-    let n0xis_sources::StaticImage::Elf(elf) = img.as_ref() else {
-        return std::collections::HashMap::new();
-    };
-    n0xis_core::scan_itanium_rtti(src.as_mem(), &elf.data_symbols(), src.text_range())
-        .into_iter()
-        .map(|v| (v.vtable.get(), v.name))
-        .collect()
+    // A refusal was asked for before this, in `rtti_vtable_map`.
+    src.itanium_vtables().ok().flatten().map(|s| s.vtables).unwrap_or_default().into_iter().map(|v| (v.vtable.get(), v.name)).collect()
 }
 
 /// Every function extent and protected range the image states, read from
@@ -756,7 +764,7 @@ fn function_var_keys(
 /// image, as `decomp.pseudo` reads them).
 pub(crate) fn function_var_keys_at(args: &Value) -> Result<std::collections::BTreeSet<String>, String> {
     let mut keys = None;
-    let answer = with_cfg_ctx(args, |ctx, input, _| {
+    let answer = with_cfg_ctx(args, RttiUse::Answers, |ctx, input, _| {
         let struct_defs = n0xis_project::types_db::field_maps().into_iter().collect();
         keys = Some(function_var_keys(ctx, input, &struct_defs));
         Response::success("", Value::Null)
@@ -768,7 +776,34 @@ pub(crate) fn function_var_keys_at(args: &Value) -> Result<std::collections::BTr
     }
 }
 
-fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str) -> Response<Value>) -> Response<Value> {
+/// Whether a command's answer rests on the image's C++ RTTI — the question
+/// [`with_cfg_ctx`] asks every caller, so none can be added without answering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RttiUse {
+    /// The decompiler. Its answer names vtables and resolves virtual calls
+    /// through the vtable map, so an image whose RTTI is refused
+    /// ([`Src::rtti_refusal`]) is refused with the refusal's typed error
+    /// rather than decompiled as if it had no classes.
+    ///
+    /// That is every big-endian image, whether or not it has C++ in it:
+    /// `decomp pseudo` (and `annotate var`'s check against its variables)
+    /// refuses an `aarch64_be` function the build before this refusal
+    /// decompiled right
+    /// (`return (uint32_t)((uint32_t)x1 + (uint32_t)x0);` for `a + b`). A right
+    /// answer traded for a refusal, recorded at `n0xis_core::RttiRefusal`.
+    Answers,
+    /// Every other command: the map is attached where it is read and left off
+    /// where it is refused, and the command answers as it did. (It reads the
+    /// image little-endian like every reader that is not an RTTI path — an
+    /// open item, not a decision.)
+    Attached,
+}
+
+fn with_cfg_ctx(
+    args: &Value,
+    rtti: RttiUse,
+    work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str) -> Response<Value>,
+) -> Response<Value> {
     let addr = match required_addr(args, "addr") {
         Ok(v) => v,
         Err((code, msg)) => return Response::error(code, msg),
@@ -824,8 +859,13 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
     // a static PE with an image base and `.rdata` yields entries; every other
     // target gets an empty map and renders exactly as before. The scan reads the
     // section buffer once and indexes in memory, so it is cheap per invocation.
-    let vtables = rtti_vtable_map(&resolved.src);
-    let subclassed = subclassed_classes(&resolved.src);
+    let vtables = match (rtti_vtable_map(&resolved.src), rtti) {
+        (Ok(map), _) => Some(map),
+        (Err(refused), RttiUse::Answers) => return Response::error(refused.code(), refused.message()),
+        (Err(_), RttiUse::Attached) => None,
+    };
+    let subclassed = vtables.as_ref().map(|_| subclassed_classes(&resolved.src));
+    let slots = resolved.src.vtable_slots();
 
     // Exception edges for THIS function (ROADMAP Phase 10, priority 0). A
     // landing pad has no incoming branch, so without this it is an unreachable
@@ -877,19 +917,17 @@ fn with_cfg_ctx(args: &Value, work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::Cf
                 flirt.as_ref().map(|f| f as &dyn n0xis_sources::SymbolProvider),
             );
             let stated = stated_functions(&resolved.src);
-            work(
-                &n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
-                    .with_symbols(&full)
-                    .with_modules(pe.as_ref())
-                    .with_vtables(&vtables)
-                    .with_subclassed(&subclassed)
-                    .with_eh(eh_regions)
-                    .with_stated_functions(&stated)
-                    .with_type_flow(&flow)
-                    .with_layout(&layout),
-                input,
-                &label,
-            )
+            let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
+                .with_symbols(&full)
+                .with_modules(pe.as_ref())
+                .with_eh(eh_regions)
+                .with_stated_functions(&stated)
+                .with_type_flow(&flow)
+                .with_layout(&layout);
+            if let (Some(vtables), Some(subclassed)) = (&vtables, &subclassed) {
+                ctx = ctx.with_vtables(vtables, slots).with_subclassed(subclassed);
+            }
+            work(&ctx, input, &label)
         }
         Src::Live(l) => {
             let full;
@@ -976,8 +1014,11 @@ fn with_src_ctx(
     // this builder did not, so a *range-scoped* pass — including whole-program
     // type propagation, whose entire point is to move RTTI class names — ran
     // with `ctx.vtables == None` and therefore saw no classes at all.
-    let vtables = rtti_vtable_map(&src);
-    let subclassed = subclassed_classes(&src);
+    // An image whose RTTI is refused gets no map here: nothing built on this
+    // helper answers *from* RTTI the way the decompiler does (see `RttiUse`).
+    let vtables = rtti_vtable_map(&src).ok();
+    let subclassed = vtables.as_ref().map(|_| subclassed_classes(&src));
+    let slots = src.vtable_slots();
 
     let resp = match &src {
         Src::Static(pe) => {
@@ -997,17 +1038,11 @@ fn with_src_ctx(
             // build a CFG per function, and without these the extent heuristic
             // stretched an 82-byte function to the whole decode window.
             let stated = stated_functions(&src);
-            work(
-                &n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
-                    .with_symbols(&full)
-                    .with_modules(pe.as_ref())
-                    .with_vtables(&vtables)
-                    .with_subclassed(&subclassed)
-                    .with_stated_functions(&stated),
-                &src,
-                region_len,
-                &label,
-            )
+            let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_stated_functions(&stated);
+            if let (Some(vtables), Some(subclassed)) = (&vtables, &subclassed) {
+                ctx = ctx.with_vtables(vtables, slots).with_subclassed(subclassed);
+            }
+            work(&ctx, &src, region_len, &label)
         }
         Src::Live(l) => {
             let full;
@@ -1217,10 +1252,20 @@ impl Plugin for AnalysisPasses {
                 // Two ABIs, one output shape. An ELF's classes come from Itanium
                 // RTTI (`_ZTV…`), not from `.rdata` COL chains, so dispatch on the
                 // image rather than failing every ELF with "no .rdata".
-                let vtables = if let Src::Static(img) = &resolved.src
-                    && let n0xis_sources::StaticImage::Elf(elf) = img.as_ref()
-                {
-                    n0xis_core::scan_itanium_rtti(resolved.src.as_mem(), &elf.data_symbols(), text)
+                let itanium = match resolved.src.itanium_vtables() {
+                    Ok(scan) => scan,
+                    Err(refused) => return Response::error(refused.code(), refused.message()),
+                };
+                // A class the scan does not report is counted, not dropped:
+                // there is no place in a vtable list for a class without a
+                // vtable address, and an absent class must not read as one the
+                // image does not have.
+                let (mut refused_virtual_bases, mut refused_first_slot_not_code, mut refused_first_slot_empty) = (0usize, 0usize, 0usize);
+                let vtables = if let Some(itanium) = itanium {
+                    refused_virtual_bases = itanium.count_refused(n0xis_core::VtableRefusal::VirtualBases);
+                    refused_first_slot_not_code = itanium.count_refused(n0xis_core::VtableRefusal::FirstSlotNotCode);
+                    refused_first_slot_empty = itanium.count_refused(n0xis_core::VtableRefusal::FirstSlotEmpty);
+                    itanium.vtables
                 } else {
                     let Some(image_base) = resolved.src.module_base() else {
                         return Response::error("no-image-base", "RTTI scan needs a static PE image base".to_string());
@@ -1231,7 +1276,13 @@ impl Plugin for AnalysisPasses {
                     let _ = rdata;
                     n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.data_ranges_of(None), text, resolved.src.pointer_size())
                 };
-                let payload = json!({ "count": vtables.len(), "vtables": vtables });
+                let payload = json!({
+                    "count": vtables.len(),
+                    "vtables": vtables,
+                    "refused_virtual_bases": refused_virtual_bases,
+                    "refused_first_slot_not_code": refused_first_slot_not_code,
+                    "refused_first_slot_empty": refused_first_slot_empty,
+                });
                 ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
             }),
         ));
@@ -1407,7 +1458,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::IR_CFG),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
                     Ok((art, _cached)) => ok_json(n0xis_contracts::schema::v1::IR_CFG, art, label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
@@ -1420,7 +1471,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::IR_EXPLAIN),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
                     Ok((art, _)) => ok_json(n0xis_contracts::schema::v1::IR_EXPLAIN, json!({ "lines": n0xis_core::explain(&art) }), label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
@@ -1433,7 +1484,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::IR_DOT),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
                     Ok((art, _)) => ok_json(n0xis_contracts::schema::v1::IR_DOT, n0xis_core::dot(&art), label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
@@ -1446,7 +1497,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::VALUE_SET),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| {
                     let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
@@ -1469,7 +1520,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::DEOBFUSCATE),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| {
                     let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
@@ -1495,7 +1546,7 @@ impl Plugin for AnalysisPasses {
                     Ok(v) => v,
                     Err((c, m)) => return Response::error(c, m),
                 };
-                with_cfg_ctx(args, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| {
                     let start = input.start;
                     let art = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
@@ -1522,7 +1573,7 @@ impl Plugin for AnalysisPasses {
                     return Response::error("bad-style", format!("unknown style '{requested}', expected goto|structured|ssa"));
                 };
                 let explain = bool_arg(args, "explain");
-                with_cfg_ctx(args, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Answers, |ctx, input, label| {
                     let fn_start = input.start;
                     // The project's struct catalog (field names) — the decompiler
                     // also synthesizes `vftable@0` for RTTI classes on its own.

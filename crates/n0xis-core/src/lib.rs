@@ -122,7 +122,10 @@ pub use signatures::{known_signature, KnownParam, KnownSignature};
 pub use slice::{SliceArtifact, SliceNode, slice};
 pub use ssa::{Phi, PhiInput, SsaArtifact, SsaBlock, SsaPass, SsaStmt};
 pub use structure::{StructuredOutput, structure};
-pub use rtti::{demangle_rtti_name, rtti_symbol_map, scan_itanium_rtti, scan_msvc_rtti, RttiVtable};
+pub use rtti::{
+    demangle_rtti_name, rtti_symbol_map, scan_itanium_rtti, scan_msvc_rtti, Bases, BasesUnknown, CodePointers, ItaniumScan,
+    RefusedVtable, RttiRefusal, RttiSymbols, RttiVtable, Subclasses, VtableRefusal, VtableSlots,
+};
 pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
 pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, ReturnType,
@@ -171,21 +174,23 @@ pub struct Ctx<'a> {
     /// (ROADMAP Phase 10, priority 0 — the CFG-fidelity follow-on). `None` =
     /// intraprocedural analysis with imports as the only noreturn oracle.
     pub noreturn: Option<&'a std::collections::HashSet<n0xis_contracts::Va>>,
-    /// Recovered C++ vtable address → class name, from [`scan_msvc_rtti`]
-    /// (ROADMAP Phase 10 item 7). The frontend scans `.rdata` once and attaches
-    /// the map so a pass can name a vtable constant: the constructor idiom
-    /// `*this = 0x180021548` reads `*this = &std::exception::vtable`, and the
-    /// `this` pointer types to that class. `None` on a non-PE/non-MSVC target
-    /// (ELF, live, stripped) — every such site renders exactly as before.
-    pub vtables: Option<&'a std::sync::Arc<std::collections::HashMap<u64, String>>>,
-    /// Classes with at least one **subclass in this image**.
+    /// Recovered C++ vtable address → class name, from [`scan_msvc_rtti`] or
+    /// [`scan_itanium_rtti`] (ROADMAP Phase 10 item 7), with the width of the
+    /// slots in them. The frontend scans once and attaches the map so a pass can
+    /// name a vtable constant: the constructor idiom `*this = 0x180021548` reads
+    /// `*this = &std::exception::vtable`, and the `this` pointer types to that
+    /// class. `None` where no RTTI was recovered (live, stripped) — every such
+    /// site renders exactly as before.
+    pub vtables: Option<Vtables<'a>>,
+    /// Which classes may have a **subclass in this image** ([`Subclasses`]).
     ///
-    /// A virtual dispatch resolved through the *declared type of a field* is
-    /// sound as a type and unsound as a vtable — the object stored there may be
-    /// a derived class whose slot holds a different method. With this set,
-    /// [`devirtualize`] refuses exactly those and keeps every other basis.
-    /// `None` = no hierarchy recovered, and the refusal cannot be made.
-    pub subclassed: Option<&'a std::sync::Arc<std::collections::HashSet<String>>>,
+    /// A virtual dispatch resolved through a *declared* type — of a field, or of
+    /// a parameter — is sound as a type and unsound as a vtable: the object may
+    /// be of a derived class whose slot holds a different method. With this,
+    /// [`devirtualize`] refuses exactly those and keeps every other basis; where
+    /// any class's bases could not be read, every class may have a subclass.
+    /// `None` = no hierarchy attached, and the refusal cannot be made.
+    pub subclassed: Option<&'a std::sync::Arc<Subclasses>>,
     /// Exception edges for the function under analysis: protected ranges and the
     /// landing pads they unwind to ([`scan_eh_frame`]). A landing pad has **no
     /// incoming branch** — the personality routine enters it during unwinding —
@@ -223,6 +228,22 @@ pub struct Ctx<'a> {
     /// is what lets a dispatch through `this->impl` resolve at all. `None` =
     /// per-function layout exactly as before.
     pub layout: Option<&'a dyn crate::ClassLayoutLookup>,
+}
+
+/// The recovered vtables a pass may read, and how their slots are read.
+///
+/// One value because the two are one fact: a vtable address means nothing to
+/// [`devirtualize`] without the size of the slots it reads out of it, and what
+/// a slot's low bit means. The width was a constant eight bytes there, which on
+/// a 32-bit image read two slots as one value. Held together, a map cannot be
+/// attached without saying how its slots are read, and no `Ctx` carries a slot
+/// format that nothing has stated.
+#[derive(Clone, Copy)]
+pub struct Vtables<'a> {
+    /// Vtable address (the vptr an object stores) → class name.
+    pub classes: &'a std::sync::Arc<std::collections::HashMap<u64, String>>,
+    /// The image's slot width and code-pointer format ([`VtableSlots`]).
+    pub slots: VtableSlots,
 }
 
 /// The whole-program type store, as the decompiler consumes it. A trait so the
@@ -290,14 +311,15 @@ impl<'a> Ctx<'a> {
         self.noreturn = Some(noreturn);
         self
     }
-    /// Attach the recovered vtable-address → class-name map (see the field docs).
-    pub fn with_vtables(mut self, vtables: &'a std::sync::Arc<std::collections::HashMap<u64, String>>) -> Self {
-        self.vtables = Some(vtables);
+    /// Attach the recovered vtable-address → class-name map and how the
+    /// image's slots are read (see [`Vtables`]).
+    pub fn with_vtables(mut self, classes: &'a std::sync::Arc<std::collections::HashMap<u64, String>>, slots: VtableSlots) -> Self {
+        self.vtables = Some(Vtables { classes, slots });
         self
     }
     /// Attach this function's exception regions (see the field docs).
     /// Attach the set of classes that have a subclass here (see the field docs).
-    pub fn with_subclassed(mut self, s: &'a std::sync::Arc<std::collections::HashSet<String>>) -> Self {
+    pub fn with_subclassed(mut self, s: &'a std::sync::Arc<Subclasses>) -> Self {
         self.subclassed = Some(s);
         self
     }

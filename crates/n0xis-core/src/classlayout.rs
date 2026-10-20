@@ -798,14 +798,19 @@ fn field_types<'a>(
     if !unresolved.is_empty() {
         let mut defs = copy_of.clone();
         crate::devirt::fold_phis(blocks, &mut defs);
-        let var_class = crate::devirt::class_closure(ctx, blocks, types, &defs);
+        // A class a construction establishes is the value's here, wherever it
+        // is stored: a field's type is a declared type, not the method a slot
+        // holds at one point (`BuiltClasses`).
+        let var_class = crate::devirt::class_closure(ctx, blocks, types, &defs, crate::devirt::BuiltClasses::Everywhere);
         for (offset, value) in unresolved {
             let MicroExpr::Var(v) = crate::devirt::resolve(value, &defs) else { continue };
             // A class the closure holds is the class of an object *pointer* —
             // that is what every one of its seeds is — so the field it lands in
             // is a pointer field. Spelling it `C` instead would claim an
             // embedded sub-object, the one confusion this pass cannot afford.
-            let Some(c) = var_class.get(v.as_str()) else { continue };
+            // How exact the class is does not matter here: a field's type is
+            // its declared type, which is what every seed gives.
+            let Some(c) = var_class.get(v.as_str()).map(|c| &c.class) else { continue };
             let ty = format!("{c} *");
             if crate::typeprop::is_portable_type(&ty) {
                 claim(offset, ty);
@@ -1095,7 +1100,7 @@ mod tests {
         let vtables: std::sync::Arc<std::collections::HashMap<u64, String>> =
             std::sync::Arc::new([(0x9000u64, "Widget".to_string())].into_iter().collect());
         let syms = Syms;
-        let ctx = Ctx::new(&snap as &dyn MemorySource, &arch).with_symbols(&syms).with_vtables(&vtables);
+        let ctx = Ctx::new(&snap as &dyn MemorySource, &arch).with_symbols(&syms).with_vtables(&vtables, crate::VtableSlots { pointer_size: 8, code_pointers: crate::CodePointers::Address });
 
         let this = "rdi.0";
         let cnst = |v: i128| MicroExpr::constant(v, 64);

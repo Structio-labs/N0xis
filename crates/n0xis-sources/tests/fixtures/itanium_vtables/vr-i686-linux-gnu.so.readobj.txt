@@ -1,0 +1,81 @@
+
+File: vr-i686-linux-gnu.so
+Format: elf32-i386
+Arch: i386
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_386 (0x3)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x1288
+  Flags [ (0x0)
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 22
+  StringTableSectionIndex: 20
+}
+Relocations [
+  Section (5) .rel.dyn {
+    0x2AF0 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2B28 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2B58 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2B6C R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2B0C R_386_32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x2B40 R_386_32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x2B20 R_386_32 __cxa_pure_virtual
+    0x2B90 R_386_32 _ZTVN10__cxxabiv121__vmi_class_type_infoE
+  }
+  Section (6) .relr.dyn {
+    0x2AE4 R_386_RELATIVE -
+    0x2AE8 R_386_RELATIVE -
+    0x2AEC R_386_RELATIVE -
+    0x2AF4 R_386_RELATIVE -
+    0x2AFC R_386_RELATIVE -
+    0x2B00 R_386_RELATIVE -
+    0x2B04 R_386_RELATIVE -
+    0x2B08 R_386_RELATIVE -
+    0x2B10 R_386_RELATIVE -
+    0x2B14 R_386_RELATIVE -
+    0x2B1C R_386_RELATIVE -
+    0x2B24 R_386_RELATIVE -
+    0x2B2C R_386_RELATIVE -
+    0x2B34 R_386_RELATIVE -
+    0x2B38 R_386_RELATIVE -
+    0x2B3C R_386_RELATIVE -
+    0x2B44 R_386_RELATIVE -
+    0x2B48 R_386_RELATIVE -
+    0x2B50 R_386_RELATIVE -
+    0x2B54 R_386_RELATIVE -
+    0x2B5C R_386_RELATIVE -
+    0x2B64 R_386_RELATIVE -
+    0x2B68 R_386_RELATIVE -
+    0x2B70 R_386_RELATIVE -
+    0x2B78 R_386_RELATIVE -
+    0x2B7C R_386_RELATIVE -
+    0x2B80 R_386_RELATIVE -
+    0x2B88 R_386_RELATIVE -
+    0x2B8C R_386_RELATIVE -
+    0x2B94 R_386_RELATIVE -
+    0x2BA0 R_386_RELATIVE -
+    0x2BA8 R_386_RELATIVE -
+    0x2C38 R_386_RELATIVE -
+  }
+  Section (7) .rel.plt {
+    0x3C48 R_386_JUMP_SLOT _Z6opaquePv
+  }
+]

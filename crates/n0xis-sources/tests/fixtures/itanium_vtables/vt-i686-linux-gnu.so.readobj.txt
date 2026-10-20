@@ -1,0 +1,79 @@
+
+File: vt-i686-linux-gnu.so
+Format: elf32-i386
+Arch: i386
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_386 (0x3)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x134C
+  Flags [ (0x0)
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 21
+  StringTableSectionIndex: 19
+}
+Relocations [
+  Section (5) .rel.dyn {
+    0x2BE0 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2C18 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2C48 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2C5C R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2BFC R_386_32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x2C30 R_386_32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x2C10 R_386_32 __cxa_pure_virtual
+    0x2C80 R_386_32 _ZTVN10__cxxabiv121__vmi_class_type_infoE
+    0x2BD8 R_386_32 _ZNK4Base1fEv
+    0x2BF0 R_386_32 _ZNK4Base1fEv
+    0x2BF8 R_386_32 _ZNK7Derived1kEv
+    0x2C7C R_386_32 _ZThn4_N4Both1rEv
+    0x2C60 R_386_32 _ZTS5Right
+    0x2BDC R_386_32 _ZNK4Base1gEv
+    0x2C0C R_386_32 _ZTI5Shape
+    0x2C38 R_386_32 _ZTI5Shape
+    0x2BD4 R_386_32 _ZTI4Base
+    0x2C04 R_386_32 _ZTI4Base
+    0x2C24 R_386_32 _ZTI6Square
+    0x2C40 R_386_32 _ZTI4Left
+    0x2C90 R_386_32 _ZTI4Left
+    0x2C44 R_386_32 _ZN4Left1lEv
+    0x2C70 R_386_32 _ZN4Both1rEv
+    0x2C1C R_386_32 _ZTS5Shape
+    0x2BF4 R_386_32 _ZNK7Derived1gEv
+    0x2BE4 R_386_32 _ZTS4Base
+    0x2C34 R_386_32 _ZTS6Square
+    0x2C4C R_386_32 _ZTS4Left
+    0x2C68 R_386_32 _ZTI4Both
+    0x2C78 R_386_32 _ZTI4Both
+    0x2C14 R_386_32 _ZNK5Shape5sidesEv
+    0x2C58 R_386_32 _ZN5Right1rEv
+    0x2C6C R_386_32 _ZN4Both1lEv
+    0x2BEC R_386_32 _ZTI7Derived
+    0x2C28 R_386_32 _ZNK6Square4areaEv
+    0x2C2C R_386_32 _ZNK6Square5sidesEv
+    0x2C54 R_386_32 _ZTI5Right
+    0x2C98 R_386_32 _ZTI5Right
+    0x2C84 R_386_32 _ZTS4Both
+    0x2D08 R_386_GLOB_DAT _ZTV4Base
+    0x2C00 R_386_32 _ZTS7Derived
+  }
+  Section (6) .rel.plt {
+    0x3D18 R_386_JUMP_SLOT _Z6opaquePv
+  }
+]

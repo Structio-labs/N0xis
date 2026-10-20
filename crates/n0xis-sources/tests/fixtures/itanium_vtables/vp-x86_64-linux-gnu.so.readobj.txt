@@ -1,0 +1,195 @@
+
+File: vp-x86_64-linux-gnu.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0xE18
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 20
+  StringTableSectionIndex: 18
+}
+ProgramHeaders [
+  ProgramHeader {
+    Type: PT_PHDR (0x6)
+    Offset: 0x40
+    VirtualAddress: 0x40
+    PhysicalAddress: 0x40
+    FileSize: 560
+    MemSize: 560
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 2068
+    MemSize: 2068
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x820
+    VirtualAddress: 0x1820
+    PhysicalAddress: 0x1820
+    FileSize: 144
+    MemSize: 144
+    Flags [ (0x5)
+      PF_R (0x4)
+      PF_X (0x1)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x8B0
+    VirtualAddress: 0x28B0
+    PhysicalAddress: 0x28B0
+    FileSize: 352
+    MemSize: 1872
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0xA10
+    VirtualAddress: 0x3A10
+    PhysicalAddress: 0x3A10
+    FileSize: 32
+    MemSize: 32
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_DYNAMIC (0x2)
+    Offset: 0x920
+    VirtualAddress: 0x2920
+    PhysicalAddress: 0x2920
+    FileSize: 240
+    MemSize: 240
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_GNU_RELRO (0x6474E552)
+    Offset: 0x8B0
+    VirtualAddress: 0x28B0
+    PhysicalAddress: 0x28B0
+    FileSize: 352
+    MemSize: 1872
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 1
+  }
+  ProgramHeader {
+    Type: PT_GNU_EH_FRAME (0x6474E550)
+    Offset: 0x710
+    VirtualAddress: 0x710
+    PhysicalAddress: 0x710
+    FileSize: 68
+    MemSize: 68
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_GNU_STACK (0x6474E551)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 0
+    MemSize: 0
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 0
+  }
+  ProgramHeader {
+    Type: PT_NOTE (0x4)
+    Offset: 0x270
+    VirtualAddress: 0x270
+    PhysicalAddress: 0x270
+    FileSize: 36
+    MemSize: 36
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+]
+DynamicSection [ (15 entries)
+  Tag                Type      Name/Value
+  0x000000000000001E FLAGS     SYMBOLIC 
+  0x0000000000000007 RELA      0x5C8
+  0x0000000000000008 RELASZ    288 (bytes)
+  0x0000000000000009 RELAENT   24 (bytes)
+  0x000000006FFFFFF9 RELACOUNT 10
+  0x0000000000000017 JMPREL    0x6E8
+  0x0000000000000002 PLTRELSZ  24 (bytes)
+  0x0000000000000003 PLTGOT    0x3A10
+  0x0000000000000014 PLTREL    RELA
+  0x0000000000000006 SYMTAB    0x298
+  0x000000000000000B SYMENT    24 (bytes)
+  0x0000000000000005 STRTAB    0x4C0
+  0x000000000000000A STRSZ     259 (bytes)
+  0x000000006FFFFEF5 GNU_HASH  0x448
+  0x0000000000000000 NULL      0x0
+]
+Relocations [
+  Section (5) .rela.dyn {
+    0x28B8 R_X86_64_RELATIVE - 0x28D8
+    0x28C0 R_X86_64_RELATIVE - 0x1820
+    0x28C8 R_X86_64_RELATIVE - 0x1826
+    0x28D0 R_X86_64_RELATIVE - 0x1830
+    0x28E0 R_X86_64_RELATIVE - 0x700
+    0x28F0 R_X86_64_RELATIVE - 0x2910
+    0x28F8 R_X86_64_RELATIVE - 0x1860
+    0x2900 R_X86_64_RELATIVE - 0x1866
+    0x2908 R_X86_64_RELATIVE - 0x1870
+    0x2918 R_X86_64_RELATIVE - 0x708
+    0x28D8 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2910 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+  }
+  Section (6) .rela.plt {
+    0x3A28 R_X86_64_JUMP_SLOT _ZdlPvm 0x0
+  }
+]

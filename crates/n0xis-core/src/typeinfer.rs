@@ -1353,7 +1353,7 @@ fn ctx_identity(ctx: &Ctx) -> Option<String> {
     Some(format!(
         "{source}|{}|{}",
         ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
-        ctx.vtables.map_or(0, |v| v.len()),
+        ctx.vtables.map_or(0, |v| v.classes.len()),
     ))
 }
 
@@ -1545,7 +1545,7 @@ fn infer_with(
             api_types.entry(var).or_insert(ty);
         }
     }
-    let ctor_classes = constructor_vtable_params(blocks, ctx.vtables.map(|v| v.as_ref()));
+    let ctor_classes = constructor_vtable_params(blocks, ctx.vtables.map(|v| v.classes.as_ref()));
     let method_classes = collect_method_this_types(cfg, blocks);
     // Whole-program propagated types for THIS function's parameters, keyed the
     // same way local evidence is (`rcx.0`), so `param_ctype` reads one shape.

@@ -44,7 +44,7 @@ pub use static_pe::{CodeView, StaticPe};
 #[cfg(feature = "static-pe")]
 mod static_elf;
 #[cfg(feature = "static-pe")]
-pub use static_elf::StaticElf;
+pub use static_elf::{ByteOrder, StaticElf};
 #[cfg(feature = "static-pe")]
 mod static_image;
 #[cfg(feature = "static-pe")]
@@ -131,6 +131,111 @@ pub use window::{
 };
 
 use n0xis_contracts::{Module, Symbol, Va};
+
+/// A defined data object an image names (an ELF `STT_OBJECT`), with the size
+/// its symbol states.
+///
+/// The size is part of the answer, not decoration: an Itanium `type_info`
+/// object's size is the one thing in the image that says which of the three
+/// layouts it has — no bases, one, or several — where the bytes after its name
+/// cannot (they may be the next object, or a symbolic relocation that reads as
+/// zero). `None` where the symbol states none (`st_size` 0).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataSymbol {
+    /// Where the object starts.
+    pub va: Va,
+    /// The symbol's name as stored, version suffix included (`_ZTV…@@V_1`).
+    pub name: String,
+    /// `st_size`, where it is not zero.
+    pub size: Option<u64>,
+}
+
+/// The words of an image the **loader writes** — every one a load-time
+/// relocation names — as far as the image states them.
+///
+/// Asked for one thing: whether a word that reads zero in the file can hold
+/// something else at run time. Where no relocation names it, it cannot, and a
+/// zero is the value. The Itanium RTTI scan took every zero at `_ZTV` + two
+/// pointers for a method the loader fills, and a class built without RTTI
+/// whose virtual base shares its vptr has zero offsets there that nothing
+/// fills: `rtti scan` listed it, and `analyze` persisted its vftable, three
+/// pointers before its vptr (`n0xis_core::VtableRefusal::FirstSlotEmpty`).
+///
+/// This says *that* a word is written, not *what* is written there — what a
+/// slot is bound to is the format seam's `binding_at`
+/// (docs/design/IMAGE_FORMATS.md §5 step 2), and when that lands this is the
+/// set of words it answers for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelocatedWords {
+    /// Every relocation table the image has was read.
+    Read {
+        /// The address each relocation writes at, sorted, without repeats.
+        words: Vec<u64>,
+        /// `[start, end)` of each object a copy relocation fills whole.
+        copies: Vec<(u64, u64)>,
+    },
+    /// The image's relocations were not read, so any word may be written.
+    NotRead(RelocationsNotRead),
+}
+
+/// Why an image's load-time relocations were not read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelocationsNotRead {
+    /// Not a static image: a live process, a snapshot or bytes on the command
+    /// line, whose words are what they are and say nothing of a loader.
+    NoImage,
+    /// An ELF that is not an executable or a shared object (`ET_REL`,
+    /// `ET_CORE`): an object file's relocations are against its sections,
+    /// which are not at their run-time addresses.
+    NotLoadable,
+    /// An ELF machine whose relocations were not measured here; only `EM_386`,
+    /// `EM_X86_64`, `EM_ARM` and `EM_AARCH64` were. (MIPS, for one, relocates
+    /// its GOT with no relocation entry at all.)
+    MachineNotMeasured,
+    /// A packed relocation format this reader does not decode (Android's
+    /// `DT_ANDROID_REL`/`RELA`/`RELR`, or their section types).
+    PackedFormatNotRead,
+    /// A relocation table that does not fit in the file.
+    Malformed,
+}
+
+impl RelocatedWords {
+    /// Can the loader write any byte of the `len` bytes at `va`? `true` where
+    /// the relocations were not read. A relocation writes at most eight bytes
+    /// from its address, so one that starts up to seven bytes before `va`
+    /// counts too.
+    pub fn may_write(&self, va: Va, len: u64) -> bool {
+        match self {
+            RelocatedWords::NotRead(_) => true,
+            RelocatedWords::Read { words, copies } => {
+                let (from, to) = (va.get().saturating_sub(7), va.get().saturating_add(len));
+                let first = words.partition_point(|&w| w < from);
+                words.get(first).is_some_and(|&w| w < to) || copies.iter().any(|&(s, e)| s < to && va.get() < e)
+            }
+        }
+    }
+}
+
+/// What an image is to the loader: a program it starts, or a library that a
+/// program — or another library — loads.
+///
+/// Asked for one thing: whether every class that can derive from a class of
+/// this image is in this image. A library's classes are derived from by the
+/// programs that load it, which it cannot see: in a shared object where
+/// nothing derives from `Plugin`, `Plugin::drive`'s call through `this` was
+/// named `Plugin::run`, and the processor ran the client's `My::run`
+/// (`n0xis_core::Subclasses::Open`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Linkage {
+    /// A program. An ELF `ET_EXEC`, or an `ET_DYN` that states it is a
+    /// position-independent executable — `DF_1_PIE`, or a program
+    /// interpreter (`PT_INTERP`) and no `DT_SONAME`. A PE without
+    /// `IMAGE_FILE_DLL`.
+    Executable,
+    /// A library: every other `ET_DYN` — `libc.so.6` has an interpreter and
+    /// a `DT_SONAME`, a plugin often neither — and a PE with `IMAGE_FILE_DLL`.
+    SharedLibrary,
+}
 
 /// Something went wrong reading/writing a source.
 #[derive(Debug, thiserror::Error)]

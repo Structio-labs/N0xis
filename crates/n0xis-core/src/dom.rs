@@ -15,20 +15,27 @@ use std::collections::BTreeSet;
 
 use n0xis_contracts::Va;
 
-use crate::ir::CfgArtifact;
+use crate::ir::{CfgArtifact, Successor};
 
 /// Block-index successor/predecessor adjacency, resolved from a `CfgArtifact`'s
 /// address-keyed edges. Successor addresses that fall outside the function
 /// (tail calls, unresolved indirect branches) simply have no edge — sound,
 /// since those are not intra-function control flow.
 pub fn block_graph(cfg: &CfgArtifact) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
-    let n = cfg.blocks.len();
-    let addr_to_idx: std::collections::HashMap<Va, usize> =
-        cfg.blocks.iter().enumerate().map(|(i, b)| (b.start, i)).collect();
+    let blocks: Vec<(Va, &[Successor])> = cfg.blocks.iter().map(|b| (b.start, b.successors.as_slice())).collect();
+    block_graph_of(&blocks)
+}
+
+/// [`block_graph`] over any blocks given as `(start, successors)`, in block
+/// order — the SSA blocks carry the CFG's, so a pass on SSA reads the same
+/// edges the dominators of [`crate::SsaPass`] were computed from.
+pub fn block_graph_of(blocks: &[(Va, &[Successor])]) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    let n = blocks.len();
+    let addr_to_idx: std::collections::HashMap<Va, usize> = blocks.iter().enumerate().map(|(i, (start, _))| (*start, i)).collect();
     let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut pred: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (i, b) in cfg.blocks.iter().enumerate() {
-        for s in &b.successors {
+    for (i, (_, successors)) in blocks.iter().enumerate() {
+        for s in *successors {
             if let Some(&j) = addr_to_idx.get(&s.to) {
                 succ[i].push(j);
                 pred[j].push(i);

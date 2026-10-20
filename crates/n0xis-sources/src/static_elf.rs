@@ -57,6 +57,151 @@ fn got_reloc_types(e_machine: u16) -> Option<(u32, u32)> {
     }
 }
 
+/// The `COPY` relocation type of each machine whose relocations are read
+/// ([`read_relocated_words`]): it fills a whole object, of its symbol's size,
+/// from the image that defines it, so it writes more than the one word at its
+/// address. `None` for a machine whose relocations were not measured.
+fn copy_reloc_type(e_machine: u16) -> Option<u32> {
+    match e_machine {
+        0x3E | 0x03 => Some(5), // R_X86_64_COPY, R_386_COPY
+        0xB7 => Some(1024),     // R_AARCH64_COPY
+        0x28 => Some(20),       // R_ARM_COPY
+        _ => None,
+    }
+}
+
+/// `ET_EXEC` and `ET_DYN`: what a loader loads.
+const ET_EXEC: u16 = 2;
+const ET_DYN: u16 = 3;
+/// `SHF_ALLOC`: the section is in the image, so a relocation table with it is
+/// one the loader (or a static executable's start-up code) applies.
+const SHF_ALLOC: u64 = 0x2;
+/// `SHT_RELR` and `DT_RELR`/`DT_RELRSZ`: packed relative relocations
+/// (`-z pack-relative-relocs`), which goblin does not decode.
+const SHT_RELR: u32 = 19;
+const DT_RELRSZ: u64 = 35;
+const DT_RELR: u64 = 36;
+/// Android's packed formats: `SHT_ANDROID_REL`, `SHT_ANDROID_RELA`,
+/// `SHT_ANDROID_RELR`, and the dynamic tags `DT_ANDROID_REL`,
+/// `DT_ANDROID_RELA`, `DT_ANDROID_RELR`.
+const ANDROID_SECTION_TYPES: [u32; 3] = [0x6000_0001, 0x6000_0002, 0x6fff_ff00];
+const ANDROID_DYNAMIC_TAGS: [u64; 3] = [0x6000_000f, 0x6000_0011, 0x6fff_e000];
+
+/// A program or a library ([`crate::Linkage`]), from the header's `e_type`
+/// and, for an `ET_DYN`, its dynamic section and program headers.
+fn linkage_of(elf: &Elf) -> crate::Linkage {
+    use crate::Linkage;
+    if elf.header.e_type == ET_EXEC {
+        return Linkage::Executable;
+    }
+    let pie = elf.dynamic.as_ref().is_some_and(|d| d.info.flags_1 & goblin::elf::dynamic::DF_1_PIE != 0);
+    if pie || (elf.interpreter.is_some() && elf.soname.is_none()) { Linkage::Executable } else { Linkage::SharedLibrary }
+}
+
+/// Every word the loader writes in this image ([`crate::RelocatedWords`]):
+/// the addresses of the `REL`/`RELA` entries of the dynamic section
+/// (`DT_REL`, `DT_RELA`, `DT_JMPREL`) and of every allocated relocation section
+/// (a static executable applies its `.rela.iplt` itself and has no dynamic
+/// section), the words a `RELR` table encodes, and the objects a `COPY`
+/// relocation fills.
+///
+/// Read only where the set is known to be the whole of it: an executable or a
+/// shared object, of one of the four machines measured, with no packed format
+/// this does not decode.
+fn read_relocated_words(elf: &Elf, bytes: &[u8]) -> crate::RelocatedWords {
+    use crate::{RelocatedWords, RelocationsNotRead};
+    if !matches!(elf.header.e_type, ET_EXEC | ET_DYN) {
+        return RelocatedWords::NotRead(RelocationsNotRead::NotLoadable);
+    }
+    let Some(copy) = copy_reloc_type(elf.header.e_machine) else {
+        return RelocatedWords::NotRead(RelocationsNotRead::MachineNotMeasured);
+    };
+    let dyns: &[goblin::elf::dynamic::Dyn] = elf.dynamic.as_ref().map(|d| d.dyns.as_slice()).unwrap_or_default();
+    if elf.section_headers.iter().any(|s| ANDROID_SECTION_TYPES.contains(&s.sh_type)) || dyns.iter().any(|d| ANDROID_DYNAMIC_TAGS.contains(&d.d_tag)) {
+        return RelocatedWords::NotRead(RelocationsNotRead::PackedFormatNotRead);
+    }
+    let mut words: Vec<u64> = Vec::new();
+    let mut copies: Vec<(u64, u64)> = Vec::new();
+    let mut add = |r: goblin::elf::Reloc, symbols: &goblin::elf::Symtab| {
+        if r.r_type == copy
+            && let Some(size) = symbols.get(r.r_sym).map(|s| s.st_size).filter(|&n| n > 0)
+        {
+            copies.push((r.r_offset, r.r_offset.saturating_add(size)));
+        }
+        words.push(r.r_offset);
+    };
+    for r in elf.dynrelas.iter().chain(elf.dynrels.iter()).chain(elf.pltrelocs.iter()) {
+        add(r, &elf.dynsyms);
+    }
+    for (idx, relocs) in &elf.shdr_relocs {
+        let Some(sh) = elf.section_headers.get(*idx) else { continue };
+        if sh.sh_flags & SHF_ALLOC == 0 {
+            continue;
+        }
+        // An allocated table links the dynamic symbols (`.rela.dyn`) or none
+        // (`.rela.iplt`); a copy relocation is only ever a dynamic one.
+        for r in relocs.iter() {
+            add(r, &elf.dynsyms);
+        }
+    }
+    // RELR tables: by section, and by the dynamic section's address where the
+    // section headers are gone. The same table read twice repeats its words,
+    // which the dedup below removes.
+    let mut relr: Vec<(usize, usize)> =
+        elf.section_headers.iter().filter(|s| s.sh_type == SHT_RELR).map(|s| (s.sh_offset as usize, s.sh_size as usize)).collect();
+    let tag = |t: u64| dyns.iter().find(|d| d.d_tag == t).map(|d| d.d_val);
+    if let (Some(va), Some(size)) = (tag(DT_RELR), tag(DT_RELRSZ)) {
+        let offset = elf
+            .program_headers
+            .iter()
+            .filter(|ph| ph.p_type == PT_LOAD)
+            .find(|ph| va >= ph.p_vaddr && va.saturating_add(size) <= ph.p_vaddr.saturating_add(ph.p_filesz))
+            .map(|ph| (va - ph.p_vaddr + ph.p_offset) as usize);
+        match offset {
+            Some(o) => relr.push((o, size as usize)),
+            None => return RelocatedWords::NotRead(RelocationsNotRead::Malformed),
+        }
+    }
+    let ptr: usize = if elf.is_64 { 8 } else { 4 };
+    let word = |at: usize| -> Option<u64> {
+        let b = bytes.get(at..at.checked_add(ptr)?)?;
+        Some(match (ptr, elf.little_endian) {
+            (8, true) => u64::from_le_bytes(b.try_into().ok()?),
+            (8, false) => u64::from_be_bytes(b.try_into().ok()?),
+            (_, true) => u64::from(u32::from_le_bytes(b.try_into().ok()?)),
+            (_, false) => u64::from(u32::from_be_bytes(b.try_into().ok()?)),
+        })
+    };
+    for (offset, size) in relr {
+        // An address entry (bit 0 clear) names one word and sets where the next
+        // bitmap starts; a bitmap entry (bit 0 set) names, by its other bits,
+        // which of the next `8 * ptr - 1` words are relocated.
+        let mut next = 0u64;
+        let step = ptr as u64;
+        for i in 0..size / ptr {
+            let Some(entry) = offset.checked_add(i * ptr).and_then(word) else {
+                return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
+            };
+            if entry & 1 == 0 {
+                words.push(entry);
+                next = entry.saturating_add(step);
+            } else {
+                let bits = 8 * step - 1;
+                for b in 0..bits {
+                    if (entry >> (b + 1)) & 1 != 0 {
+                        words.push(next.saturating_add(b * step));
+                    }
+                }
+                next = next.saturating_add(bits * step);
+            }
+        }
+    }
+    words.sort_unstable();
+    words.dedup();
+    copies.sort_unstable();
+    RelocatedWords::Read { words, copies }
+}
+
 /// Module name recorded for an import whose provider library cannot be
 /// determined (the binary carries no `.gnu.version_r` entry for it). ELF
 /// resolution is a *flat* namespace, so an unversioned import genuinely has no
@@ -88,12 +233,41 @@ fn takes_image_space(sh_type: u32, sh_flags: u64) -> bool {
     !(sh_type == SHT_NOBITS && sh_flags & SHF_TLS != 0)
 }
 
+/// The byte order an image states for its multi-byte data: ELF
+/// `e_ident[EI_DATA]` 1 (`ELFDATA2LSB`) or 2 (`ELFDATA2MSB`). A PE is always
+/// little-endian.
+///
+/// Stated so a reader that only reads one order can refuse the other by name
+/// rather than read it wrongly. Today the Itanium RTTI paths do
+/// (`n0xis_core::RttiRefusal`); every other reader of image data still reads
+/// little-endian whatever this says — an open item, not a decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// `ELFDATA2LSB`, and every PE.
+    Little,
+    /// `ELFDATA2MSB`.
+    Big,
+}
+
 /// An ELF image on disk, mapped at its preferred base.
 #[derive(Debug)]
 pub struct StaticElf {
     /// What the file holds, for keying what is kept between requests.
     id: SourceId,
     bytes: Vec<u8>,
+    /// `e_ident[EI_CLASS]`: `ELFCLASS64` (2) → `true`, `ELFCLASS32` (1) →
+    /// `false`. The class is the width of the image's **data** pointers, which is
+    /// not the decoder's register width: the x32 ABI and arm64_32 run 64-bit code
+    /// with 4-byte pointers. Every ELF used to report `true` here, so a 32-bit
+    /// image's vtables were read with 8-byte slots and a 16-byte header, and
+    /// `rtti scan` answered `ok: true` with no class or with the wrong address.
+    is_64: bool,
+    /// `e_ident[EI_DATA]`, the byte order of every multi-byte field the image
+    /// holds. goblin reads the headers in either; what this image's readers do
+    /// with the data is theirs to say (see [`ByteOrder`]).
+    byte_order: ByteOrder,
+    /// A program or a library, as the headers say ([`crate::Linkage`]).
+    linkage: crate::Linkage,
     image_base: u64,
     module_name: String,
     modules: Vec<Module>,
@@ -108,12 +282,18 @@ pub struct StaticElf {
     /// linker's own answer to "where does this function end", which beats any
     /// end-of-function heuristic outright.
     sizes: BTreeMap<u64, u64>,
+    /// `st_size` of every defined data object that declares one, for the
+    /// symbol [`Self::symbols`] keeps at that address. Apart from [`Self::sizes`]
+    /// because that one is read as "where a *function* ends".
+    data_sizes: BTreeMap<u64, u64>,
     /// PLT stub → the **local definition** it ends up at, for the symbols this
     /// image both imports through its own PLT and defines. See
     /// [`SymbolProvider::thunk_to`]: without this a shared object's calls to its
     /// own functions are edges into a stub, and every whole-program pass loses
     /// them.
     plt_to_local: BTreeMap<u64, u64>,
+    /// The words the loader writes ([`read_relocated_words`]).
+    relocated: crate::RelocatedWords,
 }
 
 impl StaticElf {
@@ -122,6 +302,33 @@ impl StaticElf {
     /// classic `ET_EXEC`).
     pub fn image_base(&self) -> Va {
         Va(self.image_base)
+    }
+
+    /// Whether the image's class is `ELFCLASS64` — see the field.
+    pub fn is_64(&self) -> bool {
+        self.is_64
+    }
+
+    /// A program or a library — see [`crate::Linkage`].
+    pub fn linkage(&self) -> crate::Linkage {
+        self.linkage
+    }
+
+    /// The image's byte order, from `e_ident[EI_DATA]` — see the field.
+    pub fn byte_order(&self) -> ByteOrder {
+        self.byte_order
+    }
+
+    /// The image's data pointer size in bytes, from its class: 8 for
+    /// `ELFCLASS64`, 4 for `ELFCLASS32`.
+    pub fn pointer_size(&self) -> u8 {
+        if self.is_64 { 8 } else { 4 }
+    }
+
+    /// The words a load-time relocation writes, or why they were not read
+    /// ([`crate::RelocatedWords`]).
+    pub fn relocated_words(&self) -> &crate::RelocatedWords {
+        &self.relocated
     }
 
     /// The single module descriptor for this image.
@@ -149,8 +356,13 @@ impl StaticElf {
     /// Defined data/object symbols (`STT_OBJECT`) — where an ELF keeps its C++
     /// vtables (`_ZTV…`) and type-info objects (`_ZTI…`). [`Self::named_functions`]
     /// deliberately excludes these; Itanium RTTI recovery needs exactly them.
-    pub fn data_symbols(&self) -> Vec<(Va, String)> {
-        self.symbols.values().filter(|s| s.kind == SymKind::Data).map(|s| (s.va, s.name.clone())).collect()
+    /// Each with the size its symbol states ([`crate::DataSymbol`]).
+    pub fn data_symbols(&self) -> Vec<crate::DataSymbol> {
+        self.symbols
+            .values()
+            .filter(|s| s.kind == SymKind::Data)
+            .map(|s| crate::DataSymbol { va: s.va, name: s.name.clone(), size: self.data_sizes.get(&s.va.get()).copied() })
+            .collect()
     }
 
     /// Every section with its `SHF_EXECINSTR` flag — the shape `profile` needs.
@@ -233,6 +445,7 @@ impl StaticElf {
         // reference, not a definition — skip it.
         let mut symbols: BTreeMap<u64, Symbol> = BTreeMap::new();
         let mut sizes: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut data_sizes: BTreeMap<u64, u64> = BTreeMap::new();
         let mut collect = |syms: &goblin::elf::Symtab, strtab: &goblin::strtab::Strtab| {
             for sym in syms.iter() {
                 // Functions become named code targets; data objects (globals /
@@ -256,12 +469,14 @@ impl StaticElf {
                     // the first, and disagreement would mean a malformed table.
                     sizes.entry(sym.st_value).or_insert(sym.st_size);
                 }
-                symbols.entry(sym.st_value).or_insert_with(|| Symbol {
-                    va: Va(sym.st_value),
-                    module: module_name.clone(),
-                    name: name.to_string(),
-                    kind,
-                });
+                if let std::collections::btree_map::Entry::Vacant(slot) = symbols.entry(sym.st_value) {
+                    slot.insert(Symbol { va: Va(sym.st_value), module: module_name.clone(), name: name.to_string(), kind });
+                    // The size of the symbol kept here, and of no other: a size
+                    // is a fact about one object, read with its name.
+                    if kind == SymKind::Data && sym.st_size > 0 {
+                        data_sizes.insert(sym.st_value, sym.st_size);
+                    }
+                }
             }
         };
         collect(&elf.syms, &elf.strtab);
@@ -432,9 +647,20 @@ impl StaticElf {
 
         let modules = vec![Module { name: module_name.clone(), base: Va(image_base), size, path: Some(path.to_string_lossy().to_string()) }];
 
+        // goblin reads `e_ident[EI_CLASS]` and refuses any value but
+        // `ELFCLASS32`/`ELFCLASS64`, so this is the header's own answer.
+        let is_64 = elf.is_64;
+        // The same for `e_ident[EI_DATA]`: goblin accepts `ELFDATA2LSB` and
+        // `ELFDATA2MSB` only, and parses the headers in the one it finds.
+        let byte_order = if elf.little_endian { ByteOrder::Little } else { ByteOrder::Big };
+        let linkage = linkage_of(&elf);
+        let relocated = read_relocated_words(&elf, &bytes);
         Ok(StaticElf {
             id: SourceId::of(&bytes),
             bytes,
+            is_64,
+            byte_order,
+            linkage,
             image_base,
             module_name,
             modules,
@@ -442,7 +668,9 @@ impl StaticElf {
             symbols,
             got,
             sizes,
+            data_sizes,
             plt_to_local,
+            relocated,
         })
     }
 

@@ -1,6 +1,9 @@
 # Design: the image-format seam
 
-**Status: Accepted 2026-10-19 (the open decisions are decided in §7). Nothing here is built yet.**
+**Status: Accepted 2026-10-19 (the open decisions are decided in §7). The seam itself is not
+built yet. Three parts of step 2 landed ahead of it on 2026-10-20, with the fix for 32-bit
+C++ vtables: the ELF class is read, a machine this build cannot map is refused, and the
+image says whether it is a program or a library; each is marked where §1 and §5 name it.**
 Companion to [`CONCEPT.md`](../../CONCEPT.md) §5.1, which still describes the source seam as
 it was in September (`StaticPe` only). This document is what §5.1 should become, and the
 plan ROADMAP's gap-closing item 5 ("A format seam closes it the way `trait Arch` closed the
@@ -24,7 +27,9 @@ The survey of 2026-10-14 found that the knowledge of what an image *is* has leak
 - **One fact, two answers.** The PE machine field is mapped in two tables that already
   disagree (`0x01c0` is `arm` in one and `unknown` in the other: `static_pe.rs:329-336`,
   `profile.rs:190-198`), and read a third time (`profile.rs:214-216`).
-- **A wrong fact waiting for a reader.** The static image reports every ELF as 64-bit with
+- **A wrong fact waiting for a reader.** *(Closed 2026-10-20: the width is `e_ident[EI_CLASS]`'s,
+  and the Itanium RTTI scan and devirtualisation read it; the other passes named below still
+  assume 8-byte pointers.)* The static image reports every ELF as 64-bit with
   8-byte pointers, a documented simplification (`static_image.rs:98-105, 133-139`). No answer
   is wrong because of those two fields (`is_64`, `pointer_size`) today, checked on a 32-bit ELF
   built here: the decoder is chosen from the machine field, which is right (i386), two core
@@ -46,7 +51,9 @@ The survey of 2026-10-14 found that the knowledge of what an image *is* has leak
     its odd `st_value` the same way (`static_elf.rs:247-264`). Nothing clears bit 0.
   - A machine this build cannot map is decoded with an x86 decoder chosen by bitness
     (`arch.rs:59-69`, pinned by the test at `arch.rs:113-114`): a 32-bit RISC-V shared object
-    built here is disassembled as x86, with `ok: true`.
+    built here is disassembled as x86, with `ok: true`. *(Closed 2026-10-20: refused without
+    `--arch`, by §5 step 2's rule, on MIPS32, PowerPC32 and RISC-V 64 images built here; the
+    raw machine value in an answer decoded with `--arch` is not built.)*
   - A big-endian `EM_ARM` or `EM_AARCH64` is mapped to the same name, and so the same decoder,
     as a little-endian one (`static_elf.rs:176-187`), although the comment above it says a
     big-endian machine is returned as raw hex (`static_elf.rs:169-172`). A big-endian ARMv6
@@ -97,6 +104,7 @@ on a wrapper here once silently did nothing). Each answer is a typed fact with i
 | Question | Type (sketch) | Notes |
 |---|---|---|
 | What machine is this? | `Machine { isa, revision, bits, endian }` or `Unrecognized { raw }` | One table maps it to the set of decoders the image can hold (§7.2), the pointer size, which never chooses a decoder, and the default ABI. Revision is how ARMv6, ARMv6T2 and ARMv7 differ. |
+| Is it a program or a library? | `Linkage::{Executable, SharedLibrary}` | What the header says: ELF `ET_EXEC`, or an `ET_DYN` with `DF_1_PIE` or with a `PT_INTERP` and no `DT_SONAME`, is a program, and every other `ET_DYN` a library; a PE is a library by `IMAGE_FILE_DLL`. A library's classes may be derived from in the program that loads it, which the image cannot see, so devirtualisation takes no declared class there (built 2026-10-20 on today's readers, `n0xis_sources::Linkage`). |
 | How is it loaded? | `segments()` | The loader's view; reads go through these. |
 | What are its parts? | `sections()` with a typed `Role` | `Code`, `CString`, `ReadOnlyData`, `Data`, `ZeroFill`, `Unwind(kind)`, `Stubs`, `ImportPointers`, `Other`. Passes ask for a role, never a name. |
 | What does it name? | `symbols()` | Raw name, kind, `Extent::{Stated(n), Unknown}`, origin, Thumb bit. |
@@ -332,9 +340,10 @@ built here from known source (clang, LLD and the LLVM tools 23.1.1; gcc 16.2.1 w
    not describe, or a header known to lie) that `--bytes` over an extracted window cannot
    serve. Then the separately named override is added, and `--arch` itself is never loosened.
 
-   *Built.* Step 2, with the `Machine` table. The tests that pin today's behaviour (an explicit
-   `--arch` over the header, `arch.rs:110` and `n0xis-frontend/src/source.rs:686`; the bitness
-   fallback, `arch.rs:113-114`) change, and are on step 2's list with the measurement beside
+   *Built.* Step 2, with the `Machine` table. The refusal of a machine this build cannot map
+   landed ahead of it (2026-10-20), and the bitness-fallback test (`arch.rs:113-114`) changed
+   with it. The tests that pin the rest of today's behaviour (an explicit
+   `--arch` over the header, `arch.rs:110` and `n0xis-frontend/src/source.rs:686`) change, and are on step 2's list with the measurement beside
    each; the help texts change with them: `ARCH_HELP` (`n0xis-cli/src/main.rs:745-746`), and
    `ARCH_HELP_NO_HEADER` (`n0xis-cli/src/main.rs:750-751`) where `diff` uses it
    (`n0xis-cli/src/main.rs:1155`), since `diff.functions` then reads the header. The pickers

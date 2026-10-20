@@ -1,0 +1,44 @@
+
+File: vn-armv7-linux-gnueabihf
+Format: elf32-littlearm
+Arch: arm
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: Executable (0x2)
+  Machine: EM_ARM (0x28)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x66C
+  Flags [ (0x5000400)
+    0x400
+    0x1000000
+    0x4000000
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 6
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 10
+  StringTableSectionIndex: 8
+}
+Relocations [
+]
+
+Hex dump of section '.rodata':
+0x00010158 00000000 00000000 b8010200 c0010200 ................
+0x00010168 c4010200 00000000 00000000 00000000 ................
+0x00010178 00000000 00000000 74020200 7c020200 ........t...|...
+0x00010188 80020200 00000000 00000000 00000000 ................
+0x00010198 00000000 00000000 88020200 90020200 ................
+0x000101a8 94020200 00000000 00000000 9c020200 ................

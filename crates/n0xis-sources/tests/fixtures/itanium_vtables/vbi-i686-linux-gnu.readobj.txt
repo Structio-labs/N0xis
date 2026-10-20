@@ -1,0 +1,51 @@
+
+File: vbi-i686-linux-gnu
+Format: elf32-i386
+Arch: i386
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: Executable (0x2)
+  Machine: EM_386 (0x3)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0xAF8
+  Flags [ (0x0)
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 6
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 10
+  StringTableSectionIndex: 8
+}
+Relocations [
+]
+
+Hex dump of section '.rodata':
+0x00400118 10000000 08000000 00000000 54014000 ............T.@.
+0x00400128 70154000 80154000 90154000 00000000 p.@...@...@.....
+0x00400138 f8ffffff 54014000 a0154000 00000000 ....T.@...@.....
+0x00400148 f0ffffff 54014000 b0154000 08000000 ....T.@...@.....
+0x00400158 74014000 00000000 02000000 78014000 t.@.........x.@.
+0x00400168 03f4ffff 84014000 03f0ffff 314d0000 ......@.....1M..
+0x00400178 08000000 80014000 31410000 08000000 ......@.1A......
+0x00400188 8c014000 31420000 00000000 00000000 ..@.1B..........
+0x00400198 00000000 a8014000 c0154000 c8154000 ......@...@...@.
+0x004001a8 08000000 c0014000 00000000 01000000 ......@.........
+0x004001b8 c4014000 03f0ffff 314e0000 08000000 ..@.....1N......
+0x004001c8 cc014000 31500000 00000000 e0014000 ..@.1P........@.
+0x004001d8 d0154000 e0154000 08000000 e8014000 ..@...@.......@.
+0x004001e8 35506c61 696e0000 00000000 fc014000 5Plain........@.
+0x004001f8 f0154000 08000000 04024000 34546169 ..@.......@.4Tai
+0x00400208 6c00                                l.

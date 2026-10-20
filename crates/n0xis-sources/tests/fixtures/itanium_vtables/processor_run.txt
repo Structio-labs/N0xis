@@ -1,0 +1,23 @@
+== x86_64-linux-gnu, clang++ --target=x86_64-linux-gnu -O1: main calls _ZNK4Base1hEv
+Base::h on a Derived: 42
+if the call were Base::g: 6; Derived::g: 42
+== i686-linux-gnu, clang++ --target=i686-linux-gnu -O1: main calls _ZNK4Base1hEv
+Base::h on a Derived: 42
+if the call were Base::g: 6; Derived::g: 42
+== flow, clang++ --target=x86_64-linux-gnu -O1: main calls g, built and rebuilt
+g(&d, 0): 43
+built: 43
+rebuilt(m, 0): 43; rebuilt(m, 1): 7
+D::f + 1: 43; B::f + 1: 7
+== vbnortti, clang++ --target=x86_64-linux-gnu -O2 -fno-rtti
+build_hm: 111, build_hl: 112, build_q: 105
+vptr HM 40
+vptr HL 40
+vptr Q 16
+== vbnortti, clang++ --target=i686-linux-gnu -O2 -fno-rtti
+build_hm: 111, build_hl: 112, build_q: 105
+vptr HM 20
+vptr HL 20
+vptr Q 8
+== plugin, clang++ --target=x86_64-linux-gnu -O1 against vp-x86_64-linux-gnu.so
+My.drive(): 1007; Plugin.drive(): 1001

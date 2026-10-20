@@ -1,0 +1,25 @@
+# The executables here have no extension, so the repository's `*.so binary`
+# rule does not reach them; say it outright rather than rely on detection.
+vt-* binary
+vb-* binary
+vbi-* binary
+vo-* binary
+vd-* binary
+vx-* binary
+vf-* binary
+vn-* binary
+vy-* binary
+vr-* binary
+vp-* binary
+# The recordings are the tools' text output, compared byte for byte.
+vt-*.txt text diff merge eol=lf
+vb-*.txt text diff merge eol=lf
+vbi-*.txt text diff merge eol=lf
+vo-*.txt text diff merge eol=lf
+vd-*.txt text diff merge eol=lf
+vx-*.txt text diff merge eol=lf
+vf-*.txt text diff merge eol=lf
+vn-*.txt text diff merge eol=lf
+vy-*.txt text diff merge eol=lf
+vr-*.txt text diff merge eol=lf
+vp-*.txt text diff merge eol=lf

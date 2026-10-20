@@ -191,15 +191,19 @@ fn check(so: &Path, level: &str) -> (usize, usize, usize) {
         n0xis_core::scan_itanium_rtti(
             &elf as &dyn n0xis_sources::MemorySource,
             &elf.data_symbols(),
-            n0xis_sources::MemorySource::code_range(&elf),
+            &n0xis_sources::MemorySource::code_ranges(&elf),
+            elf.pointer_size(),
+            elf.relocated_words(),
         )
+        .vtables
         .into_iter()
         .map(|v| (v.vtable.get(), v.name))
         .collect(),
     );
     let ctx = Ctx::new(&elf, &arch)
         .with_symbols(&elf as &dyn SymbolProvider)
-        .with_vtables(&vtables);
+        // x86-64 code: a slot holds the method's address as it is.
+        .with_vtables(&vtables, n0xis_core::VtableSlots { pointer_size: elf.pointer_size(), code_pointers: n0xis_core::CodePointers::Address });
 
     let mut found = Vec::new();
     let mut missed = Vec::new();

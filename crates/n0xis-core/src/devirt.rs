@@ -16,7 +16,7 @@
 //! may be in a different function entirely.
 //!
 //! **Sound over complete — a wrong callee is far worse than an unresolved one**,
-//! since every downstream analysis then follows the wrong function. Four refusals:
+//! since every downstream analysis then follows the wrong function. The refusals:
 //!
 //! 1. A class whose name maps to **more than one** vtable (multiple
 //!    inheritance) is skipped: we cannot tell the primary base's table from a
@@ -35,6 +35,62 @@
 //!    pointer that arrived by some route we did not follow, stays indirect.
 //! 5. The `this` type must be a **class we have a vtable for**; a synthetic
 //!    `struct_rcx_0` names no class and is not tried.
+//! 6. A class the object has only by a **declared type** — a parameter's, or
+//!    a field's — is refused when the class may have a subclass
+//!    ([`crate::Subclasses`]: any class of a library, which the program that
+//!    loads it may derive from; any class, where any class's bases could not
+//!    be read). The object may be of the subclass, whose slot holds another
+//!    method. A class the object was built with (a constructor, a stored
+//!    vtable) is taken for its dynamic type — at the dispatches that
+//!    construction dominates in this function's graph, and only where no
+//!    other construction of the same object that this pass recognizes can
+//!    reach the dispatch along that graph ([`Constructions`]).
+//! 7. On 32-bit ARM, a slot holding a **Thumb** code pointer (bit 0 set) is
+//!    not resolved — an interim refusal, see [`crate::VtableSlots`].
+//!
+//! **Known wrong answers** (each measured against the processor; none is new,
+//! the build before this rule gave the same answer), all in what rules 6 and
+//! the `object` basis take on trust:
+//!
+//! - **The graph has no exception edges.** Dominance is computed over a CFG
+//!   without landing-pad edges, so a vtable store inside a `try` block counts
+//!   as dominating a call after the `catch`. `t_eh(mem, k)`: a `D` is
+//!   rebuilt in place as an `F2` inside `try` between two calls that may throw,
+//!   and `p->f()` after the `catch` resolved to `F2::f`; the processor ran
+//!   `D::f` from that call for `k = 1` (wrong in 10 of 40 x86 builds: clang
+//!   `-O1`/`-O2`/`-O3`/`-Os`, PIE and not, g++ `-O2`/`-O3` non-PIE). The same
+//!   holds of `setjmp`/`longjmp` edges, which no graph here has.
+//! - **A rebuild the graph cannot see.** A construction dominates the call,
+//!   then an opaque call destroys the object and builds another class in its
+//!   storage, and the caller calls through `std::launder`, which emits no
+//!   instruction: `t_launder` built a `D`, `rebuild(p, k)` (another
+//!   translation unit) made it a `B` when `k` was set, and the call resolved
+//!   to `D::f`, where the processor ran `B::f` (11 x86-64 builds). The machine
+//!   code has the shape of `built` in `flow.cpp`, which is right by the C++
+//!   object model without `launder`; nothing in the code tells the two apart.
+//! - **A construction this pass does not recognize.** A class the RTTI scan
+//!   refuses has no vtable in the map, so its own vtable store is no
+//!   construction here, and the base constructor before it wins: `struct EV :
+//!   D, virtual VB`, built inline over `D`'s out-of-line constructor, resolved
+//!   to `D::f` where the processor ran `EV::f` (11 x86-64 builds). A guard
+//!   would treat a store at offset 0 of an address inside any `_ZTV` the map
+//!   does not hold as an unknown construction and refuse the dispatch; it is
+//!   not built.
+//! - **The fallback branch of a compiler's own guard.** Where the compiler
+//!   devirtualized speculatively (`if (slot != &X::m) call *slot; else call
+//!   X::m`), the indirect call on the first branch is resolved to `X::m`, the
+//!   method `X`'s table holds there. Whenever that instruction runs its target
+//!   is, by the guard, *not* `X::m`: the edge named is one the program never
+//!   takes there. All 3 resolutions left on `libQt6Gui.so.6` and both on
+//!   `libQt6Quick.so.6` (`QQuickDefaultClipNode::update`, `0x276d38`) are this
+//!   shape. Nothing marks them yet.
+//!
+//! **Where it runs.** It resolves calls on x86-64 code only: on i686, ARMv7
+//! and AArch64 the matcher finds no dispatch on real code (0 calls in every
+//! probe build, before and after the slot-width work; the i686 reasons are
+//! written down in the CLI test `itanium_vtables_are_where_the_image_puts_them`),
+//! so the 32-bit and ARM work on vtables changes `rtti scan` and `analyze`'s
+//! names, not devirtualization.
 
 use n0xis_arch::{CallTarget, MicroExpr, MicroStmt};
 use n0xis_contracts::Va;
@@ -69,8 +125,16 @@ pub struct Devirtualized {
     ///
     /// - `"vtable"`: the table's address is a constant in the instruction, so
     ///   the class is read off the table itself. Nothing to be wrong about.
-    /// - `"object"`: the object's own class, from a constructor call on it or
-    ///   the propagated type of the variable. An exact dynamic type.
+    /// - `"object"`: the class of the variable the object is in — from a
+    ///   constructor call on it or a vtable stored into it (taken for its
+    ///   dynamic type where that construction dominates the call and no other
+    ///   this pass recognizes reaches it, in a graph without exception edges:
+    ///   [`Constructions`]), or from a declared type that reached
+    ///   it ([`ClassFrom`]). A
+    ///   parameter's declared type is a *static* type: `Base::h` called on a
+    ///   `Derived` runs `Derived::g` through `this`, so a class from a
+    ///   parameter is refused where the class may have a subclass in the image,
+    ///   the same guard as the `field` basis.
     /// - `"field"`: the *declared* type of a field of another object. Sound as
     ///   a type and **not** as a vtable: what is stored there may be a derived
     ///   class, whose slot holds a different method. Measured on one Qt build,
@@ -129,6 +193,11 @@ pub(crate) fn resolve<'a>(e: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a Micr
 /// expression and they are all structurally equal — "whichever path was taken,
 /// this variable was defined the same way". A phi whose inputs disagree is left
 /// alone, so nothing is claimed about a value that genuinely differs per path.
+///
+/// What it lets through on that guard is recorded in the module doc ("The
+/// fallback branch of a compiler's own guard"): the indirect call on the
+/// `slot != &known` branch is named `known`, which is the one method it never
+/// calls.
 pub(crate) fn fold_phis<'a>(blocks: &'a [SsaBlock], defs: &mut BTreeMap<&'a str, &'a MicroExpr>) {
     // A phi may feed another phi, so run to a fixpoint under the same bound the
     // definition walk uses.
@@ -231,6 +300,71 @@ fn as_vtable_dispatch<'a>(expr: &'a MicroExpr, defs: &'a BTreeMap<&'a str, &'a M
 /// of copies; the bound is what stops a cyclic definition.
 const MAX_CLOSURE_ROUNDS: usize = 8;
 
+/// Where the class of a variable was established — what the class closure
+/// knows about *how exact* it is.
+///
+/// Ordered from the least exact to the most, so that where two routes meet
+/// (a phi) the result keeps the weaker one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ClassFrom {
+    /// The declared type of a parameter — a **static** type. The object may be
+    /// of any class derived from it: the processor, running `Base::h` on a
+    /// `Derived` built from `vtables.cpp`, called `Derived::g` through the slot
+    /// devirtualization had resolved to `Base::g` (the source and the recorded
+    /// run are beside the fixtures, `processor_run.cpp`).
+    Parameter,
+    /// The program-wide layout's type of the field the value was loaded from.
+    Field,
+    /// A direct callee's propagated return type.
+    Return,
+    /// The object's dynamic type as this function builds it: a constructor of
+    /// the class ran on it, or this function stored the class's vtable into
+    /// it. A fact of a **point** in the function, not of the variable: what
+    /// devirtualization asks of it is [`Constructions::at`]; only the field
+    /// typer, which asks for a declared type, takes it as the variable's
+    /// ([`BuiltClasses`]). It is the dynamic type only as far as the graph and
+    /// the constructions [`Constructions`] can see go: an exception edge, an
+    /// opaque rebuild behind `std::launder`, and the vtable store of a class
+    /// the map does not hold are each a way it is wrong (the module doc,
+    /// "Known wrong answers").
+    Built,
+}
+
+impl ClassFrom {
+    /// Whether a dispatch through a class established this way is refused when
+    /// the class may have a subclass in the image.
+    ///
+    /// A parameter is, by decision. A field's and a return value's types are
+    /// static types too and are **not** refused here — an open item, not a
+    /// claim that they are exact. In a library every class may have a
+    /// subclass, in the program that loads it ([`crate::Subclasses::Open`]):
+    /// `libplug.so`'s `Plugin::drive() { return run() + 1000; }` resolved
+    /// `run()` through `this` to `Plugin::run` while no class of the library
+    /// derived from `Plugin`, and a client's `My : Plugin` overriding `run` to
+    /// return 7 made the processor print 1007 (g++ and clang `-O1`/`-O2`,
+    /// linked `-Bsymbolic` or `-Bsymbolic-functions`; the build before gave
+    /// the same answer). Named per variant, so a new seed has to answer.
+    pub(crate) fn refused_when_subclassed(self) -> bool {
+        match self {
+            ClassFrom::Parameter => true,
+            ClassFrom::Field | ClassFrom::Return | ClassFrom::Built => false,
+        }
+    }
+}
+
+/// A variable's class and how it was established.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Classed {
+    pub(crate) class: String,
+    pub(crate) from: ClassFrom,
+}
+
+impl Classed {
+    fn new(class: impl Into<String>, from: ClassFrom) -> Self {
+        Classed { class: class.into(), from }
+    }
+}
+
 /// Every variable that provably holds an object of a named class.
 ///
 /// The seed — a parameter whose recovered type is a class — is where this
@@ -264,37 +398,46 @@ const MAX_CLOSURE_ROUNDS: usize = 8;
 /// constructor runs its base's first, so when both are inlined into the same
 /// function the **later** call is the more derived one and it wins. A stored
 /// vtable is stronger still and overrides both — it is the dynamic type as the
-/// hardware sees it.
+/// hardware sees it. That is the rule of [`BuiltClasses::Everywhere`], where
+/// "later" is statement order; for a dispatch, [`Constructions`] decides by
+/// the control flow instead.
 ///
 /// Every one of those is a fact some other pass already established. Nothing
 /// here infers a class; it moves one that was proven elsewhere to the place the
 /// dispatch actually reads.
-pub(crate) fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact, defs: &BTreeMap<&str, &MicroExpr>) -> BTreeMap<String, String> {
-    let mut cls: BTreeMap<String, String> = types
+///
+/// Each class carries how it was established ([`ClassFrom`]): a copy, a phi
+/// or a spill keeps it, a phi of two routes keeps the less exact, and a stored
+/// vtable makes it exact.
+///
+/// `built` says whether the classes a construction establishes are in the map
+/// at all ([`BuiltClasses`]).
+pub(crate) fn class_closure(
+    ctx: &Ctx,
+    blocks: &[SsaBlock],
+    types: &TypeArtifact,
+    defs: &BTreeMap<&str, &MicroExpr>,
+    built: BuiltClasses,
+) -> BTreeMap<String, Classed> {
+    let mut cls: BTreeMap<String, Classed> = types
         .signature
         .params
         .iter()
-        .filter_map(|p| Some((format!("{}.0", p.reg), class_of(p.ty.name.as_deref()?)?.to_string())))
+        .filter_map(|p| Some((format!("{}.0", p.reg), Classed::new(class_of(p.ty.name.as_deref()?)?, ClassFrom::Parameter))))
         .collect();
+    let everywhere = built == BuiltClasses::Everywhere;
     // Constructors first, in program order, so the most derived one wins — see
     // the note on construction order above. Done before the fixpoint rather than
     // inside it because the fixpoint deliberately never overwrites a class it
     // already has.
-    for s in blocks.iter().flat_map(|b| b.stmts.iter()) {
-        let (MicroStmt::Call { target: CallTarget::Direct { va }, args, .. }
-        | MicroStmt::Assign { value: MicroExpr::Call { target: CallTarget::Direct { va }, args }, .. }) = &s.stmt
-        else {
-            continue;
-        };
-        let Some(arg0) = args.first() else { continue };
-        let MicroExpr::Var(v) = resolve(arg0, defs) else { continue };
-        if let Some(c) = crate::classlayout::ctor_class(ctx, *va) {
-            cls.insert(v.clone(), c);
+    for s in blocks.iter().flat_map(|b| b.stmts.iter()).filter(|_| everywhere) {
+        if let Some((v, c)) = ctor_construction(ctx, &s.stmt, defs) {
+            cls.insert(v.to_string(), Classed::new(c, ClassFrom::Built));
         }
     }
     // Stack slots a classed pointer was spilled into, by address expression.
-    let mut slots: Vec<(&MicroExpr, String)> = Vec::new();
-    let ret_class = |va: u64| ctx.type_flow.and_then(|f| f.ret(va)).and_then(class_of).map(str::to_string);
+    let mut slots: Vec<(&MicroExpr, Classed)> = Vec::new();
+    let ret_class = |va: u64| ctx.type_flow.and_then(|f| f.ret(va)).and_then(class_of).map(|c| Classed::new(c, ClassFrom::Return));
 
     for _ in 0..MAX_CLOSURE_ROUNDS {
         let mut changed = false;
@@ -304,8 +447,14 @@ pub(crate) fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact
                     continue;
                 }
                 let Some(first) = phi.inputs.first().and_then(|i| cls.get(i.value.as_str())).cloned() else { continue };
-                if phi.inputs.iter().all(|i| cls.get(i.value.as_str()) == Some(&first)) {
-                    cls.insert(phi.dst.clone(), first);
+                let incoming: Option<Vec<&Classed>> = phi.inputs.iter().map(|i| cls.get(i.value.as_str())).collect();
+                if let Some(incoming) = incoming
+                    && incoming.iter().all(|c| c.class == first.class)
+                {
+                    // The same class on every path; how exact it is, is the
+                    // least exact path's.
+                    let from = incoming.iter().map(|c| c.from).min().unwrap_or(first.from);
+                    cls.insert(phi.dst.clone(), Classed::new(first.class, from));
                     changed = true;
                 }
             }
@@ -331,8 +480,8 @@ pub(crate) fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact
                         // as stack locals constantly, and until now the class of
                         // every one of them was lost the moment the constructor
                         // returned.
-                        if let Some((base, 0)) = base_offset(addr, defs)
-                            && let Some(c) = stored_vtable_class(ctx, value, defs)
+                        if everywhere
+                            && let Some((base, c)) = store_construction(ctx, &s.stmt, defs)
                             && cls.get(base) != Some(&c)
                         {
                             cls.insert(base.to_string(), c);
@@ -357,17 +506,189 @@ pub(crate) fn class_closure(ctx: &Ctx, blocks: &[SsaBlock], types: &TypeArtifact
     cls
 }
 
+/// Whether [`class_closure`] puts the class a **construction** establishes —
+/// a constructor of the class called on the object, or the class's vtable
+/// stored into it ([`ClassFrom::Built`]) — into its map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuiltClasses {
+    /// As the variable's class, wherever the variable is read. For the field
+    /// typer, which asks what a value *is declared as* when it is stored into a
+    /// field, not which method a slot of it holds at one point.
+    Everywhere,
+    /// Left out: such a class is a fact of the points the construction
+    /// dominates, and devirtualization asks it there ([`Constructions::at`]).
+    /// In the map, a vtable stored on one path named the object on every
+    /// path: `g(void *mem, int rebuild)` from `flow.cpp`, which builds a `B` in
+    /// `mem` only when `rebuild` is set and otherwise calls `p->f()` on the
+    /// object it was handed, had that call resolved to `B::f` — and on the `D`
+    /// the processor hands it, it runs `D::f` (`g(&d, 0)` printed 42).
+    AtDominatedPoints,
+}
+
+/// A place in one function's SSA: a block, and a statement in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct At {
+    pub(crate) block: usize,
+    pub(crate) stmt: usize,
+}
+
+/// One construction in a function: an object of `class` is built at `at` in
+/// the variable `base`.
+#[derive(Clone, Debug)]
+struct Construction<'a> {
+    at: At,
+    base: &'a str,
+    class: String,
+}
+
+/// What a function's constructions say about one object at one point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Constructed<'a> {
+    /// The nearest construction that dominates the point built this class, and
+    /// no other construction of the object can reach the point.
+    Exact(&'a str),
+    /// A construction of the object that does not dominate the point can reach
+    /// it: on some path the object was built again, as whatever it was built as
+    /// there, so no one class is the object's at this point.
+    Refused,
+    /// No construction of the object reaches the point.
+    Unsaid,
+}
+
+/// Every construction in one function, and the control flow that decides
+/// which of them a point sees — the one rule for when a [`ClassFrom::Built`]
+/// class holds:
+///
+/// 1. A construction holds only where it **dominates** — every path from the
+///    entry to the point passes it.
+/// 2. Of the dominating ones, the **nearest** wins: they lie on one chain of
+///    the dominator tree, and the last of them on it is the last one every
+///    path runs before the point. A derived constructor stores its base's
+///    vtable and then its own, so this is also the construction order, by
+///    flow rather than by statement order.
+/// 3. If a construction of the same object that does **not** dominate the
+///    point can **reach** it, the point is refused: some path built the object
+///    again. This is reachability, not "reaches without passing a nearer
+///    one" — a construction later in a loop body refuses a dispatch earlier in
+///    it even when a dominating one comes first on every iteration. Refusing
+///    more than needed there costs a resolution; resolving it would cost a
+///    wrong one if the rule were wrong.
+///
+/// "The same object" is the same variable, both reached through the same
+/// definition map, so a copy is the variable it copies. A construction of a
+/// spilled, reloaded or phi-merged copy is a construction of another variable
+/// and says nothing here.
+///
+/// The graph is the function's CFG as built, which carries **no
+/// exception-handling edges**: a construction in a `try` body is taken to
+/// dominate a call after the `catch` that the landing pad also reaches, and the
+/// call is resolved to the class built in the `try` (`t_eh`, wrong in 10 of 40
+/// x86 builds). And only the constructions [`Self::of`] recognizes are here: a
+/// rebuild in another function, or a store of a vtable the map does not hold,
+/// is none (the module doc, "Known wrong answers").
+pub(crate) struct Constructions<'a> {
+    list: Vec<Construction<'a>>,
+    /// Forward dominators of each block ([`crate::dom::dominators_fwd`]), only
+    /// when there is a construction to ask about.
+    dom: Vec<std::collections::BTreeSet<usize>>,
+    /// For each block that holds a construction, the blocks reachable from it
+    /// along at least one edge.
+    reach: BTreeMap<usize, Vec<bool>>,
+}
+
+impl<'a> Constructions<'a> {
+    /// The constructions of `blocks`: each constructor call on a variable and
+    /// each vtable stored into one, recognized as [`class_closure`] recognizes
+    /// them.
+    pub(crate) fn of(ctx: &Ctx, blocks: &'a [SsaBlock], defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> Self {
+        let mut list = Vec::new();
+        for (block, b) in blocks.iter().enumerate() {
+            for (stmt, s) in b.stmts.iter().enumerate() {
+                if let Some((base, class)) = ctor_construction(ctx, &s.stmt, defs) {
+                    list.push(Construction { at: At { block, stmt }, base, class });
+                } else if let Some((base, c)) = store_construction(ctx, &s.stmt, defs) {
+                    list.push(Construction { at: At { block, stmt }, base, class: c.class });
+                }
+            }
+        }
+        if list.is_empty() {
+            return Constructions { list, dom: Vec::new(), reach: BTreeMap::new() };
+        }
+        let edges: Vec<(Va, &[crate::ir::Successor])> = blocks.iter().map(|b| (b.start, b.successors.as_slice())).collect();
+        let (succ, pred) = crate::dom::block_graph_of(&edges);
+        let dom = crate::dom::dominators_fwd(blocks.len(), &pred);
+        let mut reach = BTreeMap::new();
+        for c in &list {
+            reach.entry(c.at.block).or_insert_with(|| {
+                let mut seen = vec![false; blocks.len()];
+                let mut stack: Vec<usize> = succ[c.at.block].clone();
+                while let Some(b) = stack.pop() {
+                    if !std::mem::replace(&mut seen[b], true) {
+                        stack.extend_from_slice(&succ[b]);
+                    }
+                }
+                seen
+            });
+        }
+        Constructions { list, dom, reach }
+    }
+
+    /// Does `a` run before `b` on every path from the entry to `b`?
+    fn dominates(&self, a: At, b: At) -> bool {
+        if a.block == b.block { a.stmt < b.stmt } else { self.dom.get(b.block).is_some_and(|d| d.contains(&a.block)) }
+    }
+
+    /// Is there a path from just after `a` to `b`?
+    fn reaches(&self, a: At, b: At) -> bool {
+        (a.block == b.block && a.stmt < b.stmt) || self.reach.get(&a.block).is_some_and(|r| r.get(b.block).copied().unwrap_or(false))
+    }
+
+    /// The class the constructions of `base` give it at `at`, by the rule above.
+    pub(crate) fn at(&self, base: &str, at: At) -> Constructed<'_> {
+        let mut nearest: Option<&Construction> = None;
+        for c in self.list.iter().filter(|c| c.base == base) {
+            if self.dominates(c.at, at) {
+                if nearest.is_none_or(|n| self.dominates(n.at, c.at)) {
+                    nearest = Some(c);
+                }
+            } else if self.reaches(c.at, at) {
+                return Constructed::Refused;
+            }
+        }
+        nearest.map_or(Constructed::Unsaid, |c| Constructed::Exact(c.class.as_str()))
+    }
+}
+
+/// A constructor of a class called with a variable as its `this` (argument
+/// 0, by the ABI): the variable and the class.
+fn ctor_construction<'a>(ctx: &Ctx, stmt: &'a MicroStmt, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> Option<(&'a str, String)> {
+    let (MicroStmt::Call { target: CallTarget::Direct { va }, args, .. }
+    | MicroStmt::Assign { value: MicroExpr::Call { target: CallTarget::Direct { va }, args }, .. }) = stmt
+    else {
+        return None;
+    };
+    let MicroExpr::Var(v) = resolve(args.first()?, defs) else { return None };
+    Some((v.as_str(), crate::classlayout::ctor_class(ctx, *va)?))
+}
+
+/// A known vtable stored at offset 0 of a variable: the variable and the class.
+fn store_construction<'a>(ctx: &Ctx, stmt: &'a MicroStmt, defs: &'a BTreeMap<&'a str, &'a MicroExpr>) -> Option<(&'a str, Classed)> {
+    let MicroStmt::Store { addr, value, .. } = stmt else { return None };
+    let Some((base, 0)) = base_offset(addr, defs) else { return None };
+    Some((base, stored_vtable_class(ctx, value, defs)?))
+}
+
 /// The class whose **vtable** this stored value is, if it is one. Accepts the
 /// address either as a bare constant or behind an `&`, which is the same value
 /// spelled two ways by the lift.
-fn stored_vtable_class(ctx: &Ctx, value: &MicroExpr, defs: &BTreeMap<&str, &MicroExpr>) -> Option<String> {
+fn stored_vtable_class(ctx: &Ctx, value: &MicroExpr, defs: &BTreeMap<&str, &MicroExpr>) -> Option<Classed> {
     let inner = match resolve(value, defs) {
         MicroExpr::AddrOf(i) => resolve(i, defs),
         other => other,
     };
     let MicroExpr::Const { value, .. } = inner else { return None };
     let addr = u64::try_from(*value).ok()?;
-    ctx.vtables?.get(&addr).cloned()
+    ctx.vtables?.classes.get(&addr).map(|c| Classed::new(c.as_str(), ClassFrom::Built))
 }
 
 /// The class an rvalue holds, if any — the per-expression half of
@@ -375,11 +696,11 @@ fn stored_vtable_class(ctx: &Ctx, value: &MicroExpr, defs: &BTreeMap<&str, &Micr
 fn value_class(
     ctx: &Ctx,
     e: &MicroExpr,
-    cls: &BTreeMap<String, String>,
-    slots: &[(&MicroExpr, String)],
+    cls: &BTreeMap<String, Classed>,
+    slots: &[(&MicroExpr, Classed)],
     defs: &BTreeMap<&str, &MicroExpr>,
-    ret_class: &impl Fn(u64) -> Option<String>,
-) -> Option<String> {
+    ret_class: &impl Fn(u64) -> Option<Classed>,
+) -> Option<Classed> {
     match e {
         MicroExpr::Var(v) => cls.get(v.as_str()).cloned(),
         MicroExpr::Cast { expr, .. } => value_class(ctx, expr, cls, slots, defs, ret_class),
@@ -390,11 +711,11 @@ fn value_class(
             }
             let (base, offset) = base_offset(addr, defs)?;
             let owner = cls.get(base)?;
-            let ty = ctx.layout.and_then(|l| l.field_type(owner, offset))?;
+            let ty = ctx.layout.and_then(|l| l.field_type(&owner.class, offset))?;
             if !ty.trim_end().ends_with('*') {
                 return None;
             }
-            class_of(ty).map(str::to_string)
+            class_of(ty).map(|c| Classed::new(c, ClassFrom::Field))
         }
         _ => None,
     }
@@ -438,10 +759,14 @@ fn sorted_vtables(vtables: &HashMap<u64, String>) -> Vec<u64> {
 /// *soundly*, rewriting the call target in place and returning what was
 /// resolved. A no-op without a recovered vtable map.
 pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) -> Vec<Devirtualized> {
-    let Some(vtables) = ctx.vtables else { return Vec::new() };
+    let Some(crate::Vtables { classes: vtables, slots }) = ctx.vtables else { return Vec::new() };
     if vtables.is_empty() {
         return Vec::new();
     }
+    // A slot is one of the **image's** pointers. It was eight bytes whatever the
+    // image was, so on a 32-bit one the slot read joined two methods into one
+    // value and the bound below refused a table's last slot.
+    let slot_width = u64::from(slots.pointer_size);
     let by_class = class_to_vtable(vtables);
     let sorted = sorted_vtables(vtables);
 
@@ -469,7 +794,13 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
     // No early return on an empty class map: a dispatch through a **constant**
     // vtable needs no class at all, and a function whose only dispatch is that
     // shape would have been refused before it was looked at.
-    let var_class = class_closure(ctx, blocks, types, &defs);
+    // A class a construction establishes is not in it: that is asked at each
+    // dispatch, of the constructions that reach it.
+    let var_class = class_closure(ctx, blocks, types, &defs, BuiltClasses::AtDominatedPoints);
+    let built = Constructions::of(ctx, blocks, &defs);
+    // The subclass guard's one question, asked the same way by every basis it
+    // protects. No hierarchy attached is no refusal.
+    let may_have_subclass = |class: &str| ctx.subclassed.is_some_and(|s| s.may_have_subclass(class));
 
     let mut out = Vec::new();
     let mut plan: Vec<(usize, usize, Devirtualized)> = Vec::new();
@@ -495,9 +826,21 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
             }
             Object::Var(v) => {
                 basis = "object";
-                match var_class.get(v) {
-                    Some(c) => c.as_str(),
-                    None => return,
+                match built.at(v, At { block: bi, stmt: si }) {
+                    // The class the object was built with, at this point.
+                    Constructed::Exact(c) => c,
+                    Constructed::Refused => return,
+                    Constructed::Unsaid => {
+                        let Some(c) = var_class.get(v) else { return };
+                        // A class the variable has only by a declared type is
+                        // refused where the class may be derived from in this
+                        // image — the object may be of the subclass, whose slot
+                        // holds another method.
+                        if c.from.refused_when_subclassed() && may_have_subclass(&c.class) {
+                            return;
+                        }
+                        c.class.as_str()
+                    }
                 }
             }
             // A dispatch on a field needs the field's type, which only the
@@ -507,7 +850,16 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
             // wrong table with full confidence.
             Object::Field { base, offset } => {
                 basis = "field";
-                let Some(owner) = var_class.get(base).map(String::as_str) else { return };
+                // The owner's class is asked the way an object's is: the
+                // constructions that reach this point first.
+                let owner = match built.at(base, At { block: bi, stmt: si }) {
+                    Constructed::Exact(c) => c,
+                    Constructed::Refused => return,
+                    Constructed::Unsaid => match var_class.get(base) {
+                        Some(c) => c.class.as_str(),
+                        None => return,
+                    },
+                };
                 let Some(ty) = ctx.layout.and_then(|l| l.field_type(owner, offset)) else { return };
                 if !ty.trim_end().ends_with('*') {
                     return;
@@ -521,7 +873,7 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
                 // derived from. Measured on one Qt build: 5 of 88 resolutions,
                 // all of them through a class with subclasses right there in
                 // the same image.
-                if ctx.subclassed.is_some_and(|s| s.contains(c)) {
+                if may_have_subclass(c) {
                     return;
                 }
                 c
@@ -534,18 +886,17 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
         let Some(addr) = vtable.checked_add(slot) else { return };
         // The slot must be inside THIS class's table, or we would read the next
         // class's and report its method with full confidence.
-        if addr.saturating_add(8) > vtable_end {
+        if addr.saturating_add(slot_width) > vtable_end {
             return;
         }
-        let Ok(bytes) = ctx.source.read(Va(addr), 8) else { return };
-        if bytes.len() < 8 {
-            return;
-        }
-        let method = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+        let Some(value) = crate::rtti::read_pointer(ctx.source, Va(addr), slots.pointer_size) else { return };
         // A null or non-code slot is an honest "unresolved", not a callee.
-        if method == 0 || !is_code(method) {
+        if value == 0 || !is_code(value) {
             return;
         }
+        // A Thumb method on EM_ARM is not resolved to its odd address — the
+        // interim refusal [`crate::VtableSlots::method`] documents.
+        let Ok(method) = slots.method(value) else { return };
         // Naming, and the trap in it. The symbol layer names a method address
         // after whichever class's vtable walk claimed it first — and under
         // **identical-code folding** one implementation is shared by unrelated
@@ -560,7 +911,9 @@ pub fn devirtualize(ctx: &Ctx, blocks: &mut [SsaBlock], types: &TypeArtifact) ->
         // abstract slot — so this asks the same question `function discover`
         // does, through the same helper.
         let symbol = crate::ir::symbol_on_entry(ctx, Va(method)).map(|s| s.name);
-        let owned = format!("{class}::vf{}", slot / 8);
+        // The slot's index in its table — the `N` that `rtti_symbol_map`
+        // gives the same method, counted at the same width.
+        let owned = format!("{class}::vf{}", slot / slot_width);
         let (name, implementation) = match symbol {
             Some(sym) if sym.starts_with(&format!("{class}::")) => (sym, None),
             Some(sym) => (owned, Some(sym)),
@@ -765,6 +1118,331 @@ mod tests {
             false,
         );
         assert_eq!(as_vtable_dispatch(&computed, &BTreeMap::new()), None);
+    }
+
+    /// A 32-bit image: code at `0x1000..0x1100`, and three vtables laid end to
+    /// end with **4-byte** slots — `Widget` at `0x2000` holding three methods,
+    /// `Next` straight after it, and `Last`, which bounds `Next`.
+    struct Image32(n0xis_sources::Snapshot);
+    impl n0xis_sources::MemorySource for Image32 {
+        fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, n0xis_sources::SourceError> {
+            self.0.read(va, len)
+        }
+        fn contains(&self, va: Va) -> bool {
+            self.0.contains(va)
+        }
+        fn code_range(&self) -> Option<(Va, u64)> {
+            Some((Va(0x1000), 0x100))
+        }
+        fn label(&self) -> String {
+            "test:image32".into()
+        }
+    }
+
+    fn image32(methods: [u32; 4]) -> Image32 {
+        let mut table = Vec::new();
+        for method in methods {
+            table.extend_from_slice(&method.to_le_bytes()); // Widget's three, then Next's first
+        }
+        Image32(n0xis_sources::Snapshot::builder().region(Va(0x1000), vec![0xC3; 0x100]).region(Va(0x2000), table).build())
+    }
+
+    const METHODS: [u32; 4] = [0x1010, 0x1020, 0x1030, 0x1040];
+    const PLAIN_32: crate::VtableSlots = crate::VtableSlots { pointer_size: 4, code_pointers: crate::CodePointers::Address };
+
+    /// One dispatch at 32 bits: `[*ecx = &Widget::vtable;] v1 = *ecx; call
+    /// *(v1 + slot)`, with `ecx` declared `this_ty`.
+    struct Case32 {
+        methods: [u32; 4],
+        slots: crate::VtableSlots,
+        this_ty: &'static str,
+        /// Store Widget's vtable into the object first — the constructor idiom.
+        stores_vtable: bool,
+        subclassed: Option<crate::Subclasses>,
+        slot: i128,
+        /// Dispatch on the object in `this`'s field at `+8` instead, which the
+        /// layout types `Widget *` in a `this` declared `Owner *`.
+        through_field: bool,
+    }
+
+    /// `Owner`'s field at `+8` is a `Widget *`.
+    struct OwnerLayout;
+    impl crate::ClassLayoutLookup for OwnerLayout {
+        fn field_type(&self, class: &str, offset: i64) -> Option<&str> {
+            (class == "Owner" && offset == 8).then_some("Widget *")
+        }
+    }
+
+    impl Default for Case32 {
+        fn default() -> Self {
+            Case32 { methods: METHODS, slots: PLAIN_32, this_ty: "Widget *", stores_vtable: false, subclassed: None, slot: 4, through_field: false }
+        }
+    }
+
+    fn devirtualize32(case: Case32) -> Vec<Devirtualized> {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, ReturnType};
+        let img = image32(case.methods);
+        let arch = n0xis_arch::X64::x86();
+        let vtables: std::sync::Arc<HashMap<u64, String>> = std::sync::Arc::new(
+            [(0x2000u64, "Widget".to_string()), (0x200c, "Next".to_string()), (0x3000, "Last".to_string())].into_iter().collect(),
+        );
+        let subclassed = case.subclassed.map(std::sync::Arc::new);
+        let mut ctx = Ctx::new(&img, &arch).with_vtables(&vtables, case.slots);
+        if let Some(s) = &subclassed {
+            ctx = ctx.with_subclassed(s);
+        }
+        if case.through_field {
+            ctx = ctx.with_layout(&OwnerLayout);
+        }
+        let this = MicroExpr::Var("ecx.0".into());
+        let object = if case.through_field {
+            MicroExpr::load(MicroExpr::Binary(n0xis_arch::BinOp::Add, Box::new(this), Box::new(MicroExpr::constant(8, 32))), 32 as Bits, false)
+        } else {
+            this
+        };
+        let stmt = |stmt| crate::ssa::SsaStmt { va: Va(0x1000), stmt };
+        let target = MicroExpr::load(
+            MicroExpr::Binary(n0xis_arch::BinOp::Add, Box::new(MicroExpr::Var("v1".into())), Box::new(MicroExpr::constant(case.slot, 32))),
+            32 as Bits,
+            false,
+        );
+        let mut stmts = Vec::new();
+        if case.stores_vtable {
+            stmts.push(stmt(MicroStmt::Store { addr: MicroExpr::Var("ecx.0".into()), value: MicroExpr::constant(0x2000, 32), bits: 32 as Bits }));
+        }
+        stmts.push(stmt(MicroStmt::Assign { dst: "v1".into(), value: MicroExpr::load(object, 32 as Bits, false) }));
+        stmts.push(stmt(MicroStmt::Call { target: CallTarget::Indirect(Box::new(target)), args: Vec::new(), ret: None }));
+        let mut blocks = vec![SsaBlock {
+            id: 0,
+            start: Va(0x1000),
+            end: Va(0x1010),
+            terminator: "ret".into(),
+            successors: Vec::new(),
+            phis: Vec::new(),
+            stmts,
+            condition: None,
+        }];
+        let types = TypeArtifact {
+            locals: Vec::new(),
+            structs: Vec::new(),
+            signature: RecoveredSignature {
+                params: vec![ParamInfo { reg: "ecx", name: "ecx".into(), ty: CType::named(case.this_ty) }],
+                ret: ReturnType::Unknown,
+                ret_registers: Vec::new(),
+                params_known: true,
+            },
+        };
+        devirtualize(&ctx, &mut blocks, &types)
+    }
+
+    /// `v1 = *ecx; call *(v1 + slot)` with `ecx` typed `Widget *` — the dispatch
+    /// shape, at 32 bits.
+    fn devirtualize_slot32(slot: i128, pointer_size: u8) -> Vec<Devirtualized> {
+        devirtualize32(Case32 { slot, slots: crate::VtableSlots { pointer_size, code_pointers: crate::CodePointers::Address }, ..Case32::default() })
+    }
+
+    /// A slot is one of the **image's** pointers. Read at a fixed eight bytes,
+    /// slot 1 of a 32-bit table joined methods 1 and 2 into `0x0000103000001020`
+    /// — no code address, so the call stayed unresolved — and the last slot was
+    /// refused because eight bytes from it ran into the next table.
+    #[test]
+    fn a_32_bit_slot_is_read_four_bytes_wide() {
+        let one = devirtualize_slot32(4, 4);
+        assert_eq!(one.len(), 1, "slot 1 of a 4-byte table: {one:?}");
+        assert_eq!((one[0].method, one[0].slot, one[0].name.as_str()), (Va(0x1020), 4, "Widget::vf1"));
+        let last = devirtualize_slot32(8, 4);
+        assert_eq!(last.first().map(|d| (d.method, d.name.as_str())), Some((Va(0x1030), "Widget::vf2")), "the last slot is inside the table");
+        // Slot 3 is `Next`'s first method: out of `Widget`'s table, refused.
+        assert!(devirtualize_slot32(12, 4).is_empty(), "a slot past the table reads the next class's");
+    }
+
+    fn widget_is_derived_from() -> Option<crate::Subclasses> {
+        Some(crate::Subclasses::Known(["Widget".to_string()].into_iter().collect()))
+    }
+
+    /// A parameter's declared type is a **static** type. `Base::h` calling `g`
+    /// through `this` on a `Derived` runs `Derived::g` on the processor
+    /// (`processor_run.cpp` beside the Itanium fixtures, printed 42), so a
+    /// class that `this` has only by its declaration is refused where the
+    /// image derives from it — and kept where it does not.
+    #[test]
+    fn a_parameters_declared_class_is_refused_when_the_class_has_a_subclass() {
+        let derived = devirtualize32(Case32 { subclassed: widget_is_derived_from(), ..Case32::default() });
+        assert!(derived.is_empty(), "Widget has a subclass here: the object may be one: {derived:?}");
+        let alone = devirtualize32(Case32 { subclassed: Some(crate::Subclasses::Known(["Other".to_string()].into_iter().collect())), ..Case32::default() });
+        assert_eq!(alone.first().map(|d| (d.method, d.basis)), Some((Va(0x1020), "object")), "no class derives from Widget: {alone:?}");
+    }
+
+    /// Where any class's bases are unknown, any class may have a subclass, and
+    /// the declared class is refused for that reason alone.
+    #[test]
+    fn an_unknown_hierarchy_refuses_a_declared_class() {
+        let out = devirtualize32(Case32 { subclassed: Some(crate::Subclasses::Unknown { classes: 1 }), ..Case32::default() });
+        assert!(out.is_empty(), "one class's bases unknown: Widget may have a subclass: {out:?}");
+    }
+
+    /// A vtable this function stores into the object is its dynamic type, so
+    /// the dispatch stands even though the class has a subclass — the `fresh`
+    /// case, and the reason the refusal is by how the class was established
+    /// rather than by class.
+    #[test]
+    fn a_stored_vtable_is_the_dynamic_type_and_stands() {
+        for this_ty in ["void *", "Widget *"] {
+            let out = devirtualize32(Case32 { this_ty, stores_vtable: true, subclassed: widget_is_derived_from(), ..Case32::default() });
+            assert_eq!(out.first().map(|d| (d.method, d.name.as_str())), Some((Va(0x1020), "Widget::vf1")), "`this` declared {this_ty}: {out:?}");
+        }
+    }
+
+    /// The field basis asks the same question: a class that may have a
+    /// subclass is refused — and where any class's bases are unknown, that is
+    /// every class. Before, an image whose bases could not be read gave the
+    /// guard an empty set, and the field basis resolved through any class.
+    #[test]
+    fn the_field_basis_refuses_a_class_that_may_have_a_subclass() {
+        let field = |subclassed| devirtualize32(Case32 { this_ty: "Owner *", through_field: true, subclassed, ..Case32::default() });
+        let none = field(Some(crate::Subclasses::Known(std::collections::HashSet::new())));
+        assert_eq!(none.first().map(|d| (d.method, d.basis)), Some((Va(0x1020), "field")), "nothing derives from Widget: {none:?}");
+        assert!(field(widget_is_derived_from()).is_empty(), "Widget has a subclass");
+        assert!(field(Some(crate::Subclasses::Unknown { classes: 1 })).is_empty(), "the hierarchy is not known");
+    }
+
+    /// On 32-bit ARM a slot holding a Thumb method holds its address with bit
+    /// 0 set. Resolved as it was, the call went to the odd address. Refused on
+    /// `EM_ARM` until one rule clears the bit for symbols and slots alike; the
+    /// same image read as plain code pointers resolves as before.
+    #[test]
+    fn a_thumb_slot_is_not_resolved_on_arm() {
+        let thumb = [0x1011, 0x1021, 0x1031, 0x1041];
+        let arm = crate::VtableSlots { pointer_size: 4, code_pointers: crate::CodePointers::ArmInterworking };
+        assert!(devirtualize32(Case32 { methods: thumb, slots: arm, ..Case32::default() }).is_empty(), "an odd slot on EM_ARM");
+        let even = devirtualize32(Case32 { slots: arm, ..Case32::default() });
+        assert_eq!(even.first().map(|d| d.method), Some(Va(0x1020)), "an even slot on EM_ARM is an A32 method: {even:?}");
+        let plain = devirtualize32(Case32 { methods: thumb, ..Case32::default() });
+        assert_eq!(plain.first().map(|d| d.method), Some(Va(0x1021)), "elsewhere the value is the address: {plain:?}");
+    }
+
+    /// A function of planted blocks at 32 bits over [`image32`]'s tables:
+    /// `Widget` at `0x2000`, whose slot 0 holds `0x1010`, and `Next` at
+    /// `0x200c`, whose slot 0 holds `0x1040`. Each block is its statements and
+    /// the blocks it goes to; the object is `ecx`, declared `this_ty`, and no
+    /// class derives from any other.
+    fn devirtualize_blocks(this_ty: &str, blocks: Vec<(Vec<MicroStmt>, Vec<usize>)>) -> Vec<(u64, Va)> {
+        use crate::typeinfer::{CType, ParamInfo, RecoveredSignature, ReturnType};
+        let img = image32(METHODS);
+        let arch = n0xis_arch::X64::x86();
+        let vtables: std::sync::Arc<HashMap<u64, String>> = std::sync::Arc::new(
+            [(0x2000u64, "Widget".to_string()), (0x200c, "Next".to_string()), (0x3000, "Last".to_string())].into_iter().collect(),
+        );
+        let none_derived = std::sync::Arc::new(crate::Subclasses::Known(std::collections::HashSet::new()));
+        let ctx = Ctx::new(&img, &arch).with_vtables(&vtables, PLAIN_32).with_subclassed(&none_derived);
+        let start = |i: usize| Va(0x1000 + 0x10 * i as u64);
+        let mut blocks: Vec<SsaBlock> = blocks
+            .into_iter()
+            .enumerate()
+            .map(|(i, (stmts, to))| SsaBlock {
+                id: i,
+                start: start(i),
+                end: start(i + 1),
+                terminator: if to.is_empty() { "ret".into() } else { "jmp".into() },
+                successors: to.into_iter().map(|j| crate::ir::Successor { to: start(j), kind: "jmp".into(), confidence: 1.0 }).collect(),
+                phis: Vec::new(),
+                stmts: stmts.into_iter().map(|stmt| crate::ssa::SsaStmt { va: start(i), stmt }).collect(),
+                condition: None,
+            })
+            .collect();
+        let types = TypeArtifact {
+            locals: Vec::new(),
+            structs: Vec::new(),
+            signature: RecoveredSignature {
+                params: vec![ParamInfo { reg: "ecx", name: "ecx".into(), ty: CType::named(this_ty) }],
+                ret: ReturnType::Unknown,
+                ret_registers: Vec::new(),
+                params_known: true,
+            },
+        };
+        devirtualize(&ctx, &mut blocks, &types).into_iter().map(|d| (d.slot, d.method)).collect()
+    }
+
+    /// `*ecx = &table` — a construction of the object.
+    fn build(table: i128) -> MicroStmt {
+        MicroStmt::Store { addr: MicroExpr::Var("ecx.0".into()), value: MicroExpr::constant(table, 32), bits: 32 as Bits }
+    }
+
+    /// `v = *ecx; call *v` — a dispatch through slot 0, its vptr in `v`.
+    fn call_slot0(v: &str) -> [MicroStmt; 2] {
+        [
+            MicroStmt::Assign { dst: v.into(), value: MicroExpr::load(MicroExpr::Var("ecx.0".into()), 32 as Bits, false) },
+            MicroStmt::Call { target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::Var(v.into()), 32 as Bits, false))), args: Vec::new(), ret: None },
+        ]
+    }
+
+    const WIDGET_VF0: (u64, Va) = (0, Va(0x1010));
+    const NEXT_VF0: (u64, Va) = (0, Va(0x1040));
+
+    /// `flow.cpp`'s `g`: the object is built as a `Widget` on one branch and
+    /// called on the other. The construction does not dominate the call (and
+    /// cannot reach it), so it says nothing there. Taken as the variable's
+    /// class, it resolved the call to `Widget::vf0` — `B::f` in `flow.cpp`,
+    /// where the processor runs `D::f`.
+    #[test]
+    fn a_construction_on_another_branch_does_not_name_the_object() {
+        let out = devirtualize_blocks("void *", vec![(vec![], vec![1, 2]), (vec![build(0x2000)], vec![]), (call_slot0("v1").to_vec(), vec![])]);
+        assert_eq!(out, vec![], "the vtable stored on the other branch is not the object's here");
+    }
+
+    /// A construction that dominates the call names the object there, through
+    /// a branch or in the same block.
+    #[test]
+    fn a_dominating_construction_names_the_object() {
+        let across = devirtualize_blocks("void *", vec![(vec![build(0x200c)], vec![1, 2]), (vec![], vec![]), (call_slot0("v1").to_vec(), vec![])]);
+        assert_eq!(across, vec![NEXT_VF0]);
+        let mut same = vec![build(0x200c)];
+        same.extend(call_slot0("v1"));
+        assert_eq!(devirtualize_blocks("void *", vec![(same, vec![])]), vec![NEXT_VF0]);
+    }
+
+    /// Of the dominating constructions the nearest wins — by the dominator
+    /// tree, not by block order: here the nearer one (`Widget`, block 1) comes
+    /// first in block order, and taking the last in that order named `Next`.
+    #[test]
+    fn the_nearest_dominating_construction_wins() {
+        let chain = vec![
+            (vec![], vec![2]),
+            (vec![build(0x2000)], vec![3]),
+            (vec![build(0x200c)], vec![1]),
+            (call_slot0("v1").to_vec(), vec![]),
+        ];
+        assert_eq!(devirtualize_blocks("void *", chain), vec![WIDGET_VF0], "0 -> 2 (Next) -> 1 (Widget) -> 3 (call)");
+        let mut same = vec![build(0x200c), build(0x2000)];
+        same.extend(call_slot0("v1"));
+        assert_eq!(devirtualize_blocks("void *", vec![(same, vec![])]), vec![WIDGET_VF0], "the later store in the block");
+    }
+
+    /// A construction that does not dominate the call but can reach it refuses
+    /// the call: on that path the object was built again.
+    #[test]
+    fn a_construction_that_reaches_without_dominating_refuses() {
+        let out = devirtualize_blocks("void *", vec![(vec![build(0x200c)], vec![1, 2]), (vec![build(0x2000)], vec![2]), (call_slot0("v1").to_vec(), vec![])]);
+        assert_eq!(out, vec![], "built as Next, and as Widget on one path to the call");
+        // Through a loop: a construction after the call in its own block
+        // reaches it on the next iteration.
+        let body = |loops: bool| {
+            let mut stmts = vec![build(0x200c)];
+            stmts.extend(call_slot0("v1"));
+            stmts.push(build(0x2000));
+            devirtualize_blocks("void *", vec![(vec![], vec![1]), (stmts, if loops { vec![1, 2] } else { vec![2] }), (vec![], vec![])])
+        };
+        assert_eq!(body(true), vec![], "the Widget store after the call reaches it around the loop");
+        assert_eq!(body(false), vec![NEXT_VF0], "without the loop it cannot reach the call");
+    }
+
+    /// Where no construction reaches the call, the object's class is the one
+    /// its declaration gives, under that basis's own guard — not the class a
+    /// construction elsewhere stored.
+    #[test]
+    fn without_a_construction_the_declared_class_answers() {
+        let out = devirtualize_blocks("Widget *", vec![(vec![], vec![1, 2]), (vec![build(0x200c)], vec![]), (call_slot0("v1").to_vec(), vec![])]);
+        assert_eq!(out, vec![WIDGET_VF0], "`this` is declared Widget, and nothing derives from Widget here");
     }
 
     #[test]

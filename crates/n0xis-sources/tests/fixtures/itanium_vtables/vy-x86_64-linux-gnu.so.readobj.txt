@@ -1,0 +1,66 @@
+
+File: vy-x86_64-linux-gnu.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x1400
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 21
+  StringTableSectionIndex: 19
+}
+Relocations [
+  Section (5) .rela.dyn {
+    0x2C80 R_X86_64_64 _ZTVN10__cxxabiv121__vmi_class_type_infoE 0x10
+    0x2CF0 R_X86_64_64 _ZTVN10__cxxabiv121__vmi_class_type_infoE 0x10
+    0x2CA8 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2D18 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2D58 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2CB8 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x2D28 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x2E38 R_X86_64_GLOB_DAT _ZTV4Leaf 0x0
+    0x2CE0 R_X86_64_64 _ZTI5Leaf2 0x0
+    0x2D30 R_X86_64_64 _ZTS5Leaf2 0x0
+    0x2D48 R_X86_64_64 _ZTI5Plain 0x0
+    0x2D60 R_X86_64_64 _ZTS5Plain 0x0
+    0x2C78 R_X86_64_64 _ZNK4Leaf1mEv 0x0
+    0x2CC8 R_X86_64_64 _ZTI3Mid 0x0
+    0x2C88 R_X86_64_64 _ZTS3Mid 0x0
+    0x2C70 R_X86_64_64 _ZNK3Mid2fpEv 0x0
+    0x2D50 R_X86_64_64 _ZNK5Plain1gEv 0x0
+    0x2C68 R_X86_64_64 _ZTI4Leaf 0x0
+    0x2CC0 R_X86_64_64 _ZTS4Leaf 0x0
+    0x2CE8 R_X86_64_64 _ZNK5Leaf22m2Ev 0x0
+    0x2C98 R_X86_64_64 _ZTI1P 0x0
+    0x2CB0 R_X86_64_64 _ZTS1P 0x0
+    0x2E40 R_X86_64_GLOB_DAT _ZTV5Leaf2 0x0
+    0x2E48 R_X86_64_GLOB_DAT _ZTV5Plain 0x0
+    0x2D38 R_X86_64_64 _ZTI4Mid2 0x0
+    0x2CF8 R_X86_64_64 _ZTS4Mid2 0x0
+    0x2D08 R_X86_64_64 _ZTI1E 0x0
+    0x2D20 R_X86_64_64 _ZTS1E 0x0
+  }
+  Section (6) .rela.plt {
+    0x3E68 R_X86_64_JUMP_SLOT _Z6opaquePv 0x0
+  }
+]

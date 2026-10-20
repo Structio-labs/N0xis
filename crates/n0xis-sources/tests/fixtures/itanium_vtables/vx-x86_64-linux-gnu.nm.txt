@@ -1,0 +1,11 @@
+0000000000201290 T _ZNK5Alone1aEv
+0000000000201288 T _ZNK5Local1eEv
+                 U _ZTI3Ext
+0000000000200208 R _ZTI5Alone
+00000000002001d0 R _ZTI5Local
+0000000000200218 R _ZTS5Alone
+00000000002001e8 R _ZTS5Local
+00000000002001f0 R _ZTV5Alone
+00000000002001b8 R _ZTV5Local
+                 U _ZTVN10__cxxabiv117__class_type_infoE
+                 U _ZTVN10__cxxabiv120__si_class_type_infoE

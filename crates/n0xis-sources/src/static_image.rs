@@ -95,12 +95,19 @@ impl StaticImage {
         }
     }
 
-    /// 64-bit image? PE32+ / 64-bit ELF → `true`; 32-bit PE32 → `false`. (Only
-    /// 64-bit ELF is supported, so an ELF is always 64-bit here.)
+    /// Are the image's data pointers 8 bytes? PE32+ and `ELFCLASS64` → `true`;
+    /// PE32 and `ELFCLASS32` → `false`.
+    ///
+    /// The format's own statement of width — not the decoder's: an x32 ELF is
+    /// `ELFCLASS32` with x86-64 code, and the decoder is chosen from the machine
+    /// field ([`Self::machine`]), never from this. It used to answer `true` for
+    /// every ELF, a documented simplification that waited for a reader; the
+    /// Itanium RTTI scan was that reader, and on a 32-bit ELF it answered
+    /// `ok: true` with no classes or with the wrong vtable addresses.
     pub fn is_64(&self) -> bool {
         match self {
             StaticImage::Pe(p) => p.is_64(),
-            StaticImage::Elf(_) => true,
+            StaticImage::Elf(e) => e.is_64(),
         }
     }
 
@@ -130,11 +137,30 @@ impl StaticImage {
         }
     }
 
-    /// Native pointer size in bytes (4 for a 32-bit PE32, else 8).
+    /// The byte order of the image's data: an ELF's `e_ident[EI_DATA]`; a PE is
+    /// little-endian by its specification.
+    pub fn byte_order(&self) -> crate::ByteOrder {
+        match self {
+            StaticImage::Pe(_) => crate::ByteOrder::Little,
+            StaticImage::Elf(e) => e.byte_order(),
+        }
+    }
+
+    /// A program or a library, as the image's own headers say
+    /// ([`crate::Linkage`]).
+    pub fn linkage(&self) -> crate::Linkage {
+        match self {
+            StaticImage::Pe(p) => p.linkage(),
+            StaticImage::Elf(e) => e.linkage(),
+        }
+    }
+
+    /// The image's data pointer size in bytes: 4 for PE32 and `ELFCLASS32`, 8
+    /// for PE32+ and `ELFCLASS64` (see [`Self::is_64`]).
     pub fn pointer_size(&self) -> u8 {
         match self {
             StaticImage::Pe(p) => p.pointer_size(),
-            StaticImage::Elf(_) => 8,
+            StaticImage::Elf(e) => e.pointer_size(),
         }
     }
 }

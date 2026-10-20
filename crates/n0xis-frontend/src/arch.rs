@@ -48,6 +48,15 @@ pub fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
 /// instructions rendered as `jnp`, `sar edi,1`, `div dword ptr [rdx+53h]`,
 /// with function extents to match. An instruction set is a fact the file
 /// states; it is not a flag the user must remember to pass.
+///
+/// **A declared machine this build does not decode is refused** when no
+/// `--arch` is given — the rule docs/design/IMAGE_FORMATS.md §5 step 2 states.
+/// It fell back to the bitness rule, and both answers were wrong: a 32-bit
+/// MIPS or PowerPC shared object was disassembled as x86-64 while every ELF
+/// reported itself 64-bit, and as i386 once the ELF class was read, `ok: true`
+/// both times. With `--arch` the flag is the declaration, as before. (The
+/// design also shows the raw machine value in such an answer; that part is not
+/// built.)
 pub fn pick_arch_for(
     explicit: Option<&str>,
     declared_machine: Option<&str>,
@@ -57,11 +66,14 @@ pub fn pick_arch_for(
         return resolve_arch(Some(a));
     }
     // A machine this build does not map (raw hex, "unknown") is not a licence
-    // to guess: fall through to the bitness rule rather than decode blind.
-    if let Some(m) = declared_machine
-        && let Ok(a) = resolve_arch(Some(m))
-    {
-        return Ok(a);
+    // to guess, by bitness or otherwise.
+    if let Some(m) = declared_machine {
+        return resolve_arch(Some(m)).map_err(|_| {
+            format!(
+                "the image declares machine {m}, which this build does not decode; \
+                 pass --arch (x64|x86|arm64|arm32|thumb) to decode it as one of those anyway"
+            )
+        });
     }
     if source_is_32bit {
         return Ok(Box::new(X64::x86()));
@@ -108,10 +120,17 @@ mod tests {
         assert_eq!(pick_arch_for(None, Some("x86"), true).unwrap().decoder_id(), "x86-32");
         // An explicit flag still wins outright.
         assert_eq!(pick_arch_for(Some("x64"), Some("arm64"), false).unwrap().name(), "x86-64");
-        // A machine this build cannot map falls back to the bitness rule
-        // rather than decoding blind.
-        assert_eq!(pick_arch_for(None, Some("0xf3"), true).unwrap().decoder_id(), "x86-32");
-        assert_eq!(pick_arch_for(None, Some("unknown"), false).unwrap().decoder_id(), "x86-64");
+        // A machine this build cannot map is refused, at either width: these
+        // two lines asserted the bitness fallback, which decoded a 32-bit
+        // RISC-V (`0xf3`) image as x86-32 — a wrong answer the format design
+        // records (docs/design/IMAGE_FORMATS.md §1) — and an unreadable
+        // machine as x86-64.
+        for (machine, is_32) in [("0xf3", true), ("0x8", true), ("0x14", true), ("unknown", false)] {
+            let e = pick_arch_for(None, Some(machine), is_32).err().unwrap_or_else(|| panic!("{machine}: decoded"));
+            assert!(e.contains(machine), "the refusal names what the header declares: {e}");
+        }
+        // With an explicit `--arch` the flag is the declaration.
+        assert_eq!(pick_arch_for(Some("x86"), Some("0x8"), true).unwrap().decoder_id(), "x86-32");
         // No declaration at all (a live process) behaves exactly as before.
         assert_eq!(pick_arch_for(None, None, true).unwrap().decoder_id(), "x86-32");
     }

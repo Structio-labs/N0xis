@@ -1,0 +1,79 @@
+
+File: vt-x86_64-linux-gnu.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x1A68
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 21
+  StringTableSectionIndex: 19
+}
+Relocations [
+  Section (5) .rela.dyn {
+    0x3090 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x3100 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x3160 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x3188 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x30C8 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x3130 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x30F0 R_X86_64_64 __cxa_pure_virtual 0x0
+    0x31D0 R_X86_64_64 _ZTVN10__cxxabiv121__vmi_class_type_infoE 0x10
+    0x3080 R_X86_64_64 _ZNK4Base1fEv 0x0
+    0x30B0 R_X86_64_64 _ZNK4Base1fEv 0x0
+    0x30C0 R_X86_64_64 _ZNK7Derived1kEv 0x0
+    0x3190 R_X86_64_64 _ZTS5Right 0x0
+    0x3088 R_X86_64_64 _ZNK4Base1gEv 0x0
+    0x30E8 R_X86_64_64 _ZTI5Shape 0x0
+    0x3140 R_X86_64_64 _ZTI5Shape 0x0
+    0x3078 R_X86_64_64 _ZTI4Base 0x0
+    0x30D8 R_X86_64_64 _ZTI4Base 0x0
+    0x3118 R_X86_64_64 _ZTI6Square 0x0
+    0x3150 R_X86_64_64 _ZTI4Left 0x0
+    0x31E8 R_X86_64_64 _ZTI4Left 0x0
+    0x3158 R_X86_64_64 _ZN4Left1lEv 0x0
+    0x31B0 R_X86_64_64 _ZN4Both1rEv 0x0
+    0x3108 R_X86_64_64 _ZTS5Shape 0x0
+    0x30B8 R_X86_64_64 _ZNK7Derived1gEv 0x0
+    0x31C8 R_X86_64_64 _ZThn8_N4Both1rEv 0x0
+    0x3098 R_X86_64_64 _ZTS4Base 0x0
+    0x3138 R_X86_64_64 _ZTS6Square 0x0
+    0x3168 R_X86_64_64 _ZTS4Left 0x0
+    0x31A0 R_X86_64_64 _ZTI4Both 0x0
+    0x31C0 R_X86_64_64 _ZTI4Both 0x0
+    0x30F8 R_X86_64_64 _ZNK5Shape5sidesEv 0x0
+    0x3180 R_X86_64_64 _ZN5Right1rEv 0x0
+    0x31A8 R_X86_64_64 _ZN4Both1lEv 0x0
+    0x30A8 R_X86_64_64 _ZTI7Derived 0x0
+    0x3120 R_X86_64_64 _ZNK6Square4areaEv 0x0
+    0x3128 R_X86_64_64 _ZNK6Square5sidesEv 0x0
+    0x3178 R_X86_64_64 _ZTI5Right 0x0
+    0x31F8 R_X86_64_64 _ZTI5Right 0x0
+    0x31D8 R_X86_64_64 _ZTS4Both 0x0
+    0x32D8 R_X86_64_GLOB_DAT _ZTV4Base 0x0
+    0x30D0 R_X86_64_64 _ZTS7Derived 0x0
+  }
+  Section (6) .rela.plt {
+    0x42F8 R_X86_64_JUMP_SLOT _Z6opaquePv 0x0
+  }
+]

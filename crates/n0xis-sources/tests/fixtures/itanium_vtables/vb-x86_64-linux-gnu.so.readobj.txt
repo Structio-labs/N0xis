@@ -1,0 +1,66 @@
+
+File: vb-x86_64-linux-gnu.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x1068
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 9
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 17
+  StringTableSectionIndex: 15
+}
+Relocations [
+  Section (5) .rela.dyn {
+    0x2A28 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2A90 R_X86_64_64 _ZTVN10__cxxabiv121__vmi_class_type_infoE 0x10
+    0x2B68 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x2AD8 R_X86_64_64 _ZNK4Leaf1mEv 0x0
+    0x2A48 R_X86_64_64 _ZTI3Mid 0x0
+    0x2A70 R_X86_64_64 _ZTI3Mid 0x0
+    0x2B30 R_X86_64_64 _ZTI3Mid 0x0
+    0x2B58 R_X86_64_64 _ZTI3Mid 0x0
+    0x2B78 R_X86_64_64 _ZTI3Mid 0x0
+    0x2B00 R_X86_64_64 _ZTV4Leaf 0x18
+    0x2B18 R_X86_64_64 _ZTV4Leaf 0x40
+    0x2A50 R_X86_64_64 _ZNK3Mid1aEv 0x0
+    0x2AD0 R_X86_64_64 _ZNK3Mid1aEv 0x0
+    0x2B38 R_X86_64_64 _ZNK3Mid1aEv 0x0
+    0x2A78 R_X86_64_64 _ZTv0_n24_NK3Mid1aEv 0x0
+    0x2AF8 R_X86_64_64 _ZTv0_n24_NK3Mid1aEv 0x0
+    0x2B60 R_X86_64_64 _ZTv0_n24_NK3Mid1aEv 0x0
+    0x2A58 R_X86_64_64 _ZNK3Mid1mEv 0x0
+    0x2B40 R_X86_64_64 _ZNK3Mid1mEv 0x0
+    0x2A18 R_X86_64_64 _ZTI5VBase 0x0
+    0x2AA8 R_X86_64_64 _ZTI5VBase 0x0
+    0x2A80 R_X86_64_64 _ZTV3Mid 0x18
+    0x2A88 R_X86_64_64 _ZTV3Mid 0x40
+    0x2B08 R_X86_64_64 _ZTC4Leaf0_3Mid 0x18
+    0x2B10 R_X86_64_64 _ZTC4Leaf0_3Mid 0x40
+    0x2B70 R_X86_64_64 _ZTS4Leaf 0x0
+    0x2A20 R_X86_64_64 _ZNK5VBase1aEv 0x0
+    0x2A98 R_X86_64_64 _ZTS3Mid 0x0
+    0x2A30 R_X86_64_64 _ZTS5VBase 0x0
+    0x2AC8 R_X86_64_64 _ZTI4Leaf 0x0
+    0x2AF0 R_X86_64_64 _ZTI4Leaf 0x0
+  }
+]

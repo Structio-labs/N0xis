@@ -1,0 +1,80 @@
+
+File: vr-x86_64-linux-gnu.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x17B0
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 22
+  StringTableSectionIndex: 20
+}
+Relocations [
+  Section (5) .rela.dyn {
+    0x2D90 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2E00 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2E60 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2E88 R_X86_64_64 _ZTVN10__cxxabiv117__class_type_infoE 0x10
+    0x2DC8 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x2E30 R_X86_64_64 _ZTVN10__cxxabiv120__si_class_type_infoE 0x10
+    0x2DF0 R_X86_64_64 __cxa_pure_virtual 0x0
+    0x2ED0 R_X86_64_64 _ZTVN10__cxxabiv121__vmi_class_type_infoE 0x10
+  }
+  Section (6) .relr.dyn {
+    0x2D78 R_X86_64_RELATIVE -
+    0x2D80 R_X86_64_RELATIVE -
+    0x2D88 R_X86_64_RELATIVE -
+    0x2D98 R_X86_64_RELATIVE -
+    0x2DA8 R_X86_64_RELATIVE -
+    0x2DB0 R_X86_64_RELATIVE -
+    0x2DB8 R_X86_64_RELATIVE -
+    0x2DC0 R_X86_64_RELATIVE -
+    0x2DD0 R_X86_64_RELATIVE -
+    0x2DD8 R_X86_64_RELATIVE -
+    0x2DE8 R_X86_64_RELATIVE -
+    0x2DF8 R_X86_64_RELATIVE -
+    0x2E08 R_X86_64_RELATIVE -
+    0x2E18 R_X86_64_RELATIVE -
+    0x2E20 R_X86_64_RELATIVE -
+    0x2E28 R_X86_64_RELATIVE -
+    0x2E38 R_X86_64_RELATIVE -
+    0x2E40 R_X86_64_RELATIVE -
+    0x2E50 R_X86_64_RELATIVE -
+    0x2E58 R_X86_64_RELATIVE -
+    0x2E68 R_X86_64_RELATIVE -
+    0x2E78 R_X86_64_RELATIVE -
+    0x2E80 R_X86_64_RELATIVE -
+    0x2E90 R_X86_64_RELATIVE -
+    0x2EA0 R_X86_64_RELATIVE -
+    0x2EA8 R_X86_64_RELATIVE -
+    0x2EB0 R_X86_64_RELATIVE -
+    0x2EC0 R_X86_64_RELATIVE -
+    0x2EC8 R_X86_64_RELATIVE -
+    0x2ED8 R_X86_64_RELATIVE -
+    0x2EE8 R_X86_64_RELATIVE -
+    0x2EF8 R_X86_64_RELATIVE -
+  }
+  Section (7) .rela.plt {
+    0x4030 R_X86_64_JUMP_SLOT _Z6opaquePv 0x0
+  }
+]

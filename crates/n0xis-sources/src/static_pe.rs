@@ -52,6 +52,9 @@ pub struct StaticPe {
     iat: BTreeMap<u64, Symbol>,
     /// 64-bit PE32+ (`true`) vs 32-bit PE32 (`false`).
     is_64: bool,
+    /// `IMAGE_FILE_DLL` in the COFF characteristics: a library
+    /// ([`crate::Linkage`]).
+    linkage: crate::Linkage,
     /// `.pdata` `RUNTIME_FUNCTION` entries: begin VA → exclusive end VA.
     /// A PE's stated function extents — see [`StaticPe::symbol_size`].
     pdata: BTreeMap<u64, u64>,
@@ -152,6 +155,7 @@ impl StaticPe {
         // load-time rejection, now a first-class (if register-arg-conservative)
         // target.
         let is_64 = pe.is_64;
+        let linkage = if pe.is_lib { crate::Linkage::SharedLibrary } else { crate::Linkage::Executable };
 
         let oh = pe
             .header
@@ -260,6 +264,7 @@ impl StaticPe {
             exports,
             iat,
             is_64,
+            linkage,
             pdata,
             degraded,
             codeview,
@@ -286,6 +291,11 @@ impl StaticPe {
     /// Native pointer size in bytes (8 for PE32+, 4 for PE32).
     pub fn pointer_size(&self) -> u8 {
         if self.is_64 { 8 } else { 4 }
+    }
+
+    /// A program or a DLL — see [`crate::Linkage`].
+    pub fn linkage(&self) -> crate::Linkage {
+        self.linkage
     }
 
     /// The addresses this image **declares** as entry points: every named
@@ -874,6 +884,21 @@ mod tests {
         let pe = StaticPe::load(&p).expect("a well-formed PE32+ loads");
         assert_eq!(pe.degraded(), None);
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// A PE with `IMAGE_FILE_DLL` (`0x2000`) in its COFF characteristics is a
+    /// library, one without it a program: the same planted image with the bit
+    /// set and clear.
+    #[test]
+    fn a_dll_is_a_library() {
+        for (tag, characteristics, want) in [("exe", 0x0102u16, crate::Linkage::Executable), ("dll", 0x2102, crate::Linkage::SharedLibrary)] {
+            let mut b = minimal_pe(0x20b);
+            b[0x56..0x58].copy_from_slice(&characteristics.to_le_bytes());
+            let p = temp(tag, &b);
+            let pe = StaticPe::load(&p).expect("the image loads");
+            assert_eq!(pe.linkage(), want, "characteristics {characteristics:#06x}");
+            let _ = std::fs::remove_file(&p);
+        }
     }
 
     #[test]

@@ -1,0 +1,46 @@
+
+File: vd-x86_64-linux-gnu
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: Executable (0x2)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x6F0
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 7
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 11
+  StringTableSectionIndex: 9
+}
+Relocations [
+]
+
+Hex dump of section '.rodata':
+0x002001f0 00000000 00000000 10022000 00000000 .......... .....
+0x00200200 60132000 00000000 68132000 00000000 `. .....h. .....
+0x00200210 10000000 00000000 20022000 00000000 ........ . .....
+0x00200220 34426173 65000000 00000000 00000000 4Base...........
+0x00200230 48022000 00000000 8b232000 00000000 H. ......# .....
+0x00200240 80132000 00000000 10000000 00000000 .. .............
+0x00200250 60022000 00000000 10022000 00000000 `. ....... .....
+0x00200260 33537562 00000000 00000000 00000000 3Sub............
+0x00200270 80022000 00000000 88132000 00000000 .. ....... .....
+0x00200280 10000000 00000000 90022000 00000000 .......... .....
+0x00200290 344c6173 7400                       4Last.

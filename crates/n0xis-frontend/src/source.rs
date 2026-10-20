@@ -187,6 +187,19 @@ impl Src {
         [".rdata", ".rodata", ".data.rel.ro", ".data"].iter().filter_map(|s| self.section_range_in(module, s)).collect()
     }
 
+    /// A program or a library ([`n0xis_sources::Linkage`]): a static image's
+    /// own headers say. A live process is read through its main module, the
+    /// program. A snapshot, bytes or a remote agent have no headers to say it,
+    /// and are taken for a library, the answer that claims less
+    /// ([`n0xis_core::Subclasses::Open`]).
+    pub fn linkage(&self) -> n0xis_sources::Linkage {
+        match self {
+            Src::Static(img) => img.linkage(),
+            Src::Live(_) => n0xis_sources::Linkage::Executable,
+            Src::Snap(_) | Src::Remote(_) => n0xis_sources::Linkage::SharedLibrary,
+        }
+    }
+
     /// Pointer width in bytes, derived from [`Src::is_64`] so the two can never
     /// disagree.
     ///
@@ -198,10 +211,66 @@ impl Src {
         if self.is_64() { 8 } else { 4 }
     }
 
-    /// Whether the source is 64-bit. A 32-bit **static PE32** returns `false`
-    /// (so the frontend picks the i386 arch); everything else defaults to `true`
-    /// (64-bit ELF, and live/snapshot/remote whose bitness this seam does not
-    /// yet carry — those stay x64 as today).
+    /// The image's Itanium C++ vtables, from its own `_ZTV` symbols and read at
+    /// its own pointer width ([`n0xis_core::scan_itanium_rtti`]). `Ok(None)` for
+    /// anything but a static ELF, which is the only source that has the
+    /// symbols; an error where the image's RTTI is not read at all
+    /// ([`Self::rtti_refusal`]).
+    ///
+    /// One place because there were four — `analyze`, the `rtti scan`
+    /// capability, the decompiler's vtable map and its set of subclassed
+    /// classes — each passing the width on its own. Forcing it to 8 at either of
+    /// the decompiler's two failed no test, and at the subclass set no test can
+    /// see it yet: what reads that set (the `field` basis of devirtualization)
+    /// resolves nothing on a 32-bit image today.
+    pub fn itanium_vtables(&self) -> Result<Option<n0xis_core::ItaniumScan>, n0xis_core::RttiRefusal> {
+        if let Some(refused) = self.rtti_refusal() {
+            return Err(refused);
+        }
+        let Src::Static(img) = self else { return Ok(None) };
+        let n0xis_sources::StaticImage::Elf(elf) = img.as_ref() else { return Ok(None) };
+        Ok(Some(n0xis_core::scan_itanium_rtti(self.as_mem(), &elf.data_symbols(), &self.code_ranges(), self.pointer_size(), elf.relocated_words())))
+    }
+
+    /// Why this source's C++ RTTI is not read at all, if it is not: a
+    /// big-endian image, whose pointers every RTTI reader would read
+    /// byte-swapped. Asked by every RTTI path — `rtti scan`, `analyze`'s RTTI
+    /// naming, and the decompiler's vtable map and subclass set — through
+    /// [`Self::itanium_vtables`] or directly.
+    pub fn rtti_refusal(&self) -> Option<n0xis_core::RttiRefusal> {
+        match self {
+            Src::Static(img) if img.byte_order() == n0xis_sources::ByteOrder::Big => Some(n0xis_core::RttiRefusal::BigEndian),
+            _ => None,
+        }
+    }
+
+    /// How this image's vtable slots are read: its pointer width, and — on a
+    /// 32-bit ARM ELF (`EM_ARM`) — that bit 0 of a code pointer is the Thumb
+    /// indication ([`n0xis_core::VtableSlots::method`]'s interim refusal).
+    ///
+    /// The one place the slot format is decided from the image. Only the ELF
+    /// machine is asked, as decided: an ARM PE (`0x01c0`/`0x01c4`, which
+    /// [`n0xis_sources::StaticImage::machine`] also calls `arm`; ARMNT is
+    /// Thumb-2 only) is not covered yet — an open item.
+    pub fn vtable_slots(&self) -> n0xis_core::VtableSlots {
+        let arm_elf = matches!(self, Src::Static(img) if matches!(img.as_ref(), n0xis_sources::StaticImage::Elf(e) if e.machine() == "arm"));
+        n0xis_core::VtableSlots {
+            pointer_size: self.pointer_size(),
+            code_pointers: if arm_elf { n0xis_core::CodePointers::ArmInterworking } else { n0xis_core::CodePointers::Address },
+        }
+    }
+
+    /// Whether the source's data pointers are 8 bytes. A static image answers
+    /// from its own header — PE32 and `ELFCLASS32` are `false`, PE32+ and
+    /// `ELFCLASS64` are `true`. A live process, snapshot or remote agent says
+    /// `true`: this seam does not carry their width yet, so they stay x64 as
+    /// before.
+    ///
+    /// Readers: [`Self::pointer_size`], and the bitness fallback of
+    /// [`crate::pick_arch_for`], which a static image never reaches: an
+    /// `EM_386`, `EM_ARM`, `EM_X86_64` or `EM_AARCH64` image is decoded by its
+    /// machine field whatever its class, and any other machine is refused
+    /// without `--arch`.
     pub fn is_64(&self) -> bool {
         match self {
             Src::Static(img) => img.is_64(),
@@ -224,7 +293,8 @@ impl Src {
 
     /// Pick the decoder architecture for this source, honouring the image
     /// header. An explicit `--arch` wins; otherwise the declared machine
-    /// decides; otherwise bitness. This is the header-aware path every
+    /// decides, and one this build does not decode is refused; only a source
+    /// that declares none falls back to bitness. This is the header-aware path every
     /// file-analyzing command must use — prefer it over the raw
     /// [`crate::resolve_arch`]/[`crate::pick_arch`], which ignore the header and
     /// so decode a non-x64 image as x86-64 whenever `--arch` is omitted.
@@ -639,9 +709,10 @@ mod tests {
     /// `e_machine`. Header-only (no program/section headers) is a valid ELF, and
     /// it is bytes planted on purpose: the machine field is the one fact under
     /// test, so nothing else needs to be real. `StaticImage::machine` reads
-    /// `e_machine` at offset 0x12 directly, and `StaticImage::is_64` reports true
-    /// for any ELF, so this exercises the real `declared_machine()`/`is_64()`
-    /// path that `Src::pick_arch` delegates through.
+    /// `e_machine` at offset 0x12 directly, and `StaticImage::is_64` reads the
+    /// `ELFCLASS64` planted at `EI_CLASS`, so this exercises the real
+    /// `declared_machine()`/`is_64()` path that `Src::pick_arch` delegates
+    /// through.
     fn elf64_header(e_machine: u16) -> Vec<u8> {
         let mut b = vec![0u8; 64];
         b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
@@ -687,6 +758,45 @@ mod tests {
         // (c) An x64 image (0x3E = EM_X86_64) still decodes as x64.
         let x64 = static_src(0x3E);
         assert_eq!(x64.pick_arch(None).unwrap().name(), "x86-64");
+    }
+
+    /// A 52-byte `ELFCLASS32` little-endian header carrying `e_machine`, as
+    /// [`elf64_header`] is for 64-bit: header only, planted on purpose.
+    fn elf32_header(e_machine: u16) -> Vec<u8> {
+        let mut b = vec![0u8; 52];
+        b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        b[4] = 1; // EI_CLASS = ELFCLASS32
+        b[5] = 1; // EI_DATA  = ELFDATA2LSB
+        b[6] = 1; // EI_VERSION
+        b[0x10..0x12].copy_from_slice(&3u16.to_le_bytes()); // e_type = ET_DYN
+        b[0x12..0x14].copy_from_slice(&e_machine.to_le_bytes()); // e_machine
+        b[0x14..0x18].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        b[0x28..0x2a].copy_from_slice(&52u16.to_le_bytes()); // e_ehsize
+        b
+    }
+
+    /// An image whose header declares a machine this build does not decode is
+    /// refused without `--arch`, not decoded by a bitness guess: a 32-bit MIPS
+    /// (`EM_MIPS` = 8) or PowerPC (`EM_PPC` = 0x14) shared object was
+    /// disassembled as x86-64 while every ELF reported itself 64-bit, and as
+    /// i386 once the ELF class was read — `ok: true` both times. With `--arch`,
+    /// the flag is the declaration.
+    ///
+    /// CALIBRATION: restore the bitness fallback in `pick_arch_for` and the
+    /// first assertion fails on its own line, `Ok(x86-32)` where an error is.
+    #[test]
+    fn a_machine_this_build_does_not_decode_is_refused_not_guessed() {
+        for e_machine in [0x8u16, 0x14] {
+            let path = std::env::temp_dir().join(format!("n0xis_unmapped_{}_{e_machine}.elf", std::process::id()));
+            std::fs::write(&path, elf32_header(e_machine)).expect("write temp elf");
+            let img = StaticImage::load(&path).expect("a 32-bit header parses");
+            let _ = std::fs::remove_file(&path);
+            let src = Src::Static(std::sync::Arc::new(img));
+            assert!(!src.is_64(), "the planted header is ELFCLASS32");
+            let refused = src.pick_arch(None).map(|a| a.decoder_id().to_string());
+            assert!(refused.as_ref().is_err_and(|e| e.contains(&format!("{e_machine:#x}"))), "{e_machine:#x}: {refused:?}");
+            assert_eq!(src.pick_arch(Some("x86")).unwrap().decoder_id(), "x86-32", "{e_machine:#x}: --arch is the declaration");
+        }
     }
 
     /// Write one 64-byte ELF section header.

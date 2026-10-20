@@ -86,6 +86,13 @@ hex-everywhere audit closed 2026-07-18.)
 (CFG/discover/xref/goto+structured decompile) — it **still needs real-world verification** and
 is not held to x64's standard. SSA optimization and flag-precise conditions are **x64-only**.
 
+Without `--arch`, a file is decoded with the instruction set its header declares (`EM_386`,
+`EM_X86_64`, `EM_ARM`, `EM_AARCH64`, and the PE machines `0x014c`, `0x8664`, `0xaa64`,
+`0x01c0`/`0x01c4`). A header that declares any other machine (MIPS, PowerPC, RISC-V, …) is refused
+with `bad-arch`, naming the machine, by every command that decodes (`disasm`, `decomp`, `ir *`,
+`function *`, `analyze`, `profile`, …); `find`, a byte search, still searches it. With `--arch` the
+flag is the declaration. Such an image used to be decoded as x86 by its bitness, `ok: true`.
+
 ### Schema / compatibility
 
 - New v1 payloads are `n0xis.*.vN` (`crates/n0xis-contracts/src/schema.rs`, mod `v1` — the single
@@ -831,8 +838,8 @@ sections above document a subset in depth; every command has `--help`, and
 
 | Command | What it does |
 |---|---|
-| `n0x analyze` | Whole-program analysis: discover functions, recover MSVC RTTI class names, build the reverse-xref index, and warm the IR cache — materializing the `.n0x/` summary layer once so later `xref`/`decomp` are fast. Streams `[n0x]`-prefixed phase/progress JSON to stderr; resumable (content- addressed work already done is skipped). Static x64 PE (`--file`) |
-| `n0x decomp pseudo` | Pseudo-C for one function (`n0x.decomp.pseudo.v1`) |
+| `n0x analyze` | Whole-program analysis: discover functions, recover MSVC RTTI class names, build the reverse-xref index, and warm the IR cache — materializing the `.n0x/` summary layer once so later `xref`/`decomp` are fast. Streams `[n0x]`-prefixed phase/progress JSON to stderr; resumable (content- addressed work already done is skipped). Static x64 PE (`--file`). Of the RTTI phase it reports `rtti_classes`, `rtti_refused_virtual_bases` (classes not named because they have virtual bases, so their vtable's address point is not where the scan reads it), `rtti_refused_first_slot_not_code` (classes not named because the word where their first method would be is an address outside every executable section), `rtti_refused_first_slot_empty` (classes not named because that word is zero, no relocation writes it, and the word before it is no `type_info` pointer) and `rtti_thumb_slots_refused` (32-bit ARM vtable slots holding a Thumb method, walked and not named until bit 0 is cleared by one rule for symbols and slots); a big-endian ELF is refused with `big-endian-image` |
+| `n0x decomp pseudo` | Pseudo-C for one function (`n0x.decomp.pseudo.v1`). A big-endian ELF is refused with `big-endian-image`, whether or not it holds C++: the decompiler reads the image's vtable map, and the RTTI readers read only little-endian images |
 | `n0x diff functions` | Decompile two functions (from two sources/addresses) and diff their pseudo-C line-by-line |
 | `n0x disasm` | Linear disassembly |
 | `n0x find` | Search the image for a byte pattern, a string, or an escaped string — the "Find" a disassembler's Ctrl+F does. One of `--bytes` (with `?`/`??` wildcards), `--string` (UTF-8; `--utf16` for wide), or `--escaped` (`\xNN`, `\n`, `\t`, `\r`, `\0`, `\\`). Scans every file-backed section by default; narrow with `--section`, or `--start`/`--size` |
@@ -851,7 +858,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x ir slice` | Backward register slice: what computes `--reg` at `--at` |
 | `n0x ir value-set` | Light value-set / alias analysis over SSA (Phase 7): the bounded set of possible values each SSA variable can hold |
 | `n0x module list` | List modules of a live process (`--pid`) or a single PE (`--file`) |
-| `n0x rtti scan` | Scan `.rdata` for MSVC RTTI vtables and recover each one's class name |
+| `n0x rtti scan` | Recover C++ classes and their vtables: MSVC RTTI from a PE's data sections, Itanium RTTI from an ELF's `_ZTV`/`_ZTI` symbols, at the image's pointer width. `data.vtables[]`: `vtable` (the vptr an object stores), `type_descriptor`, `mangled`, `name`, `offset`, and either `bases` — an array, `[]` for none — where the image says, or, where it does not, no `bases` key and `bases_unknown`. Itanium bases are read from the class's own `_ZTI` symbol where the image has one (its size states no base, one or several), with the vtable's `type_info` pointer as a cross-check where it holds an address; the reasons: `type-info-not-in-file` (no own `_ZTI` in the image, and the vtable's `type_info` pointer is a relocation the file does not hold), `type-info-disagrees` (that pointer holds an address that is not the own `_ZTI`'s), `base-not-named` (the class's `type_info` has a base whose pointer names no `_ZTI` of this image, such as a base in another library, or one reached by a symbolic relocation, as in a shared object) or `hierarchy-unreadable` (including a `type_info` whose symbol states no size, or none of the ABI's three). Itanium classes not listed are counted: `data.refused_virtual_bases`, classes with virtual bases (a VTT, a vtable whose first word is not `offset_to_top` = 0 or whose own `type_info` is not in its second word, a `type_info` with a virtual base, or a class with its own `_ZTI` whose vtable's second word is zero and written by no relocation), whose vptr is not `_ZTV` + two pointers; `data.refused_first_slot_not_code`, classes whose word at `_ZTV` + two pointers is an address outside every executable section; `data.refused_first_slot_empty`, classes whose word there is zero, written by no relocation, after a word that is no `type_info` pointer (a class built without RTTI whose virtual base shares its vptr; also an abstract class GCC built without RTTI, whose destructor slots it leaves zero). The relocations are read for executables and shared objects of x86, x86-64, ARM and AArch64, `RELR` included; elsewhere a zero there is taken for a slot the loader fills. A big-endian ELF is refused with `big-endian-image` |
 | `n0x strings` | Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `--section`, `--all-sections`, or `--start`/`--size` for others. `--contains` filters (any case); `--limit`/`--offset` page |
 | `n0x symbols add` | Keep a PDB in the project's symbol store, after checking that it belongs to the image: its GUID and age must equal the image's CodeView record |
 | `n0x type enum` | Define (or replace) an enum. Repeat `--member "NAME=VALUE"` |

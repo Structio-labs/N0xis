@@ -1,0 +1,66 @@
+
+File: vy-i686-linux-gnu.so
+Format: elf32-i386
+Arch: i386
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_386 (0x3)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0xEEC
+  Flags [ (0x0)
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 21
+  StringTableSectionIndex: 19
+}
+Relocations [
+  Section (5) .rel.dyn {
+    0x2938 R_386_32 _ZTVN10__cxxabiv121__vmi_class_type_infoE
+    0x2974 R_386_32 _ZTVN10__cxxabiv121__vmi_class_type_infoE
+    0x2950 R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x298C R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x29AC R_386_32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x2958 R_386_32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x2994 R_386_32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x2A1C R_386_GLOB_DAT _ZTV4Leaf
+    0x296C R_386_32 _ZTI5Leaf2
+    0x2998 R_386_32 _ZTS5Leaf2
+    0x29A4 R_386_32 _ZTI5Plain
+    0x29B0 R_386_32 _ZTS5Plain
+    0x2934 R_386_32 _ZNK4Leaf1mEv
+    0x2960 R_386_32 _ZTI3Mid
+    0x293C R_386_32 _ZTS3Mid
+    0x2930 R_386_32 _ZNK3Mid2fpEv
+    0x29A8 R_386_32 _ZNK5Plain1gEv
+    0x292C R_386_32 _ZTI4Leaf
+    0x295C R_386_32 _ZTS4Leaf
+    0x2970 R_386_32 _ZNK5Leaf22m2Ev
+    0x2948 R_386_32 _ZTI1P
+    0x2954 R_386_32 _ZTS1P
+    0x2A20 R_386_GLOB_DAT _ZTV5Leaf2
+    0x2A24 R_386_GLOB_DAT _ZTV5Plain
+    0x299C R_386_32 _ZTI4Mid2
+    0x2978 R_386_32 _ZTS4Mid2
+    0x2984 R_386_32 _ZTI1E
+    0x2990 R_386_32 _ZTS1E
+  }
+  Section (6) .rel.plt {
+    0x3A34 R_386_JUMP_SLOT _Z6opaquePv
+  }
+]

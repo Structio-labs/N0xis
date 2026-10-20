@@ -1,0 +1,11 @@
+004011c0 T _ZNK5Alone1aEv
+004011b8 T _ZNK5Local1eEv
+         U _ZTI3Ext
+00400144 R _ZTI5Alone
+00400124 R _ZTI5Local
+0040014c R _ZTS5Alone
+00400130 R _ZTS5Local
+00400138 R _ZTV5Alone
+00400118 R _ZTV5Local
+         U _ZTVN10__cxxabiv117__class_type_infoE
+         U _ZTVN10__cxxabiv120__si_class_type_infoE

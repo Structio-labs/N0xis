@@ -1,0 +1,55 @@
+
+File: vt-armv7-linux-gnueabihf
+Format: elf32-littlearm
+Arch: arm
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: Executable (0x2)
+  Machine: EM_ARM (0x28)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x968
+  Flags [ (0x5000400)
+    0x400
+    0x1000000
+    0x4000000
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 6
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 10
+  StringTableSectionIndex: 8
+}
+Relocations [
+]
+
+Hex dump of section '.rodata':
+0x00010190 00000000 a0010100 9c020200 a8020200 ................
+0x000101a0 08000000 a8010100 34426173 65000000 ........4Base...
+0x000101b0 00000000 c4010100 9c020200 04030200 ................
+0x000101c0 10030200 08000000 d0010100 a0010100 ................
+0x000101d0 37446572 69766564 00000000 00000000 7Derived........
+0x000101e0 ec010100 00000000 1c030200 08000000 ................
+0x000101f0 f4010100 35536861 70650000 00000000 ....5Shape......
+0x00010200 0c020100 24030200 30030200 08000000 ....$...0.......
+0x00010210 18020100 ec010100 36537175 61726500 ........6Square.
+0x00010220 00000000 2c020100 38030200 08000000 ....,...8.......
+0x00010230 34020100 344c6566 74000000 00000000 4...4Left.......
+0x00010240 48020100 40030200 08000000 50020100 H...@.......P...
+0x00010250 35526967 68740000 00000000 74020100 5Right......t...
+0x00010260 48030200 50030200 fcffffff 74020100 H...P.......t...
+0x00010270 58030200 08000000 94020100 00000000 X...............
+0x00010280 02000000 2c020100 02000000 48020100 ....,.......H...
+0x00010290 02040000 34426f74 6800              ....4Both.
