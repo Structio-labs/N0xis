@@ -420,6 +420,122 @@ fn plugin_list_agrees_across_doors() {
     assert_eq!(m["data"]["count"], 1, "the registered plugin must be listed: {}", m["data"]);
 }
 
+/// A registry that does not parse is reported with its cause on every door
+/// that reads it: the registry's errors are `anyhow` chains, and the doors
+/// printed them with `to_string`, which is the outermost context alone —
+/// "parse plugins.json", with nothing about where or why. Printed with `{:#}`
+/// the chain carries serde_json's own "… at line 1 column 3". The parse error
+/// stands in for every cause here because it reads the same on every OS; the
+/// unreadable-file case is the same formatting with an OS error in the chain.
+///
+/// Calibration: put back `e.to_string()` at any of the three doors and its
+/// assertion fails on its own line.
+#[test]
+fn a_registry_that_does_not_parse_says_why_on_every_door() {
+    let Some(p) = new_project("plugin-registry-cause") else { return };
+    std::fs::write(p.dir.join(".n0x").join("plugins.json"), "{ this is not json").expect("plant the registry");
+    let cause = "at line 1 column";
+
+    let c = cli(&p.cli, &p.dir, &["plugin", "list"]);
+    assert_eq!(c["error"]["code"], "plugin-list-failed", "{c}");
+    let msg = c["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains(cause), "CLI `plugin list` must say why the registry failed: {msg:?}");
+
+    let mut mcp = McpClient::spawn(&p.dir);
+    let m = mcp.call("plugin_list", json!({}));
+    assert_eq!(m["error"]["code"], "plugin-list-failed", "{m}");
+    let msg = m["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains(cause), "MCP `plugin_list` must say why the registry failed: {msg:?}");
+
+    let r = mcp.call("plugin_run", json!({ "name": "demo", "kind": "cfg", "artifact": {} }));
+    assert_eq!(r["ok"], false, "{r}");
+    let msg = r["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains(cause), "MCP `plugin_run` must say why the registry failed: {msg:?}");
+}
+
+/// The prefix every door's answer for an unreadable registry starts with,
+/// from `n0xis_project::plugins::RegistryUnreadable`.
+const UNREADABLE: &str = "the plugin registry could not be read: ";
+
+/// A registry that does not parse is not "no plugins" and not "no such
+/// plugin" on any door. Whether `plugin.demo` exists is unknown, so:
+///
+/// - `capability list` carries a diagnostic saying so, on both doors — it
+///   showed no plugin and no word, the same catalog as a project with none;
+/// - `capability run plugin.demo` answers the registry's error on both doors —
+///   it answered `unknown-capability`;
+/// - MCP `plugin_run` answers `plugin-registry-unreadable` — it answered
+///   `plugin-not-found`.
+///
+/// The next test holds the other side: a readable registry without the name
+/// still answers `unknown-capability` / `plugin-not-found`.
+///
+/// Calibration: drop the `reg.diagnose` call in `ProcessPlugins::register`,
+/// the diagnostics lookup in `Registry::dispatch`, or the `Ok(None)` /
+/// `Err` split in `plugin_run`, and an assertion below fails on its own line.
+#[test]
+fn an_unreadable_registry_is_not_an_absent_plugin_on_any_door() {
+    let Some(p) = new_project("plugin-registry-unreadable") else { return };
+    std::fs::write(p.dir.join(".n0x").join("plugins.json"), "{ this is not json").expect("plant the registry");
+    let cause = "parse plugins.json: ";
+    let mut mcp = McpClient::spawn(&p.dir);
+
+    for (door, list) in [("CLI", cli(&p.cli, &p.dir, &["capability", "list"])), ("MCP", mcp.call("capability_list", json!({})))] {
+        assert_eq!(list["ok"], true, "{door} `capability list` still lists the built-ins: {list}");
+        let diags = list["data"]["diagnostics"].as_array().cloned().unwrap_or_default();
+        assert_eq!(diags.len(), 1, "{door} `capability list` must carry one diagnostic: {}", list["data"]["diagnostics"]);
+        let d = &diags[0];
+        assert_eq!(d["code"], "plugin-registry-unreadable", "{door}: {d}");
+        assert_eq!(d["covers"], "plugin.", "{door}: {d}");
+        assert_eq!(d["source"], "n0xis.process-plugins", "{door}: {d}");
+        let msg = d["message"].as_str().unwrap_or_default();
+        assert!(msg.starts_with(UNREADABLE) && msg.contains(cause), "{door} diagnostic must carry the cause: {msg:?}");
+    }
+
+    let args = json!({ "kind": "cfg", "artifact": {} });
+    let c = cli(&p.cli, &p.dir, &["capability", "run", "plugin.demo", "--args", &args.to_string()]);
+    let m = mcp.call("capability_run", json!({ "name": "plugin.demo", "args": args }));
+    for (door, run) in [("CLI", &c), ("MCP", &m)] {
+        assert_eq!(run["error"]["code"], "plugin-registry-unreadable", "{door} `capability run plugin.demo`: {run}");
+        let msg = run["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.starts_with(UNREADABLE) && msg.contains(cause), "{door} must carry the cause: {msg:?}");
+    }
+    // A name outside the plugin namespace is not covered by the diagnostic.
+    let other = cli(&p.cli, &p.dir, &["capability", "run", "no.such.capability"]);
+    assert_eq!(other["error"]["code"], "unknown-capability", "{other}");
+
+    let r = mcp.call("plugin_run", json!({ "name": "demo", "kind": "cfg", "artifact": {} }));
+    assert_eq!(r["error"]["code"], "plugin-registry-unreadable", "MCP `plugin_run`: {r}");
+    let msg = r["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.starts_with(UNREADABLE) && msg.contains(cause), "MCP `plugin_run` must carry the cause: {msg:?}");
+}
+
+/// The other side of the test above: a registry that reads, without the name
+/// asked for, answers as it always did — and `capability list` carries an
+/// empty `diagnostics`, present so its absence is not mistaken for an older
+/// build's.
+#[test]
+fn a_readable_registry_without_the_plugin_still_answers_not_found() {
+    let Some(p) = new_project("plugin-registry-readable") else { return };
+    let add = cli(&p.cli, &p.dir, &["plugin", "add", "--name", "demo", "--command", "cat", "--handles", "cfg"]);
+    assert_eq!(add["ok"], true, "plugin add failed: {add}");
+    let mut mcp = McpClient::spawn(&p.dir);
+
+    for (door, list) in [("CLI", cli(&p.cli, &p.dir, &["capability", "list"])), ("MCP", mcp.call("capability_list", json!({})))] {
+        assert_eq!(list["data"]["diagnostics"], json!([]), "{door} `capability list` on a readable registry");
+        let names: Vec<&str> =
+            list["data"]["capabilities"].as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
+        assert!(names.contains(&"plugin.demo"), "{door}: the registered plugin is listed");
+    }
+    let c = cli(&p.cli, &p.dir, &["capability", "run", "plugin.other"]);
+    assert_eq!(c["error"]["code"], "unknown-capability", "CLI: {c}");
+    let m = mcp.call("capability_run", json!({ "name": "plugin.other", "args": {} }));
+    assert_eq!(m["error"]["code"], "unknown-capability", "MCP: {m}");
+    let r = mcp.call("plugin_run", json!({ "name": "other", "kind": "cfg", "artifact": {} }));
+    assert_eq!(r["error"]["code"], "plugin-not-found", "MCP `plugin_run`: {r}");
+    assert_eq!(r["error"]["message"], "no plugin named 'other'", "{r}");
+}
+
 // ---- D1: the error contract for an out-of-image address ---------------------
 
 /// An out-of-image address is refused with the *same* code on both doors, with

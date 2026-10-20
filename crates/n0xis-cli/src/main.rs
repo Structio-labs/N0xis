@@ -1522,8 +1522,9 @@ struct CapabilityRunArgs {
 #[derive(Subcommand)]
 enum PluginCmd {
     /// Register (or overwrite, by name) a plugin: an executable spawned with
-    /// an artifact as JSON on stdin, expected to reply with one JSON findings
-    /// object on stdout.
+    /// an artifact as JSON on stdin, expected to reply with one line of JSON
+    /// on stdout (its findings: any value but `null`, at most 4 MiB), all
+    /// within 10 s of being started.
     Add(PluginAddArgs),
     /// List registered plugins.
     List,
@@ -4808,19 +4809,22 @@ fn cmd_capability(cmd: CapabilityCmd, pretty: bool) -> bool {
 
 fn cmd_plugin(cmd: PluginCmd, pretty: bool) -> bool {
     use n0xis_project::plugins as pl;
+    // The registry's errors are `anyhow` chains, and `{e:#}` prints the chain:
+    // "read …/plugins.json: Permission denied (os error 13)". `to_string` gave
+    // the outermost context alone, which named the file and dropped the cause.
     match cmd {
         PluginCmd::Add(a) => match pl::add(&a.name, &a.command, a.handles) {
             Ok(rec) => {
                 let rec_v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
                 emit(&Response::success(schema::v1::PLUGIN, json!({ "op": "add", "plugin": rec_v })), pretty)
             }
-            Err(e) => ir_err("plugin-add-failed", &e.to_string(), pretty),
+            Err(e) => ir_err("plugin-add-failed", &format!("{e:#}"), pretty),
         },
         // One builder, both doors: the MCP `plugin_list` tool emits this exact
         // payload (`pl::list_payload`), so the two cannot drift on `op` again.
         PluginCmd::List => match pl::list_payload() {
             Ok(data) => emit(&Response::success(schema::v1::PLUGIN, data), pretty),
-            Err(e) => ir_err("plugin-list-failed", &e.to_string(), pretty),
+            Err(e) => ir_err("plugin-list-failed", &format!("{e:#}"), pretty),
         },
         PluginCmd::Rm(a) => match pl::remove(&a.name) {
             Ok(true) => emit(
@@ -4828,7 +4832,7 @@ fn cmd_plugin(cmd: PluginCmd, pretty: bool) -> bool {
                 pretty,
             ),
             Ok(false) => ir_err("plugin-not-found", &format!("no plugin named '{}'", a.name), pretty),
-            Err(e) => ir_err("plugin-rm-failed", &e.to_string(), pretty),
+            Err(e) => ir_err("plugin-rm-failed", &format!("{e:#}"), pretty),
         },
     }
 }

@@ -11,11 +11,77 @@
 //! own copy of this code; new kinds use this one.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::resolve;
+
+/// Replace the contents of the file at `path` with `contents` so that no
+/// reader, and no interruption, ever sees anything but the old contents or
+/// the new: written in full to a temporary file in the same directory,
+/// flushed to the disk, then renamed over the old one, which is one step for
+/// the file system. A `fs::write` in place truncates first, so a save
+/// interrupted between the truncation and the last write leaves an empty or
+/// a partial file — for the plugin registry, an empty `plugins.json`.
+///
+/// The rule is stated once, here; [`Store::put`] and the plugin registry use
+/// it. (The IR cache, the decompile cache and the reference index still
+/// carry their own copies, as this module's doc says.)
+///
+/// What an in-place write did that a rename would not, and is kept:
+/// - a symbolic link at `path` is written through, as `fs::write` follows
+///   it: the temporary file goes beside the file the link names, and the
+///   link stays a link;
+/// - an existing file's permissions carry over to the new one;
+/// - a read-only file is refused, as an in-place write refuses it, instead
+///   of being replaced by a rename the directory allows.
+///
+/// The temporary name carries the process id and a per-process counter, so
+/// two threads or two processes saving at once do not write one temporary
+/// file. A failure removes the temporary file. Not done: flushing the
+/// directory entry itself, so after a power cut the rename may not have
+/// happened — the old contents, whole, which is the state this promises.
+pub(crate) fn write_replacing(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let target: PathBuf = if is_link {
+        fs::canonicalize(path).with_context(|| format!("write through the symbolic link {}", path.display()))?
+    } else {
+        path.to_path_buf()
+    };
+    let existing = match fs::metadata(&target) {
+        Ok(m) => Some(m.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("write {}", target.display())),
+    };
+    if existing.as_ref().is_some_and(|p| p.readonly()) {
+        anyhow::bail!("write {}: the file is read-only", target.display());
+    }
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = target.with_file_name(format!(
+        ".{name}.tmp-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| -> Result<()> {
+        let mut f = fs::File::create(&tmp).with_context(|| format!("write {}", tmp.display()))?;
+        f.write_all(contents).with_context(|| format!("write {}", tmp.display()))?;
+        f.sync_all().with_context(|| format!("flush {}", tmp.display()))?;
+        drop(f);
+        if let Some(perms) = existing {
+            fs::set_permissions(&tmp, perms).with_context(|| format!("set the permissions of {}", tmp.display()))?;
+        }
+        fs::rename(&tmp, &target).with_context(|| format!("rename into {}", target.display()))
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
 
 /// One kind of stored entry, by its directory under `.n0x/`.
 pub struct Store {
@@ -63,10 +129,7 @@ impl Store {
     /// reader in another process (a session beside an `analyze`) sees the old
     /// entry or the new one, never half of one.
     pub fn put(&self, key: &str, json: &str) -> Result<()> {
-        let path = self.path_for(key)?;
-        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-        fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
-        fs::rename(&tmp, &path).with_context(|| format!("rename into {}", path.display()))
+        write_replacing(&self.path_for(key)?, json.as_bytes())
     }
 
     /// Drop every entry whose key does not start with `prefix` (the current

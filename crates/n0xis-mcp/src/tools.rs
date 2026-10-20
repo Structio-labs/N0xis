@@ -22,7 +22,7 @@ use n0xis_core::{CoordSpace, Ctx, Pass, Rect};
 use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
 #[cfg(windows)]
 use n0xis_core::{AabbLayout, UiLocateInput, UiLocatePass};
-use n0xis_sources::{plugin_call_once, split_command_line};
+use n0xis_sources::{PLUGIN_DEADLINE, plugin_call_once, split_command_line};
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
 use n0xis_sources::{await_watchpoint_hit, MemorySource, WatchKind};
 #[cfg(windows)]
@@ -1048,26 +1048,31 @@ impl N0xisServer {
         // CLI carried `op: "list"` under the same schema.
         match n0xis_project::plugins::list_payload() {
             Ok(data) => emit(Response::success(schema::v1::PLUGIN, data)),
-            Err(e) => err("plugin-list-failed", e.to_string()),
+            // `{e:#}`: the whole anyhow chain, so the OS cause ("Permission
+            // denied") is in the message and not only the file it was about.
+            Err(e) => err("plugin-list-failed", format!("{e:#}")),
         }
     }
 
     #[tool(
-        description = "Manually invoke one registered plugin by name against an arbitrary JSON artifact and return its response. Fails visibly (never panics) if the plugin isn't registered, its command can't spawn, or it crashes/times out."
+        description = "Manually invoke one registered plugin by name against an arbitrary JSON artifact and return its response. Fails visibly (never panics) if the plugin isn't registered (`plugin-not-found`), the plugin registry can't be read (`plugin-registry-unreadable`), its command can't spawn, or it crashes/times out."
     )]
     fn plugin_run(&self, Parameters(a): Parameters<PluginRunRequest>) -> String {
+        // Three answers, three codes. An unreadable registry was folded into
+        // `plugin-not-found`, which claims a fact the door could not know.
         let record = match n0xis_project::plugins::get(&a.name) {
-            Ok(r) => r,
-            Err(e) => return err("plugin-not-found", e.to_string()),
+            Ok(Some(r)) => r,
+            Ok(None) => return err("plugin-not-found", format!("no plugin named '{}'", a.name)),
+            Err(e) => return err(n0xis_project::plugins::RegistryUnreadable::CODE, e.to_string()),
         };
         let argv = match split_command_line(&record.command) {
             Ok(argv) => argv,
             Err(e) => return err("bad-plugin-command", e),
         };
         let request = json!({ "kind": a.kind, "artifact": a.artifact });
-        match plugin_call_once(&argv, &request, std::time::Duration::from_secs(10)) {
+        match plugin_call_once(&argv, &request, PLUGIN_DEADLINE) {
             Ok(resp) => emit(Response::success(schema::v1::PLUGIN, json!({ "plugin": a.name, "findings": resp }))),
-            Err(e) => err("plugin-run-failed", e),
+            Err(e) => err("plugin-run-failed", e.to_string()),
         }
     }
 

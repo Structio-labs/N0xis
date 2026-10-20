@@ -81,9 +81,37 @@ pub trait Plugin {
     fn register(&self, reg: &mut Registry);
 }
 
+/// A contributor's report that it could not register what it should have —
+/// so that a capability's absence from the catalog is not read as a fact
+/// about what exists.
+///
+/// [`Plugin::register`] returns nothing, and the process-plugin loader used
+/// to drop an unreadable `.n0x/plugins.json` there: `capability list` showed
+/// no plugin and `capability run plugin.<name>` answered
+/// `unknown-capability`, the same answers as a project with no plugins. A
+/// diagnostic is how the failure reaches both: [`Registry::describe`] lists
+/// it, and [`Registry::dispatch`] answers its error for an unregistered name
+/// under its [`covers`](Self::covers) prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// The [`Plugin::name`] of the contributor reporting it.
+    pub source: String,
+    /// The capability-name prefix whose contents are unknown because of this
+    /// (`"plugin."`). A name under it that is not registered may still exist,
+    /// so it is answered with this error and not `unknown-capability`. Never
+    /// empty: an empty prefix would answer every unknown name with this
+    /// error.
+    pub covers: String,
+    /// The error code that answer carries.
+    pub code: String,
+    /// The cause, whole.
+    pub message: String,
+}
+
 #[derive(Default)]
 pub struct Registry {
     caps: BTreeMap<String, Capability>,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Registry {
@@ -102,6 +130,17 @@ impl Registry {
     pub fn add_plugin(&mut self, plugin: &dyn Plugin) -> &mut Self {
         plugin.register(self);
         self
+    }
+
+    /// Record that a contributor could not register what it should have
+    /// (see [`Diagnostic`]).
+    pub fn diagnose(&mut self, d: Diagnostic) -> &mut Self {
+        self.diagnostics.push(d);
+        self
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
     }
 
     pub fn get(&self, name: &str) -> Option<&Capability> {
@@ -133,13 +172,27 @@ impl Registry {
     pub fn dispatch(&self, name: &str, args: &Value) -> Response<Value> {
         let resp = match self.get(name) {
             Some(c) => c.run(args),
-            None => Response::error("unknown-capability", format!("no capability named '{name}'; list them with `capability list`")),
+            // Not registered, and whether it exists is unknown: a contributor
+            // that should have said could not. Its error, not "no such name".
+            None => match self.diagnostics.iter().find(|d| !d.covers.is_empty() && name.starts_with(&d.covers)) {
+                Some(d) => Response::error(&d.code, &d.message),
+                None => Response::error(
+                    "unknown-capability",
+                    format!("no capability named '{name}'; list them with `capability list`"),
+                ),
+            },
         };
         add_note(resp, crate::annotation_syms::unreadable_store_note())
     }
 
     /// The machine-readable catalog: what exists, where it came from, what it
     /// emits. This is what an agent should read instead of guessing.
+    ///
+    /// `diagnostics` is always present, empty when every contributor
+    /// registered what it meant to: an absent key would read the same as an
+    /// older build that never looked. Each entry is a [`Diagnostic`] —
+    /// `{source, covers, code, message}` — and means the capabilities under
+    /// `covers` that are listed are not known to be all there are.
     pub fn describe(&self) -> Value {
         let items: Vec<Value> = self
             .list()
@@ -155,7 +208,12 @@ impl Registry {
                 })
             })
             .collect();
-        json!({ "count": items.len(), "capabilities": items })
+        let diagnostics: Vec<Value> = self
+            .diagnostics
+            .iter()
+            .map(|d| json!({ "source": d.source, "covers": d.covers, "code": d.code, "message": d.message }))
+            .collect();
+        json!({ "count": items.len(), "capabilities": items, "diagnostics": diagnostics })
     }
 }
 
@@ -2537,8 +2595,9 @@ impl Plugin for AnalysisPasses {
 /// and `reg.dispatch("decode", …)` are the same call.
 pub struct ProcessPlugins;
 
-/// How long a plugin gets before it is treated as wedged.
-const PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Every process plugin's capability is named `plugin.<name>`; a diagnostic
+/// about the plugin registry covers this prefix.
+const PLUGIN_CAPABILITY_PREFIX: &str = "plugin.";
 
 impl Plugin for ProcessPlugins {
     fn name(&self) -> &str {
@@ -2546,15 +2605,29 @@ impl Plugin for ProcessPlugins {
     }
 
     fn register(&self, reg: &mut Registry) {
-        let Ok(records) = n0xis_project::plugins::list() else {
-            return; // No project, or an unreadable registry: no plugins, not an error.
+        // A registry that does not exist is `Ok` and empty: no plugins is the
+        // true answer there. One that exists and cannot be read used to land
+        // in the same `return`, so `capability list` showed no plugin and
+        // `capability run plugin.x` answered unknown-capability; now it is a
+        // diagnostic, which both read.
+        let records = match n0xis_project::plugins::list() {
+            Ok(records) => records,
+            Err(e) => {
+                reg.diagnose(Diagnostic {
+                    source: self.name().to_string(),
+                    covers: PLUGIN_CAPABILITY_PREFIX.to_string(),
+                    code: n0xis_project::plugins::RegistryUnreadable::CODE.to_string(),
+                    message: e.to_string(),
+                });
+                return;
+            }
         };
         for rec in records {
             let command = rec.command.clone();
             let handles = rec.handles.join(", ");
             let spawn = command.clone();
             reg.add(Capability::new(
-                format!("plugin.{}", rec.name),
+                format!("{PLUGIN_CAPABILITY_PREFIX}{}", rec.name),
                 format!("External plugin `{}` (handles: {handles}).", rec.name),
                 None,
                 Origin::Plugin { command },
@@ -2564,11 +2637,11 @@ impl Plugin for ProcessPlugins {
                         Ok(_) => return Response::error("bad-plugin-command", "plugin command is empty"),
                         Err(e) => return Response::error("bad-plugin-command", e),
                     };
-                    match n0xis_sources::plugin_call_once(&argv, args, PLUGIN_TIMEOUT) {
+                    match n0xis_sources::plugin_call_once(&argv, args, n0xis_sources::PLUGIN_DEADLINE) {
                         Ok(v) => Response::success("n0xis.plugin.v1", v),
                         // Fail-open-but-visible: a wedged plugin is reported,
                         // never a panic and never a silent empty result.
-                        Err(e) => Response::error("plugin-failed", e),
+                        Err(e) => Response::error("plugin-failed", e.to_string()),
                     }
                 }),
             ));
@@ -2744,6 +2817,42 @@ mod tests {
         let v = serde_json::to_value(reg.dispatch("nope", &json!({}))).unwrap();
         assert_eq!(v["ok"], false);
         assert_eq!(v["error"]["code"], "unknown-capability");
+    }
+
+    /// A diagnostic answers for the names it covers that are not registered,
+    /// and for nothing else: a registered name under the prefix still runs,
+    /// and a name outside it is still unknown. `describe` lists it, and lists
+    /// an empty `diagnostics` when there is none.
+    #[test]
+    fn a_diagnostic_answers_for_the_unregistered_names_it_covers_only() {
+        let mut reg = Registry::new();
+        assert_eq!(reg.describe()["diagnostics"], json!([]), "present and empty when nothing was reported");
+        reg.add(Capability::new(
+            "plugin.real",
+            "registered before the failure",
+            None,
+            Origin::Builtin,
+            Box::new(|args| Response::success("test.echo.v1", args.clone())),
+        ));
+        reg.diagnose(Diagnostic {
+            source: "test".into(),
+            covers: "plugin.".into(),
+            code: "test-unreadable".into(),
+            message: "the test registry could not be read".into(),
+        });
+
+        let v = serde_json::to_value(reg.dispatch("plugin.unknown", &json!({}))).unwrap();
+        assert_eq!(v["error"]["code"], "test-unreadable", "{v}");
+        assert_eq!(v["error"]["message"], "the test registry could not be read", "{v}");
+        let v = serde_json::to_value(reg.dispatch("plugin.real", &json!({ "n": 1 }))).unwrap();
+        assert_eq!(v["data"]["n"], 1, "a registered name under the prefix runs: {v}");
+        let v = serde_json::to_value(reg.dispatch("decode.unknown", &json!({}))).unwrap();
+        assert_eq!(v["error"]["code"], "unknown-capability", "outside the prefix: {v}");
+
+        assert_eq!(
+            reg.describe()["diagnostics"],
+            json!([{ "source": "test", "covers": "plugin.", "code": "test-unreadable", "message": "the test registry could not be read" }])
+        );
     }
 
     #[test]

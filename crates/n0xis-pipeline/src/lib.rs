@@ -439,36 +439,73 @@ pub struct PluginFinding {
     pub error: Option<String>,
 }
 
-/// How long any single plugin gets before it's treated as wedged and killed.
-const PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Why [`run_plugins_for`] could run no plugin at all — a failure that belongs
+/// to no single plugin, so it has no [`PluginFinding`] to live in.
+#[derive(Debug)]
+pub enum PluginHostError {
+    /// The registry (`.n0x/plugins.json`) exists but could not be read or
+    /// parsed, or the project holding it could not be resolved. Which plugins
+    /// should have run is unknown, so "none ran" would be a claim, not a fact.
+    Registry(n0xis_project::plugins::RegistryUnreadable),
+    /// The artifact could not be turned into the JSON every plugin is sent.
+    Artifact(String),
+}
+
+impl std::fmt::Display for PluginHostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Its own message, the one every door answers with.
+            PluginHostError::Registry(e) => std::fmt::Display::fmt(e, f),
+            PluginHostError::Artifact(why) => write!(f, "the artifact could not be sent to plugins: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for PluginHostError {}
 
 /// Run every plugin registered (in `.n0x/plugins.json`) for `kind`
-/// (`"cfg"`/`"pseudo"`/`"discover"`) against `artifact`. Never returns `Err`
-/// itself: an unresolvable project, an unreadable registry, a bad `command`
-/// string, or an individual plugin crashing/timing out all degrade to an
-/// entry with `error` set, never a failure of the pass that already ran.
-/// Callers (CLI/MCP) layer the result under a `plugins` key, additive to the
-/// existing response schema — never authoritative over the core artifact
-/// (CONCEPT §3 rule 6).
-pub fn run_plugins_for<T: serde::Serialize>(kind: &str, artifact: &T) -> Vec<PluginFinding> {
-    let Ok(plugins) = n0xis_project::plugins::for_kind(kind) else {
-        return Vec::new();
-    };
-    let Ok(artifact_json) = serde_json::to_value(artifact) else {
-        return Vec::new();
-    };
+/// (`"cfg"`/`"pseudo"`/`"discover"`) against `artifact`.
+///
+/// Two levels of failure, two shapes. One plugin's failure — a bad `command`
+/// string, a crash, a timeout, a reply that is not JSON — is that plugin's
+/// entry with `error` set, beside the others' findings. A failure before any
+/// plugin can be chosen is the `Err`: a registry that exists but cannot be
+/// read or parsed, or an artifact that cannot be serialized. A registry that
+/// does not exist is `Ok` and empty — no plugins is the true answer there.
+///
+/// The registry failure used to return `Vec::new()`, though this comment
+/// promised an entry: an unreadable registry and an empty one gave the same
+/// answer. An entry was not the fix — [`PluginFinding::plugin`] names a
+/// plugin, and this failure has none, so it would need a made-up name; the
+/// error type keeps that state unrepresentable and makes the caller say what
+/// it does with it.
+///
+/// Either way the pass that already ran is untouched: callers (CLI/MCP) layer
+/// the result under a `plugins` key, additive to the existing response schema
+/// — never authoritative over the core artifact (CONCEPT §3 rule 6).
+pub fn run_plugins_for<T: serde::Serialize>(
+    kind: &str,
+    artifact: &T,
+) -> Result<Vec<PluginFinding>, PluginHostError> {
+    let plugins = n0xis_project::plugins::for_kind(kind).map_err(PluginHostError::Registry)?;
+    if plugins.is_empty() {
+        // Nothing to send to: an artifact that would not serialize is not this
+        // call's failure, and the common case skips serializing it at all.
+        return Ok(Vec::new());
+    }
+    let artifact_json = serde_json::to_value(artifact).map_err(|e| PluginHostError::Artifact(e.to_string()))?;
     let request = serde_json::json!({ "kind": kind, "artifact": artifact_json });
 
-    plugins
+    Ok(plugins
         .into_iter()
         .map(|p| match n0xis_sources::split_command_line(&p.command) {
-            Ok(argv) => match n0xis_sources::plugin_call_once(&argv, &request, PLUGIN_TIMEOUT) {
+            Ok(argv) => match n0xis_sources::plugin_call_once(&argv, &request, n0xis_sources::PLUGIN_DEADLINE) {
                 Ok(resp) => PluginFinding { plugin: p.name, findings: Some(resp), error: None },
-                Err(e) => PluginFinding { plugin: p.name, findings: None, error: Some(e) },
+                Err(e) => PluginFinding { plugin: p.name, findings: None, error: Some(e.to_string()) },
             },
             Err(e) => PluginFinding { plugin: p.name, findings: None, error: Some(e) },
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -499,11 +536,73 @@ mod tests {
         result
     }
 
+    /// The project has a `.n0x/` and no `plugins.json` in it: no plugins is
+    /// the true answer, so `Ok` and empty.
     #[test]
     fn no_registered_plugins_yields_an_empty_vec_not_an_error() {
         in_temp_project(|| {
-            let findings = run_plugins_for("cfg", &serde_json::json!({"blocks": []}));
+            let findings = run_plugins_for("cfg", &serde_json::json!({"blocks": []})).unwrap();
             assert!(findings.is_empty());
+        });
+    }
+
+    /// A registry that exists and does not parse is not "no plugins": which
+    /// plugins should have run is unknown. This returned `Vec::new()`, the
+    /// same answer as no registry at all.
+    #[test]
+    fn a_registry_that_does_not_parse_is_an_error_not_an_empty_answer() {
+        in_temp_project(|| {
+            std::fs::write(".n0x/plugins.json", "{ this is not json").unwrap();
+            let answer = run_plugins_for("cfg", &serde_json::json!({"blocks": []}));
+            assert!(
+                matches!(answer, Err(PluginHostError::Registry(ref e)) if e.to_string().contains("parse plugins.json")),
+                "an unparseable registry must be a registry error, got {answer:?}"
+            );
+        });
+    }
+
+    /// A registry the user cannot read. Unix only: the mode bits are how the
+    /// state is planted. Root reads a mode-000 file anyway, so the test checks
+    /// that it planted what it meant to rather than passing on a readable file.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_registry_is_an_error_not_an_empty_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        in_temp_project(|| {
+            n0xis_project::plugins::add("p", "some-plugin", vec!["cfg".to_string()]).unwrap();
+            let path = std::path::Path::new(".n0x/plugins.json");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let planted = std::fs::read(path).is_err();
+            let answer = run_plugins_for("cfg", &serde_json::json!({"blocks": []}));
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(planted, "precondition: a mode-000 file was still readable (running as root?)");
+            assert!(
+                matches!(answer, Err(PluginHostError::Registry(ref e)) if e.to_string().contains("plugins.json")),
+                "an unreadable registry must be a registry error, got {answer:?}"
+            );
+        });
+    }
+
+    /// The directory holding the registry cannot be searched, so whether the
+    /// file exists cannot be known. `Path::exists` answers `false` there (it
+    /// is `metadata().is_ok()`), which read as "no registry" and so as no
+    /// plugins. Unix only, for the same reason as the test above.
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_behind_an_unsearchable_directory_is_an_error_not_an_empty_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        in_temp_project(|| {
+            n0xis_project::plugins::add("p", "some-plugin", vec!["cfg".to_string()]).unwrap();
+            let dir = std::path::Path::new(".n0x");
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let planted = std::fs::metadata(dir.join("plugins.json")).is_err();
+            let answer = run_plugins_for("cfg", &serde_json::json!({"blocks": []}));
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(planted, "precondition: a mode-000 directory was still searchable (running as root?)");
+            assert!(
+                matches!(answer, Err(PluginHostError::Registry(ref e)) if e.to_string().contains("plugins.json")),
+                "a registry that cannot be reached must be a registry error, got {answer:?}"
+            );
         });
     }
 
@@ -519,13 +618,13 @@ mod tests {
             let command = format!("python3 -c \"{}\"", script.replace('"', "\\\""));
             n0xis_project::plugins::add("echo-plugin", &command, vec!["cfg".to_string()]).unwrap();
 
-            let cfg_findings = run_plugins_for("cfg", &serde_json::json!({"blocks": []}));
+            let cfg_findings = run_plugins_for("cfg", &serde_json::json!({"blocks": []})).unwrap();
             assert_eq!(cfg_findings.len(), 1);
             assert_eq!(cfg_findings[0].plugin, "echo-plugin");
             assert_eq!(cfg_findings[0].findings.as_ref().unwrap()["saw_kind"], "cfg");
 
             // Not registered for "pseudo" — must not fire.
-            let pseudo_findings = run_plugins_for("pseudo", &serde_json::json!({}));
+            let pseudo_findings = run_plugins_for("pseudo", &serde_json::json!({})).unwrap();
             assert!(pseudo_findings.is_empty());
         });
     }
@@ -539,7 +638,7 @@ mod tests {
                 vec!["cfg".to_string()],
             )
             .unwrap();
-            let findings = run_plugins_for("cfg", &serde_json::json!({}));
+            let findings = run_plugins_for("cfg", &serde_json::json!({})).unwrap();
             assert_eq!(findings.len(), 1);
             assert!(findings[0].findings.is_none());
             assert!(findings[0].error.is_some());

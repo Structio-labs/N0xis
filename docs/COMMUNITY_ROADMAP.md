@@ -135,60 +135,134 @@ not bundled into the first cut.
 - **The stdio transport**
   ([`n0xis-sources/src/plugin.rs`](../crates/n0xis-sources/src/plugin.rs)):
   `call_once` spawns the command, writes one JSON line, reads one JSON line
-  back, then waits up to a timeout for the process to exit (`:34-71`). A
-  persistent `PluginSession`, for many requests to one process, sits beside it
-  (`:78-120`); nothing calls it yet.
+  back and waits for the process to exit, all inside one deadline that starts
+  at spawn (`:224`; the 10 s `DEADLINE` every door passes, `:49`). A plugin
+  that does not answer, or does not read its input, is killed and reaped at
+  the deadline and reported as a timeout; one that answers and does not exit
+  is killed at the deadline and its answer kept. The reply is one line of at
+  most `MAX_REPLY_BYTES`, 4 MiB (`:83`), refused past it, never truncated; a
+  reply of `null` is refused too (`NullReply`, `:106`), since handed on it
+  was `{"ok":true,"data":null}`. The plugin's stderr is a pipe of its own,
+  copied to the host's stderr by a thread nothing waits for
+  (`forward_stderr`, `:324`): inherited, it was the host's own stderr, a
+  plugin's child inherited it in turn, and a caller capturing the host's
+  stderr got control back only when that child exited (measured through the
+  CLI: an answer at 10 s, `subprocess.run(capture_output=True)` back at
+  40 s; with the copier, on Linux, the capture is back at 10.02 s with a
+  `sleep 40` grandchild still holding the plugin's stderr).
+  `crates/n0xis-sources/tests/plugin_deadline.rs` runs each of these
+  against a misbehaving plugin that is the test binary itself, on every
+  platform the suite runs on — the two stderr cases on Unix only (see the
+  open list below). A persistent `PluginSession`, for many requests to one
+  process, sat beside it with no caller, no deadline and no bound on its
+  reply; it was removed.
 - **Registration**
   ([`n0xis-project/src/plugins.rs`](../crates/n0xis-project/src/plugins.rs)):
   add (overwriting by name), list, get, remove and select by kind, over
-  `plugins.json` in the project's `.n0x/` (`:60-129`); outside a project the
-  file is the global directory's (`n0xis-project/src/lib.rs:167-176`).
+  `plugins.json` in the project's `.n0x/` (`:191-259`); outside a project the
+  file is the global directory's (`n0xis-project/src/lib.rs:167-176`). A
+  registry that does not exist is no plugins; one that exists and cannot be
+  read or parsed is its own error, `RegistryUnreadable` (`:43-77`, read at
+  `:79-182`), answered as `plugin-registry-unreadable` with the OS's or the
+  parser's reason. That includes three states that answered "no plugins" or
+  hung: an empty file (a registry with none is `[]`), a symbolic link to
+  nothing, and anything that is not a regular file once links are followed —
+  a FIFO there made every registry read block, so `capability list` and every
+  MCP tool call hung. A save replaces the file whole — written beside it,
+  flushed, renamed over it (`n0xis-project/src/store.rs:45`) — so an
+  interrupted save leaves the old registry, not an empty one; a link is
+  written through, the permissions are kept and a read-only file is refused,
+  as the in-place write did.
 - **The CLI** ([`n0xis-cli/src/main.rs`](../crates/n0xis-cli/src/main.rs)):
   `plugin add --name … --command … --handles …`, `plugin list` and
-  `plugin rm --name …` (`:1522-1558`, run at `:4809-4834`).
+  `plugin rm --name …` (`:1523-1558`, run at `:4809-4837`).
 - **The registry**
   ([`n0xis-frontend/src/registry.rs`](../crates/n0xis-frontend/src/registry.rs)):
   each registered plugin is a capability named `plugin.<name>`, registered
-  through the same `Plugin` trait as the built-in capabilities (`:2534-2577`,
-  composed with them at `:2591`). `capability list` shows it with its command
+  through the same `Plugin` trait as the built-in capabilities (`:2596-2650`,
+  composed with them at `:2664`). `capability list` shows it with its command
   and its declared kinds, and `capability run plugin.<name> --args '{…}'` sends
   those arguments as the request and returns the plugin's answer as `data`,
-  under `n0xis.plugin.v1`.
+  under `n0xis.plugin.v1`. When the registry cannot be read, `capability list`
+  carries it in `diagnostics` (`Diagnostic`, `:84-109`; listed by `describe`,
+  `:196`) and `capability run plugin.<name>` answers that error instead of
+  `unknown-capability` (`dispatch`, `:172`).
 - **MCP** ([`n0xis-mcp/src/tools.rs`](../crates/n0xis-mcp/src/tools.rs)):
-  `plugin_list`, the same payload as the CLI's `plugin list` (`:1044-1053`;
+  `plugin_list`, the same payload as the CLI's `plugin list` (`:1044-1055`;
   `n0xis-mcp/tests/cross_door_parity.rs:408` compares the two doors), and
   `plugin_run`, which sends one registered plugin `{kind, artifact}`
-  (`:1055-1072`); `capability_run` reaches `plugin.<name>` as it reaches a
-  built-in.
+  (`:1057-1077`); `capability_run` reaches `plugin.<name>` as it reaches a
+  built-in. `cross_door_parity.rs:477` and `:518` hold the unreadable and the
+  readable-but-absent registry on both doors.
 
 **Concretely open for whoever picks this up:**
 1. **The wire protocol shape — half done.** One JSON line each way is built;
    no schema states either side. `plugin_run` and `run_plugins_for` send
-   `{kind, artifact}` (`tools.rs:1067`, `n0xis-pipeline/src/lib.rs:460`),
+   `{kind, artifact}` (`tools.rs:1072`, `n0xis-pipeline/src/lib.rs:497`),
    `capability run plugin.<name>` sends its arguments as they are
-   (`registry.rs:2567`), and whatever line comes back is the answer. The two
+   (`registry.rs:2640`), and whatever line comes back is the answer. The two
    ways to run a plugin also answer in two shapes under one schema:
-   `plugin_run` as `{plugin, findings}` (`tools.rs:1069`), the capability as
-   the plugin's line itself (`registry.rs:2568`).
+   `plugin_run` as `{plugin, findings}` (`tools.rs:1074`), the capability as
+   the plugin's line itself (`registry.rs:2641`).
+
+   **What a reply is, as built:** data — the plugin's findings, any JSON
+   value but `null` — and not an n0xis envelope. A reply of
+   `{"ok":false,"error":{…}}` is findings that happen to carry those keys:
+   every door answers it as a success with that object as its payload
+   (`plugin_deadline.rs` pins this). A plugin reports a failure by exiting
+   without writing a reply line, with a non-zero status: the host answers
+   that as an error naming the plugin and its exit status (`plugin-failed` on
+   `capability run`, `plugin-run-failed` on MCP `plugin_run`, the entry's
+   `error` in `run_plugins_for`). What it writes to its stderr reaches the
+   host's stderr, not the answer. Reading an `ok:false` reply as a failure
+   would be a protocol change; no schema says either way yet.
 2. **`.n0x/plugins.json` registration and a CLI surface — done**, as listed
    above. Registering and removing a plugin have no MCP tool.
 3. **The plugin host in `n0xis-pipeline` — half done.** `run_plugins_for`
-   (`n0xis-pipeline/src/lib.rs:445-472`) runs every plugin registered for a
+   (`n0xis-pipeline/src/lib.rs:466-509`) runs every plugin registered for a
    kind against an artifact and returns one entry per plugin, its findings or
-   its error. Only its own tests call it (`:505, 522, 528, 542`), so no pass
-   merges plugin findings into a response, and `--handles` is declarative
-   only: recorded and shown in `capability list`, dispatched on by nothing
-   (`n0xis-cli/src/main.rs:1542-1549`). The fail-open-but-visible posture
-   holds for a plugin that exits without answering, answers something that is
-   not JSON, or answers and does not exit within 10 s: each is reported as an
-   error, never a panic. It does not hold yet for a plugin that never answers,
-   which nothing bounds, because the timeout starts only once a line has been
-   read (`n0xis-sources/src/plugin.rs:53-69`; measured through
-   `capability run`, a plugin that reads its request and then sleeps had
-   neither an answer nor an error after 30 s), nor for an unreadable
-   `plugins.json`, for which `run_plugins_for` returns no entry at all where
-   its own comment promises one with `error` set
-   (`n0xis-pipeline/src/lib.rs:445-449, 454-456`).
+   its error, or `PluginHostError` (`:442-464`) when no plugin could be
+   chosen: a registry that exists and cannot be read or parsed is that error,
+   not an empty answer (it returned no entry at all, the same answer as no
+   registry). Only its own tests call it (`:544, 556, 576, 599, 621, 627,
+   641`), so no pass merges plugin findings into a response, and `--handles`
+   is declarative only: recorded and shown in `capability list`, dispatched on
+   by nothing (`n0xis-cli/src/main.rs:1545-1551`). The fail-open-but-visible
+   posture now holds for every way a plugin itself can fail that the tests
+   above plant — no answer, no exit, not reading its input, no reply, not
+   JSON, `null`, too long: each is reported as an error within the deadline,
+   never a panic and never a hang (a plugin that read its request and slept used to
+   hang the host: still no answer after 30 s, measured through
+   `capability run`). Still open:
+   - **A plugin's grandchildren outlive it.** Only the direct child is killed
+     at the deadline. Measured 2026-10-20 through `call_once` with a 2 s
+     deadline: `sh -c 'cat >/dev/null; sleep 17; true'` timed out at 2 s and
+     `sleep 17` was still running afterwards; with `echo "{}"` before the
+     `sleep` the reply came back at 2 s, `sleep 17` again still running.
+     The threads that talk to the plugin, the stderr copier among them, live
+     until the grandchild closes the pipes. A grandchild no longer holds the
+     host's own stderr on Unix; on Windows it is expected to still: `std`
+     starts a process with handle inheritance on, so it receives every
+     inheritable handle its parent holds (Rust's `CommandExt::inherit_handles`
+     documentation, default `true`), and the host's stderr arrived as one.
+     Under Wine it does: the two stderr cases, built for Windows with their
+     gate lifted, fail on their capture assertion (Wine is a second
+     implementation of Windows, not Windows). Not run on Windows itself; the
+     stderr cases are Unix only for this reason. Closing it there needs the
+     host's own handles kept out of the plugin's inheritance (a handle list
+     at spawn, or the host's standard handles made non-inheritable), which
+     needs `windows-sys`. On Windows a virtual environment's `python.exe` is a launcher
+     that runs the interpreter as its child, so an ordinary Python plugin is
+     expected to have this shape there (not run on Windows). Killing the tree
+     needs a process group (Unix) or a Job Object (Windows); a plugin in its
+     own process group no longer receives the terminal's Ctrl-C with the
+     host, and both need `libc`/`windows-sys`, which `n0xis-sources` links
+     only under its `live` feature (`n0xis-sources/src/plugin.rs:198-223`).
+   - **A reply's memory is bounded, not small.** At the 4 MiB bound the
+     worst reply measured costs the host about 0.54 GB once parsed (120
+     nested single-key objects per element, 128.6 times its length), and
+     `run_plugins_for` holds every plugin's reply at once
+     (`n0xis-sources/src/plugin.rs:51-83`).
 4. **MCP exposure — done**: the `plugin_list`/`plugin_run` pair, as listed
    above.
 

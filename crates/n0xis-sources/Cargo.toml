@@ -48,6 +48,13 @@ static-pe = ["dep:goblin"]
 # straight from mapped memory.
 live = ["dep:windows-sys", "dep:png", "dep:libc", "dep:goblin"]
 
+# `plugin_deadline` re-executes its own binary as the misbehaving plugin, and a
+# plugin's stdout is the protocol, so libtest's `running N tests` banner cannot
+# be on it: the target supplies its own `main` (see the file's module doc).
+[[test]]
+name = "plugin_deadline"
+harness = false
+
 # The Linux debug integration test forks a child and drives it via kill/waitpid,
 # so it needs `libc` directly (the crate's own libc is an optional/private dep).
 [target.'cfg(unix)'.dev-dependencies]

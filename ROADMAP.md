@@ -6543,8 +6543,8 @@ plugin protocol, not a separate product. (These three extra crates —
   introspection** — decoding real LuaJIT object headers out of a running process's
   heap with pure memory reads (no debugger). None of these three crates is
   depended on by `n0xis-core` (the boundary law still holds).
-- ✅ **Process-based plugin protocol** (`n0xis_sources::plugin` — `PluginCall`
-  single-shot + `PluginSession` persistent, built on the same line-protocol
+- ✅ **Process-based plugin protocol** (`n0xis_sources::plugin` — a single-shot
+  call under one deadline for the whole exchange, built on the same line-protocol
   plumbing `remote.rs` already proved; `.n0x/plugins.json` registry mirroring
   `selection.rs`'s storage pattern; `n0xis-pipeline::PluginHost` for
   analysis-result plugins; CLI `plugin {list,add,rm}`; MCP `plugin_list`/

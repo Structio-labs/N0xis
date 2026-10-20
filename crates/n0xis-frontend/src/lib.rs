@@ -44,7 +44,7 @@ pub mod strings_caps;
 pub mod symbols_caps;
 
 pub use arch::{pick_arch, pick_arch_for, resolve_arch};
-pub use registry::{Capability, Origin, Plugin, Registry, build_registry, stated_functions};
+pub use registry::{Capability, Diagnostic, Origin, Plugin, Registry, build_registry, stated_functions};
 pub use parse::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, strip_hex_marker};
 pub use source::{FrontendError, ResolvedSource, SourceSpec, Src, base_for_module, load_snapshot, module_base_of, scan_range};
 

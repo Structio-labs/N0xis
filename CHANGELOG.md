@@ -58,6 +58,20 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A plugin that never replied hung the host.** The 10 s deadline now covers the whole exchange
+  with a plugin, from writing its request to its exit; a plugin past it is killed and reported,
+  where one that read its request and then slept hung the command for good (still waiting after
+  60 s, measured). A reply is bounded at 4 MiB (parsing one costs up to about 128 times its size,
+  measured), a reply of `null` is an error rather than `ok` with no data, and a plugin's stderr
+  reaches the host's through a pipe, so on Unix a grandchild left holding it no longer holds a
+  caller that captures the host's output (still open on Windows, where a child inherits the host's
+  handles). `PluginSession`, which had no caller and no deadline, is removed.
+- **An unreadable plugin registry read as "no plugins".** A `.n0x/plugins.json` that cannot be
+  read or parsed (a parse error, no permission, an empty file, a dangling link, or a FIFO, which
+  blocked every registry read) is now an error with its cause: `capability list` carries it under
+  `diagnostics`, `capability run plugin.<x>` and MCP `plugin_run` answer
+  `plugin-registry-unreadable` (they said `unknown-capability` and `plugin-not-found`), and
+  `plugin list`, `add` and `rm` fail with the cause. The registry is saved atomically.
 - **A32 `ldr pc, …` was a plain write to a register named `pc`,** and `ldr r0, [r0, #4]!`
   wrote `r0` twice; both stay `asm` now. `ldmib` read as `ldmia`, the sub form of `adr` as the
   add form, and Thumb's 16-bit `stmia` as increment-before; each now comes from the encoding.

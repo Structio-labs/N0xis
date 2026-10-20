@@ -32,7 +32,10 @@ pub use remote::{RemoteAgent, serve_stdio as remote_serve_stdio, split_command_l
 
 mod plugin;
 
-pub use plugin::{call_once as plugin_call_once, PluginSession};
+pub use plugin::{
+    call_once as plugin_call_once, DEADLINE as PLUGIN_DEADLINE, MAX_REPLY_BYTES as PLUGIN_MAX_REPLY_BYTES,
+    Pending as PluginPending, PluginError, PluginExit,
+};
 
 #[cfg(feature = "static-pe")]
 mod static_pe;
