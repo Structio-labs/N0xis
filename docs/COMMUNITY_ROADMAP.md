@@ -273,7 +273,7 @@ done, 1 and 3 half done.
 
 ## MCP parity gaps
 
-The MCP server ([`n0xis-mcp`](../crates/n0xis-mcp/src/tools.rs)) exposes 25
+The MCP server ([`n0xis-mcp`](../crates/n0xis-mcp/src/tools.rs)) exposes 27
 tools today — the read-oriented static/dynamic workflow (its `ui_locate` is not
 validated; Phase 9 is marked invalid). The stateful, cross-invocation verbs are the gap.
 

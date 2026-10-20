@@ -65,7 +65,7 @@ remote process over SSH. It is ordinary Unix plumbing —
 command. `n0x guide` lists all 117 commands, generated from the binary so it never drifts — and a test
 fails the build if this number does.
 
-**From an agent:** point any MCP client at `n0xis-mcp` — 25 tools returning the identical
+**From an agent:** point any MCP client at `n0xis-mcp` — 27 tools returning the identical
 `{ok,data,meta}` envelope, JSON-RPC over stdio.
 
 ```json
