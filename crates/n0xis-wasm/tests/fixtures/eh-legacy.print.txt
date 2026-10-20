@@ -1,0 +1,170 @@
+(module
+(;@b     ;)  (type (;0;) (func))
+(;@e     ;)  (type (;1;) (func (param i32)))
+(;@12    ;)  (type (;2;) (func (param i32 i64)))
+(;@17    ;)  (type (;3;) (func (param i32) (result i32)))
+(;@1c    ;)  (type (;4;) (func (result i32 i64)))
+(;@2c    ;)  (tag (;0;) (type 1) (param i32))
+(;@2e    ;)  (tag (;1;) (type 2) (param i32 i64))
+(;@30    ;)  (tag (;2;) (type 0))
+(;@35    ;)  (export "handlers" (func 1))
+(;@45    ;)  (func (;0;) (type 3) (param i32) (result i32)
+(;@46    ;)    local.get 0
+(;@48    ;)    i32.eqz
+(;@49    ;)    if ;; label = @1
+(;@4b    ;)      throw 2
+(;@4d    ;)    end
+(;@4e    ;)    local.get 0
+(;@50    ;)    i32.const 1
+(;@52    ;)    i32.eq
+(;@53    ;)    if ;; label = @1
+(;@55    ;)      local.get 0
+(;@57    ;)      throw 0
+(;@59    ;)    end
+(;@5a    ;)    local.get 0
+(;@5c    ;)    i64.const 7
+(;@5e    ;)    throw 1
+(;@60    ;)  )
+(;@62    ;)  (func (;1;) (type 3) (param i32) (result i32)
+(;@63    ;)    try (result i32) ;; label = @1
+(;@65    ;)      local.get 0
+(;@67    ;)      call 0
+(;@69    ;)    catch 0
+(;@6b    ;)    end
+(;@6c    ;)    drop
+(;@6d    ;)    try (result i32) ;; label = @1
+(;@6f    ;)      local.get 0
+(;@71    ;)      call 0
+(;@73    ;)    catch 0
+(;@75    ;)    catch 1
+(;@77    ;)      drop
+(;@78    ;)    catch 2
+(;@7a    ;)      i32.const 2
+(;@7c    ;)    end
+(;@7d    ;)    drop
+(;@7e    ;)    try ;; label = @1
+(;@80    ;)      local.get 0
+(;@82    ;)      call 0
+(;@84    ;)      drop
+(;@85    ;)    catch_all
+(;@86    ;)    end
+(;@87    ;)    try (result i32) ;; label = @1
+(;@89    ;)      local.get 0
+(;@8b    ;)      call 0
+(;@8d    ;)    catch 1
+(;@8f    ;)      drop
+(;@90    ;)    catch_all
+(;@91    ;)      i32.const -1
+(;@93    ;)    end
+(;@94    ;)    drop
+(;@95    ;)    try ;; label = @1
+(;@97    ;)      local.get 0
+(;@99    ;)      call 0
+(;@9b    ;)      drop
+(;@9c    ;)    end
+(;@9d    ;)    try (type 4) (result i32 i64) ;; label = @1
+(;@9f    ;)      local.get 0
+(;@a1    ;)      call 0
+(;@a3    ;)      i64.const 0
+(;@a5    ;)    catch 1
+(;@a7    ;)    end
+(;@a8    ;)    drop
+(;@a9    ;)    drop
+(;@aa    ;)    local.get 0
+(;@ac    ;)    try (type 3) (param i32) (result i32) ;; label = @1
+(;@ae    ;)      call 0
+(;@b0    ;)    catch 0
+(;@b2    ;)      i32.const 1
+(;@b4    ;)      i32.add
+(;@b5    ;)    end
+(;@b6    ;)  )
+(;@b8    ;)  (func (;2;) (type 3) (param i32) (result i32)
+(;@b9    ;)    try (result i32) ;; label = @1
+(;@bb    ;)      try ;; label = @2
+(;@bd    ;)        local.get 0
+(;@bf    ;)        call 0
+(;@c1    ;)        drop
+(;@c2    ;)      delegate 0 (;@1;)
+(;@c4    ;)      local.get 0
+(;@c6    ;)    catch_all
+(;@c7    ;)      i32.const 0
+(;@c9    ;)    end
+(;@ca    ;)    drop
+(;@cb    ;)    block ;; label = @1
+(;@cd    ;)      try ;; label = @2
+(;@cf    ;)        local.get 0
+(;@d1    ;)        call 0
+(;@d3    ;)        drop
+(;@d4    ;)      delegate 0 (;@1;)
+(;@d6    ;)    end
+(;@d7    ;)    block ;; label = @1
+(;@d9    ;)      try ;; label = @2
+(;@db    ;)        try ;; label = @3
+(;@dd    ;)          local.get 0
+(;@df    ;)          call 0
+(;@e1    ;)          drop
+(;@e2    ;)        delegate 2
+(;@e4    ;)      catch_all
+(;@e5    ;)      end
+(;@e6    ;)    end
+(;@e7    ;)    try ;; label = @1
+(;@e9    ;)      local.get 0
+(;@eb    ;)      call 0
+(;@ed    ;)      drop
+(;@ee    ;)    delegate 0
+(;@f0    ;)    local.get 0
+(;@f2    ;)  )
+(;@f4    ;)  (func (;3;) (type 3) (param i32) (result i32)
+(;@f5    ;)    try (result i32) ;; label = @1
+(;@f7    ;)      local.get 0
+(;@f9    ;)      call 0
+(;@fb    ;)    catch 0
+(;@fd    ;)      drop
+(;@fe    ;)      rethrow 0 (;@1;)
+(;@100   ;)    end
+(;@101   ;)    drop
+(;@102   ;)    try ;; label = @1
+(;@104   ;)      local.get 0
+(;@106   ;)      call 0
+(;@108   ;)      drop
+(;@109   ;)    catch_all
+(;@10a   ;)      block ;; label = @2
+(;@10c   ;)        local.get 0
+(;@10e   ;)        if ;; label = @3
+(;@110   ;)          rethrow 2 (;@1;)
+(;@112   ;)        end
+(;@113   ;)        rethrow 1 (;@1;)
+(;@115   ;)      end
+(;@116   ;)    end
+(;@117   ;)    try ;; label = @1
+(;@119   ;)      local.get 0
+(;@11b   ;)      call 0
+(;@11d   ;)      drop
+(;@11e   ;)    catch 0
+(;@120   ;)      drop
+(;@121   ;)      try ;; label = @2
+(;@123   ;)        local.get 0
+(;@125   ;)        call 0
+(;@127   ;)        drop
+(;@128   ;)      catch_all
+(;@129   ;)        rethrow 1 (;@1;)
+(;@12b   ;)      end
+(;@12c   ;)    end
+(;@12d   ;)    local.get 0
+(;@12f   ;)  )
+(;@131   ;)  (func (;4;) (type 3) (param i32) (result i32)
+(;@132   ;)    try (result i32) ;; label = @1
+(;@134   ;)      try (result i32) ;; label = @2
+(;@136   ;)        try (result i32) ;; label = @3
+(;@138   ;)          local.get 0
+(;@13a   ;)          call 0
+(;@13c   ;)        catch 2
+(;@13e   ;)          i32.const 3
+(;@140   ;)        end
+(;@141   ;)      catch 0
+(;@143   ;)      end
+(;@144   ;)    catch_all
+(;@145   ;)      i32.const -1
+(;@147   ;)    end
+(;@148   ;)  )
+(;@149   ;))

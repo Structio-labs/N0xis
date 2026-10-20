@@ -1,0 +1,69 @@
+
+eh.wasm:	file format wasm 0x1
+module name: <eh>
+
+Section Details:
+
+Type[8]:
+ - type[0] () -> nil
+ - type[1] (i32) -> nil
+ - type[2] (i32, i64) -> nil
+ - type[3] (externref) -> nil
+ - type[4] (i32) -> i32
+ - type[5] () -> (i32, exnref)
+ - type[6] () -> (i32, i64, exnref)
+ - type[7] (exnref) -> nil
+Import[1]:
+ - tag[0] sig=1 <failure> <- env.failure
+Function[6]:
+ - func[0] sig=4 <throws>
+ - func[1] sig=4 <catch_each>
+ - func[2] sig=4 <several>
+ - func[3] sig=4 <nested>
+ - func[4] sig=3 <object>
+ - func[5] sig=7 <rethrow>
+Tag[4]:
+ - tag[1] sig=0
+ - tag[2] sig=1
+ - tag[3] sig=2
+ - tag[4] sig=3
+Export[2]:
+ - tag[2] -> "code"
+ - func[2] <several> -> "run"
+Code[6]:
+ - func[0] size=40 <throws>
+ - func[1] size=84 <catch_each>
+ - func[2] size=47 <several>
+ - func[3] size=45 <nested>
+ - func[4] size=6 <object>
+ - func[5] size=5 <rethrow>
+Custom:
+ - name: "name"
+ - module <eh>
+ - func[0] <throws>
+ - func[1] <catch_each>
+ - func[2] <several>
+ - func[3] <nested>
+ - func[4] <object>
+ - func[5] <rethrow>
+ - func[0] local[0] <n>
+ - func[1] local[0] <n>
+ - func[1] local[1] <exn>
+ - func[2] local[0] <n>
+ - func[2] local[1] <exn>
+ - func[3] local[0] <n>
+ - func[4] local[0] <value>
+ - func[5] local[0] <exn>
+ - type[0] <nothing>
+ - type[1] <code>
+ - type[2] <pair>
+ - type[3] <object>
+ - type[4] <run>
+ - type[5] <caught>
+ - type[6] <caught_pair>
+ - type[7] <rethrow>
+ - tag[0] <failure>
+ - tag[1] <empty>
+ - tag[2] <code>
+ - tag[3] <pair>
+ - tag[4] <object>

@@ -1,0 +1,107 @@
+
+relaxed.wasm:	file format wasm 0x1
+module name: <relaxed>
+
+Code Disassembly:
+
+00001d func[0] <each>:
+ 00001e: 20 00                      | local.get 0 <a>
+ 000020: 20 01                      | local.get 1 <b>
+ 000022: fd 80 02                   | i8x16.relaxed_swizzle
+ 000025: 1a                         | drop
+ 000026: 20 00                      | local.get 0 <a>
+ 000028: fd 81 02                   | i32x4.relaxed_trunc_f32x4_s
+ 00002b: 1a                         | drop
+ 00002c: 20 00                      | local.get 0 <a>
+ 00002e: fd 82 02                   | i32x4.relaxed_trunc_f32x4_u
+ 000031: 1a                         | drop
+ 000032: 20 00                      | local.get 0 <a>
+ 000034: fd 83 02                   | i32x4.relaxed_trunc_f64x2_s_zero
+ 000037: 1a                         | drop
+ 000038: 20 00                      | local.get 0 <a>
+ 00003a: fd 84 02                   | i32x4.relaxed_trunc_f64x2_u_zero
+ 00003d: 1a                         | drop
+ 00003e: 20 00                      | local.get 0 <a>
+ 000040: 20 01                      | local.get 1 <b>
+ 000042: 20 02                      | local.get 2 <c>
+ 000044: fd 85 02                   | f32x4.relaxed_madd
+ 000047: 1a                         | drop
+ 000048: 20 00                      | local.get 0 <a>
+ 00004a: 20 01                      | local.get 1 <b>
+ 00004c: 20 02                      | local.get 2 <c>
+ 00004e: fd 86 02                   | f32x4.relaxed_nmadd
+ 000051: 1a                         | drop
+ 000052: 20 00                      | local.get 0 <a>
+ 000054: 20 01                      | local.get 1 <b>
+ 000056: 20 02                      | local.get 2 <c>
+ 000058: fd 87 02                   | f64x2.relaxed_madd
+ 00005b: 1a                         | drop
+ 00005c: 20 00                      | local.get 0 <a>
+ 00005e: 20 01                      | local.get 1 <b>
+ 000060: 20 02                      | local.get 2 <c>
+ 000062: fd 88 02                   | f64x2.relaxed_nmadd
+ 000065: 1a                         | drop
+ 000066: 20 00                      | local.get 0 <a>
+ 000068: 20 01                      | local.get 1 <b>
+ 00006a: 20 02                      | local.get 2 <c>
+ 00006c: fd 89 02                   | i8x16.relaxed_laneselect
+ 00006f: 1a                         | drop
+ 000070: 20 00                      | local.get 0 <a>
+ 000072: 20 01                      | local.get 1 <b>
+ 000074: 20 02                      | local.get 2 <c>
+ 000076: fd 8a 02                   | i16x8.relaxed_laneselect
+ 000079: 1a                         | drop
+ 00007a: 20 00                      | local.get 0 <a>
+ 00007c: 20 01                      | local.get 1 <b>
+ 00007e: 20 02                      | local.get 2 <c>
+ 000080: fd 8b 02                   | i32x4.relaxed_laneselect
+ 000083: 1a                         | drop
+ 000084: 20 00                      | local.get 0 <a>
+ 000086: 20 01                      | local.get 1 <b>
+ 000088: 20 02                      | local.get 2 <c>
+ 00008a: fd 8c 02                   | i64x2.relaxed_laneselect
+ 00008d: 1a                         | drop
+ 00008e: 20 00                      | local.get 0 <a>
+ 000090: 20 01                      | local.get 1 <b>
+ 000092: fd 8d 02                   | f32x4.relaxed_min
+ 000095: 1a                         | drop
+ 000096: 20 00                      | local.get 0 <a>
+ 000098: 20 01                      | local.get 1 <b>
+ 00009a: fd 8e 02                   | f32x4.relaxed_max
+ 00009d: 1a                         | drop
+ 00009e: 20 00                      | local.get 0 <a>
+ 0000a0: 20 01                      | local.get 1 <b>
+ 0000a2: fd 8f 02                   | f64x2.relaxed_min
+ 0000a5: 1a                         | drop
+ 0000a6: 20 00                      | local.get 0 <a>
+ 0000a8: 20 01                      | local.get 1 <b>
+ 0000aa: fd 90 02                   | f64x2.relaxed_max
+ 0000ad: 1a                         | drop
+ 0000ae: 20 00                      | local.get 0 <a>
+ 0000b0: 20 01                      | local.get 1 <b>
+ 0000b2: fd 91 02                   | i16x8.relaxed_q15mulr_s
+ 0000b5: 1a                         | drop
+ 0000b6: 20 00                      | local.get 0 <a>
+ 0000b8: 20 01                      | local.get 1 <b>
+ 0000ba: fd 92 02                   | i16x8.relaxed_dot_i8x16_i7x16_s
+ 0000bd: 1a                         | drop
+ 0000be: 20 00                      | local.get 0 <a>
+ 0000c0: 20 01                      | local.get 1 <b>
+ 0000c2: 20 02                      | local.get 2 <c>
+ 0000c4: fd 93 02                   | i32x4.relaxed_dot_i8x16_i7x16_add_s
+ 0000c7: 0b                         | end
+0000c9 func[1] <chained>:
+ 0000ca: 20 00                      | local.get 0 <a>
+ 0000cc: fd 82 02                   | i32x4.relaxed_trunc_f32x4_u
+ 0000cf: 20 01                      | local.get 1 <b>
+ 0000d1: fd 80 02                   | i8x16.relaxed_swizzle
+ 0000d4: 20 01                      | local.get 1 <b>
+ 0000d6: 20 02                      | local.get 2 <c>
+ 0000d8: fd 88 02                   | f64x2.relaxed_nmadd
+ 0000db: 20 02                      | local.get 2 <c>
+ 0000dd: fd 8e 02                   | f32x4.relaxed_max
+ 0000e0: fd 83 02                   | i32x4.relaxed_trunc_f64x2_s_zero
+ 0000e3: 20 00                      | local.get 0 <a>
+ 0000e5: 20 02                      | local.get 2 <c>
+ 0000e7: fd 93 02                   | i32x4.relaxed_dot_i8x16_i7x16_add_s
+ 0000ea: 0b                         | end

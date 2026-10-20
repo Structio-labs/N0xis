@@ -1,0 +1,540 @@
+(module
+(;@c     ;)  (rec)
+(;@e     ;)  (rec
+(;@10    ;)    (type (;0;) (sub (struct (field i32) (field (mut (ref null 0))))))
+(;@10    ;)    (type (;1;) (sub 0 (struct (field i32) (field (mut (ref null 0))) (field (ref null 1)) (field (ref null 1)))))
+(;@10    ;)    (type (;2;) (sub final 1 (struct (field i32) (field (mut (ref null 0))) (field (ref null 1)) (field (ref null 1)) (field (mut i64)))))
+             )
+(;@3b    ;)  (rec
+(;@3d    ;)    (type (;3;) (struct))
+             )
+(;@3f    ;)  (type (;4;) (struct (field i8) (field (mut i8)) (field i16) (field (mut i16)) (field i32) (field (mut i32)) (field i64) (field (mut i64)) (field f32) (field (mut f32)) (field f64) (field (mut f64)) (field v128) (field (mut v128)) (field anyref) (field (mut (ref null 0))) (field (ref i31)) (field (mut funcref))))
+(;@67    ;)  (type (;5;) (array (mut i8)))
+(;@6a    ;)  (type (;6;) (array i16))
+(;@6d    ;)  (type (;7;) (array (mut i64)))
+(;@70    ;)  (type (;8;) (array (ref null 1)))
+(;@74    ;)  (type (;9;) (array (mut v128)))
+(;@77    ;)  (type (;10;) (array (mut (ref null 0))))
+(;@7b    ;)  (type (;11;) (array funcref))
+(;@7e    ;)  (type (;12;) (sub (func (param i32) (result i32))))
+(;@85    ;)  (type (;13;) (sub final 12 (func (param i32) (result i32))))
+(;@8d    ;)  (type (;14;) (func (param i32 i64 f32 f64 v128) (result i32)))
+(;@96    ;)  (type (;15;) (func (param i32 i64) (result i32)))
+(;@9c    ;)  (type (;16;) (func (param anyref (ref any) eqref funcref externref) (result i32)))
+(;@a6    ;)  (type (;17;) (func (param externref anyref i32) (result i32)))
+(;@ad    ;)  (type (;18;) (func))
+(;@b0    ;)  (type (;19;) (func (param funcref nullfuncref externref nullexternref anyref eqref i31ref structref arrayref nullref exnref nullexnref) (result i32)))
+(;@c0    ;)  (type (;20;) (func (param (ref func) (ref nofunc) (ref extern) (ref noextern) (ref any) (ref eq) (ref i31) (ref struct) (ref array) (ref none) (ref exn) (ref noexn))))
+(;@eb    ;)  (global (;0;) i32 i32.const 40 i32.const 2 i32.add)
+(;@f3    ;)  (global (;1;) i64 i64.const 6 i64.const 7 i64.mul)
+(;@fb    ;)  (global (;2;) i64 i64.const 1 i64.const 2 i64.add i64.const 3 i64.const 4 i64.mul i64.sub)
+(;@109   ;)  (global (;3;) i32 global.get 0 i32.const 3 i32.const 1 i32.sub i32.mul)
+(;@114   ;)  (global (;4;) i31ref i32.const 7 ref.i31)
+(;@11b   ;)  (global (;5;) (ref 0) i32.const 1 ref.null 0 struct.new 0)
+(;@126   ;)  (global (;6;) (ref 3) struct.new_default 3)
+(;@12d   ;)  (global (;7;) (ref 5) i32.const 1 i32.const 2 i32.const 3 array.new_fixed 5 3)
+(;@13b   ;)  (global (;8;) (ref 7) i32.const 4 array.new_default 7)
+(;@144   ;)  (global (;9;) (ref 7) i64.const 7 i32.const 2 array.new 7)
+(;@14f   ;)  (global (;10;) externref global.get 4 extern.convert_any)
+(;@156   ;)  (global (;11;) anyref global.get 10 any.convert_extern)
+(;@15d   ;)  (global (;12;) (mut (ref null 0)) ref.null 0)
+(;@163   ;)  (global (;13;) (ref 13) ref.func 7)
+(;@169   ;)  (global (;14;) (ref 2) i32.const 5 ref.null 0 ref.null 1 ref.null 1 i64.const 9 struct.new 2)
+(;@17d   ;)  (export "structs" (func 0))
+(;@18a   ;)  (elem (;0;) funcref (ref.func 7) (ref.null func))
+(;@193   ;)  (elem (;1;) (ref null 0) (ref.null 0) (struct.new_default 0))
+(;@1a7   ;)  (func (;0;) (type 14) (param i32 i64 f32 f64 v128) (result i32)
+(;@1a8   ;)    (local (ref null 0) (ref null 4) (ref null 2))
+(;@1b1   ;)    i32.const 1
+(;@1b3   ;)    ref.null 0
+(;@1b5   ;)    struct.new 0
+(;@1b8   ;)    local.set 5
+(;@1ba   ;)    local.get 5
+(;@1bc   ;)    local.get 5
+(;@1be   ;)    struct.set 0 1
+(;@1c2   ;)    local.get 5
+(;@1c4   ;)    struct.get 0 0
+(;@1c8   ;)    drop
+(;@1c9   ;)    local.get 5
+(;@1cb   ;)    struct.get 0 1
+(;@1cf   ;)    drop
+(;@1d0   ;)    struct.new_default 3
+(;@1d3   ;)    drop
+(;@1d4   ;)    struct.new_default 0
+(;@1d7   ;)    drop
+(;@1d8   ;)    i32.const -1
+(;@1da   ;)    i32.const 255
+(;@1dd   ;)    i32.const -32768
+(;@1e1   ;)    i32.const 65535
+(;@1e5   ;)    local.get 0
+(;@1e7   ;)    local.get 0
+(;@1e9   ;)    local.get 1
+(;@1eb   ;)    local.get 1
+(;@1ed   ;)    local.get 2
+(;@1ef   ;)    local.get 2
+(;@1f1   ;)    local.get 3
+(;@1f3   ;)    local.get 3
+(;@1f5   ;)    local.get 4
+(;@1f7   ;)    local.get 4
+(;@1f9   ;)    ref.null none
+(;@1fb   ;)    local.get 5
+(;@1fd   ;)    i32.const 7
+(;@1ff   ;)    ref.i31
+(;@201   ;)    ref.null func
+(;@203   ;)    struct.new 4
+(;@206   ;)    local.set 6
+(;@208   ;)    local.get 6
+(;@20a   ;)    struct.get_s 4 0
+(;@20e   ;)    drop
+(;@20f   ;)    local.get 6
+(;@211   ;)    struct.get_u 4 1
+(;@215   ;)    drop
+(;@216   ;)    local.get 6
+(;@218   ;)    struct.get_s 4 2
+(;@21c   ;)    drop
+(;@21d   ;)    local.get 6
+(;@21f   ;)    struct.get_u 4 3
+(;@223   ;)    drop
+(;@224   ;)    local.get 6
+(;@226   ;)    struct.get 4 4
+(;@22a   ;)    drop
+(;@22b   ;)    local.get 6
+(;@22d   ;)    struct.get 4 5
+(;@231   ;)    drop
+(;@232   ;)    local.get 6
+(;@234   ;)    struct.get 4 6
+(;@238   ;)    drop
+(;@239   ;)    local.get 6
+(;@23b   ;)    struct.get 4 7
+(;@23f   ;)    drop
+(;@240   ;)    local.get 6
+(;@242   ;)    struct.get 4 8
+(;@246   ;)    drop
+(;@247   ;)    local.get 6
+(;@249   ;)    struct.get 4 9
+(;@24d   ;)    drop
+(;@24e   ;)    local.get 6
+(;@250   ;)    struct.get 4 10
+(;@254   ;)    drop
+(;@255   ;)    local.get 6
+(;@257   ;)    struct.get 4 11
+(;@25b   ;)    drop
+(;@25c   ;)    local.get 6
+(;@25e   ;)    struct.get 4 12
+(;@262   ;)    drop
+(;@263   ;)    local.get 6
+(;@265   ;)    struct.get 4 13
+(;@269   ;)    drop
+(;@26a   ;)    local.get 6
+(;@26c   ;)    struct.get 4 14
+(;@270   ;)    drop
+(;@271   ;)    local.get 6
+(;@273   ;)    struct.get 4 15
+(;@277   ;)    drop
+(;@278   ;)    local.get 6
+(;@27a   ;)    struct.get 4 16
+(;@27e   ;)    drop
+(;@27f   ;)    local.get 6
+(;@281   ;)    struct.get 4 17
+(;@285   ;)    drop
+(;@286   ;)    local.get 6
+(;@288   ;)    i32.const 5
+(;@28a   ;)    struct.set 4 1
+(;@28e   ;)    local.get 6
+(;@290   ;)    i32.const 6
+(;@292   ;)    struct.set 4 3
+(;@296   ;)    local.get 6
+(;@298   ;)    i32.const 7
+(;@29a   ;)    struct.set 4 5
+(;@29e   ;)    local.get 6
+(;@2a0   ;)    local.get 1
+(;@2a2   ;)    struct.set 4 7
+(;@2a6   ;)    local.get 6
+(;@2a8   ;)    local.get 2
+(;@2aa   ;)    struct.set 4 9
+(;@2ae   ;)    local.get 6
+(;@2b0   ;)    local.get 3
+(;@2b2   ;)    struct.set 4 11
+(;@2b6   ;)    local.get 6
+(;@2b8   ;)    local.get 4
+(;@2ba   ;)    struct.set 4 13
+(;@2be   ;)    local.get 6
+(;@2c0   ;)    ref.null 0
+(;@2c2   ;)    struct.set 4 15
+(;@2c6   ;)    local.get 6
+(;@2c8   ;)    ref.null func
+(;@2ca   ;)    struct.set 4 17
+(;@2ce   ;)    i32.const 3
+(;@2d0   ;)    ref.null 0
+(;@2d2   ;)    ref.null 1
+(;@2d4   ;)    ref.null 1
+(;@2d6   ;)    local.get 1
+(;@2d8   ;)    struct.new 2
+(;@2db   ;)    local.set 7
+(;@2dd   ;)    local.get 7
+(;@2df   ;)    struct.get 2 4
+(;@2e3   ;)    i64.const 1
+(;@2e5   ;)    i64.add
+(;@2e6   ;)    local.set 1
+(;@2e8   ;)    local.get 7
+(;@2ea   ;)    local.get 1
+(;@2ec   ;)    struct.set 2 4
+(;@2f0   ;)    i32.const 2
+(;@2f2   ;)    local.get 5
+(;@2f4   ;)    ref.null 1
+(;@2f6   ;)    local.get 7
+(;@2f8   ;)    struct.new 1
+(;@2fb   ;)    struct.get 1 2
+(;@2ff   ;)    drop
+(;@300   ;)    local.get 7
+(;@302   ;)    struct.get 2 0
+(;@306   ;)  )
+(;@309   ;)  (func (;1;) (type 15) (param i32 i64) (result i32)
+(;@30a   ;)    (local (ref null 5) (ref null 7) (ref null 10))
+(;@313   ;)    i32.const 7
+(;@315   ;)    local.get 0
+(;@317   ;)    array.new 5
+(;@31a   ;)    local.set 2
+(;@31c   ;)    local.get 0
+(;@31e   ;)    array.new_default 7
+(;@321   ;)    local.set 3
+(;@323   ;)    i32.const 1
+(;@325   ;)    i32.const 2
+(;@327   ;)    i32.const 3
+(;@329   ;)    array.new_fixed 6 3
+(;@32d   ;)    i32.const 1
+(;@32f   ;)    array.get_s 6
+(;@332   ;)    drop
+(;@333   ;)    i32.const 0
+(;@335   ;)    i32.const 4
+(;@337   ;)    array.new_data 5 0
+(;@33b   ;)    drop
+(;@33c   ;)    i32.const 0
+(;@33e   ;)    i32.const 1
+(;@340   ;)    array.new_data 7 0
+(;@344   ;)    drop
+(;@345   ;)    i32.const 0
+(;@347   ;)    i32.const 2
+(;@349   ;)    array.new_elem 11 0
+(;@34d   ;)    drop
+(;@34e   ;)    i32.const 0
+(;@350   ;)    i32.const 2
+(;@352   ;)    array.new_elem 10 1
+(;@356   ;)    local.set 4
+(;@358   ;)    local.get 2
+(;@35a   ;)    i32.const 0
+(;@35c   ;)    array.get_s 5
+(;@35f   ;)    drop
+(;@360   ;)    local.get 2
+(;@362   ;)    i32.const 1
+(;@364   ;)    array.get_u 5
+(;@367   ;)    drop
+(;@368   ;)    local.get 3
+(;@36a   ;)    i32.const 0
+(;@36c   ;)    array.get 7
+(;@36f   ;)    drop
+(;@370   ;)    local.get 4
+(;@372   ;)    i32.const 1
+(;@374   ;)    array.get 10
+(;@377   ;)    drop
+(;@378   ;)    local.get 2
+(;@37a   ;)    i32.const 2
+(;@37c   ;)    i32.const 9
+(;@37e   ;)    array.set 5
+(;@381   ;)    local.get 3
+(;@383   ;)    i32.const 1
+(;@385   ;)    local.get 1
+(;@387   ;)    array.set 7
+(;@38a   ;)    local.get 4
+(;@38c   ;)    i32.const 0
+(;@38e   ;)    ref.null 0
+(;@390   ;)    array.set 10
+(;@393   ;)    local.get 2
+(;@395   ;)    array.len
+(;@397   ;)    drop
+(;@398   ;)    local.get 2
+(;@39a   ;)    i32.const 0
+(;@39c   ;)    i32.const 255
+(;@39f   ;)    i32.const 2
+(;@3a1   ;)    array.fill 5
+(;@3a4   ;)    local.get 3
+(;@3a6   ;)    i32.const 0
+(;@3a8   ;)    local.get 1
+(;@3aa   ;)    local.get 0
+(;@3ac   ;)    array.fill 7
+(;@3af   ;)    local.get 2
+(;@3b1   ;)    i32.const 4
+(;@3b3   ;)    local.get 2
+(;@3b5   ;)    i32.const 0
+(;@3b7   ;)    i32.const 4
+(;@3b9   ;)    array.copy 5 5
+(;@3bd   ;)    local.get 4
+(;@3bf   ;)    i32.const 1
+(;@3c1   ;)    local.get 4
+(;@3c3   ;)    i32.const 0
+(;@3c5   ;)    i32.const 1
+(;@3c7   ;)    array.copy 10 10
+(;@3cb   ;)    i32.const 1
+(;@3cd   ;)    array.new_default 10
+(;@3d0   ;)    i32.const 0
+(;@3d2   ;)    i32.const 1
+(;@3d4   ;)    array.new_default 8
+(;@3d7   ;)    i32.const 0
+(;@3d9   ;)    i32.const 1
+(;@3db   ;)    array.copy 10 8
+(;@3df   ;)    local.get 2
+(;@3e1   ;)    i32.const 0
+(;@3e3   ;)    i32.const 1
+(;@3e5   ;)    i32.const 2
+(;@3e7   ;)    array.init_data 5 0
+(;@3eb   ;)    local.get 3
+(;@3ed   ;)    i32.const 0
+(;@3ef   ;)    i32.const 0
+(;@3f1   ;)    i32.const 1
+(;@3f3   ;)    array.init_data 7 0
+(;@3f7   ;)    local.get 4
+(;@3f9   ;)    i32.const 0
+(;@3fb   ;)    i32.const 0
+(;@3fd   ;)    i32.const 2
+(;@3ff   ;)    array.init_elem 10 1
+(;@403   ;)    local.get 0
+(;@405   ;)    array.new_default 8
+(;@408   ;)    i32.const 0
+(;@40a   ;)    array.get 8
+(;@40d   ;)    drop
+(;@40e   ;)    local.get 0
+(;@410   ;)    array.new_default 9
+(;@413   ;)    i32.const 0
+(;@415   ;)    array.get 9
+(;@418   ;)    drop
+(;@419   ;)    i32.const 1
+(;@41b   ;)    i32.const 2
+(;@41d   ;)    array.new_fixed 6 2
+(;@421   ;)    i32.const 0
+(;@423   ;)    array.get_u 6
+(;@426   ;)    drop
+(;@427   ;)    local.get 3
+(;@429   ;)    array.len
+(;@42b   ;)  )
+(;@42e   ;)  (func (;2;) (type 16) (param anyref (ref any) eqref funcref externref) (result i32)
+(;@42f   ;)    local.get 0
+(;@431   ;)    ref.test (ref 0)
+(;@434   ;)    drop
+(;@435   ;)    local.get 0
+(;@437   ;)    ref.test (ref null 1)
+(;@43a   ;)    drop
+(;@43b   ;)    local.get 0
+(;@43d   ;)    ref.test (ref eq)
+(;@440   ;)    drop
+(;@441   ;)    local.get 0
+(;@443   ;)    ref.test i31ref
+(;@446   ;)    drop
+(;@447   ;)    local.get 1
+(;@449   ;)    ref.test (ref none)
+(;@44c   ;)    drop
+(;@44d   ;)    local.get 0
+(;@44f   ;)    ref.test nullref
+(;@452   ;)    drop
+(;@453   ;)    local.get 3
+(;@455   ;)    ref.test (ref 12)
+(;@458   ;)    drop
+(;@459   ;)    local.get 3
+(;@45b   ;)    ref.test nullfuncref
+(;@45e   ;)    drop
+(;@45f   ;)    local.get 4
+(;@461   ;)    ref.test (ref noextern)
+(;@464   ;)    drop
+(;@465   ;)    local.get 0
+(;@467   ;)    ref.cast (ref 2)
+(;@46a   ;)    drop
+(;@46b   ;)    local.get 0
+(;@46d   ;)    ref.cast (ref null 4)
+(;@470   ;)    drop
+(;@471   ;)    local.get 2
+(;@473   ;)    ref.cast (ref struct)
+(;@476   ;)    drop
+(;@477   ;)    local.get 0
+(;@479   ;)    ref.cast arrayref
+(;@47c   ;)    drop
+(;@47d   ;)    local.get 3
+(;@47f   ;)    ref.cast (ref 13)
+(;@482   ;)    drop
+(;@483   ;)    local.get 3
+(;@485   ;)    ref.cast funcref
+(;@488   ;)    drop
+(;@489   ;)    local.get 4
+(;@48b   ;)    ref.cast externref
+(;@48e   ;)    drop
+(;@48f   ;)    block (result anyref) ;; label = @1
+(;@491   ;)      local.get 1
+(;@493   ;)      br_on_cast 0 (;@1;) (ref any) (ref 0)
+(;@499   ;)      br_on_cast 0 (;@1;) (ref any) (ref i31)
+(;@49f   ;)      drop
+(;@4a0   ;)      local.get 0
+(;@4a2   ;)      br_on_cast 0 (;@1;) anyref (ref 1)
+(;@4a8   ;)      br_on_cast 0 (;@1;) anyref (ref null 2)
+(;@4ae   ;)      br_on_cast 0 (;@1;) (ref any) (ref struct)
+(;@4b4   ;)      drop
+(;@4b5   ;)      local.get 2
+(;@4b7   ;)      br_on_cast 0 (;@1;) eqref nullref
+(;@4bd   ;)      drop
+(;@4be   ;)      ref.null none
+(;@4c0   ;)    end
+(;@4c1   ;)    drop
+(;@4c2   ;)    block (result anyref) ;; label = @1
+(;@4c4   ;)      block (result (ref 0)) ;; label = @2
+(;@4c7   ;)        local.get 0
+(;@4c9   ;)        br_on_cast 1 (;@1;) anyref (ref null 0)
+(;@4cf   ;)        br_on_cast 0 (;@2;) (ref any) (ref 0)
+(;@4d5   ;)        drop
+(;@4d6   ;)        unreachable
+(;@4d7   ;)      end
+(;@4d8   ;)    end
+(;@4d9   ;)    drop
+(;@4da   ;)    block (result anyref) ;; label = @1
+(;@4dc   ;)      local.get 1
+(;@4de   ;)      br_on_cast_fail 0 (;@1;) (ref any) (ref 0)
+(;@4e4   ;)      drop
+(;@4e5   ;)      local.get 0
+(;@4e7   ;)      br_on_cast_fail 0 (;@1;) anyref (ref 1)
+(;@4ed   ;)      drop
+(;@4ee   ;)      local.get 0
+(;@4f0   ;)      br_on_cast_fail 0 (;@1;) anyref (ref null 2)
+(;@4f6   ;)      drop
+(;@4f7   ;)      local.get 2
+(;@4f9   ;)      br_on_cast_fail 0 (;@1;) eqref arrayref
+(;@4ff   ;)      drop
+(;@500   ;)      local.get 1
+(;@502   ;)      br_on_cast_fail 0 (;@1;) (ref any) (ref i31)
+(;@508   ;)      drop
+(;@509   ;)      ref.null none
+(;@50b   ;)    end
+(;@50c   ;)    drop
+(;@50d   ;)    block (result funcref) ;; label = @1
+(;@50f   ;)      local.get 3
+(;@511   ;)      br_on_cast 0 (;@1;) funcref (ref 13)
+(;@517   ;)      br_on_cast_fail 0 (;@1;) funcref (ref null 12)
+(;@51d   ;)      drop
+(;@51e   ;)      ref.null nofunc
+(;@520   ;)    end
+(;@521   ;)    drop
+(;@522   ;)    block (result externref) ;; label = @1
+(;@524   ;)      local.get 4
+(;@526   ;)      br_on_cast 0 (;@1;) externref (ref noextern)
+(;@52c   ;)    end
+(;@52d   ;)    drop
+(;@52e   ;)    local.get 2
+(;@530   ;)    local.get 2
+(;@532   ;)    ref.eq
+(;@533   ;)  )
+(;@535   ;)  (func (;3;) (type 17) (param externref anyref i32) (result i32)
+(;@536   ;)    local.get 0
+(;@538   ;)    any.convert_extern
+(;@53a   ;)    drop
+(;@53b   ;)    local.get 1
+(;@53d   ;)    extern.convert_any
+(;@53f   ;)    drop
+(;@540   ;)    local.get 2
+(;@542   ;)    ref.i31
+(;@544   ;)    i31.get_s
+(;@546   ;)    drop
+(;@547   ;)    local.get 2
+(;@549   ;)    ref.i31
+(;@54b   ;)    i31.get_u
+(;@54d   ;)    drop
+(;@54e   ;)    local.get 2
+(;@550   ;)    ref.i31
+(;@552   ;)    extern.convert_any
+(;@554   ;)    any.convert_extern
+(;@556   ;)    ref.cast i31ref
+(;@559   ;)    i31.get_u
+(;@55b   ;)  )
+(;@55d   ;)  (func (;4;) (type 18)
+(;@55e   ;)    ref.null func
+(;@560   ;)    drop
+(;@561   ;)    ref.null nofunc
+(;@563   ;)    drop
+(;@564   ;)    ref.null extern
+(;@566   ;)    drop
+(;@567   ;)    ref.null noextern
+(;@569   ;)    drop
+(;@56a   ;)    ref.null any
+(;@56c   ;)    drop
+(;@56d   ;)    ref.null eq
+(;@56f   ;)    drop
+(;@570   ;)    ref.null i31
+(;@572   ;)    drop
+(;@573   ;)    ref.null struct
+(;@575   ;)    drop
+(;@576   ;)    ref.null array
+(;@578   ;)    drop
+(;@579   ;)    ref.null none
+(;@57b   ;)    drop
+(;@57c   ;)    ref.null exn
+(;@57e   ;)    drop
+(;@57f   ;)    ref.null noexn
+(;@581   ;)    drop
+(;@582   ;)    ref.null 0
+(;@584   ;)    drop
+(;@585   ;)    ref.null 5
+(;@587   ;)    drop
+(;@588   ;)    ref.null 12
+(;@58a   ;)    drop
+(;@58b   ;)  )
+(;@58d   ;)  (func (;5;) (type 19) (param funcref nullfuncref externref nullexternref anyref eqref i31ref structref arrayref nullref exnref nullexnref) (result i32)
+(;@58e   ;)    (local (ref func) (ref nofunc) (ref extern) (ref noextern) (ref any) (ref eq) (ref i31) (ref struct) (ref array) (ref none) (ref exn) (ref noexn))
+(;@5b2   ;)    local.get 5
+(;@5b4   ;)    local.get 9
+(;@5b6   ;)    ref.eq
+(;@5b7   ;)    drop
+(;@5b8   ;)    local.get 6
+(;@5ba   ;)    ref.is_null
+(;@5bb   ;)    drop
+(;@5bc   ;)    local.get 10
+(;@5be   ;)    ref.is_null
+(;@5bf   ;)    drop
+(;@5c0   ;)    local.get 11
+(;@5c2   ;)    ref.is_null
+(;@5c3   ;)  )
+(;@5c5   ;)  (func (;6;) (type 20) (param (ref func) (ref nofunc) (ref extern) (ref noextern) (ref any) (ref eq) (ref i31) (ref struct) (ref array) (ref none) (ref exn) (ref noexn))
+(;@5c6   ;)    (local funcref nullfuncref externref nullexternref anyref eqref i31ref structref arrayref nullref exnref nullexnref)
+(;@5de   ;)    local.get 0
+(;@5e0   ;)    local.set 12
+(;@5e2   ;)    local.get 1
+(;@5e4   ;)    local.set 13
+(;@5e6   ;)    local.get 2
+(;@5e8   ;)    local.set 14
+(;@5ea   ;)    local.get 3
+(;@5ec   ;)    local.set 15
+(;@5ee   ;)    local.get 4
+(;@5f0   ;)    local.set 16
+(;@5f2   ;)    local.get 5
+(;@5f4   ;)    local.set 17
+(;@5f6   ;)    local.get 6
+(;@5f8   ;)    local.set 18
+(;@5fa   ;)    local.get 7
+(;@5fc   ;)    local.set 19
+(;@5fe   ;)    local.get 8
+(;@600   ;)    local.set 20
+(;@602   ;)    local.get 9
+(;@604   ;)    local.set 21
+(;@606   ;)    local.get 10
+(;@608   ;)    local.set 22
+(;@60a   ;)    local.get 11
+(;@60c   ;)    local.set 23
+(;@60e   ;)    local.get 6
+(;@610   ;)    i31.get_s
+(;@612   ;)    drop
+(;@613   ;)  )
+(;@615   ;)  (func (;7;) (type 13) (param i32) (result i32)
+(;@616   ;)    local.get 0
+(;@618   ;)    i32.const 1
+(;@61a   ;)    i32.add
+(;@61b   ;)  )
+(;@61d   ;)  (func (;8;) (type 12) (param i32) (result i32)
+(;@61e   ;)    local.get 0
+(;@620   ;)    ref.func 7
+(;@622   ;)    call_ref 12
+(;@624   ;)  )
+(;@628   ;)  (data (;0;) "\01\02\03\04\05\06\07\08")
+(;@632   ;))

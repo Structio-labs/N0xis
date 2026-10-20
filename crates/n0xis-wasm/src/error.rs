@@ -43,28 +43,49 @@ pub enum Problem {
     SectionOrder { id: u8, after: u8 },
     #[error("section {id} states {declared} bytes and its contents take {used}")]
     SectionSize { id: u8, declared: u32, used: usize },
+    /// The same rule inside the `name` section, whose subsections each state
+    /// their size; `id` is the subsection's, not a standard section's.
+    #[error("name subsection {id} states {declared} bytes and its contents take {used}")]
+    SubsectionSize { id: u8, declared: u32, used: usize },
     #[error("value type byte {0:#04x} is not one read here")]
     UnknownValueType(u8),
     #[error("reference type byte {0:#04x} is not one read here")]
     UnknownRefType(u8),
+    #[error("heap type byte {0:#04x} is neither an abstract heap type nor a type index")]
+    UnknownHeapType(u8),
     #[error("block type byte {0:#04x} is neither empty, a value type nor a type index")]
     UnknownBlockType(u8),
-    #[error("type form {0:#04x} is not a function type (0x60), and no other form is read here")]
+    /// Met where a composite type must begin: after a recursion group's head
+    /// and a subtype's head have been read, so `0x4e`, `0x50` and `0x4f` land
+    /// here only where they may not stand (a group inside a group, a subtype
+    /// inside a subtype).
+    #[error(
+        "type form {0:#04x} is not a function (0x60), structure (0x5f) or array (0x5e) type, the only forms that \
+         may stand here"
+    )]
     UnknownTypeForm(u8),
     #[error("import kind {0:#04x} is not one read here")]
     UnknownImportKind(u8),
     #[error("export kind {0:#04x} is not one read here")]
     UnknownExportKind(u8),
-    #[error("limits flags {0:#04x} are not read here (shared memories are not)")]
+    #[error("limits flags {0:#04x} are not read here")]
     UnknownLimitsFlags(u8),
     #[error("mutability byte {0:#04x} is neither 0 nor 1")]
     UnknownMutability(u8),
     #[error("element segment form {0} is not one of the eight the format defines")]
     UnknownElementForm(u32),
-    #[error("element kind {0:#04x} is not `funcref` (0x00)")]
+    #[error("element kind {0:#04x} is not `func` (0x00)")]
     UnknownElementKind(u8),
     #[error("data segment form {0} is not one of the three the format defines")]
     UnknownDataForm(u32),
+    #[error("tag attribute {0:#04x} is not 0, an exception")]
+    UnknownTagAttribute(u8),
+    #[error("catch clause kind {0:#04x} is none of the four (0 to 3)")]
+    UnknownCatchKind(u8),
+    #[error("cast flags {0:#04x} set a bit other than the two nullability bits")]
+    CastFlags(u8),
+    #[error("a reserved byte is {0:#04x} and the format requires 0")]
+    ReservedByte(u8),
     #[error("{functions} functions are declared and {bodies} bodies given")]
     BodyCount { functions: u32, bodies: u32 },
     #[error("the data count section states {declared} segments and the data section holds {segments}")]
@@ -79,6 +100,10 @@ pub enum Problem {
     MemArgFlags(u32),
     #[error("`else` outside an `if`, or a second `else` in one")]
     ElseWithoutIf,
+    #[error("`catch` or `catch_all` outside a `try`, or after its `catch_all`")]
+    CatchOutsideTry,
+    #[error("`delegate` outside a `try`, or after one of its handlers")]
+    DelegateOutsideTry,
     #[error("the expression ends before its final `end`")]
     NotEnded,
     #[error("{0} bytes after the final `end` of a function body")]

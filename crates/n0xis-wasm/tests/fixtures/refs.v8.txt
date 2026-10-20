@@ -1,0 +1,106 @@
+000000: (module
+00002d:   (func $env.unary (;0;) (import "env" "unary") (param i32) (result i32))
+000047:   (table $table0 4 funcref)
+00004a:   (table $table1 2 (ref null $type1))
+000053:   (table $table2 2 (ref $type1))
+00005f:   (global $global0 (mut (ref null $type1)) (ref.null $type1))
+000065:   (global $always (;1;) (export "always") (ref $type1) (ref.func $func3))
+00006b:   (global $global2 (ref func) (ref.func $func1))
+000087:   (elem $elem0 (ref null $type1) (ref.func $func2) (ref.null $type1))
+000091:   (elem $elem1 (table $table1) (i32.const 0) (ref $type1) (ref.func $func2) (ref.func $func3))
+00009f:   (elem $elem2 declare (ref $type0) (ref.func $func1))
+0000ab:   (func $func1 (param $var0 i32) (param $var1 i32) (result i32)
+0000ac:     local.get $var0
+0000ae:     local.get $var1
+0000b0:     i32.add
+0000b1:   )
+0000b3:   (func $func2 (param $var0 i32) (result i32)
+0000b4:     local.get $var0
+0000b6:     i32.const 2
+0000b8:     i32.mul
+0000b9:   )
+0000bb:   (func $func3 (param $var0 i32) (result i32)
+0000bc:     local.get $var0
+0000be:     i32.const 3
+0000c0:     i32.mul
+0000c1:   )
+0000c3:   (func $func4 (param $var0 i32) (result i32)
+0000c4:     local.get $var0
+0000c6:     i32.eqz
+0000c7:     if (result i32)
+0000c9:       i32.const 0
+0000cb:     else
+0000cc:       local.get $var0
+0000ce:       i32.const 1
+0000d0:       i32.sub
+0000d1:       return_call $func4
+0000d3:     end
+0000d4:   )
+0000d6:   (func $func5 (param $var0 i32) (result i32)
+0000d7:     local.get $var0
+0000d9:     return_call $env.unary
+0000db:   )
+0000dd:   (func $func6 (param $var0 i32) (param $var1 i32) (result i32)
+0000de:     local.get $var1
+0000e0:     i32.eqz
+0000e1:     if
+0000e3:       local.get $var0
+0000e5:       i32.const 0
+0000e7:       return_call_indirect (param i32) (result i32)
+0000ea:     end
+0000eb:     local.get $var0
+0000ed:     local.get $var1
+0000ef:     return_call_indirect (param i32) (result i32) $table1
+0000f2:   )
+0000f4:   (func $func7 (param $var0 (ref null $type1)) (param $var1 i32) (result i32)
+0000f5:     local.get $var1
+0000f7:     local.get $var0
+0000f9:     call_ref $type1
+0000fb:     local.get $var0
+0000fd:     return_call_ref $type1
+0000ff:   )
+000101:   (func $pick (;8;) (export "pick") (param $var0 (ref null $type1)) (param $var1 (ref $type1)) (param $var2 (ref func)) (param $var3 (ref extern)) (param $var4 i32) (result i32)
+000101:     (local $var5 (ref null $type1))
+000101:     (local $var6 (ref $type1))
+000101:     (local $var7 (ref func))
+000101:     (local $var8 (ref extern))
+00010e:     block $label0
+000110:       local.get $var0
+000112:       br_on_null $label0
+000114:       local.set $var6
+000116:     end $label0
+000117:     block $label1 (result (ref $type1))
+00011a:       local.get $var0
+00011c:       br_on_non_null $label1
+00011e:       local.get $var1
+000120:     end $label1
+000121:     local.set $var6
+000123:     local.get $var0
+000125:     ref.as_non_null
+000126:     local.set $var6
+000128:     local.get $var0
+00012a:     ref.null $type1
+00012c:     local.get $var4
+00012e:     select (ref null $type1)
+000132:     local.set $var5
+000134:     ref.func $func2
+000136:     local.get $var2
+000138:     local.get $var4
+00013a:     select (ref func)
+00013e:     local.set $var7
+000140:     ref.func $func3
+000142:     ref.null func
+000144:     local.get $var4
+000146:     select funcref
+000149:     drop
+00014a:     local.get $var3
+00014c:     local.set $var8
+00014e:     i32.const 0
+000150:     i32.const 0
+000152:     i32.const 1
+000154:     table.copy $table1 $table2
+000158:     local.get $var4
+00015a:     local.get $var6
+00015c:     call_ref $type1
+00015e:   )
+00015f: )

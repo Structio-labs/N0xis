@@ -1,0 +1,165 @@
+
+eh-legacy.wasm:	file format wasm 0x1
+module name: <eh_legacy>
+
+Code Disassembly:
+
+000045 func[0] <throws>:
+ 000046: 20 00                      | local.get 0 <n>
+ 000048: 45                         | i32.eqz
+ 000049: 04 40                      | if
+ 00004b: 08 02                      |   throw 2 <empty>
+ 00004d: 0b                         | end
+ 00004e: 20 00                      | local.get 0 <n>
+ 000050: 41 01                      | i32.const 1
+ 000052: 46                         | i32.eq
+ 000053: 04 40                      | if
+ 000055: 20 00                      |   local.get 0 <n>
+ 000057: 08 00                      |   throw 0 <code>
+ 000059: 0b                         | end
+ 00005a: 20 00                      | local.get 0 <n>
+ 00005c: 42 07                      | i64.const 7
+ 00005e: 08 01                      | throw 1 <pair>
+ 000060: 0b                         | end
+000062 func[1] <handlers>:
+ 000063: 06 7f                      | try i32
+ 000065: 20 00                      |   local.get 0 <n>
+ 000067: 10 00                      |   call 0 <throws>
+ 000069: 07 00                      | catch 0
+ 00006b: 0b                         | end
+ 00006c: 1a                         | drop
+ 00006d: 06 7f                      | try i32
+ 00006f: 20 00                      |   local.get 0 <n>
+ 000071: 10 00                      |   call 0 <throws>
+ 000073: 07 00                      | catch 0
+ 000075: 07 01                      | catch 1
+ 000077: 1a                         |   drop
+ 000078: 07 02                      | catch 2
+ 00007a: 41 02                      |   i32.const 2
+ 00007c: 0b                         | end
+ 00007d: 1a                         | drop
+ 00007e: 06 40                      | try
+ 000080: 20 00                      |   local.get 0 <n>
+ 000082: 10 00                      |   call 0 <throws>
+ 000084: 1a                         |   drop
+ 000085: 19                         | catch_all
+ 000086: 0b                         | end
+ 000087: 06 7f                      | try i32
+ 000089: 20 00                      |   local.get 0 <n>
+ 00008b: 10 00                      |   call 0 <throws>
+ 00008d: 07 01                      | catch 1
+ 00008f: 1a                         |   drop
+ 000090: 19                         | catch_all
+ 000091: 41 7f                      |   i32.const 4294967295
+ 000093: 0b                         | end
+ 000094: 1a                         | drop
+ 000095: 06 40                      | try
+ 000097: 20 00                      |   local.get 0 <n>
+ 000099: 10 00                      |   call 0 <throws>
+ 00009b: 1a                         |   drop
+ 00009c: 0b                         | end
+ 00009d: 06 04                      | try type[4]
+ 00009f: 20 00                      |   local.get 0 <n>
+ 0000a1: 10 00                      |   call 0 <throws>
+ 0000a3: 42 00                      |   i64.const 0
+ 0000a5: 07 01                      | catch 1
+ 0000a7: 0b                         | end
+ 0000a8: 1a                         | drop
+ 0000a9: 1a                         | drop
+ 0000aa: 20 00                      | local.get 0 <n>
+ 0000ac: 06 03                      | try type[3]
+ 0000ae: 10 00                      |   call 0 <throws>
+ 0000b0: 07 00                      | catch 0
+ 0000b2: 41 01                      |   i32.const 1
+ 0000b4: 6a                         |   i32.add
+ 0000b5: 0b                         | end
+ 0000b6: 0b                         | end
+0000b8 func[2] <delegates>:
+ 0000b9: 06 7f                      | try i32
+ 0000bb: 06 40                      |   try
+ 0000bd: 20 00                      |     local.get 0 <n>
+ 0000bf: 10 00                      |     call 0 <throws>
+ 0000c1: 1a                         |     drop
+ 0000c2: 18 00                      |   delegate 0
+ 0000c4: 20 00                      |   local.get 0 <n>
+ 0000c6: 19                         | catch_all
+ 0000c7: 41 00                      |   i32.const 0
+ 0000c9: 0b                         | end
+ 0000ca: 1a                         | drop
+ 0000cb: 02 40                      | block
+ 0000cd: 06 40                      |   try
+ 0000cf: 20 00                      |     local.get 0 <n>
+ 0000d1: 10 00                      |     call 0 <throws>
+ 0000d3: 1a                         |     drop
+ 0000d4: 18 00                      |   delegate 0
+ 0000d6: 0b                         | end
+ 0000d7: 02 40                      | block
+ 0000d9: 06 40                      |   try
+ 0000db: 06 40                      |     try
+ 0000dd: 20 00                      |       local.get 0 <n>
+ 0000df: 10 00                      |       call 0 <throws>
+ 0000e1: 1a                         |       drop
+ 0000e2: 18 02                      |     delegate 2
+ 0000e4: 19                         |   catch_all
+ 0000e5: 0b                         |   end
+ 0000e6: 0b                         | end
+ 0000e7: 06 40                      | try
+ 0000e9: 20 00                      |   local.get 0 <n>
+ 0000eb: 10 00                      |   call 0 <throws>
+ 0000ed: 1a                         |   drop
+ 0000ee: 18 00                      | delegate 0
+ 0000f0: 20 00                      | local.get 0 <n>
+ 0000f2: 0b                         | end
+0000f4 func[3] <rethrows>:
+ 0000f5: 06 7f                      | try i32
+ 0000f7: 20 00                      |   local.get 0 <n>
+ 0000f9: 10 00                      |   call 0 <throws>
+ 0000fb: 07 00                      | catch 0
+ 0000fd: 1a                         |   drop
+ 0000fe: 09 00                      |   rethrow 0
+ 000100: 0b                         | end
+ 000101: 1a                         | drop
+ 000102: 06 40                      | try
+ 000104: 20 00                      |   local.get 0 <n>
+ 000106: 10 00                      |   call 0 <throws>
+ 000108: 1a                         |   drop
+ 000109: 19                         | catch_all
+ 00010a: 02 40                      |   block
+ 00010c: 20 00                      |     local.get 0 <n>
+ 00010e: 04 40                      |     if
+ 000110: 09 02                      |       rethrow 2
+ 000112: 0b                         |     end
+ 000113: 09 01                      |     rethrow 1
+ 000115: 0b                         |   end
+ 000116: 0b                         | end
+ 000117: 06 40                      | try
+ 000119: 20 00                      |   local.get 0 <n>
+ 00011b: 10 00                      |   call 0 <throws>
+ 00011d: 1a                         |   drop
+ 00011e: 07 00                      | catch 0
+ 000120: 1a                         |   drop
+ 000121: 06 40                      |   try
+ 000123: 20 00                      |     local.get 0 <n>
+ 000125: 10 00                      |     call 0 <throws>
+ 000127: 1a                         |     drop
+ 000128: 19                         |   catch_all
+ 000129: 09 01                      |     rethrow 1
+ 00012b: 0b                         |   end
+ 00012c: 0b                         | end
+ 00012d: 20 00                      | local.get 0 <n>
+ 00012f: 0b                         | end
+000131 func[4] <nested>:
+ 000132: 06 7f                      | try i32
+ 000134: 06 7f                      |   try i32
+ 000136: 06 7f                      |     try i32
+ 000138: 20 00                      |       local.get 0 <n>
+ 00013a: 10 00                      |       call 0 <throws>
+ 00013c: 07 02                      |     catch 2
+ 00013e: 41 03                      |       i32.const 3
+ 000140: 0b                         |     end
+ 000141: 07 00                      |   catch 0
+ 000143: 0b                         |   end
+ 000144: 19                         | catch_all
+ 000145: 41 7f                      |   i32.const 4294967295
+ 000147: 0b                         | end
+ 000148: 0b                         | end

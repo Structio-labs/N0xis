@@ -1,0 +1,238 @@
+(module
+(;@b     ;)  (type (;0;) (func (param i32)))
+(;@f     ;)  (type (;1;) (func (param i32) (result i32)))
+(;@14    ;)  (type (;2;) (func))
+(;@1b    ;)  (import "env" "may_throw" (func (;0;) (type 0) (param i32)))
+(;@2b    ;)  (import "env" "__cpp_exception" (tag (;0;) (type 0) (param i32)))
+(;@42    ;)  (import "env" "__cxa_begin_catch" (func (;1;) (type 1) (param i32) (result i32)))
+(;@5a    ;)  (import "env" "report" (func (;2;) (type 1) (param i32) (result i32)))
+(;@67    ;)  (import "env" "__cxa_end_catch" (func (;3;) (type 2)))
+(;@7d    ;)  (import "env" "_ZSt9terminatev" (func (;4;) (type 2)))
+(;@93    ;)  (import "env" "__cxa_rethrow" (func (;5;) (type 2)))
+(;@b3    ;)  (table (;0;) 1 1 funcref)
+(;@ba    ;)  (memory (;0;) 1)
+(;@bf    ;)  (global (;0;) (mut i32) i32.const 65536)
+(;@c6    ;)  (global (;1;) i32 i32.const 0)
+(;@cb    ;)  (global (;2;) i32 i32.const 1)
+(;@d0    ;)  (global (;3;) i32 i32.const 65536)
+(;@d7    ;)  (global (;4;) i32 i32.const 65536)
+(;@de    ;)  (global (;5;) i32 i32.const 65536)
+(;@e5    ;)  (global (;6;) i32 i32.const 0)
+(;@ea    ;)  (global (;7;) i32 i32.const 0)
+(;@ef    ;)  (global (;8;) i32 i32.const 0)
+(;@f4    ;)  (global (;9;) i32 i32.const 65536)
+(;@fb    ;)  (global (;10;) i32 i32.const 65536)
+(;@102   ;)  (global (;11;) i32 i32.const 65536)
+(;@109   ;)  (global (;12;) i32 i32.const 65536)
+(;@110   ;)  (global (;13;) i32 i32.const 65536)
+(;@11b   ;)  (export "memory" (memory 0))
+(;@124   ;)  (export "__wasm_call_ctors" (func 6))
+(;@138   ;)  (export "__stack_pointer" (global 0))
+(;@14a   ;)  (export "guarded" (func 7))
+(;@154   ;)  (export "with_cleanup" (func 8))
+(;@163   ;)  (export "nested" (func 9))
+(;@16c   ;)  (export "rethrows" (func 10))
+(;@177   ;)  (export "raise" (func 11))
+(;@17f   ;)  (export "__indirect_function_table" (table 0))
+(;@19b   ;)  (export "__dso_handle" (global 4))
+(;@1aa   ;)  (export "__data_end" (global 5))
+(;@1b7   ;)  (export "__rodata_start" (global 6))
+(;@1c8   ;)  (export "__rodata_end" (global 7))
+(;@1d7   ;)  (export "__stack_low" (global 8))
+(;@1e5   ;)  (export "__stack_high" (global 9))
+(;@1f4   ;)  (export "__global_base" (global 10))
+(;@204   ;)  (export "__heap_base" (global 11))
+(;@212   ;)  (export "__heap_end" (global 12))
+(;@21f   ;)  (export "__memory_base" (global 1))
+(;@22f   ;)  (export "__table_base" (global 2))
+(;@23e   ;)  (export "__wasm_first_page_end" (global 13))
+(;@256   ;)  (export "__tls_base" (global 3))
+(;@268   ;)  (func (;6;) (type 2)
+(;@269   ;)  )
+(;@26b   ;)  (func (;7;) (type 1) (param i32) (result i32)
+(;@26c   ;)    (local i32)
+(;@26e   ;)    global.get 0
+(;@274   ;)    local.set 1
+(;@276   ;)    block ;; label = @1
+(;@278   ;)      try ;; label = @2
+(;@27a   ;)        local.get 0
+(;@27c   ;)        call 0
+(;@282   ;)      catch 0
+(;@288   ;)        local.set 0
+(;@28a   ;)        local.get 1
+(;@28c   ;)        global.set 0
+(;@292   ;)        local.get 0
+(;@294   ;)        call 1
+(;@29a   ;)        drop
+(;@29b   ;)        try ;; label = @3
+(;@29d   ;)          i32.const -1
+(;@29f   ;)          call 2
+(;@2a5   ;)          local.set 0
+(;@2a7   ;)        catch_all
+(;@2a8   ;)          local.get 1
+(;@2aa   ;)          global.set 0
+(;@2b0   ;)          try ;; label = @4
+(;@2b2   ;)            call 3
+(;@2b8   ;)          catch_all
+(;@2b9   ;)            local.get 1
+(;@2bb   ;)            global.set 0
+(;@2c1   ;)            call 4
+(;@2c7   ;)            unreachable
+(;@2c8   ;)          end
+(;@2c9   ;)          rethrow 0 (;@3;)
+(;@2cb   ;)        end
+(;@2cc   ;)        call 3
+(;@2d2   ;)        br 1 (;@1;)
+(;@2d4   ;)      end
+(;@2d5   ;)      local.get 0
+(;@2d7   ;)      call 2
+(;@2dd   ;)      local.set 0
+(;@2df   ;)    end
+(;@2e0   ;)    local.get 0
+(;@2e2   ;)  )
+(;@2e4   ;)  (func (;8;) (type 1) (param i32) (result i32)
+(;@2e5   ;)    (local i32)
+(;@2e7   ;)    global.get 0
+(;@2ed   ;)    local.set 1
+(;@2ef   ;)    try ;; label = @1
+(;@2f1   ;)      local.get 0
+(;@2f3   ;)      call 0
+(;@2f9   ;)    catch_all
+(;@2fa   ;)      local.get 1
+(;@2fc   ;)      global.set 0
+(;@302   ;)      try ;; label = @2
+(;@304   ;)        local.get 0
+(;@306   ;)        call 2
+(;@30c   ;)        drop
+(;@30d   ;)      catch_all
+(;@30e   ;)        local.get 1
+(;@310   ;)        global.set 0
+(;@316   ;)        call 4
+(;@31c   ;)        unreachable
+(;@31d   ;)      end
+(;@31e   ;)      rethrow 0 (;@1;)
+(;@320   ;)    end
+(;@321   ;)    try ;; label = @1
+(;@323   ;)      local.get 0
+(;@325   ;)      call 2
+(;@32b   ;)      drop
+(;@32c   ;)    catch_all
+(;@32d   ;)      local.get 1
+(;@32f   ;)      global.set 0
+(;@335   ;)      call 4
+(;@33b   ;)      unreachable
+(;@33c   ;)    end
+(;@33d   ;)    local.get 0
+(;@33f   ;)    i32.const 1
+(;@341   ;)    i32.add
+(;@342   ;)  )
+(;@345   ;)  (func (;9;) (type 1) (param i32) (result i32)
+(;@346   ;)    (local i32 i32)
+(;@348   ;)    global.get 0
+(;@34e   ;)    local.set 1
+(;@350   ;)    i32.const 0
+(;@352   ;)    local.set 2
+(;@354   ;)    try ;; label = @1
+(;@356   ;)      local.get 0
+(;@358   ;)      call 0
+(;@35e   ;)    catch 0
+(;@364   ;)      local.set 2
+(;@366   ;)      local.get 1
+(;@368   ;)      global.set 0
+(;@36e   ;)      local.get 2
+(;@370   ;)      call 1
+(;@376   ;)      drop
+(;@377   ;)      try ;; label = @2
+(;@379   ;)        try ;; label = @3
+(;@37b   ;)          local.get 0
+(;@37d   ;)          i32.const 1
+(;@37f   ;)          i32.add
+(;@380   ;)          call 0
+(;@386   ;)        catch 0
+(;@38c   ;)          local.set 0
+(;@38e   ;)          local.get 1
+(;@390   ;)          global.set 0
+(;@396   ;)          local.get 0
+(;@398   ;)          call 1
+(;@39e   ;)          drop
+(;@39f   ;)          try ;; label = @4
+(;@3a1   ;)            i32.const 2
+(;@3a3   ;)            call 2
+(;@3a9   ;)            local.set 2
+(;@3ab   ;)          catch_all
+(;@3ac   ;)            local.get 1
+(;@3ae   ;)            global.set 0
+(;@3b4   ;)            try ;; label = @5
+(;@3b6   ;)              call 3
+(;@3bc   ;)            catch_all
+(;@3bd   ;)              local.get 1
+(;@3bf   ;)              global.set 0
+(;@3c5   ;)              call 4
+(;@3cb   ;)              unreachable
+(;@3cc   ;)            end
+(;@3cd   ;)            rethrow 0 (;@4;)
+(;@3cf   ;)          end
+(;@3d0   ;)          call 3
+(;@3d6   ;)          br 1 (;@2;)
+(;@3d8   ;)        end
+(;@3d9   ;)        i32.const 1
+(;@3db   ;)        call 2
+(;@3e1   ;)        local.set 2
+(;@3e3   ;)      catch_all
+(;@3e4   ;)        local.get 1
+(;@3e6   ;)        global.set 0
+(;@3ec   ;)        try ;; label = @3
+(;@3ee   ;)          call 3
+(;@3f4   ;)        catch_all
+(;@3f5   ;)          local.get 1
+(;@3f7   ;)          global.set 0
+(;@3fd   ;)          call 4
+(;@403   ;)          unreachable
+(;@404   ;)        end
+(;@405   ;)        rethrow 0 (;@2;)
+(;@407   ;)      end
+(;@408   ;)      call 3
+(;@40e   ;)    end
+(;@40f   ;)    local.get 2
+(;@411   ;)  )
+(;@413   ;)  (func (;10;) (type 1) (param i32) (result i32)
+(;@414   ;)    (local i32)
+(;@416   ;)    global.get 0
+(;@41c   ;)    local.set 1
+(;@41e   ;)    try ;; label = @1
+(;@420   ;)      local.get 0
+(;@422   ;)      call 0
+(;@428   ;)    catch 0
+(;@42e   ;)      local.set 0
+(;@430   ;)      local.get 1
+(;@432   ;)      global.set 0
+(;@438   ;)      local.get 0
+(;@43a   ;)      call 1
+(;@440   ;)      drop
+(;@441   ;)      try ;; label = @2
+(;@443   ;)        i32.const 3
+(;@445   ;)        call 2
+(;@44b   ;)        drop
+(;@44c   ;)        call 5
+(;@452   ;)      catch_all
+(;@453   ;)        local.get 1
+(;@455   ;)        global.set 0
+(;@45b   ;)        try ;; label = @3
+(;@45d   ;)          call 3
+(;@463   ;)        catch_all
+(;@464   ;)          local.get 1
+(;@466   ;)          global.set 0
+(;@46c   ;)          call 4
+(;@472   ;)          unreachable
+(;@473   ;)        end
+(;@474   ;)        rethrow 0 (;@2;)
+(;@476   ;)      end
+(;@477   ;)      unreachable
+(;@478   ;)    end
+(;@479   ;)    local.get 0
+(;@47b   ;)  )
+(;@47d   ;)  (func (;11;) (type 0) (param i32)
+(;@47e   ;)    local.get 0
+(;@480   ;)    throw 0
+(;@486   ;)  )
+(;@487   ;))

@@ -10,7 +10,10 @@ use crate::error::{Error, Problem};
 use crate::instr::Located;
 use crate::names::{self, NameProblem, Names};
 use crate::reader::Reader;
-use crate::types::{FuncIdx, FuncType, GlobalIdx, GlobalType, Limits, MemIdx, RefType, TableIdx, TableType, TypeIdx};
+use crate::types::{
+    AbsHeapType, CompositeType, FuncIdx, FuncType, GlobalIdx, GlobalType, HeapType, MemIdx, MemoryType, RecGroup, RecHead,
+    RefType, SubType, TableIdx, TableType, TagIdx, TypeIdx, read_tag_type,
+};
 
 /// The four bytes every module begins with, then the version.
 const MAGIC: [u8; 4] = *b"\0asm";
@@ -32,6 +35,7 @@ pub enum SectionKind {
     Code,
     Data,
     DataCount,
+    Tag,
 }
 
 impl SectionKind {
@@ -51,6 +55,7 @@ impl SectionKind {
             SectionKind::Code => 10,
             SectionKind::Data => 11,
             SectionKind::DataCount => 12,
+            SectionKind::Tag => 13,
         }
     }
 
@@ -69,20 +74,31 @@ impl SectionKind {
             10 => SectionKind::Code,
             11 => SectionKind::Data,
             12 => SectionKind::DataCount,
+            13 => SectionKind::Tag,
             _ => return None,
         })
     }
 
-    /// Where a standard section stands in the order the format requires. The
-    /// data count section is numbered after the data section but stands
-    /// between the element and code sections.
+    /// Where a standard section stands in the order the format requires,
+    /// which is not the order of the ids: the data count section (12) stands
+    /// between the element and code sections, the tag section (13) between
+    /// the memory and global sections.
     fn rank(&self) -> u8 {
         match self {
             SectionKind::Custom { .. } => 0,
-            SectionKind::DataCount => 10,
-            SectionKind::Code => 11,
-            SectionKind::Data => 12,
-            other => other.id(),
+            SectionKind::Type => 1,
+            SectionKind::Import => 2,
+            SectionKind::Function => 3,
+            SectionKind::Table => 4,
+            SectionKind::Memory => 5,
+            SectionKind::Tag => 6,
+            SectionKind::Global => 7,
+            SectionKind::Export => 8,
+            SectionKind::Start => 9,
+            SectionKind::Element => 10,
+            SectionKind::DataCount => 11,
+            SectionKind::Code => 12,
+            SectionKind::Data => 13,
         }
     }
 }
@@ -101,8 +117,10 @@ pub struct Section {
 pub enum ImportItem {
     Func(TypeIdx),
     Table(TableType),
-    Memory(Limits),
+    Memory(MemoryType),
     Global(GlobalType),
+    /// A tag, by the function type of its payload.
+    Tag(TypeIdx),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,6 +137,7 @@ pub enum ExportItem {
     Table(TableIdx),
     Memory(MemIdx),
     Global(GlobalIdx),
+    Tag(TagIdx),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +146,7 @@ pub struct Export {
     pub item: ExportItem,
 }
 
-/// Where a function, table or memory of an index space comes from.
+/// Where a memory or a tag of an index space comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// The import at this position of [`Module::imports`].
@@ -151,15 +170,35 @@ pub enum FuncOrigin {
     Defined { body: usize },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Table {
     pub ty: TableType,
-    pub origin: Origin,
+    pub origin: TableOrigin,
+}
+
+/// Where a table comes from. Only a table the module defines can state an
+/// initial value for its elements, so an import has no place for one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableOrigin {
+    /// The import at this position of [`Module::imports`].
+    Imported { import: usize },
+    /// The module defines it: `init` is `None` in the plain form, where every
+    /// element starts null, and the expression of the `0x40 0x00` form, which
+    /// gives every element its initial value.
+    Defined { init: Option<Vec<Located>> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Memory {
-    pub limits: Limits,
+    pub ty: MemoryType,
+    pub origin: Origin,
+}
+
+/// An entry of the tag index space: an exception tag, by the function type of
+/// its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tag {
+    pub ty: TypeIdx,
     pub origin: Origin,
 }
 
@@ -198,6 +237,9 @@ pub enum ElementItems {
 pub struct ElementSegment {
     /// Which of the format's eight encodings the segment used (0 to 7).
     pub form: u32,
+    /// The type of its elements, as WebAssembly 3.0 types it: a segment of
+    /// function indices (forms 0 to 3) holds the non-null `(ref func)`, form 4
+    /// the nullable `funcref`, and forms 5 to 7 state their reference type.
     pub ty: RefType,
     pub mode: ElementMode,
     pub items: ElementItems,
@@ -232,11 +274,13 @@ pub enum Finding {
 pub struct Module {
     bytes: Vec<u8>,
     sections: Vec<Section>,
-    types: Vec<FuncType>,
+    types: Vec<SubType>,
+    rec_groups: Vec<RecGroup>,
     imports: Vec<Import>,
     functions: Vec<Func>,
     tables: Vec<Table>,
     memories: Vec<Memory>,
+    tags: Vec<Tag>,
     globals: Vec<Global>,
     exports: Vec<Export>,
     start: Option<FuncIdx>,
@@ -262,8 +306,25 @@ impl Module {
         })
     }
 
-    pub fn types(&self) -> &[FuncType] {
+    /// The type index space: every subtype of every recursion group, in
+    /// order. The position is the [`TypeIdx`].
+    pub fn types(&self) -> &[SubType] {
         &self.types
+    }
+
+    /// The type section's entries: each recursion group and the type indices
+    /// it defines.
+    pub fn rec_groups(&self) -> &[RecGroup] {
+        &self.rec_groups
+    }
+
+    /// The function type at `index`; `None` past the index space, or when the
+    /// type there is a structure or an array type.
+    pub fn func_type(&self, index: TypeIdx) -> Option<&FuncType> {
+        match &self.types.get(index.0 as usize)?.composite {
+            CompositeType::Func(f) => Some(f),
+            CompositeType::Struct(_) | CompositeType::Array(_) => None,
+        }
     }
 
     pub fn imports(&self) -> &[Import] {
@@ -294,6 +355,11 @@ impl Module {
     /// The memory index space, imports first. The position is the [`MemIdx`].
     pub fn memories(&self) -> &[Memory] {
         &self.memories
+    }
+
+    /// The tag index space, imports first. The position is the [`TagIdx`].
+    pub fn tags(&self) -> &[Tag] {
+        &self.tags
     }
 
     /// The global index space, imports first. The position is the [`GlobalIdx`].
@@ -333,8 +399,9 @@ impl Module {
         self.names.as_ref()
     }
 
-    /// What was wrong but left the rest readable. Empty for a well-formed
-    /// module.
+    /// What was wrong but left the rest readable. Empty when nothing was
+    /// found wrong. A well-formed module can still have findings about its
+    /// name section, which the format says must not invalidate the module.
     pub fn findings(&self) -> &[Finding] {
         &self.findings
     }
@@ -383,10 +450,12 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
         bytes: bytes.to_vec(),
         sections: Vec::new(),
         types: Vec::new(),
+        rec_groups: Vec::new(),
         imports: Vec::new(),
         functions: Vec::new(),
         tables: Vec::new(),
         memories: Vec::new(),
+        tags: Vec::new(),
         globals: Vec::new(),
         exports: Vec::new(),
         start: None,
@@ -439,8 +508,29 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
 
         match kind {
             SectionKind::Type => {
-                for _ in 0..s.count(3)? {
-                    m.types.push(FuncType::read(&mut s)?);
+                // The count is of recursion groups, each two bytes at least
+                // (`0x4e 0x00` and `0x5f 0x00` are complete); the type index
+                // space is every subtype of every group, in order.
+                for _ in 0..s.count(2)? {
+                    let head = RecGroup::read_head(&mut s)?;
+                    let first = next_index(m.types.len(), s.offset(), &s)?;
+                    let n = match head {
+                        RecHead::Single => 1,
+                        RecHead::Rec(n) => n,
+                    };
+                    for _ in 0..n {
+                        let at = s.offset();
+                        let ty = SubType::read(&mut s)?;
+                        next_index(m.types.len(), at, &s)?;
+                        m.types.push(ty);
+                    }
+                    // A subtype takes two bytes and a section at most 2^32 - 1,
+                    // so the space never reaches 2^32 and the end fits.
+                    let end = next_index(m.types.len(), s.offset(), &s)?;
+                    m.rec_groups.push(match head {
+                        RecHead::Single => RecGroup::Single(TypeIdx(first)),
+                        RecHead::Rec(_) => RecGroup::Rec(first..end),
+                    });
                 }
             }
             SectionKind::Import => {
@@ -452,8 +542,9 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
                     let item = match s.byte()? {
                         0x00 => ImportItem::Func(TypeIdx::read(&mut s)?),
                         0x01 => ImportItem::Table(TableType::read(&mut s)?),
-                        0x02 => ImportItem::Memory(Limits::read(&mut s)?),
+                        0x02 => ImportItem::Memory(MemoryType::read(&mut s)?),
                         0x03 => ImportItem::Global(GlobalType::read(&mut s)?),
+                        0x04 => ImportItem::Tag(read_tag_type(&mut s)?),
                         k => return Err(s.error(kind_at, Problem::UnknownImportKind(k))),
                     };
                     let import = m.imports.len();
@@ -464,15 +555,19 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
                         }
                         ImportItem::Table(ty) => {
                             next_index(m.tables.len(), at, &s)?;
-                            m.tables.push(Table { ty, origin: Origin::Imported { import } });
+                            m.tables.push(Table { ty, origin: TableOrigin::Imported { import } });
                         }
-                        ImportItem::Memory(limits) => {
+                        ImportItem::Memory(ty) => {
                             next_index(m.memories.len(), at, &s)?;
-                            m.memories.push(Memory { limits, origin: Origin::Imported { import } });
+                            m.memories.push(Memory { ty, origin: Origin::Imported { import } });
                         }
                         ImportItem::Global(ty) => {
                             next_index(m.globals.len(), at, &s)?;
                             m.globals.push(Global { ty, origin: GlobalOrigin::Imported { import } });
+                        }
+                        ImportItem::Tag(ty) => {
+                            next_index(m.tags.len(), at, &s)?;
+                            m.tags.push(Tag { ty, origin: Origin::Imported { import } });
                         }
                     }
                     m.imports.push(Import { module, name, item });
@@ -490,17 +585,26 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
             SectionKind::Table => {
                 for _ in 0..s.count(3)? {
                     let at = s.offset();
-                    let ty = TableType::read(&mut s)?;
+                    let (ty, init) = table_entry(&mut s)?;
                     next_index(m.tables.len(), at, &s)?;
-                    m.tables.push(Table { ty, origin: Origin::Defined });
+                    m.tables.push(Table { ty, origin: TableOrigin::Defined { init } });
                 }
             }
             SectionKind::Memory => {
                 for _ in 0..s.count(2)? {
                     let at = s.offset();
-                    let limits = Limits::read(&mut s)?;
+                    let ty = MemoryType::read(&mut s)?;
                     next_index(m.memories.len(), at, &s)?;
-                    m.memories.push(Memory { limits, origin: Origin::Defined });
+                    m.memories.push(Memory { ty, origin: Origin::Defined });
+                }
+            }
+            SectionKind::Tag => {
+                // `0x00 typeidx`: two bytes at least.
+                for _ in 0..s.count(2)? {
+                    let at = s.offset();
+                    let ty = read_tag_type(&mut s)?;
+                    next_index(m.tags.len(), at, &s)?;
+                    m.tags.push(Tag { ty, origin: Origin::Defined });
                 }
             }
             SectionKind::Global => {
@@ -523,6 +627,7 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
                         0x01 => ExportItem::Table(TableIdx(index)),
                         0x02 => ExportItem::Memory(MemIdx(index)),
                         0x03 => ExportItem::Global(GlobalIdx(index)),
+                        0x04 => ExportItem::Tag(TagIdx(index)),
                         k => return Err(s.error(kind_at, Problem::UnknownExportKind(k))),
                     };
                     m.exports.push(Export { name, item });
@@ -594,6 +699,31 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
     Ok(m)
 }
 
+/// The type of a segment of function indices: each element is a function, so
+/// none is null.
+const FUNC_INDICES: RefType = RefType { nullable: false, heap: HeapType::Abstract(AbsHeapType::Func) };
+
+/// The byte that opens a table entry with an initial value, `0x40 0x00
+/// tabletype expr`; any other first byte is the reference type of a plain
+/// `tabletype`.
+const TABLE_WITH_INIT: u8 = 0x40;
+
+/// A table section entry: its type, and the initial value of its elements
+/// when the entry states one.
+fn table_entry(s: &mut Reader) -> Result<(TableType, Option<Vec<Located>>), Error> {
+    if s.peek()? != TABLE_WITH_INIT {
+        return Ok((TableType::read(s)?, None));
+    }
+    s.byte()?;
+    let at = s.offset();
+    match s.byte()? {
+        0x00 => {}
+        b => return Err(s.error(at, Problem::ReservedByte(b))),
+    }
+    let ty = TableType::read(s)?;
+    Ok((ty, Some(body::const_expression(s)?)))
+}
+
 fn element_segment(s: &mut Reader) -> Result<ElementSegment, Error> {
     let at = s.offset();
     let form = s.u32()?;
@@ -613,17 +743,20 @@ fn element_segment(s: &mut Reader) -> Result<ElementSegment, Error> {
     } else {
         ElementMode::Passive
     };
-    // Forms 0 and 4 state no type: both are `funcref`. The others state an
-    // element kind (indices) or a reference type (expressions).
-    let ty = if form == 0 || form == 4 {
-        RefType::FuncRef
-    } else if expressions {
-        RefType::read(s)?
-    } else {
-        let kind_at = s.offset();
-        match s.byte()? {
-            0x00 => RefType::FuncRef,
-            k => return Err(s.error(kind_at, Problem::UnknownElementKind(k))),
+    // Forms 0 and 4 state no type: function indices, `(ref func)`, and
+    // expressions, `funcref`. The others state an element kind (indices),
+    // whose one kind `0x00` is `(ref func)`, or a reference type
+    // (expressions).
+    let ty = match form {
+        0 => FUNC_INDICES,
+        4 => RefType::FUNCREF,
+        _ if expressions => RefType::read(s)?,
+        _ => {
+            let kind_at = s.offset();
+            match s.byte()? {
+                0x00 => FUNC_INDICES,
+                k => return Err(s.error(kind_at, Problem::UnknownElementKind(k))),
+            }
         }
     };
     let n = s.count(1)?;

@@ -1,0 +1,212 @@
+
+cthreads-O2.wasm:	file format wasm 0x1
+module name: <cthreads-O2.wasm>
+
+Code Disassembly:
+
+00039f func[0] <__wasm_call_ctors>:
+ 0003a0: 0b                         | end
+0003a2 func[1] <__wasm_init_tls>:
+ 0003a3: 20 00                      | local.get 0
+ 0003a5: 24 01                      | global.set 1 <__tls_base>
+ 0003a7: 20 00                      | local.get 0
+ 0003a9: 41 00                      | i32.const 0
+ 0003ab: 41 10                      | i32.const 16
+ 0003ad: fc 08 02 00                | memory.init 2 0 <.tdata>
+ 0003b1: 0b                         | end
+0003b3 func[2] <__wasm_init_memory>:
+ 0003b4: 02 40                      | block
+ 0003b6: 02 40                      |   block
+ 0003b8: 02 40                      |     block
+ 0003ba: 41 c4 80 04                |       i32.const 65604
+ 0003be: 41 00                      |       i32.const 0
+ 0003c0: 41 01                      |       i32.const 1
+ 0003c2: fe 48 02 00                |       i32.atomic.rmw.cmpxchg 2 0
+ 0003c6: 0e 02 00 01 02             |       br_table 0 1 2
+ 0003cb: 0b                         |     end
+ 0003cc: 41 80 80 04                |     i32.const 65536
+ 0003d0: 41 00                      |     i32.const 0
+ 0003d2: 41 10                      |     i32.const 16
+ 0003d4: fc 08 00 00                |     memory.init 0 0 <.rodata>
+ 0003d8: 41 90 80 04                |     i32.const 65552
+ 0003dc: 41 00                      |     i32.const 0
+ 0003de: 41 20                      |     i32.const 32
+ 0003e0: fc 08 01 00                |     memory.init 1 0 <.data>
+ 0003e4: 41 b0 80 04                |     i32.const 65584
+ 0003e8: 41 b0 80 04                |     i32.const 65584
+ 0003ec: 24 01                      |     global.set 1 <__tls_base>
+ 0003ee: 41 00                      |     i32.const 0
+ 0003f0: 41 10                      |     i32.const 16
+ 0003f2: fc 08 02 00                |     memory.init 2 0 <.tdata>
+ 0003f6: 41 c0 80 04                |     i32.const 65600
+ 0003fa: 41 00                      |     i32.const 0
+ 0003fc: 41 01                      |     i32.const 1
+ 0003fe: fc 0b 00                   |     memory.fill 0
+ 000401: 41 c4 80 04                |     i32.const 65604
+ 000405: 41 02                      |     i32.const 2
+ 000407: fe 17 02 00                |     i32.atomic.store 2 0
+ 00040b: 41 c4 80 04                |     i32.const 65604
+ 00040f: 41 7f                      |     i32.const 4294967295
+ 000411: fe 00 02 00                |     memory.atomic.notify 2 0
+ 000415: 1a                         |     drop
+ 000416: 0c 01                      |     br 1
+ 000418: 0b                         |   end
+ 000419: 41 c4 80 04                |   i32.const 65604
+ 00041d: 41 01                      |   i32.const 1
+ 00041f: 42 7f                      |   i64.const 18446744073709551615
+ 000421: fe 01 02 00                |   memory.atomic.wait32 2 0
+ 000425: 1a                         |   drop
+ 000426: 0b                         | end
+ 000427: fc 09 00                   | data.drop 0 <.rodata>
+ 00042a: fc 09 01                   | data.drop 1 <.data>
+ 00042d: 0b                         | end
+00042f func[3] <load8>:
+ 000430: 41 00                      | i32.const 0
+ 000432: fe 12 00 c0 80 84 80 00    | i32.atomic.load8_u 0 65600
+ 00043a: 0b                         | end
+00043c func[4] <load16>:
+ 00043d: 41 00                      | i32.const 0
+ 00043f: fe 13 01 90 80 84 80 00    | i32.atomic.load16_u 1 65552
+ 000447: 0b                         | end
+000449 func[5] <load32>:
+ 00044a: 41 00                      | i32.const 0
+ 00044c: fe 10 02 94 80 84 80 00    | i32.atomic.load 2 65556
+ 000454: 0b                         | end
+000456 func[6] <load64>:
+ 000457: 41 00                      | i32.const 0
+ 000459: fe 11 03 98 80 84 80 00    | i64.atomic.load 3 65560
+ 000461: 0b                         | end
+000463 func[7] <store8>:
+ 000464: 41 00                      | i32.const 0
+ 000466: 20 00                      | local.get 0
+ 000468: fe 19 00 c0 80 84 80 00    | i32.atomic.store8 0 65600
+ 000470: 0b                         | end
+000472 func[8] <store16>:
+ 000473: 41 00                      | i32.const 0
+ 000475: 20 00                      | local.get 0
+ 000477: fe 1a 01 90 80 84 80 00    | i32.atomic.store16 1 65552
+ 00047f: 0b                         | end
+000481 func[9] <store32>:
+ 000482: 41 00                      | i32.const 0
+ 000484: 20 00                      | local.get 0
+ 000486: fe 17 02 94 80 84 80 00    | i32.atomic.store 2 65556
+ 00048e: 0b                         | end
+000490 func[10] <store64>:
+ 000491: 41 00                      | i32.const 0
+ 000493: 20 00                      | local.get 0
+ 000495: fe 18 03 98 80 84 80 00    | i64.atomic.store 3 65560
+ 00049d: 0b                         | end
+00049f func[11] <add8>:
+ 0004a0: 41 00                      | i32.const 0
+ 0004a2: 20 00                      | local.get 0
+ 0004a4: fe 20 00 c0 80 84 80 00    | i32.atomic.rmw8.add_u 0 65600
+ 0004ac: 0b                         | end
+0004ae func[12] <sub16>:
+ 0004af: 41 00                      | i32.const 0
+ 0004b1: 20 00                      | local.get 0
+ 0004b3: fe 28 01 90 80 84 80 00    | i32.atomic.rmw16.sub_u 1 65552
+ 0004bb: 0b                         | end
+0004bd func[13] <and32>:
+ 0004be: 41 00                      | i32.const 0
+ 0004c0: 20 00                      | local.get 0
+ 0004c2: fe 2c 02 94 80 84 80 00    | i32.atomic.rmw.and 2 65556
+ 0004ca: 0b                         | end
+0004cc func[14] <or64>:
+ 0004cd: 41 00                      | i32.const 0
+ 0004cf: 20 00                      | local.get 0
+ 0004d1: fe 34 03 98 80 84 80 00    | i64.atomic.rmw.or 3 65560
+ 0004d9: 0b                         | end
+0004db func[15] <xor32>:
+ 0004dc: 41 00                      | i32.const 0
+ 0004de: 20 00                      | local.get 0
+ 0004e0: fe 3a 02 94 80 84 80 00    | i32.atomic.rmw.xor 2 65556
+ 0004e8: 0b                         | end
+0004ea func[16] <add64>:
+ 0004eb: 41 00                      | i32.const 0
+ 0004ed: 20 00                      | local.get 0
+ 0004ef: fe 1f 03 98 80 84 80 00    | i64.atomic.rmw.add 3 65560
+ 0004f7: 0b                         | end
+0004f9 func[17] <exchange16>:
+ 0004fa: 41 00                      | i32.const 0
+ 0004fc: 20 00                      | local.get 0
+ 0004fe: fe 44 01 90 80 84 80 00    | i32.atomic.rmw16.xchg_u 1 65552
+ 000506: 0b                         | end
+000508 func[18] <exchange64>:
+ 000509: 41 00                      | i32.const 0
+ 00050b: 20 00                      | local.get 0
+ 00050d: fe 42 03 98 80 84 80 00    | i64.atomic.rmw.xchg 3 65560
+ 000515: 0b                         | end
+000517 func[19] <swap8>:
+ 000518: 41 00                      | i32.const 0
+ 00051a: 20 00                      | local.get 0
+ 00051c: 20 01                      | local.get 1
+ 00051e: fe 4a 00 c0 80 84 80 00    | i32.atomic.rmw8.cmpxchg_u 0 65600
+ 000526: 0b                         | end
+000528 func[20] <swap32>:
+ 000529: 41 00                      | i32.const 0
+ 00052b: 20 00                      | local.get 0
+ 00052d: 20 01                      | local.get 1
+ 00052f: fe 48 02 94 80 84 80 00    | i32.atomic.rmw.cmpxchg 2 65556
+ 000537: 0b                         | end
+000539 func[21] <swap64>:
+ 00053a: 41 00                      | i32.const 0
+ 00053c: 20 00                      | local.get 0
+ 00053e: 20 01                      | local.get 1
+ 000540: fe 49 03 98 80 84 80 00    | i64.atomic.rmw.cmpxchg 3 65560
+ 000548: 0b                         | end
+00054a func[22] <fence>:
+ 00054b: fe 03 00                   | atomic.fence 0
+ 00054e: 0b                         | end
+000550 func[23] <wait32>:
+ 000551: 20 00                      | local.get 0
+ 000553: 20 01                      | local.get 1
+ 000555: 20 02                      | local.get 2
+ 000557: fe 01 02 00                | memory.atomic.wait32 2 0
+ 00055b: 0b                         | end
+00055d func[24] <wait64>:
+ 00055e: 20 00                      | local.get 0
+ 000560: 20 01                      | local.get 1
+ 000562: 20 02                      | local.get 2
+ 000564: fe 02 03 00                | memory.atomic.wait64 3 0
+ 000568: 0b                         | end
+00056a func[25] <notify>:
+ 00056b: 20 00                      | local.get 0
+ 00056d: 20 01                      | local.get 1
+ 00056f: fe 00 02 00                | memory.atomic.notify 2 0
+ 000573: 0b                         | end
+000575 func[26] <bump_thread_local>:
+ 000576: 02 7f                      | local[1..2] type=i32
+ 000578: 23 81 80 80 80 00          | global.get 1 <__tls_base>
+ 00057e: 22 01                      | local.tee 1
+ 000580: 41 80 80 80 80 00          | i32.const 0
+ 000586: 6a                         | i32.add
+ 000587: 22 02                      | local.tee 2
+ 000589: 20 02                      | local.get 2
+ 00058b: 28 02 00                   | i32.load 2 0
+ 00058e: 20 00                      | local.get 0
+ 000590: 6a                         | i32.add
+ 000591: 22 02                      | local.tee 2
+ 000593: 36 02 00                   | i32.store 2 0
+ 000596: 20 01                      | local.get 1
+ 000598: 41 88 80 80 80 00          | i32.const 8
+ 00059e: 6a                         | i32.add
+ 00059f: 22 01                      | local.tee 1
+ 0005a1: 20 01                      | local.get 1
+ 0005a3: 29 03 00                   | i64.load 3 0
+ 0005a6: 20 00                      | local.get 0
+ 0005a8: ad                         | i64.extend_i32_u
+ 0005a9: 7c                         | i64.add
+ 0005aa: 37 03 00                   | i64.store 3 0
+ 0005ad: 20 00                      | local.get 0
+ 0005af: 41 03                      | i32.const 3
+ 0005b1: 71                         | i32.and
+ 0005b2: 41 02                      | i32.const 2
+ 0005b4: 74                         | i32.shl
+ 0005b5: 22 00                      | local.tee 0
+ 0005b7: 28 02 a0 80 84 80 00       | i32.load 2 65568
+ 0005be: 20 02                      | local.get 2
+ 0005c0: 6a                         | i32.add
+ 0005c1: 20 00                      | local.get 0
+ 0005c3: 28 02 80 80 84 80 00       | i32.load 2 65536
+ 0005ca: 6a                         | i32.add
+ 0005cb: 0b                         | end

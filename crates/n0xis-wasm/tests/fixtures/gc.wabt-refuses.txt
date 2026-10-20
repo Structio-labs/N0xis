@@ -1,0 +1,4 @@
+000000d: error: unexpected type form (got -0x32)
+0000115: error: invalid global type: 0xffffffec
+000019b: error: unexpected opcode: 0xfb
+exit status 1

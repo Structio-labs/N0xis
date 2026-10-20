@@ -1,0 +1,109 @@
+(module
+(;@b     ;)  (type (;0;) (func (param i32 i32) (result i32)))
+(;@11    ;)  (type (;1;) (func (param i32) (result i32)))
+(;@16    ;)  (type (;2;) (func (param (ref null 1) i32) (result i32)))
+(;@1d    ;)  (type (;3;) (func (param (ref null 1) (ref 1) (ref func) (ref extern) i32) (result i32)))
+(;@2d    ;)  (import "env" "unary" (func (;0;) (type 1) (param i32) (result i32)))
+(;@47    ;)  (table (;0;) 4 funcref)
+(;@4a    ;)  (table (;1;) 2 (ref null 1) ref.null 1)
+(;@53    ;)  (table (;2;) 2 (ref 1) ref.func 2)
+(;@5f    ;)  (global (;0;) (mut (ref null 1)) ref.null 1)
+(;@65    ;)  (global (;1;) (ref 1) ref.func 3)
+(;@6b    ;)  (global (;2;) (ref func) ref.func 1)
+(;@74    ;)  (export "pick" (func 8))
+(;@7b    ;)  (export "always" (global 1))
+(;@87    ;)  (elem (;0;) (ref null 1) (ref.func 2) (ref.null 1))
+(;@91    ;)  (elem (;1;) (table 1) (i32.const 0) (ref 1) (ref.func 2) (ref.func 3))
+(;@9f    ;)  (elem (;2;) declare (ref 0) (ref.func 1))
+(;@ab    ;)  (func (;1;) (type 0) (param i32 i32) (result i32)
+(;@ac    ;)    local.get 0
+(;@ae    ;)    local.get 1
+(;@b0    ;)    i32.add
+(;@b1    ;)  )
+(;@b3    ;)  (func (;2;) (type 1) (param i32) (result i32)
+(;@b4    ;)    local.get 0
+(;@b6    ;)    i32.const 2
+(;@b8    ;)    i32.mul
+(;@b9    ;)  )
+(;@bb    ;)  (func (;3;) (type 1) (param i32) (result i32)
+(;@bc    ;)    local.get 0
+(;@be    ;)    i32.const 3
+(;@c0    ;)    i32.mul
+(;@c1    ;)  )
+(;@c3    ;)  (func (;4;) (type 1) (param i32) (result i32)
+(;@c4    ;)    local.get 0
+(;@c6    ;)    i32.eqz
+(;@c7    ;)    if (result i32) ;; label = @1
+(;@c9    ;)      i32.const 0
+(;@cb    ;)    else
+(;@cc    ;)      local.get 0
+(;@ce    ;)      i32.const 1
+(;@d0    ;)      i32.sub
+(;@d1    ;)      return_call 4
+(;@d3    ;)    end
+(;@d4    ;)  )
+(;@d6    ;)  (func (;5;) (type 1) (param i32) (result i32)
+(;@d7    ;)    local.get 0
+(;@d9    ;)    return_call 0
+(;@db    ;)  )
+(;@dd    ;)  (func (;6;) (type 0) (param i32 i32) (result i32)
+(;@de    ;)    local.get 1
+(;@e0    ;)    i32.eqz
+(;@e1    ;)    if ;; label = @1
+(;@e3    ;)      local.get 0
+(;@e5    ;)      i32.const 0
+(;@e7    ;)      return_call_indirect (type 1)
+(;@ea    ;)    end
+(;@eb    ;)    local.get 0
+(;@ed    ;)    local.get 1
+(;@ef    ;)    return_call_indirect 1 (type 1)
+(;@f2    ;)  )
+(;@f4    ;)  (func (;7;) (type 2) (param (ref null 1) i32) (result i32)
+(;@f5    ;)    local.get 1
+(;@f7    ;)    local.get 0
+(;@f9    ;)    call_ref 1
+(;@fb    ;)    local.get 0
+(;@fd    ;)    return_call_ref 1
+(;@ff    ;)  )
+(;@101   ;)  (func (;8;) (type 3) (param (ref null 1) (ref 1) (ref func) (ref extern) i32) (result i32)
+(;@102   ;)    (local (ref null 1) (ref 1) (ref func) (ref extern))
+(;@10e   ;)    block ;; label = @1
+(;@110   ;)      local.get 0
+(;@112   ;)      br_on_null 0 (;@1;)
+(;@114   ;)      local.set 6
+(;@116   ;)    end
+(;@117   ;)    block (result (ref 1)) ;; label = @1
+(;@11a   ;)      local.get 0
+(;@11c   ;)      br_on_non_null 0 (;@1;)
+(;@11e   ;)      local.get 1
+(;@120   ;)    end
+(;@121   ;)    local.set 6
+(;@123   ;)    local.get 0
+(;@125   ;)    ref.as_non_null
+(;@126   ;)    local.set 6
+(;@128   ;)    local.get 0
+(;@12a   ;)    ref.null 1
+(;@12c   ;)    local.get 4
+(;@12e   ;)    select (result (ref null 1))
+(;@132   ;)    local.set 5
+(;@134   ;)    ref.func 2
+(;@136   ;)    local.get 2
+(;@138   ;)    local.get 4
+(;@13a   ;)    select (result (ref func))
+(;@13e   ;)    local.set 7
+(;@140   ;)    ref.func 3
+(;@142   ;)    ref.null func
+(;@144   ;)    local.get 4
+(;@146   ;)    select (result funcref)
+(;@149   ;)    drop
+(;@14a   ;)    local.get 3
+(;@14c   ;)    local.set 8
+(;@14e   ;)    i32.const 0
+(;@150   ;)    i32.const 0
+(;@152   ;)    i32.const 1
+(;@154   ;)    table.copy 1 2
+(;@158   ;)    local.get 4
+(;@15a   ;)    local.get 6
+(;@15c   ;)    call_ref 1
+(;@15e   ;)  )
+(;@15f   ;))

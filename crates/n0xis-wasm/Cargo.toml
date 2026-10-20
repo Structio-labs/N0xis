@@ -1,6 +1,6 @@
 [package]
 name = "n0xis-wasm"
-description = "WebAssembly modules: every section of the core binary format and every instruction of WebAssembly 2.0, SIMD included, with memory64 and multiple memories, read into this crate's own types. A module is untrusted input: a malformed one is a typed error or a finding, never a crash or an allocation sized by a count it states."
+description = "WebAssembly modules: every section and every instruction of the WebAssembly 3.0 binary format, with threads and legacy exception handling, read into this crate's own types. A module is untrusted input: a malformed one is a typed error or a finding, never a crash or an allocation sized by a count it states."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

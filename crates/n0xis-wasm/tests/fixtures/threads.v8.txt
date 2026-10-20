@@ -1,0 +1,379 @@
+000000: (module
+000024:   (memory $env.memory (;0;) (import "env" "memory") 1 16 shared)
+000047:   (memory $wide (;1;) (export "wide") 1 65536 shared)
+000047:   (memory $memory2 1 2)
+000047:   (memory $memory3 1 1 shared)
+000061:   (func $sync (;0;) (export "sync") (param $var0 i32) (param $var1 i64) (result i32)
+000062:     local.get $var0
+000064:     i32.const 1
+000066:     memory.atomic.notify
+00006a:     drop
+00006b:     local.get $var0
+00006d:     i32.const 0
+00006f:     i64.const -1
+000071:     memory.atomic.wait32 offset=4
+000075:     drop
+000076:     local.get $var0
+000078:     local.get $var1
+00007a:     i64.const 1000000
+00007e:     memory.atomic.wait64 offset=8
+000082:     drop
+000083:     atomic.fence
+000086:     i64.const 0
+000088:     i32.const 2
+00008a:     memory.atomic.notify offset=4294967296
+000093:     drop
+000094:     i64.const 0
+000096:     i32.const 7
+000098:     i64.const 0
+00009a:     memory.atomic.wait32 offset=4294967300
+0000a3:     drop
+0000a4:     i64.const 0
+0000a6:     local.get $var1
+0000a8:     i64.const 0
+0000aa:     memory.atomic.wait64 offset=4294967304
+0000b3:     drop
+0000b4:     local.get $var0
+0000b6:     i32.const 3
+0000b8:     memory.atomic.notify offset=16
+0000bd:     drop
+0000be:     local.get $var0
+0000c0:     i32.const 0
+0000c2:     i64.const 0
+0000c4:     memory.atomic.wait32 offset=20
+0000c9:     drop
+0000ca:     local.get $var0
+0000cc:     local.get $var1
+0000ce:     i64.const 0
+0000d0:     memory.atomic.wait64 offset=24
+0000d5:     drop
+0000d6:     atomic.fence
+0000d9:     local.get $var0
+0000db:     i32.const -1
+0000dd:     memory.atomic.notify offset=32
+0000e2:     drop
+0000e3:     local.get $var0
+0000e5:     i32.const 0
+0000e7:     i64.const -1
+0000e9:     memory.atomic.wait32 offset=36
+0000ee:     drop
+0000ef:     local.get $var0
+0000f1:     local.get $var1
+0000f3:     i64.const -1
+0000f5:     memory.atomic.wait64 offset=40
+0000fa:   )
+0000fc:   (func $func1 (param $var0 i32) (param $var1 i64)
+0000fd:     local.get $var0
+0000ff:     i32.atomic.load
+000103:     drop
+000104:     local.get $var0
+000106:     i64.atomic.load offset=8
+00010a:     drop
+00010b:     local.get $var0
+00010d:     i32.atomic.load8_u offset=16
+000111:     drop
+000112:     local.get $var0
+000114:     i32.atomic.load16_u offset=18
+000118:     drop
+000119:     local.get $var0
+00011b:     i64.atomic.load8_u offset=20
+00011f:     drop
+000120:     local.get $var0
+000122:     i64.atomic.load16_u offset=22
+000126:     drop
+000127:     local.get $var0
+000129:     i64.atomic.load32_u offset=4294967292
+000131:     drop
+000132:     local.get $var0
+000134:     i32.const -1
+000136:     i32.atomic.store offset=24
+00013a:     local.get $var0
+00013c:     local.get $var1
+00013e:     i64.atomic.store offset=32
+000142:     local.get $var0
+000144:     i32.const 255
+000147:     i32.atomic.store8 offset=40
+00014b:     local.get $var0
+00014d:     i32.const 65535
+000151:     i32.atomic.store16 offset=42
+000155:     local.get $var0
+000157:     local.get $var1
+000159:     i64.atomic.store8 offset=4294967295
+000161:     local.get $var0
+000163:     local.get $var1
+000165:     i64.atomic.store16 offset=46
+000169:     local.get $var0
+00016b:     local.get $var1
+00016d:     i64.atomic.store32 offset=48
+000171:   )
+000174:   (func $func2 (param $var0 i32) (param $var1 i64)
+000175:     local.get $var0
+000177:     i32.const -20
+000179:     i32.atomic.rmw.add
+00017d:     drop
+00017e:     local.get $var0
+000180:     local.get $var1
+000182:     i64.atomic.rmw.add offset=8
+000186:     drop
+000187:     local.get $var0
+000189:     i32.const -14
+00018b:     i32.atomic.rmw8.add_u offset=16
+00018f:     drop
+000190:     local.get $var0
+000192:     i32.const -11
+000194:     i32.atomic.rmw16.add_u offset=24
+000198:     drop
+000199:     local.get $var0
+00019b:     local.get $var1
+00019d:     i64.atomic.rmw8.add_u offset=32
+0001a1:     drop
+0001a2:     local.get $var0
+0001a4:     local.get $var1
+0001a6:     i64.atomic.rmw16.add_u offset=40
+0001aa:     drop
+0001ab:     local.get $var0
+0001ad:     local.get $var1
+0001af:     i64.atomic.rmw32.add_u offset=48
+0001b3:     drop
+0001b4:     local.get $var0
+0001b6:     i32.const 1
+0001b8:     i32.atomic.rmw.sub offset=56
+0001bc:     drop
+0001bd:     local.get $var0
+0001bf:     local.get $var1
+0001c1:     i64.atomic.rmw.sub offset=64
+0001c5:     drop
+0001c6:     local.get $var0
+0001c8:     i32.const 7
+0001ca:     i32.atomic.rmw8.sub_u offset=72
+0001ce:     drop
+0001cf:     local.get $var0
+0001d1:     i32.const 10
+0001d3:     i32.atomic.rmw16.sub_u offset=80
+0001d7:     drop
+0001d8:     local.get $var0
+0001da:     local.get $var1
+0001dc:     i64.atomic.rmw8.sub_u offset=88
+0001e0:     drop
+0001e1:     local.get $var0
+0001e3:     local.get $var1
+0001e5:     i64.atomic.rmw16.sub_u offset=96
+0001e9:     drop
+0001ea:     local.get $var0
+0001ec:     local.get $var1
+0001ee:     i64.atomic.rmw32.sub_u offset=104
+0001f2:     drop
+0001f3:     local.get $var0
+0001f5:     i32.const 22
+0001f7:     i32.atomic.rmw.and offset=112
+0001fb:     drop
+0001fc:     local.get $var0
+0001fe:     local.get $var1
+000200:     i64.atomic.rmw.and offset=120
+000204:     drop
+000205:     local.get $var0
+000207:     i32.const 28
+000209:     i32.atomic.rmw8.and_u offset=128
+00020e:     drop
+00020f:     local.get $var0
+000211:     i32.const 31
+000213:     i32.atomic.rmw16.and_u offset=136
+000218:     drop
+000219:     local.get $var0
+00021b:     local.get $var1
+00021d:     i64.atomic.rmw8.and_u offset=144
+000222:     drop
+000223:     local.get $var0
+000225:     local.get $var1
+000227:     i64.atomic.rmw16.and_u offset=152
+00022c:     drop
+00022d:     local.get $var0
+00022f:     local.get $var1
+000231:     i64.atomic.rmw32.and_u offset=160
+000236:     drop
+000237:     local.get $var0
+000239:     i32.const 43
+00023b:     i32.atomic.rmw.or offset=168
+000240:     drop
+000241:     local.get $var0
+000243:     local.get $var1
+000245:     i64.atomic.rmw.or offset=176
+00024a:     drop
+00024b:     local.get $var0
+00024d:     i32.const 49
+00024f:     i32.atomic.rmw8.or_u offset=184
+000254:     drop
+000255:     local.get $var0
+000257:     i32.const 52
+000259:     i32.atomic.rmw16.or_u offset=192
+00025e:     drop
+00025f:     local.get $var0
+000261:     local.get $var1
+000263:     i64.atomic.rmw8.or_u offset=200
+000268:     drop
+000269:     local.get $var0
+00026b:     local.get $var1
+00026d:     i64.atomic.rmw16.or_u offset=208
+000272:     drop
+000273:     local.get $var0
+000275:     local.get $var1
+000277:     i64.atomic.rmw32.or_u offset=216
+00027c:     drop
+00027d:     local.get $var0
+00027f:     i32.const 64
+000282:     i32.atomic.rmw.xor offset=224
+000287:     drop
+000288:     local.get $var0
+00028a:     local.get $var1
+00028c:     i64.atomic.rmw.xor offset=232
+000291:     drop
+000292:     local.get $var0
+000294:     i32.const 70
+000297:     i32.atomic.rmw8.xor_u offset=240
+00029c:     drop
+00029d:     local.get $var0
+00029f:     i32.const 73
+0002a2:     i32.atomic.rmw16.xor_u offset=248
+0002a7:     drop
+0002a8:     local.get $var0
+0002aa:     local.get $var1
+0002ac:     i64.atomic.rmw8.xor_u offset=256
+0002b1:     drop
+0002b2:     local.get $var0
+0002b4:     local.get $var1
+0002b6:     i64.atomic.rmw16.xor_u offset=264
+0002bb:     drop
+0002bc:     local.get $var0
+0002be:     local.get $var1
+0002c0:     i64.atomic.rmw32.xor_u offset=272
+0002c5:     drop
+0002c6:     local.get $var0
+0002c8:     i32.const 85
+0002cb:     i32.atomic.rmw.xchg offset=280
+0002d0:     drop
+0002d1:     local.get $var0
+0002d3:     local.get $var1
+0002d5:     i64.atomic.rmw.xchg offset=288
+0002da:     drop
+0002db:     local.get $var0
+0002dd:     i32.const 91
+0002e0:     i32.atomic.rmw8.xchg_u offset=296
+0002e5:     drop
+0002e6:     local.get $var0
+0002e8:     i32.const 94
+0002eb:     i32.atomic.rmw16.xchg_u offset=304
+0002f0:     drop
+0002f1:     local.get $var0
+0002f3:     local.get $var1
+0002f5:     i64.atomic.rmw8.xchg_u offset=312
+0002fa:     drop
+0002fb:     local.get $var0
+0002fd:     local.get $var1
+0002ff:     i64.atomic.rmw16.xchg_u offset=320
+000304:     drop
+000305:     local.get $var0
+000307:     local.get $var1
+000309:     i64.atomic.rmw32.xchg_u offset=328
+00030e:     drop
+00030f:     local.get $var0
+000311:     i32.const 106
+000314:     i32.const 107
+000317:     i32.atomic.rmw.cmpxchg offset=336
+00031c:     drop
+00031d:     local.get $var0
+00031f:     local.get $var1
+000321:     i64.const -43001
+000325:     i64.atomic.rmw.cmpxchg offset=344
+00032a:     drop
+00032b:     local.get $var0
+00032d:     i32.const 112
+000330:     i32.const 113
+000333:     i32.atomic.rmw8.cmpxchg_u offset=352
+000338:     drop
+000339:     local.get $var0
+00033b:     i32.const 115
+00033e:     i32.const 116
+000341:     i32.atomic.rmw16.cmpxchg_u offset=360
+000346:     drop
+000347:     local.get $var0
+000349:     local.get $var1
+00034b:     i64.const -46001
+00034f:     i64.atomic.rmw8.cmpxchg_u offset=368
+000354:     drop
+000355:     local.get $var0
+000357:     local.get $var1
+000359:     i64.const -47001
+00035d:     i64.atomic.rmw16.cmpxchg_u offset=376
+000362:     drop
+000363:     local.get $var0
+000365:     local.get $var1
+000367:     i64.const -48001
+00036b:     i64.atomic.rmw32.cmpxchg_u offset=384
+000370:     drop
+000371:   )
+000373:   (func $func3 (param $var0 i64) (param $var1 i64) (result i64)
+000374:     local.get $var0
+000376:     i32.atomic.load offset=4294967296
+00037f:     drop
+000380:     local.get $var0
+000382:     i64.atomic.load offset=4294967304
+00038b:     drop
+00038c:     local.get $var0
+00038e:     i64.atomic.load32_u offset=18446744073709551612
+00039c:     drop
+00039d:     local.get $var0
+00039f:     local.get $var1
+0003a1:     i64.atomic.store offset=8589934592
+0003aa:     local.get $var0
+0003ac:     i32.const 1
+0003ae:     i32.atomic.store16 offset=4294967298
+0003b7:     local.get $var0
+0003b9:     i32.const 1
+0003bb:     i32.atomic.rmw.add offset=4294967296
+0003c4:     drop
+0003c5:     local.get $var0
+0003c7:     local.get $var1
+0003c9:     i64.atomic.rmw8.xchg_u offset=4294967297
+0003d2:     drop
+0003d3:     local.get $var0
+0003d5:     local.get $var1
+0003d7:     i64.const 0
+0003d9:     i64.atomic.rmw.cmpxchg offset=1099511627776
+0003e3:   )
+0003e5:   (func $func4 (param $var0 i32) (result i32)
+0003e6:     local.get $var0
+0003e8:     i32.atomic.load
+0003ed:     drop
+0003ee:     local.get $var0
+0003f0:     i64.const 5
+0003f2:     i64.atomic.store32 offset=4
+0003f7:     local.get $var0
+0003f9:     i32.const 1
+0003fb:     i32.atomic.rmw16.sub_u offset=8
+000400:     drop
+000401:     local.get $var0
+000403:     i64.const 0
+000405:     i64.const 1
+000407:     i64.atomic.rmw32.cmpxchg_u offset=8
+00040c:     drop
+00040d:     local.get $var0
+00040f:     i32.const 1
+000411:     i32.atomic.rmw8.and_u offset=12
+000416:   )
+000418:   (func $func5 (param $var0 i32) (result i32)
+000419:     local.get $var0
+00041b:     i64.atomic.load16_u offset=2
+000420:     drop
+000421:     local.get $var0
+000423:     i32.const 7
+000425:     i32.atomic.store8 offset=1
+00042a:     local.get $var0
+00042c:     i64.const 1
+00042e:     i64.atomic.rmw.or offset=8
+000433:     drop
+000434:     local.get $var0
+000436:     i32.const 0
+000438:     i32.const 1
+00043a:     i32.atomic.rmw.cmpxchg offset=16
+00043f:   )
+000440: )

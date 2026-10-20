@@ -1,0 +1,10 @@
+
+relaxed.wasm:	file format wasm 0x1
+module name: <relaxed>
+
+Sections:
+
+     Type start=0x0000000a end=0x00000012 (size=0x00000008) count: 1
+ Function start=0x00000014 end=0x00000017 (size=0x00000003) count: 2
+     Code start=0x0000001a end=0x000000eb (size=0x000000d1) count: 2
+   Custom start=0x000000ed end=0x00000131 (size=0x00000044) "name"

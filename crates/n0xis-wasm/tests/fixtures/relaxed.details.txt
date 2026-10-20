@@ -1,0 +1,26 @@
+
+relaxed.wasm:	file format wasm 0x1
+module name: <relaxed>
+
+Section Details:
+
+Type[1]:
+ - type[0] (v128, v128, v128) -> v128
+Function[2]:
+ - func[0] sig=0 <each>
+ - func[1] sig=0 <chained>
+Code[2]:
+ - func[0] size=171 <each>
+ - func[1] size=34 <chained>
+Custom:
+ - name: "name"
+ - module <relaxed>
+ - func[0] <each>
+ - func[1] <chained>
+ - func[0] local[0] <a>
+ - func[0] local[1] <b>
+ - func[0] local[2] <c>
+ - func[1] local[0] <a>
+ - func[1] local[1] <b>
+ - func[1] local[2] <c>
+ - type[0] <lanes>

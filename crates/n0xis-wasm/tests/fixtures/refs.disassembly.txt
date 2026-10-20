@@ -1,0 +1,100 @@
+
+refs.wasm:	file format wasm 0x1
+module name: <refs>
+
+Code Disassembly:
+
+0000ab func[1] <add>:
+ 0000ac: 20 00                      | local.get 0 <a>
+ 0000ae: 20 01                      | local.get 1 <b>
+ 0000b0: 6a                         | i32.add
+ 0000b1: 0b                         | end
+0000b3 func[2] <double>:
+ 0000b4: 20 00                      | local.get 0 <n>
+ 0000b6: 41 02                      | i32.const 2
+ 0000b8: 6c                         | i32.mul
+ 0000b9: 0b                         | end
+0000bb func[3] <triple>:
+ 0000bc: 20 00                      | local.get 0 <n>
+ 0000be: 41 03                      | i32.const 3
+ 0000c0: 6c                         | i32.mul
+ 0000c1: 0b                         | end
+0000c3 func[4] <countdown>:
+ 0000c4: 20 00                      | local.get 0 <n>
+ 0000c6: 45                         | i32.eqz
+ 0000c7: 04 7f                      | if i32
+ 0000c9: 41 00                      |   i32.const 0
+ 0000cb: 05                         | else
+ 0000cc: 20 00                      |   local.get 0 <n>
+ 0000ce: 41 01                      |   i32.const 1
+ 0000d0: 6b                         |   i32.sub
+ 0000d1: 12 04                      |   return_call 4
+ 0000d3: 0b                         | end
+ 0000d4: 0b                         | end
+0000d6 func[5] <forward>:
+ 0000d7: 20 00                      | local.get 0 <n>
+ 0000d9: 12 00                      | return_call 0
+ 0000db: 0b                         | end
+0000dd func[6] <indirect>:
+ 0000de: 20 01                      | local.get 1 <slot>
+ 0000e0: 45                         | i32.eqz
+ 0000e1: 04 40                      | if
+ 0000e3: 20 00                      |   local.get 0 <n>
+ 0000e5: 41 00                      |   i32.const 0
+ 0000e7: 13 01 00                   |   return_call_indirect 1 0
+ 0000ea: 0b                         | end
+ 0000eb: 20 00                      | local.get 0 <n>
+ 0000ed: 20 01                      | local.get 1 <slot>
+ 0000ef: 13 01 01                   | return_call_indirect 1 1
+ 0000f2: 0b                         | end
+0000f4 func[7] <apply>:
+ 0000f5: 20 01                      | local.get 1 <n>
+ 0000f7: 20 00                      | local.get 0 <f>
+ 0000f9: 14 01                      | call_ref (ref null 1)
+ 0000fb: 20 00                      | local.get 0 <f>
+ 0000fd: 15 01                      | return_call_ref <invalid>
+ 0000ff: 0b                         | end
+000101 func[8] <pick>:
+ 000102: 01 63 01                   | local[5] type=(ref null 1)
+ 000105: 01 64 01                   | local[6] type=(ref 1)
+ 000108: 01 64 70                   | local[7] type=(ref func)
+ 00010b: 01 64 6f                   | local[8] type=(ref extern)
+ 00010e: 02 40                      | block
+ 000110: 20 00                      |   local.get 0 <maybe>
+ 000112: d5 00                      |   br_on_null 0
+ 000114: 21 06                      |   local.set 6 <known>
+ 000116: 0b                         | end
+ 000117: 02 64 01                   | block (ref 1)
+ 00011a: 20 00                      |   local.get 0 <maybe>
+ 00011c: d6 00                      |   br_on_non_null 0
+ 00011e: 20 01                      |   local.get 1 <sure>
+ 000120: 0b                         | end
+ 000121: 21 06                      | local.set 6 <known>
+ 000123: 20 00                      | local.get 0 <maybe>
+ 000125: d4                         | ref.as_non_null
+ 000126: 21 06                      | local.set 6 <known>
+ 000128: 20 00                      | local.get 0 <maybe>
+ 00012a: d0 01                      | ref.null <invalid>
+ 00012c: 20 04                      | local.get 4 <n>
+ 00012e: 1c 01 63 01                | select (ref null 1)
+ 000132: 21 05                      | local.set 5 <chosen>
+ 000134: d2 02                      | ref.func 2
+ 000136: 20 02                      | local.get 2 <some>
+ 000138: 20 04                      | local.get 4 <n>
+ 00013a: 1c 01 64 70                | select (ref func)
+ 00013e: 21 07                      | local.set 7 <any>
+ 000140: d2 03                      | ref.func 3
+ 000142: d0 70                      | ref.null func
+ 000144: 20 04                      | local.get 4 <n>
+ 000146: 1c 01 70                   | select funcref
+ 000149: 1a                         | drop
+ 00014a: 20 03                      | local.get 3 <outside>
+ 00014c: 21 08                      | local.set 8 <kept>
+ 00014e: 41 00                      | i32.const 0
+ 000150: 41 00                      | i32.const 0
+ 000152: 41 01                      | i32.const 1
+ 000154: fc 0e 01 02                | table.copy 1 2
+ 000158: 20 04                      | local.get 4 <n>
+ 00015a: 20 06                      | local.get 6 <known>
+ 00015c: 14 01                      | call_ref (ref null 1)
+ 00015e: 0b                         | end

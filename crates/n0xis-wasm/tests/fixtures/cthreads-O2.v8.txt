@@ -1,0 +1,238 @@
+000000: (module
+000045:   (memory $env.memory (;0;) (import "env" "memory") 2 4 shared)
+000076:   (global $__stack_pointer (;0;) (export "__stack_pointer") (mut i32) (i32.const 65536))
+00007d:   (global $__tls_base (;1;) (export "__tls_base") (mut i32) (i32.const 0))
+000082:   (global $__tls_size (;2;) (export "__tls_size") i32 (i32.const 16))
+000087:   (global $__tls_align (;3;) (export "__tls_align") i32 (i32.const 8))
+00008c:   (global $__memory_base (;4;) (export "__memory_base") i32 (i32.const 0))
+000091:   (global $__table_base (;5;) (export "__table_base") i32 (i32.const 1))
+000096:   (global $flag8 (;6;) (export "flag8") i32 (i32.const 65600))
+00009d:   (global $count16 (;7;) (export "count16") i32 (i32.const 65552))
+0000a4:   (global $count32 (;8;) (export "count32") i32 (i32.const 65556))
+0000ab:   (global $count64 (;9;) (export "count64") i32 (i32.const 65560))
+0000b2:   (global $per_thread (;10;) (export "per_thread") i32 (i32.const 0))
+0000b7:   (global $per_thread_total (;11;) (export "per_thread_total") i32 (i32.const 8))
+0000bc:   (global $shared_table (;12;) (export "shared_table") i32 (i32.const 65568))
+0000c3:   (global $__dso_handle (;13;) (export "__dso_handle") i32 (i32.const 65536))
+0000ca:   (global $__data_end (;14;) (export "__data_end") i32 (i32.const 65608))
+0000d1:   (global $__rodata_start (;15;) (export "__rodata_start") i32 (i32.const 65536))
+0000d8:   (global $__rodata_end (;16;) (export "__rodata_end") i32 (i32.const 65552))
+0000df:   (global $__stack_low (;17;) (export "__stack_low") i32 (i32.const 0))
+0000e4:   (global $__stack_high (;18;) (export "__stack_high") i32 (i32.const 65536))
+0000eb:   (global $__global_base (;19;) (export "__global_base") i32 (i32.const 65536))
+0000f2:   (global $__heap_base (;20;) (export "__heap_base") i32 (i32.const 65616))
+0000f9:   (global $__heap_end (;21;) (export "__heap_end") i32 (i32.const 131072))
+000100:   (global $__wasm_first_page_end (;22;) (export "__wasm_first_page_end") i32 (i32.const 65536))
+000107:   (global $__wasm_init_memory_flag (;23;) (export "__wasm_init_memory_flag") i32 (i32.const 65604))
+000396:   (start $__wasm_init_memory)
+00039f:   (func $__wasm_call_ctors (;0;) (export "__wasm_call_ctors")
+0003a0:   )
+0003a2:   (func $__wasm_init_tls (;1;) (export "__wasm_init_tls") (param $var0 i32)
+0003a3:     local.get $var0
+0003a5:     global.set $__tls_base
+0003a7:     local.get $var0
+0003a9:     i32.const 0
+0003ab:     i32.const 16
+0003ad:     memory.init 2
+0003b1:   )
+0003b3:   (func $__wasm_init_memory (;2;) (export "__wasm_init_memory")
+0003b4:     block $label2
+0003b6:       block $label1
+0003b8:         block $label0
+0003ba:           i32.const 65604
+0003be:           i32.const 0
+0003c0:           i32.const 1
+0003c2:           i32.atomic.rmw.cmpxchg
+0003c6:           br_table $label0 $label1 $label2
+0003cb:         end $label0
+0003cc:         i32.const 65536
+0003d0:         i32.const 0
+0003d2:         i32.const 16
+0003d4:         memory.init 0
+0003d8:         i32.const 65552
+0003dc:         i32.const 0
+0003de:         i32.const 32
+0003e0:         memory.init 1
+0003e4:         i32.const 65584
+0003e8:         i32.const 65584
+0003ec:         global.set $__tls_base
+0003ee:         i32.const 0
+0003f0:         i32.const 16
+0003f2:         memory.init 2
+0003f6:         i32.const 65600
+0003fa:         i32.const 0
+0003fc:         i32.const 1
+0003fe:         memory.fill
+000401:         i32.const 65604
+000405:         i32.const 2
+000407:         i32.atomic.store
+00040b:         i32.const 65604
+00040f:         i32.const -1
+000411:         memory.atomic.notify
+000415:         drop
+000416:         br $label2
+000418:       end $label1
+000419:       i32.const 65604
+00041d:       i32.const 1
+00041f:       i64.const -1
+000421:       memory.atomic.wait32
+000425:       drop
+000426:     end $label2
+000427:     data.drop 0
+00042a:     data.drop 1
+00042d:   )
+00042f:   (func $load8 (;3;) (export "load8") (result i32)
+000430:     i32.const 0
+000432:     i32.atomic.load8_u offset=65600
+00043a:   )
+00043c:   (func $load16 (;4;) (export "load16") (result i32)
+00043d:     i32.const 0
+00043f:     i32.atomic.load16_u offset=65552
+000447:   )
+000449:   (func $load32 (;5;) (export "load32") (result i32)
+00044a:     i32.const 0
+00044c:     i32.atomic.load offset=65556
+000454:   )
+000456:   (func $load64 (;6;) (export "load64") (result i64)
+000457:     i32.const 0
+000459:     i64.atomic.load offset=65560
+000461:   )
+000463:   (func $store8 (;7;) (export "store8") (param $var0 i32)
+000464:     i32.const 0
+000466:     local.get $var0
+000468:     i32.atomic.store8 offset=65600
+000470:   )
+000472:   (func $store16 (;8;) (export "store16") (param $var0 i32)
+000473:     i32.const 0
+000475:     local.get $var0
+000477:     i32.atomic.store16 offset=65552
+00047f:   )
+000481:   (func $store32 (;9;) (export "store32") (param $var0 i32)
+000482:     i32.const 0
+000484:     local.get $var0
+000486:     i32.atomic.store offset=65556
+00048e:   )
+000490:   (func $store64 (;10;) (export "store64") (param $var0 i64)
+000491:     i32.const 0
+000493:     local.get $var0
+000495:     i64.atomic.store offset=65560
+00049d:   )
+00049f:   (func $add8 (;11;) (export "add8") (param $var0 i32) (result i32)
+0004a0:     i32.const 0
+0004a2:     local.get $var0
+0004a4:     i32.atomic.rmw8.add_u offset=65600
+0004ac:   )
+0004ae:   (func $sub16 (;12;) (export "sub16") (param $var0 i32) (result i32)
+0004af:     i32.const 0
+0004b1:     local.get $var0
+0004b3:     i32.atomic.rmw16.sub_u offset=65552
+0004bb:   )
+0004bd:   (func $and32 (;13;) (export "and32") (param $var0 i32) (result i32)
+0004be:     i32.const 0
+0004c0:     local.get $var0
+0004c2:     i32.atomic.rmw.and offset=65556
+0004ca:   )
+0004cc:   (func $or64 (;14;) (export "or64") (param $var0 i64) (result i64)
+0004cd:     i32.const 0
+0004cf:     local.get $var0
+0004d1:     i64.atomic.rmw.or offset=65560
+0004d9:   )
+0004db:   (func $xor32 (;15;) (export "xor32") (param $var0 i32) (result i32)
+0004dc:     i32.const 0
+0004de:     local.get $var0
+0004e0:     i32.atomic.rmw.xor offset=65556
+0004e8:   )
+0004ea:   (func $add64 (;16;) (export "add64") (param $var0 i64) (result i64)
+0004eb:     i32.const 0
+0004ed:     local.get $var0
+0004ef:     i64.atomic.rmw.add offset=65560
+0004f7:   )
+0004f9:   (func $exchange16 (;17;) (export "exchange16") (param $var0 i32) (result i32)
+0004fa:     i32.const 0
+0004fc:     local.get $var0
+0004fe:     i32.atomic.rmw16.xchg_u offset=65552
+000506:   )
+000508:   (func $exchange64 (;18;) (export "exchange64") (param $var0 i64) (result i64)
+000509:     i32.const 0
+00050b:     local.get $var0
+00050d:     i64.atomic.rmw.xchg offset=65560
+000515:   )
+000517:   (func $swap8 (;19;) (export "swap8") (param $var0 i32) (param $var1 i32) (result i32)
+000518:     i32.const 0
+00051a:     local.get $var0
+00051c:     local.get $var1
+00051e:     i32.atomic.rmw8.cmpxchg_u offset=65600
+000526:   )
+000528:   (func $swap32 (;20;) (export "swap32") (param $var0 i32) (param $var1 i32) (result i32)
+000529:     i32.const 0
+00052b:     local.get $var0
+00052d:     local.get $var1
+00052f:     i32.atomic.rmw.cmpxchg offset=65556
+000537:   )
+000539:   (func $swap64 (;21;) (export "swap64") (param $var0 i64) (param $var1 i64) (result i64)
+00053a:     i32.const 0
+00053c:     local.get $var0
+00053e:     local.get $var1
+000540:     i64.atomic.rmw.cmpxchg offset=65560
+000548:   )
+00054a:   (func $fence (;22;) (export "fence")
+00054b:     atomic.fence
+00054e:   )
+000550:   (func $wait32 (;23;) (export "wait32") (param $var0 i32) (param $var1 i32) (param $var2 i64) (result i32)
+000551:     local.get $var0
+000553:     local.get $var1
+000555:     local.get $var2
+000557:     memory.atomic.wait32
+00055b:   )
+00055d:   (func $wait64 (;24;) (export "wait64") (param $var0 i32) (param $var1 i64) (param $var2 i64) (result i32)
+00055e:     local.get $var0
+000560:     local.get $var1
+000562:     local.get $var2
+000564:     memory.atomic.wait64
+000568:   )
+00056a:   (func $notify (;25;) (export "notify") (param $var0 i32) (param $var1 i32) (result i32)
+00056b:     local.get $var0
+00056d:     local.get $var1
+00056f:     memory.atomic.notify
+000573:   )
+000575:   (func $bump_thread_local (;26;) (export "bump_thread_local") (param $var0 i32) (result i32)
+000575:     (local $var1 i32)
+000575:     (local $var2 i32)
+000578:     global.get $__tls_base
+00057e:     local.tee $var1
+000580:     i32.const 0
+000586:     i32.add
+000587:     local.tee $var2
+000589:     local.get $var2
+00058b:     i32.load
+00058e:     local.get $var0
+000590:     i32.add
+000591:     local.tee $var2
+000593:     i32.store
+000596:     local.get $var1
+000598:     i32.const 8
+00059e:     i32.add
+00059f:     local.tee $var1
+0005a1:     local.get $var1
+0005a3:     i64.load
+0005a6:     local.get $var0
+0005a8:     i64.extend_i32_u
+0005a9:     i64.add
+0005aa:     i64.store
+0005ad:     local.get $var0
+0005af:     i32.const 3
+0005b1:     i32.and
+0005b2:     i32.const 2
+0005b4:     i32.shl
+0005b5:     local.tee $var0
+0005b7:     i32.load offset=65568
+0005be:     local.get $var2
+0005c0:     i32.add
+0005c1:     local.get $var0
+0005c3:     i32.load offset=65536
+0005ca:     i32.add
+0005cb:   )
+0005cf:   (data "\01\00\00\00\02\00\00\00\03\00\00\00\04\00\00\00")
+0005e1:   (data "\03\00\00\00\07\00\00\00\89gE#\01\00\00\00\0a\00\00\00\14\00\00\00\1e\00\00\00(\00\00\00")
+000603:   (data "\05\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+000615: )

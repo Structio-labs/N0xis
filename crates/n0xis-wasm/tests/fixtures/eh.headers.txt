@@ -1,0 +1,13 @@
+
+eh.wasm:	file format wasm 0x1
+module name: <eh>
+
+Sections:
+
+     Type start=0x0000000a end=0x0000002f (size=0x00000025) count: 8
+   Import start=0x00000031 end=0x00000041 (size=0x00000010) count: 1
+ Function start=0x00000043 end=0x0000004a (size=0x00000007) count: 6
+      Tag start=0x0000004c end=0x00000055 (size=0x00000009) count: 4
+   Export start=0x00000057 end=0x00000065 (size=0x0000000e) count: 2
+     Code start=0x00000068 end=0x00000152 (size=0x000000ea) count: 6
+   Custom start=0x00000155 end=0x00000233 (size=0x000000de) "name"

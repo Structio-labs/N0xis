@@ -8,13 +8,39 @@
 
 use std::path::PathBuf;
 
+pub mod memarg;
 pub mod planted;
 
 /// Every fixture, by the stem of its file names.
-pub const FIXTURES: [&str; 5] = ["ctarget-O0", "ctarget-O2", "core", "simd", "shapes"];
+pub const FIXTURES: [&str; 14] = [
+    "ctarget-O0",
+    "ctarget-O2",
+    "core",
+    "simd",
+    "shapes",
+    "threads",
+    "refs",
+    "gc",
+    "eh",
+    "eh-legacy",
+    "relaxed",
+    "cthreads-O2",
+    "ceh-legacy-O2",
+    "ceh-exnref-O2",
+];
 
 /// The fixtures written as text, whose every instruction the text states.
-pub const TEXT_FIXTURES: [&str; 3] = ["core", "simd", "shapes"];
+pub const TEXT_FIXTURES: [&str; 9] = ["core", "simd", "shapes", "threads", "refs", "gc", "eh", "eh-legacy", "relaxed"];
+
+/// The fixtures wabt cannot read at all: for each, `build.sh` records what
+/// wabt said (`<stem>.wabt-refuses.txt`) in place of its three recordings.
+/// wabt 1.0.42 reads no garbage-collected type.
+pub const WABT_REFUSES: [&str; 1] = ["gc"];
+
+/// Whether wabt read this fixture, so that its three recordings exist.
+pub fn wabt_reads(stem: &str) -> bool {
+    !WABT_REFUSES.contains(&stem)
+}
 
 pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")

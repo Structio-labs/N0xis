@@ -1,0 +1,859 @@
+000000: (module
+00001a:   (memory $memory0 1)
+000022:   (func $func0 (param $var0 i32) (param $var1 i64) (param $var2 f32) (param $var3 f64) (param $var4 v128)
+000023:     local.get $var0
+000025:     v128.load offset=16 align=1
+000029:     drop
+00002a:     local.get $var0
+00002c:     v128.load8x8_s offset=32
+000030:     drop
+000031:     local.get $var0
+000033:     v128.load8x8_u offset=48 align=1
+000037:     drop
+000038:     local.get $var0
+00003a:     v128.load16x4_s offset=64
+00003e:     drop
+00003f:     local.get $var0
+000041:     v128.load16x4_u offset=80 align=1
+000045:     drop
+000046:     local.get $var0
+000048:     v128.load32x2_s offset=96
+00004c:     drop
+00004d:     local.get $var0
+00004f:     v128.load32x2_u offset=112 align=1
+000053:     drop
+000054:     local.get $var0
+000056:     v128.load8_splat offset=128
+00005b:     drop
+00005c:     local.get $var0
+00005e:     v128.load16_splat offset=144 align=1
+000063:     drop
+000064:     local.get $var0
+000066:     v128.load32_splat offset=160
+00006b:     drop
+00006c:     local.get $var0
+00006e:     v128.load64_splat offset=176 align=1
+000073:     drop
+000074:     local.get $var0
+000076:     local.get $var4
+000078:     v128.store offset=192
+00007d:     v128.const i32x4 0x03020100 0x07060504 0x0B0A0908 0x0F0E0D0C
+00008f:     drop
+000090:     v128.const i32x4 0xFFFFFFFF 0x80000000 0x00000000 0x7FFFFFFF
+0000a2:     drop
+0000a3:     local.get $var4
+0000a5:     local.get $var4
+0000a7:     i8x16.shuffle 0 17 2 19 4 21 6 23 8 25 10 27 12 29 14 31
+0000b9:     drop
+0000ba:     local.get $var4
+0000bc:     local.get $var4
+0000be:     i8x16.swizzle
+0000c0:     drop
+0000c1:     local.get $var0
+0000c3:     i8x16.splat
+0000c5:     drop
+0000c6:     local.get $var0
+0000c8:     i16x8.splat
+0000ca:     drop
+0000cb:     local.get $var0
+0000cd:     i32x4.splat
+0000cf:     drop
+0000d0:     local.get $var1
+0000d2:     i64x2.splat
+0000d4:     drop
+0000d5:     local.get $var2
+0000d7:     f32x4.splat
+0000d9:     drop
+0000da:     local.get $var3
+0000dc:     f64x2.splat
+0000de:     drop
+0000df:     local.get $var4
+0000e1:     i8x16.extract_lane_s 14
+0000e4:     drop
+0000e5:     local.get $var4
+0000e7:     i8x16.extract_lane_u 3
+0000ea:     drop
+0000eb:     local.get $var4
+0000ed:     local.get $var0
+0000ef:     i8x16.replace_lane 8
+0000f2:     drop
+0000f3:     local.get $var4
+0000f5:     i16x8.extract_lane_s 5
+0000f8:     drop
+0000f9:     local.get $var4
+0000fb:     i16x8.extract_lane_u 2
+0000fe:     drop
+0000ff:     local.get $var4
+000101:     local.get $var0
+000103:     i16x8.replace_lane 7
+000106:     drop
+000107:     local.get $var4
+000109:     i32x4.extract_lane 0
+00010c:     drop
+00010d:     local.get $var4
+00010f:     local.get $var0
+000111:     i32x4.replace_lane 1
+000114:     drop
+000115:     local.get $var4
+000117:     i64x2.extract_lane 0
+00011a:     drop
+00011b:     local.get $var4
+00011d:     local.get $var1
+00011f:     i64x2.replace_lane 1
+000122:     drop
+000123:     local.get $var4
+000125:     f32x4.extract_lane 0
+000128:     drop
+000129:     local.get $var4
+00012b:     local.get $var2
+00012d:     f32x4.replace_lane 1
+000130:     drop
+000131:     local.get $var4
+000133:     f64x2.extract_lane 0
+000136:     drop
+000137:     local.get $var4
+000139:     local.get $var3
+00013b:     f64x2.replace_lane 1
+00013e:     drop
+00013f:     local.get $var4
+000141:     local.get $var4
+000143:     i8x16.eq
+000145:     drop
+000146:     local.get $var4
+000148:     local.get $var4
+00014a:     i8x16.ne
+00014c:     drop
+00014d:     local.get $var4
+00014f:     local.get $var4
+000151:     i8x16.lt_s
+000153:     drop
+000154:     local.get $var4
+000156:     local.get $var4
+000158:     i8x16.lt_u
+00015a:     drop
+00015b:     local.get $var4
+00015d:     local.get $var4
+00015f:     i8x16.gt_s
+000161:     drop
+000162:     local.get $var4
+000164:     local.get $var4
+000166:     i8x16.gt_u
+000168:     drop
+000169:     local.get $var4
+00016b:     local.get $var4
+00016d:     i8x16.le_s
+00016f:     drop
+000170:     local.get $var4
+000172:     local.get $var4
+000174:     i8x16.le_u
+000176:     drop
+000177:     local.get $var4
+000179:     local.get $var4
+00017b:     i8x16.ge_s
+00017d:     drop
+00017e:     local.get $var4
+000180:     local.get $var4
+000182:     i8x16.ge_u
+000184:     drop
+000185:     local.get $var4
+000187:     local.get $var4
+000189:     i16x8.eq
+00018b:     drop
+00018c:     local.get $var4
+00018e:     local.get $var4
+000190:     i16x8.ne
+000192:     drop
+000193:     local.get $var4
+000195:     local.get $var4
+000197:     i16x8.lt_s
+000199:     drop
+00019a:     local.get $var4
+00019c:     local.get $var4
+00019e:     i16x8.lt_u
+0001a0:     drop
+0001a1:     local.get $var4
+0001a3:     local.get $var4
+0001a5:     i16x8.gt_s
+0001a7:     drop
+0001a8:     local.get $var4
+0001aa:     local.get $var4
+0001ac:     i16x8.gt_u
+0001ae:     drop
+0001af:     local.get $var4
+0001b1:     local.get $var4
+0001b3:     i16x8.le_s
+0001b5:     drop
+0001b6:     local.get $var4
+0001b8:     local.get $var4
+0001ba:     i16x8.le_u
+0001bc:     drop
+0001bd:     local.get $var4
+0001bf:     local.get $var4
+0001c1:     i16x8.ge_s
+0001c3:     drop
+0001c4:     local.get $var4
+0001c6:     local.get $var4
+0001c8:     i16x8.ge_u
+0001ca:     drop
+0001cb:     local.get $var4
+0001cd:     local.get $var4
+0001cf:     i32x4.eq
+0001d1:     drop
+0001d2:     local.get $var4
+0001d4:     local.get $var4
+0001d6:     i32x4.ne
+0001d8:     drop
+0001d9:     local.get $var4
+0001db:     local.get $var4
+0001dd:     i32x4.lt_s
+0001df:     drop
+0001e0:     local.get $var4
+0001e2:     local.get $var4
+0001e4:     i32x4.lt_u
+0001e6:     drop
+0001e7:     local.get $var4
+0001e9:     local.get $var4
+0001eb:     i32x4.gt_s
+0001ed:     drop
+0001ee:     local.get $var4
+0001f0:     local.get $var4
+0001f2:     i32x4.gt_u
+0001f4:     drop
+0001f5:     local.get $var4
+0001f7:     local.get $var4
+0001f9:     i32x4.le_s
+0001fb:     drop
+0001fc:     local.get $var4
+0001fe:     local.get $var4
+000200:     i32x4.le_u
+000202:     drop
+000203:     local.get $var4
+000205:     local.get $var4
+000207:     i32x4.ge_s
+000209:     drop
+00020a:     local.get $var4
+00020c:     local.get $var4
+00020e:     i32x4.ge_u
+000210:     drop
+000211:     local.get $var4
+000213:     local.get $var4
+000215:     f32x4.eq
+000217:     drop
+000218:     local.get $var4
+00021a:     local.get $var4
+00021c:     f32x4.ne
+00021e:     drop
+00021f:     local.get $var4
+000221:     local.get $var4
+000223:     f32x4.lt
+000225:     drop
+000226:     local.get $var4
+000228:     local.get $var4
+00022a:     f32x4.gt
+00022c:     drop
+00022d:     local.get $var4
+00022f:     local.get $var4
+000231:     f32x4.le
+000233:     drop
+000234:     local.get $var4
+000236:     local.get $var4
+000238:     f32x4.ge
+00023a:     drop
+00023b:     local.get $var4
+00023d:     local.get $var4
+00023f:     f64x2.eq
+000241:     drop
+000242:     local.get $var4
+000244:     local.get $var4
+000246:     f64x2.ne
+000248:     drop
+000249:     local.get $var4
+00024b:     local.get $var4
+00024d:     f64x2.lt
+00024f:     drop
+000250:     local.get $var4
+000252:     local.get $var4
+000254:     f64x2.gt
+000256:     drop
+000257:     local.get $var4
+000259:     local.get $var4
+00025b:     f64x2.le
+00025d:     drop
+00025e:     local.get $var4
+000260:     local.get $var4
+000262:     f64x2.ge
+000264:     drop
+000265:     local.get $var4
+000267:     v128.not
+000269:     drop
+00026a:     local.get $var4
+00026c:     local.get $var4
+00026e:     v128.and
+000270:     drop
+000271:     local.get $var4
+000273:     local.get $var4
+000275:     v128.andnot
+000277:     drop
+000278:     local.get $var4
+00027a:     local.get $var4
+00027c:     v128.or
+00027e:     drop
+00027f:     local.get $var4
+000281:     local.get $var4
+000283:     v128.xor
+000285:     drop
+000286:     local.get $var4
+000288:     local.get $var4
+00028a:     local.get $var4
+00028c:     v128.bitselect
+00028e:     drop
+00028f:     local.get $var4
+000291:     v128.any_true
+000293:     drop
+000294:     local.get $var0
+000296:     local.get $var4
+000298:     v128.load8_lane offset=1360 15
+00029e:     drop
+00029f:     local.get $var0
+0002a1:     local.get $var4
+0002a3:     v128.load16_lane offset=1376 2
+0002a9:     drop
+0002aa:     local.get $var0
+0002ac:     local.get $var4
+0002ae:     v128.load32_lane offset=1392 align=1 1
+0002b4:     drop
+0002b5:     local.get $var0
+0002b7:     local.get $var4
+0002b9:     v128.load64_lane offset=1408 0
+0002bf:     drop
+0002c0:     local.get $var0
+0002c2:     local.get $var4
+0002c4:     v128.store8_lane offset=1424 11
+0002ca:     local.get $var0
+0002cc:     local.get $var4
+0002ce:     v128.store16_lane offset=1440 6
+0002d4:     local.get $var0
+0002d6:     local.get $var4
+0002d8:     v128.store32_lane offset=1456 align=1 1
+0002de:     local.get $var0
+0002e0:     local.get $var4
+0002e2:     v128.store64_lane offset=1472 0
+0002e8:     local.get $var0
+0002ea:     v128.load32_zero offset=1488 align=1
+0002ef:     drop
+0002f0:     local.get $var0
+0002f2:     v128.load64_zero offset=1504
+0002f7:     drop
+0002f8:     local.get $var4
+0002fa:     f32x4.demote_f64x2_zero
+0002fc:     drop
+0002fd:     local.get $var4
+0002ff:     f64x2.promote_low_f32x4
+000301:     drop
+000302:     local.get $var4
+000304:     i8x16.abs
+000306:     drop
+000307:     local.get $var4
+000309:     i8x16.neg
+00030b:     drop
+00030c:     local.get $var4
+00030e:     i8x16.popcnt
+000310:     drop
+000311:     local.get $var4
+000313:     i8x16.all_true
+000315:     drop
+000316:     local.get $var4
+000318:     i8x16.bitmask
+00031a:     drop
+00031b:     local.get $var4
+00031d:     local.get $var4
+00031f:     i8x16.narrow_i16x8_s
+000321:     drop
+000322:     local.get $var4
+000324:     local.get $var4
+000326:     i8x16.narrow_i16x8_u
+000328:     drop
+000329:     local.get $var4
+00032b:     local.get $var0
+00032d:     i8x16.shl
+00032f:     drop
+000330:     local.get $var4
+000332:     local.get $var0
+000334:     i8x16.shr_s
+000336:     drop
+000337:     local.get $var4
+000339:     local.get $var0
+00033b:     i8x16.shr_u
+00033d:     drop
+00033e:     local.get $var4
+000340:     local.get $var4
+000342:     i8x16.add
+000344:     drop
+000345:     local.get $var4
+000347:     local.get $var4
+000349:     i8x16.add_sat_s
+00034b:     drop
+00034c:     local.get $var4
+00034e:     local.get $var4
+000350:     i8x16.add_sat_u
+000352:     drop
+000353:     local.get $var4
+000355:     local.get $var4
+000357:     i8x16.sub
+000359:     drop
+00035a:     local.get $var4
+00035c:     local.get $var4
+00035e:     i8x16.sub_sat_s
+000360:     drop
+000361:     local.get $var4
+000363:     local.get $var4
+000365:     i8x16.sub_sat_u
+000367:     drop
+000368:     local.get $var4
+00036a:     local.get $var4
+00036c:     i8x16.min_s
+00036e:     drop
+00036f:     local.get $var4
+000371:     local.get $var4
+000373:     i8x16.min_u
+000375:     drop
+000376:     local.get $var4
+000378:     local.get $var4
+00037a:     i8x16.max_s
+00037c:     drop
+00037d:     local.get $var4
+00037f:     local.get $var4
+000381:     i8x16.max_u
+000383:     drop
+000384:     local.get $var4
+000386:     local.get $var4
+000388:     i8x16.avgr_u
+00038a:     drop
+00038b:     local.get $var4
+00038d:     i16x8.extadd_pairwise_i8x16_s
+00038f:     drop
+000390:     local.get $var4
+000392:     i16x8.extadd_pairwise_i8x16_u
+000394:     drop
+000395:     local.get $var4
+000397:     i32x4.extadd_pairwise_i16x8_s
+000399:     drop
+00039a:     local.get $var4
+00039c:     i32x4.extadd_pairwise_i16x8_u
+00039e:     drop
+00039f:     local.get $var4
+0003a1:     i16x8.abs
+0003a4:     drop
+0003a5:     local.get $var4
+0003a7:     i16x8.neg
+0003aa:     drop
+0003ab:     local.get $var4
+0003ad:     local.get $var4
+0003af:     i16x8.q15mulr_sat_s
+0003b2:     drop
+0003b3:     local.get $var4
+0003b5:     i16x8.all_true
+0003b8:     drop
+0003b9:     local.get $var4
+0003bb:     i16x8.bitmask
+0003be:     drop
+0003bf:     local.get $var4
+0003c1:     local.get $var4
+0003c3:     i16x8.narrow_i32x4_s
+0003c6:     drop
+0003c7:     local.get $var4
+0003c9:     local.get $var4
+0003cb:     i16x8.narrow_i32x4_u
+0003ce:     drop
+0003cf:     local.get $var4
+0003d1:     i16x8.extend_low_i8x16_s
+0003d4:     drop
+0003d5:     local.get $var4
+0003d7:     i16x8.extend_high_i8x16_s
+0003da:     drop
+0003db:     local.get $var4
+0003dd:     i16x8.extend_low_i8x16_u
+0003e0:     drop
+0003e1:     local.get $var4
+0003e3:     i16x8.extend_high_i8x16_u
+0003e6:     drop
+0003e7:     local.get $var4
+0003e9:     local.get $var0
+0003eb:     i16x8.shl
+0003ee:     drop
+0003ef:     local.get $var4
+0003f1:     local.get $var0
+0003f3:     i16x8.shr_s
+0003f6:     drop
+0003f7:     local.get $var4
+0003f9:     local.get $var0
+0003fb:     i16x8.shr_u
+0003fe:     drop
+0003ff:     local.get $var4
+000401:     local.get $var4
+000403:     i16x8.add
+000406:     drop
+000407:     local.get $var4
+000409:     local.get $var4
+00040b:     i16x8.add_sat_s
+00040e:     drop
+00040f:     local.get $var4
+000411:     local.get $var4
+000413:     i16x8.add_sat_u
+000416:     drop
+000417:     local.get $var4
+000419:     local.get $var4
+00041b:     i16x8.sub
+00041e:     drop
+00041f:     local.get $var4
+000421:     local.get $var4
+000423:     i16x8.sub_sat_s
+000426:     drop
+000427:     local.get $var4
+000429:     local.get $var4
+00042b:     i16x8.sub_sat_u
+00042e:     drop
+00042f:     local.get $var4
+000431:     local.get $var4
+000433:     i16x8.mul
+000436:     drop
+000437:     local.get $var4
+000439:     local.get $var4
+00043b:     i16x8.min_s
+00043e:     drop
+00043f:     local.get $var4
+000441:     local.get $var4
+000443:     i16x8.min_u
+000446:     drop
+000447:     local.get $var4
+000449:     local.get $var4
+00044b:     i16x8.max_s
+00044e:     drop
+00044f:     local.get $var4
+000451:     local.get $var4
+000453:     i16x8.max_u
+000456:     drop
+000457:     local.get $var4
+000459:     local.get $var4
+00045b:     i16x8.avgr_u
+00045e:     drop
+00045f:     local.get $var4
+000461:     local.get $var4
+000463:     i16x8.extmul_low_i8x16_s
+000466:     drop
+000467:     local.get $var4
+000469:     local.get $var4
+00046b:     i16x8.extmul_high_i8x16_s
+00046e:     drop
+00046f:     local.get $var4
+000471:     local.get $var4
+000473:     i16x8.extmul_low_i8x16_u
+000476:     drop
+000477:     local.get $var4
+000479:     local.get $var4
+00047b:     i16x8.extmul_high_i8x16_u
+00047e:     drop
+00047f:     local.get $var4
+000481:     i32x4.abs
+000484:     drop
+000485:     local.get $var4
+000487:     i32x4.neg
+00048a:     drop
+00048b:     local.get $var4
+00048d:     i32x4.all_true
+000490:     drop
+000491:     local.get $var4
+000493:     i32x4.bitmask
+000496:     drop
+000497:     local.get $var4
+000499:     i32x4.extend_low_i16x8_s
+00049c:     drop
+00049d:     local.get $var4
+00049f:     i32x4.extend_high_i16x8_s
+0004a2:     drop
+0004a3:     local.get $var4
+0004a5:     i32x4.extend_low_i16x8_u
+0004a8:     drop
+0004a9:     local.get $var4
+0004ab:     i32x4.extend_high_i16x8_u
+0004ae:     drop
+0004af:     local.get $var4
+0004b1:     local.get $var0
+0004b3:     i32x4.shl
+0004b6:     drop
+0004b7:     local.get $var4
+0004b9:     local.get $var0
+0004bb:     i32x4.shr_s
+0004be:     drop
+0004bf:     local.get $var4
+0004c1:     local.get $var0
+0004c3:     i32x4.shr_u
+0004c6:     drop
+0004c7:     local.get $var4
+0004c9:     local.get $var4
+0004cb:     i32x4.add
+0004ce:     drop
+0004cf:     local.get $var4
+0004d1:     local.get $var4
+0004d3:     i32x4.sub
+0004d6:     drop
+0004d7:     local.get $var4
+0004d9:     local.get $var4
+0004db:     i32x4.mul
+0004de:     drop
+0004df:     local.get $var4
+0004e1:     local.get $var4
+0004e3:     i32x4.min_s
+0004e6:     drop
+0004e7:     local.get $var4
+0004e9:     local.get $var4
+0004eb:     i32x4.min_u
+0004ee:     drop
+0004ef:     local.get $var4
+0004f1:     local.get $var4
+0004f3:     i32x4.max_s
+0004f6:     drop
+0004f7:     local.get $var4
+0004f9:     local.get $var4
+0004fb:     i32x4.max_u
+0004fe:     drop
+0004ff:     local.get $var4
+000501:     local.get $var4
+000503:     i32x4.dot_i16x8_s
+000506:     drop
+000507:     local.get $var4
+000509:     local.get $var4
+00050b:     i32x4.extmul_low_i16x8_s
+00050e:     drop
+00050f:     local.get $var4
+000511:     local.get $var4
+000513:     i32x4.extmul_high_i16x8_s
+000516:     drop
+000517:     local.get $var4
+000519:     local.get $var4
+00051b:     i32x4.extmul_low_i16x8_u
+00051e:     drop
+00051f:     local.get $var4
+000521:     local.get $var4
+000523:     i32x4.extmul_high_i16x8_u
+000526:     drop
+000527:     local.get $var4
+000529:     i64x2.abs
+00052c:     drop
+00052d:     local.get $var4
+00052f:     i64x2.neg
+000532:     drop
+000533:     local.get $var4
+000535:     i64x2.all_true
+000538:     drop
+000539:     local.get $var4
+00053b:     i64x2.bitmask
+00053e:     drop
+00053f:     local.get $var4
+000541:     i64x2.extend_low_i32x4_s
+000544:     drop
+000545:     local.get $var4
+000547:     i64x2.extend_high_i32x4_s
+00054a:     drop
+00054b:     local.get $var4
+00054d:     i64x2.extend_low_i32x4_u
+000550:     drop
+000551:     local.get $var4
+000553:     i64x2.extend_high_i32x4_u
+000556:     drop
+000557:     local.get $var4
+000559:     local.get $var0
+00055b:     i64x2.shl
+00055e:     drop
+00055f:     local.get $var4
+000561:     local.get $var0
+000563:     i64x2.shr_s
+000566:     drop
+000567:     local.get $var4
+000569:     local.get $var0
+00056b:     i64x2.shr_u
+00056e:     drop
+00056f:     local.get $var4
+000571:     local.get $var4
+000573:     i64x2.add
+000576:     drop
+000577:     local.get $var4
+000579:     local.get $var4
+00057b:     i64x2.sub
+00057e:     drop
+00057f:     local.get $var4
+000581:     local.get $var4
+000583:     i64x2.mul
+000586:     drop
+000587:     local.get $var4
+000589:     local.get $var4
+00058b:     i64x2.eq
+00058e:     drop
+00058f:     local.get $var4
+000591:     local.get $var4
+000593:     i64x2.ne
+000596:     drop
+000597:     local.get $var4
+000599:     local.get $var4
+00059b:     i64x2.lt_s
+00059e:     drop
+00059f:     local.get $var4
+0005a1:     local.get $var4
+0005a3:     i64x2.gt_s
+0005a6:     drop
+0005a7:     local.get $var4
+0005a9:     local.get $var4
+0005ab:     i64x2.le_s
+0005ae:     drop
+0005af:     local.get $var4
+0005b1:     local.get $var4
+0005b3:     i64x2.ge_s
+0005b6:     drop
+0005b7:     local.get $var4
+0005b9:     local.get $var4
+0005bb:     i64x2.extmul_low_i32x4_s
+0005be:     drop
+0005bf:     local.get $var4
+0005c1:     local.get $var4
+0005c3:     i64x2.extmul_high_i32x4_s
+0005c6:     drop
+0005c7:     local.get $var4
+0005c9:     local.get $var4
+0005cb:     i64x2.extmul_low_i32x4_u
+0005ce:     drop
+0005cf:     local.get $var4
+0005d1:     local.get $var4
+0005d3:     i64x2.extmul_high_i32x4_u
+0005d6:     drop
+0005d7:     local.get $var4
+0005d9:     f32x4.ceil
+0005db:     drop
+0005dc:     local.get $var4
+0005de:     f32x4.floor
+0005e0:     drop
+0005e1:     local.get $var4
+0005e3:     f32x4.trunc
+0005e5:     drop
+0005e6:     local.get $var4
+0005e8:     f32x4.nearest
+0005ea:     drop
+0005eb:     local.get $var4
+0005ed:     f64x2.ceil
+0005ef:     drop
+0005f0:     local.get $var4
+0005f2:     f64x2.floor
+0005f4:     drop
+0005f5:     local.get $var4
+0005f7:     f64x2.trunc
+0005f9:     drop
+0005fa:     local.get $var4
+0005fc:     f64x2.nearest
+0005ff:     drop
+000600:     local.get $var4
+000602:     f32x4.abs
+000605:     drop
+000606:     local.get $var4
+000608:     f32x4.neg
+00060b:     drop
+00060c:     local.get $var4
+00060e:     f32x4.sqrt
+000611:     drop
+000612:     local.get $var4
+000614:     local.get $var4
+000616:     f32x4.add
+000619:     drop
+00061a:     local.get $var4
+00061c:     local.get $var4
+00061e:     f32x4.sub
+000621:     drop
+000622:     local.get $var4
+000624:     local.get $var4
+000626:     f32x4.mul
+000629:     drop
+00062a:     local.get $var4
+00062c:     local.get $var4
+00062e:     f32x4.div
+000631:     drop
+000632:     local.get $var4
+000634:     local.get $var4
+000636:     f32x4.min
+000639:     drop
+00063a:     local.get $var4
+00063c:     local.get $var4
+00063e:     f32x4.max
+000641:     drop
+000642:     local.get $var4
+000644:     local.get $var4
+000646:     f32x4.pmin
+000649:     drop
+00064a:     local.get $var4
+00064c:     local.get $var4
+00064e:     f32x4.pmax
+000651:     drop
+000652:     local.get $var4
+000654:     f64x2.abs
+000657:     drop
+000658:     local.get $var4
+00065a:     f64x2.neg
+00065d:     drop
+00065e:     local.get $var4
+000660:     f64x2.sqrt
+000663:     drop
+000664:     local.get $var4
+000666:     local.get $var4
+000668:     f64x2.add
+00066b:     drop
+00066c:     local.get $var4
+00066e:     local.get $var4
+000670:     f64x2.sub
+000673:     drop
+000674:     local.get $var4
+000676:     local.get $var4
+000678:     f64x2.mul
+00067b:     drop
+00067c:     local.get $var4
+00067e:     local.get $var4
+000680:     f64x2.div
+000683:     drop
+000684:     local.get $var4
+000686:     local.get $var4
+000688:     f64x2.min
+00068b:     drop
+00068c:     local.get $var4
+00068e:     local.get $var4
+000690:     f64x2.max
+000693:     drop
+000694:     local.get $var4
+000696:     local.get $var4
+000698:     f64x2.pmin
+00069b:     drop
+00069c:     local.get $var4
+00069e:     local.get $var4
+0006a0:     f64x2.pmax
+0006a3:     drop
+0006a4:     local.get $var4
+0006a6:     i32x4.trunc_sat_f32x4_s
+0006a9:     drop
+0006aa:     local.get $var4
+0006ac:     i32x4.trunc_sat_f32x4_u
+0006af:     drop
+0006b0:     local.get $var4
+0006b2:     f32x4.convert_i32x4_s
+0006b5:     drop
+0006b6:     local.get $var4
+0006b8:     f32x4.convert_i32x4_u
+0006bb:     drop
+0006bc:     local.get $var4
+0006be:     i32x4.trunc_sat_f64x2_s_zero
+0006c1:     drop
+0006c2:     local.get $var4
+0006c4:     i32x4.trunc_sat_f64x2_u_zero
+0006c7:     drop
+0006c8:     local.get $var4
+0006ca:     f64x2.convert_low_i32x4_s
+0006cd:     drop
+0006ce:     local.get $var4
+0006d0:     f64x2.convert_low_i32x4_u
+0006d3:     drop
+0006d4:   )
+0006d5: )

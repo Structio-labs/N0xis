@@ -1,0 +1,787 @@
+000000: (module
+00002c:   (table $table0 4 8 funcref)
+000030:   (table $table1 2 externref)
+000036:   (memory $memory0 1 2)
+00003c:   (global $global0 (mut i32) (i32.const 0))
+000041:   (global $global1 (mut i64) (i64.const 0))
+000049:   (elem $elem0 (i32.const 0) (ref func) (ref.func $func1) (ref.func $func2))
+000050:   (elem $elem1 (ref func) (ref.func $func1))
+00005d:   (func $func0 (param $var0 i32) (param $var1 i32) (result i32)
+00005e:     block
+000060:       nop
+000061:     end
+000062:     block (result i32)
+000064:       i32.const 1
+000066:     end
+000067:     drop
+000068:     local.get $var0
+00006a:     block (param i32) (result i32) (result i32)
+00006c:       i32.const 6
+00006e:     end
+00006f:     drop
+000070:     drop
+000071:     loop $label0
+000073:       local.get $var0
+000075:       br_if $label0
+000077:     end $label0
+000078:     loop (result i64)
+00007a:       i64.const 0
+00007c:     end
+00007d:     drop
+00007e:     local.get $var0
+000080:     if
+000082:       nop
+000083:     else
+000084:       nop
+000085:     end
+000086:     local.get $var0
+000088:     if (result i32)
+00008a:       i32.const 1
+00008c:     else
+00008d:       i32.const 2
+00008f:     end
+000090:     drop
+000091:     local.get $var1
+000093:     local.get $var0
+000095:     if (param i32) (result i32) (result i32)
+000097:       i32.const 3
+000099:     else
+00009a:       i32.const 4
+00009c:     end
+00009d:     drop
+00009e:     drop
+00009f:     local.get $var0
+0000a1:     if
+0000a3:       unreachable
+0000a4:     end
+0000a5:     block $label3
+0000a7:       block $label2
+0000a9:         block $label1
+0000ab:           local.get $var0
+0000ad:           br_table $label1 $label2 $label3 $label2
+0000b3:         end $label1
+0000b4:         br $label3
+0000b6:       end $label2
+0000b7:       br $label3
+0000b9:     end $label3
+0000ba:     block $label4
+0000bc:       local.get $var0
+0000be:       br_table $label4
+0000c1:     end $label4
+0000c2:     local.get $var0
+0000c4:     local.get $var1
+0000c6:     call $func1
+0000c8:     drop
+0000c9:     local.get $var0
+0000cb:     local.get $var1
+0000cd:     i32.const 0
+0000cf:     call_indirect (param i32 i32) (result i32)
+0000d2:     drop
+0000d3:     i32.const 7
+0000d5:     i32.const 8
+0000d7:     local.get $var0
+0000d9:     select
+0000da:     drop
+0000db:     i64.const 7
+0000dd:     i64.const 8
+0000df:     local.get $var0
+0000e1:     select i64
+0000e4:     drop
+0000e5:     ref.null extern
+0000e7:     ref.null extern
+0000e9:     local.get $var0
+0000eb:     select externref
+0000ee:     drop
+0000ef:     local.get $var0
+0000f1:     local.set $var1
+0000f3:     local.get $var1
+0000f5:     local.tee $var0
+0000f7:     drop
+0000f8:     global.get $global0
+0000fa:     global.set $global0
+0000fc:     global.get $global1
+0000fe:     global.set $global1
+000100:     local.get $var0
+000102:     return
+000103:   )
+000105:   (func $func1 (param $var0 i32) (param $var1 i32) (result i32)
+000106:     local.get $var0
+000108:     local.get $var1
+00010a:     i32.add
+00010b:   )
+00010e:   (func $func2 (param $var0 i32) (param $var1 i64) (param $var2 f32) (param $var3 f64)
+00010f:     i32.const 0
+000111:     drop
+000112:     i32.const -1
+000114:     drop
+000115:     i32.const 63
+000117:     drop
+000118:     i32.const -64
+00011a:     drop
+00011b:     i32.const 64
+00011e:     drop
+00011f:     i32.const -2147483648
+000125:     drop
+000126:     i32.const 2147483647
+00012c:     drop
+00012d:     i64.const 0
+00012f:     drop
+000130:     i64.const -1
+000132:     drop
+000133:     i64.const -9223372036854775808
+00013e:     drop
+00013f:     i64.const 9223372036854775807
+00014a:     drop
+00014b:     i64.const 81985529216486895
+000155:     drop
+000156:     f32.const 1.5
+00015b:     drop
+00015c:     f32.const -0.0
+000161:     drop
+000162:     f32.const 0.0
+000167:     drop
+000168:     f32.const 1.40129846e-45
+00016d:     drop
+00016e:     f32.const 1.17549421e-38
+000173:     drop
+000174:     f32.const 3.40282347e+38
+000179:     drop
+00017a:     f32.const inf
+00017f:     drop
+000180:     f32.const -inf
+000185:     drop
+000186:     f32.const nan
+00018b:     drop
+00018c:     f32.const -nan:0x1
+000191:     drop
+000192:     f64.const 1
+00019b:     drop
+00019c:     f64.const -3.141592653589793
+0001a5:     drop
+0001a6:     f64.const 5e-324
+0001af:     drop
+0001b0:     f64.const 1.7976931348623157e+308
+0001b9:     drop
+0001ba:     f64.const -inf
+0001c3:     drop
+0001c4:     f64.const nan
+0001cd:     drop
+0001ce:     f64.const -nan:0xfffffffffffff
+0001d7:     drop
+0001d8:     local.get $var0
+0001da:     i32.eqz
+0001db:     drop
+0001dc:     local.get $var0
+0001de:     local.get $var0
+0001e0:     i32.eq
+0001e1:     drop
+0001e2:     local.get $var0
+0001e4:     local.get $var0
+0001e6:     i32.ne
+0001e7:     drop
+0001e8:     local.get $var0
+0001ea:     local.get $var0
+0001ec:     i32.lt_s
+0001ed:     drop
+0001ee:     local.get $var0
+0001f0:     local.get $var0
+0001f2:     i32.lt_u
+0001f3:     drop
+0001f4:     local.get $var0
+0001f6:     local.get $var0
+0001f8:     i32.gt_s
+0001f9:     drop
+0001fa:     local.get $var0
+0001fc:     local.get $var0
+0001fe:     i32.gt_u
+0001ff:     drop
+000200:     local.get $var0
+000202:     local.get $var0
+000204:     i32.le_s
+000205:     drop
+000206:     local.get $var0
+000208:     local.get $var0
+00020a:     i32.le_u
+00020b:     drop
+00020c:     local.get $var0
+00020e:     local.get $var0
+000210:     i32.ge_s
+000211:     drop
+000212:     local.get $var0
+000214:     local.get $var0
+000216:     i32.ge_u
+000217:     drop
+000218:     local.get $var1
+00021a:     i64.eqz
+00021b:     drop
+00021c:     local.get $var1
+00021e:     local.get $var1
+000220:     i64.eq
+000221:     drop
+000222:     local.get $var1
+000224:     local.get $var1
+000226:     i64.ne
+000227:     drop
+000228:     local.get $var1
+00022a:     local.get $var1
+00022c:     i64.lt_s
+00022d:     drop
+00022e:     local.get $var1
+000230:     local.get $var1
+000232:     i64.lt_u
+000233:     drop
+000234:     local.get $var1
+000236:     local.get $var1
+000238:     i64.gt_s
+000239:     drop
+00023a:     local.get $var1
+00023c:     local.get $var1
+00023e:     i64.gt_u
+00023f:     drop
+000240:     local.get $var1
+000242:     local.get $var1
+000244:     i64.le_s
+000245:     drop
+000246:     local.get $var1
+000248:     local.get $var1
+00024a:     i64.le_u
+00024b:     drop
+00024c:     local.get $var1
+00024e:     local.get $var1
+000250:     i64.ge_s
+000251:     drop
+000252:     local.get $var1
+000254:     local.get $var1
+000256:     i64.ge_u
+000257:     drop
+000258:     local.get $var2
+00025a:     local.get $var2
+00025c:     f32.eq
+00025d:     drop
+00025e:     local.get $var2
+000260:     local.get $var2
+000262:     f32.ne
+000263:     drop
+000264:     local.get $var2
+000266:     local.get $var2
+000268:     f32.lt
+000269:     drop
+00026a:     local.get $var2
+00026c:     local.get $var2
+00026e:     f32.gt
+00026f:     drop
+000270:     local.get $var2
+000272:     local.get $var2
+000274:     f32.le
+000275:     drop
+000276:     local.get $var2
+000278:     local.get $var2
+00027a:     f32.ge
+00027b:     drop
+00027c:     local.get $var3
+00027e:     local.get $var3
+000280:     f64.eq
+000281:     drop
+000282:     local.get $var3
+000284:     local.get $var3
+000286:     f64.ne
+000287:     drop
+000288:     local.get $var3
+00028a:     local.get $var3
+00028c:     f64.lt
+00028d:     drop
+00028e:     local.get $var3
+000290:     local.get $var3
+000292:     f64.gt
+000293:     drop
+000294:     local.get $var3
+000296:     local.get $var3
+000298:     f64.le
+000299:     drop
+00029a:     local.get $var3
+00029c:     local.get $var3
+00029e:     f64.ge
+00029f:     drop
+0002a0:     local.get $var0
+0002a2:     i32.clz
+0002a3:     drop
+0002a4:     local.get $var0
+0002a6:     i32.ctz
+0002a7:     drop
+0002a8:     local.get $var0
+0002aa:     i32.popcnt
+0002ab:     drop
+0002ac:     local.get $var0
+0002ae:     local.get $var0
+0002b0:     i32.add
+0002b1:     drop
+0002b2:     local.get $var0
+0002b4:     local.get $var0
+0002b6:     i32.sub
+0002b7:     drop
+0002b8:     local.get $var0
+0002ba:     local.get $var0
+0002bc:     i32.mul
+0002bd:     drop
+0002be:     local.get $var0
+0002c0:     local.get $var0
+0002c2:     i32.div_s
+0002c3:     drop
+0002c4:     local.get $var0
+0002c6:     local.get $var0
+0002c8:     i32.div_u
+0002c9:     drop
+0002ca:     local.get $var0
+0002cc:     local.get $var0
+0002ce:     i32.rem_s
+0002cf:     drop
+0002d0:     local.get $var0
+0002d2:     local.get $var0
+0002d4:     i32.rem_u
+0002d5:     drop
+0002d6:     local.get $var0
+0002d8:     local.get $var0
+0002da:     i32.and
+0002db:     drop
+0002dc:     local.get $var0
+0002de:     local.get $var0
+0002e0:     i32.or
+0002e1:     drop
+0002e2:     local.get $var0
+0002e4:     local.get $var0
+0002e6:     i32.xor
+0002e7:     drop
+0002e8:     local.get $var0
+0002ea:     local.get $var0
+0002ec:     i32.shl
+0002ed:     drop
+0002ee:     local.get $var0
+0002f0:     local.get $var0
+0002f2:     i32.shr_s
+0002f3:     drop
+0002f4:     local.get $var0
+0002f6:     local.get $var0
+0002f8:     i32.shr_u
+0002f9:     drop
+0002fa:     local.get $var0
+0002fc:     local.get $var0
+0002fe:     i32.rotl
+0002ff:     drop
+000300:     local.get $var0
+000302:     local.get $var0
+000304:     i32.rotr
+000305:     drop
+000306:     local.get $var1
+000308:     i64.clz
+000309:     drop
+00030a:     local.get $var1
+00030c:     i64.ctz
+00030d:     drop
+00030e:     local.get $var1
+000310:     i64.popcnt
+000311:     drop
+000312:     local.get $var1
+000314:     local.get $var1
+000316:     i64.add
+000317:     drop
+000318:     local.get $var1
+00031a:     local.get $var1
+00031c:     i64.sub
+00031d:     drop
+00031e:     local.get $var1
+000320:     local.get $var1
+000322:     i64.mul
+000323:     drop
+000324:     local.get $var1
+000326:     local.get $var1
+000328:     i64.div_s
+000329:     drop
+00032a:     local.get $var1
+00032c:     local.get $var1
+00032e:     i64.div_u
+00032f:     drop
+000330:     local.get $var1
+000332:     local.get $var1
+000334:     i64.rem_s
+000335:     drop
+000336:     local.get $var1
+000338:     local.get $var1
+00033a:     i64.rem_u
+00033b:     drop
+00033c:     local.get $var1
+00033e:     local.get $var1
+000340:     i64.and
+000341:     drop
+000342:     local.get $var1
+000344:     local.get $var1
+000346:     i64.or
+000347:     drop
+000348:     local.get $var1
+00034a:     local.get $var1
+00034c:     i64.xor
+00034d:     drop
+00034e:     local.get $var1
+000350:     local.get $var1
+000352:     i64.shl
+000353:     drop
+000354:     local.get $var1
+000356:     local.get $var1
+000358:     i64.shr_s
+000359:     drop
+00035a:     local.get $var1
+00035c:     local.get $var1
+00035e:     i64.shr_u
+00035f:     drop
+000360:     local.get $var1
+000362:     local.get $var1
+000364:     i64.rotl
+000365:     drop
+000366:     local.get $var1
+000368:     local.get $var1
+00036a:     i64.rotr
+00036b:     drop
+00036c:     local.get $var2
+00036e:     f32.abs
+00036f:     drop
+000370:     local.get $var2
+000372:     f32.neg
+000373:     drop
+000374:     local.get $var2
+000376:     f32.ceil
+000377:     drop
+000378:     local.get $var2
+00037a:     f32.floor
+00037b:     drop
+00037c:     local.get $var2
+00037e:     f32.trunc
+00037f:     drop
+000380:     local.get $var2
+000382:     f32.nearest
+000383:     drop
+000384:     local.get $var2
+000386:     f32.sqrt
+000387:     drop
+000388:     local.get $var2
+00038a:     local.get $var2
+00038c:     f32.add
+00038d:     drop
+00038e:     local.get $var2
+000390:     local.get $var2
+000392:     f32.sub
+000393:     drop
+000394:     local.get $var2
+000396:     local.get $var2
+000398:     f32.mul
+000399:     drop
+00039a:     local.get $var2
+00039c:     local.get $var2
+00039e:     f32.div
+00039f:     drop
+0003a0:     local.get $var2
+0003a2:     local.get $var2
+0003a4:     f32.min
+0003a5:     drop
+0003a6:     local.get $var2
+0003a8:     local.get $var2
+0003aa:     f32.max
+0003ab:     drop
+0003ac:     local.get $var2
+0003ae:     local.get $var2
+0003b0:     f32.copysign
+0003b1:     drop
+0003b2:     local.get $var3
+0003b4:     f64.abs
+0003b5:     drop
+0003b6:     local.get $var3
+0003b8:     f64.neg
+0003b9:     drop
+0003ba:     local.get $var3
+0003bc:     f64.ceil
+0003bd:     drop
+0003be:     local.get $var3
+0003c0:     f64.floor
+0003c1:     drop
+0003c2:     local.get $var3
+0003c4:     f64.trunc
+0003c5:     drop
+0003c6:     local.get $var3
+0003c8:     f64.nearest
+0003c9:     drop
+0003ca:     local.get $var3
+0003cc:     f64.sqrt
+0003cd:     drop
+0003ce:     local.get $var3
+0003d0:     local.get $var3
+0003d2:     f64.add
+0003d3:     drop
+0003d4:     local.get $var3
+0003d6:     local.get $var3
+0003d8:     f64.sub
+0003d9:     drop
+0003da:     local.get $var3
+0003dc:     local.get $var3
+0003de:     f64.mul
+0003df:     drop
+0003e0:     local.get $var3
+0003e2:     local.get $var3
+0003e4:     f64.div
+0003e5:     drop
+0003e6:     local.get $var3
+0003e8:     local.get $var3
+0003ea:     f64.min
+0003eb:     drop
+0003ec:     local.get $var3
+0003ee:     local.get $var3
+0003f0:     f64.max
+0003f1:     drop
+0003f2:     local.get $var3
+0003f4:     local.get $var3
+0003f6:     f64.copysign
+0003f7:     drop
+0003f8:     local.get $var1
+0003fa:     i32.wrap_i64
+0003fb:     drop
+0003fc:     local.get $var2
+0003fe:     i32.trunc_f32_s
+0003ff:     drop
+000400:     local.get $var2
+000402:     i32.trunc_f32_u
+000403:     drop
+000404:     local.get $var3
+000406:     i32.trunc_f64_s
+000407:     drop
+000408:     local.get $var3
+00040a:     i32.trunc_f64_u
+00040b:     drop
+00040c:     local.get $var0
+00040e:     i64.extend_i32_s
+00040f:     drop
+000410:     local.get $var0
+000412:     i64.extend_i32_u
+000413:     drop
+000414:     local.get $var2
+000416:     i64.trunc_f32_s
+000417:     drop
+000418:     local.get $var2
+00041a:     i64.trunc_f32_u
+00041b:     drop
+00041c:     local.get $var3
+00041e:     i64.trunc_f64_s
+00041f:     drop
+000420:     local.get $var3
+000422:     i64.trunc_f64_u
+000423:     drop
+000424:     local.get $var0
+000426:     f32.convert_i32_s
+000427:     drop
+000428:     local.get $var0
+00042a:     f32.convert_i32_u
+00042b:     drop
+00042c:     local.get $var1
+00042e:     f32.convert_i64_s
+00042f:     drop
+000430:     local.get $var1
+000432:     f32.convert_i64_u
+000433:     drop
+000434:     local.get $var3
+000436:     f32.demote_f64
+000437:     drop
+000438:     local.get $var0
+00043a:     f64.convert_i32_s
+00043b:     drop
+00043c:     local.get $var0
+00043e:     f64.convert_i32_u
+00043f:     drop
+000440:     local.get $var1
+000442:     f64.convert_i64_s
+000443:     drop
+000444:     local.get $var1
+000446:     f64.convert_i64_u
+000447:     drop
+000448:     local.get $var2
+00044a:     f64.promote_f32
+00044b:     drop
+00044c:     local.get $var2
+00044e:     i32.reinterpret_f32
+00044f:     drop
+000450:     local.get $var3
+000452:     i64.reinterpret_f64
+000453:     drop
+000454:     local.get $var0
+000456:     f32.reinterpret_i32
+000457:     drop
+000458:     local.get $var1
+00045a:     f64.reinterpret_i64
+00045b:     drop
+00045c:     local.get $var0
+00045e:     i32.extend8_s
+00045f:     drop
+000460:     local.get $var0
+000462:     i32.extend16_s
+000463:     drop
+000464:     local.get $var1
+000466:     i64.extend8_s
+000467:     drop
+000468:     local.get $var1
+00046a:     i64.extend16_s
+00046b:     drop
+00046c:     local.get $var1
+00046e:     i64.extend32_s
+00046f:     drop
+000470:     local.get $var2
+000472:     i32.trunc_sat_f32_s
+000474:     drop
+000475:     local.get $var2
+000477:     i32.trunc_sat_f32_u
+000479:     drop
+00047a:     local.get $var3
+00047c:     i32.trunc_sat_f64_s
+00047e:     drop
+00047f:     local.get $var3
+000481:     i32.trunc_sat_f64_u
+000483:     drop
+000484:     local.get $var2
+000486:     i64.trunc_sat_f32_s
+000488:     drop
+000489:     local.get $var2
+00048b:     i64.trunc_sat_f32_u
+00048d:     drop
+00048e:     local.get $var3
+000490:     i64.trunc_sat_f64_s
+000492:     drop
+000493:     local.get $var3
+000495:     i64.trunc_sat_f64_u
+000497:     drop
+000498:   )
+00049b:   (func $func3 (param $var0 i32) (param $var1 i64) (param $var2 f32) (param $var3 f64)
+00049c:     local.get $var0
+00049e:     i32.load
+0004a1:     drop
+0004a2:     local.get $var0
+0004a4:     i64.load offset=8
+0004a7:     drop
+0004a8:     local.get $var0
+0004aa:     f32.load offset=16 align=1
+0004ad:     drop
+0004ae:     local.get $var0
+0004b0:     f64.load offset=24
+0004b3:     drop
+0004b4:     local.get $var0
+0004b6:     i32.load8_s offset=1
+0004b9:     drop
+0004ba:     local.get $var0
+0004bc:     i32.load8_u offset=4294967295
+0004c3:     drop
+0004c4:     local.get $var0
+0004c6:     i32.load16_s offset=2
+0004c9:     drop
+0004ca:     local.get $var0
+0004cc:     i32.load16_u offset=3 align=1
+0004cf:     drop
+0004d0:     local.get $var0
+0004d2:     i64.load8_s offset=4
+0004d5:     drop
+0004d6:     local.get $var0
+0004d8:     i64.load8_u offset=5
+0004db:     drop
+0004dc:     local.get $var0
+0004de:     i64.load16_s offset=6
+0004e1:     drop
+0004e2:     local.get $var0
+0004e4:     i64.load16_u offset=7 align=1
+0004e7:     drop
+0004e8:     local.get $var0
+0004ea:     i64.load32_s offset=8
+0004ed:     drop
+0004ee:     local.get $var0
+0004f0:     i64.load32_u offset=9 align=2
+0004f3:     drop
+0004f4:     local.get $var0
+0004f6:     local.get $var0
+0004f8:     i32.store offset=10 align=1
+0004fb:     local.get $var0
+0004fd:     local.get $var1
+0004ff:     i64.store offset=11
+000502:     local.get $var0
+000504:     local.get $var2
+000506:     f32.store offset=12
+000509:     local.get $var0
+00050b:     local.get $var3
+00050d:     f64.store offset=13 align=2
+000510:     local.get $var0
+000512:     local.get $var0
+000514:     i32.store8 offset=14
+000517:     local.get $var0
+000519:     local.get $var0
+00051b:     i32.store16 offset=15
+00051e:     local.get $var0
+000520:     local.get $var1
+000522:     i64.store8 offset=16
+000525:     local.get $var0
+000527:     local.get $var1
+000529:     i64.store16 offset=17 align=1
+00052c:     local.get $var0
+00052e:     local.get $var1
+000530:     i64.store32 offset=18
+000533:     memory.size
+000535:     drop
+000536:     i32.const 1
+000538:     memory.grow
+00053a:     drop
+00053b:     local.get $var0
+00053d:     i32.const 0
+00053f:     i32.const 4
+000541:     memory.fill
+000544:     local.get $var0
+000546:     i32.const 0
+000548:     i32.const 4
+00054a:     memory.copy
+00054e:     local.get $var0
+000550:     i32.const 0
+000552:     i32.const 4
+000554:     memory.init 1
+000558:     data.drop 1
+00055b:   )
+00055d:   (func $func4
+00055e:     i32.const 0
+000560:     table.get $table0
+000562:     drop
+000563:     i32.const 0
+000565:     ref.null func
+000567:     table.set $table0
+000569:     i32.const 1
+00056b:     table.get $table1
+00056d:     drop
+00056e:     table.size $table0
+000571:     drop
+000572:     ref.null func
+000574:     i32.const 1
+000576:     table.grow $table0
+000579:     drop
+00057a:     i32.const 0
+00057c:     ref.null func
+00057e:     i32.const 1
+000580:     table.fill $table0
+000583:     i32.const 0
+000585:     i32.const 1
+000587:     i32.const 1
+000589:     table.copy
+00058d:     i32.const 0
+00058f:     i32.const 1
+000591:     i32.const 1
+000593:     table.copy $table1 $table1
+000597:     i32.const 0
+000599:     i32.const 0
+00059b:     i32.const 1
+00059d:     table.init $elem1
+0005a1:     elem.drop $elem1
+0005a4:     ref.func $func1
+0005a6:     ref.is_null
+0005a7:     drop
+0005a8:     ref.null extern
+0005aa:     ref.is_null
+0005ab:     drop
+0005ac:   )
+0005b0:   (data (i32.const 0) "\00\01\02\03")
+0005b9:   (data "passive")
+0005c2: )

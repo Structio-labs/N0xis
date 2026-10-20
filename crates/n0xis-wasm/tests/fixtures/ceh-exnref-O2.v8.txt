@@ -1,0 +1,303 @@
+000000: (module
+00001b:   (tag $env.__cpp_exception (;0;) (import "env" "__cpp_exception") (param i32))
+000032:   (func $env.may_throw (;0;) (import "env" "may_throw") (param i32))
+000042:   (func $env.__cxa_begin_catch (;1;) (import "env" "__cxa_begin_catch") (param i32) (result i32))
+00005a:   (func $env.report (;2;) (import "env" "report") (param i32) (result i32))
+000067:   (func $env.__cxa_end_catch (;3;) (import "env" "__cxa_end_catch"))
+00007d:   (func $env._ZSt9terminatev (;4;) (import "env" "_ZSt9terminatev"))
+000093:   (func $env.__cxa_rethrow (;5;) (import "env" "__cxa_rethrow"))
+0000b3:   (table $__indirect_function_table (;0;) (export "__indirect_function_table") 1 1 funcref)
+0000ba:   (memory $memory (;0;) (export "memory") 1)
+0000bf:   (global $__stack_pointer (;0;) (export "__stack_pointer") (mut i32) (i32.const 65536))
+0000c6:   (global $__memory_base (;1;) (export "__memory_base") i32 (i32.const 0))
+0000cb:   (global $__table_base (;2;) (export "__table_base") i32 (i32.const 1))
+0000d0:   (global $__tls_base (;3;) (export "__tls_base") i32 (i32.const 65536))
+0000d7:   (global $__dso_handle (;4;) (export "__dso_handle") i32 (i32.const 65536))
+0000de:   (global $__data_end (;5;) (export "__data_end") i32 (i32.const 65536))
+0000e5:   (global $__rodata_start (;6;) (export "__rodata_start") i32 (i32.const 0))
+0000ea:   (global $__rodata_end (;7;) (export "__rodata_end") i32 (i32.const 0))
+0000ef:   (global $__stack_low (;8;) (export "__stack_low") i32 (i32.const 0))
+0000f4:   (global $__stack_high (;9;) (export "__stack_high") i32 (i32.const 65536))
+0000fb:   (global $__global_base (;10;) (export "__global_base") i32 (i32.const 65536))
+000102:   (global $__heap_base (;11;) (export "__heap_base") i32 (i32.const 65536))
+000109:   (global $__heap_end (;12;) (export "__heap_end") i32 (i32.const 65536))
+000110:   (global $__wasm_first_page_end (;13;) (export "__wasm_first_page_end") i32 (i32.const 65536))
+000268:   (func $__wasm_call_ctors (;6;) (export "__wasm_call_ctors")
+000269:   )
+00026c:   (func $guarded (;7;) (export "guarded") (param $var0 i32) (result i32)
+00026c:     (local $var1 i32)
+00026c:     (local $var2 exnref)
+000271:     global.get $__stack_pointer
+000277:     local.set $var1
+000279:     block $label6
+00027b:       block $label1
+00027d:         block $label0 (result i32)
+00027f:           try_table catch $env.__cpp_exception $label0
+000289:             local.get $var0
+00028b:             call $env.may_throw
+000291:             br $label1
+000293:           end
+000294:           unreachable
+000295:         end $label0
+000296:         local.set $var0
+000298:         local.get $var1
+00029a:         global.set $__stack_pointer
+0002a0:         local.get $var0
+0002a2:         call $env.__cxa_begin_catch
+0002a8:         drop
+0002a9:         block $label3
+0002ab:           block $label2 (result exnref)
+0002ad:             try_table catch_all_ref $label2
+0002b2:               i32.const -1
+0002b4:               call $env.report
+0002ba:               local.set $var0
+0002bc:               br $label3
+0002be:             end
+0002bf:             unreachable
+0002c0:           end $label2
+0002c1:           local.set $var2
+0002c3:           local.get $var1
+0002c5:           global.set $__stack_pointer
+0002cb:           block $label5
+0002cd:             block $label4
+0002cf:               try_table catch_all $label4
+0002d4:                 call $env.__cxa_end_catch
+0002da:                 br $label5
+0002dc:               end
+0002dd:               unreachable
+0002de:             end $label4
+0002df:             local.get $var1
+0002e1:             global.set $__stack_pointer
+0002e7:             call $env._ZSt9terminatev
+0002ed:             unreachable
+0002ee:           end $label5
+0002ef:           local.get $var2
+0002f1:           throw_ref
+0002f2:         end $label3
+0002f3:         call $env.__cxa_end_catch
+0002f9:         br $label6
+0002fb:       end $label1
+0002fc:       local.get $var0
+0002fe:       call $env.report
+000304:       local.set $var0
+000306:     end $label6
+000307:     local.get $var0
+000309:   )
+00030c:   (func $with_cleanup (;8;) (export "with_cleanup") (param $var0 i32) (result i32)
+00030c:     (local $var1 i32)
+00030c:     (local $var2 exnref)
+000311:     global.get $__stack_pointer
+000317:     local.set $var1
+000319:     block $label1
+00031b:       block $label0 (result exnref)
+00031d:         try_table catch_all_ref $label0
+000322:           local.get $var0
+000324:           call $env.may_throw
+00032a:           br $label1
+00032c:         end
+00032d:         unreachable
+00032e:       end $label0
+00032f:       local.set $var2
+000331:       local.get $var1
+000333:       global.set $__stack_pointer
+000339:       block $label3
+00033b:         block $label2
+00033d:           try_table catch_all $label2
+000342:             local.get $var0
+000344:             call $env.report
+00034a:             drop
+00034b:             br $label3
+00034d:           end
+00034e:           unreachable
+00034f:         end $label2
+000350:         local.get $var1
+000352:         global.set $__stack_pointer
+000358:         call $env._ZSt9terminatev
+00035e:         unreachable
+00035f:       end $label3
+000360:       local.get $var2
+000362:       throw_ref
+000363:     end $label1
+000364:     block $label5
+000366:       block $label4
+000368:         try_table catch_all $label4
+00036d:           local.get $var0
+00036f:           call $env.report
+000375:           drop
+000376:           br $label5
+000378:         end
+000379:         unreachable
+00037a:       end $label4
+00037b:       local.get $var1
+00037d:       global.set $__stack_pointer
+000383:       call $env._ZSt9terminatev
+000389:       unreachable
+00038a:     end $label5
+00038b:     local.get $var0
+00038d:     i32.const 1
+00038f:     i32.add
+000390:   )
+000393:   (func $nested (;9;) (export "nested") (param $var0 i32) (result i32)
+000393:     (local $var1 i32)
+000393:     (local $var2 i32)
+000393:     (local $var3 exnref)
+000398:     global.get $__stack_pointer
+00039e:     local.set $var1
+0003a0:     i32.const 0
+0003a2:     local.set $var2
+0003a4:     block $label1
+0003a6:       block $label0 (result i32)
+0003a8:         try_table catch $env.__cpp_exception $label0
+0003b2:           local.get $var0
+0003b4:           call $env.may_throw
+0003ba:           br $label1
+0003bc:         end
+0003bd:         unreachable
+0003be:       end $label0
+0003bf:       local.set $var2
+0003c1:       local.get $var1
+0003c3:       global.set $__stack_pointer
+0003c9:       local.get $var2
+0003cb:       call $env.__cxa_begin_catch
+0003d1:       drop
+0003d2:       block $label9
+0003d4:         block $label2 (result exnref)
+0003d6:           try_table catch_all_ref $label2
+0003db:             block $label4
+0003dd:               block $label3 (result i32)
+0003df:                 try_table catch $env.__cpp_exception $label3
+0003e9:                   local.get $var0
+0003eb:                   i32.const 1
+0003ed:                   i32.add
+0003ee:                   call $env.may_throw
+0003f4:                   br $label4
+0003f6:                 end
+0003f7:                 unreachable
+0003f8:               end $label3
+0003f9:               local.set $var0
+0003fb:               local.get $var1
+0003fd:               global.set $__stack_pointer
+000403:               local.get $var0
+000405:               call $env.__cxa_begin_catch
+00040b:               drop
+00040c:               block $label6
+00040e:                 block $label5 (result exnref)
+000410:                   try_table catch_all_ref $label5
+000415:                     i32.const 2
+000417:                     call $env.report
+00041d:                     local.set $var2
+00041f:                     br $label6
+000421:                   end
+000422:                   unreachable
+000423:                 end $label5
+000424:                 local.set $var3
+000426:                 local.get $var1
+000428:                 global.set $__stack_pointer
+00042e:                 block $label8
+000430:                   block $label7
+000432:                     try_table catch_all $label7
+000437:                       call $env.__cxa_end_catch
+00043d:                       br $label8
+00043f:                     end
+000440:                     unreachable
+000441:                   end $label7
+000442:                   local.get $var1
+000444:                   global.set $__stack_pointer
+00044a:                   call $env._ZSt9terminatev
+000450:                   unreachable
+000451:                 end $label8
+000452:                 local.get $var3
+000454:                 throw_ref
+000455:               end $label6
+000456:               call $env.__cxa_end_catch
+00045c:               br $label9
+00045e:             end $label4
+00045f:             i32.const 1
+000461:             call $env.report
+000467:             local.set $var2
+000469:             br $label9
+00046b:           end
+00046c:           unreachable
+00046d:         end $label2
+00046e:         local.set $var3
+000470:         local.get $var1
+000472:         global.set $__stack_pointer
+000478:         block $label11
+00047a:           block $label10
+00047c:             try_table catch_all $label10
+000481:               call $env.__cxa_end_catch
+000487:               br $label11
+000489:             end
+00048a:             unreachable
+00048b:           end $label10
+00048c:           local.get $var1
+00048e:           global.set $__stack_pointer
+000494:           call $env._ZSt9terminatev
+00049a:           unreachable
+00049b:         end $label11
+00049c:         local.get $var3
+00049e:         throw_ref
+00049f:       end $label9
+0004a0:       call $env.__cxa_end_catch
+0004a6:     end $label1
+0004a7:     local.get $var2
+0004a9:   )
+0004ac:   (func $rethrows (;10;) (export "rethrows") (param $var0 i32) (result i32)
+0004ac:     (local $var1 i32)
+0004ac:     (local $var2 exnref)
+0004b1:     global.get $__stack_pointer
+0004b7:     local.set $var1
+0004b9:     block $label1
+0004bb:       block $label0 (result i32)
+0004bd:         try_table catch $env.__cpp_exception $label0
+0004c7:           local.get $var0
+0004c9:           call $env.may_throw
+0004cf:           br $label1
+0004d1:         end
+0004d2:         unreachable
+0004d3:       end $label0
+0004d4:       local.set $var0
+0004d6:       local.get $var1
+0004d8:       global.set $__stack_pointer
+0004de:       local.get $var0
+0004e0:       call $env.__cxa_begin_catch
+0004e6:       drop
+0004e7:       block $label3
+0004e9:         block $label2 (result exnref)
+0004eb:           try_table catch_all_ref $label2
+0004f0:             i32.const 3
+0004f2:             call $env.report
+0004f8:             drop
+0004f9:             call $env.__cxa_rethrow
+0004ff:             br $label3
+000501:           end
+000502:           unreachable
+000503:         end $label2
+000504:         local.set $var2
+000506:         local.get $var1
+000508:         global.set $__stack_pointer
+00050e:         block $label5
+000510:           block $label4
+000512:             try_table catch_all $label4
+000517:               call $env.__cxa_end_catch
+00051d:               br $label5
+00051f:             end
+000520:             unreachable
+000521:           end $label4
+000522:           local.get $var1
+000524:           global.set $__stack_pointer
+00052a:           call $env._ZSt9terminatev
+000530:           unreachable
+000531:         end $label5
+000532:         local.get $var2
+000534:         throw_ref
+000535:       end $label3
+000536:       unreachable
+000537:     end $label1
+000538:     local.get $var0
+00053a:   )
+00053c:   (func $raise (;11;) (export "raise") (param $var0 i32)
+00053d:     local.get $var0
+00053f:     throw $env.__cpp_exception
+000545:   )
+000546: )

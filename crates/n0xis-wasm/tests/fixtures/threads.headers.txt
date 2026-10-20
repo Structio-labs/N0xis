@@ -1,0 +1,13 @@
+
+threads.wasm:	file format wasm 0x1
+module name: <threads>
+
+Sections:
+
+     Type start=0x0000000a end=0x00000021 (size=0x00000017) count: 4
+   Import start=0x00000023 end=0x00000033 (size=0x00000010) count: 1
+ Function start=0x00000035 end=0x0000003c (size=0x00000007) count: 6
+   Memory start=0x0000003e end=0x0000004a (size=0x0000000c) count: 3
+   Export start=0x0000004c end=0x0000005b (size=0x0000000f) count: 2
+     Code start=0x0000005e end=0x00000440 (size=0x000003e2) count: 6
+   Custom start=0x00000443 end=0x00000546 (size=0x00000103) "name"

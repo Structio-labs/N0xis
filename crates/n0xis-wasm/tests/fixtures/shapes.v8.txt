@@ -1,0 +1,105 @@
+000000: (module
+000021:   (func $env.pair (;0;) (export "imported_again") (import "env" "pair") (param i32) (result i32) (result i64))
+00002c:   (func $env.unary (;1;) (import "env" "unary") (param f64) (result f64))
+000038:   (table $env.table (;0;) (import "env" "table") 4 16 funcref)
+000047:   (memory $env.memory (;0;) (import "env" "memory") 1)
+000055:   (global $env.counter (;0;) (import "env" "counter") (mut i64))
+000064:   (global $env.scale (;1;) (import "env" "scale") f32)
+00007a:   (table $refs (;1;) (export "refs") 3 externref)
+00007d:   (table $table2 2 8 funcref)
+000089:   (memory $wide (;1;) (export "wide") 1 65536)
+000089:   (memory $memory2 2)
+00008e:   (global $state (;2;) (export "state") (mut i32) (i32.const 42))
+000093:   (global $global3 v128 (v128.const i32x4 0x00000001 0x00000002 0x00000003 0x00000004))
+0000a8:   (global $global4 funcref (ref.func $multi))
+0000ad:   (global $global5 externref (ref.null extern))
+0000e6:   (start $func2)
+0000ea:   (elem $elem0 (i32.const 0) (ref func) (ref.func $multi) (ref.func $func2))
+0000f1:   (elem $elem1 (ref func) (ref.func $multi))
+0000f5:   (elem $elem2 (table $table2) (i64.const 1) (ref func) (ref.func $func2))
+0000fd:   (elem $elem3 declare (ref func) (ref.func $func4))
+000101:   (elem $elem4 (i32.const 2) funcref (ref.func $multi) (ref.null func))
+00010c:   (elem $elem5 funcref (ref.func $func2) (ref.null func))
+000115:   (elem $elem6 (table $refs) (i32.const 0) externref (ref.null extern))
+00011f:   (elem $elem7 declare funcref (ref.func $func2))
+00012d:   (func $func2
+00012e:     i32.const 1
+000130:     global.set $state
+000132:   )
+000134:   (func $multi (;3;) (export "multi") (param $var0 i32) (result i32) (result i64)
+000134:     (local $var1 i64)
+000134:     (local $var2 v128)
+000139:     local.get $var0
+00013b:     block (param i32) (result i32) (result i64)
+00013d:       i64.extend_i32_u
+00013e:       local.set $var1
+000140:       local.get $var1
+000142:       i32.wrap_i64
+000143:       local.get $var1
+000145:     end
+000146:     local.set $var1
+000148:     i32.const 7
+00014a:     local.get $var0
+00014c:     select i32
+00014f:     local.get $var1
+000151:   )
+000154:   (func $func4 (param $var0 i64) (result i32)
+000154:     (local $var1 i32)
+000154:     (local $var2 v128)
+000159:     local.get $var0
+00015b:     i32.load offset=4294967300
+000163:     local.get $var0
+000165:     i64.load8_u
+000169:     i32.wrap_i64
+00016a:     i32.add
+00016b:     i32.const 64
+00016e:     i32.load16_s offset=4
+000172:     i32.add
+000173:     local.set $var1
+000175:     local.get $var0
+000177:     local.get $var1
+000179:     i32.store offset=8
+00017d:     i32.const 16
+00017f:     i32.const 0
+000181:     v128.load offset=32
+000186:     v128.load32_lane offset=4 3
+00018c:     local.set $var2
+00018e:     i32.const 0
+000190:     local.get $var2
+000192:     v128.store offset=48
+000197:     memory.size 1
+000199:     drop
+00019a:     i64.const 1
+00019c:     memory.grow 1
+00019e:     drop
+00019f:     i32.const 1
+0001a1:     memory.grow 2
+0001a3:     drop
+0001a4:     i64.const 0
+0001a6:     i32.const 0
+0001a8:     i32.const 4
+0001aa:     memory.copy 1 2
+0001ae:     i32.const 0
+0001b0:     i32.const 255
+0001b3:     i32.const 4
+0001b5:     memory.fill 2
+0001b8:     i32.const 0
+0001ba:     i32.const 0
+0001bc:     i32.const 3
+0001be:     memory.init 2 2
+0001c2:     i32.const 0
+0001c4:     i32.const 0
+0001c6:     i32.const 3
+0001c8:     memory.init 0
+0001cc:     i64.const 0
+0001ce:     table.get $table2
+0001d0:     drop
+0001d1:     table.size $table2
+0001d4:     drop
+0001d5:     local.get $var1
+0001d7:   )
+0001db:   (data (i32.const 8) "abc")
+0001e3:   (data "passive")
+0001ec:   (data (i32.const 16) "xyz")
+0001f5:   (data (i64.const 4294967300) "far")
+000202: )

@@ -1,0 +1,140 @@
+(module
+(;@b     ;)  (type (;0;) (func))
+(;@e     ;)  (type (;1;) (func (param i32)))
+(;@12    ;)  (type (;2;) (func (param i32 i64)))
+(;@17    ;)  (type (;3;) (func (param externref)))
+(;@1b    ;)  (type (;4;) (func (param i32) (result i32)))
+(;@20    ;)  (type (;5;) (func (result i32 exnref)))
+(;@25    ;)  (type (;6;) (func (result i32 i64 exnref)))
+(;@2b    ;)  (type (;7;) (func (param exnref)))
+(;@32    ;)  (import "env" "failure" (tag (;0;) (type 1) (param i32)))
+(;@4d    ;)  (tag (;1;) (type 0))
+(;@4f    ;)  (tag (;2;) (type 1) (param i32))
+(;@51    ;)  (tag (;3;) (type 2) (param i32 i64))
+(;@53    ;)  (tag (;4;) (type 3) (param externref))
+(;@58    ;)  (export "code" (tag 2))
+(;@5f    ;)  (export "run" (func 2))
+(;@6a    ;)  (func (;0;) (type 4) (param i32) (result i32)
+(;@6b    ;)    local.get 0
+(;@6d    ;)    i32.eqz
+(;@6e    ;)    if ;; label = @1
+(;@70    ;)      throw 1
+(;@72    ;)    end
+(;@73    ;)    local.get 0
+(;@75    ;)    i32.const 1
+(;@77    ;)    i32.eq
+(;@78    ;)    if ;; label = @1
+(;@7a    ;)      local.get 0
+(;@7c    ;)      throw 0
+(;@7e    ;)    end
+(;@7f    ;)    local.get 0
+(;@81    ;)    i32.const 2
+(;@83    ;)    i32.eq
+(;@84    ;)    if ;; label = @1
+(;@86    ;)      local.get 0
+(;@88    ;)      throw 2
+(;@8a    ;)    end
+(;@8b    ;)    local.get 0
+(;@8d    ;)    i64.const 7
+(;@8f    ;)    throw 3
+(;@91    ;)  )
+(;@93    ;)  (func (;1;) (type 4) (param i32) (result i32)
+(;@94    ;)    (local exnref)
+(;@96    ;)    try_table ;; label = @1
+(;@99    ;)      local.get 0
+(;@9b    ;)      call 0
+(;@9d    ;)      drop
+(;@9e    ;)    end
+(;@9f    ;)    block (result i32) ;; label = @1
+(;@a1    ;)      try_table (result i32) (catch 2 0 (;@1;)) ;; label = @2
+(;@a7    ;)        local.get 0
+(;@a9    ;)        call 0
+(;@ab    ;)      end
+(;@ac    ;)    end
+(;@ad    ;)    drop
+(;@ae    ;)    block (type 5) (result i32 exnref) ;; label = @1
+(;@b0    ;)      try_table (catch_ref 2 0 (;@1;)) ;; label = @2
+(;@b6    ;)        local.get 0
+(;@b8    ;)        call 0
+(;@ba    ;)        drop
+(;@bb    ;)      end
+(;@bc    ;)      i32.const 0
+(;@be    ;)      ref.null exn
+(;@c0    ;)    end
+(;@c1    ;)    local.set 1
+(;@c3    ;)    drop
+(;@c4    ;)    block ;; label = @1
+(;@c6    ;)      try_table (catch_all 0 (;@1;)) ;; label = @2
+(;@cb    ;)        local.get 0
+(;@cd    ;)        call 0
+(;@cf    ;)        drop
+(;@d0    ;)      end
+(;@d1    ;)    end
+(;@d2    ;)    block (result exnref) ;; label = @1
+(;@d4    ;)      try_table (catch_all_ref 0 (;@1;)) ;; label = @2
+(;@d9    ;)        local.get 0
+(;@db    ;)        call 0
+(;@dd    ;)        drop
+(;@de    ;)      end
+(;@df    ;)      ref.null exn
+(;@e1    ;)    end
+(;@e2    ;)    local.set 1
+(;@e4    ;)    local.get 0
+(;@e6    ;)  )
+(;@e8    ;)  (func (;2;) (type 4) (param i32) (result i32)
+(;@e9    ;)    (local exnref)
+(;@eb    ;)    block (result exnref) ;; label = @1
+(;@ed    ;)      block ;; label = @2
+(;@ef    ;)        block (type 6) (result i32 i64 exnref) ;; label = @3
+(;@f1    ;)          block (result i32) ;; label = @4
+(;@f3    ;)            try_table (result i32) (catch 2 0 (;@4;)) (catch_ref 3 1 (;@3;)) (catch_all 2 (;@2;)) (catch_all_ref 3 (;@1;)) ;; label = @5
+(;@100   ;)              local.get 0
+(;@102   ;)              call 0
+(;@104   ;)            end
+(;@105   ;)            return
+(;@106   ;)          end
+(;@107   ;)          return
+(;@108   ;)        end
+(;@109   ;)        local.set 1
+(;@10b   ;)        drop
+(;@10c   ;)        drop
+(;@10d   ;)        i32.const -1
+(;@10f   ;)        return
+(;@110   ;)      end
+(;@111   ;)      i32.const -2
+(;@113   ;)      return
+(;@114   ;)    end
+(;@115   ;)    throw_ref
+(;@116   ;)  )
+(;@118   ;)  (func (;3;) (type 4) (param i32) (result i32)
+(;@119   ;)    block (result i32) ;; label = @1
+(;@11b   ;)      try_table (result i32) (catch 0 0 (;@1;)) ;; label = @2
+(;@121   ;)        block (result exnref) ;; label = @3
+(;@123   ;)          try_table (result i32) (catch_all_ref 0 (;@3;)) ;; label = @4
+(;@128   ;)            local.get 0
+(;@12a   ;)            call 0
+(;@12c   ;)          end
+(;@12d   ;)          return
+(;@12e   ;)        end
+(;@12f   ;)        throw_ref
+(;@130   ;)      end
+(;@131   ;)    end
+(;@132   ;)    local.set 0
+(;@134   ;)    block ;; label = @1
+(;@136   ;)      local.get 0
+(;@138   ;)      try_table (type 4) (param i32) (result i32) (catch_all 0 (;@1;)) ;; label = @2
+(;@13d   ;)        call 0
+(;@13f   ;)      end
+(;@140   ;)      return
+(;@141   ;)    end
+(;@142   ;)    i32.const 0
+(;@144   ;)  )
+(;@146   ;)  (func (;4;) (type 3) (param externref)
+(;@147   ;)    local.get 0
+(;@149   ;)    throw 4
+(;@14b   ;)  )
+(;@14d   ;)  (func (;5;) (type 7) (param exnref)
+(;@14e   ;)    local.get 0
+(;@150   ;)    throw_ref
+(;@151   ;)  )
+(;@152   ;))

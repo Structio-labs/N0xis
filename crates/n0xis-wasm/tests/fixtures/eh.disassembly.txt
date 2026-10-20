@@ -1,0 +1,130 @@
+
+eh.wasm:	file format wasm 0x1
+module name: <eh>
+
+Code Disassembly:
+
+00006a func[0] <throws>:
+ 00006b: 20 00                      | local.get 0 <n>
+ 00006d: 45                         | i32.eqz
+ 00006e: 04 40                      | if
+ 000070: 08 01                      |   throw 1 <empty>
+ 000072: 0b                         | end
+ 000073: 20 00                      | local.get 0 <n>
+ 000075: 41 01                      | i32.const 1
+ 000077: 46                         | i32.eq
+ 000078: 04 40                      | if
+ 00007a: 20 00                      |   local.get 0 <n>
+ 00007c: 08 00                      |   throw 0 <failure>
+ 00007e: 0b                         | end
+ 00007f: 20 00                      | local.get 0 <n>
+ 000081: 41 02                      | i32.const 2
+ 000083: 46                         | i32.eq
+ 000084: 04 40                      | if
+ 000086: 20 00                      |   local.get 0 <n>
+ 000088: 08 02                      |   throw 2 <code>
+ 00008a: 0b                         | end
+ 00008b: 20 00                      | local.get 0 <n>
+ 00008d: 42 07                      | i64.const 7
+ 00008f: 08 03                      | throw 3 <pair>
+ 000091: 0b                         | end
+000093 func[1] <catch_each>:
+ 000094: 01 69                      | local[1] type=exnref
+ 000096: 1f 40 00                   | try_table 
+ 000099: 20 00                      |   local.get 0 <n>
+ 00009b: 10 00                      |   call 0 <throws>
+ 00009d: 1a                         |   drop
+ 00009e: 0b                         | end
+ 00009f: 02 7f                      | block i32
+ 0000a1: 1f 7f 01 00 02 00          |   try_table i32 catch 2 0
+ 0000a7: 20 00                      |     local.get 0 <n>
+ 0000a9: 10 00                      |     call 0 <throws>
+ 0000ab: 0b                         |   end
+ 0000ac: 0b                         | end
+ 0000ad: 1a                         | drop
+ 0000ae: 02 05                      | block type[5]
+ 0000b0: 1f 40 01 01 02 00          |   try_table catch_ref 2 0
+ 0000b6: 20 00                      |     local.get 0 <n>
+ 0000b8: 10 00                      |     call 0 <throws>
+ 0000ba: 1a                         |     drop
+ 0000bb: 0b                         |   end
+ 0000bc: 41 00                      |   i32.const 0
+ 0000be: d0 69                      |   ref.null exn
+ 0000c0: 0b                         | end
+ 0000c1: 21 01                      | local.set 1 <exn>
+ 0000c3: 1a                         | drop
+ 0000c4: 02 40                      | block
+ 0000c6: 1f 40 01 02 00             |   try_table catch_all  0
+ 0000cb: 20 00                      |     local.get 0 <n>
+ 0000cd: 10 00                      |     call 0 <throws>
+ 0000cf: 1a                         |     drop
+ 0000d0: 0b                         |   end
+ 0000d1: 0b                         | end
+ 0000d2: 02 69                      | block exnref
+ 0000d4: 1f 40 01 03 00             |   try_table catch_all_ref  0
+ 0000d9: 20 00                      |     local.get 0 <n>
+ 0000db: 10 00                      |     call 0 <throws>
+ 0000dd: 1a                         |     drop
+ 0000de: 0b                         |   end
+ 0000df: d0 69                      |   ref.null exn
+ 0000e1: 0b                         | end
+ 0000e2: 21 01                      | local.set 1 <exn>
+ 0000e4: 20 00                      | local.get 0 <n>
+ 0000e6: 0b                         | end
+0000e8 func[2] <several>:
+ 0000e9: 01 69                      | local[1] type=exnref
+ 0000eb: 02 69                      | block exnref
+ 0000ed: 02 40                      |   block
+ 0000ef: 02 06                      |     block type[6]
+ 0000f1: 02 7f                      |       block i32
+ 0000f3: 1f 7f 04 00 02 00 01 03 01 |         try_table i32 catch 2 0 catch_ref 3 1 catch_all  2 catch_all_ref  3
+ 0000fc: 02 02 03 03                | 
+ 000100: 20 00                      |           local.get 0 <n>
+ 000102: 10 00                      |           call 0 <throws>
+ 000104: 0b                         |         end
+ 000105: 0f                         |         return
+ 000106: 0b                         |       end
+ 000107: 0f                         |       return
+ 000108: 0b                         |     end
+ 000109: 21 01                      |     local.set 1 <exn>
+ 00010b: 1a                         |     drop
+ 00010c: 1a                         |     drop
+ 00010d: 41 7f                      |     i32.const 4294967295
+ 00010f: 0f                         |     return
+ 000110: 0b                         |   end
+ 000111: 41 7e                      |   i32.const 4294967294
+ 000113: 0f                         |   return
+ 000114: 0b                         | end
+ 000115: 0a                         | throw_ref
+ 000116: 0b                         | end
+000118 func[3] <nested>:
+ 000119: 02 7f                      | block i32
+ 00011b: 1f 7f 01 00 00 00          |   try_table i32 catch 0 0
+ 000121: 02 69                      |     block exnref
+ 000123: 1f 7f 01 03 00             |       try_table i32 catch_all_ref  0
+ 000128: 20 00                      |         local.get 0 <n>
+ 00012a: 10 00                      |         call 0 <throws>
+ 00012c: 0b                         |       end
+ 00012d: 0f                         |       return
+ 00012e: 0b                         |     end
+ 00012f: 0a                         |     throw_ref
+ 000130: 0b                         |   end
+ 000131: 0b                         | end
+ 000132: 21 00                      | local.set 0 <n>
+ 000134: 02 40                      | block
+ 000136: 20 00                      |   local.get 0 <n>
+ 000138: 1f 04 01 02 00             |   try_table type[4] catch_all  0
+ 00013d: 10 00                      |     call 0 <throws>
+ 00013f: 0b                         |   end
+ 000140: 0f                         |   return
+ 000141: 0b                         | end
+ 000142: 41 00                      | i32.const 0
+ 000144: 0b                         | end
+000146 func[4] <object>:
+ 000147: 20 00                      | local.get 0 <value>
+ 000149: 08 04                      | throw 4 <object>
+ 00014b: 0b                         | end
+00014d func[5] <rethrow>:
+ 00014e: 20 00                      | local.get 0 <exn>
+ 000150: 0a                         | throw_ref
+ 000151: 0b                         | end

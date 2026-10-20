@@ -1,0 +1,381 @@
+
+threads.wasm:	file format wasm 0x1
+module name: <threads>
+
+Code Disassembly:
+
+000061 func[0] <sync>:
+ 000062: 20 00                      | local.get 0 <address>
+ 000064: 41 01                      | i32.const 1
+ 000066: fe 00 02 00                | memory.atomic.notify 2 0
+ 00006a: 1a                         | drop
+ 00006b: 20 00                      | local.get 0 <address>
+ 00006d: 41 00                      | i32.const 0
+ 00006f: 42 7f                      | i64.const 18446744073709551615
+ 000071: fe 01 02 04                | memory.atomic.wait32 2 4
+ 000075: 1a                         | drop
+ 000076: 20 00                      | local.get 0 <address>
+ 000078: 20 01                      | local.get 1 <expected>
+ 00007a: 42 c0 84 3d                | i64.const 1000000
+ 00007e: fe 02 03 08                | memory.atomic.wait64 3 8
+ 000082: 1a                         | drop
+ 000083: fe 03 00                   | atomic.fence 0
+ 000086: 42 00                      | i64.const 0
+ 000088: 41 02                      | i32.const 2
+ 00008a: fe 00 42 01 80 80 80 80 10 | memory.atomic.notify 2 1 0
+ 000093: 1a                         | drop
+ 000094: 42 00                      | i64.const 0
+ 000096: 41 07                      | i32.const 7
+ 000098: 42 00                      | i64.const 0
+ 00009a: fe 01 42 01 84 80 80 80 10 | memory.atomic.wait32 2 1 4
+ 0000a3: 1a                         | drop
+ 0000a4: 42 00                      | i64.const 0
+ 0000a6: 20 01                      | local.get 1 <expected>
+ 0000a8: 42 00                      | i64.const 0
+ 0000aa: fe 02 43 01 88 80 80 80 10 | memory.atomic.wait64 3 1 8
+ 0000b3: 1a                         | drop
+ 0000b4: 20 00                      | local.get 0 <address>
+ 0000b6: 41 03                      | i32.const 3
+ 0000b8: fe 00 42 02 10             | memory.atomic.notify 2 2 16
+ 0000bd: 1a                         | drop
+ 0000be: 20 00                      | local.get 0 <address>
+ 0000c0: 41 00                      | i32.const 0
+ 0000c2: 42 00                      | i64.const 0
+ 0000c4: fe 01 42 02 14             | memory.atomic.wait32 2 2 20
+ 0000c9: 1a                         | drop
+ 0000ca: 20 00                      | local.get 0 <address>
+ 0000cc: 20 01                      | local.get 1 <expected>
+ 0000ce: 42 00                      | i64.const 0
+ 0000d0: fe 02 43 02 18             | memory.atomic.wait64 3 2 24
+ 0000d5: 1a                         | drop
+ 0000d6: fe 03 00                   | atomic.fence 0
+ 0000d9: 20 00                      | local.get 0 <address>
+ 0000db: 41 7f                      | i32.const 4294967295
+ 0000dd: fe 00 42 03 20             | memory.atomic.notify 2 3 32
+ 0000e2: 1a                         | drop
+ 0000e3: 20 00                      | local.get 0 <address>
+ 0000e5: 41 00                      | i32.const 0
+ 0000e7: 42 7f                      | i64.const 18446744073709551615
+ 0000e9: fe 01 42 03 24             | memory.atomic.wait32 2 3 36
+ 0000ee: 1a                         | drop
+ 0000ef: 20 00                      | local.get 0 <address>
+ 0000f1: 20 01                      | local.get 1 <expected>
+ 0000f3: 42 7f                      | i64.const 18446744073709551615
+ 0000f5: fe 02 43 03 28             | memory.atomic.wait64 3 3 40
+ 0000fa: 0b                         | end
+0000fc func[1] <loads_and_stores>:
+ 0000fd: 20 00                      | local.get 0 <address>
+ 0000ff: fe 10 02 00                | i32.atomic.load 2 0
+ 000103: 1a                         | drop
+ 000104: 20 00                      | local.get 0 <address>
+ 000106: fe 11 03 08                | i64.atomic.load 3 8
+ 00010a: 1a                         | drop
+ 00010b: 20 00                      | local.get 0 <address>
+ 00010d: fe 12 00 10                | i32.atomic.load8_u 0 16
+ 000111: 1a                         | drop
+ 000112: 20 00                      | local.get 0 <address>
+ 000114: fe 13 01 12                | i32.atomic.load16_u 1 18
+ 000118: 1a                         | drop
+ 000119: 20 00                      | local.get 0 <address>
+ 00011b: fe 14 00 14                | i64.atomic.load8_u 0 20
+ 00011f: 1a                         | drop
+ 000120: 20 00                      | local.get 0 <address>
+ 000122: fe 15 01 16                | i64.atomic.load16_u 1 22
+ 000126: 1a                         | drop
+ 000127: 20 00                      | local.get 0 <address>
+ 000129: fe 16 02 fc ff ff ff 0f    | i64.atomic.load32_u 2 4294967292
+ 000131: 1a                         | drop
+ 000132: 20 00                      | local.get 0 <address>
+ 000134: 41 7f                      | i32.const 4294967295
+ 000136: fe 17 02 18                | i32.atomic.store 2 24
+ 00013a: 20 00                      | local.get 0 <address>
+ 00013c: 20 01                      | local.get 1 <value>
+ 00013e: fe 18 03 20                | i64.atomic.store 3 32
+ 000142: 20 00                      | local.get 0 <address>
+ 000144: 41 ff 01                   | i32.const 255
+ 000147: fe 19 00 28                | i32.atomic.store8 0 40
+ 00014b: 20 00                      | local.get 0 <address>
+ 00014d: 41 ff ff 03                | i32.const 65535
+ 000151: fe 1a 01 2a                | i32.atomic.store16 1 42
+ 000155: 20 00                      | local.get 0 <address>
+ 000157: 20 01                      | local.get 1 <value>
+ 000159: fe 1b 00 ff ff ff ff 0f    | i64.atomic.store8 0 4294967295
+ 000161: 20 00                      | local.get 0 <address>
+ 000163: 20 01                      | local.get 1 <value>
+ 000165: fe 1c 01 2e                | i64.atomic.store16 1 46
+ 000169: 20 00                      | local.get 0 <address>
+ 00016b: 20 01                      | local.get 1 <value>
+ 00016d: fe 1d 02 30                | i64.atomic.store32 2 48
+ 000171: 0b                         | end
+000174 func[2] <read_modify_write>:
+ 000175: 20 00                      | local.get 0 <address>
+ 000177: 41 6c                      | i32.const 4294967276
+ 000179: fe 1e 02 00                | i32.atomic.rmw.add 2 0
+ 00017d: 1a                         | drop
+ 00017e: 20 00                      | local.get 0 <address>
+ 000180: 20 01                      | local.get 1 <value>
+ 000182: fe 1f 03 08                | i64.atomic.rmw.add 3 8
+ 000186: 1a                         | drop
+ 000187: 20 00                      | local.get 0 <address>
+ 000189: 41 72                      | i32.const 4294967282
+ 00018b: fe 20 00 10                | i32.atomic.rmw8.add_u 0 16
+ 00018f: 1a                         | drop
+ 000190: 20 00                      | local.get 0 <address>
+ 000192: 41 75                      | i32.const 4294967285
+ 000194: fe 21 01 18                | i32.atomic.rmw16.add_u 1 24
+ 000198: 1a                         | drop
+ 000199: 20 00                      | local.get 0 <address>
+ 00019b: 20 01                      | local.get 1 <value>
+ 00019d: fe 22 00 20                | i64.atomic.rmw8.add_u 0 32
+ 0001a1: 1a                         | drop
+ 0001a2: 20 00                      | local.get 0 <address>
+ 0001a4: 20 01                      | local.get 1 <value>
+ 0001a6: fe 23 01 28                | i64.atomic.rmw16.add_u 1 40
+ 0001aa: 1a                         | drop
+ 0001ab: 20 00                      | local.get 0 <address>
+ 0001ad: 20 01                      | local.get 1 <value>
+ 0001af: fe 24 02 30                | i64.atomic.rmw32.add_u 2 48
+ 0001b3: 1a                         | drop
+ 0001b4: 20 00                      | local.get 0 <address>
+ 0001b6: 41 01                      | i32.const 1
+ 0001b8: fe 25 02 38                | i32.atomic.rmw.sub 2 56
+ 0001bc: 1a                         | drop
+ 0001bd: 20 00                      | local.get 0 <address>
+ 0001bf: 20 01                      | local.get 1 <value>
+ 0001c1: fe 26 03 40                | i64.atomic.rmw.sub 3 64
+ 0001c5: 1a                         | drop
+ 0001c6: 20 00                      | local.get 0 <address>
+ 0001c8: 41 07                      | i32.const 7
+ 0001ca: fe 27 00 48                | i32.atomic.rmw8.sub_u 0 72
+ 0001ce: 1a                         | drop
+ 0001cf: 20 00                      | local.get 0 <address>
+ 0001d1: 41 0a                      | i32.const 10
+ 0001d3: fe 28 01 50                | i32.atomic.rmw16.sub_u 1 80
+ 0001d7: 1a                         | drop
+ 0001d8: 20 00                      | local.get 0 <address>
+ 0001da: 20 01                      | local.get 1 <value>
+ 0001dc: fe 29 00 58                | i64.atomic.rmw8.sub_u 0 88
+ 0001e0: 1a                         | drop
+ 0001e1: 20 00                      | local.get 0 <address>
+ 0001e3: 20 01                      | local.get 1 <value>
+ 0001e5: fe 2a 01 60                | i64.atomic.rmw16.sub_u 1 96
+ 0001e9: 1a                         | drop
+ 0001ea: 20 00                      | local.get 0 <address>
+ 0001ec: 20 01                      | local.get 1 <value>
+ 0001ee: fe 2b 02 68                | i64.atomic.rmw32.sub_u 2 104
+ 0001f2: 1a                         | drop
+ 0001f3: 20 00                      | local.get 0 <address>
+ 0001f5: 41 16                      | i32.const 22
+ 0001f7: fe 2c 02 70                | i32.atomic.rmw.and 2 112
+ 0001fb: 1a                         | drop
+ 0001fc: 20 00                      | local.get 0 <address>
+ 0001fe: 20 01                      | local.get 1 <value>
+ 000200: fe 2d 03 78                | i64.atomic.rmw.and 3 120
+ 000204: 1a                         | drop
+ 000205: 20 00                      | local.get 0 <address>
+ 000207: 41 1c                      | i32.const 28
+ 000209: fe 2e 00 80 01             | i32.atomic.rmw8.and_u 0 128
+ 00020e: 1a                         | drop
+ 00020f: 20 00                      | local.get 0 <address>
+ 000211: 41 1f                      | i32.const 31
+ 000213: fe 2f 01 88 01             | i32.atomic.rmw16.and_u 1 136
+ 000218: 1a                         | drop
+ 000219: 20 00                      | local.get 0 <address>
+ 00021b: 20 01                      | local.get 1 <value>
+ 00021d: fe 30 00 90 01             | i64.atomic.rmw8.and_u 0 144
+ 000222: 1a                         | drop
+ 000223: 20 00                      | local.get 0 <address>
+ 000225: 20 01                      | local.get 1 <value>
+ 000227: fe 31 01 98 01             | i64.atomic.rmw16.and_u 1 152
+ 00022c: 1a                         | drop
+ 00022d: 20 00                      | local.get 0 <address>
+ 00022f: 20 01                      | local.get 1 <value>
+ 000231: fe 32 02 a0 01             | i64.atomic.rmw32.and_u 2 160
+ 000236: 1a                         | drop
+ 000237: 20 00                      | local.get 0 <address>
+ 000239: 41 2b                      | i32.const 43
+ 00023b: fe 33 02 a8 01             | i32.atomic.rmw.or 2 168
+ 000240: 1a                         | drop
+ 000241: 20 00                      | local.get 0 <address>
+ 000243: 20 01                      | local.get 1 <value>
+ 000245: fe 34 03 b0 01             | i64.atomic.rmw.or 3 176
+ 00024a: 1a                         | drop
+ 00024b: 20 00                      | local.get 0 <address>
+ 00024d: 41 31                      | i32.const 49
+ 00024f: fe 35 00 b8 01             | i32.atomic.rmw8.or_u 0 184
+ 000254: 1a                         | drop
+ 000255: 20 00                      | local.get 0 <address>
+ 000257: 41 34                      | i32.const 52
+ 000259: fe 36 01 c0 01             | i32.atomic.rmw16.or_u 1 192
+ 00025e: 1a                         | drop
+ 00025f: 20 00                      | local.get 0 <address>
+ 000261: 20 01                      | local.get 1 <value>
+ 000263: fe 37 00 c8 01             | i64.atomic.rmw8.or_u 0 200
+ 000268: 1a                         | drop
+ 000269: 20 00                      | local.get 0 <address>
+ 00026b: 20 01                      | local.get 1 <value>
+ 00026d: fe 38 01 d0 01             | i64.atomic.rmw16.or_u 1 208
+ 000272: 1a                         | drop
+ 000273: 20 00                      | local.get 0 <address>
+ 000275: 20 01                      | local.get 1 <value>
+ 000277: fe 39 02 d8 01             | i64.atomic.rmw32.or_u 2 216
+ 00027c: 1a                         | drop
+ 00027d: 20 00                      | local.get 0 <address>
+ 00027f: 41 c0 00                   | i32.const 64
+ 000282: fe 3a 02 e0 01             | i32.atomic.rmw.xor 2 224
+ 000287: 1a                         | drop
+ 000288: 20 00                      | local.get 0 <address>
+ 00028a: 20 01                      | local.get 1 <value>
+ 00028c: fe 3b 03 e8 01             | i64.atomic.rmw.xor 3 232
+ 000291: 1a                         | drop
+ 000292: 20 00                      | local.get 0 <address>
+ 000294: 41 c6 00                   | i32.const 70
+ 000297: fe 3c 00 f0 01             | i32.atomic.rmw8.xor_u 0 240
+ 00029c: 1a                         | drop
+ 00029d: 20 00                      | local.get 0 <address>
+ 00029f: 41 c9 00                   | i32.const 73
+ 0002a2: fe 3d 01 f8 01             | i32.atomic.rmw16.xor_u 1 248
+ 0002a7: 1a                         | drop
+ 0002a8: 20 00                      | local.get 0 <address>
+ 0002aa: 20 01                      | local.get 1 <value>
+ 0002ac: fe 3e 00 80 02             | i64.atomic.rmw8.xor_u 0 256
+ 0002b1: 1a                         | drop
+ 0002b2: 20 00                      | local.get 0 <address>
+ 0002b4: 20 01                      | local.get 1 <value>
+ 0002b6: fe 3f 01 88 02             | i64.atomic.rmw16.xor_u 1 264
+ 0002bb: 1a                         | drop
+ 0002bc: 20 00                      | local.get 0 <address>
+ 0002be: 20 01                      | local.get 1 <value>
+ 0002c0: fe 40 02 90 02             | i64.atomic.rmw32.xor_u 2 272
+ 0002c5: 1a                         | drop
+ 0002c6: 20 00                      | local.get 0 <address>
+ 0002c8: 41 d5 00                   | i32.const 85
+ 0002cb: fe 41 02 98 02             | i32.atomic.rmw.xchg 2 280
+ 0002d0: 1a                         | drop
+ 0002d1: 20 00                      | local.get 0 <address>
+ 0002d3: 20 01                      | local.get 1 <value>
+ 0002d5: fe 42 03 a0 02             | i64.atomic.rmw.xchg 3 288
+ 0002da: 1a                         | drop
+ 0002db: 20 00                      | local.get 0 <address>
+ 0002dd: 41 db 00                   | i32.const 91
+ 0002e0: fe 43 00 a8 02             | i32.atomic.rmw8.xchg_u 0 296
+ 0002e5: 1a                         | drop
+ 0002e6: 20 00                      | local.get 0 <address>
+ 0002e8: 41 de 00                   | i32.const 94
+ 0002eb: fe 44 01 b0 02             | i32.atomic.rmw16.xchg_u 1 304
+ 0002f0: 1a                         | drop
+ 0002f1: 20 00                      | local.get 0 <address>
+ 0002f3: 20 01                      | local.get 1 <value>
+ 0002f5: fe 45 00 b8 02             | i64.atomic.rmw8.xchg_u 0 312
+ 0002fa: 1a                         | drop
+ 0002fb: 20 00                      | local.get 0 <address>
+ 0002fd: 20 01                      | local.get 1 <value>
+ 0002ff: fe 46 01 c0 02             | i64.atomic.rmw16.xchg_u 1 320
+ 000304: 1a                         | drop
+ 000305: 20 00                      | local.get 0 <address>
+ 000307: 20 01                      | local.get 1 <value>
+ 000309: fe 47 02 c8 02             | i64.atomic.rmw32.xchg_u 2 328
+ 00030e: 1a                         | drop
+ 00030f: 20 00                      | local.get 0 <address>
+ 000311: 41 ea 00                   | i32.const 106
+ 000314: 41 eb 00                   | i32.const 107
+ 000317: fe 48 02 d0 02             | i32.atomic.rmw.cmpxchg 2 336
+ 00031c: 1a                         | drop
+ 00031d: 20 00                      | local.get 0 <address>
+ 00031f: 20 01                      | local.get 1 <value>
+ 000321: 42 87 b0 7d                | i64.const 18446744073709508615
+ 000325: fe 49 03 d8 02             | i64.atomic.rmw.cmpxchg 3 344
+ 00032a: 1a                         | drop
+ 00032b: 20 00                      | local.get 0 <address>
+ 00032d: 41 f0 00                   | i32.const 112
+ 000330: 41 f1 00                   | i32.const 113
+ 000333: fe 4a 00 e0 02             | i32.atomic.rmw8.cmpxchg_u 0 352
+ 000338: 1a                         | drop
+ 000339: 20 00                      | local.get 0 <address>
+ 00033b: 41 f3 00                   | i32.const 115
+ 00033e: 41 f4 00                   | i32.const 116
+ 000341: fe 4b 01 e8 02             | i32.atomic.rmw16.cmpxchg_u 1 360
+ 000346: 1a                         | drop
+ 000347: 20 00                      | local.get 0 <address>
+ 000349: 20 01                      | local.get 1 <value>
+ 00034b: 42 cf 98 7d                | i64.const 18446744073709505615
+ 00034f: fe 4c 00 f0 02             | i64.atomic.rmw8.cmpxchg_u 0 368
+ 000354: 1a                         | drop
+ 000355: 20 00                      | local.get 0 <address>
+ 000357: 20 01                      | local.get 1 <value>
+ 000359: 42 e7 90 7d                | i64.const 18446744073709504615
+ 00035d: fe 4d 01 f8 02             | i64.atomic.rmw16.cmpxchg_u 1 376
+ 000362: 1a                         | drop
+ 000363: 20 00                      | local.get 0 <address>
+ 000365: 20 01                      | local.get 1 <value>
+ 000367: 42 ff 88 7d                | i64.const 18446744073709503615
+ 00036b: fe 4e 02 80 03             | i64.atomic.rmw32.cmpxchg_u 2 384
+ 000370: 1a                         | drop
+ 000371: 0b                         | end
+000373 func[3] <wide>:
+ 000374: 20 00                      | local.get 0 <address>
+ 000376: fe 10 42 01 80 80 80 80 10 | i32.atomic.load 2 1 0
+ 00037f: 1a                         | drop
+ 000380: 20 00                      | local.get 0 <address>
+ 000382: fe 11 43 01 88 80 80 80 10 | i64.atomic.load 3 1 8
+ 00038b: 1a                         | drop
+ 00038c: 20 00                      | local.get 0 <address>
+ 00038e: fe 16 42 01 fc ff ff ff ff | i64.atomic.load32_u 2 1 4294967292
+ 000397: ff ff ff ff 01             | 
+ 00039c: 1a                         | drop
+ 00039d: 20 00                      | local.get 0 <address>
+ 00039f: 20 01                      | local.get 1 <value>
+ 0003a1: fe 18 43 01 80 80 80 80 20 | i64.atomic.store 3 1 0
+ 0003aa: 20 00                      | local.get 0 <address>
+ 0003ac: 41 01                      | i32.const 1
+ 0003ae: fe 1a 41 01 82 80 80 80 10 | i32.atomic.store16 1 1 2
+ 0003b7: 20 00                      | local.get 0 <address>
+ 0003b9: 41 01                      | i32.const 1
+ 0003bb: fe 1e 42 01 80 80 80 80 10 | i32.atomic.rmw.add 2 1 0
+ 0003c4: 1a                         | drop
+ 0003c5: 20 00                      | local.get 0 <address>
+ 0003c7: 20 01                      | local.get 1 <value>
+ 0003c9: fe 45 40 01 81 80 80 80 10 | i64.atomic.rmw8.xchg_u 0 1 1
+ 0003d2: 1a                         | drop
+ 0003d3: 20 00                      | local.get 0 <address>
+ 0003d5: 20 01                      | local.get 1 <value>
+ 0003d7: 42 00                      | i64.const 0
+ 0003d9: fe 49 43 01 80 80 80 80 80 | i64.atomic.rmw.cmpxchg 3 1 0
+ 0003e2: 20                         | 
+ 0003e3: 0b                         | end
+0003e5 func[4] <private>:
+ 0003e6: 20 00                      | local.get 0 <address>
+ 0003e8: fe 10 42 02 00             | i32.atomic.load 2 2 0
+ 0003ed: 1a                         | drop
+ 0003ee: 20 00                      | local.get 0 <address>
+ 0003f0: 42 05                      | i64.const 5
+ 0003f2: fe 1d 42 02 04             | i64.atomic.store32 2 2 4
+ 0003f7: 20 00                      | local.get 0 <address>
+ 0003f9: 41 01                      | i32.const 1
+ 0003fb: fe 28 41 02 08             | i32.atomic.rmw16.sub_u 1 2 8
+ 000400: 1a                         | drop
+ 000401: 20 00                      | local.get 0 <address>
+ 000403: 42 00                      | i64.const 0
+ 000405: 42 01                      | i64.const 1
+ 000407: fe 4e 42 02 08             | i64.atomic.rmw32.cmpxchg_u 2 2 8
+ 00040c: 1a                         | drop
+ 00040d: 20 00                      | local.get 0 <address>
+ 00040f: 41 01                      | i32.const 1
+ 000411: fe 2e 40 02 0c             | i32.atomic.rmw8.and_u 0 2 12
+ 000416: 0b                         | end
+000418 func[5] <own>:
+ 000419: 20 00                      | local.get 0 <address>
+ 00041b: fe 15 41 03 02             | i64.atomic.load16_u 1 3 2
+ 000420: 1a                         | drop
+ 000421: 20 00                      | local.get 0 <address>
+ 000423: 41 07                      | i32.const 7
+ 000425: fe 19 40 03 01             | i32.atomic.store8 0 3 1
+ 00042a: 20 00                      | local.get 0 <address>
+ 00042c: 42 01                      | i64.const 1
+ 00042e: fe 34 43 03 08             | i64.atomic.rmw.or 3 3 8
+ 000433: 1a                         | drop
+ 000434: 20 00                      | local.get 0 <address>
+ 000436: 41 00                      | i32.const 0
+ 000438: 41 01                      | i32.const 1
+ 00043a: fe 48 42 03 10             | i32.atomic.rmw.cmpxchg 2 3 16
+ 00043f: 0b                         | end

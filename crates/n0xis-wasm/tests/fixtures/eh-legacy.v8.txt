@@ -1,0 +1,164 @@
+000000: (module
+00002c:   (tag $tag0 (param i32))
+00002e:   (tag $tag1 (param i32) (param i64))
+000030:   (tag $tag2)
+000045:   (func $func0 (param $var0 i32) (result i32)
+000046:     local.get $var0
+000048:     i32.eqz
+000049:     if
+00004b:       throw $tag2
+00004d:     end
+00004e:     local.get $var0
+000050:     i32.const 1
+000052:     i32.eq
+000053:     if
+000055:       local.get $var0
+000057:       throw $tag0
+000059:     end
+00005a:     local.get $var0
+00005c:     i64.const 7
+00005e:     throw $tag1
+000060:   )
+000062:   (func $handlers (;1;) (export "handlers") (param $var0 i32) (result i32)
+000063:     try (result i32)
+000065:       local.get $var0
+000067:       call $func0
+000069:     catch $tag0
+00006b:     end
+00006c:     drop
+00006d:     try (result i32)
+00006f:       local.get $var0
+000071:       call $func0
+000073:     catch $tag0
+000075:     catch $tag1
+000077:       drop
+000078:     catch $tag2
+00007a:       i32.const 2
+00007c:     end
+00007d:     drop
+00007e:     try
+000080:       local.get $var0
+000082:       call $func0
+000084:       drop
+000085:     catch_all
+000086:     end
+000087:     try (result i32)
+000089:       local.get $var0
+00008b:       call $func0
+00008d:     catch $tag1
+00008f:       drop
+000090:     catch_all
+000091:       i32.const -1
+000093:     end
+000094:     drop
+000095:     try
+000097:       local.get $var0
+000099:       call $func0
+00009b:       drop
+00009c:     end
+00009d:     try (result i32) (result i64)
+00009f:       local.get $var0
+0000a1:       call $func0
+0000a3:       i64.const 0
+0000a5:     catch $tag1
+0000a7:     end
+0000a8:     drop
+0000a9:     drop
+0000aa:     local.get $var0
+0000ac:     try (param i32) (result i32)
+0000ae:       call $func0
+0000b0:     catch $tag0
+0000b2:       i32.const 1
+0000b4:       i32.add
+0000b5:     end
+0000b6:   )
+0000b8:   (func $func2 (param $var0 i32) (result i32)
+0000b9:     try $label0 (result i32)
+0000bb:       try
+0000bd:         local.get $var0
+0000bf:         call $func0
+0000c1:         drop
+0000c2:       delegate $label0
+0000c4:       local.get $var0
+0000c6:     catch_all
+0000c7:       i32.const 0
+0000c9:     end
+0000ca:     drop
+0000cb:     block $label1
+0000cd:       try
+0000cf:         local.get $var0
+0000d1:         call $func0
+0000d3:         drop
+0000d4:       delegate $label1
+0000d6:     end
+0000d7:     block $label2
+0000d9:       try
+0000db:         try
+0000dd:           local.get $var0
+0000df:           call $func0
+0000e1:           drop
+0000e2:         delegate $label1
+0000e4:       catch_all
+0000e5:       end
+0000e6:     end
+0000e7:     try
+0000e9:       local.get $var0
+0000eb:       call $func0
+0000ed:       drop
+0000ee:     delegate $label2
+0000f0:     local.get $var0
+0000f2:   )
+0000f4:   (func $func3 (param $var0 i32) (result i32)
+0000f5:     try $label0 (result i32)
+0000f7:       local.get $var0
+0000f9:       call $func0
+0000fb:     catch $tag0
+0000fd:       drop
+0000fe:       rethrow $label0
+000100:     end $label0
+000101:     drop
+000102:     try $label1
+000104:       local.get $var0
+000106:       call $func0
+000108:       drop
+000109:     catch_all
+00010a:       block
+00010c:         local.get $var0
+00010e:         if
+000110:           rethrow $label1
+000112:         end
+000113:         rethrow $label1
+000115:       end
+000116:     end $label1
+000117:     try $label2
+000119:       local.get $var0
+00011b:       call $func0
+00011d:       drop
+00011e:     catch $tag0
+000120:       drop
+000121:       try
+000123:         local.get $var0
+000125:         call $func0
+000127:         drop
+000128:       catch_all
+000129:         rethrow $label2
+00012b:       end
+00012c:     end $label2
+00012d:     local.get $var0
+00012f:   )
+000131:   (func $func4 (param $var0 i32) (result i32)
+000132:     try (result i32)
+000134:       try (result i32)
+000136:         try (result i32)
+000138:           local.get $var0
+00013a:           call $func0
+00013c:         catch $tag2
+00013e:           i32.const 3
+000140:         end
+000141:       catch $tag0
+000143:       end
+000144:     catch_all
+000145:       i32.const -1
+000147:     end
+000148:   )
+000149: )

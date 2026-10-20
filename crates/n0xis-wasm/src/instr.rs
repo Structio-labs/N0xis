@@ -1,11 +1,15 @@
 // Copyright (c) 2026 Tymofii Kosovskyi
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Every instruction of the core instruction set: the WebAssembly 2.0
-//! opcodes, the `0xFC` space (saturating truncation, bulk memory, table
-//! instructions) and the `0xFD` space (128-bit SIMD), plus the memory index
-//! of multiple memories and the 64-bit offsets of memory64 in a memory
-//! argument.
+//! Every instruction of the core instruction set of WebAssembly 3.0: the
+//! one-byte opcodes (with tail calls, typed function references and
+//! exception handling), the `0xFB` space (garbage-collected types), the
+//! `0xFC` space (saturating truncation, bulk memory, table instructions) and
+//! the `0xFD` space (128-bit SIMD and relaxed SIMD); and beside 3.0 the `0xFE`
+//! space of threads (atomic memory instructions) and the legacy exception
+//! handling instructions (`try`, `catch`, `catch_all`, `delegate`, `rethrow`)
+//! that LLVM still emits. A memory argument carries the memory index of
+//! multiple memories and the 64-bit offset of memory64.
 //!
 //! One table at the bottom of this file states each opcode once: its prefix
 //! and code, the variant, the immediate it carries and its text name. The
@@ -28,7 +32,22 @@
 //!   (which has no memory index) writes them;
 //! - table indices always (`call_indirect 0 (type 2)`, `table.get 0`);
 //! - block types as `(result t)` or `(type N)`, typed `select` as
-//!   `(result t …)`, `ref.null` with its heap type (`func`, `extern`);
+//!   `(result t …)`;
+//! - reference types as [`RefType`] writes them (`funcref`, `(ref null 3)`,
+//!   `(ref any)`); `ref.null` with its heap type, an abstract name or a type
+//!   index (`ref.null func`, `ref.null 3`); `ref.test` and `ref.cast` with the
+//!   full reference type; `br_on_cast` and `br_on_cast_fail` with the label,
+//!   then the source and target types;
+//! - `try_table` with its block type, then each clause (`(catch T L)`,
+//!   `(catch_ref T L)`, `(catch_all L)`, `(catch_all_ref L)`);
+//! - `return_call_indirect` like `call_indirect`;
+//! - `atomic.fence` with no immediate: its reserved byte is checked, not
+//!   printed; atomic memory arguments are memory arguments, `offset=O align=A`
+//!   always;
+//! - field, type, tag, data and element indices in decimal, in the text
+//!   format's order, which is the binary order except that `call_indirect`,
+//!   `return_call_indirect`, `memory.init` and `table.init` put the table or
+//!   memory first (the binary format states the type or the segment first);
 //! - `v128.const` as `i32x4` with four `0x%08x` words, and `i8x16.shuffle`
 //!   with its sixteen lane indices in decimal.
 //!
@@ -39,7 +58,8 @@ use std::fmt;
 use crate::error::{Error, Problem};
 use crate::reader::Reader;
 use crate::types::{
-    BlockType, DataIdx, ElemIdx, FuncIdx, GlobalIdx, LabelIdx, LocalIdx, MemIdx, RefType, TableIdx, TypeIdx, ValType,
+    BlockType, DataIdx, ElemIdx, FieldIdx, FuncIdx, GlobalIdx, HeapType, LabelIdx, LocalIdx, MemIdx, RefType, TableIdx,
+    TagIdx, TypeIdx, ValType,
 };
 
 /// An instruction and where it is: the offset of its first byte in the file.
@@ -52,12 +72,14 @@ pub struct Located {
 /// Which opcode an instruction is, as the binary format numbers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Opcode {
-    /// `None` for a one-byte opcode, `Some(0xFC)` or `Some(0xFD)` for one of
-    /// the prefixed spaces, whose code follows the prefix as a u32 LEB128.
+    /// `None` for a one-byte opcode, or one of the four prefixes `0xFB`,
+    /// `0xFC`, `0xFD`, `0xFE` of the prefixed spaces, whose code follows the
+    /// prefix as a u32 LEB128.
     pub prefix: Option<u8>,
     pub code: u32,
-    /// The text format's name. Two opcodes share one: `select` (0x1B) and
-    /// `select` with types (0x1C).
+    /// The text format's name. A few opcodes share one: `select` (0x1B) and
+    /// `select` with types (0x1C); `ref.test` and `ref.cast` to a non-null
+    /// and to a nullable type (`0xFB` 20 and 21, 22 and 23).
     pub name: &'static str,
 }
 
@@ -68,7 +90,9 @@ pub struct BrTargets {
     pub default: LabelIdx,
 }
 
-/// `call_indirect`: the expected type, and the table the callee is taken from.
+/// `call_indirect` and `return_call_indirect`: the expected type, and the
+/// table the callee is taken from, in binary order; the text format writes
+/// the table first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IndirectCall {
     pub ty: TypeIdx,
@@ -115,7 +139,8 @@ pub struct MemArgLane {
     pub lane: LaneIdx,
 }
 
-/// `memory.init`: the data segment, then the memory, in binary order.
+/// `memory.init`: the data segment, then the memory, in binary order; the
+/// text format writes the memory first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DataToMemory {
     pub data: DataIdx,
@@ -129,7 +154,8 @@ pub struct MemoryPair {
     pub src: MemIdx,
 }
 
-/// `table.init`: the element segment, then the table, in binary order.
+/// `table.init`: the element segment, then the table, in binary order; the
+/// text format writes the table first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ElemToTable {
     pub elem: ElemIdx,
@@ -142,6 +168,98 @@ pub struct TablePair {
     pub dst: TableIdx,
     pub src: TableIdx,
 }
+
+/// `struct.get`, `struct.set` and the like: the structure type, then the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FieldRef {
+    pub ty: TypeIdx,
+    pub field: FieldIdx,
+}
+
+/// `array.new_fixed`: the array type, then how many operands it takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FixedArray {
+    pub ty: TypeIdx,
+    pub len: u32,
+}
+
+/// `array.new_data` and `array.init_data`: the array type, then the data
+/// segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ArrayData {
+    pub ty: TypeIdx,
+    pub data: DataIdx,
+}
+
+/// `array.new_elem` and `array.init_elem`: the array type, then the element
+/// segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ArrayElem {
+    pub ty: TypeIdx,
+    pub elem: ElemIdx,
+}
+
+/// `array.copy`: the destination array type, then the source's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ArrayPair {
+    pub dst: TypeIdx,
+    pub src: TypeIdx,
+}
+
+/// The target of `ref.test` and `ref.cast` (`0xFB` 20, 22): a non-null
+/// reference to this heap type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NonNull(pub HeapType);
+
+impl NonNull {
+    pub fn ref_type(&self) -> RefType {
+        RefType { nullable: false, heap: self.0 }
+    }
+}
+
+/// The target of `ref.test` and `ref.cast` that admit null (`0xFB` 21, 23): a
+/// nullable reference to this heap type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Nullable(pub HeapType);
+
+impl Nullable {
+    pub fn ref_type(&self) -> RefType {
+        RefType { nullable: true, heap: self.0 }
+    }
+}
+
+/// `br_on_cast` and `br_on_cast_fail`: the label, the type of the operand and
+/// the type cast to. The binary format states the two heap types and, in a
+/// flags byte before the label, whether each is nullable (bit 0 the source,
+/// bit 1 the target).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CastBranch {
+    pub label: LabelIdx,
+    pub from: RefType,
+    pub to: RefType,
+}
+
+/// A clause of `try_table`: which exceptions it catches and where it branches.
+/// The `_ref` forms also hand the branch the caught exception as an `exnref`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Catch {
+    Catch { tag: TagIdx, label: LabelIdx },
+    CatchRef { tag: TagIdx, label: LabelIdx },
+    CatchAll { label: LabelIdx },
+    CatchAllRef { label: LabelIdx },
+}
+
+/// `try_table`: its block type, then its catch clauses in order.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TryTable {
+    pub ty: BlockType,
+    pub catches: Vec<Catch>,
+}
+
+/// The reserved byte after `atomic.fence`, which must be 0. It carries
+/// nothing, so all that is kept is that it was checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FenceZero;
 
 /// How one kind of immediate is read and written.
 trait Immediate: Sized {
@@ -164,7 +282,7 @@ macro_rules! plain_index_immediate {
     )*};
 }
 
-plain_index_immediate!(FuncIdx, LocalIdx, GlobalIdx, LabelIdx, TableIdx, DataIdx, ElemIdx);
+plain_index_immediate!(TypeIdx, FuncIdx, LocalIdx, GlobalIdx, TagIdx, LabelIdx, TableIdx, DataIdx, ElemIdx);
 
 impl Immediate for MemIdx {
     fn read(r: &mut Reader) -> Result<Self, Error> {
@@ -366,12 +484,153 @@ impl Immediate for MemArgLane {
     }
 }
 
-impl Immediate for RefType {
+/// `ref.null`'s immediate: `func`, `none`, `3`.
+impl Immediate for HeapType {
     fn read(r: &mut Reader) -> Result<Self, Error> {
-        RefType::read(r)
+        HeapType::read(r)
     }
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, " {}", self.heap_name())
+        write!(f, " {self}")
+    }
+}
+
+impl Immediate for NonNull {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        Ok(NonNull(HeapType::read(r)?))
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {}", self.ref_type())
+    }
+}
+
+impl Immediate for Nullable {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        Ok(Nullable(HeapType::read(r)?))
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {}", self.ref_type())
+    }
+}
+
+/// The two nullability bits of `br_on_cast`'s flags; no other bit is defined.
+const CAST_FROM_NULLABLE: u8 = 0x01;
+const CAST_TO_NULLABLE: u8 = 0x02;
+
+impl Immediate for CastBranch {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let at = r.offset();
+        let flags = r.byte()?;
+        if flags & !(CAST_FROM_NULLABLE | CAST_TO_NULLABLE) != 0 {
+            return Err(r.error(at, Problem::CastFlags(flags)));
+        }
+        let label = LabelIdx::read(r)?;
+        let from = RefType { nullable: flags & CAST_FROM_NULLABLE != 0, heap: HeapType::read(r)? };
+        let to = RefType { nullable: flags & CAST_TO_NULLABLE != 0, heap: HeapType::read(r)? };
+        Ok(CastBranch { label, from, to })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {} {} {}", self.label, self.from, self.to)
+    }
+}
+
+impl Immediate for FieldRef {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let ty = TypeIdx::read(r)?;
+        Ok(FieldRef { ty, field: FieldIdx::read(r)? })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {} {}", self.ty, self.field)
+    }
+}
+
+impl Immediate for FixedArray {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let ty = TypeIdx::read(r)?;
+        Ok(FixedArray { ty, len: r.u32()? })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {} {}", self.ty, self.len)
+    }
+}
+
+impl Immediate for ArrayData {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let ty = TypeIdx::read(r)?;
+        Ok(ArrayData { ty, data: DataIdx::read(r)? })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {} {}", self.ty, self.data)
+    }
+}
+
+impl Immediate for ArrayElem {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let ty = TypeIdx::read(r)?;
+        Ok(ArrayElem { ty, elem: ElemIdx::read(r)? })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {} {}", self.ty, self.elem)
+    }
+}
+
+impl Immediate for ArrayPair {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let dst = TypeIdx::read(r)?;
+        Ok(ArrayPair { dst, src: TypeIdx::read(r)? })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " {} {}", self.dst, self.src)
+    }
+}
+
+impl Immediate for TryTable {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let ty = BlockType::read(r)?;
+        // A clause is a kind byte and at least one index: two bytes.
+        let n = r.count(2)?;
+        let mut catches = Vec::new();
+        for _ in 0..n {
+            let at = r.offset();
+            catches.push(match r.byte()? {
+                0x00 => {
+                    let tag = TagIdx::read(r)?;
+                    Catch::Catch { tag, label: LabelIdx::read(r)? }
+                }
+                0x01 => {
+                    let tag = TagIdx::read(r)?;
+                    Catch::CatchRef { tag, label: LabelIdx::read(r)? }
+                }
+                0x02 => Catch::CatchAll { label: LabelIdx::read(r)? },
+                0x03 => Catch::CatchAllRef { label: LabelIdx::read(r)? },
+                b => return Err(r.error(at, Problem::UnknownCatchKind(b))),
+            });
+        }
+        Ok(TryTable { ty, catches })
+    }
+    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.ty.write(f)?;
+        for c in &self.catches {
+            match c {
+                Catch::Catch { tag, label } => write!(f, " (catch {tag} {label})")?,
+                Catch::CatchRef { tag, label } => write!(f, " (catch_ref {tag} {label})")?,
+                Catch::CatchAll { label } => write!(f, " (catch_all {label})")?,
+                Catch::CatchAllRef { label } => write!(f, " (catch_all_ref {label})")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Immediate for FenceZero {
+    fn read(r: &mut Reader) -> Result<Self, Error> {
+        let at = r.offset();
+        match r.byte()? {
+            0 => Ok(FenceZero),
+            b => Err(r.error(at, Problem::ReservedByte(b))),
+        }
+    }
+    fn write(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 }
 
@@ -427,22 +686,28 @@ macro_rules! bind {
 macro_rules! instructions {
     (
         plain { $( $pc:literal => $pv:ident $( ( $pt:ty ) )? = $pn:literal ; )* }
+        fb { $( $bc:literal => $bv:ident $( ( $bt:ty ) )? = $bname:literal ; )* }
         fc { $( $fc:literal => $fv:ident $( ( $ft:ty ) )? = $fname:literal ; )* }
         fd { $( $dc:literal => $dv:ident $( ( $dt:ty ) )? = $dname:literal ; )* }
+        fe { $( $ec:literal => $ev:ident $( ( $et:ty ) )? = $ename:literal ; )* }
     ) => {
         /// One instruction with its immediates, as the binary format encodes them.
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub enum Instr {
             $( $pv $( ($pt) )?, )*
+            $( $bv $( ($bt) )?, )*
             $( $fv $( ($ft) )?, )*
             $( $dv $( ($dt) )?, )*
+            $( $ev $( ($et) )?, )*
         }
 
         /// Every opcode this crate decodes, in table order.
         pub const OPCODES: &[Opcode] = &[
             $( Opcode { prefix: None, code: $pc, name: $pn }, )*
+            $( Opcode { prefix: Some(0xfb), code: $bc, name: $bname }, )*
             $( Opcode { prefix: Some(0xfc), code: $fc, name: $fname }, )*
             $( Opcode { prefix: Some(0xfd), code: $dc, name: $dname }, )*
+            $( Opcode { prefix: Some(0xfe), code: $ec, name: $ename }, )*
         ];
 
         impl Instr {
@@ -450,24 +715,30 @@ macro_rules! instructions {
             pub fn name(&self) -> &'static str {
                 match self {
                     $( Instr::$pv { .. } => $pn, )*
+                    $( Instr::$bv { .. } => $bname, )*
                     $( Instr::$fv { .. } => $fname, )*
                     $( Instr::$dv { .. } => $dname, )*
+                    $( Instr::$ev { .. } => $ename, )*
                 }
             }
 
             pub fn opcode(&self) -> Opcode {
                 match self {
                     $( Instr::$pv { .. } => Opcode { prefix: None, code: $pc, name: $pn }, )*
+                    $( Instr::$bv { .. } => Opcode { prefix: Some(0xfb), code: $bc, name: $bname }, )*
                     $( Instr::$fv { .. } => Opcode { prefix: Some(0xfc), code: $fc, name: $fname }, )*
                     $( Instr::$dv { .. } => Opcode { prefix: Some(0xfd), code: $dc, name: $dname }, )*
+                    $( Instr::$ev { .. } => Opcode { prefix: Some(0xfe), code: $ec, name: $ename }, )*
                 }
             }
 
             fn write_immediates(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 match self {
                     $( Instr::$pv $( (bind!($pt, imm)) )? => { $( Immediate::write(bind!($pt, imm), f)?; )? Ok(()) } )*
+                    $( Instr::$bv $( (bind!($bt, imm)) )? => { $( Immediate::write(bind!($bt, imm), f)?; )? Ok(()) } )*
                     $( Instr::$fv $( (bind!($ft, imm)) )? => { $( Immediate::write(bind!($ft, imm), f)?; )? Ok(()) } )*
                     $( Instr::$dv $( (bind!($dt, imm)) )? => { $( Immediate::write(bind!($dt, imm), f)?; )? Ok(()) } )*
+                    $( Instr::$ev $( (bind!($et, imm)) )? => { $( Immediate::write(bind!($et, imm), f)?; )? Ok(()) } )*
                 }
             }
         }
@@ -475,6 +746,20 @@ macro_rules! instructions {
         fn decode_plain(code: u8, r: &mut Reader) -> Result<Option<Instr>, Error> {
             Ok(Some(match code {
                 $( $pc => Instr::$pv $( ( <$pt as Immediate>::read(r)? ) )?, )*
+                _ => return Ok(None),
+            }))
+        }
+
+        fn decode_fb(code: u32, r: &mut Reader) -> Result<Option<Instr>, Error> {
+            Ok(Some(match code {
+                $( $bc => Instr::$bv $( ( <$bt as Immediate>::read(r)? ) )?, )*
+                _ => return Ok(None),
+            }))
+        }
+
+        fn decode_fe(code: u32, r: &mut Reader) -> Result<Option<Instr>, Error> {
+            Ok(Some(match code {
+                $( $ec => Instr::$ev $( ( <$et as Immediate>::read(r)? ) )?, )*
                 _ => return Ok(None),
             }))
         }
@@ -495,6 +780,19 @@ macro_rules! instructions {
     };
 }
 
+impl Instr {
+    /// The data segment the instruction names, if it names one: the
+    /// instructions the data count rule is about (a data index anywhere in
+    /// code needs a data count section).
+    pub fn data_index(&self) -> Option<DataIdx> {
+        match self {
+            Instr::MemoryInit(DataToMemory { data, .. }) | Instr::DataDrop(data) => Some(*data),
+            Instr::ArrayNewData(ArrayData { data, .. }) | Instr::ArrayInitData(ArrayData { data, .. }) => Some(*data),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Instr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())?;
@@ -507,9 +805,14 @@ pub(crate) fn decode(r: &mut Reader) -> Result<Instr, Error> {
     let at = r.offset();
     let first = r.byte()?;
     let (prefix, code, decoded) = match first {
-        0xfc | 0xfd => {
+        0xfb..=0xfe => {
             let code = r.u32()?;
-            let decoded = if first == 0xfc { decode_fc(code, r)? } else { decode_fd(code, r)? };
+            let decoded = match first {
+                0xfb => decode_fb(code, r)?,
+                0xfc => decode_fc(code, r)?,
+                0xfd => decode_fd(code, r)?,
+                _ => decode_fe(code, r)?,
+            };
             (Some(first), code, decoded)
         }
         _ => (None, u32::from(first), decode_plain(first, r)?),
@@ -525,6 +828,11 @@ instructions! {
         0x03 => Loop(BlockType) = "loop";
         0x04 => If(BlockType) = "if";
         0x05 => Else = "else";
+        0x06 => Try(BlockType) = "try";
+        0x07 => Catch(TagIdx) = "catch";
+        0x08 => Throw(TagIdx) = "throw";
+        0x09 => Rethrow(LabelIdx) = "rethrow";
+        0x0a => ThrowRef = "throw_ref";
         0x0b => End = "end";
         0x0c => Br(LabelIdx) = "br";
         0x0d => BrIf(LabelIdx) = "br_if";
@@ -532,9 +840,16 @@ instructions! {
         0x0f => Return = "return";
         0x10 => Call(FuncIdx) = "call";
         0x11 => CallIndirect(IndirectCall) = "call_indirect";
+        0x12 => ReturnCall(FuncIdx) = "return_call";
+        0x13 => ReturnCallIndirect(IndirectCall) = "return_call_indirect";
+        0x14 => CallRef(TypeIdx) = "call_ref";
+        0x15 => ReturnCallRef(TypeIdx) = "return_call_ref";
+        0x18 => Delegate(LabelIdx) = "delegate";
+        0x19 => CatchAll = "catch_all";
         0x1a => Drop = "drop";
         0x1b => Select = "select";
         0x1c => SelectTyped(SelectTypes) = "select";
+        0x1f => TryTable(TryTable) = "try_table";
         0x20 => LocalGet(LocalIdx) = "local.get";
         0x21 => LocalSet(LocalIdx) = "local.set";
         0x22 => LocalTee(LocalIdx) = "local.tee";
@@ -699,9 +1014,46 @@ instructions! {
         0xc2 => I64Extend8S = "i64.extend8_s";
         0xc3 => I64Extend16S = "i64.extend16_s";
         0xc4 => I64Extend32S = "i64.extend32_s";
-        0xd0 => RefNull(RefType) = "ref.null";
+        0xd0 => RefNull(HeapType) = "ref.null";
         0xd1 => RefIsNull = "ref.is_null";
         0xd2 => RefFunc(FuncIdx) = "ref.func";
+        0xd3 => RefEq = "ref.eq";
+        0xd4 => RefAsNonNull = "ref.as_non_null";
+        0xd5 => BrOnNull(LabelIdx) = "br_on_null";
+        0xd6 => BrOnNonNull(LabelIdx) = "br_on_non_null";
+    }
+    fb {
+        0 => StructNew(TypeIdx) = "struct.new";
+        1 => StructNewDefault(TypeIdx) = "struct.new_default";
+        2 => StructGet(FieldRef) = "struct.get";
+        3 => StructGetS(FieldRef) = "struct.get_s";
+        4 => StructGetU(FieldRef) = "struct.get_u";
+        5 => StructSet(FieldRef) = "struct.set";
+        6 => ArrayNew(TypeIdx) = "array.new";
+        7 => ArrayNewDefault(TypeIdx) = "array.new_default";
+        8 => ArrayNewFixed(FixedArray) = "array.new_fixed";
+        9 => ArrayNewData(ArrayData) = "array.new_data";
+        10 => ArrayNewElem(ArrayElem) = "array.new_elem";
+        11 => ArrayGet(TypeIdx) = "array.get";
+        12 => ArrayGetS(TypeIdx) = "array.get_s";
+        13 => ArrayGetU(TypeIdx) = "array.get_u";
+        14 => ArraySet(TypeIdx) = "array.set";
+        15 => ArrayLen = "array.len";
+        16 => ArrayFill(TypeIdx) = "array.fill";
+        17 => ArrayCopy(ArrayPair) = "array.copy";
+        18 => ArrayInitData(ArrayData) = "array.init_data";
+        19 => ArrayInitElem(ArrayElem) = "array.init_elem";
+        20 => RefTest(NonNull) = "ref.test";
+        21 => RefTestNull(Nullable) = "ref.test";
+        22 => RefCast(NonNull) = "ref.cast";
+        23 => RefCastNull(Nullable) = "ref.cast";
+        24 => BrOnCast(CastBranch) = "br_on_cast";
+        25 => BrOnCastFail(CastBranch) = "br_on_cast_fail";
+        26 => AnyConvertExtern = "any.convert_extern";
+        27 => ExternConvertAny = "extern.convert_any";
+        28 => RefI31 = "ref.i31";
+        29 => I31GetS = "i31.get_s";
+        30 => I31GetU = "i31.get_u";
     }
     fc {
         0x00 => I32TruncSatF32S = "i32.trunc_sat_f32_s";
@@ -960,5 +1312,94 @@ instructions! {
         0xfd => I32x4TruncSatF64x2UZero = "i32x4.trunc_sat_f64x2_u_zero";
         0xfe => F64x2ConvertLowI32x4S = "f64x2.convert_low_i32x4_s";
         0xff => F64x2ConvertLowI32x4U = "f64x2.convert_low_i32x4_u";
+        0x100 => I8x16RelaxedSwizzle = "i8x16.relaxed_swizzle";
+        0x101 => I32x4RelaxedTruncF32x4S = "i32x4.relaxed_trunc_f32x4_s";
+        0x102 => I32x4RelaxedTruncF32x4U = "i32x4.relaxed_trunc_f32x4_u";
+        0x103 => I32x4RelaxedTruncF64x2SZero = "i32x4.relaxed_trunc_f64x2_s_zero";
+        0x104 => I32x4RelaxedTruncF64x2UZero = "i32x4.relaxed_trunc_f64x2_u_zero";
+        0x105 => F32x4RelaxedMadd = "f32x4.relaxed_madd";
+        0x106 => F32x4RelaxedNmadd = "f32x4.relaxed_nmadd";
+        0x107 => F64x2RelaxedMadd = "f64x2.relaxed_madd";
+        0x108 => F64x2RelaxedNmadd = "f64x2.relaxed_nmadd";
+        0x109 => I8x16RelaxedLaneselect = "i8x16.relaxed_laneselect";
+        0x10a => I16x8RelaxedLaneselect = "i16x8.relaxed_laneselect";
+        0x10b => I32x4RelaxedLaneselect = "i32x4.relaxed_laneselect";
+        0x10c => I64x2RelaxedLaneselect = "i64x2.relaxed_laneselect";
+        0x10d => F32x4RelaxedMin = "f32x4.relaxed_min";
+        0x10e => F32x4RelaxedMax = "f32x4.relaxed_max";
+        0x10f => F64x2RelaxedMin = "f64x2.relaxed_min";
+        0x110 => F64x2RelaxedMax = "f64x2.relaxed_max";
+        0x111 => I16x8RelaxedQ15mulrS = "i16x8.relaxed_q15mulr_s";
+        0x112 => I16x8RelaxedDotI8x16I7x16S = "i16x8.relaxed_dot_i8x16_i7x16_s";
+        0x113 => I32x4RelaxedDotI8x16I7x16AddS = "i32x4.relaxed_dot_i8x16_i7x16_add_s";
+    }
+    fe {
+        0x00 => MemoryAtomicNotify(MemArg) = "memory.atomic.notify";
+        0x01 => MemoryAtomicWait32(MemArg) = "memory.atomic.wait32";
+        0x02 => MemoryAtomicWait64(MemArg) = "memory.atomic.wait64";
+        0x03 => AtomicFence(FenceZero) = "atomic.fence";
+        0x10 => I32AtomicLoad(MemArg) = "i32.atomic.load";
+        0x11 => I64AtomicLoad(MemArg) = "i64.atomic.load";
+        0x12 => I32AtomicLoad8U(MemArg) = "i32.atomic.load8_u";
+        0x13 => I32AtomicLoad16U(MemArg) = "i32.atomic.load16_u";
+        0x14 => I64AtomicLoad8U(MemArg) = "i64.atomic.load8_u";
+        0x15 => I64AtomicLoad16U(MemArg) = "i64.atomic.load16_u";
+        0x16 => I64AtomicLoad32U(MemArg) = "i64.atomic.load32_u";
+        0x17 => I32AtomicStore(MemArg) = "i32.atomic.store";
+        0x18 => I64AtomicStore(MemArg) = "i64.atomic.store";
+        0x19 => I32AtomicStore8(MemArg) = "i32.atomic.store8";
+        0x1a => I32AtomicStore16(MemArg) = "i32.atomic.store16";
+        0x1b => I64AtomicStore8(MemArg) = "i64.atomic.store8";
+        0x1c => I64AtomicStore16(MemArg) = "i64.atomic.store16";
+        0x1d => I64AtomicStore32(MemArg) = "i64.atomic.store32";
+        0x1e => I32AtomicRmwAdd(MemArg) = "i32.atomic.rmw.add";
+        0x1f => I64AtomicRmwAdd(MemArg) = "i64.atomic.rmw.add";
+        0x20 => I32AtomicRmw8AddU(MemArg) = "i32.atomic.rmw8.add_u";
+        0x21 => I32AtomicRmw16AddU(MemArg) = "i32.atomic.rmw16.add_u";
+        0x22 => I64AtomicRmw8AddU(MemArg) = "i64.atomic.rmw8.add_u";
+        0x23 => I64AtomicRmw16AddU(MemArg) = "i64.atomic.rmw16.add_u";
+        0x24 => I64AtomicRmw32AddU(MemArg) = "i64.atomic.rmw32.add_u";
+        0x25 => I32AtomicRmwSub(MemArg) = "i32.atomic.rmw.sub";
+        0x26 => I64AtomicRmwSub(MemArg) = "i64.atomic.rmw.sub";
+        0x27 => I32AtomicRmw8SubU(MemArg) = "i32.atomic.rmw8.sub_u";
+        0x28 => I32AtomicRmw16SubU(MemArg) = "i32.atomic.rmw16.sub_u";
+        0x29 => I64AtomicRmw8SubU(MemArg) = "i64.atomic.rmw8.sub_u";
+        0x2a => I64AtomicRmw16SubU(MemArg) = "i64.atomic.rmw16.sub_u";
+        0x2b => I64AtomicRmw32SubU(MemArg) = "i64.atomic.rmw32.sub_u";
+        0x2c => I32AtomicRmwAnd(MemArg) = "i32.atomic.rmw.and";
+        0x2d => I64AtomicRmwAnd(MemArg) = "i64.atomic.rmw.and";
+        0x2e => I32AtomicRmw8AndU(MemArg) = "i32.atomic.rmw8.and_u";
+        0x2f => I32AtomicRmw16AndU(MemArg) = "i32.atomic.rmw16.and_u";
+        0x30 => I64AtomicRmw8AndU(MemArg) = "i64.atomic.rmw8.and_u";
+        0x31 => I64AtomicRmw16AndU(MemArg) = "i64.atomic.rmw16.and_u";
+        0x32 => I64AtomicRmw32AndU(MemArg) = "i64.atomic.rmw32.and_u";
+        0x33 => I32AtomicRmwOr(MemArg) = "i32.atomic.rmw.or";
+        0x34 => I64AtomicRmwOr(MemArg) = "i64.atomic.rmw.or";
+        0x35 => I32AtomicRmw8OrU(MemArg) = "i32.atomic.rmw8.or_u";
+        0x36 => I32AtomicRmw16OrU(MemArg) = "i32.atomic.rmw16.or_u";
+        0x37 => I64AtomicRmw8OrU(MemArg) = "i64.atomic.rmw8.or_u";
+        0x38 => I64AtomicRmw16OrU(MemArg) = "i64.atomic.rmw16.or_u";
+        0x39 => I64AtomicRmw32OrU(MemArg) = "i64.atomic.rmw32.or_u";
+        0x3a => I32AtomicRmwXor(MemArg) = "i32.atomic.rmw.xor";
+        0x3b => I64AtomicRmwXor(MemArg) = "i64.atomic.rmw.xor";
+        0x3c => I32AtomicRmw8XorU(MemArg) = "i32.atomic.rmw8.xor_u";
+        0x3d => I32AtomicRmw16XorU(MemArg) = "i32.atomic.rmw16.xor_u";
+        0x3e => I64AtomicRmw8XorU(MemArg) = "i64.atomic.rmw8.xor_u";
+        0x3f => I64AtomicRmw16XorU(MemArg) = "i64.atomic.rmw16.xor_u";
+        0x40 => I64AtomicRmw32XorU(MemArg) = "i64.atomic.rmw32.xor_u";
+        0x41 => I32AtomicRmwXchg(MemArg) = "i32.atomic.rmw.xchg";
+        0x42 => I64AtomicRmwXchg(MemArg) = "i64.atomic.rmw.xchg";
+        0x43 => I32AtomicRmw8XchgU(MemArg) = "i32.atomic.rmw8.xchg_u";
+        0x44 => I32AtomicRmw16XchgU(MemArg) = "i32.atomic.rmw16.xchg_u";
+        0x45 => I64AtomicRmw8XchgU(MemArg) = "i64.atomic.rmw8.xchg_u";
+        0x46 => I64AtomicRmw16XchgU(MemArg) = "i64.atomic.rmw16.xchg_u";
+        0x47 => I64AtomicRmw32XchgU(MemArg) = "i64.atomic.rmw32.xchg_u";
+        0x48 => I32AtomicRmwCmpxchg(MemArg) = "i32.atomic.rmw.cmpxchg";
+        0x49 => I64AtomicRmwCmpxchg(MemArg) = "i64.atomic.rmw.cmpxchg";
+        0x4a => I32AtomicRmw8CmpxchgU(MemArg) = "i32.atomic.rmw8.cmpxchg_u";
+        0x4b => I32AtomicRmw16CmpxchgU(MemArg) = "i32.atomic.rmw16.cmpxchg_u";
+        0x4c => I64AtomicRmw8CmpxchgU(MemArg) = "i64.atomic.rmw8.cmpxchg_u";
+        0x4d => I64AtomicRmw16CmpxchgU(MemArg) = "i64.atomic.rmw16.cmpxchg_u";
+        0x4e => I64AtomicRmw32CmpxchgU(MemArg) = "i64.atomic.rmw32.cmpxchg_u";
     }
 }

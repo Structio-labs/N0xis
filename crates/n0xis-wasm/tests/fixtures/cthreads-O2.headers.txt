@@ -1,0 +1,18 @@
+
+cthreads-O2.wasm:	file format wasm 0x1
+module name: <cthreads-O2.wasm>
+
+Sections:
+
+     Type start=0x0000000a end=0x00000042 (size=0x00000038) count: 11
+   Import start=0x00000044 end=0x00000054 (size=0x00000010) count: 1
+ Function start=0x00000056 end=0x00000072 (size=0x0000001c) count: 27
+   Global start=0x00000075 end=0x0000010e (size=0x00000099) count: 24
+   Export start=0x00000111 end=0x00000394 (size=0x00000283) count: 51
+    Start start=0x00000396 end=0x00000397 (size=0x00000001) start: 2
+DataCount start=0x00000399 end=0x0000039a (size=0x00000001) count: 3
+     Code start=0x0000039d end=0x000005cc (size=0x0000022f) count: 27
+     Data start=0x000005ce end=0x00000615 (size=0x00000047) count: 3
+   Custom start=0x00000618 end=0x000007a8 (size=0x00000190) "name"
+   Custom start=0x000007aa end=0x000007d0 (size=0x00000026) "producers"
+   Custom start=0x000007d3 end=0x00000870 (size=0x0000009d) "target_features"

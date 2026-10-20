@@ -1,0 +1,17 @@
+
+ceh-legacy-O2.wasm:	file format wasm 0x1
+module name: <ceh-legacy-O2.wasm>
+
+Sections:
+
+     Type start=0x0000000a end=0x00000017 (size=0x0000000d) count: 3
+   Import start=0x0000001a end=0x000000a7 (size=0x0000008d) count: 7
+ Function start=0x000000a9 end=0x000000b0 (size=0x00000007) count: 6
+    Table start=0x000000b2 end=0x000000b7 (size=0x00000005) count: 1
+   Memory start=0x000000b9 end=0x000000bc (size=0x00000003) count: 1
+   Global start=0x000000be end=0x00000117 (size=0x00000059) count: 14
+   Export start=0x0000011a end=0x00000263 (size=0x00000149) count: 22
+     Code start=0x00000266 end=0x00000487 (size=0x00000221) count: 6
+   Custom start=0x0000048a end=0x00000580 (size=0x000000f6) "name"
+   Custom start=0x00000582 end=0x000005a8 (size=0x00000026) "producers"
+   Custom start=0x000005ab end=0x00000653 (size=0x000000a8) "target_features"

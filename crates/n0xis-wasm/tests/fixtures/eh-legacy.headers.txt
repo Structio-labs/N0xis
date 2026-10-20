@@ -1,0 +1,12 @@
+
+eh-legacy.wasm:	file format wasm 0x1
+module name: <eh_legacy>
+
+Sections:
+
+     Type start=0x0000000a end=0x00000021 (size=0x00000017) count: 5
+ Function start=0x00000023 end=0x00000029 (size=0x00000006) count: 5
+      Tag start=0x0000002b end=0x00000032 (size=0x00000007) count: 3
+   Export start=0x00000034 end=0x00000040 (size=0x0000000c) count: 1
+     Code start=0x00000043 end=0x00000149 (size=0x00000106) count: 5
+   Custom start=0x0000014c end=0x000001e3 (size=0x00000097) "name"

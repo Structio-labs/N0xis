@@ -1,0 +1,130 @@
+000000: (module
+000032:   (tag $env.failure (;0;) (import "env" "failure") (param i32))
+00004d:   (tag $tag1)
+00004f:   (tag $code (;2;) (export "code") (param i32))
+000051:   (tag $tag3 (param i32) (param i64))
+000053:   (tag $tag4 (param externref))
+00006a:   (func $func0 (param $var0 i32) (result i32)
+00006b:     local.get $var0
+00006d:     i32.eqz
+00006e:     if
+000070:       throw $tag1
+000072:     end
+000073:     local.get $var0
+000075:     i32.const 1
+000077:     i32.eq
+000078:     if
+00007a:       local.get $var0
+00007c:       throw $env.failure
+00007e:     end
+00007f:     local.get $var0
+000081:     i32.const 2
+000083:     i32.eq
+000084:     if
+000086:       local.get $var0
+000088:       throw $code
+00008a:     end
+00008b:     local.get $var0
+00008d:     i64.const 7
+00008f:     throw $tag3
+000091:   )
+000093:   (func $func1 (param $var0 i32) (result i32)
+000093:     (local $var1 exnref)
+000096:     try_table
+000099:       local.get $var0
+00009b:       call $func0
+00009d:       drop
+00009e:     end
+00009f:     block $label0 (result i32)
+0000a1:       try_table (result i32) catch $code $label0
+0000a7:         local.get $var0
+0000a9:         call $func0
+0000ab:       end
+0000ac:     end $label0
+0000ad:     drop
+0000ae:     block $label1 (result i32) (result exnref)
+0000b0:       try_table catch_ref $code $label1
+0000b6:         local.get $var0
+0000b8:         call $func0
+0000ba:         drop
+0000bb:       end
+0000bc:       i32.const 0
+0000be:       ref.null exn
+0000c0:     end $label1
+0000c1:     local.set $var1
+0000c3:     drop
+0000c4:     block $label2
+0000c6:       try_table catch_all $label2
+0000cb:         local.get $var0
+0000cd:         call $func0
+0000cf:         drop
+0000d0:       end
+0000d1:     end $label2
+0000d2:     block $label3 (result exnref)
+0000d4:       try_table catch_all_ref $label3
+0000d9:         local.get $var0
+0000db:         call $func0
+0000dd:         drop
+0000de:       end
+0000df:       ref.null exn
+0000e1:     end $label3
+0000e2:     local.set $var1
+0000e4:     local.get $var0
+0000e6:   )
+0000e8:   (func $run (;2;) (export "run") (param $var0 i32) (result i32)
+0000e8:     (local $var1 exnref)
+0000eb:     block $label3 (result exnref)
+0000ed:       block $label2
+0000ef:         block $label1 (result i32) (result i64) (result exnref)
+0000f1:           block $label0 (result i32)
+0000f3:             try_table (result i32) catch $code $label0 catch_ref $tag3 $label1 catch_all $label2 catch_all_ref $label3
+000100:               local.get $var0
+000102:               call $func0
+000104:             end
+000105:             return
+000106:           end $label0
+000107:           return
+000108:         end $label1
+000109:         local.set $var1
+00010b:         drop
+00010c:         drop
+00010d:         i32.const -1
+00010f:         return
+000110:       end $label2
+000111:       i32.const -2
+000113:       return
+000114:     end $label3
+000115:     throw_ref
+000116:   )
+000118:   (func $func3 (param $var0 i32) (result i32)
+000119:     block $label0 (result i32)
+00011b:       try_table (result i32) catch $env.failure $label0
+000121:         block $label1 (result exnref)
+000123:           try_table (result i32) catch_all_ref $label1
+000128:             local.get $var0
+00012a:             call $func0
+00012c:           end
+00012d:           return
+00012e:         end $label1
+00012f:         throw_ref
+000130:       end
+000131:     end $label0
+000132:     local.set $var0
+000134:     block $label2
+000136:       local.get $var0
+000138:       try_table (param i32) (result i32) catch_all $label2
+00013d:         call $func0
+00013f:       end
+000140:       return
+000141:     end $label2
+000142:     i32.const 0
+000144:   )
+000146:   (func $func4 (param $var0 externref)
+000147:     local.get $var0
+000149:     throw $tag4
+00014b:   )
+00014d:   (func $func5 (param $var0 exnref)
+00014e:     local.get $var0
+000150:     throw_ref
+000151:   )
+000152: )

@@ -1,0 +1,287 @@
+
+ceh-exnref-O2.wasm:	file format wasm 0x1
+module name: <ceh-exnref-O2.wasm>
+
+Code Disassembly:
+
+000268 func[6] <__wasm_call_ctors>:
+ 000269: 0b                         | end
+00026c func[7] <guarded>:
+ 00026d: 01 7f                      | local[1] type=i32
+ 00026f: 01 69                      | local[2] type=exnref
+ 000271: 23 80 80 80 80 00          | global.get 0 <__stack_pointer>
+ 000277: 21 01                      | local.set 1
+ 000279: 02 40                      | block
+ 00027b: 02 40                      |   block
+ 00027d: 02 7f                      |     block i32
+ 00027f: 1f 40 01 00 80 80 80 80 00 |       try_table catch 0 0
+ 000288: 00                         | 
+ 000289: 20 00                      |         local.get 0
+ 00028b: 10 80 80 80 80 00          |         call 0 <may_throw>
+ 000291: 0c 02                      |         br 2
+ 000293: 0b                         |       end
+ 000294: 00                         |       unreachable
+ 000295: 0b                         |     end
+ 000296: 21 00                      |     local.set 0
+ 000298: 20 01                      |     local.get 1
+ 00029a: 24 80 80 80 80 00          |     global.set 0 <__stack_pointer>
+ 0002a0: 20 00                      |     local.get 0
+ 0002a2: 10 81 80 80 80 00          |     call 1 <__cxa_begin_catch>
+ 0002a8: 1a                         |     drop
+ 0002a9: 02 40                      |     block
+ 0002ab: 02 69                      |       block exnref
+ 0002ad: 1f 40 01 03 00             |         try_table catch_all_ref  0
+ 0002b2: 41 7f                      |           i32.const 4294967295
+ 0002b4: 10 82 80 80 80 00          |           call 2 <report>
+ 0002ba: 21 00                      |           local.set 0
+ 0002bc: 0c 02                      |           br 2
+ 0002be: 0b                         |         end
+ 0002bf: 00                         |         unreachable
+ 0002c0: 0b                         |       end
+ 0002c1: 21 02                      |       local.set 2
+ 0002c3: 20 01                      |       local.get 1
+ 0002c5: 24 80 80 80 80 00          |       global.set 0 <__stack_pointer>
+ 0002cb: 02 40                      |       block
+ 0002cd: 02 40                      |         block
+ 0002cf: 1f 40 01 02 00             |           try_table catch_all  0
+ 0002d4: 10 83 80 80 80 00          |             call 3 <__cxa_end_catch>
+ 0002da: 0c 02                      |             br 2
+ 0002dc: 0b                         |           end
+ 0002dd: 00                         |           unreachable
+ 0002de: 0b                         |         end
+ 0002df: 20 01                      |         local.get 1
+ 0002e1: 24 80 80 80 80 00          |         global.set 0 <__stack_pointer>
+ 0002e7: 10 84 80 80 80 00          |         call 4 <std::terminate()>
+ 0002ed: 00                         |         unreachable
+ 0002ee: 0b                         |       end
+ 0002ef: 20 02                      |       local.get 2
+ 0002f1: 0a                         |       throw_ref
+ 0002f2: 0b                         |     end
+ 0002f3: 10 83 80 80 80 00          |     call 3 <__cxa_end_catch>
+ 0002f9: 0c 01                      |     br 1
+ 0002fb: 0b                         |   end
+ 0002fc: 20 00                      |   local.get 0
+ 0002fe: 10 82 80 80 80 00          |   call 2 <report>
+ 000304: 21 00                      |   local.set 0
+ 000306: 0b                         | end
+ 000307: 20 00                      | local.get 0
+ 000309: 0b                         | end
+00030c func[8] <with_cleanup>:
+ 00030d: 01 7f                      | local[1] type=i32
+ 00030f: 01 69                      | local[2] type=exnref
+ 000311: 23 80 80 80 80 00          | global.get 0 <__stack_pointer>
+ 000317: 21 01                      | local.set 1
+ 000319: 02 40                      | block
+ 00031b: 02 69                      |   block exnref
+ 00031d: 1f 40 01 03 00             |     try_table catch_all_ref  0
+ 000322: 20 00                      |       local.get 0
+ 000324: 10 80 80 80 80 00          |       call 0 <may_throw>
+ 00032a: 0c 02                      |       br 2
+ 00032c: 0b                         |     end
+ 00032d: 00                         |     unreachable
+ 00032e: 0b                         |   end
+ 00032f: 21 02                      |   local.set 2
+ 000331: 20 01                      |   local.get 1
+ 000333: 24 80 80 80 80 00          |   global.set 0 <__stack_pointer>
+ 000339: 02 40                      |   block
+ 00033b: 02 40                      |     block
+ 00033d: 1f 40 01 02 00             |       try_table catch_all  0
+ 000342: 20 00                      |         local.get 0
+ 000344: 10 82 80 80 80 00          |         call 2 <report>
+ 00034a: 1a                         |         drop
+ 00034b: 0c 02                      |         br 2
+ 00034d: 0b                         |       end
+ 00034e: 00                         |       unreachable
+ 00034f: 0b                         |     end
+ 000350: 20 01                      |     local.get 1
+ 000352: 24 80 80 80 80 00          |     global.set 0 <__stack_pointer>
+ 000358: 10 84 80 80 80 00          |     call 4 <std::terminate()>
+ 00035e: 00                         |     unreachable
+ 00035f: 0b                         |   end
+ 000360: 20 02                      |   local.get 2
+ 000362: 0a                         |   throw_ref
+ 000363: 0b                         | end
+ 000364: 02 40                      | block
+ 000366: 02 40                      |   block
+ 000368: 1f 40 01 02 00             |     try_table catch_all  0
+ 00036d: 20 00                      |       local.get 0
+ 00036f: 10 82 80 80 80 00          |       call 2 <report>
+ 000375: 1a                         |       drop
+ 000376: 0c 02                      |       br 2
+ 000378: 0b                         |     end
+ 000379: 00                         |     unreachable
+ 00037a: 0b                         |   end
+ 00037b: 20 01                      |   local.get 1
+ 00037d: 24 80 80 80 80 00          |   global.set 0 <__stack_pointer>
+ 000383: 10 84 80 80 80 00          |   call 4 <std::terminate()>
+ 000389: 00                         |   unreachable
+ 00038a: 0b                         | end
+ 00038b: 20 00                      | local.get 0
+ 00038d: 41 01                      | i32.const 1
+ 00038f: 6a                         | i32.add
+ 000390: 0b                         | end
+000393 func[9] <nested>:
+ 000394: 02 7f                      | local[1..2] type=i32
+ 000396: 01 69                      | local[3] type=exnref
+ 000398: 23 80 80 80 80 00          | global.get 0 <__stack_pointer>
+ 00039e: 21 01                      | local.set 1
+ 0003a0: 41 00                      | i32.const 0
+ 0003a2: 21 02                      | local.set 2
+ 0003a4: 02 40                      | block
+ 0003a6: 02 7f                      |   block i32
+ 0003a8: 1f 40 01 00 80 80 80 80 00 |     try_table catch 0 0
+ 0003b1: 00                         | 
+ 0003b2: 20 00                      |       local.get 0
+ 0003b4: 10 80 80 80 80 00          |       call 0 <may_throw>
+ 0003ba: 0c 02                      |       br 2
+ 0003bc: 0b                         |     end
+ 0003bd: 00                         |     unreachable
+ 0003be: 0b                         |   end
+ 0003bf: 21 02                      |   local.set 2
+ 0003c1: 20 01                      |   local.get 1
+ 0003c3: 24 80 80 80 80 00          |   global.set 0 <__stack_pointer>
+ 0003c9: 20 02                      |   local.get 2
+ 0003cb: 10 81 80 80 80 00          |   call 1 <__cxa_begin_catch>
+ 0003d1: 1a                         |   drop
+ 0003d2: 02 40                      |   block
+ 0003d4: 02 69                      |     block exnref
+ 0003d6: 1f 40 01 03 00             |       try_table catch_all_ref  0
+ 0003db: 02 40                      |         block
+ 0003dd: 02 7f                      |           block i32
+ 0003df: 1f 40 01 00 80 80 80 80 00 |             try_table catch 0 0
+ 0003e8: 00                         | 
+ 0003e9: 20 00                      |               local.get 0
+ 0003eb: 41 01                      |               i32.const 1
+ 0003ed: 6a                         |               i32.add
+ 0003ee: 10 80 80 80 80 00          |               call 0 <may_throw>
+ 0003f4: 0c 02                      |               br 2
+ 0003f6: 0b                         |             end
+ 0003f7: 00                         |             unreachable
+ 0003f8: 0b                         |           end
+ 0003f9: 21 00                      |           local.set 0
+ 0003fb: 20 01                      |           local.get 1
+ 0003fd: 24 80 80 80 80 00          |           global.set 0 <__stack_pointer>
+ 000403: 20 00                      |           local.get 0
+ 000405: 10 81 80 80 80 00          |           call 1 <__cxa_begin_catch>
+ 00040b: 1a                         |           drop
+ 00040c: 02 40                      |           block
+ 00040e: 02 69                      |             block exnref
+ 000410: 1f 40 01 03 00             |               try_table catch_all_ref  0
+ 000415: 41 02                      |                 i32.const 2
+ 000417: 10 82 80 80 80 00          |                 call 2 <report>
+ 00041d: 21 02                      |                 local.set 2
+ 00041f: 0c 02                      |                 br 2
+ 000421: 0b                         |               end
+ 000422: 00                         |               unreachable
+ 000423: 0b                         |             end
+ 000424: 21 03                      |             local.set 3
+ 000426: 20 01                      |             local.get 1
+ 000428: 24 80 80 80 80 00          |             global.set 0 <__stack_pointer>
+ 00042e: 02 40                      |             block
+ 000430: 02 40                      |               block
+ 000432: 1f 40 01 02 00             |                 try_table catch_all  0
+ 000437: 10 83 80 80 80 00          |                   call 3 <__cxa_end_catch>
+ 00043d: 0c 02                      |                   br 2
+ 00043f: 0b                         |                 end
+ 000440: 00                         |                 unreachable
+ 000441: 0b                         |               end
+ 000442: 20 01                      |               local.get 1
+ 000444: 24 80 80 80 80 00          |               global.set 0 <__stack_pointer>
+ 00044a: 10 84 80 80 80 00          |               call 4 <std::terminate()>
+ 000450: 00                         |               unreachable
+ 000451: 0b                         |             end
+ 000452: 20 03                      |             local.get 3
+ 000454: 0a                         |             throw_ref
+ 000455: 0b                         |           end
+ 000456: 10 83 80 80 80 00          |           call 3 <__cxa_end_catch>
+ 00045c: 0c 03                      |           br 3
+ 00045e: 0b                         |         end
+ 00045f: 41 01                      |         i32.const 1
+ 000461: 10 82 80 80 80 00          |         call 2 <report>
+ 000467: 21 02                      |         local.set 2
+ 000469: 0c 02                      |         br 2
+ 00046b: 0b                         |       end
+ 00046c: 00                         |       unreachable
+ 00046d: 0b                         |     end
+ 00046e: 21 03                      |     local.set 3
+ 000470: 20 01                      |     local.get 1
+ 000472: 24 80 80 80 80 00          |     global.set 0 <__stack_pointer>
+ 000478: 02 40                      |     block
+ 00047a: 02 40                      |       block
+ 00047c: 1f 40 01 02 00             |         try_table catch_all  0
+ 000481: 10 83 80 80 80 00          |           call 3 <__cxa_end_catch>
+ 000487: 0c 02                      |           br 2
+ 000489: 0b                         |         end
+ 00048a: 00                         |         unreachable
+ 00048b: 0b                         |       end
+ 00048c: 20 01                      |       local.get 1
+ 00048e: 24 80 80 80 80 00          |       global.set 0 <__stack_pointer>
+ 000494: 10 84 80 80 80 00          |       call 4 <std::terminate()>
+ 00049a: 00                         |       unreachable
+ 00049b: 0b                         |     end
+ 00049c: 20 03                      |     local.get 3
+ 00049e: 0a                         |     throw_ref
+ 00049f: 0b                         |   end
+ 0004a0: 10 83 80 80 80 00          |   call 3 <__cxa_end_catch>
+ 0004a6: 0b                         | end
+ 0004a7: 20 02                      | local.get 2
+ 0004a9: 0b                         | end
+0004ac func[10] <rethrows>:
+ 0004ad: 01 7f                      | local[1] type=i32
+ 0004af: 01 69                      | local[2] type=exnref
+ 0004b1: 23 80 80 80 80 00          | global.get 0 <__stack_pointer>
+ 0004b7: 21 01                      | local.set 1
+ 0004b9: 02 40                      | block
+ 0004bb: 02 7f                      |   block i32
+ 0004bd: 1f 40 01 00 80 80 80 80 00 |     try_table catch 0 0
+ 0004c6: 00                         | 
+ 0004c7: 20 00                      |       local.get 0
+ 0004c9: 10 80 80 80 80 00          |       call 0 <may_throw>
+ 0004cf: 0c 02                      |       br 2
+ 0004d1: 0b                         |     end
+ 0004d2: 00                         |     unreachable
+ 0004d3: 0b                         |   end
+ 0004d4: 21 00                      |   local.set 0
+ 0004d6: 20 01                      |   local.get 1
+ 0004d8: 24 80 80 80 80 00          |   global.set 0 <__stack_pointer>
+ 0004de: 20 00                      |   local.get 0
+ 0004e0: 10 81 80 80 80 00          |   call 1 <__cxa_begin_catch>
+ 0004e6: 1a                         |   drop
+ 0004e7: 02 40                      |   block
+ 0004e9: 02 69                      |     block exnref
+ 0004eb: 1f 40 01 03 00             |       try_table catch_all_ref  0
+ 0004f0: 41 03                      |         i32.const 3
+ 0004f2: 10 82 80 80 80 00          |         call 2 <report>
+ 0004f8: 1a                         |         drop
+ 0004f9: 10 85 80 80 80 00          |         call 5 <__cxa_rethrow>
+ 0004ff: 0c 02                      |         br 2
+ 000501: 0b                         |       end
+ 000502: 00                         |       unreachable
+ 000503: 0b                         |     end
+ 000504: 21 02                      |     local.set 2
+ 000506: 20 01                      |     local.get 1
+ 000508: 24 80 80 80 80 00          |     global.set 0 <__stack_pointer>
+ 00050e: 02 40                      |     block
+ 000510: 02 40                      |       block
+ 000512: 1f 40 01 02 00             |         try_table catch_all  0
+ 000517: 10 83 80 80 80 00          |           call 3 <__cxa_end_catch>
+ 00051d: 0c 02                      |           br 2
+ 00051f: 0b                         |         end
+ 000520: 00                         |         unreachable
+ 000521: 0b                         |       end
+ 000522: 20 01                      |       local.get 1
+ 000524: 24 80 80 80 80 00          |       global.set 0 <__stack_pointer>
+ 00052a: 10 84 80 80 80 00          |       call 4 <std::terminate()>
+ 000530: 00                         |       unreachable
+ 000531: 0b                         |     end
+ 000532: 20 02                      |     local.get 2
+ 000534: 0a                         |     throw_ref
+ 000535: 0b                         |   end
+ 000536: 00                         |   unreachable
+ 000537: 0b                         | end
+ 000538: 20 00                      | local.get 0
+ 00053a: 0b                         | end
+00053c func[11] <raise>:
+ 00053d: 20 00                      | local.get 0
+ 00053f: 08 80 80 80 80 00          | throw 0 <env.__cpp_exception>
+ 000545: 0b                         | end

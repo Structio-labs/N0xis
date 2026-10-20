@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! The `name` custom section: the names a producer kept for the module, its
-//! functions, their locals and labels, and (the extended name section) its
-//! types, tables, memories, globals and segments.
+//! functions and their locals, its types and the fields of its structure
+//! types, and its tags, which are the subsections the WebAssembly 3.0
+//! custom-sections appendix defines (0 module, 1 functions, 2 locals, 4
+//! types, 10 fields, 11 tags); and the labels of its functions, its tables,
+//! memories, globals, and element and data segments, which are the extended
+//! name section's (3 labels, 5 tables, 6 memories, 7 globals, 8 element
+//! segments, 9 data segments) and which wasm-tools writes.
 //!
 //! A custom section does not make a module malformed, and the format says a
 //! broken name section may be ignored. So nothing here is an [`Error`] of the
@@ -15,7 +20,30 @@ use std::collections::BTreeMap;
 
 use crate::error::{Error, Problem};
 use crate::reader::Reader;
-use crate::types::{DataIdx, ElemIdx, FuncIdx, GlobalIdx, LocalIdx, MemIdx, TableIdx, TypeIdx};
+use crate::types::{DataIdx, ElemIdx, FieldIdx, FuncIdx, GlobalIdx, LocalIdx, MemIdx, TableIdx, TagIdx, TypeIdx};
+
+/// What an inner map of an indirect name map belongs to. Locals and labels
+/// are listed by function, field names by type: two index spaces, so the
+/// index is typed by the one it is in and cannot be read as the other's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Within {
+    /// The map of a function's locals (subsection 2) or labels (3).
+    Function(FuncIdx),
+    /// The map of a structure type's field names (subsection 10).
+    Type(TypeIdx),
+}
+
+impl From<FuncIdx> for Within {
+    fn from(f: FuncIdx) -> Self {
+        Within::Function(f)
+    }
+}
+
+impl From<TypeIdx> for Within {
+    fn from(t: TypeIdx) -> Self {
+        Within::Type(t)
+    }
+}
 
 /// The names a module's `name` section gives, by index.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -32,6 +60,9 @@ pub struct Names {
     pub globals: BTreeMap<GlobalIdx, String>,
     pub elements: BTreeMap<ElemIdx, String>,
     pub data: BTreeMap<DataIdx, String>,
+    /// Field names by structure type.
+    pub fields: BTreeMap<TypeIdx, BTreeMap<FieldIdx, String>>,
+    pub tags: BTreeMap<TagIdx, String>,
 }
 
 /// What was wrong in a `name` section, and what was left out because of it.
@@ -45,9 +76,8 @@ pub enum NameProblem {
     /// A subsection whose id is not above the previous one: each appears at
     /// most once, in increasing order. Left out.
     SubsectionOrder { id: u8, after: u8 },
-    /// A subsection id not read here: 10 (field names) and 11 (tag names)
-    /// name types of proposals this crate does not read, and no other id is
-    /// defined. Left out.
+    /// A subsection id not read here: one above 11 (tag names), the last the
+    /// format defines. Left out.
     SubsectionNotRead { id: u8 },
     /// A subsection that could not be read, or whose contents do not fill its
     /// stated size. Left out whole.
@@ -55,11 +85,13 @@ pub enum NameProblem {
     /// The subsections' own framing broke (a size past the section's end);
     /// nothing after this point was read.
     Framing { error: Error },
-    /// An index not above the one listed before it in its map (`within` names
-    /// the function for a map of locals or labels): the format lists each index
-    /// once, in increasing order. A name for an index already named is left
-    /// out, so the first stays; any other is kept.
-    IndexOrder { subsection: u8, within: Option<u32>, index: u32 },
+    /// An index not above the one listed before it in its map: the format
+    /// lists each index once, in increasing order. `within` is `None` for a
+    /// top-level map (the functions, or the outer list of an indirect map), and
+    /// names the function or the type whose inner map it is otherwise. A name
+    /// for an index already named is left out, so the first stays; any other
+    /// is kept.
+    IndexOrder { subsection: u8, within: Option<Within>, index: u32 },
 }
 
 /// A name and where it was found, before being placed in a map.
@@ -92,7 +124,7 @@ fn out_of_order(
     previous: &mut Option<u32>,
     index: u32,
     subsection: u8,
-    within: Option<u32>,
+    within: Option<Within>,
     problems: &mut Vec<NameProblem>,
 ) {
     if previous.is_some_and(|p| index <= p) {
@@ -106,7 +138,7 @@ fn place<K: Ord>(
     entries: Vec<Assoc>,
     key: impl Fn(u32) -> K,
     subsection: u8,
-    within: Option<u32>,
+    within: Option<Within>,
     problems: &mut Vec<NameProblem>,
 ) {
     let mut previous = None;
@@ -116,7 +148,10 @@ fn place<K: Ord>(
     }
 }
 
-fn place_indirect<K: Ord, L: Ord>(
+/// An indirect map, placed by `outer`'s key, whose index space also names
+/// each inner map in a [`NameProblem::IndexOrder`]: one key, so a map of
+/// locals cannot be reported as within a type.
+fn place_indirect<K: Ord + Copy + Into<Within>, L: Ord>(
     map: &mut BTreeMap<K, BTreeMap<L, String>>,
     entries: Vec<(u32, Vec<Assoc>)>,
     outer: impl Fn(u32) -> K,
@@ -127,22 +162,22 @@ fn place_indirect<K: Ord, L: Ord>(
     let mut previous = None;
     for (index, names) in entries {
         out_of_order(&mut previous, index, subsection, None, problems);
-        if map.contains_key(&outer(index)) {
+        let key = outer(index);
+        if map.contains_key(&key) {
             continue;
         }
         let mut inner_map = BTreeMap::new();
-        place(&mut inner_map, names, inner, subsection, Some(index), problems);
-        map.insert(outer(index), inner_map);
+        place(&mut inner_map, names, inner, subsection, Some(key.into()), problems);
+        map.insert(key, inner_map);
     }
 }
 
-/// The highest subsection id read here. 0 module, 1 functions, 2 locals and
-/// 4 types are the core specification's (its appendix on custom sections);
-/// 3 labels, 5 tables, 6 memories, 7 globals, 8 element segments and 9 data
-/// segments are the extended name section's, which wasm-tools writes. The
-/// specification's 10 (field names) and 11 (tag names) name structure fields
-/// and exception tags, which this crate does not read.
-const LAST_KNOWN_SUBSECTION: u8 = 9;
+/// The highest subsection id read here. The WebAssembly 3.0 custom-sections
+/// appendix defines 0 (module), 1 (functions), 2 (locals), 4 (types), 10
+/// (fields) and 11 (tags); 3 (labels) and 5 to 9 (tables, memories, globals,
+/// element and data segments) are the extended name section's, which
+/// wasm-tools writes.
+const LAST_KNOWN_SUBSECTION: u8 = 11;
 
 /// Read a `name` section's contents into `names`.
 pub(crate) fn read(mut r: Reader, names: &mut Names, problems: &mut Vec<NameProblem>) {
@@ -184,7 +219,7 @@ fn subsection(id: u8, size: u32, r: &mut Reader, names: &mut Names, problems: &m
             Ok(())
         } else {
             let used = size as usize - r.remaining();
-            Err(r.error(r.offset(), Problem::SectionSize { id, declared: size, used }))
+            Err(r.error(r.offset(), Problem::SubsectionSize { id, declared: size, used }))
         }
     };
     match id {
@@ -193,13 +228,13 @@ fn subsection(id: u8, size: u32, r: &mut Reader, names: &mut Names, problems: &m
             filled(r)?;
             names.module = Some(name);
         }
-        2 | 3 => {
+        2 | 3 | 10 => {
             let m = indirect_name_map(r)?;
             filled(r)?;
-            if id == 2 {
-                place_indirect(&mut names.locals, m, FuncIdx, LocalIdx, id, problems);
-            } else {
-                place_indirect(&mut names.labels, m, FuncIdx, |i| i, id, problems);
+            match id {
+                2 => place_indirect(&mut names.locals, m, FuncIdx, LocalIdx, id, problems),
+                3 => place_indirect(&mut names.labels, m, FuncIdx, |i| i, id, problems),
+                _ => place_indirect(&mut names.fields, m, TypeIdx, FieldIdx, id, problems),
             }
         }
         _ => {
@@ -212,8 +247,9 @@ fn subsection(id: u8, size: u32, r: &mut Reader, names: &mut Names, problems: &m
                 6 => place(&mut names.memories, m, MemIdx, id, None, problems),
                 7 => place(&mut names.globals, m, GlobalIdx, id, None, problems),
                 8 => place(&mut names.elements, m, ElemIdx, id, None, problems),
-                // 9, the last id read here: the caller left out the rest.
-                _ => place(&mut names.data, m, DataIdx, id, None, problems),
+                9 => place(&mut names.data, m, DataIdx, id, None, problems),
+                // 11, the last id read here: the caller left out the rest.
+                _ => place(&mut names.tags, m, TagIdx, id, None, problems),
             }
         }
     }

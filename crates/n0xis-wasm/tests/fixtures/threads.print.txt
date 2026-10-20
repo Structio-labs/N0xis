@@ -1,0 +1,385 @@
+(module
+(;@b     ;)  (type (;0;) (func (param i32 i64) (result i32)))
+(;@11    ;)  (type (;1;) (func (param i32 i64)))
+(;@16    ;)  (type (;2;) (func (param i64 i64) (result i64)))
+(;@1c    ;)  (type (;3;) (func (param i32) (result i32)))
+(;@24    ;)  (import "env" "memory" (memory (;0;) 1 16 shared))
+(;@3f    ;)  (memory (;1;) i64 1 65536 shared)
+(;@44    ;)  (memory (;2;) 1 2)
+(;@47    ;)  (memory (;3;) 1 1 shared)
+(;@4d    ;)  (export "wide" (memory 1))
+(;@54    ;)  (export "sync" (func 0))
+(;@61    ;)  (func (;0;) (type 0) (param i32 i64) (result i32)
+(;@62    ;)    local.get 0
+(;@64    ;)    i32.const 1
+(;@66    ;)    memory.atomic.notify
+(;@6a    ;)    drop
+(;@6b    ;)    local.get 0
+(;@6d    ;)    i32.const 0
+(;@6f    ;)    i64.const -1
+(;@71    ;)    memory.atomic.wait32 offset=4
+(;@75    ;)    drop
+(;@76    ;)    local.get 0
+(;@78    ;)    local.get 1
+(;@7a    ;)    i64.const 1000000
+(;@7e    ;)    memory.atomic.wait64 offset=8
+(;@82    ;)    drop
+(;@83    ;)    atomic.fence
+(;@86    ;)    i64.const 0
+(;@88    ;)    i32.const 2
+(;@8a    ;)    memory.atomic.notify 1 offset=4294967296
+(;@93    ;)    drop
+(;@94    ;)    i64.const 0
+(;@96    ;)    i32.const 7
+(;@98    ;)    i64.const 0
+(;@9a    ;)    memory.atomic.wait32 1 offset=4294967300
+(;@a3    ;)    drop
+(;@a4    ;)    i64.const 0
+(;@a6    ;)    local.get 1
+(;@a8    ;)    i64.const 0
+(;@aa    ;)    memory.atomic.wait64 1 offset=4294967304
+(;@b3    ;)    drop
+(;@b4    ;)    local.get 0
+(;@b6    ;)    i32.const 3
+(;@b8    ;)    memory.atomic.notify 2 offset=16
+(;@bd    ;)    drop
+(;@be    ;)    local.get 0
+(;@c0    ;)    i32.const 0
+(;@c2    ;)    i64.const 0
+(;@c4    ;)    memory.atomic.wait32 2 offset=20
+(;@c9    ;)    drop
+(;@ca    ;)    local.get 0
+(;@cc    ;)    local.get 1
+(;@ce    ;)    i64.const 0
+(;@d0    ;)    memory.atomic.wait64 2 offset=24
+(;@d5    ;)    drop
+(;@d6    ;)    atomic.fence
+(;@d9    ;)    local.get 0
+(;@db    ;)    i32.const -1
+(;@dd    ;)    memory.atomic.notify 3 offset=32
+(;@e2    ;)    drop
+(;@e3    ;)    local.get 0
+(;@e5    ;)    i32.const 0
+(;@e7    ;)    i64.const -1
+(;@e9    ;)    memory.atomic.wait32 3 offset=36
+(;@ee    ;)    drop
+(;@ef    ;)    local.get 0
+(;@f1    ;)    local.get 1
+(;@f3    ;)    i64.const -1
+(;@f5    ;)    memory.atomic.wait64 3 offset=40
+(;@fa    ;)  )
+(;@fc    ;)  (func (;1;) (type 1) (param i32 i64)
+(;@fd    ;)    local.get 0
+(;@ff    ;)    i32.atomic.load
+(;@103   ;)    drop
+(;@104   ;)    local.get 0
+(;@106   ;)    i64.atomic.load offset=8
+(;@10a   ;)    drop
+(;@10b   ;)    local.get 0
+(;@10d   ;)    i32.atomic.load8_u offset=16
+(;@111   ;)    drop
+(;@112   ;)    local.get 0
+(;@114   ;)    i32.atomic.load16_u offset=18
+(;@118   ;)    drop
+(;@119   ;)    local.get 0
+(;@11b   ;)    i64.atomic.load8_u offset=20
+(;@11f   ;)    drop
+(;@120   ;)    local.get 0
+(;@122   ;)    i64.atomic.load16_u offset=22
+(;@126   ;)    drop
+(;@127   ;)    local.get 0
+(;@129   ;)    i64.atomic.load32_u offset=4294967292
+(;@131   ;)    drop
+(;@132   ;)    local.get 0
+(;@134   ;)    i32.const -1
+(;@136   ;)    i32.atomic.store offset=24
+(;@13a   ;)    local.get 0
+(;@13c   ;)    local.get 1
+(;@13e   ;)    i64.atomic.store offset=32
+(;@142   ;)    local.get 0
+(;@144   ;)    i32.const 255
+(;@147   ;)    i32.atomic.store8 offset=40
+(;@14b   ;)    local.get 0
+(;@14d   ;)    i32.const 65535
+(;@151   ;)    i32.atomic.store16 offset=42
+(;@155   ;)    local.get 0
+(;@157   ;)    local.get 1
+(;@159   ;)    i64.atomic.store8 offset=4294967295
+(;@161   ;)    local.get 0
+(;@163   ;)    local.get 1
+(;@165   ;)    i64.atomic.store16 offset=46
+(;@169   ;)    local.get 0
+(;@16b   ;)    local.get 1
+(;@16d   ;)    i64.atomic.store32 offset=48
+(;@171   ;)  )
+(;@174   ;)  (func (;2;) (type 1) (param i32 i64)
+(;@175   ;)    local.get 0
+(;@177   ;)    i32.const -20
+(;@179   ;)    i32.atomic.rmw.add
+(;@17d   ;)    drop
+(;@17e   ;)    local.get 0
+(;@180   ;)    local.get 1
+(;@182   ;)    i64.atomic.rmw.add offset=8
+(;@186   ;)    drop
+(;@187   ;)    local.get 0
+(;@189   ;)    i32.const -14
+(;@18b   ;)    i32.atomic.rmw8.add_u offset=16
+(;@18f   ;)    drop
+(;@190   ;)    local.get 0
+(;@192   ;)    i32.const -11
+(;@194   ;)    i32.atomic.rmw16.add_u offset=24
+(;@198   ;)    drop
+(;@199   ;)    local.get 0
+(;@19b   ;)    local.get 1
+(;@19d   ;)    i64.atomic.rmw8.add_u offset=32
+(;@1a1   ;)    drop
+(;@1a2   ;)    local.get 0
+(;@1a4   ;)    local.get 1
+(;@1a6   ;)    i64.atomic.rmw16.add_u offset=40
+(;@1aa   ;)    drop
+(;@1ab   ;)    local.get 0
+(;@1ad   ;)    local.get 1
+(;@1af   ;)    i64.atomic.rmw32.add_u offset=48
+(;@1b3   ;)    drop
+(;@1b4   ;)    local.get 0
+(;@1b6   ;)    i32.const 1
+(;@1b8   ;)    i32.atomic.rmw.sub offset=56
+(;@1bc   ;)    drop
+(;@1bd   ;)    local.get 0
+(;@1bf   ;)    local.get 1
+(;@1c1   ;)    i64.atomic.rmw.sub offset=64
+(;@1c5   ;)    drop
+(;@1c6   ;)    local.get 0
+(;@1c8   ;)    i32.const 7
+(;@1ca   ;)    i32.atomic.rmw8.sub_u offset=72
+(;@1ce   ;)    drop
+(;@1cf   ;)    local.get 0
+(;@1d1   ;)    i32.const 10
+(;@1d3   ;)    i32.atomic.rmw16.sub_u offset=80
+(;@1d7   ;)    drop
+(;@1d8   ;)    local.get 0
+(;@1da   ;)    local.get 1
+(;@1dc   ;)    i64.atomic.rmw8.sub_u offset=88
+(;@1e0   ;)    drop
+(;@1e1   ;)    local.get 0
+(;@1e3   ;)    local.get 1
+(;@1e5   ;)    i64.atomic.rmw16.sub_u offset=96
+(;@1e9   ;)    drop
+(;@1ea   ;)    local.get 0
+(;@1ec   ;)    local.get 1
+(;@1ee   ;)    i64.atomic.rmw32.sub_u offset=104
+(;@1f2   ;)    drop
+(;@1f3   ;)    local.get 0
+(;@1f5   ;)    i32.const 22
+(;@1f7   ;)    i32.atomic.rmw.and offset=112
+(;@1fb   ;)    drop
+(;@1fc   ;)    local.get 0
+(;@1fe   ;)    local.get 1
+(;@200   ;)    i64.atomic.rmw.and offset=120
+(;@204   ;)    drop
+(;@205   ;)    local.get 0
+(;@207   ;)    i32.const 28
+(;@209   ;)    i32.atomic.rmw8.and_u offset=128
+(;@20e   ;)    drop
+(;@20f   ;)    local.get 0
+(;@211   ;)    i32.const 31
+(;@213   ;)    i32.atomic.rmw16.and_u offset=136
+(;@218   ;)    drop
+(;@219   ;)    local.get 0
+(;@21b   ;)    local.get 1
+(;@21d   ;)    i64.atomic.rmw8.and_u offset=144
+(;@222   ;)    drop
+(;@223   ;)    local.get 0
+(;@225   ;)    local.get 1
+(;@227   ;)    i64.atomic.rmw16.and_u offset=152
+(;@22c   ;)    drop
+(;@22d   ;)    local.get 0
+(;@22f   ;)    local.get 1
+(;@231   ;)    i64.atomic.rmw32.and_u offset=160
+(;@236   ;)    drop
+(;@237   ;)    local.get 0
+(;@239   ;)    i32.const 43
+(;@23b   ;)    i32.atomic.rmw.or offset=168
+(;@240   ;)    drop
+(;@241   ;)    local.get 0
+(;@243   ;)    local.get 1
+(;@245   ;)    i64.atomic.rmw.or offset=176
+(;@24a   ;)    drop
+(;@24b   ;)    local.get 0
+(;@24d   ;)    i32.const 49
+(;@24f   ;)    i32.atomic.rmw8.or_u offset=184
+(;@254   ;)    drop
+(;@255   ;)    local.get 0
+(;@257   ;)    i32.const 52
+(;@259   ;)    i32.atomic.rmw16.or_u offset=192
+(;@25e   ;)    drop
+(;@25f   ;)    local.get 0
+(;@261   ;)    local.get 1
+(;@263   ;)    i64.atomic.rmw8.or_u offset=200
+(;@268   ;)    drop
+(;@269   ;)    local.get 0
+(;@26b   ;)    local.get 1
+(;@26d   ;)    i64.atomic.rmw16.or_u offset=208
+(;@272   ;)    drop
+(;@273   ;)    local.get 0
+(;@275   ;)    local.get 1
+(;@277   ;)    i64.atomic.rmw32.or_u offset=216
+(;@27c   ;)    drop
+(;@27d   ;)    local.get 0
+(;@27f   ;)    i32.const 64
+(;@282   ;)    i32.atomic.rmw.xor offset=224
+(;@287   ;)    drop
+(;@288   ;)    local.get 0
+(;@28a   ;)    local.get 1
+(;@28c   ;)    i64.atomic.rmw.xor offset=232
+(;@291   ;)    drop
+(;@292   ;)    local.get 0
+(;@294   ;)    i32.const 70
+(;@297   ;)    i32.atomic.rmw8.xor_u offset=240
+(;@29c   ;)    drop
+(;@29d   ;)    local.get 0
+(;@29f   ;)    i32.const 73
+(;@2a2   ;)    i32.atomic.rmw16.xor_u offset=248
+(;@2a7   ;)    drop
+(;@2a8   ;)    local.get 0
+(;@2aa   ;)    local.get 1
+(;@2ac   ;)    i64.atomic.rmw8.xor_u offset=256
+(;@2b1   ;)    drop
+(;@2b2   ;)    local.get 0
+(;@2b4   ;)    local.get 1
+(;@2b6   ;)    i64.atomic.rmw16.xor_u offset=264
+(;@2bb   ;)    drop
+(;@2bc   ;)    local.get 0
+(;@2be   ;)    local.get 1
+(;@2c0   ;)    i64.atomic.rmw32.xor_u offset=272
+(;@2c5   ;)    drop
+(;@2c6   ;)    local.get 0
+(;@2c8   ;)    i32.const 85
+(;@2cb   ;)    i32.atomic.rmw.xchg offset=280
+(;@2d0   ;)    drop
+(;@2d1   ;)    local.get 0
+(;@2d3   ;)    local.get 1
+(;@2d5   ;)    i64.atomic.rmw.xchg offset=288
+(;@2da   ;)    drop
+(;@2db   ;)    local.get 0
+(;@2dd   ;)    i32.const 91
+(;@2e0   ;)    i32.atomic.rmw8.xchg_u offset=296
+(;@2e5   ;)    drop
+(;@2e6   ;)    local.get 0
+(;@2e8   ;)    i32.const 94
+(;@2eb   ;)    i32.atomic.rmw16.xchg_u offset=304
+(;@2f0   ;)    drop
+(;@2f1   ;)    local.get 0
+(;@2f3   ;)    local.get 1
+(;@2f5   ;)    i64.atomic.rmw8.xchg_u offset=312
+(;@2fa   ;)    drop
+(;@2fb   ;)    local.get 0
+(;@2fd   ;)    local.get 1
+(;@2ff   ;)    i64.atomic.rmw16.xchg_u offset=320
+(;@304   ;)    drop
+(;@305   ;)    local.get 0
+(;@307   ;)    local.get 1
+(;@309   ;)    i64.atomic.rmw32.xchg_u offset=328
+(;@30e   ;)    drop
+(;@30f   ;)    local.get 0
+(;@311   ;)    i32.const 106
+(;@314   ;)    i32.const 107
+(;@317   ;)    i32.atomic.rmw.cmpxchg offset=336
+(;@31c   ;)    drop
+(;@31d   ;)    local.get 0
+(;@31f   ;)    local.get 1
+(;@321   ;)    i64.const -43001
+(;@325   ;)    i64.atomic.rmw.cmpxchg offset=344
+(;@32a   ;)    drop
+(;@32b   ;)    local.get 0
+(;@32d   ;)    i32.const 112
+(;@330   ;)    i32.const 113
+(;@333   ;)    i32.atomic.rmw8.cmpxchg_u offset=352
+(;@338   ;)    drop
+(;@339   ;)    local.get 0
+(;@33b   ;)    i32.const 115
+(;@33e   ;)    i32.const 116
+(;@341   ;)    i32.atomic.rmw16.cmpxchg_u offset=360
+(;@346   ;)    drop
+(;@347   ;)    local.get 0
+(;@349   ;)    local.get 1
+(;@34b   ;)    i64.const -46001
+(;@34f   ;)    i64.atomic.rmw8.cmpxchg_u offset=368
+(;@354   ;)    drop
+(;@355   ;)    local.get 0
+(;@357   ;)    local.get 1
+(;@359   ;)    i64.const -47001
+(;@35d   ;)    i64.atomic.rmw16.cmpxchg_u offset=376
+(;@362   ;)    drop
+(;@363   ;)    local.get 0
+(;@365   ;)    local.get 1
+(;@367   ;)    i64.const -48001
+(;@36b   ;)    i64.atomic.rmw32.cmpxchg_u offset=384
+(;@370   ;)    drop
+(;@371   ;)  )
+(;@373   ;)  (func (;3;) (type 2) (param i64 i64) (result i64)
+(;@374   ;)    local.get 0
+(;@376   ;)    i32.atomic.load 1 offset=4294967296
+(;@37f   ;)    drop
+(;@380   ;)    local.get 0
+(;@382   ;)    i64.atomic.load 1 offset=4294967304
+(;@38b   ;)    drop
+(;@38c   ;)    local.get 0
+(;@38e   ;)    i64.atomic.load32_u 1 offset=18446744073709551612
+(;@39c   ;)    drop
+(;@39d   ;)    local.get 0
+(;@39f   ;)    local.get 1
+(;@3a1   ;)    i64.atomic.store 1 offset=8589934592
+(;@3aa   ;)    local.get 0
+(;@3ac   ;)    i32.const 1
+(;@3ae   ;)    i32.atomic.store16 1 offset=4294967298
+(;@3b7   ;)    local.get 0
+(;@3b9   ;)    i32.const 1
+(;@3bb   ;)    i32.atomic.rmw.add 1 offset=4294967296
+(;@3c4   ;)    drop
+(;@3c5   ;)    local.get 0
+(;@3c7   ;)    local.get 1
+(;@3c9   ;)    i64.atomic.rmw8.xchg_u 1 offset=4294967297
+(;@3d2   ;)    drop
+(;@3d3   ;)    local.get 0
+(;@3d5   ;)    local.get 1
+(;@3d7   ;)    i64.const 0
+(;@3d9   ;)    i64.atomic.rmw.cmpxchg 1 offset=1099511627776
+(;@3e3   ;)  )
+(;@3e5   ;)  (func (;4;) (type 3) (param i32) (result i32)
+(;@3e6   ;)    local.get 0
+(;@3e8   ;)    i32.atomic.load 2
+(;@3ed   ;)    drop
+(;@3ee   ;)    local.get 0
+(;@3f0   ;)    i64.const 5
+(;@3f2   ;)    i64.atomic.store32 2 offset=4
+(;@3f7   ;)    local.get 0
+(;@3f9   ;)    i32.const 1
+(;@3fb   ;)    i32.atomic.rmw16.sub_u 2 offset=8
+(;@400   ;)    drop
+(;@401   ;)    local.get 0
+(;@403   ;)    i64.const 0
+(;@405   ;)    i64.const 1
+(;@407   ;)    i64.atomic.rmw32.cmpxchg_u 2 offset=8
+(;@40c   ;)    drop
+(;@40d   ;)    local.get 0
+(;@40f   ;)    i32.const 1
+(;@411   ;)    i32.atomic.rmw8.and_u 2 offset=12
+(;@416   ;)  )
+(;@418   ;)  (func (;5;) (type 3) (param i32) (result i32)
+(;@419   ;)    local.get 0
+(;@41b   ;)    i64.atomic.load16_u 3 offset=2
+(;@420   ;)    drop
+(;@421   ;)    local.get 0
+(;@423   ;)    i32.const 7
+(;@425   ;)    i32.atomic.store8 3 offset=1
+(;@42a   ;)    local.get 0
+(;@42c   ;)    i64.const 1
+(;@42e   ;)    i64.atomic.rmw.or 3 offset=8
+(;@433   ;)    drop
+(;@434   ;)    local.get 0
+(;@436   ;)    i32.const 0
+(;@438   ;)    i32.const 1
+(;@43a   ;)    i32.atomic.rmw.cmpxchg 3 offset=16
+(;@43f   ;)  )
+(;@440   ;))

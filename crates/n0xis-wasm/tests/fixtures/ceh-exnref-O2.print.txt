@@ -1,0 +1,323 @@
+(module
+(;@b     ;)  (type (;0;) (func (param i32)))
+(;@f     ;)  (type (;1;) (func (param i32) (result i32)))
+(;@14    ;)  (type (;2;) (func))
+(;@1b    ;)  (import "env" "__cpp_exception" (tag (;0;) (type 0) (param i32)))
+(;@32    ;)  (import "env" "may_throw" (func (;0;) (type 0) (param i32)))
+(;@42    ;)  (import "env" "__cxa_begin_catch" (func (;1;) (type 1) (param i32) (result i32)))
+(;@5a    ;)  (import "env" "report" (func (;2;) (type 1) (param i32) (result i32)))
+(;@67    ;)  (import "env" "__cxa_end_catch" (func (;3;) (type 2)))
+(;@7d    ;)  (import "env" "_ZSt9terminatev" (func (;4;) (type 2)))
+(;@93    ;)  (import "env" "__cxa_rethrow" (func (;5;) (type 2)))
+(;@b3    ;)  (table (;0;) 1 1 funcref)
+(;@ba    ;)  (memory (;0;) 1)
+(;@bf    ;)  (global (;0;) (mut i32) i32.const 65536)
+(;@c6    ;)  (global (;1;) i32 i32.const 0)
+(;@cb    ;)  (global (;2;) i32 i32.const 1)
+(;@d0    ;)  (global (;3;) i32 i32.const 65536)
+(;@d7    ;)  (global (;4;) i32 i32.const 65536)
+(;@de    ;)  (global (;5;) i32 i32.const 65536)
+(;@e5    ;)  (global (;6;) i32 i32.const 0)
+(;@ea    ;)  (global (;7;) i32 i32.const 0)
+(;@ef    ;)  (global (;8;) i32 i32.const 0)
+(;@f4    ;)  (global (;9;) i32 i32.const 65536)
+(;@fb    ;)  (global (;10;) i32 i32.const 65536)
+(;@102   ;)  (global (;11;) i32 i32.const 65536)
+(;@109   ;)  (global (;12;) i32 i32.const 65536)
+(;@110   ;)  (global (;13;) i32 i32.const 65536)
+(;@11b   ;)  (export "memory" (memory 0))
+(;@124   ;)  (export "__wasm_call_ctors" (func 6))
+(;@138   ;)  (export "__stack_pointer" (global 0))
+(;@14a   ;)  (export "guarded" (func 7))
+(;@154   ;)  (export "with_cleanup" (func 8))
+(;@163   ;)  (export "nested" (func 9))
+(;@16c   ;)  (export "rethrows" (func 10))
+(;@177   ;)  (export "raise" (func 11))
+(;@17f   ;)  (export "__indirect_function_table" (table 0))
+(;@19b   ;)  (export "__dso_handle" (global 4))
+(;@1aa   ;)  (export "__data_end" (global 5))
+(;@1b7   ;)  (export "__rodata_start" (global 6))
+(;@1c8   ;)  (export "__rodata_end" (global 7))
+(;@1d7   ;)  (export "__stack_low" (global 8))
+(;@1e5   ;)  (export "__stack_high" (global 9))
+(;@1f4   ;)  (export "__global_base" (global 10))
+(;@204   ;)  (export "__heap_base" (global 11))
+(;@212   ;)  (export "__heap_end" (global 12))
+(;@21f   ;)  (export "__memory_base" (global 1))
+(;@22f   ;)  (export "__table_base" (global 2))
+(;@23e   ;)  (export "__wasm_first_page_end" (global 13))
+(;@256   ;)  (export "__tls_base" (global 3))
+(;@268   ;)  (func (;6;) (type 2)
+(;@269   ;)  )
+(;@26c   ;)  (func (;7;) (type 1) (param i32) (result i32)
+(;@26d   ;)    (local i32 exnref)
+(;@271   ;)    global.get 0
+(;@277   ;)    local.set 1
+(;@279   ;)    block ;; label = @1
+(;@27b   ;)      block ;; label = @2
+(;@27d   ;)        block (result i32) ;; label = @3
+(;@27f   ;)          try_table (catch 0 0 (;@3;)) ;; label = @4
+(;@289   ;)            local.get 0
+(;@28b   ;)            call 0
+(;@291   ;)            br 2 (;@2;)
+(;@293   ;)          end
+(;@294   ;)          unreachable
+(;@295   ;)        end
+(;@296   ;)        local.set 0
+(;@298   ;)        local.get 1
+(;@29a   ;)        global.set 0
+(;@2a0   ;)        local.get 0
+(;@2a2   ;)        call 1
+(;@2a8   ;)        drop
+(;@2a9   ;)        block ;; label = @3
+(;@2ab   ;)          block (result exnref) ;; label = @4
+(;@2ad   ;)            try_table (catch_all_ref 0 (;@4;)) ;; label = @5
+(;@2b2   ;)              i32.const -1
+(;@2b4   ;)              call 2
+(;@2ba   ;)              local.set 0
+(;@2bc   ;)              br 2 (;@3;)
+(;@2be   ;)            end
+(;@2bf   ;)            unreachable
+(;@2c0   ;)          end
+(;@2c1   ;)          local.set 2
+(;@2c3   ;)          local.get 1
+(;@2c5   ;)          global.set 0
+(;@2cb   ;)          block ;; label = @4
+(;@2cd   ;)            block ;; label = @5
+(;@2cf   ;)              try_table (catch_all 0 (;@5;)) ;; label = @6
+(;@2d4   ;)                call 3
+(;@2da   ;)                br 2 (;@4;)
+(;@2dc   ;)              end
+(;@2dd   ;)              unreachable
+(;@2de   ;)            end
+(;@2df   ;)            local.get 1
+(;@2e1   ;)            global.set 0
+(;@2e7   ;)            call 4
+(;@2ed   ;)            unreachable
+(;@2ee   ;)          end
+(;@2ef   ;)          local.get 2
+(;@2f1   ;)          throw_ref
+(;@2f2   ;)        end
+(;@2f3   ;)        call 3
+(;@2f9   ;)        br 1 (;@1;)
+(;@2fb   ;)      end
+(;@2fc   ;)      local.get 0
+(;@2fe   ;)      call 2
+(;@304   ;)      local.set 0
+(;@306   ;)    end
+(;@307   ;)    local.get 0
+(;@309   ;)  )
+(;@30c   ;)  (func (;8;) (type 1) (param i32) (result i32)
+(;@30d   ;)    (local i32 exnref)
+(;@311   ;)    global.get 0
+(;@317   ;)    local.set 1
+(;@319   ;)    block ;; label = @1
+(;@31b   ;)      block (result exnref) ;; label = @2
+(;@31d   ;)        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+(;@322   ;)          local.get 0
+(;@324   ;)          call 0
+(;@32a   ;)          br 2 (;@1;)
+(;@32c   ;)        end
+(;@32d   ;)        unreachable
+(;@32e   ;)      end
+(;@32f   ;)      local.set 2
+(;@331   ;)      local.get 1
+(;@333   ;)      global.set 0
+(;@339   ;)      block ;; label = @2
+(;@33b   ;)        block ;; label = @3
+(;@33d   ;)          try_table (catch_all 0 (;@3;)) ;; label = @4
+(;@342   ;)            local.get 0
+(;@344   ;)            call 2
+(;@34a   ;)            drop
+(;@34b   ;)            br 2 (;@2;)
+(;@34d   ;)          end
+(;@34e   ;)          unreachable
+(;@34f   ;)        end
+(;@350   ;)        local.get 1
+(;@352   ;)        global.set 0
+(;@358   ;)        call 4
+(;@35e   ;)        unreachable
+(;@35f   ;)      end
+(;@360   ;)      local.get 2
+(;@362   ;)      throw_ref
+(;@363   ;)    end
+(;@364   ;)    block ;; label = @1
+(;@366   ;)      block ;; label = @2
+(;@368   ;)        try_table (catch_all 0 (;@2;)) ;; label = @3
+(;@36d   ;)          local.get 0
+(;@36f   ;)          call 2
+(;@375   ;)          drop
+(;@376   ;)          br 2 (;@1;)
+(;@378   ;)        end
+(;@379   ;)        unreachable
+(;@37a   ;)      end
+(;@37b   ;)      local.get 1
+(;@37d   ;)      global.set 0
+(;@383   ;)      call 4
+(;@389   ;)      unreachable
+(;@38a   ;)    end
+(;@38b   ;)    local.get 0
+(;@38d   ;)    i32.const 1
+(;@38f   ;)    i32.add
+(;@390   ;)  )
+(;@393   ;)  (func (;9;) (type 1) (param i32) (result i32)
+(;@394   ;)    (local i32 i32 exnref)
+(;@398   ;)    global.get 0
+(;@39e   ;)    local.set 1
+(;@3a0   ;)    i32.const 0
+(;@3a2   ;)    local.set 2
+(;@3a4   ;)    block ;; label = @1
+(;@3a6   ;)      block (result i32) ;; label = @2
+(;@3a8   ;)        try_table (catch 0 0 (;@2;)) ;; label = @3
+(;@3b2   ;)          local.get 0
+(;@3b4   ;)          call 0
+(;@3ba   ;)          br 2 (;@1;)
+(;@3bc   ;)        end
+(;@3bd   ;)        unreachable
+(;@3be   ;)      end
+(;@3bf   ;)      local.set 2
+(;@3c1   ;)      local.get 1
+(;@3c3   ;)      global.set 0
+(;@3c9   ;)      local.get 2
+(;@3cb   ;)      call 1
+(;@3d1   ;)      drop
+(;@3d2   ;)      block ;; label = @2
+(;@3d4   ;)        block (result exnref) ;; label = @3
+(;@3d6   ;)          try_table (catch_all_ref 0 (;@3;)) ;; label = @4
+(;@3db   ;)            block ;; label = @5
+(;@3dd   ;)              block (result i32) ;; label = @6
+(;@3df   ;)                try_table (catch 0 0 (;@6;)) ;; label = @7
+(;@3e9   ;)                  local.get 0
+(;@3eb   ;)                  i32.const 1
+(;@3ed   ;)                  i32.add
+(;@3ee   ;)                  call 0
+(;@3f4   ;)                  br 2 (;@5;)
+(;@3f6   ;)                end
+(;@3f7   ;)                unreachable
+(;@3f8   ;)              end
+(;@3f9   ;)              local.set 0
+(;@3fb   ;)              local.get 1
+(;@3fd   ;)              global.set 0
+(;@403   ;)              local.get 0
+(;@405   ;)              call 1
+(;@40b   ;)              drop
+(;@40c   ;)              block ;; label = @6
+(;@40e   ;)                block (result exnref) ;; label = @7
+(;@410   ;)                  try_table (catch_all_ref 0 (;@7;)) ;; label = @8
+(;@415   ;)                    i32.const 2
+(;@417   ;)                    call 2
+(;@41d   ;)                    local.set 2
+(;@41f   ;)                    br 2 (;@6;)
+(;@421   ;)                  end
+(;@422   ;)                  unreachable
+(;@423   ;)                end
+(;@424   ;)                local.set 3
+(;@426   ;)                local.get 1
+(;@428   ;)                global.set 0
+(;@42e   ;)                block ;; label = @7
+(;@430   ;)                  block ;; label = @8
+(;@432   ;)                    try_table (catch_all 0 (;@8;)) ;; label = @9
+(;@437   ;)                      call 3
+(;@43d   ;)                      br 2 (;@7;)
+(;@43f   ;)                    end
+(;@440   ;)                    unreachable
+(;@441   ;)                  end
+(;@442   ;)                  local.get 1
+(;@444   ;)                  global.set 0
+(;@44a   ;)                  call 4
+(;@450   ;)                  unreachable
+(;@451   ;)                end
+(;@452   ;)                local.get 3
+(;@454   ;)                throw_ref
+(;@455   ;)              end
+(;@456   ;)              call 3
+(;@45c   ;)              br 3 (;@2;)
+(;@45e   ;)            end
+(;@45f   ;)            i32.const 1
+(;@461   ;)            call 2
+(;@467   ;)            local.set 2
+(;@469   ;)            br 2 (;@2;)
+(;@46b   ;)          end
+(;@46c   ;)          unreachable
+(;@46d   ;)        end
+(;@46e   ;)        local.set 3
+(;@470   ;)        local.get 1
+(;@472   ;)        global.set 0
+(;@478   ;)        block ;; label = @3
+(;@47a   ;)          block ;; label = @4
+(;@47c   ;)            try_table (catch_all 0 (;@4;)) ;; label = @5
+(;@481   ;)              call 3
+(;@487   ;)              br 2 (;@3;)
+(;@489   ;)            end
+(;@48a   ;)            unreachable
+(;@48b   ;)          end
+(;@48c   ;)          local.get 1
+(;@48e   ;)          global.set 0
+(;@494   ;)          call 4
+(;@49a   ;)          unreachable
+(;@49b   ;)        end
+(;@49c   ;)        local.get 3
+(;@49e   ;)        throw_ref
+(;@49f   ;)      end
+(;@4a0   ;)      call 3
+(;@4a6   ;)    end
+(;@4a7   ;)    local.get 2
+(;@4a9   ;)  )
+(;@4ac   ;)  (func (;10;) (type 1) (param i32) (result i32)
+(;@4ad   ;)    (local i32 exnref)
+(;@4b1   ;)    global.get 0
+(;@4b7   ;)    local.set 1
+(;@4b9   ;)    block ;; label = @1
+(;@4bb   ;)      block (result i32) ;; label = @2
+(;@4bd   ;)        try_table (catch 0 0 (;@2;)) ;; label = @3
+(;@4c7   ;)          local.get 0
+(;@4c9   ;)          call 0
+(;@4cf   ;)          br 2 (;@1;)
+(;@4d1   ;)        end
+(;@4d2   ;)        unreachable
+(;@4d3   ;)      end
+(;@4d4   ;)      local.set 0
+(;@4d6   ;)      local.get 1
+(;@4d8   ;)      global.set 0
+(;@4de   ;)      local.get 0
+(;@4e0   ;)      call 1
+(;@4e6   ;)      drop
+(;@4e7   ;)      block ;; label = @2
+(;@4e9   ;)        block (result exnref) ;; label = @3
+(;@4eb   ;)          try_table (catch_all_ref 0 (;@3;)) ;; label = @4
+(;@4f0   ;)            i32.const 3
+(;@4f2   ;)            call 2
+(;@4f8   ;)            drop
+(;@4f9   ;)            call 5
+(;@4ff   ;)            br 2 (;@2;)
+(;@501   ;)          end
+(;@502   ;)          unreachable
+(;@503   ;)        end
+(;@504   ;)        local.set 2
+(;@506   ;)        local.get 1
+(;@508   ;)        global.set 0
+(;@50e   ;)        block ;; label = @3
+(;@510   ;)          block ;; label = @4
+(;@512   ;)            try_table (catch_all 0 (;@4;)) ;; label = @5
+(;@517   ;)              call 3
+(;@51d   ;)              br 2 (;@3;)
+(;@51f   ;)            end
+(;@520   ;)            unreachable
+(;@521   ;)          end
+(;@522   ;)          local.get 1
+(;@524   ;)          global.set 0
+(;@52a   ;)          call 4
+(;@530   ;)          unreachable
+(;@531   ;)        end
+(;@532   ;)        local.get 2
+(;@534   ;)        throw_ref
+(;@535   ;)      end
+(;@536   ;)      unreachable
+(;@537   ;)    end
+(;@538   ;)    local.get 0
+(;@53a   ;)  )
+(;@53c   ;)  (func (;11;) (type 0) (param i32)
+(;@53d   ;)    local.get 0
+(;@53f   ;)    throw 0
+(;@545   ;)  )
+(;@546   ;))

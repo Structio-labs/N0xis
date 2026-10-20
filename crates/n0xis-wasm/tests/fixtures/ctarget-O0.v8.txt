@@ -1,0 +1,1055 @@
+000000: (module
+00005b:   (func $host.report (;0;) (import "host" "report") (param i32 i64))
+000069:   (func $host.scale (;1;) (import "host" "scale") (param f64) (result f64))
+000094:   (table $__indirect_function_table (;0;) (export "__indirect_function_table") 4 4 funcref)
+00009b:   (memory $memory (;0;) (export "memory") 2)
+0000a0:   (global $__stack_pointer (;0;) (export "__stack_pointer") (mut i32) (i32.const 65536))
+0000a7:   (global $__memory_base (;1;) (export "__memory_base") i32 (i32.const 0))
+0000ac:   (global $__table_base (;2;) (export "__table_base") i32 (i32.const 1))
+0000b1:   (global $__tls_base (;3;) (export "__tls_base") i32 (i32.const 65536))
+0000b8:   (global $operations (;4;) (export "operations") i32 (i32.const 65560))
+0000bf:   (global $counter (;5;) (export "counter") i32 (i32.const 65536))
+0000c6:   (global $big_total (;6;) (export "big_total") i32 (i32.const 65544))
+0000cd:   (global $accumulated (;7;) (export "accumulated") i32 (i32.const 65552))
+0000d4:   (global $pool (;8;) (export "pool") i32 (i32.const 65584))
+0000db:   (global $__dso_handle (;9;) (export "__dso_handle") i32 (i32.const 65536))
+0000e2:   (global $__data_end (;10;) (export "__data_end") i32 (i32.const 65776))
+0000e9:   (global $__rodata_start (;11;) (export "__rodata_start") i32 (i32.const 0))
+0000ee:   (global $__rodata_end (;12;) (export "__rodata_end") i32 (i32.const 0))
+0000f3:   (global $__stack_low (;13;) (export "__stack_low") i32 (i32.const 0))
+0000f8:   (global $__stack_high (;14;) (export "__stack_high") i32 (i32.const 65536))
+0000ff:   (global $__global_base (;15;) (export "__global_base") i32 (i32.const 65536))
+000106:   (global $__heap_base (;16;) (export "__heap_base") i32 (i32.const 65776))
+00010d:   (global $__heap_end (;17;) (export "__heap_end") i32 (i32.const 131072))
+000114:   (global $__wasm_first_page_end (;18;) (export "__wasm_first_page_end") i32 (i32.const 65536))
+000388:   (elem $elem0 (i32.const 1) (ref func) (ref.func $add) (ref.func $subtract) (ref.func $multiply))
+000395:   (func $__wasm_call_ctors (;2;) (export "__wasm_call_ctors")
+000396:   )
+000398:   (func $add (;3;) (export "add") (param $var0 i32) (param $var1 i32) (result i32)
+000398:     (local $var2 i32)
+00039b:     global.get $__stack_pointer
+0003a1:     i32.const 16
+0003a3:     i32.sub
+0003a4:     local.set $var2
+0003a6:     local.get $var2
+0003a8:     local.get $var0
+0003aa:     i32.store offset=12
+0003ad:     local.get $var2
+0003af:     local.get $var1
+0003b1:     i32.store offset=8
+0003b4:     local.get $var2
+0003b6:     i32.load offset=12
+0003b9:     local.get $var2
+0003bb:     i32.load offset=8
+0003be:     i32.add
+0003bf:     return
+0003c0:   )
+0003c2:   (func $subtract (;4;) (export "subtract") (param $var0 i32) (param $var1 i32) (result i32)
+0003c2:     (local $var2 i32)
+0003c5:     global.get $__stack_pointer
+0003cb:     i32.const 16
+0003cd:     i32.sub
+0003ce:     local.set $var2
+0003d0:     local.get $var2
+0003d2:     local.get $var0
+0003d4:     i32.store offset=12
+0003d7:     local.get $var2
+0003d9:     local.get $var1
+0003db:     i32.store offset=8
+0003de:     local.get $var2
+0003e0:     i32.load offset=12
+0003e3:     local.get $var2
+0003e5:     i32.load offset=8
+0003e8:     i32.sub
+0003e9:     return
+0003ea:   )
+0003ec:   (func $multiply (;5;) (export "multiply") (param $var0 i32) (param $var1 i32) (result i32)
+0003ec:     (local $var2 i32)
+0003ef:     global.get $__stack_pointer
+0003f5:     i32.const 16
+0003f7:     i32.sub
+0003f8:     local.set $var2
+0003fa:     local.get $var2
+0003fc:     local.get $var0
+0003fe:     i32.store offset=12
+000401:     local.get $var2
+000403:     local.get $var1
+000405:     i32.store offset=8
+000408:     local.get $var2
+00040a:     i32.load offset=12
+00040d:     local.get $var2
+00040f:     i32.load offset=8
+000412:     i32.mul
+000413:     return
+000414:   )
+000416:   (func $apply (;6;) (export "apply") (param $var0 i32) (param $var1 i32) (param $var2 i32) (result i32)
+000416:     (local $var3 i32)
+000416:     (local $var4 i32)
+000416:     (local $var5 i32)
+000416:     (local $var6 i32)
+000419:     global.get $__stack_pointer
+00041f:     i32.const 16
+000421:     i32.sub
+000422:     local.set $var3
+000424:     local.get $var3
+000426:     global.set $__stack_pointer
+00042c:     local.get $var3
+00042e:     local.get $var0
+000430:     i32.store offset=12
+000433:     local.get $var3
+000435:     local.get $var1
+000437:     i32.store offset=8
+00043a:     local.get $var3
+00043c:     local.get $var2
+00043e:     i32.store offset=4
+000441:     local.get $var3
+000443:     i32.load offset=12
+000446:     i32.const 3
+000448:     i32.rem_u
+000449:     local.set $var4
+00044b:     i32.const 65560
+000451:     local.get $var4
+000453:     i32.const 2
+000455:     i32.shl
+000456:     i32.add
+000457:     i32.load
+00045a:     local.set $var5
+00045c:     local.get $var3
+00045e:     i32.load offset=8
+000461:     local.get $var3
+000463:     i32.load offset=4
+000466:     local.get $var5
+000468:     call_indirect (param i32 i32) (result i32)
+000473:     local.set $var6
+000475:     local.get $var3
+000477:     i32.const 16
+000479:     i32.add
+00047a:     global.set $__stack_pointer
+000480:     local.get $var6
+000482:     return
+000483:   )
+000486:   (func $mix32 (;7;) (export "mix32") (param $var0 i32) (param $var1 i32) (param $var2 i32) (param $var3 i32) (result i32)
+000486:     (local $var4 i32)
+000486:     (local $var5 i32)
+000489:     global.get $__stack_pointer
+00048f:     i32.const 32
+000491:     i32.sub
+000492:     local.set $var4
+000494:     local.get $var4
+000496:     local.get $var0
+000498:     i32.store offset=28
+00049b:     local.get $var4
+00049d:     local.get $var1
+00049f:     i32.store offset=24
+0004a2:     local.get $var4
+0004a4:     local.get $var2
+0004a6:     i32.store offset=20
+0004a9:     local.get $var4
+0004ab:     local.get $var3
+0004ad:     i32.store offset=16
+0004b0:     local.get $var4
+0004b2:     local.get $var4
+0004b4:     i32.load offset=28
+0004b7:     local.get $var4
+0004b9:     i32.load offset=24
+0004bc:     i32.mul
+0004bd:     local.get $var4
+0004bf:     i32.load offset=28
+0004c2:     i32.const 3
+0004c4:     i32.shr_s
+0004c5:     i32.xor
+0004c6:     local.get $var4
+0004c8:     i32.load offset=20
+0004cb:     local.get $var4
+0004cd:     i32.load offset=16
+0004d0:     i32.const 7
+0004d2:     i32.and
+0004d3:     i32.shr_u
+0004d4:     i32.xor
+0004d5:     i32.store offset=12
+0004d8:     local.get $var4
+0004da:     local.get $var4
+0004dc:     i32.load offset=20
+0004df:     local.get $var4
+0004e1:     i32.load offset=16
+0004e4:     i32.const 1
+0004e6:     i32.or
+0004e7:     i32.div_u
+0004e8:     local.get $var4
+0004ea:     i32.load offset=28
+0004ed:     local.get $var4
+0004ef:     i32.load offset=24
+0004f2:     i32.const 1
+0004f4:     i32.or
+0004f5:     i32.rem_s
+0004f6:     i32.add
+0004f7:     local.get $var4
+0004f9:     i32.load offset=20
+0004fc:     local.get $var4
+0004fe:     i32.load offset=16
+000501:     i32.const 1
+000503:     i32.or
+000504:     i32.rem_u
+000505:     i32.add
+000506:     local.get $var4
+000508:     i32.load offset=12
+00050b:     i32.add
+00050c:     i32.store offset=12
+00050f:     local.get $var4
+000511:     i32.load offset=28
+000514:     local.get $var4
+000516:     i32.load offset=24
+000519:     i32.const 1
+00051b:     i32.or
+00051c:     i32.div_s
+00051d:     local.set $var5
+00051f:     local.get $var4
+000521:     local.get $var4
+000523:     i32.load offset=12
+000526:     local.get $var5
+000528:     i32.sub
+000529:     i32.store offset=12
+00052c:     local.get $var4
+00052e:     i32.load offset=12
+000531:     local.get $var4
+000533:     i32.load offset=28
+000536:     local.get $var4
+000538:     i32.load offset=24
+00053b:     i32.const -1
+00053d:     i32.xor
+00053e:     i32.and
+00053f:     i32.or
+000540:     return
+000541:   )
+000544:   (func $mix64 (;8;) (export "mix64") (param $var0 i64) (param $var1 i64) (param $var2 i64) (result i64)
+000544:     (local $var3 i32)
+000547:     global.get $__stack_pointer
+00054d:     i32.const 32
+00054f:     i32.sub
+000550:     local.set $var3
+000552:     local.get $var3
+000554:     local.get $var0
+000556:     i64.store offset=24
+000559:     local.get $var3
+00055b:     local.get $var1
+00055d:     i64.store offset=16
+000560:     local.get $var3
+000562:     local.get $var2
+000564:     i64.store offset=8
+000567:     local.get $var3
+000569:     local.get $var3
+00056b:     i64.load offset=24
+00056e:     local.get $var3
+000570:     i64.load offset=16
+000573:     i64.mul
+000574:     local.get $var3
+000576:     i64.load offset=24
+000579:     i64.const 7
+00057b:     i64.shr_s
+00057c:     i64.add
+00057d:     local.get $var3
+00057f:     i64.load offset=8
+000582:     i64.const 9
+000584:     i64.shr_u
+000585:     i64.sub
+000586:     i64.store
+000589:     local.get $var3
+00058b:     local.get $var3
+00058d:     i64.load offset=8
+000590:     local.get $var3
+000592:     i64.load offset=16
+000595:     i64.const 1
+000597:     i64.or
+000598:     i64.div_u
+000599:     local.get $var3
+00059b:     i64.load offset=24
+00059e:     local.get $var3
+0005a0:     i64.load offset=16
+0005a3:     i64.const 1
+0005a5:     i64.or
+0005a6:     i64.div_s
+0005a7:     i64.add
+0005a8:     local.get $var3
+0005aa:     i64.load offset=24
+0005ad:     local.get $var3
+0005af:     i64.load offset=16
+0005b2:     i64.const 1
+0005b4:     i64.or
+0005b5:     i64.rem_s
+0005b6:     i64.add
+0005b7:     local.get $var3
+0005b9:     i64.load
+0005bc:     i64.xor
+0005bd:     i64.store
+0005c0:     local.get $var3
+0005c2:     i64.load
+0005c5:     local.get $var3
+0005c7:     i64.load offset=8
+0005ca:     i64.const 1000
+0005cd:     i64.rem_u
+0005ce:     i64.add
+0005cf:     return
+0005d0:   )
+0005d3:   (func $mixf (;9;) (export "mixf") (param $var0 f64) (param $var1 f32) (param $var2 i64) (param $var3 i32) (result f64)
+0005d3:     (local $var4 i32)
+0005d3:     (local $var5 f64)
+0005d3:     (local $var6 f64)
+0005d3:     (local $var7 f32)
+0005d3:     (local $var8 f32)
+0005d3:     (local $var9 f32)
+0005da:     global.get $__stack_pointer
+0005e0:     i32.const 48
+0005e2:     i32.sub
+0005e3:     local.set $var4
+0005e5:     local.get $var4
+0005e7:     local.get $var0
+0005e9:     f64.store offset=40
+0005ec:     local.get $var4
+0005ee:     local.get $var1
+0005f0:     f32.store offset=36
+0005f3:     local.get $var4
+0005f5:     local.get $var2
+0005f7:     i64.store offset=24
+0005fa:     local.get $var4
+0005fc:     local.get $var3
+0005fe:     i32.store offset=20
+000601:     local.get $var4
+000603:     f64.load offset=40
+000606:     local.set $var5
+000608:     local.get $var4
+00060a:     f32.load offset=36
+00060d:     f64.promote_f32
+00060e:     local.set $var6
+000610:     local.get $var4
+000612:     local.get $var4
+000614:     i64.load offset=24
+000617:     f64.convert_i64_s
+000618:     f64.const 3
+000621:     f64.div
+000622:     local.get $var5
+000624:     local.get $var6
+000626:     f64.mul
+000627:     f64.add
+000628:     local.get $var4
+00062a:     i32.load offset=20
+00062d:     f64.convert_i32_u
+00062e:     f64.sub
+00062f:     f64.store offset=8
+000632:     local.get $var4
+000634:     f64.load offset=8
+000637:     f32.demote_f64
+000638:     local.set $var7
+00063a:     local.get $var4
+00063c:     f32.load offset=36
+00063f:     local.set $var8
+000641:     local.get $var4
+000643:     i64.load offset=24
+000646:     f32.convert_i64_s
+000647:     local.set $var9
+000649:     local.get $var4
+00064b:     local.get $var7
+00064d:     local.get $var8
+00064f:     f32.mul
+000650:     local.get $var9
+000652:     f32.sub
+000653:     f32.store offset=4
+000656:     local.get $var4
+000658:     f64.load offset=8
+00065b:     local.get $var4
+00065d:     f32.load offset=4
+000660:     f64.promote_f32
+000661:     f64.add
+000662:     local.get $var4
+000664:     f64.load offset=40
+000667:     i64.trunc_sat_f64_s
+000669:     f64.convert_i64_s
+00066a:     f64.add
+00066b:     local.get $var4
+00066d:     f32.load offset=36
+000670:     i32.trunc_sat_f32_u
+000672:     f64.convert_i32_u
+000673:     f64.add
+000674:     return
+000675:   )
+000677:   (func $sum (;10;) (export "sum") (param $var0 i32) (param $var1 i32) (result i64)
+000677:     (local $var2 i32)
+00067a:     global.get $__stack_pointer
+000680:     i32.const 32
+000682:     i32.sub
+000683:     local.set $var2
+000685:     local.get $var2
+000687:     local.get $var0
+000689:     i32.store offset=28
+00068c:     local.get $var2
+00068e:     local.get $var1
+000690:     i32.store offset=24
+000693:     local.get $var2
+000695:     i64.const 0
+000697:     i64.store offset=16
+00069a:     local.get $var2
+00069c:     i32.const 0
+00069e:     i32.store offset=12
+0006a1:     block $label0
+0006a3:       loop $label1
+0006a5:         local.get $var2
+0006a7:         i32.load offset=12
+0006aa:         local.get $var2
+0006ac:         i32.load offset=24
+0006af:         i32.lt_s
+0006b0:         i32.const 1
+0006b2:         i32.and
+0006b3:         i32.eqz
+0006b4:         br_if $label0
+0006b6:         local.get $var2
+0006b8:         local.get $var2
+0006ba:         i32.load offset=28
+0006bd:         local.get $var2
+0006bf:         i32.load offset=12
+0006c2:         i32.const 2
+0006c4:         i32.shl
+0006c5:         i32.add
+0006c6:         i64.load32_s
+0006c9:         local.get $var2
+0006cb:         i64.load offset=16
+0006ce:         i64.add
+0006cf:         i64.store offset=16
+0006d2:         local.get $var2
+0006d4:         local.get $var2
+0006d6:         i32.load offset=12
+0006d9:         i32.const 1
+0006db:         i32.add
+0006dc:         i32.store offset=12
+0006df:         br $label1
+0006e1:       end $label1
+0006e2:     end $label0
+0006e3:     local.get $var2
+0006e5:     i64.load offset=16
+0006e8:     return
+0006e9:   )
+0006eb:   (func $chain_length (;11;) (export "chain_length") (param $var0 i32) (result i32)
+0006eb:     (local $var1 i32)
+0006ee:     global.get $__stack_pointer
+0006f4:     i32.const 16
+0006f6:     i32.sub
+0006f7:     local.set $var1
+0006f9:     local.get $var1
+0006fb:     local.get $var0
+0006fd:     i32.store offset=12
+000700:     local.get $var1
+000702:     i32.const 0
+000704:     i32.store offset=8
+000707:     block $label0
+000709:       loop $label1
+00070b:         local.get $var1
+00070d:         i32.load offset=12
+000710:         i32.const 0
+000712:         i32.ne
+000713:         i32.const 1
+000715:         i32.and
+000716:         i32.eqz
+000717:         br_if $label0
+000719:         local.get $var1
+00071b:         local.get $var1
+00071d:         i32.load offset=8
+000720:         i32.const 1
+000722:         i32.add
+000723:         i32.store offset=8
+000726:         local.get $var1
+000728:         local.get $var1
+00072a:         i32.load offset=12
+00072d:         i32.load offset=40
+000730:         i32.store offset=12
+000733:         br $label1
+000735:       end $label1
+000736:     end $label0
+000737:     local.get $var1
+000739:     i32.load offset=8
+00073c:     return
+00073d:   )
+000740:   (func $read_all (;12;) (export "read_all") (param $var0 i32) (result i64)
+000740:     (local $var1 i32)
+000740:     (local $var2 i32)
+000740:     (local $var3 i32)
+000743:     global.get $__stack_pointer
+000749:     i32.const 16
+00074b:     i32.sub
+00074c:     local.set $var1
+00074e:     local.get $var1
+000750:     local.get $var0
+000752:     i32.store offset=12
+000755:     local.get $var1
+000757:     local.get $var1
+000759:     i32.load offset=12
+00075c:     i64.load8_s
+00075f:     i64.store
+000762:     local.get $var1
+000764:     i32.load offset=12
+000767:     local.set $var2
+000769:     i32.const 255
+00076c:     drop
+00076d:     local.get $var1
+00076f:     local.get $var2
+000771:     i64.load8_u offset=1
+000774:     local.get $var1
+000776:     i64.load
+000779:     i64.add
+00077a:     i64.store
+00077d:     local.get $var1
+00077f:     local.get $var1
+000781:     i32.load offset=12
+000784:     i64.load16_s offset=2
+000787:     local.get $var1
+000789:     i64.load
+00078c:     i64.add
+00078d:     i64.store
+000790:     local.get $var1
+000792:     i32.load offset=12
+000795:     local.set $var3
+000797:     i32.const 65535
+00079b:     drop
+00079c:     local.get $var1
+00079e:     local.get $var3
+0007a0:     i64.load16_u offset=4
+0007a3:     local.get $var1
+0007a5:     i64.load
+0007a8:     i64.add
+0007a9:     i64.store
+0007ac:     local.get $var1
+0007ae:     local.get $var1
+0007b0:     i32.load offset=12
+0007b3:     i64.load32_s offset=8
+0007b6:     local.get $var1
+0007b8:     i64.load
+0007bb:     i64.add
+0007bc:     i64.store
+0007bf:     local.get $var1
+0007c1:     local.get $var1
+0007c3:     i32.load offset=12
+0007c6:     i64.load offset=16
+0007c9:     local.get $var1
+0007cb:     i64.load
+0007ce:     i64.add
+0007cf:     i64.store
+0007d2:     local.get $var1
+0007d4:     local.get $var1
+0007d6:     i32.load offset=12
+0007d9:     f32.load offset=24
+0007dc:     i64.trunc_sat_f32_s
+0007de:     local.get $var1
+0007e0:     i64.load
+0007e3:     i64.add
+0007e4:     i64.store
+0007e7:     local.get $var1
+0007e9:     local.get $var1
+0007eb:     i32.load offset=12
+0007ee:     f64.load offset=32
+0007f1:     i64.trunc_sat_f64_s
+0007f3:     local.get $var1
+0007f5:     i64.load
+0007f8:     i64.add
+0007f9:     i64.store
+0007fc:     local.get $var1
+0007fe:     i64.load
+000801:     return
+000802:   )
+000804:   (func $widen_signed8 (;13;) (export "widen_signed8") (param $var0 i32) (result i64)
+000804:     (local $var1 i32)
+000807:     global.get $__stack_pointer
+00080d:     i32.const 16
+00080f:     i32.sub
+000810:     local.set $var1
+000812:     local.get $var1
+000814:     local.get $var0
+000816:     i32.store offset=12
+000819:     local.get $var1
+00081b:     i32.load offset=12
+00081e:     i64.load8_s
+000821:     return
+000822:   )
+000824:   (func $widen_unsigned8 (;14;) (export "widen_unsigned8") (param $var0 i32) (result i64)
+000824:     (local $var1 i32)
+000824:     (local $var2 i32)
+000827:     global.get $__stack_pointer
+00082d:     i32.const 16
+00082f:     i32.sub
+000830:     local.set $var1
+000832:     local.get $var1
+000834:     local.get $var0
+000836:     i32.store offset=12
+000839:     local.get $var1
+00083b:     i32.load offset=12
+00083e:     local.set $var2
+000840:     i32.const 255
+000843:     drop
+000844:     local.get $var2
+000846:     i64.load8_u
+000849:     return
+00084a:   )
+00084c:   (func $widen_signed16 (;15;) (export "widen_signed16") (param $var0 i32) (result i64)
+00084c:     (local $var1 i32)
+00084f:     global.get $__stack_pointer
+000855:     i32.const 16
+000857:     i32.sub
+000858:     local.set $var1
+00085a:     local.get $var1
+00085c:     local.get $var0
+00085e:     i32.store offset=12
+000861:     local.get $var1
+000863:     i32.load offset=12
+000866:     i64.load16_s
+000869:     return
+00086a:   )
+00086c:   (func $widen_unsigned16 (;16;) (export "widen_unsigned16") (param $var0 i32) (result i64)
+00086c:     (local $var1 i32)
+00086c:     (local $var2 i32)
+00086f:     global.get $__stack_pointer
+000875:     i32.const 16
+000877:     i32.sub
+000878:     local.set $var1
+00087a:     local.get $var1
+00087c:     local.get $var0
+00087e:     i32.store offset=12
+000881:     local.get $var1
+000883:     i32.load offset=12
+000886:     local.set $var2
+000888:     i32.const 65535
+00088c:     drop
+00088d:     local.get $var2
+00088f:     i64.load16_u
+000892:     return
+000893:   )
+000895:   (func $widen_signed32 (;17;) (export "widen_signed32") (param $var0 i32) (result i64)
+000895:     (local $var1 i32)
+000898:     global.get $__stack_pointer
+00089e:     i32.const 16
+0008a0:     i32.sub
+0008a1:     local.set $var1
+0008a3:     local.get $var1
+0008a5:     local.get $var0
+0008a7:     i32.store offset=12
+0008aa:     local.get $var1
+0008ac:     i32.load offset=12
+0008af:     i64.load32_s
+0008b2:     return
+0008b3:   )
+0008b5:   (func $widen_unsigned32 (;18;) (export "widen_unsigned32") (param $var0 i32) (result i64)
+0008b5:     (local $var1 i32)
+0008b8:     global.get $__stack_pointer
+0008be:     i32.const 16
+0008c0:     i32.sub
+0008c1:     local.set $var1
+0008c3:     local.get $var1
+0008c5:     local.get $var0
+0008c7:     i32.store offset=12
+0008ca:     local.get $var1
+0008cc:     i32.load offset=12
+0008cf:     i64.load32_u
+0008d2:     return
+0008d3:   )
+0008d6:   (func $write_all (;19;) (export "write_all") (param $var0 i32) (param $var1 i64) (param $var2 f64)
+0008d6:     (local $var3 i32)
+0008d6:     (local $var4 i64)
+0008d6:     (local $var5 i64)
+0008d6:     (local $var6 i64)
+0008d6:     (local $var7 i64)
+0008d6:     (local $var8 i64)
+0008d6:     (local $var9 i64)
+0008d6:     (local $var10 f32)
+0008d6:     (local $var11 f64)
+0008df:     global.get $__stack_pointer
+0008e5:     i32.const 32
+0008e7:     i32.sub
+0008e8:     local.set $var3
+0008ea:     local.get $var3
+0008ec:     local.get $var0
+0008ee:     i32.store offset=28
+0008f1:     local.get $var3
+0008f3:     local.get $var1
+0008f5:     i64.store offset=16
+0008f8:     local.get $var3
+0008fa:     local.get $var2
+0008fc:     f64.store offset=8
+0008ff:     local.get $var3
+000901:     i64.load offset=16
+000904:     local.set $var4
+000906:     local.get $var3
+000908:     i32.load offset=28
+00090b:     local.get $var4
+00090d:     i64.store8
+000910:     local.get $var3
+000912:     i64.load offset=16
+000915:     i64.const 8
+000917:     i64.shr_u
+000918:     local.set $var5
+00091a:     local.get $var3
+00091c:     i32.load offset=28
+00091f:     local.get $var5
+000921:     i64.store8 offset=1
+000924:     local.get $var3
+000926:     i64.load offset=16
+000929:     local.set $var6
+00092b:     local.get $var3
+00092d:     i32.load offset=28
+000930:     local.get $var6
+000932:     i64.store16 offset=2
+000935:     local.get $var3
+000937:     i64.load offset=16
+00093a:     i64.const 16
+00093c:     i64.shr_u
+00093d:     local.set $var7
+00093f:     local.get $var3
+000941:     i32.load offset=28
+000944:     local.get $var7
+000946:     i64.store16 offset=4
+000949:     local.get $var3
+00094b:     i64.load offset=16
+00094e:     local.set $var8
+000950:     local.get $var3
+000952:     i32.load offset=28
+000955:     local.get $var8
+000957:     i64.store32 offset=8
+00095a:     local.get $var3
+00095c:     i64.load offset=16
+00095f:     local.set $var9
+000961:     local.get $var3
+000963:     i32.load offset=28
+000966:     local.get $var9
+000968:     i64.store offset=16
+00096b:     local.get $var3
+00096d:     f64.load offset=8
+000970:     f32.demote_f64
+000971:     local.set $var10
+000973:     local.get $var3
+000975:     i32.load offset=28
+000978:     local.get $var10
+00097a:     f32.store offset=24
+00097d:     local.get $var3
+00097f:     f64.load offset=8
+000982:     local.set $var11
+000984:     local.get $var3
+000986:     i32.load offset=28
+000989:     local.get $var11
+00098b:     f64.store offset=32
+00098e:     return
+00098f:   )
+000991:   (func $narrow_reads (;20;) (export "narrow_reads") (param $var0 i32) (param $var1 i32) (param $var2 i32) (param $var3 i32) (result i32)
+000991:     (local $var4 i32)
+000991:     (local $var5 i32)
+000991:     (local $var6 i32)
+000991:     (local $var7 i32)
+000991:     (local $var8 i32)
+000994:     global.get $__stack_pointer
+00099a:     i32.const 16
+00099c:     i32.sub
+00099d:     local.set $var4
+00099f:     local.get $var4
+0009a1:     local.get $var0
+0009a3:     i32.store offset=12
+0009a6:     local.get $var4
+0009a8:     local.get $var1
+0009aa:     i32.store offset=8
+0009ad:     local.get $var4
+0009af:     local.get $var2
+0009b1:     i32.store offset=4
+0009b4:     local.get $var4
+0009b6:     local.get $var3
+0009b8:     i32.store
+0009bb:     local.get $var4
+0009bd:     i32.load offset=12
+0009c0:     i32.load8_s
+0009c3:     local.set $var5
+0009c5:     local.get $var4
+0009c7:     i32.load offset=8
+0009ca:     local.set $var6
+0009cc:     i32.const 255
+0009cf:     drop
+0009d0:     local.get $var5
+0009d2:     local.get $var6
+0009d4:     i32.load8_u
+0009d7:     i32.add
+0009d8:     local.get $var4
+0009da:     i32.load offset=4
+0009dd:     i32.load16_s
+0009e0:     i32.add
+0009e1:     local.set $var7
+0009e3:     local.get $var4
+0009e5:     i32.load
+0009e8:     local.set $var8
+0009ea:     i32.const 65535
+0009ee:     drop
+0009ef:     local.get $var7
+0009f1:     local.get $var8
+0009f3:     i32.load16_u
+0009f6:     i32.add
+0009f7:     return
+0009f8:   )
+0009fa:   (func $narrow_writes (;21;) (export "narrow_writes") (param $var0 i32) (param $var1 i32) (param $var2 i32)
+0009fa:     (local $var3 i32)
+0009fa:     (local $var4 i32)
+0009fa:     (local $var5 i32)
+0009fd:     global.get $__stack_pointer
+000a03:     i32.const 16
+000a05:     i32.sub
+000a06:     local.set $var3
+000a08:     local.get $var3
+000a0a:     local.get $var0
+000a0c:     i32.store offset=12
+000a0f:     local.get $var3
+000a11:     local.get $var1
+000a13:     i32.store offset=8
+000a16:     local.get $var3
+000a18:     local.get $var2
+000a1a:     i32.store offset=4
+000a1d:     local.get $var3
+000a1f:     i32.load offset=4
+000a22:     local.set $var4
+000a24:     local.get $var3
+000a26:     i32.load offset=12
+000a29:     local.get $var4
+000a2b:     i32.store8
+000a2e:     local.get $var3
+000a30:     i32.load offset=4
+000a33:     local.set $var5
+000a35:     local.get $var3
+000a37:     i32.load offset=8
+000a3a:     local.get $var5
+000a3c:     i32.store16
+000a3f:     return
+000a40:   )
+000a42:   (func $narrow8 (;22;) (export "narrow8") (param $var0 i32) (param $var1 i64)
+000a42:     (local $var2 i32)
+000a42:     (local $var3 i32)
+000a45:     global.get $__stack_pointer
+000a4b:     i32.const 16
+000a4d:     i32.sub
+000a4e:     local.set $var2
+000a50:     local.get $var2
+000a52:     local.get $var0
+000a54:     i32.store offset=12
+000a57:     local.get $var2
+000a59:     local.get $var1
+000a5b:     i64.store
+000a5e:     local.get $var2
+000a60:     i64.load
+000a63:     i32.wrap_i64
+000a64:     local.set $var3
+000a66:     local.get $var2
+000a68:     i32.load offset=12
+000a6b:     local.get $var3
+000a6d:     i32.store8
+000a70:     return
+000a71:   )
+000a73:   (func $narrow16 (;23;) (export "narrow16") (param $var0 i32) (param $var1 i64)
+000a73:     (local $var2 i32)
+000a73:     (local $var3 i32)
+000a76:     global.get $__stack_pointer
+000a7c:     i32.const 16
+000a7e:     i32.sub
+000a7f:     local.set $var2
+000a81:     local.get $var2
+000a83:     local.get $var0
+000a85:     i32.store offset=12
+000a88:     local.get $var2
+000a8a:     local.get $var1
+000a8c:     i64.store
+000a8f:     local.get $var2
+000a91:     i64.load
+000a94:     i32.wrap_i64
+000a95:     local.set $var3
+000a97:     local.get $var2
+000a99:     i32.load offset=12
+000a9c:     local.get $var3
+000a9e:     i32.store16
+000aa1:     return
+000aa2:   )
+000aa4:   (func $narrow32 (;24;) (export "narrow32") (param $var0 i32) (param $var1 i64)
+000aa4:     (local $var2 i32)
+000aa4:     (local $var3 i32)
+000aa7:     global.get $__stack_pointer
+000aad:     i32.const 16
+000aaf:     i32.sub
+000ab0:     local.set $var2
+000ab2:     local.get $var2
+000ab4:     local.get $var0
+000ab6:     i32.store offset=12
+000ab9:     local.get $var2
+000abb:     local.get $var1
+000abd:     i64.store
+000ac0:     local.get $var2
+000ac2:     i64.load
+000ac5:     i32.wrap_i64
+000ac6:     local.set $var3
+000ac8:     local.get $var2
+000aca:     i32.load offset=12
+000acd:     local.get $var3
+000acf:     i32.store
+000ad2:     return
+000ad3:   )
+000ad6:   (func $dispatch (;25;) (export "dispatch") (param $var0 i32) (param $var1 i32) (param $var2 i32) (result i32)
+000ad6:     (local $var3 i32)
+000ad6:     (local $var4 i32)
+000ad6:     (local $var5 i32)
+000ad6:     (local $var6 i64)
+000ad6:     (local $var7 i64)
+000ad6:     (local $var8 f64)
+000ad6:     (local $var9 i32)
+000ad6:     (local $var10 i32)
+000ad6:     (local $var11 i32)
+000ad6:     (local $var12 i32)
+000adf:     global.get $__stack_pointer
+000ae5:     i32.const 16
+000ae7:     i32.sub
+000ae8:     local.set $var3
+000aea:     local.get $var3
+000aec:     global.set $__stack_pointer
+000af2:     local.get $var3
+000af4:     local.get $var0
+000af6:     i32.store offset=8
+000af9:     local.get $var3
+000afb:     local.get $var1
+000afd:     i32.store offset=4
+000b00:     local.get $var3
+000b02:     local.get $var2
+000b04:     i32.store
+000b07:     local.get $var3
+000b09:     i32.load offset=8
+000b0c:     local.set $var4
+000b0e:     local.get $var4
+000b10:     i32.const 6
+000b12:     i32.gt_u
+000b13:     drop
+000b14:     block $label8
+000b16:       block $label7
+000b18:         block $label6
+000b1a:           block $label5
+000b1c:             block $label4
+000b1e:               block $label3
+000b20:                 block $label2
+000b22:                   block $label1
+000b24:                     block $label0
+000b26:                       local.get $var4
+000b28:                       br_table $label0 $label1 $label2 $label3 $label4 $label5 $label6 $label7
+000b32:                     end $label0
+000b33:                     local.get $var3
+000b35:                     i32.load offset=4
+000b38:                     i32.const 0
+000b3a:                     i32.load offset=65536
+000b41:                     i32.add
+000b42:                     local.set $var5
+000b44:                     i32.const 0
+000b46:                     local.get $var5
+000b48:                     i32.store offset=65536
+000b4f:                     local.get $var3
+000b51:                     i32.const 0
+000b53:                     i32.load offset=65536
+000b5a:                     i32.store offset=12
+000b5d:                     br $label8
+000b5f:                   end $label1
+000b60:                   local.get $var3
+000b62:                   i64.load32_s offset=4
+000b65:                   local.set $var6
+000b67:                   i32.const 1
+000b69:                   local.get $var6
+000b6b:                   call $host.report
+000b71:                   local.get $var3
+000b73:                   local.get $var3
+000b75:                   i32.load offset=4
+000b78:                   local.get $var3
+000b7a:                   i32.load
+000b7d:                   i32.sub
+000b7e:                   i32.store offset=12
+000b81:                   br $label8
+000b83:                 end $label2
+000b84:                 local.get $var3
+000b86:                 local.get $var3
+000b88:                 i32.load offset=4
+000b8b:                 local.get $var3
+000b8d:                 i32.load
+000b90:                 local.get $var3
+000b92:                 i32.load offset=8
+000b95:                 call $apply
+000b9b:                 i32.store offset=12
+000b9e:                 br $label8
+000ba0:               end $label3
+000ba1:               local.get $var3
+000ba3:               i64.load32_s
+000ba6:               i32.const 0
+000ba8:               i64.load offset=65544
+000baf:               i64.add
+000bb0:               local.set $var7
+000bb2:               i32.const 0
+000bb4:               local.get $var7
+000bb6:               i64.store offset=65544
+000bbd:               local.get $var3
+000bbf:               i32.const 0
+000bc1:               i64.load offset=65544
+000bc8:               i32.wrap_i64
+000bc9:               i32.store offset=12
+000bcc:               br $label8
+000bce:             end $label4
+000bcf:             i32.const 0
+000bd1:             f64.load offset=65552
+000bd8:             call $host.scale
+000bde:             local.set $var8
+000be0:             i32.const 0
+000be2:             local.get $var8
+000be4:             f64.store offset=65552
+000beb:             local.get $var3
+000bed:             i32.const 0
+000bef:             f64.load offset=65552
+000bf6:             i32.trunc_sat_f64_s
+000bf8:             i32.store offset=12
+000bfb:             br $label8
+000bfd:           end $label5
+000bfe:           local.get $var3
+000c00:           i32.load
+000c03:           local.set $var9
+000c05:           local.get $var3
+000c07:           i32.load offset=4
+000c0a:           i32.const 3
+000c0c:           i32.and
+000c0d:           local.set $var10
+000c0f:           i32.const 65584
+000c15:           local.get $var10
+000c17:           i32.const 48
+000c19:           i32.mul
+000c1a:           i32.add
+000c1b:           local.get $var9
+000c1d:           i32.store offset=8
+000c20:           local.get $var3
+000c22:           local.get $var3
+000c24:           i32.load
+000c27:           i32.store offset=12
+000c2a:           br $label8
+000c2c:         end $label6
+000c2d:         local.get $var3
+000c2f:         i32.load
+000c32:         i32.const 3
+000c34:         i32.and
+000c35:         local.set $var11
+000c37:         local.get $var3
+000c39:         i32.const 65584
+000c3f:         local.get $var11
+000c41:         i32.const 48
+000c43:         i32.mul
+000c44:         i32.add
+000c45:         call $chain_length
+000c4b:         i32.store offset=12
+000c4e:         br $label8
+000c50:       end $label7
+000c51:       local.get $var3
+000c53:       i32.const -1
+000c55:       i32.store offset=12
+000c58:     end $label8
+000c59:     local.get $var3
+000c5b:     i32.load offset=12
+000c5e:     local.set $var12
+000c60:     local.get $var3
+000c62:     i32.const 16
+000c64:     i32.add
+000c65:     global.set $__stack_pointer
+000c6b:     local.get $var12
+000c6d:     return
+000c6e:   )
+000c72:   (data (i32.const 65536) "\07\00\00\00\00\00\00\00\ef\cd\ab\89gE#\01\00\00\00\00\00\00\f8?\01\00\00\00\02\00\00\00\03\00\00\00")
+000c9d: )

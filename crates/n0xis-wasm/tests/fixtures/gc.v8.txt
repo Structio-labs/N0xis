@@ -1,0 +1,583 @@
+000000: (module
+00000c:   (rec)
+00000e:   (rec
+000010:     (type $type0 (struct (field $field0 i32) (field $field1 (mut (ref null $type0)))))
+000019:     (type $type1 (sub $type0 (struct
+000019:       (field $field0 i32)
+000019:       (field $field1 (mut (ref null $type0)))
+000019:       (field $field2 (ref null $type1))
+000019:       (field $field3 (ref null $type1)))))
+000029:     (type $type2 (sub final $type1 (struct
+000029:       (field $field0 i32)
+000029:       (field $field1 (mut (ref null $type0)))
+000029:       (field $field2 (ref null $type1))
+000029:       (field $field3 (ref null $type1))
+000029:       (field $field4 (mut i64)))))
+000029:   )
+00003b:   (rec
+00003d:     (type $type3 (struct))
+00003d:   )
+00003f:   (type $type4 (struct
+00003f:     (field $field0 i8)
+00003f:     (field $field1 (mut i8))
+00003f:     (field $field2 i16)
+00003f:     (field $field3 (mut i16))
+00003f:     (field $field4 i32)
+00003f:     (field $field5 (mut i32))
+00003f:     (field $field6 i64)
+00003f:     (field $field7 (mut i64))
+00003f:     (field $field8 f32)
+00003f:     (field $field9 (mut f32))
+00003f:     (field $field10 f64)
+00003f:     (field $field11 (mut f64))
+00003f:     (field $field12 v128)
+00003f:     (field $field13 (mut v128))
+00003f:     (field $field14 anyref)
+00003f:     (field $field15 (mut (ref null $type0)))
+00003f:     (field $field16 (ref i31))
+00003f:     (field $field17 (mut funcref))))
+000067:   (type $type5 (array (field (mut i8))))
+00006a:   (type $type6 (array (field i16)))
+00006d:   (type $type7 (array (field (mut i64))))
+000070:   (type $type8 (array (field (ref null $type1))))
+000074:   (type $type9 (array (field (mut v128))))
+000077:   (type $type10 (array (field (mut (ref null $type0)))))
+00007b:   (type $type11 (array (field funcref)))
+0000eb:   (global $global0 i32 (i32.const 40) (i32.const 2) (i32.add))
+0000f3:   (global $global1 i64 (i64.const 6) (i64.const 7) (i64.mul))
+0000fb:   (global $global2 i64 (i64.const 1) (i64.const 2) (i64.add) (i64.const 3) (i64.const 4) (i64.mul) (i64.sub))
+000109:   (global $global3 i32 (global.get $global0) (i32.const 3) (i32.const 1) (i32.sub) (i32.mul))
+000114:   (global $global4 i31ref (i32.const 7) (ref.i31))
+00011b:   (global $global5 (ref $type0) (i32.const 1) (ref.null $type0) (struct.new $type0))
+000126:   (global $global6 (ref $type3) (struct.new_default $type3))
+00012d:   (global $global7 (ref $type5) (i32.const 1) (i32.const 2) (i32.const 3) (array.new_fixed $type5 3))
+00013b:   (global $global8 (ref $type7) (i32.const 4) (array.new_default $type7))
+000144:   (global $global9 (ref $type7) (i64.const 7) (i32.const 2) (array.new $type7))
+00014f:   (global $global10 externref (global.get $global4) (extern.convert_any))
+000156:   (global $global11 anyref (global.get $global10) (any.convert_extern))
+00015d:   (global $global12 (mut (ref null $type0)) (ref.null $type0))
+000163:   (global $global13 (ref $type13) (ref.func $func7))
+000169:   (global $global14 (ref $type2) (i32.const 5) (ref.null $type0) (ref.null $type1) (ref.null $type1) (i64.const 9) (struct.new $type2))
+00018a:   (elem $elem0 funcref (ref.func $func7) (ref.null func))
+000193:   (elem $elem1 (ref null $type0) (ref.null $type0) (struct.new_default $type0))
+0001a7:   (func $structs (;0;) (export "structs") (param $var0 i32) (param $var1 i64) (param $var2 f32) (param $var3 f64) (param $var4 v128) (result i32)
+0001a7:     (local $var5 (ref null $type0))
+0001a7:     (local $var6 (ref null $type4))
+0001a7:     (local $var7 (ref null $type2))
+0001b1:     i32.const 1
+0001b3:     ref.null $type0
+0001b5:     struct.new $type0
+0001b8:     local.set $var5
+0001ba:     local.get $var5
+0001bc:     local.get $var5
+0001be:     struct.set $type0 $field1
+0001c2:     local.get $var5
+0001c4:     struct.get $type0 $field0
+0001c8:     drop
+0001c9:     local.get $var5
+0001cb:     struct.get $type0 $field1
+0001cf:     drop
+0001d0:     struct.new_default $type3
+0001d3:     drop
+0001d4:     struct.new_default $type0
+0001d7:     drop
+0001d8:     i32.const -1
+0001da:     i32.const 255
+0001dd:     i32.const -32768
+0001e1:     i32.const 65535
+0001e5:     local.get $var0
+0001e7:     local.get $var0
+0001e9:     local.get $var1
+0001eb:     local.get $var1
+0001ed:     local.get $var2
+0001ef:     local.get $var2
+0001f1:     local.get $var3
+0001f3:     local.get $var3
+0001f5:     local.get $var4
+0001f7:     local.get $var4
+0001f9:     ref.null none
+0001fb:     local.get $var5
+0001fd:     i32.const 7
+0001ff:     ref.i31
+000201:     ref.null func
+000203:     struct.new $type4
+000206:     local.set $var6
+000208:     local.get $var6
+00020a:     struct.get_s $type4 $field0
+00020e:     drop
+00020f:     local.get $var6
+000211:     struct.get_u $type4 $field1
+000215:     drop
+000216:     local.get $var6
+000218:     struct.get_s $type4 $field2
+00021c:     drop
+00021d:     local.get $var6
+00021f:     struct.get_u $type4 $field3
+000223:     drop
+000224:     local.get $var6
+000226:     struct.get $type4 $field4
+00022a:     drop
+00022b:     local.get $var6
+00022d:     struct.get $type4 $field5
+000231:     drop
+000232:     local.get $var6
+000234:     struct.get $type4 $field6
+000238:     drop
+000239:     local.get $var6
+00023b:     struct.get $type4 $field7
+00023f:     drop
+000240:     local.get $var6
+000242:     struct.get $type4 $field8
+000246:     drop
+000247:     local.get $var6
+000249:     struct.get $type4 $field9
+00024d:     drop
+00024e:     local.get $var6
+000250:     struct.get $type4 $field10
+000254:     drop
+000255:     local.get $var6
+000257:     struct.get $type4 $field11
+00025b:     drop
+00025c:     local.get $var6
+00025e:     struct.get $type4 $field12
+000262:     drop
+000263:     local.get $var6
+000265:     struct.get $type4 $field13
+000269:     drop
+00026a:     local.get $var6
+00026c:     struct.get $type4 $field14
+000270:     drop
+000271:     local.get $var6
+000273:     struct.get $type4 $field15
+000277:     drop
+000278:     local.get $var6
+00027a:     struct.get $type4 $field16
+00027e:     drop
+00027f:     local.get $var6
+000281:     struct.get $type4 $field17
+000285:     drop
+000286:     local.get $var6
+000288:     i32.const 5
+00028a:     struct.set $type4 $field1
+00028e:     local.get $var6
+000290:     i32.const 6
+000292:     struct.set $type4 $field3
+000296:     local.get $var6
+000298:     i32.const 7
+00029a:     struct.set $type4 $field5
+00029e:     local.get $var6
+0002a0:     local.get $var1
+0002a2:     struct.set $type4 $field7
+0002a6:     local.get $var6
+0002a8:     local.get $var2
+0002aa:     struct.set $type4 $field9
+0002ae:     local.get $var6
+0002b0:     local.get $var3
+0002b2:     struct.set $type4 $field11
+0002b6:     local.get $var6
+0002b8:     local.get $var4
+0002ba:     struct.set $type4 $field13
+0002be:     local.get $var6
+0002c0:     ref.null $type0
+0002c2:     struct.set $type4 $field15
+0002c6:     local.get $var6
+0002c8:     ref.null func
+0002ca:     struct.set $type4 $field17
+0002ce:     i32.const 3
+0002d0:     ref.null $type0
+0002d2:     ref.null $type1
+0002d4:     ref.null $type1
+0002d6:     local.get $var1
+0002d8:     struct.new $type2
+0002db:     local.set $var7
+0002dd:     local.get $var7
+0002df:     struct.get $type2 $field4
+0002e3:     i64.const 1
+0002e5:     i64.add
+0002e6:     local.set $var1
+0002e8:     local.get $var7
+0002ea:     local.get $var1
+0002ec:     struct.set $type2 $field4
+0002f0:     i32.const 2
+0002f2:     local.get $var5
+0002f4:     ref.null $type1
+0002f6:     local.get $var7
+0002f8:     struct.new $type1
+0002fb:     struct.get $type1 $field2
+0002ff:     drop
+000300:     local.get $var7
+000302:     struct.get $type2 $field0
+000306:   )
+000309:   (func $func1 (param $var0 i32) (param $var1 i64) (result i32)
+000309:     (local $var2 (ref null $type5))
+000309:     (local $var3 (ref null $type7))
+000309:     (local $var4 (ref null $type10))
+000313:     i32.const 7
+000315:     local.get $var0
+000317:     array.new $type5
+00031a:     local.set $var2
+00031c:     local.get $var0
+00031e:     array.new_default $type7
+000321:     local.set $var3
+000323:     i32.const 1
+000325:     i32.const 2
+000327:     i32.const 3
+000329:     array.new_fixed $type6 3
+00032d:     i32.const 1
+00032f:     array.get_s $type6
+000332:     drop
+000333:     i32.const 0
+000335:     i32.const 4
+000337:     array.new_data $type5 0
+00033b:     drop
+00033c:     i32.const 0
+00033e:     i32.const 1
+000340:     array.new_data $type7 0
+000344:     drop
+000345:     i32.const 0
+000347:     i32.const 2
+000349:     array.new_elem $type11 $elem0
+00034d:     drop
+00034e:     i32.const 0
+000350:     i32.const 2
+000352:     array.new_elem $type10 $elem1
+000356:     local.set $var4
+000358:     local.get $var2
+00035a:     i32.const 0
+00035c:     array.get_s $type5
+00035f:     drop
+000360:     local.get $var2
+000362:     i32.const 1
+000364:     array.get_u $type5
+000367:     drop
+000368:     local.get $var3
+00036a:     i32.const 0
+00036c:     array.get $type7
+00036f:     drop
+000370:     local.get $var4
+000372:     i32.const 1
+000374:     array.get $type10
+000377:     drop
+000378:     local.get $var2
+00037a:     i32.const 2
+00037c:     i32.const 9
+00037e:     array.set $type5
+000381:     local.get $var3
+000383:     i32.const 1
+000385:     local.get $var1
+000387:     array.set $type7
+00038a:     local.get $var4
+00038c:     i32.const 0
+00038e:     ref.null $type0
+000390:     array.set $type10
+000393:     local.get $var2
+000395:     array.len
+000397:     drop
+000398:     local.get $var2
+00039a:     i32.const 0
+00039c:     i32.const 255
+00039f:     i32.const 2
+0003a1:     array.fill $type5
+0003a4:     local.get $var3
+0003a6:     i32.const 0
+0003a8:     local.get $var1
+0003aa:     local.get $var0
+0003ac:     array.fill $type7
+0003af:     local.get $var2
+0003b1:     i32.const 4
+0003b3:     local.get $var2
+0003b5:     i32.const 0
+0003b7:     i32.const 4
+0003b9:     array.copy $type5 $type5
+0003bd:     local.get $var4
+0003bf:     i32.const 1
+0003c1:     local.get $var4
+0003c3:     i32.const 0
+0003c5:     i32.const 1
+0003c7:     array.copy $type10 $type10
+0003cb:     i32.const 1
+0003cd:     array.new_default $type10
+0003d0:     i32.const 0
+0003d2:     i32.const 1
+0003d4:     array.new_default $type8
+0003d7:     i32.const 0
+0003d9:     i32.const 1
+0003db:     array.copy $type10 $type8
+0003df:     local.get $var2
+0003e1:     i32.const 0
+0003e3:     i32.const 1
+0003e5:     i32.const 2
+0003e7:     array.init_data $type5 0
+0003eb:     local.get $var3
+0003ed:     i32.const 0
+0003ef:     i32.const 0
+0003f1:     i32.const 1
+0003f3:     array.init_data $type7 0
+0003f7:     local.get $var4
+0003f9:     i32.const 0
+0003fb:     i32.const 0
+0003fd:     i32.const 2
+0003ff:     array.init_elem $type10 $elem1
+000403:     local.get $var0
+000405:     array.new_default $type8
+000408:     i32.const 0
+00040a:     array.get $type8
+00040d:     drop
+00040e:     local.get $var0
+000410:     array.new_default $type9
+000413:     i32.const 0
+000415:     array.get $type9
+000418:     drop
+000419:     i32.const 1
+00041b:     i32.const 2
+00041d:     array.new_fixed $type6 2
+000421:     i32.const 0
+000423:     array.get_u $type6
+000426:     drop
+000427:     local.get $var3
+000429:     array.len
+00042b:   )
+00042e:   (func $func2 (param $var0 anyref) (param $var1 (ref any)) (param $var2 eqref) (param $var3 funcref) (param $var4 externref) (result i32)
+00042f:     local.get $var0
+000431:     ref.test $type0
+000434:     drop
+000435:     local.get $var0
+000437:     ref.test null $type1
+00043a:     drop
+00043b:     local.get $var0
+00043d:     ref.test eq
+000440:     drop
+000441:     local.get $var0
+000443:     ref.test null i31
+000446:     drop
+000447:     local.get $var1
+000449:     ref.test none
+00044c:     drop
+00044d:     local.get $var0
+00044f:     ref.test null none
+000452:     drop
+000453:     local.get $var3
+000455:     ref.test $type12
+000458:     drop
+000459:     local.get $var3
+00045b:     ref.test null nofunc
+00045e:     drop
+00045f:     local.get $var4
+000461:     ref.test noextern
+000464:     drop
+000465:     local.get $var0
+000467:     ref.cast $type2
+00046a:     drop
+00046b:     local.get $var0
+00046d:     ref.cast null $type4
+000470:     drop
+000471:     local.get $var2
+000473:     ref.cast struct
+000476:     drop
+000477:     local.get $var0
+000479:     ref.cast null array
+00047c:     drop
+00047d:     local.get $var3
+00047f:     ref.cast $type13
+000482:     drop
+000483:     local.get $var3
+000485:     ref.cast null func
+000488:     drop
+000489:     local.get $var4
+00048b:     ref.cast null extern
+00048e:     drop
+00048f:     block $label0 (result anyref)
+000491:       local.get $var1
+000493:       br_on_cast $label0 (ref any) (ref $type0)
+000499:       br_on_cast $label0 (ref any) (ref i31)
+00049f:       drop
+0004a0:       local.get $var0
+0004a2:       br_on_cast $label0 anyref (ref $type1)
+0004a8:       br_on_cast $label0 anyref (ref null $type2)
+0004ae:       br_on_cast $label0 (ref any) (ref struct)
+0004b4:       drop
+0004b5:       local.get $var2
+0004b7:       br_on_cast $label0 eqref nullref
+0004bd:       drop
+0004be:       ref.null none
+0004c0:     end $label0
+0004c1:     drop
+0004c2:     block $label1 (result anyref)
+0004c4:       block $label2 (result (ref $type0))
+0004c7:         local.get $var0
+0004c9:         br_on_cast $label1 anyref (ref null $type0)
+0004cf:         br_on_cast $label2 (ref any) (ref $type0)
+0004d5:         drop
+0004d6:         unreachable
+0004d7:       end $label2
+0004d8:     end $label1
+0004d9:     drop
+0004da:     block $label3 (result anyref)
+0004dc:       local.get $var1
+0004de:       br_on_cast_fail $label3 (ref any) (ref $type0)
+0004e4:       drop
+0004e5:       local.get $var0
+0004e7:       br_on_cast_fail $label3 anyref (ref $type1)
+0004ed:       drop
+0004ee:       local.get $var0
+0004f0:       br_on_cast_fail $label3 anyref (ref null $type2)
+0004f6:       drop
+0004f7:       local.get $var2
+0004f9:       br_on_cast_fail $label3 eqref arrayref
+0004ff:       drop
+000500:       local.get $var1
+000502:       br_on_cast_fail $label3 (ref any) (ref i31)
+000508:       drop
+000509:       ref.null none
+00050b:     end $label3
+00050c:     drop
+00050d:     block $label4 (result funcref)
+00050f:       local.get $var3
+000511:       br_on_cast $label4 funcref (ref $type13)
+000517:       br_on_cast_fail $label4 funcref (ref null $type12)
+00051d:       drop
+00051e:       ref.null nofunc
+000520:     end $label4
+000521:     drop
+000522:     block $label5 (result externref)
+000524:       local.get $var4
+000526:       br_on_cast $label5 externref (ref noextern)
+00052c:     end $label5
+00052d:     drop
+00052e:     local.get $var2
+000530:     local.get $var2
+000532:     ref.eq
+000533:   )
+000535:   (func $func3 (param $var0 externref) (param $var1 anyref) (param $var2 i32) (result i32)
+000536:     local.get $var0
+000538:     any.convert_extern
+00053a:     drop
+00053b:     local.get $var1
+00053d:     extern.convert_any
+00053f:     drop
+000540:     local.get $var2
+000542:     ref.i31
+000544:     i31.get_s
+000546:     drop
+000547:     local.get $var2
+000549:     ref.i31
+00054b:     i31.get_u
+00054d:     drop
+00054e:     local.get $var2
+000550:     ref.i31
+000552:     extern.convert_any
+000554:     any.convert_extern
+000556:     ref.cast null i31
+000559:     i31.get_u
+00055b:   )
+00055d:   (func $func4
+00055e:     ref.null func
+000560:     drop
+000561:     ref.null nofunc
+000563:     drop
+000564:     ref.null extern
+000566:     drop
+000567:     ref.null noextern
+000569:     drop
+00056a:     ref.null any
+00056c:     drop
+00056d:     ref.null eq
+00056f:     drop
+000570:     ref.null i31
+000572:     drop
+000573:     ref.null struct
+000575:     drop
+000576:     ref.null array
+000578:     drop
+000579:     ref.null none
+00057b:     drop
+00057c:     ref.null exn
+00057e:     drop
+00057f:     ref.null noexn
+000581:     drop
+000582:     ref.null $type0
+000584:     drop
+000585:     ref.null $type5
+000587:     drop
+000588:     ref.null $type12
+00058a:     drop
+00058b:   )
+00058d:   (func $func5 (param $var0 funcref) (param $var1 nullfuncref) (param $var2 externref) (param $var3 nullexternref) (param $var4 anyref) (param $var5 eqref) (param $var6 i31ref) (param $var7 structref) (param $var8 arrayref) (param $var9 nullref) (param $var10 exnref) (param $var11 nullexnref) (result i32)
+00058d:     (local $var12 (ref func))
+00058d:     (local $var13 (ref nofunc))
+00058d:     (local $var14 (ref extern))
+00058d:     (local $var15 (ref noextern))
+00058d:     (local $var16 (ref any))
+00058d:     (local $var17 (ref eq))
+00058d:     (local $var18 (ref i31))
+00058d:     (local $var19 (ref struct))
+00058d:     (local $var20 (ref array))
+00058d:     (local $var21 (ref none))
+00058d:     (local $var22 (ref exn))
+00058d:     (local $var23 (ref noexn))
+0005b2:     local.get $var5
+0005b4:     local.get $var9
+0005b6:     ref.eq
+0005b7:     drop
+0005b8:     local.get $var6
+0005ba:     ref.is_null
+0005bb:     drop
+0005bc:     local.get $var10
+0005be:     ref.is_null
+0005bf:     drop
+0005c0:     local.get $var11
+0005c2:     ref.is_null
+0005c3:   )
+0005c5:   (func $func6 (param $var0 (ref func)) (param $var1 (ref nofunc)) (param $var2 (ref extern)) (param $var3 (ref noextern)) (param $var4 (ref any)) (param $var5 (ref eq)) (param $var6 (ref i31)) (param $var7 (ref struct)) (param $var8 (ref array)) (param $var9 (ref none)) (param $var10 (ref exn)) (param $var11 (ref noexn))
+0005c5:     (local $var12 funcref)
+0005c5:     (local $var13 nullfuncref)
+0005c5:     (local $var14 externref)
+0005c5:     (local $var15 nullexternref)
+0005c5:     (local $var16 anyref)
+0005c5:     (local $var17 eqref)
+0005c5:     (local $var18 i31ref)
+0005c5:     (local $var19 structref)
+0005c5:     (local $var20 arrayref)
+0005c5:     (local $var21 nullref)
+0005c5:     (local $var22 exnref)
+0005c5:     (local $var23 nullexnref)
+0005de:     local.get $var0
+0005e0:     local.set $var12
+0005e2:     local.get $var1
+0005e4:     local.set $var13
+0005e6:     local.get $var2
+0005e8:     local.set $var14
+0005ea:     local.get $var3
+0005ec:     local.set $var15
+0005ee:     local.get $var4
+0005f0:     local.set $var16
+0005f2:     local.get $var5
+0005f4:     local.set $var17
+0005f6:     local.get $var6
+0005f8:     local.set $var18
+0005fa:     local.get $var7
+0005fc:     local.set $var19
+0005fe:     local.get $var8
+000600:     local.set $var20
+000602:     local.get $var9
+000604:     local.set $var21
+000606:     local.get $var10
+000608:     local.set $var22
+00060a:     local.get $var11
+00060c:     local.set $var23
+00060e:     local.get $var6
+000610:     i31.get_s
+000612:     drop
+000613:   )
+000615:   (func $func7 (param $var0 i32) (result i32)
+000616:     local.get $var0
+000618:     i32.const 1
+00061a:     i32.add
+00061b:   )
+00061d:   (func $func8 (param $var0 i32) (result i32)
+00061e:     local.get $var0
+000620:     ref.func $func7
+000622:     call_ref $type12
+000624:   )
+000628:   (data "\01\02\03\04\05\06\07\08")
+000632: )

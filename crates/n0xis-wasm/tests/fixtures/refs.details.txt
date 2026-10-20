@@ -1,0 +1,95 @@
+
+refs.wasm:	file format wasm 0x1
+module name: <refs>
+
+Section Details:
+
+Type[4]:
+ - type[0] (i32, i32) -> i32
+ - type[1] (i32) -> i32
+ - type[2] ((ref null 1), i32) -> i32
+ - type[3] ((ref null 1), (ref 1), (ref func), (ref extern), i32) -> i32
+Import[1]:
+ - func[0] sig=1 <imported> <- env.unary
+Function[8]:
+ - func[1] sig=0 <add>
+ - func[2] sig=1 <double>
+ - func[3] sig=1 <triple>
+ - func[4] sig=1 <countdown>
+ - func[5] sig=1 <forward>
+ - func[6] sig=0 <indirect>
+ - func[7] sig=2 <apply>
+ - func[8] sig=3 <pick>
+Table[3]:
+ - table[0] type=funcref initial=4 <plain>
+ - table[1] type=(ref null 1) initial=2 <nullable>
+ - table[2] type=(ref 1) initial=2 <non_null>
+Global[3]:
+ - global[0] (ref null 1) mutable=1 <maybe> - init ref.null (ref null 1)
+ - global[1] (ref 1) mutable=0 <always> - init ref.func:3 <triple>
+ - global[2] (ref func) mutable=0 <any_function> - init ref.func:1 <add>
+Export[2]:
+ - func[8] <pick> -> "pick"
+ - global[1] -> "always"
+Elem[3]:
+ - segment[0] flags=5 table=0 count=2
+  - elem[0] = ref.func:2 <double>
+  - elem[1] = ref.null (ref null 1)
+ - segment[1] flags=6 table=1 count=2 - init i32=0
+  - elem[0] = ref.func:2 <double>
+  - elem[1] = ref.func:3 <triple>
+ - segment[2] flags=7 table=0 count=1
+  - elem[0] = ref.func:1 <add>
+Code[8]:
+ - func[1] size=7 <add>
+ - func[2] size=7 <double>
+ - func[3] size=7 <triple>
+ - func[4] size=18 <countdown>
+ - func[5] size=6 <forward>
+ - func[6] size=22 <indirect>
+ - func[7] size=12 <apply>
+ - func[8] size=94 <pick>
+Custom:
+ - name: "name"
+ - module <refs>
+ - func[0] <imported>
+ - func[1] <add>
+ - func[2] <double>
+ - func[3] <triple>
+ - func[4] <countdown>
+ - func[5] <forward>
+ - func[6] <indirect>
+ - func[7] <apply>
+ - func[8] <pick>
+ - func[1] local[0] <a>
+ - func[1] local[1] <b>
+ - func[2] local[0] <n>
+ - func[3] local[0] <n>
+ - func[4] local[0] <n>
+ - func[5] local[0] <n>
+ - func[6] local[0] <n>
+ - func[6] local[1] <slot>
+ - func[7] local[0] <f>
+ - func[7] local[1] <n>
+ - func[8] local[0] <maybe>
+ - func[8] local[1] <sure>
+ - func[8] local[2] <some>
+ - func[8] local[3] <outside>
+ - func[8] local[4] <n>
+ - func[8] local[5] <chosen>
+ - func[8] local[6] <known>
+ - func[8] local[7] <any>
+ - func[8] local[8] <kept>
+ - type[0] <binary>
+ - type[1] <unary>
+ - type[2] <apply>
+ - type[3] <pick>
+ - table[0] <plain>
+ - table[1] <nullable>
+ - table[2] <non_null>
+ - global[0] <maybe>
+ - global[1] <always>
+ - global[2] <any_function>
+ - elemseg[0] <passive>
+ - elemseg[1] <active>
+ - elemseg[2] <declared>

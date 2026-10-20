@@ -1,0 +1,51 @@
+
+eh-legacy.wasm:	file format wasm 0x1
+module name: <eh_legacy>
+
+Section Details:
+
+Type[5]:
+ - type[0] () -> nil
+ - type[1] (i32) -> nil
+ - type[2] (i32, i64) -> nil
+ - type[3] (i32) -> i32
+ - type[4] () -> (i32, i64)
+Function[5]:
+ - func[0] sig=3 <throws>
+ - func[1] sig=3 <handlers>
+ - func[2] sig=3 <delegates>
+ - func[3] sig=3 <rethrows>
+ - func[4] sig=3 <nested>
+Tag[3]:
+ - tag[0] sig=1
+ - tag[1] sig=2
+ - tag[2] sig=0
+Export[1]:
+ - func[1] <handlers> -> "handlers"
+Code[5]:
+ - func[0] size=28 <throws>
+ - func[1] size=85 <handlers>
+ - func[2] size=59 <delegates>
+ - func[3] size=60 <rethrows>
+ - func[4] size=24 <nested>
+Custom:
+ - name: "name"
+ - module <eh_legacy>
+ - func[0] <throws>
+ - func[1] <handlers>
+ - func[2] <delegates>
+ - func[3] <rethrows>
+ - func[4] <nested>
+ - func[0] local[0] <n>
+ - func[1] local[0] <n>
+ - func[2] local[0] <n>
+ - func[3] local[0] <n>
+ - func[4] local[0] <n>
+ - type[0] <nothing>
+ - type[1] <code>
+ - type[2] <pair>
+ - type[3] <run>
+ - type[4] <two>
+ - tag[0] <code>
+ - tag[1] <pair>
+ - tag[2] <empty>

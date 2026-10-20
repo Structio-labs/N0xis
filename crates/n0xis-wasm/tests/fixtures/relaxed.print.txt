@@ -1,0 +1,104 @@
+(module
+(;@b     ;)  (type (;0;) (func (param v128 v128 v128) (result v128)))
+(;@1d    ;)  (func (;0;) (type 0) (param v128 v128 v128) (result v128)
+(;@1e    ;)    local.get 0
+(;@20    ;)    local.get 1
+(;@22    ;)    i8x16.relaxed_swizzle
+(;@25    ;)    drop
+(;@26    ;)    local.get 0
+(;@28    ;)    i32x4.relaxed_trunc_f32x4_s
+(;@2b    ;)    drop
+(;@2c    ;)    local.get 0
+(;@2e    ;)    i32x4.relaxed_trunc_f32x4_u
+(;@31    ;)    drop
+(;@32    ;)    local.get 0
+(;@34    ;)    i32x4.relaxed_trunc_f64x2_s_zero
+(;@37    ;)    drop
+(;@38    ;)    local.get 0
+(;@3a    ;)    i32x4.relaxed_trunc_f64x2_u_zero
+(;@3d    ;)    drop
+(;@3e    ;)    local.get 0
+(;@40    ;)    local.get 1
+(;@42    ;)    local.get 2
+(;@44    ;)    f32x4.relaxed_madd
+(;@47    ;)    drop
+(;@48    ;)    local.get 0
+(;@4a    ;)    local.get 1
+(;@4c    ;)    local.get 2
+(;@4e    ;)    f32x4.relaxed_nmadd
+(;@51    ;)    drop
+(;@52    ;)    local.get 0
+(;@54    ;)    local.get 1
+(;@56    ;)    local.get 2
+(;@58    ;)    f64x2.relaxed_madd
+(;@5b    ;)    drop
+(;@5c    ;)    local.get 0
+(;@5e    ;)    local.get 1
+(;@60    ;)    local.get 2
+(;@62    ;)    f64x2.relaxed_nmadd
+(;@65    ;)    drop
+(;@66    ;)    local.get 0
+(;@68    ;)    local.get 1
+(;@6a    ;)    local.get 2
+(;@6c    ;)    i8x16.relaxed_laneselect
+(;@6f    ;)    drop
+(;@70    ;)    local.get 0
+(;@72    ;)    local.get 1
+(;@74    ;)    local.get 2
+(;@76    ;)    i16x8.relaxed_laneselect
+(;@79    ;)    drop
+(;@7a    ;)    local.get 0
+(;@7c    ;)    local.get 1
+(;@7e    ;)    local.get 2
+(;@80    ;)    i32x4.relaxed_laneselect
+(;@83    ;)    drop
+(;@84    ;)    local.get 0
+(;@86    ;)    local.get 1
+(;@88    ;)    local.get 2
+(;@8a    ;)    i64x2.relaxed_laneselect
+(;@8d    ;)    drop
+(;@8e    ;)    local.get 0
+(;@90    ;)    local.get 1
+(;@92    ;)    f32x4.relaxed_min
+(;@95    ;)    drop
+(;@96    ;)    local.get 0
+(;@98    ;)    local.get 1
+(;@9a    ;)    f32x4.relaxed_max
+(;@9d    ;)    drop
+(;@9e    ;)    local.get 0
+(;@a0    ;)    local.get 1
+(;@a2    ;)    f64x2.relaxed_min
+(;@a5    ;)    drop
+(;@a6    ;)    local.get 0
+(;@a8    ;)    local.get 1
+(;@aa    ;)    f64x2.relaxed_max
+(;@ad    ;)    drop
+(;@ae    ;)    local.get 0
+(;@b0    ;)    local.get 1
+(;@b2    ;)    i16x8.relaxed_q15mulr_s
+(;@b5    ;)    drop
+(;@b6    ;)    local.get 0
+(;@b8    ;)    local.get 1
+(;@ba    ;)    i16x8.relaxed_dot_i8x16_i7x16_s
+(;@bd    ;)    drop
+(;@be    ;)    local.get 0
+(;@c0    ;)    local.get 1
+(;@c2    ;)    local.get 2
+(;@c4    ;)    i32x4.relaxed_dot_i8x16_i7x16_add_s
+(;@c7    ;)  )
+(;@c9    ;)  (func (;1;) (type 0) (param v128 v128 v128) (result v128)
+(;@ca    ;)    local.get 0
+(;@cc    ;)    i32x4.relaxed_trunc_f32x4_u
+(;@cf    ;)    local.get 1
+(;@d1    ;)    i8x16.relaxed_swizzle
+(;@d4    ;)    local.get 1
+(;@d6    ;)    local.get 2
+(;@d8    ;)    f64x2.relaxed_nmadd
+(;@db    ;)    local.get 2
+(;@dd    ;)    f32x4.relaxed_max
+(;@e0    ;)    i32x4.relaxed_trunc_f64x2_s_zero
+(;@e3    ;)    local.get 0
+(;@e5    ;)    local.get 2
+(;@e7    ;)    i32x4.relaxed_dot_i8x16_i7x16_add_s
+(;@ea    ;)  )
+(;@eb    ;))

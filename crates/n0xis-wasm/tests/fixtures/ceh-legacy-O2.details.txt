@@ -1,0 +1,106 @@
+
+ceh-legacy-O2.wasm:	file format wasm 0x1
+module name: <ceh-legacy-O2.wasm>
+
+Section Details:
+
+Type[3]:
+ - type[0] (i32) -> nil
+ - type[1] (i32) -> i32
+ - type[2] () -> nil
+Import[7]:
+ - func[0] sig=0 <may_throw> <- env.may_throw
+ - tag[0] sig=0 <env.__cpp_exception> <- env.__cpp_exception
+ - func[1] sig=1 <__cxa_begin_catch> <- env.__cxa_begin_catch
+ - func[2] sig=1 <report> <- env.report
+ - func[3] sig=2 <__cxa_end_catch> <- env.__cxa_end_catch
+ - func[4] sig=2 <std::terminate()> <- env._ZSt9terminatev
+ - func[5] sig=2 <__cxa_rethrow> <- env.__cxa_rethrow
+Function[6]:
+ - func[6] sig=2 <__wasm_call_ctors>
+ - func[7] sig=1 <guarded>
+ - func[8] sig=1 <with_cleanup>
+ - func[9] sig=1 <nested>
+ - func[10] sig=1 <rethrows>
+ - func[11] sig=0 <raise>
+Table[1]:
+ - table[0] type=funcref initial=1 max=1
+Memory[1]:
+ - memory[0] pages: initial=1
+Global[14]:
+ - global[0] i32 mutable=1 <__stack_pointer> - init i32=65536
+ - global[1] i32 mutable=0 <__memory_base> - init i32=0
+ - global[2] i32 mutable=0 <__table_base> - init i32=1
+ - global[3] i32 mutable=0 <__tls_base> - init i32=65536
+ - global[4] i32 mutable=0 <__dso_handle> - init i32=65536
+ - global[5] i32 mutable=0 <__data_end> - init i32=65536
+ - global[6] i32 mutable=0 <__rodata_start> - init i32=0
+ - global[7] i32 mutable=0 <__rodata_end> - init i32=0
+ - global[8] i32 mutable=0 <__stack_low> - init i32=0
+ - global[9] i32 mutable=0 <__stack_high> - init i32=65536
+ - global[10] i32 mutable=0 <__global_base> - init i32=65536
+ - global[11] i32 mutable=0 <__heap_base> - init i32=65536
+ - global[12] i32 mutable=0 <__heap_end> - init i32=65536
+ - global[13] i32 mutable=0 <__wasm_first_page_end> - init i32=65536
+Export[22]:
+ - memory[0] -> "memory"
+ - func[6] <__wasm_call_ctors> -> "__wasm_call_ctors"
+ - global[0] -> "__stack_pointer"
+ - func[7] <guarded> -> "guarded"
+ - func[8] <with_cleanup> -> "with_cleanup"
+ - func[9] <nested> -> "nested"
+ - func[10] <rethrows> -> "rethrows"
+ - func[11] <raise> -> "raise"
+ - table[0] -> "__indirect_function_table"
+ - global[4] -> "__dso_handle"
+ - global[5] -> "__data_end"
+ - global[6] -> "__rodata_start"
+ - global[7] -> "__rodata_end"
+ - global[8] -> "__stack_low"
+ - global[9] -> "__stack_high"
+ - global[10] -> "__global_base"
+ - global[11] -> "__heap_base"
+ - global[12] -> "__heap_end"
+ - global[1] -> "__memory_base"
+ - global[2] -> "__table_base"
+ - global[13] -> "__wasm_first_page_end"
+ - global[3] -> "__tls_base"
+Code[6]:
+ - func[6] size=2 <__wasm_call_ctors>
+ - func[7] size=120 <guarded>
+ - func[8] size=95 <with_cleanup>
+ - func[9] size=205 <nested>
+ - func[10] size=105 <rethrows>
+ - func[11] size=10 <raise>
+Custom:
+ - name: "name"
+ - module <ceh-legacy-O2.wasm>
+ - func[0] <may_throw>
+ - func[1] <__cxa_begin_catch>
+ - func[2] <report>
+ - func[3] <__cxa_end_catch>
+ - func[4] <std::terminate()>
+ - func[5] <__cxa_rethrow>
+ - func[6] <__wasm_call_ctors>
+ - func[7] <guarded>
+ - func[8] <with_cleanup>
+ - func[9] <nested>
+ - func[10] <rethrows>
+ - func[11] <raise>
+ - global[0] <__stack_pointer>
+ - global[1] <__memory_base>
+ - global[2] <__table_base>
+ - global[3] <__tls_base>
+Custom:
+ - name: "producers"
+Custom:
+ - name: "target_features"
+  - [+] bulk-memory
+  - [+] bulk-memory-opt
+  - [+] call-indirect-overlong
+  - [+] exception-handling
+  - [+] multivalue
+  - [+] mutable-globals
+  - [+] nontrapping-fptoint
+  - [+] reference-types
+  - [+] sign-ext

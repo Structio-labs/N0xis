@@ -1,0 +1,103 @@
+000000: (module
+00001d:   (func $func0 (param $var0 v128) (param $var1 v128) (param $var2 v128) (result v128)
+00001e:     local.get $var0
+000020:     local.get $var1
+000022:     i8x16.relaxed_swizzle
+000025:     drop
+000026:     local.get $var0
+000028:     i32x4.relaxed_trunc_f32x4_s
+00002b:     drop
+00002c:     local.get $var0
+00002e:     i32x4.relaxed_trunc_f32x4_u
+000031:     drop
+000032:     local.get $var0
+000034:     i32x4.relaxed_trunc_f64x2_s_zero
+000037:     drop
+000038:     local.get $var0
+00003a:     i32x4.relaxed_trunc_f64x2_u_zero
+00003d:     drop
+00003e:     local.get $var0
+000040:     local.get $var1
+000042:     local.get $var2
+000044:     f32x4.qfma
+000047:     drop
+000048:     local.get $var0
+00004a:     local.get $var1
+00004c:     local.get $var2
+00004e:     f32x4.qfms
+000051:     drop
+000052:     local.get $var0
+000054:     local.get $var1
+000056:     local.get $var2
+000058:     f64x2.qfma
+00005b:     drop
+00005c:     local.get $var0
+00005e:     local.get $var1
+000060:     local.get $var2
+000062:     f64x2.qfms
+000065:     drop
+000066:     local.get $var0
+000068:     local.get $var1
+00006a:     local.get $var2
+00006c:     i8x16.relaxed_laneselect
+00006f:     drop
+000070:     local.get $var0
+000072:     local.get $var1
+000074:     local.get $var2
+000076:     i16x8.relaxed_laneselect
+000079:     drop
+00007a:     local.get $var0
+00007c:     local.get $var1
+00007e:     local.get $var2
+000080:     i32x4.relaxed_laneselect
+000083:     drop
+000084:     local.get $var0
+000086:     local.get $var1
+000088:     local.get $var2
+00008a:     i64x2.relaxed_laneselect
+00008d:     drop
+00008e:     local.get $var0
+000090:     local.get $var1
+000092:     f32x4.relaxed_min
+000095:     drop
+000096:     local.get $var0
+000098:     local.get $var1
+00009a:     f32x4.relaxed_max
+00009d:     drop
+00009e:     local.get $var0
+0000a0:     local.get $var1
+0000a2:     f64x2.relaxed_min
+0000a5:     drop
+0000a6:     local.get $var0
+0000a8:     local.get $var1
+0000aa:     f64x2.relaxed_max
+0000ad:     drop
+0000ae:     local.get $var0
+0000b0:     local.get $var1
+0000b2:     i16x8.relaxed_q15mulr_s
+0000b5:     drop
+0000b6:     local.get $var0
+0000b8:     local.get $var1
+0000ba:     i16x8.dot_i8x16_i7x16_s
+0000bd:     drop
+0000be:     local.get $var0
+0000c0:     local.get $var1
+0000c2:     local.get $var2
+0000c4:     i32x4.dot_i8x16_i7x16_add_s
+0000c7:   )
+0000c9:   (func $func1 (param $var0 v128) (param $var1 v128) (param $var2 v128) (result v128)
+0000ca:     local.get $var0
+0000cc:     i32x4.relaxed_trunc_f32x4_u
+0000cf:     local.get $var1
+0000d1:     i8x16.relaxed_swizzle
+0000d4:     local.get $var1
+0000d6:     local.get $var2
+0000d8:     f64x2.qfms
+0000db:     local.get $var2
+0000dd:     f32x4.relaxed_max
+0000e0:     i32x4.relaxed_trunc_f64x2_s_zero
+0000e3:     local.get $var0
+0000e5:     local.get $var2
+0000e7:     i32x4.dot_i8x16_i7x16_add_s
+0000ea:   )
+0000eb: )
