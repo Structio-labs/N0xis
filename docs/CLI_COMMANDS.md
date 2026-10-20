@@ -59,18 +59,23 @@ pipelines).
 
 ### Source-selection flags
 
-Commands that read a target accept **exactly one** source. The full set:
+A command that reads a target takes **one** source. The full set:
 
 - `--pid <u32>` — a live process (VAs respect ASLR).
-- `--file <path>` — a static PE on disk (VAs use the image's preferred base).
+- `--file <path>` — a file on disk: an executable image (PE or ELF; VAs use the image's
+  preferred base) for the commands that analyse one; for the archive, script and bytecode
+  readers (`bundle`, `lua disasm`, `lua patch`) the file their own help names.
 - `--snapshot <name>` — reload a captured `snapshot dump`.
 - `--remote-cmd "<argv>"` — attach over the remote-agent transport, e.g.
   `"ssh host n0xis remote-serve --pid 1234"`.
-- `--bytes "<hex>"` — inline bytes (only on some commands; e.g. `"48 89 c8 c3"`).
+- `--bytes "<hex>"` — inline bytes, e.g. `"48 89 c8 c3"`.
 
-Not every command accepts all five — the per-command **Sources** line lists what that command
-actually takes. When no source is given, analysis commands fall back to the `.n0x/` session
-default (set by `init`/attach).
+Few commands take all five: `n0x guide` states each command's own in its `sources` field, read
+from the command's argument definitions, and a command takes no others — passing one it does
+not take is `bad-arguments` (`unexpected argument`). The per-command **Sources** lines below
+restate the guide, and a test holds them to it. `diff functions` names its two targets with
+flags of its own (`--a-file`, `--b-pid`, …). When no source is given, analysis commands fall
+back to the `.n0x/` session default (set by `init`/attach).
 
 ### Number parsing
 
@@ -217,8 +222,7 @@ List modules of a live process (`--pid`) or a single PE (`--file`).
 Linear disassembly.
 - `--addr` (required) — start address.
 - `--count` — number of instructions to decode (default 20).
-- `--bytes` — raw bytes to disassemble (the working Phase-1 source).
-- `--pid` / `--file` — **reserved** on this legacy command; use `--bytes`.
+- Sources: `--pid` | `--file` | `--bytes`.
 - Schema: `n0xis.decode.v1`
 
 ### `ir build` / `ir explain` / `ir dot`
@@ -234,7 +238,8 @@ human-readable summary; `dot` = Graphviz DOT (pipe to `dot -Tsvg`).
 Backward register slice: what computes `--reg` at `--at`.
 - `--reg` (required) — register to slice backward on (any width: `rax`, `eax`, `r8d`, …).
 - `--at` — query point (hex); defaults to the function's last instruction.
-- Plus all `IrArgs` (`--addr`, `--arch`, `--size`, `--no-auto-end`) and the same five sources.
+- Plus all `IrArgs` (`--addr`, `--arch`, `--size`, `--no-auto-end`).
+- Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.ir.slice.v1`
 
 ### `ir manifest`
@@ -248,13 +253,15 @@ Per-function index with quality scoring, over discovered candidates.
 ### `ir value-set`
 Light value-set / alias analysis over SSA (Phase 7): the bounded set of possible values each SSA
 variable can hold.
-- Args + sources: same as `ir build` (`IrArgs`).
+- Args: same as `ir build` (`IrArgs`).
+- Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.value_set.v1`
 
 ### `ir deobfuscate`
 Pattern-based deobfuscation report (Phase 7): junk instructions and value-set-provable opaque
 predicates.
-- Args + sources: same as `ir build` (`IrArgs`).
+- Args: same as `ir build` (`IrArgs`).
+- Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.deobfuscate.v1`
 
 ### `function discover`
@@ -288,7 +295,8 @@ Walk the call graph from a root function.
 Pseudo-C for one function.
 - `--style` — `goto` (flat + labels), `structured` (if/while, unoptimized), or **`ssa`**
   (structured *and* optimized — the full Phase 3 pipeline; **default**).
-- Plus all `IrArgs` (`--addr`, `--arch`, `--size`, `--no-auto-end`) and the same five sources.
+- Plus all `IrArgs` (`--addr`, `--arch`, `--size`, `--no-auto-end`).
+- Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: **`n0x.decomp.pseudo.v1`** (archived v0 id, kept for back-compat — the only current
   command that still emits a `n0x.*` schema).
 - `data.variables` lists every variable the page shows: `name` as printed (after any rename),
@@ -731,7 +739,7 @@ technique that reliably returns exactly one result (RE_METHOD W1). Live only.
   region); `--align`.
 - `--transition changed|increased|decreased` (default `changed`).
 - `--wait-ms <n>` — instead of pausing for the operator, wait N ms between snapshot and rescan
-  (scripted/agent use).
+  (scripted use).
 - Structural predicates over survivors: `--expect <f64>` (keep survivors whose new value equals
   this); `--min`/`--max` (keep survivors in `[min,max]`).
 - `--save-as` (required) — persist the working set under `.n0x/dumps/scan/<name>.json` so a later
@@ -823,10 +831,10 @@ sections above document a subset in depth; every command has `--help`, and
 
 | Command | What it does |
 |---|---|
-| `n0x capability list` | List every registered capability with its origin and emitted schema — the catalog an agent should read instead of guessing |
+| `n0x capability list` | List every registered capability with its origin and emitted schema — the catalog a script or a person reads instead of guessing |
 | `n0x capability run` | Run a capability by name with JSON arguments |
 | `n0x doctor` | Environment / readiness check |
-| `n0x guide` | Agent-oriented capability catalog: every command, its arguments, and composable workflow recipes — structured JSON an AI agent can read to understand what the tool can do and how to drive it. `guide <topic>` filters to matching commands (e.g. `guide scan`) |
+| `n0x guide` | Capability catalog: every command, its arguments, and composable workflow recipes — structured JSON a script or a person reads to learn what the tool can do and how to drive it, instead of guessing. `guide <topic>` filters to matching commands (e.g. `guide scan`) |
 | `n0x init` | Create a `.n0x/` project (config, dirs, `n0x.cmd` shim) |
 | `n0x process ps` | List running processes |
 | `n0x profile` | Profile a target before analyzing it: image facts (sections, exports, branch stubs, folded addresses, `.pdata`), the runtime/engine it was built with, and **which commands will be ineffective on it and why**. Run this first on an unfamiliar binary — it answers in one call what is otherwise learned by a sequence of empty results |
@@ -932,7 +940,7 @@ sections above document a subset in depth; every command has `--help`, and
 | Command | What it does |
 |---|---|
 | `n0x aot symbols` | List/resolve managed method names from NativeAOT stack-trace metadata |
-| `n0x serve` | Persistent static session: load `--file` once, then read one command line per line from stdin (e.g. `decomp pseudo --addr 0x…`) and write one compact JSON envelope per line to stdout — the image is parsed once and reused, so repeated decompile/disasm/xref calls avoid the per-call file re-load. A GUI/agent front-end drives this instead of spawning the CLI per click. Blank line or EOF exits |
+| `n0x serve` | Persistent static session: load `--file` once, then read one command line per line from stdin (e.g. `decomp pseudo --addr 0x…`) and write one compact JSON envelope per line to stdout — the image is parsed once and reused, so repeated decompile/disasm/xref calls avoid the per-call file re-load. A GUI or a script drives this instead of spawning the CLI per click. Blank line or EOF exits |
 | `n0x stack backtrace` | Snapshot a thread's registers and walk its call stack. Frame 0 is the current instruction; each caller is recovered through that module's unwind data (never a raw `[rsp]` guess). Reads registers via `ptrace` and stack/unwind bytes with `process_vm_readv`; `/proc/<pid>/maps` (and `/proc/<pid>/task` for `--all-threads`) supplies only the module map. The thread is held stopped just for the duration of the walk |
 
 ### Script & asset archives (Bitsquid/LuaJIT) (9)
@@ -967,8 +975,8 @@ sections above document a subset in depth; every command has `--help`, and
 |---|---|
 | `n0x ui focus` | Bring a window to the foreground (window selector). NOT read-only — it activates a window on the target |
 | `n0x ui locate` | Enumerate live UI elements whose bounding box intersects a screen rect |
-| `n0x ui screenshot` | Capture a window to a PNG so an agent can visually choose a rect. Honest about blank frames (GDI/PrintWindow return black for flip-model DirectX) — never reports a blank capture as a real image |
-| `n0x ui windows` | List a process's top-level windows (title/class/rects/DPI) so an agent can name the target's main window before capturing or locating |
+| `n0x ui screenshot` | Capture a window to a PNG so a caller can choose a rect by looking. Honest about blank frames (GDI/PrintWindow return black for flip-model DirectX) — never reports a blank capture as a real image |
+| `n0x ui windows` | List a process's top-level windows (title/class/rects/DPI) so a caller can name the target's main window before capturing or locating |
 
 ### IL2CPP managed layer (Phase 12) (6)
 

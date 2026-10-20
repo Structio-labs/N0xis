@@ -8,10 +8,9 @@
 //! **No analysis logic lives here** — the CLI is one of two equal frontends
 //! (the other is `n0xis-mcp`), both over the same core API (CONCEPT §3 rule 5).
 //!
-//! Phase 1 surface: `doctor`, `guide`, `init`, `project info`, and a `disasm`
-//! demo (`--bytes`) that drives the full source→arch→pass pipeline with no OS
-//! code. `--pid` / `--file` sources are reserved and return a Phase-2 error so
-//! the v0 command shape is preserved without pretending to implement it yet.
+//! Which target sources (`--pid`, `--file`, `--snapshot`, `--remote-cmd`,
+//! `--bytes`) a command takes is read from its own argument definitions — see
+//! [`TargetSource`]; `guide` lists them per command.
 
 mod emit;
 
@@ -121,10 +120,10 @@ enum Command {
     /// Run this first on an unfamiliar binary — it answers in one call what is
     /// otherwise learned by a sequence of empty results.
     Profile(ProfileArgs),
-    /// Agent-oriented capability catalog: every command, its arguments, and
-    /// composable workflow recipes — structured JSON an AI agent can read to
-    /// understand what the tool can do and how to drive it. `guide <topic>`
-    /// filters to matching commands (e.g. `guide scan`).
+    /// Capability catalog: every command, its arguments, and composable
+    /// workflow recipes — structured JSON a script or a person reads to learn
+    /// what the tool can do and how to drive it, instead of guessing.
+    /// `guide <topic>` filters to matching commands (e.g. `guide scan`).
     Guide(GuideArgs),
     /// Create a `.n0x/` project (config, dirs, `n0x.cmd` shim).
     Init(InitArgs),
@@ -238,13 +237,13 @@ enum Command {
     /// line per line from stdin (e.g. `decomp pseudo --addr 0x…`) and write one
     /// compact JSON envelope per line to stdout — the image is parsed once and
     /// reused, so repeated decompile/disasm/xref calls avoid the per-call file
-    /// re-load. A GUI/agent front-end drives this instead of spawning the CLI
+    /// re-load. A GUI or a script drives this instead of spawning the CLI
     /// per click. A line may instead be a JSON array of argument strings
     /// (`["annotate","comment","--addr","0x…","--value","…"]`), which carries
     /// any text exactly; the ready banner lists the accepted forms in
     /// `data.request_formats`. Blank line or EOF exits.
     Serve(ServeArgs),
-    /// Structural diffing at the IR/pseudo level (Phase 7): agent-friendly
+    /// Structural diffing at the IR/pseudo level (Phase 7): script-friendly
     /// change reports between two functions (e.g. two builds of a binary).
     #[command(subcommand)]
     Diff(DiffCmd),
@@ -483,10 +482,10 @@ enum UiCmd {
     /// NOT VALIDATED (Phase 9 marked invalid): hit-test one hardcoded UI-box
     /// layout against a screen rect. Do not rely on the results.
     Locate(UiLocateArgs),
-    /// List a process's top-level windows (title/class/rects/DPI) so an agent
+    /// List a process's top-level windows (title/class/rects/DPI) so a caller
     /// can name the target's main window before capturing or locating.
     Windows(UiWindowsArgs),
-    /// Capture a window to a PNG so an agent can visually choose a rect. Honest
+    /// Capture a window to a PNG so a caller can choose a rect by looking. Honest
     /// about blank frames (GDI/PrintWindow return black for flip-model DirectX)
     /// — never reports a blank capture as a real image.
     Screenshot(UiScreenshotArgs),
@@ -529,7 +528,7 @@ struct UiScreenshotArgs {
     /// `blank:true` in the envelope) — never silently.
     #[arg(long)]
     out: Option<String>,
-    /// Also embed the PNG as base64 in the envelope (for agents with no file
+    /// Also embed the PNG as base64 in the envelope (for a caller with no file
     /// access). Off by default — a full-window PNG is large.
     #[arg(long)]
     base64: bool,
@@ -660,7 +659,7 @@ struct LocateByTransitionArgs {
     #[arg(long, default_value = "changed")]
     transition: String,
     /// Instead of pausing for the operator, wait this many milliseconds between
-    /// the snapshot and the rescan (for scripted/agent use).
+    /// the snapshot and the rescan (for scripted use).
     #[arg(long)]
     wait_ms: Option<u64>,
     /// After the transition filter, keep only survivors whose new value equals
@@ -1505,7 +1504,7 @@ struct SelectionShowArgs {
 #[derive(Subcommand)]
 enum CapabilityCmd {
     /// List every registered capability with its origin and emitted schema —
-    /// the catalog an agent should read instead of guessing.
+    /// the catalog a script or a person reads instead of guessing.
     List,
     /// Run a capability by name with JSON arguments.
     Run(CapabilityRunArgs),
@@ -2176,7 +2175,7 @@ struct FindArgs {
     // Spelled `--bytes` like the inline-bytes *source* other commands take,
     // but here it is the thing searched for, not the thing searched — so its
     // id is `pattern`. A `serve` session decides whether a request names its
-    // own source by argument id (`SERVE_SOURCE_IDS`); under the shared id this
+    // own source by argument id (`TargetSource`); under the shared id this
     // pattern counted as one, the session image was withheld, and `find`
     // searched whatever the project default named instead. (`//`, not `///`:
     // a doc comment on a clap field is its help text.)
@@ -2903,13 +2902,13 @@ struct DisasmArgs {
     /// Number of instructions to decode.
     #[arg(long, default_value_t = n0xis_frontend::registry::DEFAULT_DECODE_COUNT)]
     count: usize,
-    /// Raw bytes to disassemble, e.g. "48 89 c8 c3" (Phase-1 source).
+    /// Raw bytes to disassemble, e.g. "48 89 c8 c3".
     #[arg(long)]
     bytes: Option<String>,
-    /// Live process id (Phase 2 — reserved).
+    /// Live process id.
     #[arg(long)]
     pid: Option<u32>,
-    /// PE file on disk (Phase 2 — reserved).
+    /// Executable image on disk (PE or ELF).
     #[arg(long)]
     file: Option<String>,
     #[arg(long, help = ARCH_HELP)]
@@ -3238,13 +3237,9 @@ fn guide_arg_json(arg: &clap::Arg) -> Option<serde_json::Value> {
     }
     let is_flag = matches!(arg.get_action(), ArgAction::SetTrue | ArgAction::SetFalse);
     let long = arg.get_long();
-    let name = match long {
-        Some(l) => format!("--{l}"),
-        None => format!("<{id}>"),
-    };
     let values: Vec<String> = arg.get_possible_values().iter().map(|p| p.get_name().to_string()).collect();
     Some(json!({
-        "name": name,
+        "name": guide_arg_name(arg),
         "positional": long.is_none() && !is_flag,
         "required": arg.is_required_set(),
         "takes_value": !is_flag,
@@ -3253,9 +3248,20 @@ fn guide_arg_json(arg: &clap::Arg) -> Option<serde_json::Value> {
     }))
 }
 
+/// How the guide names an argument: `--long`, or `<id>` for a positional.
+/// One spelling for an argument's own entry and for the `sources` it is in.
+fn guide_arg_name(arg: &clap::Arg) -> String {
+    match arg.get_long() {
+        Some(l) => format!("--{l}"),
+        None => format!("<{}>", arg.get_id()),
+    }
+}
+
 /// Walk the clap command tree, emitting one entry per *leaf* command (a command
 /// with no subcommands), with its full `path` (`"scan value"`), the `about` text
-/// straight from the clap definition, and its arguments. Derived from the real
+/// straight from the clap definition, the target sources it declares (see
+/// [`TargetSource`]; on `--brief` too, since which target a command can read
+/// is what a caller picks it by), and its arguments. Derived from the real
 /// CLI definition, so the catalog can never drift from what the binary accepts.
 fn guide_collect(cmd: &clap::Command, prefix: &str, brief: bool, out: &mut Vec<serde_json::Value>) {
     let subs: Vec<&clap::Command> = cmd.get_subcommands().filter(|c| c.get_name() != "help").collect();
@@ -3269,6 +3275,7 @@ fn guide_collect(cmd: &clap::Command, prefix: &str, brief: bool, out: &mut Vec<s
             "path": path,
             "category": guide_category(top),
             "summary": cmd.get_about().map(|s| s.to_string()),
+            "sources": command_sources(cmd).into_iter().map(|(_, arg)| guide_arg_name(arg)).collect::<Vec<_>>(),
         });
         if let Some(d) = cmd.get_long_about() {
             entry["detail"] = json!(d.to_string());
@@ -3366,6 +3373,21 @@ fn guide_workflows() -> Vec<serde_json::Value> {
     ]
 }
 
+/// The preamble's account of the target flags. It says what each flag hands a
+/// command and defers *which* flags a command takes to that command's own
+/// `sources`: a sentence here cannot know, and the one that tried claimed all
+/// five for every command.
+fn guide_sources_preamble() -> String {
+    let flags: Vec<String> = TargetSource::ALL.into_iter().map(|s| format!("{} {}", s.flag(), s.meaning())).collect();
+    format!(
+        "each command's `sources` lists the target flags its definition declares, and a command takes no others; \
+         an empty list means it reads no target through these flags. A command reads one target: {}. \
+         A command that compares two targets names each with flags of its own, listed in its `args`. \
+         Live VAs respect ASLR; static VAs use the image's preferred base.",
+        flags.join("; ")
+    )
+}
+
 fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
     let root = <Cli as clap::CommandFactory>::command();
     let mut commands = Vec::new();
@@ -3395,14 +3417,14 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
     let data = json!({
         "tool": "n0xis",
         "version": env!("CARGO_PKG_VERSION"),
-        "tagline": "Reverse-engineering toolkit: static PE/ELF + live memory in one contract-first pipeline — an optimizing SSA decompiler, watchpoint→decompiled-statement provenance, and journaled patching. Structured JSON from a terminal or, via MCP, an agent. Windows + Linux.",
+        "tagline": "Reverse-engineering toolkit: static PE/ELF + live memory in one contract-first pipeline — an optimizing SSA decompiler, watchpoint→decompiled-statement provenance, and journaled patching. Structured JSON from a terminal, a script, or an MCP client. Windows + Linux.",
         "usage_model": "Pick a command from `commands` (or a recipe from `workflows`). Every command emits the same { ok, data, meta } envelope on stdout; add --pretty for indented JSON; meta.schema names the payload shape. Progress goes to stderr with a [n0x] prefix (safe to ignore, or silence with --quiet). Non-zero exit on ok:false.",
         "global_flags": [
             { "name": "--pretty", "help": "indent the JSON envelope" },
             { "name": "--json", "help": "strict JSON-only stdout (already the default)" },
             { "name": "--quiet", "help": "suppress [n0x] stderr progress" }
         ],
-        "sources": "commands that read a target accept exactly one of: --pid <live process>, --file <static PE>, --snapshot <name of a captured snapshot dump>, --remote-cmd \"<argv, e.g. ssh host n0xis remote-serve --pid N>\", or --bytes \"<hex>\" (inline). Live VAs respect ASLR; static VAs use the image's preferred base.",
+        "sources": guide_sources_preamble(),
         "envelope": "every command emits { ok, data, meta } or { ok:false, error:{code,message,hint?} }; meta.schema is the payload id (n0xis.*.v1, or the archived n0x.*.v1 for ported v0 shapes).",
         "architectures": [
             "x64 — iced-x86, full pipeline: CFG / SSA / type recovery / optimized decompile. A 32-bit PE32 auto-selects i386 (or force with --arch x86)",
@@ -5611,17 +5633,92 @@ fn command_stdin() -> Result<std::io::Stdin, StdinIsSessionChannel> {
     Ok(std::io::stdin())
 }
 
-/// The argument ids that make a request name its own source: a session adds its
-/// `--file` only to a request that names none of these (and whose leaf takes a
-/// `file` at all — see [`serve_leaf_takes_file`]).
+/// The flags that hand a command its target — the one answer to "is this
+/// argument a source?", asked by the `serve` session (does a request name its
+/// own target, and does its leaf take the session's image?) and by `guide`
+/// (which sources does each command take?).
 ///
-/// Ids, not flag spellings. The spelling `--bytes` is a source in `disasm`,
-/// `ir` or `xref` and data in `find` (a pattern) and `mem write`/`patch` (a
-/// payload); a token list could not tell them apart, so `find --bytes …` in a
-/// session was dispatched without the session's file and searched whatever
-/// the project default named. Those data arguments carry ids of their own, so
-/// the one question — "is this a source?" — has one answer, clap's.
-const SERVE_SOURCE_IDS: [&str; 5] = ["file", "pid", "snapshot", "remote_cmd", "bytes"];
+/// Read from the clap argument *id*, not the flag spelling. The spelling
+/// `--bytes` is a source in `disasm`, `ir` or `xref` and data in `find` (a
+/// pattern) and `mem write`/`patch` (a payload); a token list could not tell
+/// them apart, so `find --bytes …` in a session was dispatched without the
+/// session's file and searched whatever the project default named. Those data
+/// arguments carry ids of their own (`pattern`, `payload`, `payload_file`).
+///
+/// `guide` once stated, in one sentence for the whole catalog, that every
+/// command reading a target took all five of these; measured on 0.3.4, 29 of
+/// 117 commands took `--snapshot` and `--remote-cmd`, and `disasm --snapshot`
+/// answered `unexpected argument`. Each command's sources are now read from its
+/// own definition through [`command_sources`], so a command lists exactly the
+/// ones it declares, a new command included, with no list to keep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetSource {
+    Pid,
+    File,
+    Snapshot,
+    RemoteCmd,
+    Bytes,
+}
+
+impl TargetSource {
+    /// In the order `guide` lists them.
+    const ALL: [TargetSource; 5] = [Self::Pid, Self::File, Self::Snapshot, Self::RemoteCmd, Self::Bytes];
+
+    /// The clap argument id that makes an argument this source.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Pid => "pid",
+            Self::File => "file",
+            Self::Snapshot => "snapshot",
+            Self::RemoteCmd => "remote_cmd",
+            Self::Bytes => "bytes",
+        }
+    }
+
+    /// The flag as the guide's preamble spells it. Every argument with this
+    /// source's id is spelled so — `every_source_argument_is_spelled_as_its_source`
+    /// fails on one that is not, which would make the preamble name a flag the
+    /// command does not have.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Pid => "--pid",
+            Self::File => "--file",
+            Self::Snapshot => "--snapshot",
+            Self::RemoteCmd => "--remote-cmd",
+            Self::Bytes => "--bytes",
+        }
+    }
+
+    /// What the flag hands the command, for the guide's preamble.
+    ///
+    /// `--file` is not only an executable image: `bundle`, `lua` and the other
+    /// archive and script readers take the file they read under the same id,
+    /// and a session hands them its file the same way. Their own help says
+    /// which file.
+    fn meaning(self) -> &'static str {
+        match self {
+            Self::Pid => "<a live process>",
+            Self::File => "<a file on disk: an executable image (PE or ELF) for the commands that analyse one; for archive, script and bytecode readers the file their own help names>",
+            Self::Snapshot => "<the name of a dump captured by `snapshot dump`>",
+            Self::RemoteCmd => "\"<argv of a remote agent, e.g. ssh host n0xis remote-serve --pid N>\"",
+            Self::Bytes => "\"<hex>\" <inline bytes>",
+        }
+    }
+
+    /// Which source an argument is, if any.
+    fn of_arg(arg: &clap::Arg) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| arg.get_id() == s.id())
+    }
+}
+
+/// The source arguments a command's definition declares, in
+/// [`TargetSource::ALL`] order.
+fn command_sources(cmd: &clap::Command) -> Vec<(TargetSource, &clap::Arg)> {
+    TargetSource::ALL
+        .into_iter()
+        .filter_map(|s| cmd.get_arguments().find(|a| TargetSource::of_arg(a) == Some(s)).map(|a| (s, a)))
+        .collect()
+}
 
 /// The deepest subcommand's matches: where a request's own arguments live.
 fn serve_leaf(matches: &clap::ArgMatches) -> &clap::ArgMatches {
@@ -5658,14 +5755,14 @@ fn serve_leaf_takes_file(matches: &clap::ArgMatches) -> bool {
         cmd = next;
         m = sub;
     }
-    cmd.get_arguments().any(|arg| arg.get_id() == "file")
+    command_sources(cmd).iter().any(|(s, _)| *s == TargetSource::File)
 }
 
-/// Whether a parsed request line names its own source: one of
-/// [`SERVE_SOURCE_IDS`] given on the command line of its leaf subcommand.
+/// Whether a parsed request line names its own source: one of the
+/// [`TargetSource`] ids given on the command line of its leaf subcommand.
 fn serve_names_source(matches: &clap::ArgMatches) -> bool {
     let leaf = serve_leaf(matches);
-    SERVE_SOURCE_IDS.iter().any(|id| {
+    TargetSource::ALL.into_iter().map(TargetSource::id).any(|id| {
         // `try_get_raw` first: in a debug build it answers `Err` for an id this
         // leaf does not define, where `value_source` would panic (a release
         // build answers `Ok(None)` and does not panic — either way the id is
@@ -7824,6 +7921,43 @@ mod typed_path_premise_tests {
         let mut valued = Vec::new();
         collect_valued(&root, "", &mut valued);
         assert!(valued.is_empty(), "options with values above a leaf break `typed_path`: {valued:?}");
+    }
+}
+
+#[cfg(test)]
+mod target_source_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn walk<'a>(cmd: &'a clap::Command, path: &str, out: &mut Vec<(String, &'a clap::Command)>) {
+        out.push((path.to_string(), cmd));
+        for s in cmd.get_subcommands() {
+            walk(s, format!("{path} {}", s.get_name()).trim(), out);
+        }
+    }
+
+    /// The guide's preamble spells each source as [`TargetSource::flag`]; an
+    /// argument carrying a source's id under another spelling (or none — a
+    /// positional) would be listed in a command's `sources` under a name the
+    /// preamble never explains.
+    #[test]
+    fn every_source_argument_is_spelled_as_its_source() {
+        let root = Cli::command();
+        let mut all = Vec::new();
+        walk(&root, "", &mut all);
+        let mut seen = 0usize;
+        let mut wrong = Vec::new();
+        for (path, cmd) in &all {
+            for (source, arg) in command_sources(cmd) {
+                seen += 1;
+                if guide_arg_name(arg) != source.flag() {
+                    wrong.push(format!("`{path}`: id `{}` is spelled {}", source.id(), guide_arg_name(arg)));
+                }
+            }
+        }
+        // A walk that found nothing would pass the assertion below vacuously.
+        assert!(seen > 100, "the walk reached the source arguments ({seen})");
+        assert!(wrong.is_empty(), "source arguments spelled unlike their source: {wrong:?}");
     }
 }
 
