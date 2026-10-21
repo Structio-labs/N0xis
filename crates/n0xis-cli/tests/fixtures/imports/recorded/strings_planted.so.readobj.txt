@@ -1,0 +1,224 @@
+
+File: crates/n0xis-cli/tests/fixtures/strings_planted.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x3580
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 11
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 26
+  StringTableSectionIndex: 25
+}
+DynamicSection [ (20 entries)
+  Tag                Type         Name/Value
+  0x0000000000000001 NEEDED       Shared library: [libc.so.6]
+  0x000000000000000C INIT         0x1000
+  0x000000000000000D FINI         0x111C
+  0x0000000000000019 INIT_ARRAY   0x3E18
+  0x000000000000001B INIT_ARRAYSZ 8 (bytes)
+  0x000000000000001A FINI_ARRAY   0x3E20
+  0x000000000000001C FINI_ARRAYSZ 8 (bytes)
+  0x000000006FFFFEF5 GNU_HASH     0x2D0
+  0x0000000000000005 STRTAB       0x3F8
+  0x0000000000000006 SYMTAB       0x308
+  0x000000000000000A STRSZ        154 (bytes)
+  0x000000000000000B SYMENT       24 (bytes)
+  0x0000000000000007 RELA         0x4C8
+  0x0000000000000008 RELASZ       264 (bytes)
+  0x0000000000000009 RELAENT      24 (bytes)
+  0x000000006FFFFFFE VERNEED      0x4A8
+  0x000000006FFFFFFF VERNEEDNUM   1
+  0x000000006FFFFFF0 VERSYM       0x492
+  0x000000006FFFFFF9 RELACOUNT    3
+  0x0000000000000000 NULL         0x0
+]
+NeededLibraries [
+  libc.so.6
+]
+Relocations [
+  Section (7) .rela.dyn {
+    0x3E18 R_X86_64_RELATIVE - 0x10E0
+    0x3E20 R_X86_64_RELATIVE - 0x1090
+    0x4000 R_X86_64_RELATIVE - 0x4000
+    0x3FA8 R_X86_64_GLOB_DAT n0x_utf8 0x0
+    0x3FB0 R_X86_64_GLOB_DAT _ITM_deregisterTMCloneTable 0x0
+    0x3FB8 R_X86_64_GLOB_DAT n0x_short 0x0
+    0x3FC0 R_X86_64_GLOB_DAT n0x_ascii 0x0
+    0x3FC8 R_X86_64_GLOB_DAT __gmon_start__ 0x0
+    0x3FD0 R_X86_64_GLOB_DAT n0x_wide 0x0
+    0x3FD8 R_X86_64_GLOB_DAT _ITM_registerTMCloneTable 0x0
+    0x3FE0 R_X86_64_GLOB_DAT __cxa_finalize@GLIBC_2.2.5 0x0
+  }
+]
+DynamicSymbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_deregisterTMCloneTable (16)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __gmon_start__ (1)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_registerTMCloneTable (44)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __cxa_finalize@GLIBC_2.2.5 (70)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: n0x_ascii (94)
+    Value: 0x2050
+    Size: 25
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0xB)
+  }
+  Symbol {
+    Name: n0x_utf8 (114)
+    Value: 0x2030
+    Size: 20
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0xB)
+  }
+  Symbol {
+    Name: n0x_pick (85)
+    Value: 0x10E9
+    Size: 50
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: n0x_short (104)
+    Value: 0x2000
+    Size: 4
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0xB)
+  }
+  Symbol {
+    Name: n0x_wide (123)
+    Value: 0x2010
+    Size: 26
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0xB)
+  }
+]
+VersionSymbols [
+  Symbol {
+    Version: 0
+    Name: 
+  }
+  Symbol {
+    Version: 0
+    Name: _ITM_deregisterTMCloneTable
+  }
+  Symbol {
+    Version: 0
+    Name: __gmon_start__
+  }
+  Symbol {
+    Version: 0
+    Name: _ITM_registerTMCloneTable
+  }
+  Symbol {
+    Version: 2
+    Name: __cxa_finalize@GLIBC_2.2.5
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_ascii
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_utf8
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_pick
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_short
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_wide
+  }
+]
+VersionDefinitions [
+]
+VersionRequirements [
+  Dependency {
+    Version: 1
+    Count: 1
+    FileName: libc.so.6
+    Entries [
+      Entry {
+        Hash: 157882997
+        Flags [ (0x0)
+        ]
+        Index: 2
+        Name: GLIBC_2.2.5
+      }
+    ]
+  }
+]

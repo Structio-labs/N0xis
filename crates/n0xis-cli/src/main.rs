@@ -53,11 +53,11 @@ use n0xis_core::{FilterInput, FilterPass, ScanCriterion, ScanInput, ScanPass, Sc
 #[cfg(windows)]
 use n0xis_core::{build_trampoline, AabbLayout, UiLocateInput, UiLocatePass};
 use n0xis_pipeline::cfg_cached;
-// Cross-platform sources: `MemorySource` (the trait), `Snapshot`/`StaticPe`
+// Cross-platform sources: `MemorySource` (the trait), `Snapshot`
 // (offline sources), `RemoteAgent`/`remote_serve_stdio` (the SSH/remote-serve
 // transport — a Linux box can drive a *remote* Windows target over this
 // without itself needing Win32) — none of these require the `live` feature.
-use n0xis_sources::{MemorySource, Snapshot, StaticImage, remote_serve_stdio};
+use n0xis_sources::{MemorySource, Snapshot, remote_serve_stdio};
 // Live-process (Win32) sources: only ever compiled in on Windows, matching
 // n0xis-sources' own `#[cfg(feature = "live")]` gates (see its lib.rs) and
 // this crate's Cargo.toml `[target.'cfg(windows)'.dependencies]` split.
@@ -133,6 +133,13 @@ enum Command {
     /// Program databases (PDB) for the project's images.
     #[command(subcommand)]
     Symbols(SymbolsCmd),
+    /// What an image file needs from other images: its libraries in the order
+    /// it states them, and each imported name with the library it is
+    /// attributed to and how it is reached. The same question for every
+    /// format; `not_read` where the table was not read: a PE only a
+    /// permissive parse opened, a PE with a delay-load import table, an ELF
+    /// relocatable object.
+    Imports(ImportsArgs),
     /// Live process inspection.
     #[command(subcommand)]
     Process(ProcessCmd),
@@ -2878,6 +2885,13 @@ enum SymbolsCmd {
 }
 
 #[derive(Args)]
+struct ImportsArgs {
+    /// The image.
+    #[arg(long)]
+    file: String,
+}
+
+#[derive(Args)]
 struct SymbolsAddArgs {
     /// The image the PDB belongs to.
     #[arg(long)]
@@ -3084,6 +3098,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
         Command::Project(ProjectCmd::Cache(a)) => cmd_project_cache(a, pretty),
         Command::Symbols(SymbolsCmd::Add(a)) => cmd_symbols_add(a, pretty),
+        Command::Imports(a) => cmd_imports(a, pretty),
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
@@ -3215,7 +3230,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -3508,6 +3523,11 @@ fn cmd_project_cache(a: ProjectCacheArgs, pretty: bool) -> bool {
     emit(&Response::success(schema::v1::PROJECT_CACHE, data), pretty)
 }
 
+/// `imports`: through the registry, so `serve` and an agent read the same answer.
+fn cmd_imports(a: ImportsArgs, pretty: bool) -> bool {
+    run_capability("imports", json!({ "file": a.file }), pretty)
+}
+
 /// `symbols add`: through the registry, so `serve` and an agent reach the same check.
 fn cmd_symbols_add(a: SymbolsAddArgs, pretty: bool) -> bool {
     run_capability("symbols.add", json!({ "file": a.file, "pdb": a.pdb }), pretty)
@@ -3771,19 +3791,17 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
     // -> section table). An ELF has none of that, so it used to fail at the very
     // first read — `profile` is the command everyone runs first, which made the
     // whole tool look ELF-incapable even though disasm/decomp/xref all work.
-    // Whether this image needed a permissive parse — see `StaticPe::load`.
+    // Whether this image needed a permissive parse — see the PE reader's
+    // strict-then-permissive open.
     let degraded_reason: Option<String> = match &src {
-        Src::Static(img) => match img.as_ref() {
-            StaticImage::Pe(pe) => pe.degraded().map(str::to_string),
-            _ => None,
-        },
+        Src::Static(img) => img.degraded().map(str::to_string),
         _ => None,
     };
 
     // Build the same profile from the ELF source's own parsed section table and
     // symbols, and share the format-agnostic assembly with the PE path.
-    if let Src::Static(img) = &src
-        && let StaticImage::Elf(elf) = img.as_ref()
+    if let Src::Static(elf) = &src
+        && elf.format() == n0xis_sources::ImageFormat::Elf
     {
         let sections: Vec<n0xis_core::SectionInfo> = elf
             .sections_detailed()
@@ -7079,14 +7097,19 @@ fn generate_pattern(window: &[u8], window_va: Va, arch: &dyn Arch) -> Option<(St
 }
 
 fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
-    let img = match StaticImage::load(std::path::Path::new(&a.file)) {
-        Ok(i) => i,
-        Err(e) => return emit(&Response::<serde_json::Value>::error("load-failed", e.to_string()), pretty),
+    // The image is loaded the way every command loads one, so its load
+    // errors are theirs.
+    let resolved = match n0xis_frontend::source::resolve(SourceSpec { file: Some(&a.file), ..Default::default() }) {
+        Ok(r) => r,
+        Err((code, message)) => return emit(&Response::<serde_json::Value>::error(&code, message), pretty),
+    };
+    let Src::Static(img) = &resolved.src else {
+        return emit(&Response::<serde_json::Value>::error("not-an-image", "a signature library is built from an image file"), pretty);
     };
     // Honour the image's own machine field, not just its bitness: a signature
     // library must fingerprint an AArch64 image with the AArch64 decoder, never
-    // x86-64. `StaticImage` lives below the frontend, so thread its declared
-    // machine into `pick_arch_for` directly (an explicit `--arch` still wins).
+    // x86-64. Its declared machine goes into `pick_arch_for` directly (an
+    // explicit `--arch` still wins).
     let declared = img.machine();
     let arch = match n0xis_frontend::pick_arch_for(a.arch.as_deref(), Some(declared.as_str()), !img.is_64()) {
         Ok(x) => x,

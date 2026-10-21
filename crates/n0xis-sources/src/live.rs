@@ -8,7 +8,7 @@
 //! through `ReadProcessMemory`, clamps requests to committed regions via
 //! `VirtualQueryEx` (giving the documented read-up-to semantics), writes via
 //! `WriteProcessMemory`, and enumerates modules via ToolHelp. To the pipeline
-//! it is indistinguishable from [`StaticPe`](crate::StaticPe) — same seams,
+//! it is indistinguishable from [`ImageSource`](crate::ImageSource) — same seams,
 //! same passes. That is the "one pipeline, live + static" thesis in code.
 
 use std::ffi::c_void;
@@ -163,7 +163,7 @@ impl LiveProcess {
 
     /// Locate a named section's `(start, size)` in the main module by reading
     /// its PE headers straight from live memory (the full image is mapped, so
-    /// unlike `StaticPe` we parse the section table from RAM). `name` is any
+    /// unlike the PE reader we parse the section table from RAM). `name` is any
     /// section, not just `.text` — e.g. `.rdata` for string-literal scanning.
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
         self.section_range_of(self.main_module()?.base, name)

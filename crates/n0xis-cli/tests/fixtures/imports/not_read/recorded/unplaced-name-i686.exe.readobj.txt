@@ -1,0 +1,9 @@
+
+File: unplaced-name-i686.exe
+Format: COFF-i386
+Arch: i386
+AddressSize: 32bit
+Import {
+  Name: planted.dll
+  ImportLookupTableRVA: 0x403C
+  ImportAddressTableRVA: 0x4050

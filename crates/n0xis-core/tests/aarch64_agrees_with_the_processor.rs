@@ -51,7 +51,7 @@ use std::process::Command;
 use n0xis_arch::{Arch, Arm64};
 use n0xis_contracts::Va;
 use n0xis_core::{CfgInput, CfgPass, Ctx, EmuConfig, EmuError, Emulator, Pass, SsaPass};
-use n0xis_sources::{MemorySource, StaticElf, SymbolProvider};
+use n0xis_sources::{MemorySource, ImageSource, SymbolProvider};
 
 /// The cross toolchain, named once. Each is a machine fact, not a preference:
 /// the compiler that emits AArch64, the `nm` that reads its symbol table, and
@@ -467,7 +467,7 @@ fn check_one_build(so: &Path, driver: &Path, arch: &Arm64, level: &str) -> Tally
         addrs.len()
     );
 
-    let elf = StaticElf::load(so).expect("n0xis loads the same library");
+    let elf = ImageSource::load(so).expect("n0xis loads the same library");
     // An independent statement that n0xis is looking at the AArch64 object the
     // cross toolchain produced, and not at a stale x86 build left in the temp
     // directory by a sibling test.

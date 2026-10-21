@@ -1,0 +1,6 @@
+LIBRARY planted.dll
+EXPORTS
+  by_name
+  by_ordinal @7 NONAME
+  a_value DATA
+  forwarded = KERNEL32.ExitProcess

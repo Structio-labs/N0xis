@@ -1,0 +1,249 @@
+
+File: crates/n0xis-sources/tests/fixtures/tls_overlap.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x35F0
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 12
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 29
+  StringTableSectionIndex: 28
+}
+DynamicSection [ (25 entries)
+  Tag                Type         Name/Value
+  0x0000000000000001 NEEDED       Shared library: [libc.so.6]
+  0x0000000000000001 NEEDED       Shared library: [ld-linux-x86-64.so.2]
+  0x000000000000000C INIT         0x1000
+  0x000000000000000D FINI         0x1188
+  0x0000000000000019 INIT_ARRAY   0x3DB0
+  0x000000000000001B INIT_ARRAYSZ 16 (bytes)
+  0x000000000000001A FINI_ARRAY   0x3DC0
+  0x000000000000001C FINI_ARRAYSZ 16 (bytes)
+  0x000000006FFFFEF5 GNU_HASH     0x308
+  0x0000000000000005 STRTAB       0x430
+  0x0000000000000006 SYMTAB       0x340
+  0x000000000000000A STRSZ        200 (bytes)
+  0x000000000000000B SYMENT       24 (bytes)
+  0x0000000000000003 PLTGOT       0x3FE8
+  0x0000000000000002 PLTRELSZ     24 (bytes)
+  0x0000000000000014 PLTREL       RELA
+  0x0000000000000017 JMPREL       0x688
+  0x0000000000000007 RELA         0x550
+  0x0000000000000008 RELASZ       312 (bytes)
+  0x0000000000000009 RELAENT      24 (bytes)
+  0x000000006FFFFFFE VERNEED      0x510
+  0x000000006FFFFFFF VERNEEDNUM   2
+  0x000000006FFFFFF0 VERSYM       0x4F8
+  0x000000006FFFFFF9 RELACOUNT    5
+  0x0000000000000000 NULL         0x0
+]
+NeededLibraries [
+  ld-linux-x86-64.so.2
+  libc.so.6
+]
+Relocations [
+  Section (7) .rela.dyn {
+    0x3DB0 R_X86_64_RELATIVE - 0x1100
+    0x3DB8 R_X86_64_RELATIVE - 0x1144
+    0x3DC0 R_X86_64_RELATIVE - 0x10B0
+    0x3DC8 R_X86_64_RELATIVE - 0x1165
+    0x4008 R_X86_64_RELATIVE - 0x4008
+    0x3DD0 R_X86_64_64 n0x_first 0x0
+    0x3DD8 R_X86_64_64 n0x_second 0x0
+    0x3FB0 R_X86_64_GLOB_DAT _ITM_deregisterTMCloneTable 0x0
+    0x3FB8 R_X86_64_GLOB_DAT __gmon_start__ 0x0
+    0x3FC0 R_X86_64_DTPMOD64 n0x_tls_counter 0x0
+    0x3FC8 R_X86_64_DTPOFF64 n0x_tls_counter 0x0
+    0x3FD0 R_X86_64_GLOB_DAT _ITM_registerTMCloneTable 0x0
+    0x3FD8 R_X86_64_GLOB_DAT __cxa_finalize@GLIBC_2.2.5 0x0
+  }
+  Section (8) .rela.plt {
+    0x4000 R_X86_64_JUMP_SLOT __tls_get_addr@GLIBC_2.3 0x0
+  }
+]
+DynamicSymbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_deregisterTMCloneTable (16)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __tls_get_addr@GLIBC_2.3 (111)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __gmon_start__ (1)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_registerTMCloneTable (44)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __cxa_finalize@GLIBC_2.2.5 (70)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: n0x_second (126)
+    Value: 0x1126
+    Size: 30
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: n0x_tls_counter (95)
+    Value: 0x0
+    Size: 64
+    Binding: Global (0x1)
+    Type: TLS (0x6)
+    Other: 0
+    Section: .tbss (0x10)
+  }
+  Symbol {
+    Name: n0x_first (85)
+    Value: 0x1109
+    Size: 29
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: n0x_table (137)
+    Value: 0x3DD0
+    Size: 16
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0x13)
+  }
+]
+VersionSymbols [
+  Symbol {
+    Version: 0
+    Name: 
+  }
+  Symbol {
+    Version: 0
+    Name: _ITM_deregisterTMCloneTable
+  }
+  Symbol {
+    Version: 2
+    Name: __tls_get_addr@GLIBC_2.3
+  }
+  Symbol {
+    Version: 0
+    Name: __gmon_start__
+  }
+  Symbol {
+    Version: 0
+    Name: _ITM_registerTMCloneTable
+  }
+  Symbol {
+    Version: 3
+    Name: __cxa_finalize@GLIBC_2.2.5
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_second
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_tls_counter
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_first
+  }
+  Symbol {
+    Version: 1
+    Name: n0x_table
+  }
+]
+VersionDefinitions [
+]
+VersionRequirements [
+  Dependency {
+    Version: 1
+    Count: 1
+    FileName: libc.so.6
+    Entries [
+      Entry {
+        Hash: 157882997
+        Flags [ (0x0)
+        ]
+        Index: 3
+        Name: GLIBC_2.2.5
+      }
+    ]
+  }
+  Dependency {
+    Version: 1
+    Count: 1
+    FileName: ld-linux-x86-64.so.2
+    Entries [
+      Entry {
+        Hash: 225011987
+        Flags [ (0x0)
+        ]
+        Index: 2
+        Name: GLIBC_2.3
+      }
+    ]
+  }
+]

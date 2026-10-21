@@ -8,7 +8,7 @@
 //! persisted alongside them (`flirt-symbols.json`). All three are address→name
 //! maps loaded at `Ctx`-build time and shared cheaply via `Arc`, so this provider
 //! borrows nothing from the source and chains as ONE unit — unlike the per-source
-//! providers (`StaticPe`, ad-hoc FLIRT, IL2CPP) it sits above.
+//! providers (`ImageSource`, ad-hoc FLIRT, IL2CPP) it sits above.
 //!
 //! Chained as the **primary** provider (see `registry`'s `with_cfg_ctx` /
 //! `with_src_ctx`), so a user rename wins over a recovered name, which wins over

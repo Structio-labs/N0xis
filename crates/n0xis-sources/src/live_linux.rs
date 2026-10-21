@@ -384,7 +384,7 @@ fn read_errno(pid: u32, va: u64) -> SourceError {
 
 impl MemorySource for LinuxProcess {
     /// Read *up to* `len` bytes, truncated at the end of the containing
-    /// mapping — the same contract the Win32 adapter and `StaticPe` honour.
+    /// mapping — the same contract the Win32 adapter and `ImageSource` honour.
     fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
         let Some(entry) = self.entry_containing(va.0) else {
             return Err(SourceError::Unmapped(va));

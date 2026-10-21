@@ -24,7 +24,7 @@
 
 use std::path::PathBuf;
 
-use n0xis_sources::{ByteOrder, Linkage, StaticElf, StaticImage};
+use n0xis_sources::{ByteOrder, ImageSource, Linkage, PointerWidth};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/itanium_vtables")
@@ -67,18 +67,19 @@ fn the_pointer_size_is_the_elf_class() {
             "64-bit (0x2)" => 8,
             other => panic!("{image}: llvm-readobj's Class is {other}"),
         };
-        let elf = StaticElf::load(&path).expect("the fixture loads");
-        assert_eq!(elf.pointer_size(), want, "{image}: llvm-readobj says Class {class}");
-        assert_eq!(elf.is_64(), want == 8, "{image}");
-        // The image enum is what every front end asks.
-        let img = StaticImage::load(&path).expect("the fixture loads");
-        assert_eq!((img.pointer_size(), img.is_64()), (want, want == 8), "{image}: through StaticImage");
+        let img = ImageSource::load(&path).expect("the fixture loads");
+        // The reader's own answer...
+        let elf = img.image().machine();
+        assert_eq!(elf.pointer_width.bytes(), want, "{image}: llvm-readobj says Class {class}");
+        assert_eq!(elf.pointer_width == PointerWidth::Eight, want == 8, "{image}");
+        // ...and the adapter's, which is what every front end asks.
+        assert_eq!((img.pointer_size(), img.is_64()), (want, want == 8), "{image}: through ImageSource");
         let order = match encoding.as_str() {
             "LittleEndian (0x1)" => ByteOrder::Little,
             "BigEndian (0x2)" => ByteOrder::Big,
             other => panic!("{image}: llvm-readobj's DataEncoding is {other}"),
         };
-        assert_eq!((elf.byte_order(), img.byte_order()), (order, order), "{image}: llvm-readobj says DataEncoding {encoding}");
+        assert_eq!((elf.byte_order, img.byte_order()), (order, order), "{image}: llvm-readobj says DataEncoding {encoding}");
     }
     // The set must hold both byte orders, or the check above proves one.
     assert!(recorded.iter().any(|(_, _, e)| e.starts_with("BigEndian")), "a big-endian fixture");
@@ -119,8 +120,9 @@ fn a_program_or_a_library_is_what_the_headers_say() {
             other => panic!("{image}: llvm-readobj's Type is {other}"),
         };
         let path = fixtures().join(image);
-        assert_eq!(StaticElf::load(&path).expect("the fixture loads").linkage(), want, "{image}: llvm-readobj says Type {kind}");
-        assert_eq!(StaticImage::load(&path).expect("the fixture loads").linkage(), want, "{image}: through StaticImage");
+        let img = ImageSource::load(&path).expect("the fixture loads");
+        assert_eq!(img.image().linkage(), want, "{image}: llvm-readobj says Type {kind}");
+        assert_eq!(img.linkage(), want, "{image}: through ImageSource");
         checked += 1;
     }
     assert_eq!(checked, 34, "every fixture");

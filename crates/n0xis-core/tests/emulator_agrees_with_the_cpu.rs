@@ -41,7 +41,7 @@ use std::process::Command;
 use n0xis_arch::X64;
 use n0xis_contracts::Va;
 use n0xis_core::{CfgInput, CfgPass, Ctx, Emulator, OptimizePass, Pass, SsaPass};
-use n0xis_sources::StaticElf;
+use n0xis_sources::ImageSource;
 
 /// An arbitrary but fixed canary. Its value never reaches a result; only its
 /// consistency between the prologue's store and the epilogue's compare does.
@@ -217,7 +217,7 @@ fn check_one_build(so: &Path, driver: &Path, level: &str) -> (usize, usize, usiz
     let cases = parse_cases(&String::from_utf8_lossy(&out.stdout));
     assert!(cases.len() >= addrs.len(), "the CPU answered fewer cases than there are functions");
 
-    let elf = StaticElf::load(so).expect("n0xis loads the same library");
+    let elf = ImageSource::load(so).expect("n0xis loads the same library");
     let arch = X64::new();
     // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
     // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition back

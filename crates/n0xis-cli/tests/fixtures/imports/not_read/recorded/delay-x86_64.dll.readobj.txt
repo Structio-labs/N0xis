@@ -1,0 +1,28 @@
+
+File: delay-x86_64.dll
+Format: COFF-x86-64
+Arch: x86_64
+AddressSize: 64bit
+Import {
+  Name: n0xnow.dll
+  ImportLookupTableRVA: 0x2120
+  ImportAddressTableRVA: 0x2130
+  Symbol: n0x_now (0)
+}
+DelayImport {
+  Name: n0xlater.dll
+  Attributes: 0x1
+  ModuleHandle: 0x3000
+  ImportAddressTable: 0x3008
+  ImportNameTable: 0x2068
+  BoundDelayImportTable: 0x0
+  UnloadDelayImportTable: 0x0
+  Import {
+    Symbol: n0x_later_a (0)
+    Address: 0x18000103F
+  }
+  Import {
+    Symbol: n0x_later_b (0)
+    Address: 0x18000104B
+  }
+}

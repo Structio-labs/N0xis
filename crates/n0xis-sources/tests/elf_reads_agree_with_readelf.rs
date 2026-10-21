@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use n0xis_contracts::Va;
-use n0xis_sources::{MemorySource, StaticElf};
+use n0xis_sources::{MemorySource, ImageSource};
 
 /// Files above this size are skipped: the comparison copies each section.
 const MAX_FILE: u64 = 64 << 20;
@@ -103,7 +103,7 @@ fn every_section_reads_as_the_file_holds_it() {
     let mut wrong: Vec<String> = Vec::new();
     for path in &files {
         let Some(sections) = readelf_sections(path) else { continue };
-        let Ok(elf) = StaticElf::load(path) else { continue };
+        let Ok(elf) = ImageSource::load(path) else { continue };
         let Ok(file) = std::fs::read(path) else { continue };
         checked_files += 1;
         for s in sections.iter().filter(|s| s.kind != SHT_NOBITS) {

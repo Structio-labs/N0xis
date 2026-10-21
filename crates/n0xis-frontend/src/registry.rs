@@ -453,10 +453,7 @@ static EH_MEMO: std::sync::Mutex<EhMemo> = std::sync::Mutex::new(None);
 /// not a statically loaded PE.
 fn pe_image_base(src: &Src) -> Option<n0xis_contracts::Va> {
     match src {
-        Src::Static(img) => match &**img {
-            n0xis_sources::StaticImage::Pe(pe) => Some(pe.image_base()),
-            _ => None,
-        },
+        Src::Static(img) if img.format() == n0xis_sources::ImageFormat::Pe => Some(img.image_base()),
         _ => None,
     }
 }
@@ -842,7 +839,7 @@ fn with_cfg_ctx(
     let input = n0xis_core::CfgInput { start, max_bytes: usize_arg(args, "size", 4096), auto_end: !bool_arg(args, "no_auto_end") };
     let label = resolved.label.clone();
 
-    // A StaticPe is also a SymbolProvider + ModuleProvider — feed those seams
+    // A ImageSource is also a SymbolProvider + ModuleProvider — feed those seams
     // so call targets resolve to names.
     //
     // Phase 12 item 2: when the project holds an IL2CPP index that fits this
@@ -1098,7 +1095,7 @@ fn with_scan_ctx(
             Ok(v) => v,
             Err(e) => return Response::error("bad-addr", e.to_string()),
         };
-        let pe = match n0xis_sources::StaticImage::load(std::path::Path::new(file)) {
+        let pe = match n0xis_sources::ImageSource::load(std::path::Path::new(file)) {
             Ok(p) => p,
             Err(e) => return Response::error("load-failed", e.to_string()),
         };
@@ -2110,7 +2107,7 @@ impl Plugin for AnalysisPasses {
                         Err((c, m)) => Err(Response::error(&c, m)),
                     }
                 } else if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
-                    match n0xis_sources::StaticImage::load(std::path::Path::new(file)) {
+                    match n0xis_sources::ImageSource::load(std::path::Path::new(file)) {
                         Ok(pe) => {
                             let label = n0xis_sources::MemorySource::label(&pe);
                             match n0xis_core::parse_aot(&pe, pe.image_base()) {
@@ -2712,6 +2709,7 @@ pub fn build_registry() -> Registry {
     reg.add_plugin(&crate::il2cpp_caps::Il2CppTools);
     reg.add_plugin(&crate::strings_caps::StringTools);
     reg.add_plugin(&crate::symbols_caps::SymbolTools);
+    reg.add_plugin(&crate::image_caps::ImageTools);
     reg.add_plugin(&ProcessPlugins);
     reg
 }
@@ -2749,7 +2747,7 @@ mod tests {
     fn a_pe_carrying_both_unwind_tables_is_read_as_a_pe() {
         let path = std::env::temp_dir().join(format!("n0xis_both_tables_{}.exe", std::process::id()));
         std::fs::write(&path, pe_with_both_tables()).unwrap();
-        let img = n0xis_sources::StaticImage::load(&path).expect("the synthetic PE loads");
+        let img = n0xis_sources::ImageSource::load(&path).expect("the synthetic PE loads");
         let src = Src::Static(std::sync::Arc::new(img));
 
         let fns = scan_unwind(&src).expect("an image with either table has an answer");

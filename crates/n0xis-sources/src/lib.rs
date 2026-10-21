@@ -10,10 +10,11 @@
 //! pipeline run byte-for-byte identically on a running process and a file on disk
 //! (CONCEPT §5.1).
 //!
-//! Phase 1 ships only [`Snapshot`], a pure in-memory implementation with **no
-//! OS dependency** — the test double the whole core is validated against. The
-//! `LiveProcess` (Win32) and `StaticPe` (goblin) adapters arrive in Phase 2,
-//! gated behind features so this crate stays OS-free by default.
+//! [`Snapshot`] is a pure in-memory implementation with **no OS dependency** —
+//! the test double the whole core is validated against. An image file is
+//! served by [`ImageSource`] over whichever [`Image`] reader recognizes it (the
+//! PE and ELF ones under the `static-pe` feature), and the live adapters come
+//! with `live`; both are gated so this crate stays OS-free by default.
 
 mod snapshot;
 
@@ -22,7 +23,7 @@ pub use snapshot::{Snapshot, SnapshotBuilder};
 // The PE export table, read once for the file loader and for `profile` over a
 // mapped module alike — OS-free, so it is compiled without `static-pe`.
 mod pe_exports;
-pub use pe_exports::{read_export_table, ExportDirectory, ExportTarget, PeExport, MAX_EXPORT_SLOTS};
+pub use pe_exports::{read_export_table, try_read_export_table, ExportDirectory, ExportTarget, PeExport, MAX_EXPORT_SLOTS};
 
 mod linewire;
 
@@ -37,18 +38,24 @@ pub use plugin::{
     Pending as PluginPending, PluginError, PluginExit,
 };
 
+// The format seam: the `Image` trait every image reader implements, the one
+// registry of readers, and the one adapter (`ImageSource`) that serves any
+// image through the seams below (docs/design/IMAGE_FORMATS.md §2). The trait
+// and the adapter are format-neutral and goblin-free; the PE and ELF readers
+// are what `static-pe` adds to the registry.
+mod image;
+pub use image::{
+    formats, recognize, Access, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, Format, Image, ImageFormat,
+    ImageSymbol, ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, Library, LibraryRef, LibrarySource, LoadedBytes,
+    Machine, OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartReason, SymbolKind,
+    SymbolTable, UnlistedSlot, Unread,
+};
+mod image_source;
+pub use image_source::ImageSource;
 #[cfg(feature = "static-pe")]
 mod static_pe;
 #[cfg(feature = "static-pe")]
-pub use static_pe::{CodeView, StaticPe};
-#[cfg(feature = "static-pe")]
 mod static_elf;
-#[cfg(feature = "static-pe")]
-pub use static_elf::{ByteOrder, StaticElf};
-#[cfg(feature = "static-pe")]
-mod static_image;
-#[cfg(feature = "static-pe")]
-pub use static_image::StaticImage;
 
 // The live-target seam itself is OS-free and always compiled: `trait
 // LiveTarget` plus the vocabulary its answers are phrased in. Frontends can
@@ -162,9 +169,10 @@ pub struct DataSymbol {
 /// pointers before its vptr (`n0xis_core::VtableRefusal::FirstSlotEmpty`).
 ///
 /// This says *that* a word is written, not *what* is written there — what a
-/// slot is bound to is the format seam's `binding_at`
-/// (docs/design/IMAGE_FORMATS.md §5 step 2), and when that lands this is the
-/// set of words it answers for.
+/// slot is bound to is [`Image::binding_at`], which answers today only for
+/// import slots and self-bound jump slots; when it answers every word the
+/// loader writes (the announced change after IMAGE_FORMATS.md §5 step 3), this
+/// is the set of words it answers for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelocatedWords {
     /// Every relocation table the image has was read.
@@ -197,6 +205,9 @@ pub enum RelocationsNotRead {
     PackedFormatNotRead,
     /// A relocation table that does not fit in the file.
     Malformed,
+    /// The format's reader does not read its relocations: a PE's base
+    /// relocation table.
+    FormatNotRead,
 }
 
 impl RelocatedWords {
@@ -295,7 +306,7 @@ pub trait MemorySource {
     }
 
     /// Write bytes at `va`. Default: [`SourceError::ReadOnly`] — only live
-    /// sources override this. `StaticPe`/`Snapshot` stay read-only.
+    /// sources override this. `ImageSource`/`Snapshot` stay read-only.
     fn write(&self, _va: Va, _bytes: &[u8]) -> Result<(), SourceError> {
         Err(SourceError::ReadOnly)
     }

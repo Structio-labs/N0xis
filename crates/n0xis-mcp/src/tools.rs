@@ -692,7 +692,7 @@ impl N0xisServer {
         emit(Response::success(schema::v1::PROJECT_INFO, data).with_source(src.label()))
     }
 
-    #[tool(description = "List loaded modules of a live process or a static PE's imports/module table.")]
+    #[tool(description = "List the loaded modules of a live process, or, for an image file, the one module it is. What an image imports is the `imports` capability (`capability_run`).")]
     fn module_list(&self, Parameters(a): Parameters<ModuleListRequest>) -> String {
         let src = resolve_or_return!(a);
         let mut modules: Vec<n0xis_contracts::Module> = src.modules();

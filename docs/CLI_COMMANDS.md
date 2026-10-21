@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **117 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **118 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -212,8 +212,52 @@ whole (`pdb-unreadable`); an image with no record is `no-codeview`.
   `functions`, `with_length`, `skipped` (`streams`, `unplaced`, `names`).
 - Schema: `n0xis.symbols.add.v1`
 
+### `imports --file <image>`
+What an image needs from other images, the same question for every format (one command per
+question, never one per container): the libraries in the order the image states them, and each
+imported name with the library it is attributed to and how the image reaches it. Through the
+registry (`imports`), so `serve` and an MCP client (`capability_run`) get the same answer.
+- Sources: `--file`.
+- `data.format` — `pe` or `elf`, the reader that opened the image.
+- `data.imports` — `{"read": {...}}`, or `{"not_read": {"why": "..."}}` where the table was not
+  read: a PE that only a permissive parse opened, whose import table is missing rather than empty;
+  a PE with a delay-load import table, which is not read, so its import table alone is not
+  everything it imports; and an ELF that is not an executable or a shared object (a relocatable
+  object, whose needs are its undefined `.symtab` symbols, resolved by a link editor). An image
+  that imports nothing reads as empty lists, never as `not_read`.
+  - `binding` — `per_library` (a PE: each import descriptor binds its entries to its library) or
+    `flat` (an ELF: the loader looks every name up in every loaded object in order, so the library
+    named for a symbol is informative, not authoritative).
+  - `libraries[]` — `name` and `stated_by`: `import_descriptor` (PE, in descriptor order),
+    `needed` (ELF `DT_NEEDED`, in the dynamic table's order) or `version_requirement_only` (named
+    by an ELF version requirement and by no `DT_NEEDED` entry, listed after the others); and
+    `references_not_read` — `[{"part": "...", "why": "..."}]`, the entries of the library's table
+    that `references` does not hold as the table does: a PE import lookup table holding more
+    entries than the PE parser returned (it skips an entry whose hint/name entry lies in no
+    section, and numbers the slots after it from the skipped one's), with both counts; the
+    library's references from the first such entry on then carry a `reach` of `not_read`. Empty
+    when the table was read whole, and always for an ELF.
+  - `references[]` — `name`, or `ordinal` for a PE import by ordinal only; `library`:
+    `{"binds": i}` (PE), `{"named": i}` (an ELF version requirement names `libraries[i]`) or
+    `{"unattributed": {"why": "..."}}`; `reach` — `{"read": [...]}` of `{"slot": "0x…"}` (the
+    pointer the loader binds: an IAT entry, a GOT slot), `{"stub": "0x…"}` (an x86-64 PLT entry
+    that jumps through it) and, for a WebAssembly module once one is read, `{"index": n}`; or
+    `{"not_read": {"why": ...}}` on an ELF machine whose import relocations are not read, and on
+    a PE library's references from the first entry its `references_not_read` names.
+    An ELF lists every undefined dynamic symbol; its reach is the slots a `GLOB_DAT` or
+    `JUMP_SLOT` relocation binds to it, so a symbol reached only through another relocation (an
+    absolute data pointer, a copy relocation, TLS) lists no reach. Each slot and stub is listed
+    once, however many times the relocation tables state it. PLT stubs are decoded on x86-64
+    only.
+  - `reach_not_read` — `[{"part": "...", "why": "..."}]`, what the image reaches its imports
+    through that no reference's `reach` lists: `PLT stubs` on an ELF of another machine that has
+    them (the references' reach is still the slots read). Empty when nothing was left out.
+- A source that is not an image file is `not-an-image`.
+- Schema: `n0xis.imports.v1`
+
 ### `module list`
-List modules of a live process (`--pid`) or a single PE (`--file`).
+List modules of a live process (`--pid`) or the one module an image file is (`--file`). What an
+image imports is `imports`.
 - Sources: `--pid` | `--file`.
 - `--filter` — case-insensitive substring filter on the module name.
 - Schema: `n0xis.module.list.v1`
@@ -820,7 +864,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**117 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**118 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -842,7 +886,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x project cache` | How much disk the project's caches use, per kind; `--clear` removes them. Only what the engine can rebuild from the image is a cache: names, comments, types, patches and tables are never touched |
 | `n0x remote-serve` | Serve a live process over the remote-agent stdio protocol — the remote-side half of `--remote-cmd` (Phase 6). Typically invoked over SSH by the *other* machine, not run directly: e.g. locally, run `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...` |
 
-### Static analysis & decompilation (29)
+### Static analysis & decompilation (30)
 
 | Command | What it does |
 |---|---|
@@ -858,6 +902,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x function summary` | Per-function interprocedural summary — the substrate the whole-program passes read instead of re-analyzing a callee once per question: does it return, what types are its parameters and result, which volatile registers does it clobber (and is that set complete), whom does it call |
 | `n0x function trace` | Walk the call graph from a root function |
 | `n0x function typeflow` | Whole-program type propagation: flow recovered types along the call graph to a fixpoint, so a class recovered in one function (from RTTI, or from concrete field accesses) reaches every function that touches the same object — a persistent, call-graph-wide type database |
+| `n0x imports` | What an image file needs from other images: its libraries in the order it states them, and each imported name with the library it is attributed to and how it is reached. The same question for every format; `not_read` where the table was not read: a PE only a permissive parse opened, a PE with a delay-load import table, an ELF relocatable object |
 | `n0x ir build` | Build the CFG + block/def-use IR artifact |
 | `n0x ir deobfuscate` | Pattern-based deobfuscation report (Phase 7): junk instructions and value-set-provable opaque predicates |
 | `n0x ir dot` | Render the CFG as Graphviz DOT (pipe to `dot -Tsvg`) |
@@ -1020,6 +1065,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.xref.string.v1` | xref string |
 | `n0xis.strings.v1` | strings |
 | `n0xis.symbols.add.v1` | symbols add |
+| `n0xis.imports.v1` | imports |
 | `n0xis.diff.v1` | diff functions |
 | `n0xis.mem.read.v1` | mem read |
 | `n0xis.mem.span.v1` | mem span |
@@ -1071,5 +1117,5 @@ optimization delta; inlined into `decomp pseudo --style ssa`, and exposed standa
 
 Source of truth for this reference: `crates/n0xis-cli/src/main.rs` (clap enums + `main()`
 dispatch), `crates/n0xis-contracts/src/schema.rs` (mod `v1` / mod `v0`), cross-checked against
-`n0x guide --pretty` from this binary (`command_count: 117`). When in doubt, run `n0x
+`n0x guide --pretty` from this binary (`command_count: 118`). When in doubt, run `n0x
 guide` or `n0x <cmd> --help` — those are generated from the binary and never drift.

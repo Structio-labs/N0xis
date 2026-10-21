@@ -4,7 +4,7 @@
 //! **The words an ELF's loader writes are the ones its relocation tables
 //! name.**
 //!
-//! [`StaticElf::relocated_words`] is what tells the Itanium RTTI scan a zero
+//! [`ImageSource::relocated_words`] is what tells the Itanium RTTI scan a zero
 //! the loader fills from a zero that stays: a class built without RTTI whose
 //! virtual base shares its vptr has zero offsets at `_ZTV` + two pointers, and
 //! taking every zero there for a relocated method listed it, and `analyze`
@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use n0xis_contracts::Va;
-use n0xis_sources::{RelocatedWords, RelocationsNotRead, StaticElf};
+use n0xis_sources::{RelocatedWords, RelocationsNotRead, ImageSource};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/itanium_vtables")
@@ -54,7 +54,7 @@ fn every_relocated_word_is_one_llvm_readobj_lists() {
     images.sort();
     let (mut with_relocations, mut with_relr) = (0, 0);
     for image in &images {
-        let elf = StaticElf::load(&fixtures().join(image)).unwrap_or_else(|e| panic!("{image}: {e}"));
+        let elf = ImageSource::load(&fixtures().join(image)).unwrap_or_else(|e| panic!("{image}: {e}"));
         let RelocatedWords::Read { words, copies } = elf.relocated_words() else {
             panic!("{image}: an executable or shared object of a measured machine, read: {:?}", elf.relocated_words())
         };

@@ -1,0 +1,157 @@
+
+File: crates/n0xis-sources/tests/fixtures/itanium_vtables/vp-pie-x86_64-linux-gnu
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0xA38
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 18
+  StringTableSectionIndex: 16
+}
+ProgramHeaders [
+  ProgramHeader {
+    Type: PT_PHDR (0x6)
+    Offset: 0x40
+    VirtualAddress: 0x40
+    PhysicalAddress: 0x40
+    FileSize: 560
+    MemSize: 560
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_INTERP (0x3)
+    Offset: 0x270
+    VirtualAddress: 0x270
+    PhysicalAddress: 0x270
+    FileSize: 28
+    MemSize: 28
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 1
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 1244
+    MemSize: 1244
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x4E0
+    VirtualAddress: 0x14E0
+    PhysicalAddress: 0x14E0
+    FileSize: 74
+    MemSize: 74
+    Flags [ (0x5)
+      PF_R (0x4)
+      PF_X (0x1)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x530
+    VirtualAddress: 0x2530
+    PhysicalAddress: 0x2530
+    FileSize: 304
+    MemSize: 2768
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_DYNAMIC (0x2)
+    Offset: 0x5A0
+    VirtualAddress: 0x25A0
+    PhysicalAddress: 0x25A0
+    FileSize: 192
+    MemSize: 192
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_GNU_RELRO (0x6474E552)
+    Offset: 0x530
+    VirtualAddress: 0x2530
+    PhysicalAddress: 0x2530
+    FileSize: 304
+    MemSize: 2768
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 1
+  }
+  ProgramHeader {
+    Type: PT_GNU_EH_FRAME (0x6474E550)
+    Offset: 0x3E8
+    VirtualAddress: 0x3E8
+    PhysicalAddress: 0x3E8
+    FileSize: 68
+    MemSize: 68
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_GNU_STACK (0x6474E551)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 0
+    MemSize: 0
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 0
+  }
+  ProgramHeader {
+    Type: PT_NOTE (0x4)
+    Offset: 0x28C
+    VirtualAddress: 0x28C
+    PhysicalAddress: 0x28C
+    FileSize: 36
+    MemSize: 36
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+]

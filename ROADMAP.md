@@ -4551,7 +4551,7 @@ replaces.
 #### Every command, and what its answer was checked against
 
 The claim "all sixty closed" is only checkable if the list is written down, so
-here is the whole surface — all **117** commands, not only the sixty, since the
+here is the whole surface — all **118** commands, not only the sixty, since the
 sixty are a subset and this way none of them can be missing by omission. Every
 row names the source its answer was checked against, and none of those sources
 is n0xis. Two rows say **not checkable here**, and each says why; three say
@@ -4654,6 +4654,7 @@ phase from its first mistake on.
 | `sig validate` | Spec-first method tooling | a known invariant set, and both refusal reasons |
 | `sig gen` | Spec-first method tooling | `nm` on the unstripped binary — 10 of 10 names correct in a stripped copy |
 | `module list` | Static analysis & decompilation | the file's own header (base, size, path) |
+| `imports` | Static analysis & decompilation | `llvm-readobj` on the committed images `crates/n0xis-cli/tests/fixtures/imports/fixtures.txt` lists, among them three planted for it (a PE32 importing by name and by ordinal only, and the library it imports from; a shared object needing libm then libc, importing from each by a versioned name): a PE's descriptors, names, ordinals and slots against `--coff-imports`; an ELF's libraries in `DT_NEEDED` order against `--dynamic-table` and `--needed-libs`, its undefined dynamic symbols against `--dyn-syms`, their libraries against `--version-info`, their slots against `--relocations`, and its x86-64 PLT stubs against `llvm-objdump`'s names; on the other ELF machines the engine reads no stubs and llvm-objdump names some, recorded as a gap |
 | `disasm` | Static analysis & decompilation | objdump — 1 200 instructions, every address and length |
 | `ir build` | Static analysis & decompilation | objdump's decode + the compiler's DWARF extents |
 | `ir explain` | Static analysis & decompilation | the frame and callsites of a function of known source |
@@ -7668,7 +7669,19 @@ Not bugs — places where a seam that exists for one axis was never built for a 
 one. Each is cheap to record and expensive to discover the day a second implementation is
 wanted, which is the whole argument for writing them down before that day.
 
-- ⬜ **There is no format seam.** The ISA got `trait Arch` in Phase 1 *with a single
+- ◐ **The format seam is built for the static path (2026-10-21,
+  docs/design/IMAGE_FORMATS.md §5 step 3); the rest of this item is history.** One `Image`
+  trait (`n0xis-sources/src/image.rs`) that the PE and ELF readers implement, with no
+  default methods; one registry of `(sniff, open)` pairs that the static path opens every
+  file through; and one adapter, `ImageSource`, that serves any `Image` as `MemorySource`,
+  `SymbolProvider` and `ModuleProvider`, computing symbol lookup, import slots, function
+  sizes and thunk targets once. The `StaticImage` enum and its per-variant forwarding are
+  gone. Not yet through the seam: the live Windows adapter, the unwinder and three passes in
+  `n0xis-core` still check a container signature themselves, because they read an image as
+  it is mapped and no opener over the mapped layout exists yet (§2, step 4); and five call
+  sites still ask `ImageSource::format()` for a fact a role or a metadata unit will answer
+  (`.pdata`, the Itanium RTTI scan, the ELF `profile`, the ARM vtable slot format, and the
+  instrument that pins the facts). The ISA got `trait Arch` in Phase 1 *with a single
   implementation*, precisely so x64 could never leak into the passes — see the sequencing
   note at the foot of this file. The container format never got the same treatment.
   `goblin::pe` is imported in exactly one place in the workspace

@@ -13,8 +13,7 @@
 //! `module!` prefix first), narrower purpose (control flow, not argument
 //! typing). Covers Win32/CRT/MSVC-C++ **and** the glibc/Itanium-ABI names an
 //! ELF target calls — the latter only became reachable once
-//! [`StaticElf`](../../n0xis_sources/struct.StaticElf.html) learned to resolve
-//! GOT slots to import names (2026-09-05); before that no ELF callee had a
+//! the ELF reader learned to resolve GOT slots to import names (2026-09-05); before that no ELF callee had a
 //! name to look up, so this table was dead on Linux binaries. Rust
 //! panic/unwind symbol names are mangling/version-fragile and are an explicit
 //! non-goal here, not a silent gap.

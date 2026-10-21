@@ -9,7 +9,7 @@
 //! already drifted — see [`resolve`]'s note on the session default.
 
 use n0xis_contracts::Va;
-use n0xis_sources::{LiveTarget, MemorySource, ModuleProvider, RemoteAgent, Snapshot, StaticImage, split_command_line};
+use n0xis_sources::{LiveTarget, MemorySource, ModuleProvider, RemoteAgent, Snapshot, ImageSource, split_command_line};
 
 /// A stable `(code, message)` pair. Frontends turn it into their own error
 /// shape — `{ok:false,error:{code,message}}` for both the CLI and MCP, which
@@ -37,7 +37,7 @@ pub enum Src {
     // `Arc` (not `Box`) so a persistent `serve` process can keep the parsed image
     // in memory and hand out cheap clones — re-loading a 233 MB PE per call is
     // the ~90 ms click latency; the in-process cache in `resolve` removes it.
-    Static(std::sync::Arc<StaticImage>),
+    Static(std::sync::Arc<ImageSource>),
     Snap(Snapshot),
     Remote(Box<RemoteAgent>),
 }
@@ -227,9 +227,14 @@ impl Src {
         if let Some(refused) = self.rtti_refusal() {
             return Err(refused);
         }
+        // Only an ELF's symbols are scanned for `_ZTV` today; the scan becomes
+        // a metadata unit that any image with the symbols can feed
+        // (IMAGE_FORMATS.md §5 step 5).
         let Src::Static(img) = self else { return Ok(None) };
-        let n0xis_sources::StaticImage::Elf(elf) = img.as_ref() else { return Ok(None) };
-        Ok(Some(n0xis_core::scan_itanium_rtti(self.as_mem(), &elf.data_symbols(), &self.code_ranges(), self.pointer_size(), elf.relocated_words())))
+        if img.format() != n0xis_sources::ImageFormat::Elf {
+            return Ok(None);
+        }
+        Ok(Some(n0xis_core::scan_itanium_rtti(self.as_mem(), &img.data_symbols(), &self.code_ranges(), self.pointer_size(), img.relocated_words())))
     }
 
     /// Why this source's C++ RTTI is not read at all, if it is not: a
@@ -250,10 +255,10 @@ impl Src {
     ///
     /// The one place the slot format is decided from the image. Only the ELF
     /// machine is asked, as decided: an ARM PE (`0x01c0`/`0x01c4`, which
-    /// [`n0xis_sources::StaticImage::machine`] also calls `arm`; ARMNT is
+    /// [`n0xis_sources::ImageSource::machine`] also calls `arm`; ARMNT is
     /// Thumb-2 only) is not covered yet — an open item.
     pub fn vtable_slots(&self) -> n0xis_core::VtableSlots {
-        let arm_elf = matches!(self, Src::Static(img) if matches!(img.as_ref(), n0xis_sources::StaticImage::Elf(e) if e.machine() == "arm"));
+        let arm_elf = matches!(self, Src::Static(img) if img.format() == n0xis_sources::ImageFormat::Elf && img.machine() == "arm");
         n0xis_core::VtableSlots {
             pointer_size: self.pointer_size(),
             code_pointers: if arm_elf { n0xis_core::CodePointers::ArmInterworking } else { n0xis_core::CodePointers::Address },
@@ -387,7 +392,7 @@ pub fn load_snapshot(name: &str) -> Result<Snapshot, String> {
 /// one-shot CLI call it is harmless (one lock + Arc); in a persistent `serve`
 /// process it is the whole point — the 233 MB PE is parsed once and every later
 /// command reuses it, turning ~90 ms/call into a few ms.
-static LAST_IMAGE: std::sync::Mutex<Option<(std::path::PathBuf, u64, std::sync::Arc<StaticImage>)>> = std::sync::Mutex::new(None);
+static LAST_IMAGE: std::sync::Mutex<Option<(std::path::PathBuf, u64, std::sync::Arc<ImageSource>)>> = std::sync::Mutex::new(None);
 
 fn file_mtime(path: &std::path::Path) -> u64 {
     std::fs::metadata(path)
@@ -398,14 +403,14 @@ fn file_mtime(path: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn load_image_cached(path: &std::path::Path) -> Result<std::sync::Arc<StaticImage>, FrontendError> {
+fn load_image_cached(path: &std::path::Path) -> Result<std::sync::Arc<ImageSource>, FrontendError> {
     let mtime = file_mtime(path);
     let mut slot = LAST_IMAGE.lock().unwrap_or_else(|e| e.into_inner());
     match slot.as_ref() {
         Some((p, mt, arc)) if p == path && *mt == mtime => return Ok(arc.clone()),
         _ => {} // slot empty or file changed → (re)load below
     }
-    let img = std::sync::Arc::new(StaticImage::load(path).map_err(|e| err("load-failed", e.to_string()))?);
+    let img = std::sync::Arc::new(ImageSource::load(path).map_err(|e| err("load-failed", e.to_string()))?);
     *slot = Some((path.to_path_buf(), mtime, img.clone()));
     Ok(img)
 }
@@ -708,8 +713,8 @@ mod tests {
     /// A minimal but goblin-parseable 64-bit little-endian ELF header carrying
     /// `e_machine`. Header-only (no program/section headers) is a valid ELF, and
     /// it is bytes planted on purpose: the machine field is the one fact under
-    /// test, so nothing else needs to be real. `StaticImage::machine` reads
-    /// `e_machine` at offset 0x12 directly, and `StaticImage::is_64` reads the
+    /// test, so nothing else needs to be real. `ImageSource::machine` reads
+    /// `e_machine` at offset 0x12 directly, and `ImageSource::is_64` reads the
     /// `ELFCLASS64` planted at `EI_CLASS`, so this exercises the real
     /// `declared_machine()`/`is_64()` path that `Src::pick_arch` delegates
     /// through.
@@ -733,7 +738,7 @@ mod tests {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("n0xis_pick_arch_{}_{n}.elf", std::process::id()));
         std::fs::write(&path, elf64_header(e_machine)).expect("write temp elf");
-        let img = StaticImage::load(&path).expect("minimal elf header parses");
+        let img = ImageSource::load(&path).expect("minimal elf header parses");
         let _ = std::fs::remove_file(&path);
         Src::Static(std::sync::Arc::new(img))
     }
@@ -749,7 +754,7 @@ mod tests {
     /// exact regression this guards.
     #[test]
     fn src_pick_arch_honours_the_header_the_image_declares() {
-        // 0xB7 = EM_AARCH64, which StaticImage::machine reports as "arm64".
+        // 0xB7 = EM_AARCH64, which ImageSource::machine reports as "arm64".
         let arm = static_src(0xB7);
         // (a) No --arch: the declared machine decides, NOT the x64 default.
         assert_eq!(arm.pick_arch(None).unwrap().name(), "arm64");
@@ -789,7 +794,7 @@ mod tests {
         for e_machine in [0x8u16, 0x14] {
             let path = std::env::temp_dir().join(format!("n0xis_unmapped_{}_{e_machine}.elf", std::process::id()));
             std::fs::write(&path, elf32_header(e_machine)).expect("write temp elf");
-            let img = StaticImage::load(&path).expect("a 32-bit header parses");
+            let img = ImageSource::load(&path).expect("a 32-bit header parses");
             let _ = std::fs::remove_file(&path);
             let src = Src::Static(std::sync::Arc::new(img));
             assert!(!src.is_64(), "the planted header is ELFCLASS32");
@@ -863,7 +868,7 @@ mod tests {
     fn data_ranges_of_covers_every_read_only_and_initialized_elf_section() {
         let path = std::env::temp_dir().join(format!("n0xis_data_ranges_{}.elf", std::process::id()));
         std::fs::write(&path, elf64_with_sections()).expect("write temp elf");
-        let img = StaticImage::load(&path).expect("synthetic sectioned elf parses");
+        let img = ImageSource::load(&path).expect("synthetic sectioned elf parses");
         let _ = std::fs::remove_file(&path);
         let src = Src::Static(std::sync::Arc::new(img));
 
@@ -884,7 +889,7 @@ mod tests {
             eprintln!("data_ranges: skipping the PE side — fixture {fixture:?} is absent, so nothing was checked");
             return;
         }
-        let img = StaticImage::load(&fixture).expect("committed native_pe.dll parses");
+        let img = ImageSource::load(&fixture).expect("committed native_pe.dll parses");
         let src = Src::Static(std::sync::Arc::new(img));
         let rdata = src.section_range(".rdata").expect("native_pe.dll has a .rdata section");
         assert_eq!(

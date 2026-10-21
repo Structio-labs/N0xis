@@ -38,7 +38,7 @@ use std::process::Command;
 use n0xis_arch::X64;
 use n0xis_contracts::Va;
 use n0xis_core::{Ctx, this_class_of};
-use n0xis_sources::{StaticElf, SymbolProvider};
+use n0xis_sources::{ImageSource, SymbolProvider};
 
 fn oracle_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("oracle")
@@ -178,7 +178,7 @@ fn check(so: &Path, level: &str) -> (usize, usize, usize) {
     let dwarf = object_pointers(so);
     assert!(!dwarf.is_empty(), "{level}: objdump reported no subprograms — built without -g?");
     let syms = symbols(so);
-    let elf = StaticElf::load(so).expect("n0xis loads it");
+    let elf = ImageSource::load(so).expect("n0xis loads it");
     let arch = X64::new();
     // Both of these are what the real pipeline attaches, and without them the
     // question cannot be asked at all: every ground `this_class_of` stands on

@@ -80,6 +80,8 @@ pub mod v1 {
     pub const PROJECT_CACHE: &str = "n0xis.project.cache.v1";
     /// A PDB kept in the project's symbol store (`symbols add`).
     pub const SYMBOLS_ADD: &str = "n0xis.symbols.add.v1";
+    /// What an image needs from other images, grouped by library (`imports`).
+    pub const IMPORTS: &str = "n0xis.imports.v1";
     /// Software-breakpoint hit report (`debug await-hit`).
     pub const DEBUG_AWAIT_HIT: &str = "n0xis.debug.await_hit.v1";
     /// SSA form (`ir ssa`, ROADMAP Phase 3).

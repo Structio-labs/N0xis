@@ -37,7 +37,7 @@ use std::process::Command;
 use n0xis_arch::X64;
 use n0xis_contracts::Va;
 use n0xis_core::{CfgInput, CfgPass, Ctx, EmuConfig, Emulator, Pass, SsaPass};
-use n0xis_sources::StaticElf;
+use n0xis_sources::ImageSource;
 
 /// System V x86-64: the CFA is the caller's `rsp`, and `call` pushed 8 bytes
 /// before the callee's first instruction — so entry `rsp` is `CFA - 8`.
@@ -182,7 +182,7 @@ fn every_declared_local_is_touched_at_the_address_dwarf_states() {
         let subs = dwarf_subprograms(&so);
         assert!(!subs.is_empty(), "{level}: DWARF declared no frame-based locals");
 
-        let elf = StaticElf::load(&so).expect("n0xis loads the same library");
+        let elf = ImageSource::load(&so).expect("n0xis loads the same library");
         let arch = X64::new();
         // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
         // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition

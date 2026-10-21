@@ -1,0 +1,486 @@
+
+File: crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-armv7-linux-gnueabihf.so
+Format: elf32-littlearm
+Arch: arm
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_ARM (0x28)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x12E8
+  Flags [ (0x5000400)
+    0x400
+    0x1000000
+    0x4000000
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 21
+  StringTableSectionIndex: 19
+}
+DynamicSection [ (13 entries)
+  Tag        Type     Name/Value
+  0x00000011 REL      0x7A4
+  0x00000012 RELSZ    328 (bytes)
+  0x00000013 RELENT   8 (bytes)
+  0x00000017 JMPREL   0x964
+  0x00000002 PLTRELSZ 8 (bytes)
+  0x00000003 PLTGOT   0x30BDC
+  0x00000014 PLTREL   REL
+  0x00000006 SYMTAB   0x198
+  0x0000000B SYMENT   16 (bytes)
+  0x00000005 STRTAB   0x534
+  0x0000000A STRSZ    623 (bytes)
+  0x6FFFFEF5 GNU_HASH 0x438
+  0x00000000 NULL     0x0
+]
+NeededLibraries [
+]
+Relocations [
+  Section (5) .rel.dyn {
+    0x20AB0 R_ARM_ABS32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x20AE8 R_ARM_ABS32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x20B18 R_ARM_ABS32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x20B2C R_ARM_ABS32 _ZTVN10__cxxabiv117__class_type_infoE
+    0x20ACC R_ARM_ABS32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x20B00 R_ARM_ABS32 _ZTVN10__cxxabiv120__si_class_type_infoE
+    0x20AE0 R_ARM_ABS32 __cxa_pure_virtual
+    0x20B50 R_ARM_ABS32 _ZTVN10__cxxabiv121__vmi_class_type_infoE
+    0x20AA8 R_ARM_ABS32 _ZNK4Base1fEv
+    0x20AC0 R_ARM_ABS32 _ZNK4Base1fEv
+    0x20AC8 R_ARM_ABS32 _ZNK7Derived1kEv
+    0x20B4C R_ARM_ABS32 _ZThn4_N4Both1rEv
+    0x20B30 R_ARM_ABS32 _ZTS5Right
+    0x20AAC R_ARM_ABS32 _ZNK4Base1gEv
+    0x20ADC R_ARM_ABS32 _ZTI5Shape
+    0x20B08 R_ARM_ABS32 _ZTI5Shape
+    0x20AA4 R_ARM_ABS32 _ZTI4Base
+    0x20AD4 R_ARM_ABS32 _ZTI4Base
+    0x20AF4 R_ARM_ABS32 _ZTI6Square
+    0x20B10 R_ARM_ABS32 _ZTI4Left
+    0x20B60 R_ARM_ABS32 _ZTI4Left
+    0x20B14 R_ARM_ABS32 _ZN4Left1lEv
+    0x20B40 R_ARM_ABS32 _ZN4Both1rEv
+    0x20AEC R_ARM_ABS32 _ZTS5Shape
+    0x20AC4 R_ARM_ABS32 _ZNK7Derived1gEv
+    0x20AB4 R_ARM_ABS32 _ZTS4Base
+    0x20B04 R_ARM_ABS32 _ZTS6Square
+    0x20B1C R_ARM_ABS32 _ZTS4Left
+    0x20B38 R_ARM_ABS32 _ZTI4Both
+    0x20B48 R_ARM_ABS32 _ZTI4Both
+    0x20AE4 R_ARM_ABS32 _ZNK5Shape5sidesEv
+    0x20B28 R_ARM_ABS32 _ZN5Right1rEv
+    0x20B3C R_ARM_ABS32 _ZN4Both1lEv
+    0x20ABC R_ARM_ABS32 _ZTI7Derived
+    0x20AF8 R_ARM_ABS32 _ZNK6Square4areaEv
+    0x20AFC R_ARM_ABS32 _ZNK6Square5sidesEv
+    0x20B24 R_ARM_ABS32 _ZTI5Right
+    0x20B68 R_ARM_ABS32 _ZTI5Right
+    0x20B54 R_ARM_ABS32 _ZTS4Both
+    0x20BD8 R_ARM_GLOB_DAT _ZTV4Base
+    0x20AD0 R_ARM_ABS32 _ZTS7Derived
+  }
+  Section (7) .rel.plt {
+    0x30BE8 R_ARM_JUMP_SLOT _Z6opaquePv
+  }
+]
+DynamicSymbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __aeabi_unwind_cpp_pr0 (43)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _Z6opaquePv (77)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ZTVN10__cxxabiv117__class_type_infoE (272)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ZTVN10__cxxabiv120__si_class_type_infoE (346)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __cxa_pure_virtual (422)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ZTVN10__cxxabiv121__vmi_class_type_infoE (571)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ZNK4Base1fEv (1)
+    Value: 0x109A0
+    Size: 12
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZNK7Derived1kEv (116)
+    Value: 0x10A18
+    Size: 12
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZThn4_N4Both1rEv (244)
+    Value: 0x10A60
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTS5Right (540)
+    Value: 0x990
+    Size: 7
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZNK4Base1gEv (15)
+    Value: 0x109AC
+    Size: 12
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _Z5freshPv (66)
+    Value: 0x109D0
+    Size: 60
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTI5Shape (411)
+    Value: 0x20AE8
+    Size: 8
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTV4Both (551)
+    Value: 0x20B34
+    Size: 28
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZNK4Base1hEv (29)
+    Value: 0x109B8
+    Size: 24
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTI4Base (262)
+    Value: 0x20AB0
+    Size: 8
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTV7Derived (320)
+    Value: 0x20AB8
+    Size: 20
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTI6Square (464)
+    Value: 0x20B00
+    Size: 12
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTI4Left (498)
+    Value: 0x20B18
+    Size: 8
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZN4Left1lEv (191)
+    Value: 0x10A40
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZN4Both1rEv (231)
+    Value: 0x10A58
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTS5Shape (441)
+    Value: 0x97B
+    Size: 7
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZTV5Right (518)
+    Value: 0x20B20
+    Size: 12
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZNK7Derived1gEv (99)
+    Value: 0x10A0C
+    Size: 12
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTS4Base (310)
+    Value: 0x96C
+    Size: 6
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZTS6Square (476)
+    Value: 0x982
+    Size: 8
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZTS4Left (508)
+    Value: 0x98A
+    Size: 6
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZTI4Both (561)
+    Value: 0x20B50
+    Size: 32
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZNK5Shape5sidesEv (133)
+    Value: 0x10A24
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZN5Right1rEv (204)
+    Value: 0x10A48
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZN4Both1lEv (218)
+    Value: 0x10A50
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTI7Derived (333)
+    Value: 0x20ACC
+    Size: 12
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZNK6Square4areaEv (152)
+    Value: 0x10A2C
+    Size: 12
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZNK6Square5sidesEv (171)
+    Value: 0x10A38
+    Size: 8
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x9)
+  }
+  Symbol {
+    Name: _ZTV5Shape (400)
+    Value: 0x20AD8
+    Size: 16
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTI5Right (529)
+    Value: 0x20B2C
+    Size: 8
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTS4Both (613)
+    Value: 0x997
+    Size: 6
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZTV4Base (89)
+    Value: 0x20AA0
+    Size: 16
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTS7Derived (387)
+    Value: 0x972
+    Size: 9
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0x8)
+  }
+  Symbol {
+    Name: _ZTV6Square (452)
+    Value: 0x20AF0
+    Size: 16
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+  Symbol {
+    Name: _ZTV4Left (488)
+    Value: 0x20B0C
+    Size: 12
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data.rel.ro (0xB)
+  }
+]
+VersionSymbols [
+]
+VersionDefinitions [
+]
+VersionRequirements [
+]

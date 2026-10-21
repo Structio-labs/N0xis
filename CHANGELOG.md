@@ -5,6 +5,36 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **`imports`: what an image file needs from other images,** the same command for every format.
+  Its libraries in the order the image states them, and each imported name with the library it
+  is attributed to and how the image reaches it: a PE's import descriptors, each entry's name or
+  ordinal and its slot; an ELF's `DT_NEEDED` libraries and every undefined dynamic symbol, with
+  the library its version requirement names (informative: ELF binding is flat), the slots its
+  `GLOB_DAT` and `JUMP_SLOT` relocations bind and, on x86-64, the PLT stubs that jump through
+  them. `not_read`, instead of a list that reads as complete, for a PE that only a permissive
+  parse opened, for a PE with a delay-load import table (which is not read), and for an ELF that
+  is not an executable or a shared object (a relocatable object). Where a table is read in
+  part, the answer says which part: a library whose PE import lookup table holds more entries
+  than the PE parser returned (it skips an entry whose name lies in no section and gives the
+  entries after it the wrong slots, so their slots are `not_read`), and an ELF's PLT stubs on a
+  machine other than x86-64.
+  Through the registry, so `serve` and an MCP client get the same answer. Checked against
+  `llvm-readobj` and `llvm-objdump` on 16 committed images, three of them planted for it (a PE32
+  importing by ordinal only, the library it imports from, and a shared object needing two
+  libraries in a stated order).
+
+### Changed
+
+- **The format seam, for the static path** (docs/design/IMAGE_FORMATS.md §5 step 3). The PE and
+  ELF readers answer one `Image` trait with no default methods; a file is opened through one
+  registry of readers; and one adapter, `ImageSource`, replaces the `StaticImage` enum and
+  serves any image through the source seams. No answer changes: every fact the image layer
+  gives the passes, and the answers of eleven commands, were recorded on 495 images before and
+  after (42 committed ELF fixtures and 3 PE, 300 system ELF images, 150 PE32 and PE32+ DLLs) and
+  are identical.
+
 ## [0.3.5] — 2026-10-20
 
 ### Added

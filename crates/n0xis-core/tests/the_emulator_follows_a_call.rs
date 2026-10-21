@@ -41,7 +41,7 @@ use n0xis_core::{
     BodyMap, CallPolicy, CfgInput, CfgPass, CodeProvider, Ctx, EmuConfig, Emulator, OptimizePass,
     Pass, SsaBlock, SsaPass,
 };
-use n0xis_sources::{MemorySource, StaticElf, SymbolProvider};
+use n0xis_sources::{MemorySource, ImageSource, SymbolProvider};
 
 /// An arbitrary but fixed canary, as in the leaf test: its value never reaches
 /// a result, only its consistency between prologue and epilogue does.
@@ -161,7 +161,7 @@ fn plt_stub(so: &Path, name: &str) -> Option<u64> {
 /// not — and the PLT stubs in between.
 struct Bodies<'a> {
     map: BodyMap,
-    elf: &'a StaticElf,
+    elf: &'a ImageSource,
     ext_plt: Option<u64>,
     ext_value: u64,
 }
@@ -281,7 +281,7 @@ fn check_one_build(
     let ext_plt = plt_stub(so, "emu_ext_const");
     assert!(ext_plt.is_some(), "{level}: no PLT stub for emu_ext_const — the import case is absent");
 
-    let elf = StaticElf::load(so).expect("n0xis loads the same library");
+    let elf = ImageSource::load(so).expect("n0xis loads the same library");
     let arch = X64::new();
     // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
     // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition back

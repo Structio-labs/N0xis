@@ -51,7 +51,7 @@ pub struct FunctionCandidate {
 /// with an exact start *and* end, no prologue heuristic and no cap. x64-only —
 /// the table only exists on exception-handling architectures. Reads the PE
 /// headers through the [`MemorySource`] seam, so it behaves identically on a
-/// [`StaticPe`](n0xis_sources::StaticPe) and a live module. Returns an empty
+/// [`ImageSource`](n0xis_sources::ImageSource) and a live module. Returns an empty
 /// list (not an error) when the image has no exception directory.
 ///
 /// ⚠️ Takes a bare [`MemorySource`], not a [`Ctx`], so it has no symbol seam to

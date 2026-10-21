@@ -72,7 +72,8 @@ impl ExportDirectory {
 }
 
 /// Where an export's address-table entry leads.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExportTarget {
     /// An address in this image — a function, or an exported variable. Which
     /// of the two is a question about the section it lands in, and is left to
@@ -128,12 +129,26 @@ const MAX_FORWARDER: usize = MAX_NAME + 256;
 /// Absent pieces (a zero directory, an unreadable table) yield fewer entries,
 /// never an error and never a guess.
 pub fn read_export_table(source: &dyn MemorySource, base: Va, dir: ExportDirectory) -> Vec<PeExport> {
+    try_read_export_table(source, base, dir).unwrap_or_default()
+}
+
+/// [`read_export_table`], saying why when the table was not read at all: the
+/// header states a directory (`dir.rva` is not 0) whose 40 bytes cannot be
+/// read where it says they are. An empty list then would claim the image
+/// exports nothing, which nobody looked at.
+///
+/// Only the directory itself is answered this way. A table read in part (an
+/// address table cut short by its section, a name that cannot be read) still
+/// comes back as the entries that could be read, with nothing saying more were
+/// stated.
+pub fn try_read_export_table(source: &dyn MemorySource, base: Va, dir: ExportDirectory) -> Result<Vec<PeExport>, &'static str> {
     if dir.rva == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let Some(hdr) = read_at(source, base, dir.rva, 40) else { return Vec::new() };
+    const UNREADABLE: &str = "the header states an export directory whose 40 bytes cannot be read where it places them";
+    let Some(hdr) = read_at(source, base, dir.rva, 40) else { return Err(UNREADABLE) };
     if hdr.len() < 40 {
-        return Vec::new();
+        return Err(UNREADABLE);
     }
     let ordinal_base = u32_at(&hdr, 16);
     let n_slots = (u32_at(&hdr, 20) as usize).min(MAX_EXPORT_SLOTS);
@@ -185,7 +200,7 @@ pub fn read_export_table(source: &dyn MemorySource, base: Va, dir: ExportDirecto
         let Some(target) = target_of(rva) else { continue };
         out.push(PeExport { name: None, ordinal: ordinal_base.wrapping_add(index as u32), target });
     }
-    out
+    Ok(out)
 }
 
 fn u32_at_checked(b: &[u8], off: usize) -> Option<u32> {

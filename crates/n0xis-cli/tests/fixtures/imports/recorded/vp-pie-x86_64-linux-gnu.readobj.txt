@@ -1,0 +1,79 @@
+
+File: crates/n0xis-sources/tests/fixtures/itanium_vtables/vp-pie-x86_64-linux-gnu
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0xA38
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 18
+  StringTableSectionIndex: 16
+}
+DynamicSection [ (12 entries)
+  Tag                Type      Name/Value
+  0x000000006FFFFFFB FLAGS_1   PIE 
+  0x0000000000000015 DEBUG     0x0
+  0x0000000000000007 RELA      0x2E8
+  0x0000000000000008 RELASZ    240 (bytes)
+  0x0000000000000009 RELAENT   24 (bytes)
+  0x000000006FFFFFF9 RELACOUNT 10
+  0x0000000000000006 SYMTAB    0x2B0
+  0x000000000000000B SYMENT    24 (bytes)
+  0x0000000000000005 STRTAB    0x2E4
+  0x000000000000000A STRSZ     1 (bytes)
+  0x000000006FFFFEF5 GNU_HASH  0x2C8
+  0x0000000000000000 NULL      0x0
+]
+NeededLibraries [
+]
+Relocations [
+  Section (6) .rela.dyn {
+    0x2538 R_X86_64_RELATIVE - 0x2558
+    0x2540 R_X86_64_RELATIVE - 0x14E0
+    0x2548 R_X86_64_RELATIVE - 0x14E6
+    0x2550 R_X86_64_RELATIVE - 0x14F0
+    0x2560 R_X86_64_RELATIVE - 0x3D8
+    0x2570 R_X86_64_RELATIVE - 0x2590
+    0x2578 R_X86_64_RELATIVE - 0x1510
+    0x2580 R_X86_64_RELATIVE - 0x1516
+    0x2588 R_X86_64_RELATIVE - 0x1520
+    0x2598 R_X86_64_RELATIVE - 0x3E0
+  }
+]
+DynamicSymbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+]
+VersionSymbols [
+]
+VersionDefinitions [
+]
+VersionRequirements [
+]

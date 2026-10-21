@@ -54,8 +54,8 @@ const NOT_THROUGH_THE_REGISTRY: &[(&str, &str)] = &[
 /// Every `fn cmd_*` in the CLI, with its body — taken as the text up to the
 /// next top-level `fn`, not by brace matching. A brace inside a string literal
 /// or a doc comment ends a match early and silently, which would make this
-/// guard quietly stop looking. Over-reading by a few lines cannot hide a
-/// `StaticImage::load`; under-reading can.
+/// guard quietly stop looking. Over-reading by a few lines cannot hide an
+/// `ImageSource::load`; under-reading can.
 fn handlers() -> Vec<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("main.rs");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -77,8 +77,13 @@ fn handlers() -> Vec<(String, String)> {
 /// A handler that opens the target itself has its own answer to "which source,
 /// which architecture, and what is readable" — the three questions that made
 /// `disasm` disagree with `decode`.
+///
+/// `ImageSource::load` is how an image file is opened; it was `StaticImage::load`
+/// until the format seam replaced that type, and a token for a name that no
+/// longer exists matches nothing — the guard kept passing while it had stopped
+/// looking for the most common way to open a source.
 fn resolves_its_own_source(body: &str) -> bool {
-    ["StaticImage::load", "attach_live(", "Snapshot::builder()", "build_source(", "source::resolve("]
+    ["ImageSource::load", "attach_live(", "Snapshot::builder()", "build_source(", "source::resolve("]
         .iter()
         .any(|k| body.contains(k))
 }

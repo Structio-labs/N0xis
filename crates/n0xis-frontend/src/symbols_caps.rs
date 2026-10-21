@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use n0xis_contracts::{Response, schema};
-use n0xis_sources::StaticImage;
+use n0xis_sources::ImageSource;
 use serde_json::{Value, json};
 
 use crate::pdb_syms;
@@ -41,7 +41,7 @@ fn add(args: &Value) -> Response<Value> {
     let (Some(file), Some(pdb)) = (str_arg(args, "file"), str_arg(args, "pdb")) else {
         return Response::error("missing-argument", "'file' (the image) and 'pdb' (the PDB to keep) are both required");
     };
-    let image = match StaticImage::load(Path::new(file)) {
+    let image = match ImageSource::load(Path::new(file)) {
         Ok(image) => image,
         Err(e) => return Response::error("load-failed", e.to_string()),
     };

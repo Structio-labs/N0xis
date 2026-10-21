@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use n0xis_contracts::{SymKind, Symbol, Va};
 use n0xis_pdb::{Guid, Identity, Skipped};
-use n0xis_sources::{MemorySource, SourceId, StaticImage, SymbolProvider};
+use n0xis_sources::{MemorySource, SourceId, ImageSource, SymbolProvider};
 
 /// The names a matched PDB gives, by function start.
 #[derive(Debug)]
@@ -113,7 +113,7 @@ type Memo = Option<(SourceId, Arc<PdbLookup>)>;
 static MEMO: Mutex<Memo> = Mutex::new(None);
 
 /// The PDB for `image`, looked for once per image in a process.
-pub fn lookup(image: &StaticImage) -> Arc<PdbLookup> {
+pub fn lookup(image: &ImageSource) -> Arc<PdbLookup> {
     let id = image.identity();
     if let Some(id) = id
         && let Ok(memo) = MEMO.lock()
@@ -140,7 +140,7 @@ pub fn forget() {
 }
 
 /// The identity an image's CodeView record names, and the PDB's file name.
-pub fn wanted(image: &StaticImage) -> Option<(Identity, String)> {
+pub fn wanted(image: &ImageSource) -> Option<(Identity, String)> {
     let cv = image.codeview()?;
     // The file name, whichever separator the building machine used.
     let name = cv.pdb_path.rsplit(['/', '\\']).next().unwrap_or_default().to_string();
@@ -153,7 +153,7 @@ pub fn store_path(store: &Path, pdb_name: &str, identity: &Identity) -> PathBuf 
 }
 
 /// The places [`lookup`] tries, in order (see the module notes).
-pub fn places(image: &StaticImage) -> Vec<PathBuf> {
+pub fn places(image: &ImageSource) -> Vec<PathBuf> {
     let Some((identity, name)) = wanted(image) else { return Vec::new() };
     let mut places = Vec::new();
     if !name.is_empty()
@@ -181,7 +181,7 @@ pub fn places(image: &StaticImage) -> Vec<PathBuf> {
     places
 }
 
-fn look(image: &StaticImage) -> PdbLookup {
+fn look(image: &ImageSource) -> PdbLookup {
     let Some((wanted, pdb_name)) = wanted(image) else { return PdbLookup::NotNamed };
     let mut looked = Vec::new();
     for path in places(image) {
@@ -217,7 +217,7 @@ fn look(image: &StaticImage) -> PdbLookup {
 }
 
 /// The PDB's functions that the image's own layout bears out.
-fn placed(image: &StaticImage, path: PathBuf, contents: n0xis_pdb::Contents) -> Matched {
+fn placed(image: &ImageSource, path: PathBuf, contents: n0xis_pdb::Contents) -> Matched {
     let base = image.image_base().0;
     let code = image.code_ranges();
     let mut by_start = BTreeMap::new();
@@ -243,7 +243,7 @@ fn placed(image: &StaticImage, path: PathBuf, contents: n0xis_pdb::Contents) -> 
 /// What `profile` says about the image's PDB: which one it names, where it was
 /// looked for and what was there, and what a match brought. `null` when the
 /// image names none.
-pub fn report(image: &StaticImage) -> serde_json::Value {
+pub fn report(image: &ImageSource) -> serde_json::Value {
     use serde_json::{Value, json};
     let Some((wanted, name)) = wanted(image) else { return Value::Null };
     let written = image.codeview().map(|cv| cv.pdb_path.clone()).unwrap_or_default();
@@ -296,8 +296,8 @@ pub fn report(image: &StaticImage) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    fn fixture() -> StaticImage {
-        StaticImage::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../n0xis-pdb/tests/fixtures/pdbtarget.exe")).expect("the fixture")
+    fn fixture() -> ImageSource {
+        ImageSource::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../n0xis-pdb/tests/fixtures/pdbtarget.exe")).expect("the fixture")
     }
 
     /// The PDB is checked against the image: a function it places in a

@@ -988,7 +988,7 @@ mod tests {
     /// forwarder strings as functions, and `sig gen` fingerprinted them.
     #[test]
     fn profile_and_the_file_loader_agree_on_which_exports_are_forwarders() {
-        use n0xis_sources::{StaticPe, SymbolProvider};
+        use n0xis_sources::{ImageSource, SymbolProvider};
         // One executable section (RVA 0x1000 = file 0x1000) holding the export
         // directory (RVA 0x1100, size 0x100) and the code: `code_export` at
         // 0x1300, `fwd_export` pointing at its string inside the directory.
@@ -1029,7 +1029,7 @@ mod tests {
         b[0x1300] = 0xc3;
         let path = std::env::temp_dir().join(format!("n0xis_profile_agree_{}.dll", std::process::id()));
         std::fs::write(&path, &b).expect("write image");
-        let pe = StaticPe::load(&path).expect("load");
+        let pe = ImageSource::load(&path).expect("load");
         let _ = std::fs::remove_file(&path);
 
         let p = profile_image(&pe, &X64::new(), pe.image_base(), true).expect("profile");

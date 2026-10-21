@@ -22,7 +22,7 @@ fn resolves_managed_names_from_a_nativeaot_image() {
         eprintln!("skip: N0XIS_AOT_TEST_DLL does not exist");
         return;
     }
-    let pe = n0xis_sources::StaticPe::load(dll.as_path()).expect("load pe");
+    let pe = n0xis_sources::ImageSource::load(dll.as_path()).expect("load pe");
     let art = n0xis_core::parse_aot(&pe, pe.image_base()).expect("parse aot");
 
     eprintln!(

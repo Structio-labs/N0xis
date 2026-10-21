@@ -1,0 +1,7 @@
+; The import library ordinals-i686.exe is linked against: the two functions of
+; planted_dll.def it calls, numbered as that file numbers them. Not built from
+; planted_dll.def itself, whose import library gives a different executable.
+LIBRARY planted.dll
+EXPORTS
+  by_name
+  by_ordinal @7 NONAME

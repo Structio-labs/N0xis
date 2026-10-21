@@ -41,7 +41,7 @@ use std::process::Command;
 use n0xis_arch::{Arch, Arm32};
 use n0xis_contracts::Va;
 use n0xis_core::{CfgInput, CfgPass, Ctx, EmuConfig, EmuError, Emulator, Pass, SsaPass};
-use n0xis_sources::{MemorySource, StaticElf, SymbolProvider};
+use n0xis_sources::{MemorySource, ImageSource, SymbolProvider};
 
 const AS: &str = "arm-none-eabi-as";
 const LD: &str = "arm-none-eabi-ld";
@@ -222,7 +222,7 @@ fn a32_media_lifts_compute_what_the_processor_computes() {
         .collect();
     assert_eq!(addrs.len(), funcs.len(), "nm found every function: {addrs:?}");
 
-    let image = StaticElf::load(&elf).expect("n0xis loads the corpus");
+    let image = ImageSource::load(&elf).expect("n0xis loads the corpus");
     assert_eq!(image.machine(), "arm", "n0xis is reading the 32-bit ARM image the assembler produced");
     let arch = Arm32::a32();
     let ctx = Ctx::new(&image, &arch as &dyn Arch).with_symbols(&image as &dyn SymbolProvider);

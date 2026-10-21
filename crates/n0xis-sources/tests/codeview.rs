@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use n0xis_sources::StaticPe;
+use n0xis_sources::ImageSource;
 
 fn repo(path: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
@@ -17,7 +17,7 @@ fn repo(path: &str) -> std::path::PathBuf {
 
 #[test]
 fn an_image_names_the_pdb_built_with_it() {
-    let pe = StaticPe::load(&repo("crates/n0xis-pdb/tests/fixtures/pdbtarget.exe")).expect("the fixture");
+    let pe = ImageSource::load(&repo("crates/n0xis-pdb/tests/fixtures/pdbtarget.exe")).expect("the fixture");
     let cv = pe.codeview().expect("a CodeView record");
     // {90BA008E-0CF5-2548-4C4C-44205044422E}: the first three fields
     // little-endian, the last eight bytes as printed.
@@ -27,6 +27,6 @@ fn an_image_names_the_pdb_built_with_it() {
 
 #[test]
 fn an_image_built_without_debug_information_names_none() {
-    let pe = StaticPe::load(&repo("crates/n0xis-cli/tests/fixtures/native_pe.dll")).expect("the fixture");
+    let pe = ImageSource::load(&repo("crates/n0xis-cli/tests/fixtures/native_pe.dll")).expect("the fixture");
     assert_eq!(pe.codeview(), None);
 }

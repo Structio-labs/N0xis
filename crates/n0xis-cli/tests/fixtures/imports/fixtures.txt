@@ -1,0 +1,16 @@
+crates/n0xis-cli/tests/fixtures/imports/ordinals-i686.exe
+crates/n0xis-cli/tests/fixtures/imports/planted-i686.dll
+crates/n0xis-cli/tests/fixtures/imports/imports-x86_64.so
+crates/n0xis-cli/tests/fixtures/native_pe.dll
+crates/n0xis-cli/tests/fixtures/native_pe_b.dll
+crates/n0xis-pdb/tests/fixtures/pdbtarget.exe
+crates/n0xis-cli/tests/fixtures/strings_planted.so
+crates/n0xis-cli/tests/fixtures/stack_slots.so
+crates/n0xis-sources/tests/fixtures/tls_overlap.so
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-x86_64-linux-gnu.so
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-i686-linux-gnu.so
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-armv7-linux-gnueabihf.so
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-aarch64-linux-gnu.so
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-aarch64_be-linux-gnu.so
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vp-pie-x86_64-linux-gnu
+crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-x86_64-linux-gnu

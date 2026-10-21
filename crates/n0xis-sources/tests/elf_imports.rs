@@ -3,7 +3,7 @@
 
 //! **ELF import resolution on a real, compiler-produced shared object.**
 //!
-//! [`StaticElf::iat_slot`] maps a GOT slot to the imported symbol it resolves
+//! [`ImageSource::iat_slot`] maps a GOT slot to the imported symbol it resolves
 //! to — the ELF twin of the PE IAT map, and the seam every callee-name
 //! consumer reads (`ir::resolved_target_name`, thunk/tail-call recognition,
 //! the known-API signature table, noreturn CFG closure). Until 2026-09-05 it
@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use n0xis_contracts::{SymKind, Va};
-use n0xis_sources::{MemorySource, StaticElf, SymbolProvider};
+use n0xis_sources::{MemorySource, ImageSource, SymbolProvider};
 
 /// A shared object that calls one libc import (`getenv`) and one function it
 /// **defines itself** and also exports (`n0x_local_helper`). The second is the
@@ -70,7 +70,7 @@ fn build_so(dir: &std::path::Path, name: &str, extra: &[&str]) -> Option<PathBuf
 }
 
 /// Every GOT slot the image maps to an import, as `(bare name, module)`.
-fn imports(elf: &StaticElf) -> Vec<(String, String)> {
+fn imports(elf: &ImageSource) -> Vec<(String, String)> {
     // The map is private, so probe it the way the pipeline does: over every
     // 8-byte-aligned address of the sections that can hold a GOT.
     let mut out = Vec::new();
@@ -102,7 +102,7 @@ fn got_slots_resolve_to_imported_symbol_names() {
             eprintln!("skipping: no C compiler on PATH");
             return;
         };
-        let elf = StaticElf::load(&path).expect("load the shared object we just built");
+        let elf = ImageSource::load(&path).expect("load the shared object we just built");
         let found = imports(&elf);
 
         let getenv = found.iter().find(|(n, _)| n == "getenv");
@@ -140,7 +140,7 @@ fn plt_stubs_are_named_after_the_import_they_jump_to() {
         return;
     };
     let _ = Command::new("strip").arg("--strip-all").arg(&path).status();
-    let elf = StaticElf::load(&path).expect("load the stripped shared object");
+    let elf = ImageSource::load(&path).expect("load the stripped shared object");
 
     // Walk every executable `.plt*` section and collect the stub names.
     let mut stubs = Vec::new();
@@ -183,7 +183,7 @@ fn plt_stubs_are_not_reported_as_defined_functions() {
         eprintln!("skipping: no C compiler on PATH");
         return;
     };
-    let elf = StaticElf::load(&path).expect("load the shared object");
+    let elf = ImageSource::load(&path).expect("load the shared object");
     let defined: Vec<String> = elf.named_functions().into_iter().map(|(_, n)| n).collect();
 
     assert!(defined.iter().any(|n| n == "n0x_entry"), "its own functions are still there: {defined:?}");
@@ -204,7 +204,7 @@ fn defined_functions_report_their_stated_size_and_nothing_else_does() {
         eprintln!("skipping: no C compiler on PATH");
         return;
     };
-    let elf = StaticElf::load(&path).expect("load the shared object");
+    let elf = ImageSource::load(&path).expect("load the shared object");
 
     // Its own functions state a size, and it agrees with the next symbol's start
     // being at least that far away (a size that overlapped would be malformed).

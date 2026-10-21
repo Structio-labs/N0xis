@@ -1,0 +1,3 @@
+LIBRARY n0xnow.dll
+EXPORTS
+    n0x_now

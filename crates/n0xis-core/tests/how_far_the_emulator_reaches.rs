@@ -25,7 +25,7 @@ use n0xis_core::{
     BodyMap, CallPolicy, CfgInput, CfgPass, CodeProvider, Ctx, EmuConfig, Emulator, Pass, SsaBlock,
     SsaPass,
 };
-use n0xis_sources::{MemorySource, SourceError, StaticElf, SymbolProvider};
+use n0xis_sources::{MemorySource, SourceError, ImageSource, SymbolProvider};
 
 /// Candidate libraries, in preference order. Skipped loudly if none is present.
 const LIBRARIES: [&str; 3] =
@@ -68,7 +68,7 @@ const SCRATCH_LEN: u64 = 1 << 20;
 
 /// The image, plus [`SCRATCH_BASE`]. Composed at the seam rather than taught to
 /// the emulator, so the emulator keeps reporting unmapped memory as unmapped.
-struct Planted<'a>(&'a StaticElf);
+struct Planted<'a>(&'a ImageSource);
 
 impl MemorySource for Planted<'_> {
     fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
@@ -88,7 +88,7 @@ impl MemorySource for Planted<'_> {
 /// The callees, resolved the way the caller sees them.
 struct Bodies<'a> {
     map: BodyMap,
-    elf: &'a StaticElf,
+    elf: &'a ImageSource,
 }
 
 impl CodeProvider for Bodies<'_> {
@@ -122,7 +122,7 @@ fn the_census_of_what_real_code_hands_the_emulator() {
         eprintln!("skip: none of {LIBRARIES:?} is present — nothing was checked");
         return;
     };
-    let elf = StaticElf::load(Path::new(lib)).expect("loads");
+    let elf = ImageSource::load(Path::new(lib)).expect("loads");
     let arch = X64::new();
     // **With the symbol table**, because the pipeline this census is supposed
     // to describe has one. Without it a tail call through a GOT slot is not

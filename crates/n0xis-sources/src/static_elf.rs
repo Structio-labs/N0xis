@@ -1,28 +1,31 @@
 // Copyright (c) 2026 Tymofii Kosovskyi
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! [`StaticElf`] — a file-backed ELF [`MemorySource`] (+ symbols + module),
-//! the ELF twin of [`StaticPe`](crate::StaticPe).
+//! The ELF reader behind [`Image`], the twin of the PE one: an executable or
+//! a shared object, as its headers, symbol tables and dynamic section state
+//! it.
 //!
-//! Loads an ELF (executable or PIE shared object) from disk and exposes it
-//! through the same seams a live process uses: [`read`](MemorySource::read)
-//! translates a virtual address back to a file offset via the section table
-//! (at the image's preferred base), and defined function symbols from
-//! `.symtab`/`.dynsym` are surfaced through [`SymbolProvider`]. So the whole
-//! "one pipeline, live + static" property extends to Linux-native binaries —
-//! Rust and GCC/System V C++ alike — not just PE.
+//! Commands read it through [`ImageSource`](crate::ImageSource), which serves
+//! it at its preferred base through the same seams a live process uses, so the
+//! whole "one pipeline, live + static" property extends to Linux-native
+//! binaries — Rust and GCC/System V C++ alike — not just PE. This file only
+//! parses; every lookup is computed once, in the adapter.
 //!
 //! Scope: static code + symbols. DWARF type/line recovery (`.debug_info`) is a
 //! documented follow-on; a not-stripped ELF still yields real function names
 //! here, which is the bulk of the readability win.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use goblin::elf::Elf;
-use n0xis_contracts::{Module, SymKind, Symbol, Va};
+use n0xis_contracts::Va;
 
-use crate::{MemorySource, ModuleProvider, SourceError, SourceId, SymbolProvider};
+use crate::image::{
+    Access, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, Image, ImageSymbol, ImportBinding, ImportName,
+    ImportRef, ImportReference, Imports, Isa, Library, LibraryRef, LibrarySource, LoadedBytes, Machine, OpenError, OpenOptions, Opened,
+    Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartReason, SymbolKind, SymbolTable, UnlistedSlot, Unread,
+};
+
 
 /// `SHF_EXECINSTR` — the section holds executable machine code.
 const SHF_EXECINSTR: u64 = 0x4;
@@ -68,6 +71,35 @@ fn copy_reloc_type(e_machine: u16) -> Option<u32> {
         0x28 => Some(20),       // R_ARM_COPY
         _ => None,
     }
+}
+
+/// Whether this reader decodes the PLT stubs of a machine: x86-64 only. **The
+/// one statement of it**, read by the decoder's gate and by the answers that
+/// say the stubs were not read ([`plt_stubs_unread`]), so the two cannot
+/// drift apart.
+fn decodes_plt_stubs(e_machine: u16) -> bool {
+    e_machine == 0x3E
+}
+
+/// The sections a PLT stub lives in: executable, named `.plt…` (`.plt`,
+/// `.plt.got`, `.plt.sec`), with bytes in the file.
+fn plt_sections(sections: &[SectionRange]) -> impl Iterator<Item = &SectionRange> {
+    sections.iter().filter(|s| s.executable && s.name.starts_with(".plt") && s.file_size > 0)
+}
+
+/// What is said where an image has PLT stubs this reader does not decode:
+/// they are neither starts nor a reach of the import their slot is bound to.
+/// `None` where there are none, or where they are decoded.
+fn plt_stubs_unread(e_machine: u16, sections: &[SectionRange]) -> Option<Unread> {
+    let names: Vec<&str> = plt_sections(sections).map(|s| s.name.as_str()).collect();
+    (!decodes_plt_stubs(e_machine) && !names.is_empty()).then(|| Unread {
+        part: "PLT stubs".into(),
+        why: format!(
+            "the image has {}, and the PLT stubs of machine {e_machine:#x} are not decoded (x86-64's are), so no stub is a start or a \
+             reach of the import its slot is bound to",
+            names.join(", ")
+        ),
+    })
 }
 
 /// `ET_EXEC` and `ET_DYN`: what a loader loads.
@@ -202,11 +234,10 @@ fn read_relocated_words(elf: &Elf, bytes: &[u8]) -> crate::RelocatedWords {
     RelocatedWords::Read { words, copies }
 }
 
-/// Module name recorded for an import whose provider library cannot be
-/// determined (the binary carries no `.gnu.version_r` entry for it). ELF
-/// resolution is a *flat* namespace, so an unversioned import genuinely has no
-/// named provider — this says so instead of guessing one from `DT_NEEDED`.
-const UNKNOWN_PROVIDER: &str = "extern";
+/// Every ELF file starts with `\x7fELF`.
+pub(crate) fn sniff(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x7fELF")
+}
 
 #[derive(Debug, Clone)]
 struct SectionRange {
@@ -233,182 +264,63 @@ fn takes_image_space(sh_type: u32, sh_flags: u64) -> bool {
     !(sh_type == SHT_NOBITS && sh_flags & SHF_TLS != 0)
 }
 
-/// The byte order an image states for its multi-byte data: ELF
-/// `e_ident[EI_DATA]` 1 (`ELFDATA2LSB`) or 2 (`ELFDATA2MSB`). A PE is always
-/// little-endian.
-///
-/// Stated so a reader that only reads one order can refuse the other by name
-/// rather than read it wrongly. Today the Itanium RTTI paths do
-/// (`n0xis_core::RttiRefusal`); every other reader of image data still reads
-/// little-endian whatever this says — an open item, not a decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ByteOrder {
-    /// `ELFDATA2LSB`, and every PE.
-    Little,
-    /// `ELFDATA2MSB`.
-    Big,
-}
+/// `PF_X`, `PF_W`, `PF_R`.
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+const PF_R: u32 = 4;
 
-/// An ELF image on disk, mapped at its preferred base.
+/// An ELF image's answers, read from its file.
 #[derive(Debug)]
-pub struct StaticElf {
-    /// What the file holds, for keying what is kept between requests.
-    id: SourceId,
+pub(crate) struct StaticElf {
     bytes: Vec<u8>,
-    /// `e_ident[EI_CLASS]`: `ELFCLASS64` (2) → `true`, `ELFCLASS32` (1) →
-    /// `false`. The class is the width of the image's **data** pointers, which is
-    /// not the decoder's register width: the x32 ABI and arm64_32 run 64-bit code
-    /// with 4-byte pointers. Every ELF used to report `true` here, so a 32-bit
-    /// image's vtables were read with 8-byte slots and a 16-byte header, and
-    /// `rtti scan` answered `ok: true` with no class or with the wrong address.
-    is_64: bool,
-    /// `e_ident[EI_DATA]`, the byte order of every multi-byte field the image
-    /// holds. goblin reads the headers in either; what this image's readers do
-    /// with the data is theirs to say (see [`ByteOrder`]).
-    byte_order: ByteOrder,
+    machine: Machine,
     /// A program or a library, as the headers say ([`crate::Linkage`]).
     linkage: crate::Linkage,
-    image_base: u64,
-    module_name: String,
-    modules: Vec<Module>,
-    sections: Vec<SectionRange>,
-    /// Defined function symbols, keyed by virtual address.
-    symbols: BTreeMap<u64, Symbol>,
-    /// Imported symbols keyed by the **GOT slot** that holds them — the ELF
-    /// twin of the PE IAT map. This is what a `call qword ptr [rip+disp]`
-    /// points at, so it is the map [`SymbolProvider::iat_slot`] answers from.
-    got: BTreeMap<u64, Symbol>,
-    /// `Elf64_Sym.st_size` for every defined function that declares one — the
-    /// linker's own answer to "where does this function end", which beats any
-    /// end-of-function heuristic outright.
-    sizes: BTreeMap<u64, u64>,
-    /// `st_size` of every defined data object that declares one, for the
-    /// symbol [`Self::symbols`] keeps at that address. Apart from [`Self::sizes`]
-    /// because that one is read as "where a *function* ends".
-    data_sizes: BTreeMap<u64, u64>,
-    /// PLT stub → the **local definition** it ends up at, for the symbols this
-    /// image both imports through its own PLT and defines. See
-    /// [`SymbolProvider::thunk_to`]: without this a shared object's calls to its
-    /// own functions are edges into a stub, and every whole-program pass loses
-    /// them.
-    plt_to_local: BTreeMap<u64, u64>,
+    segments: Segments,
+    sections: Vec<Section>,
+    placed: Vec<Placement>,
+    symbols: Answer<Partial<Vec<ImageSymbol>>>,
+    exports: Answer<Vec<Export>>,
+    imports: Answer<Imports>,
+    starts: Partial<Vec<DeclaredStart>>,
+    /// Import slots and self-bound jump slots, by slot address.
+    bindings: BTreeMap<u64, Binding>,
+    /// The answer for a slot [`Self::bindings`] does not list.
+    unlisted: UnlistedSlot,
     /// The words the loader writes ([`read_relocated_words`]).
     relocated: crate::RelocatedWords,
+    /// Statements of the image that disagree ([`bindings_of`]).
+    findings: Vec<Finding>,
+}
+
+/// Parse an ELF file's bytes.
+pub(crate) fn open(bytes: Vec<u8>, _opts: &OpenOptions) -> Result<Opened, OpenError> {
+    StaticElf::parse(bytes).map(|elf| Opened::Thin(Box::new(elf)))
+}
+
+/// The ELF `e_machine`, mapped onto the same names the PE reader reports
+/// (`x64`, `arm64`, …) so one consumer reads both formats. An unrecognized
+/// machine is returned as its raw value rather than guessed into a wrong name.
+fn elf_machine(bytes: &[u8]) -> Isa {
+    // e_ident[EI_DATA] = 1 little-endian, 2 big-endian; e_machine at 0x12.
+    let Some(raw) = bytes.get(0x12..0x14) else { return Isa::Unreadable };
+    let em = match bytes.get(5) {
+        Some(1) => u16::from_le_bytes([raw[0], raw[1]]),
+        Some(2) => u16::from_be_bytes([raw[0], raw[1]]),
+        _ => return Isa::Unreadable,
+    };
+    match em {
+        0x3E => Isa::X64,
+        0xB7 => Isa::Arm64,
+        0x03 => Isa::X86,
+        0x28 => Isa::Arm,
+        raw => Isa::Unrecognized { raw },
+    }
 }
 
 impl StaticElf {
-    /// Preferred image base: the minimum `PT_LOAD` virtual address (0 for a
-    /// position-independent executable, the first segment's `p_vaddr` for a
-    /// classic `ET_EXEC`).
-    pub fn image_base(&self) -> Va {
-        Va(self.image_base)
-    }
-
-    /// Whether the image's class is `ELFCLASS64` — see the field.
-    pub fn is_64(&self) -> bool {
-        self.is_64
-    }
-
-    /// A program or a library — see [`crate::Linkage`].
-    pub fn linkage(&self) -> crate::Linkage {
-        self.linkage
-    }
-
-    /// The image's byte order, from `e_ident[EI_DATA]` — see the field.
-    pub fn byte_order(&self) -> ByteOrder {
-        self.byte_order
-    }
-
-    /// The image's data pointer size in bytes, from its class: 8 for
-    /// `ELFCLASS64`, 4 for `ELFCLASS32`.
-    pub fn pointer_size(&self) -> u8 {
-        if self.is_64 { 8 } else { 4 }
-    }
-
-    /// The words a load-time relocation writes, or why they were not read
-    /// ([`crate::RelocatedWords`]).
-    pub fn relocated_words(&self) -> &crate::RelocatedWords {
-        &self.relocated
-    }
-
-    /// The single module descriptor for this image.
-    pub fn module(&self) -> &Module {
-        &self.modules[0]
-    }
-
-    /// Virtual address range of the `.text` section `(start, size)`.
-    pub fn text_range(&self) -> Option<(Va, u64)> {
-        self.section_range(".text")
-    }
-
-    /// Every section that carries on-disk bytes, as `(name, va, size)` — the
-    /// ranges a byte/string search (`find`) can read. `SHT_NOBITS` (`.bss`) is
-    /// skipped (it has no file bytes); the readable size is the on-disk size.
-    pub fn sections(&self) -> Vec<(String, Va, u64)> {
-        self.sections
-            .iter()
-            .filter(|s| s.file_size > 0)
-            .map(|s| (s.name.clone(), Va(s.va_start), s.file_size as u64))
-            .collect()
-    }
-
-    /// Virtual address range of a named section `(start, size)`.
-    /// Defined data/object symbols (`STT_OBJECT`) — where an ELF keeps its C++
-    /// vtables (`_ZTV…`) and type-info objects (`_ZTI…`). [`Self::named_functions`]
-    /// deliberately excludes these; Itanium RTTI recovery needs exactly them.
-    /// Each with the size its symbol states ([`crate::DataSymbol`]).
-    pub fn data_symbols(&self) -> Vec<crate::DataSymbol> {
-        self.symbols
-            .values()
-            .filter(|s| s.kind == SymKind::Data)
-            .map(|s| crate::DataSymbol { va: s.va, name: s.name.clone(), size: self.data_sizes.get(&s.va.get()).copied() })
-            .collect()
-    }
-
-    /// Every section with its `SHF_EXECINSTR` flag — the shape `profile` needs.
-    ///
-    /// Separate from [`Self::sections`] (which `find` uses to bound a byte
-    /// search and therefore wants only file-backed ranges) because a profile
-    /// must report the section table as it is, executability included: `.text`
-    /// is not always where the code lives.
-    pub fn sections_detailed(&self) -> Vec<(String, Va, u64, bool)> {
-        self.sections
-            .iter()
-            .map(|s| (s.name.clone(), Va(s.va_start), s.va_end.saturating_sub(s.va_start), s.executable))
-            .collect()
-    }
-
-    /// The ELF `e_machine`, mapped onto the same names the PE profile reports
-    /// (`x64`, `arm64`, …) so one consumer reads both formats. An unrecognized
-    /// or big-endian machine is returned as raw hex rather than guessed into a
-    /// wrong name.
-    pub fn machine(&self) -> String {
-        // e_ident[EI_DATA] = 1 little-endian, 2 big-endian; e_machine at 0x12.
-        let Some(raw) = self.bytes.get(0x12..0x14) else { return "unknown".to_string() };
-        let em = match self.bytes.get(5) {
-            Some(1) => u16::from_le_bytes([raw[0], raw[1]]),
-            Some(2) => u16::from_be_bytes([raw[0], raw[1]]),
-            _ => return "unknown".to_string(),
-        };
-        match em {
-            0x3E => "x64".to_string(),
-            0xB7 => "arm64".to_string(),
-            0x03 => "x86".to_string(),
-            0x28 => "arm".to_string(),
-            other => format!("0x{other:x}"),
-        }
-    }
-
-    pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
-        self.sections.iter().find(|s| s.name == name).map(|s| (Va(s.va_start), s.va_end - s.va_start))
-    }
-
-    /// Load and parse an ELF file, building the section map and symbol table.
-    pub fn load(path: &Path) -> Result<Self, SourceError> {
-        let bytes = std::fs::read(path).map_err(|e| SourceError::Load(format!("read '{}': {e}", path.display())))?;
-        let elf = Elf::parse(&bytes).map_err(|e| SourceError::Load(format!("parse '{}': {e}", path.display())))?;
-
-        let module_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("module").to_string();
+    fn parse(bytes: Vec<u8>) -> Result<Self, OpenError> {
+        let elf = Elf::parse(&bytes).map_err(|e| OpenError::Parse(e.to_string()))?;
 
         // Preferred base = min PT_LOAD p_vaddr. A PIE loads at 0, so its VAs are
         // already the section vaddrs; a fixed ET_EXEC keeps its absolute vaddrs.
@@ -439,24 +351,19 @@ impl StaticElf {
             });
         }
 
-        // Defined function symbols from `.symtab` (full, when not stripped) and
-        // `.dynsym` (exported dynamic symbols; the only ones on a stripped ELF).
-        // A symbol with `st_value == 0` or `st_shndx == SHN_UNDEF` is an import
-        // reference, not a definition — skip it.
-        let mut symbols: BTreeMap<u64, Symbol> = BTreeMap::new();
-        let mut sizes: BTreeMap<u64, u64> = BTreeMap::new();
-        let mut data_sizes: BTreeMap<u64, u64> = BTreeMap::new();
-        let mut collect = |syms: &goblin::elf::Symtab, strtab: &goblin::strtab::Strtab| {
+        // Defined function and data symbols from `.symtab` (full, when not
+        // stripped) and `.dynsym` (exported dynamic symbols; the only ones on a
+        // stripped ELF), in that order, every one listed: which of several at
+        // one address names it is the adapter's rule, not a choice made here.
+        let mut symbols: Vec<ImageSymbol> = Vec::new();
+        // Defined, named symbols of a type not read, per table: said, so the
+        // list is not taken for every name the image gives an address.
+        let mut symbols_unread: Vec<Unread> = Vec::new();
+        let mut collect = |syms: &goblin::elf::Symtab, strtab: &goblin::strtab::Strtab, table: SymbolTable, table_name: &str| {
+            let mut other: BTreeMap<u8, usize> = BTreeMap::new();
             for sym in syms.iter() {
-                // Functions become named code targets; data objects (globals /
-                // statics) become named data references (`&crc_table`). A symbol
-                // with `st_value == 0` or `st_shndx == SHN_UNDEF` is an import
-                // reference, not a definition — skip it.
-                let kind = match sym.st_type() {
-                    STT_FUNC => SymKind::Export,
-                    STT_OBJECT => SymKind::Data,
-                    _ => continue,
-                };
+                // A symbol with `st_value == 0` or `st_shndx == SHN_UNDEF` is
+                // an import reference, not a definition — skip it.
                 if sym.st_value == 0 || sym.st_shndx == 0 {
                     continue;
                 }
@@ -464,23 +371,54 @@ impl StaticElf {
                 if name.is_empty() {
                     continue;
                 }
-                if kind == SymKind::Export && sym.st_size > 0 {
-                    // Aliases at one address agree on the size; `or_insert` keeps
-                    // the first, and disagreement would mean a malformed table.
-                    sizes.entry(sym.st_value).or_insert(sym.st_size);
-                }
-                if let std::collections::btree_map::Entry::Vacant(slot) = symbols.entry(sym.st_value) {
-                    slot.insert(Symbol { va: Va(sym.st_value), module: module_name.clone(), name: name.to_string(), kind });
-                    // The size of the symbol kept here, and of no other: a size
-                    // is a fact about one object, read with its name.
-                    if kind == SymKind::Data && sym.st_size > 0 {
-                        data_sizes.insert(sym.st_value, sym.st_size);
+                // Functions become named code targets; data objects (globals /
+                // statics) become named data references (`&crc_table`).
+                let kind = match sym.st_type() {
+                    STT_FUNC => SymbolKind::Function,
+                    STT_OBJECT => SymbolKind::Object,
+                    other_type => {
+                        *other.entry(other_type).or_default() += 1;
+                        continue;
                     }
-                }
+                };
+                let extent = if sym.st_size > 0 { Extent::Stated(sym.st_size) } else { Extent::Unknown };
+                symbols.push(ImageSymbol { va: Va(sym.st_value), name: name.to_string(), kind, extent, table });
+            }
+            if !other.is_empty() {
+                let counts: Vec<String> = other.iter().map(|(&ty, n)| format!("{n} {}", symbol_type_name(ty))).collect();
+                symbols_unread.push(Unread {
+                    part: format!("{table_name} symbols of a type other than STT_FUNC and STT_OBJECT"),
+                    why: format!("{} defined and named, and only STT_FUNC and STT_OBJECT symbols are read", counts.join(", ")),
+                });
             }
         };
-        collect(&elf.syms, &elf.strtab);
-        collect(&elf.dynsyms, &elf.dynstrtab);
+        collect(&elf.syms, &elf.strtab, SymbolTable::Static, ".symtab");
+        collect(&elf.dynsyms, &elf.dynstrtab, SymbolTable::Dynamic, ".dynsym");
+        // `Elf64_Sym.st_size` of a defined function is the linker's own answer
+        // to "where does this function end", which beats any end-of-function
+        // heuristic outright.
+        let mut starts: Vec<DeclaredStart> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .map(|s| DeclaredStart { va: s.va, why: StartReason::Symbol, extent: s.extent })
+            .collect();
+
+        // Symbol-version index -> the library that is expected to provide it
+        // (`.gnu.version_r`: `getenv@GLIBC_2.2.5` -> `libc.so.6`). This is the
+        // only per-symbol provider attribution an ELF carries; binding is flat
+        // at run time, so it is informative, not authoritative.
+        let mut provider: BTreeMap<u16, String> = BTreeMap::new();
+        if let Some(verneed) = elf.verneed.as_ref() {
+            for need in verneed.iter() {
+                let Some(file) = elf.dynstrtab.get_at(need.vn_file) else { continue };
+                for aux in need.iter() {
+                    provider.insert(aux.vna_other, file.to_string());
+                }
+            }
+        }
+        let provider_of = |sym_index: usize| -> Option<String> {
+            elf.versym.as_ref().and_then(|vs| vs.get_at(sym_index)).and_then(|v| provider.get(&v.version()).cloned())
+        };
 
         // --- Imports: GOT slot -> imported symbol (the ELF twin of the PE IAT) ---
         //
@@ -493,33 +431,30 @@ impl StaticElf {
         // signature table, thunk/tail-call recognition, and noreturn CFG
         // closure. (The same class of bug the PE side hit in 2026-08 by keying
         // its IAT map on the wrong RVA.)
-        let mut got: BTreeMap<u64, Symbol> = BTreeMap::new();
+        let mut got: BTreeMap<u64, ImportRef> = BTreeMap::new();
+        // Every relocation here that names a slot, as (slot, type, symbol), so
+        // that two naming one slot are seen ([`bindings_of`]).
+        let mut named_slots: Vec<(u64, u32, usize)> = Vec::new();
         // GOT slot → the address of the definition **in this image** it binds
         // to. Populated only for `JUMP_SLOT` relocations against symbols this
         // object defines, which is exactly the self-call-through-the-PLT case.
         let mut local_slot: BTreeMap<u64, u64> = BTreeMap::new();
-        if let Some((glob_dat, jump_slot)) = got_reloc_types(elf.header.e_machine) {
-            // Symbol-version index -> the library that is expected to provide it
-            // (`.gnu.version_r`: `getenv@GLIBC_2.2.5` -> `libc.so.6`). This is the
-            // only per-symbol provider attribution an ELF carries; binding is
-            // flat at run time, so it is informative, not authoritative.
-            let mut provider: BTreeMap<u16, String> = BTreeMap::new();
-            if let Some(verneed) = elf.verneed.as_ref() {
-                for need in verneed.iter() {
-                    let Some(file) = elf.dynstrtab.get_at(need.vn_file) else { continue };
-                    for aux in need.iter() {
-                        provider.insert(aux.vna_other, file.to_string());
-                    }
-                }
-            }
-
-            let add_local = &mut local_slot;
+        // The import slots each imported dynamic symbol is bound through, by
+        // symbol index, in relocation order.
+        let mut slots_of: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+        let reloc_types = got_reloc_types(elf.header.e_machine);
+        // Why the slots were not read, once, for both answers that say so: an
+        // import's reach and what a slot is bound to.
+        let slots_not_read = reloc_types
+            .is_none()
+            .then(|| format!("the GLOB_DAT and JUMP_SLOT relocations of machine {:#x} are not read", elf.header.e_machine));
+        if let Some((glob_dat, jump_slot)) = reloc_types {
             let mut add = |reloc: &goblin::elf::Reloc| {
-                let local_slot = &mut *add_local;
                 if reloc.r_type != glob_dat && reloc.r_type != jump_slot {
                     return;
                 }
                 let Some(sym) = elf.dynsyms.get(reloc.r_sym) else { return };
+                named_slots.push((reloc.r_offset, reloc.r_type, reloc.r_sym));
                 // `st_shndx == SHN_UNDEF` is what makes it an *import*. A
                 // GLOB_DAT against a symbol this image defines itself is the
                 // linker routing an internal reference through the GOT (PIE
@@ -541,14 +476,16 @@ impl StaticElf {
                 if name.is_empty() {
                     return;
                 }
-                let module = elf
-                    .versym
-                    .as_ref()
-                    .and_then(|vs| vs.get_at(reloc.r_sym))
-                    .and_then(|v| provider.get(&v.version()).cloned())
-                    .unwrap_or_else(|| UNKNOWN_PROVIDER.to_string());
-                let slot = Va(reloc.r_offset);
-                got.insert(reloc.r_offset, Symbol { va: slot, module, name: name.to_string(), kind: SymKind::Import });
+                got.insert(reloc.r_offset, ImportRef { name: ImportName::Named(name.to_string()), library: provider_of(reloc.r_sym) });
+                // A slot is one way to reach the import however many times a
+                // table states it. One relocation read twice — a `DT_RELASZ`
+                // that also covers the `DT_JMPREL` entries, a layout the
+                // loader accepts — listed each slot, and each stub through
+                // it, twice ([`bindings_of`] dedups the same entries).
+                let slots = slots_of.entry(reloc.r_sym).or_default();
+                if !slots.contains(&reloc.r_offset) {
+                    slots.push(reloc.r_offset);
+                }
             };
             for r in elf.pltrelocs.iter() {
                 add(&r);
@@ -561,27 +498,28 @@ impl StaticElf {
             }
         }
 
-        let mut plt_to_local: BTreeMap<u64, u64> = BTreeMap::new();
-        // --- PLT stubs: name the *stub* after the import it jumps to ---
+        // --- PLT stubs: the stubs that jump through a bound slot ---
         //
         // With lazy binding (the default, and what a stripped ELF executable
         // almost always uses) a call to an import is a **direct** `call` to a
-        // PLT stub, not an indirect call through the GOT — so `iat_slot` above
-        // never sees it and the callee stays `sub_1030`. Naming the
-        // stub after its import for exactly this reason; so do we, which makes
-        // one entry in `symbols` serve every consumer at once (discovery list,
-        // xref, decompiler) instead of each re-deriving the thunk.
+        // PLT stub, not an indirect call through the GOT — so the slot map
+        // above never sees it and the callee stays `sub_1030`. The stub is a
+        // declared start of its own, and the adapter names it after the import
+        // its slot is bound to, which makes one symbol serve every consumer at
+        // once (discovery list, xref, decompiler) instead of each re-deriving
+        // the thunk.
         //
         // Every x86-64 PLT variant contains exactly one `jmp qword ptr
         // [rip+disp]` (`FF 25`) whose target is the import's GOT slot, so the
         // stub is identified by that instruction rather than by assuming an
         // entry size: `.plt` entries are 16 bytes, `.plt.got` are 8, and
         // `.plt.sec` prefixes an `endbr64`. **The match is self-validating** —
-        // the slot must already be in the import map built above, which is what
-        // keeps `.plt`'s resolver stub (PLT0, whose `jmp` goes through
-        // `GOT+0x10`, not a symbol) and any non-PLT `FF 25` out.
-        if elf.header.e_machine == 0x3E {
-            for sec in sections.iter().filter(|s| s.executable && s.name.starts_with(".plt") && s.file_size > 0) {
+        // the slot must already be bound above, which is what keeps `.plt`'s
+        // resolver stub (PLT0, whose `jmp` goes through `GOT+0x10`, not a
+        // symbol) and any non-PLT `FF 25` out.
+        let mut stub_of_slot: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        if decodes_plt_stubs(elf.header.e_machine) {
+            for sec in plt_sections(&sections) {
                 let bytes = &bytes[sec.file_offset..(sec.file_offset + sec.file_size).min(bytes.len())];
                 let mut i = 0usize;
                 while i + 6 <= bytes.len() {
@@ -593,9 +531,8 @@ impl StaticElf {
                     // RIP is the address of the *next* instruction (`FF 25` + rel32 = 6 bytes).
                     let jmp_va = sec.va_start + i as u64;
                     let slot = jmp_va.wrapping_add(6).wrapping_add(disp as i64 as u64);
-                    let sym = got.get(&slot);
-                    let local = local_slot.get(&slot).copied();
-                    if sym.is_none() && local.is_none() {
+                    let import = got.contains_key(&slot);
+                    if !import && !local_slot.contains_key(&slot) {
                         i += 1;
                         continue;
                     }
@@ -610,175 +547,275 @@ impl StaticElf {
                         start -= 4; // `endbr64` (CET)
                     }
                     let stub_va = sec.va_start + start as u64;
-                    // The stub forwards into this same image: record where, so
-                    // a whole-program pass can follow the program's own call
-                    // graph instead of stopping at a thunk.
-                    if let Some(target) = local
-                        && target != stub_va
-                    {
-                        plt_to_local.insert(stub_va, target);
-                    }
-                    let Some(sym) = sym else {
-                        i += 1;
-                        continue;
-                    };
-                    // A real symbol for this address (an unstripped `foo@plt`)
-                    // always wins; this only fills a hole.
-                    symbols.entry(stub_va).or_insert_with(|| Symbol {
-                        va: Va(stub_va),
-                        module: sym.module.clone(),
-                        name: sym.name.clone(),
-                        kind: SymKind::Import,
-                    });
-                    i += 6;
+                    starts.push(DeclaredStart { va: Va(stub_va), why: StartReason::Stub { slot: Va(slot) }, extent: Extent::Unknown });
+                    stub_of_slot.entry(slot).or_default().push(stub_va);
+                    i += if import { 6 } else { 1 };
                 }
             }
         }
 
-        // Image size: span from the base to the end of the last loadable segment.
-        let size = elf
-            .program_headers
+        let libraries = libraries_of(&elf);
+        let library_ref = |name: Option<String>| match name {
+            Some(name) => match libraries.iter().position(|l| l.name == name) {
+                Some(i) => LibraryRef::Named(i),
+                None => LibraryRef::Unattributed { why: "the version requirement names no library this image lists" },
+            },
+            None => LibraryRef::Unattributed { why: "no version requirement names a library for it, and ELF binding is flat" },
+        };
+        // Every undefined dynamic symbol is something the image needs, whether
+        // or not a slot above is bound to it.
+        let references: Vec<ImportReference> = elf
+            .dynsyms
             .iter()
-            .filter(|ph| ph.p_type == PT_LOAD)
-            .map(|ph| ph.p_vaddr.saturating_add(ph.p_memsz))
-            .max()
-            .unwrap_or(0)
-            .saturating_sub(image_base);
+            .enumerate()
+            .skip(1)
+            .filter(|(_, sym)| sym.st_shndx == 0)
+            .filter_map(|(index, sym)| {
+                let name = elf.dynstrtab.get_at(sym.st_name).filter(|n| !n.is_empty())?;
+                let reach = if let Some(why) = &slots_not_read {
+                    Answer::NotRead { why: why.clone() }
+                } else {
+                    let slots = slots_of.get(&index).map(Vec::as_slice).unwrap_or_default();
+                    let stubs = slots.iter().flat_map(|s| stub_of_slot.get(s).into_iter().flatten());
+                    Answer::Read(slots.iter().map(|&s| Reach::Slot(Va(s))).chain(stubs.map(|&s| Reach::Stub(Va(s)))).collect())
+                };
+                Some(ImportReference { name: ImportName::Named(name.to_string()), library: library_ref(provider_of(index)), reach })
+            })
+            .collect();
 
-        let modules = vec![Module { name: module_name.clone(), base: Va(image_base), size, path: Some(path.to_string_lossy().to_string()) }];
+        let (bindings, findings) = bindings_of(got, local_slot, named_slots);
+        let unlisted = match slots_not_read {
+            Some(why) => UnlistedSlot::NotRead { why },
+            None => UnlistedSlot::Unbound {
+                why: "no GLOB_DAT or JUMP_SLOT relocation binds this slot to an import, nor a JUMP_SLOT to a definition here",
+            },
+        };
+
+        let loads = || elf.program_headers.iter().filter(|ph| ph.p_type == PT_LOAD);
+        // Image size: span from the base to the end of the last loadable segment.
+        let span = loads().map(|ph| ph.p_vaddr.saturating_add(ph.p_memsz)).max().unwrap_or(0).saturating_sub(image_base);
+        let segments = Segments {
+            base: Va(image_base),
+            span,
+            list: loads()
+                .map(|ph| Segment {
+                    va: Va(ph.p_vaddr),
+                    mem_size: ph.p_memsz,
+                    file_offset: ph.p_offset,
+                    file_size: ph.p_filesz,
+                    access: Access { read: ph.p_flags & PF_R != 0, write: ph.p_flags & PF_W != 0, execute: ph.p_flags & PF_X != 0 },
+                })
+                .collect(),
+        };
 
         // goblin reads `e_ident[EI_CLASS]` and refuses any value but
-        // `ELFCLASS32`/`ELFCLASS64`, so this is the header's own answer.
-        let is_64 = elf.is_64;
-        // The same for `e_ident[EI_DATA]`: goblin accepts `ELFDATA2LSB` and
-        // `ELFDATA2MSB` only, and parses the headers in the one it finds.
-        let byte_order = if elf.little_endian { ByteOrder::Little } else { ByteOrder::Big };
+        // `ELFCLASS32`/`ELFCLASS64`, so the width is the header's own answer.
+        // The class is the width of the image's **data** pointers, which is not
+        // the decoder's register width: the x32 ABI and arm64_32 run 64-bit
+        // code with 4-byte pointers. Every ELF used to report 8 here, so a
+        // 32-bit image's vtables were read with 8-byte slots and a 16-byte
+        // header, and `rtti scan` answered `ok: true` with no class or with the
+        // wrong address. The same for `e_ident[EI_DATA]`: goblin accepts
+        // `ELFDATA2LSB` and `ELFDATA2MSB` only, and parses the headers in the
+        // one it finds.
+        let machine = Machine {
+            isa: elf_machine(&bytes),
+            pointer_width: if elf.is_64 { PointerWidth::Eight } else { PointerWidth::Four },
+            byte_order: if elf.little_endian { ByteOrder::Little } else { ByteOrder::Big },
+            abi: "sysv", // ELF → System V.
+        };
         let linkage = linkage_of(&elf);
+        // What a relocatable object needs is its undefined `.symtab` symbols,
+        // resolved by a link editor, not by a loader from other images; it has
+        // no dynamic symbols, so the list above is empty whatever it needs (a
+        // `crt1.o` needs `__libc_start_main` and `main`). Not read, rather
+        // than answered as "nothing".
+        let stubs_unread = plt_stubs_unread(elf.header.e_machine, &sections);
+        let imports = if matches!(elf.header.e_type, ET_EXEC | ET_DYN) {
+            Answer::Read(Imports { binding: ImportBinding::Flat, libraries, references, reach_not_read: stubs_unread.iter().cloned().collect() })
+        } else {
+            Answer::NotRead {
+                why: format!(
+                    "an ELF of type {} is not an executable or a shared object: what it needs is resolved by a link editor from its \
+                     undefined .symtab symbols, which are not read",
+                    elf_type_name(elf.header.e_type)
+                ),
+            }
+        };
         let relocated = read_relocated_words(&elf, &bytes);
+        let placed = sections
+            .iter()
+            .filter(|s| s.in_image)
+            .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
+            .collect();
+        let public_sections = sections
+            .iter()
+            .map(|s| Section {
+                name: s.name.clone(),
+                va: Va(s.va_start),
+                size: s.va_end - s.va_start,
+                file_offset: s.file_offset as u64,
+                file_size: s.file_size as u64,
+                executable: s.executable,
+                in_image: s.in_image,
+            })
+            .collect();
+        // What the image states about where code starts that is not read
+        // here: the entry point, the PLT stubs of a machine whose stubs are
+        // not decoded, and `.eh_frame`'s frame descriptions.
+        let mut starts_unread: Vec<Unread> = Vec::new();
+        if elf.header.e_entry != 0 {
+            starts_unread.push(Unread {
+                part: "the entry point".into(),
+                why: format!("e_entry ({:#x}) is a header field this reader does not make a start of", elf.header.e_entry),
+            });
+        }
+        starts_unread.extend(stubs_unread);
+        starts_unread.extend(crate::static_pe::eh_frame_unread(sections.iter().map(|s| (s.name.as_str(), s.file_size))));
+        // The parse borrows the bytes the image keeps.
+        drop(elf);
         Ok(StaticElf {
-            id: SourceId::of(&bytes),
             bytes,
-            is_64,
-            byte_order,
+            machine,
             linkage,
-            image_base,
-            module_name,
-            modules,
-            sections,
-            symbols,
-            got,
-            sizes,
-            data_sizes,
-            plt_to_local,
+            segments,
+            sections: public_sections,
+            placed,
+            symbols: Answer::Read(Partial { read: symbols, not_read: symbols_unread }),
+            exports: Answer::NotRead { why: "an ELF's exports are its defined dynamic symbols, which are read as symbols and not listed apart".into() },
+            imports,
+            starts: Partial { read: starts, not_read: starts_unread },
+            bindings,
+            unlisted,
             relocated,
+            findings,
         })
     }
+}
 
-    /// The section that holds `va` in the image: the one address lookup, which
-    /// `read` and `contains` both go through.
-    fn section_for(&self, va: u64) -> Option<&SectionRange> {
-        self.sections.iter().find(|s| s.in_image && va >= s.va_start && va < s.va_end)
-    }
-
-    /// The **defined** function symbols (`.symtab`/`.dynsym`), address-ordered —
-    /// the `(va, name)` list a signature generator fingerprints and `profile`
-    /// reports as this format's answer to a PE export table. Empty on a stripped
-    /// binary, which is exactly why signatures are needed in the first place.
-    ///
-    /// Excludes the **PLT stubs** named after their imports: a stub is a thunk
-    /// into another library, not code this image defines. Signing one is both
-    /// useless and unsafe — every x86-64 lazy PLT entry embeds its own
-    /// relocation index (`push <n>`), a value specific to *this* binary's link
-    /// order, so the pattern either matches nothing elsewhere or matches an
-    /// unrelated stub that happens to share the index.
-    pub fn named_functions(&self) -> Vec<(Va, String)> {
-        self.symbols.values().filter(|s| s.kind == SymKind::Export).map(|s| (s.va, s.name.clone())).collect()
+/// A symbol's `st_type` as the specification names it.
+fn symbol_type_name(st_type: u8) -> String {
+    match st_type {
+        0 => "STT_NOTYPE".into(),
+        1 => "STT_OBJECT".into(),
+        2 => "STT_FUNC".into(),
+        3 => "STT_SECTION".into(),
+        4 => "STT_FILE".into(),
+        5 => "STT_COMMON".into(),
+        6 => "STT_TLS".into(),
+        10 => "STT_GNU_IFUNC".into(),
+        other => format!("type {other}"),
     }
 }
 
-impl MemorySource for StaticElf {
-    fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
-        let Some(section) = self.section_for(va.0) else {
-            return Err(SourceError::Unmapped(va));
+/// `e_type` as the specification names it.
+fn elf_type_name(e_type: u16) -> String {
+    match e_type {
+        0 => "ET_NONE".into(),
+        1 => "ET_REL".into(),
+        2 => "ET_EXEC".into(),
+        3 => "ET_DYN".into(),
+        4 => "ET_CORE".into(),
+        other => format!("{other:#x}"),
+    }
+}
+
+/// What each slot is bound to, from the import slots (`got`) and the jump
+/// slots bound to this image's own definitions (`local`), and a finding for
+/// every slot two relocations name.
+///
+/// Each map keeps the last relocation it read at a slot, as the reader always
+/// has. A slot in both maps is both — the answers built on it name its stub
+/// after the import and forward the stub to the definition, as they did before
+/// the format seam — and neither is dropped: on such a planted file the 0.3.5
+/// reader answered both, and a binding that picked one lost the other.
+/// `named` is every `GLOB_DAT` and `JUMP_SLOT` relocation read, as (slot,
+/// type, symbol index). One relocation read twice is one statement, not two:
+/// a dynamic table whose `DT_RELASZ` also covers the `DT_JMPREL` entries
+/// hands the same entry to both lists.
+fn bindings_of(
+    got: BTreeMap<u64, ImportRef>,
+    mut local: BTreeMap<u64, u64>,
+    mut named: Vec<(u64, u32, usize)>,
+) -> (BTreeMap<u64, Binding>, Vec<Finding>) {
+    let mut bindings: BTreeMap<u64, Binding> = BTreeMap::new();
+    for (slot, import) in got {
+        let binding = match local.remove(&slot) {
+            Some(target) => Binding::ImportAndSelfDefinition { import, target: Va(target) },
+            None => Binding::Import(import),
         };
-        let in_section = (va.0 - section.va_start) as usize;
-        if in_section >= section.file_size {
-            return Ok(Vec::new()); // BSS-style tail: short read, not synthesized.
-        }
-        let file_start = section.file_offset + in_section;
-        let avail = section.file_size - in_section;
-        let take = len.min(avail);
-        let end = (file_start + take).min(self.bytes.len());
-        if file_start >= end {
-            return Ok(Vec::new());
-        }
-        Ok(self.bytes[file_start..end].to_vec())
+        bindings.insert(slot, binding);
     }
-
-    fn contains(&self, va: Va) -> bool {
-        self.section_for(va.0).is_some()
+    bindings.extend(local.into_iter().map(|(slot, target)| (slot, Binding::SelfDefinition { target: Va(target) })));
+    named.sort_unstable();
+    named.dedup();
+    let mut findings = Vec::new();
+    for pair in named.chunk_by(|a, b| a.0 == b.0).filter(|run| run.len() > 1) {
+        let slot = pair[0].0;
+        let then = match bindings.get(&slot) {
+            Some(Binding::ImportAndSelfDefinition { .. }) => "one binds it to an import and one to a definition here, and both are kept",
+            Some(Binding::Import(_)) => "it is answered as the slot of one import, the last read",
+            Some(Binding::SelfDefinition { .. }) => "it is answered as bound to one definition here, the last read",
+            Some(Binding::Unbound { .. } | Binding::NotRead { .. }) | None => "neither binds it to an import or to a jump target here",
+        };
+        findings.push(Finding::Contradiction { what: format!("{} GLOB_DAT or JUMP_SLOT relocations name the slot at {slot:#x}: {then}", pair.len()) });
     }
-
-    /// An image on disk cannot change under the loaded copy; everything the
-    /// source answers comes from its bytes.
-    fn identity(&self) -> Option<SourceId> {
-        Some(self.id)
-    }
-
-    /// A readable stretch starts where a section starts or another ends.
-    fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
-        let bounds = self.sections.iter().filter(|s| s.in_image).flat_map(|s| [s.va_start, s.va_end]);
-        crate::next_readable_at(self, va, end, bounds)
-    }
-
-    fn code_range(&self) -> Option<(Va, u64)> {
-        self.text_range()
-    }
-
-    /// Every executable section in address order (`.text`, `.plt`, `.init`, …),
-    /// not just `.text` — the same breadth [`StaticPe`](crate::StaticPe) needs.
-    fn code_ranges(&self) -> Vec<(Va, u64)> {
-        let mut out: Vec<(Va, u64)> =
-            self.sections.iter().filter(|s| s.executable && s.va_end > s.va_start).map(|s| (Va(s.va_start), s.va_end - s.va_start)).collect();
-        out.sort_by_key(|(va, _)| va.0);
-        out
-    }
-
-    fn label(&self) -> String {
-        format!("static:{}", self.module_name)
-    }
-
-    fn abi_name(&self) -> &'static str {
-        "sysv" // ELF → System V AMD64.
-    }
+    (bindings, findings)
 }
 
-impl SymbolProvider for StaticElf {
-    fn thunk_to(&self, va: Va) -> Option<Va> {
-        self.plt_to_local.get(&va.0).copied().map(Va)
+/// The libraries an ELF needs: its `DT_NEEDED` entries in order, then, in
+/// the order `.gnu.version_r` holds them, any library a version requirement
+/// names that no `DT_NEEDED` entry does.
+fn libraries_of(elf: &Elf) -> Vec<Library> {
+    let mut out: Vec<Library> =
+        elf.libraries.iter().map(|l| Library { name: l.to_string(), stated_by: LibrarySource::Needed, references_not_read: Vec::new() }).collect();
+    for need in elf.verneed.iter().flat_map(|v| v.iter()) {
+        let Some(name) = elf.dynstrtab.get_at(need.vn_file) else { continue };
+        if !out.iter().any(|l| l.name == name) {
+            out.push(Library { name: name.to_string(), stated_by: LibrarySource::VersionRequirementOnly, references_not_read: Vec::new() });
+        }
     }
-
-    fn symbol_at(&self, va: Va) -> Option<Symbol> {
-        self.symbols.get(&va.0).cloned()
-    }
-    /// The imported symbol a GOT slot resolves to. Named `iat_slot` for the PE
-    /// term the trait was born with; on ELF the same seam is the GOT, and the
-    /// consumers (`ir::resolved_target_name`, thunk recognition, the known-API
-    /// and noreturn tables) are format-neutral.
-    fn iat_slot(&self, va: Va) -> Option<Symbol> {
-        self.got.get(&va.0).cloned()
-    }
-
-    /// `st_size` — the linker's own extent for this function. Only for a symbol
-    /// this image *defines* (a PLT stub is a thunk, and carries the size of the
-    /// stub, not of the function it reaches).
-    fn symbol_size(&self, va: Va) -> Option<u64> {
-        self.sizes.get(&va.0).copied()
-    }
+    out
 }
 
-impl ModuleProvider for StaticElf {
-    fn modules(&self) -> &[Module] {
-        &self.modules
+impl Image for StaticElf {
+    fn machine(&self) -> Machine {
+        self.machine
+    }
+    fn linkage(&self) -> crate::Linkage {
+        self.linkage
+    }
+    fn segments(&self) -> &Segments {
+        &self.segments
+    }
+    fn sections(&self) -> &[Section] {
+        &self.sections
+    }
+    fn symbols(&self) -> &Answer<Partial<Vec<ImageSymbol>>> {
+        &self.symbols
+    }
+    fn imports(&self) -> &Answer<Imports> {
+        &self.imports
+    }
+    fn exports(&self) -> &Answer<Vec<Export>> {
+        &self.exports
+    }
+    fn declared_starts(&self) -> &Partial<Vec<DeclaredStart>> {
+        &self.starts
+    }
+    fn loaded_bytes(&self) -> LoadedBytes<'_> {
+        LoadedBytes { file: &self.bytes, placed: &self.placed, written_by_loader: &self.relocated }
+    }
+    fn findings(&self) -> &[Finding] {
+        &self.findings
+    }
+    fn binding_at(&self, slot: Va) -> Binding {
+        match self.bindings.get(&slot.0) {
+            Some(binding) => binding.clone(),
+            None => self.unlisted.binding(),
+        }
+    }
+    fn codeview(&self) -> Option<&CodeView> {
+        None
     }
 }

@@ -1,0 +1,397 @@
+
+File: types-x86_64.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+Symbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: crtbeginS.o (1)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: File (0x4)
+    Other: 0
+    Section: Absolute (0xFFF1)
+  }
+  Symbol {
+    Name: deregister_tm_clones (13)
+    Value: 0x1050
+    Size: 0
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: register_tm_clones (15)
+    Value: 0x1080
+    Size: 0
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: __do_global_dtors_aux (34)
+    Value: 0x10C0
+    Size: 0
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: completed.0 (56)
+    Value: 0x4018
+    Size: 1
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .bss (0x17)
+  }
+  Symbol {
+    Name: __do_global_dtors_aux_fini_array_entry (68)
+    Value: 0x3DD0
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .fini_array (0x12)
+  }
+  Symbol {
+    Name: frame_dummy (107)
+    Value: 0x1110
+    Size: 0
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: __frame_dummy_init_array_entry (119)
+    Value: 0x3DC8
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .init_array (0x11)
+  }
+  Symbol {
+    Name: types.c (150)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: File (0x4)
+    Other: 0
+    Section: Absolute (0xFFF1)
+  }
+  Symbol {
+    Name: n0x_impl (158)
+    Value: 0x111A
+    Size: 6
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: n0x_resolve (167)
+    Value: 0x1120
+    Size: 8
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: crtendS.o (179)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: File (0x4)
+    Other: 0
+    Section: Absolute (0xFFF1)
+  }
+  Symbol {
+    Name: __FRAME_END__ (189)
+    Value: 0x20B4
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .eh_frame (0xE)
+  }
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: File (0x4)
+    Other: 0
+    Section: Absolute (0xFFF1)
+  }
+  Symbol {
+    Name: _fini (203)
+    Value: 0x1158
+    Size: 0
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .fini (0xC)
+  }
+  Symbol {
+    Name: __dso_handle (209)
+    Value: 0x4010
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data (0x16)
+  }
+  Symbol {
+    Name: _DYNAMIC (222)
+    Value: 0x3DD8
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .dynamic (0x13)
+  }
+  Symbol {
+    Name: __GNU_EH_FRAME_HDR (231)
+    Value: 0x2000
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: .eh_frame_hdr (0xD)
+  }
+  Symbol {
+    Name: __TMC_END__ (250)
+    Value: 0x4018
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data (0x16)
+  }
+  Symbol {
+    Name: _GLOBAL_OFFSET_TABLE_ (262)
+    Value: 0x3FE8
+    Size: 0
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .got.plt (0x15)
+  }
+  Symbol {
+    Name: _init (284)
+    Value: 0x1000
+    Size: 0
+    Binding: Local (0x0)
+    Type: Function (0x2)
+    Other: 0
+    Section: .init (0x9)
+  }
+  Symbol {
+    Name: n0x_chosen (290)
+    Value: 0x1120
+    Size: 8
+    Binding: Global (0x1)
+    Type: GNU_IFunc (0xA)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: _ITM_deregisterTMCloneTable (301)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: n0x_tls_b (329)
+    Value: 0x0
+    Size: 4
+    Binding: Global (0x1)
+    Type: TLS (0x6)
+    Other: 0
+    Section: .tdata (0x10)
+  }
+  Symbol {
+    Name: __tls_get_addr@GLIBC_2.3 (339)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __gmon_start__ (364)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: n0x_label (379)
+    Value: 0x1119
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: n0x_tls_a (389)
+    Value: 0x4
+    Size: 4
+    Binding: Global (0x1)
+    Type: TLS (0x6)
+    Other: 0
+    Section: .tdata (0x10)
+  }
+  Symbol {
+    Name: _ITM_registerTMCloneTable (399)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: n0x_plain (425)
+    Value: 0x1128
+    Size: 48
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: __cxa_finalize@GLIBC_2.2.5 (435)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+]
+DynamicSymbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_deregisterTMCloneTable (16)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __tls_get_addr@GLIBC_2.3 (126)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __gmon_start__ (1)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_registerTMCloneTable (44)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __cxa_finalize@GLIBC_2.2.5 (70)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: n0x_label (85)
+    Value: 0x1119
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: n0x_tls_a (116)
+    Value: 0x4
+    Size: 4
+    Binding: Global (0x1)
+    Type: TLS (0x6)
+    Other: 0
+    Section: .tdata (0x10)
+  }
+  Symbol {
+    Name: n0x_chosen (95)
+    Value: 0x1120
+    Size: 8
+    Binding: Global (0x1)
+    Type: GNU_IFunc (0xA)
+    Other: 0
+    Section: .text (0xB)
+  }
+  Symbol {
+    Name: n0x_tls_b (141)
+    Value: 0x0
+    Size: 4
+    Binding: Global (0x1)
+    Type: TLS (0x6)
+    Other: 0
+    Section: .tdata (0x10)
+  }
+  Symbol {
+    Name: n0x_plain (106)
+    Value: 0x1128
+    Size: 48
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0xB)
+  }
+]

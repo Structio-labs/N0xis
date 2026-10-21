@@ -32,7 +32,7 @@ use std::process::Command;
 use n0xis_arch::X64;
 use n0xis_contracts::Va;
 use n0xis_core::{CfgInput, CfgPass, Ctx, EmuConfig, Emulator, OptimizePass, Pass, SsaPass};
-use n0xis_sources::{MemorySource, StaticImage};
+use n0xis_sources::{MemorySource, ImageSource};
 
 const CC: &str = "x86_64-w64-mingw32-gcc";
 const NM: &str = "x86_64-w64-mingw32-nm";
@@ -177,7 +177,7 @@ fn check_one(tmp: &Path, dll_name: &str, label: &str) -> (usize, usize, usize) {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let image = StaticImage::load(&dll).expect("n0xis loads the same DLL");
+    let image = ImageSource::load(&dll).expect("n0xis loads the same DLL");
     let arch = X64::new();
     // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:
     // `.with_symbols`); a bare `Ctx` cannot fold a `<fn>.cold` partition back

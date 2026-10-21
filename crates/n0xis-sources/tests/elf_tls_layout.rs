@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use n0xis_contracts::Va;
-use n0xis_sources::{MemorySource, StaticElf, SymbolProvider};
+use n0xis_sources::{MemorySource, ImageSource, SymbolProvider};
 
 /// `.tbss`: address and size. It covers both arrays, `.data.rel.ro`, and the
 /// first 0x10 bytes of `.dynamic`.
@@ -45,7 +45,7 @@ fn words(bytes: &[u8]) -> Vec<u64> {
 
 #[test]
 fn the_sections_under_a_tls_block_read_as_the_file_holds_them() {
-    let elf = StaticElf::load(&fixture_path()).expect("the fixture loads");
+    let elf = ImageSource::load(&fixture_path()).expect("the fixture loads");
     let init = elf.read(Va(INIT_ARRAY), 16).expect("readable");
     assert_eq!(words(&init), [FRAME_DUMMY, N0X_CTOR], ".init_array holds the declared constructor: {init:02x?}");
     let fini = elf.read(Va(FINI_ARRAY), 16).expect("readable");
@@ -61,7 +61,7 @@ fn the_sections_under_a_tls_block_read_as_the_file_holds_them() {
 
 #[test]
 fn the_tls_section_is_still_listed_as_the_table_has_it() {
-    let elf = StaticElf::load(&fixture_path()).expect("the fixture loads");
+    let elf = ImageSource::load(&fixture_path()).expect("the fixture loads");
     let tbss = elf.sections_detailed().into_iter().find(|s| s.0 == ".tbss").map(|s| (s.1 .0, s.2));
     assert_eq!(tbss, Some(TBSS), "a profile reports the section table as it is");
 }

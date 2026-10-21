@@ -35,7 +35,7 @@ use n0xis_core::{
     BodyMap, CallPolicy, CfgInput, CfgPass, CodeProvider, Ctx, EmuConfig, Emulator, OptimizePass,
     Pass, SsaPass,
 };
-use n0xis_sources::{MemorySource, StaticImage};
+use n0xis_sources::{MemorySource, ImageSource};
 
 /// i386 passes everything on the stack: the return address at `esp`, then the
 /// arguments, four bytes each.
@@ -419,7 +419,7 @@ fn check_one(so: &Path, driver: &Path, target: &Target, label: &str) -> (usize, 
     let cases = parse_cases(&String::from_utf8_lossy(&out.stdout));
     assert!(cases.len() >= addrs.len(), "{label}: fewer answers than functions");
 
-    let image = StaticImage::load(so).expect("n0xis loads the same library");
+    let image = ImageSource::load(so).expect("n0xis loads the same library");
     // The decoder, the register widths and the lift all follow from this.
     let arch = X64::x86();
     // The real `decomp`/`ir` pipeline attaches the symbol table (`main.rs`:

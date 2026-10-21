@@ -1,0 +1,17 @@
+
+contested-x86_64.so:	file format elf64-x86-64
+
+Disassembly of section .plt:
+
+0000000000001020 <.plt>:
+    1020:      	pushq	0x2fca(%rip)            # 0x3ff0 <_GLOBAL_OFFSET_TABLE_+0x8>
+    1026:      	jmpq	*0x2fcc(%rip)           # 0x3ff8 <_GLOBAL_OFFSET_TABLE_+0x10>
+    102c:      	nopl	(%rax)
+
+0000000000001030 <n0x_local_fn@plt>:
+    1030:      	jmpq	*0x2fca(%rip)           # 0x4000 <_GLOBAL_OFFSET_TABLE_+0x18>
+    1036:      	pushq	$0x0
+    103b:      	jmp	0x1020 <.plt>
+    1040:      	jmpq	*0x2fc2(%rip)           # 0x4008 <_GLOBAL_OFFSET_TABLE_+0x20>
+    1046:      	pushq	$0x1
+    104b:      	jmp	0x1020 <.plt>

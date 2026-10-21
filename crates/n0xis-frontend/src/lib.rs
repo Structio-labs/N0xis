@@ -33,6 +33,7 @@ pub mod discovered;
 pub mod doctor;
 pub mod flirt_syms;
 pub mod il2cpp_caps;
+pub mod image_caps;
 pub mod method_caps;
 pub mod parse;
 pub mod pdb_syms;

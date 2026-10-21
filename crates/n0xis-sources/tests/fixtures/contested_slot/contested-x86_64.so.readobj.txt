@@ -1,0 +1,21 @@
+
+File: contested-x86_64.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+Relocations [
+  Section (7) .rela.dyn {
+    0x3DF8 R_X86_64_RELATIVE - 0x1110
+    0x3E00 R_X86_64_RELATIVE - 0x10C0
+    0x4010 R_X86_64_RELATIVE - 0x4010
+    0x3FC8 R_X86_64_GLOB_DAT _ITM_deregisterTMCloneTable 0x0
+    0x3FD0 R_X86_64_GLOB_DAT __gmon_start__ 0x0
+    0x3FD8 R_X86_64_GLOB_DAT _ITM_registerTMCloneTable 0x0
+    0x3FE0 R_X86_64_GLOB_DAT __cxa_finalize@GLIBC_2.2.5 0x0
+  }
+  Section (8) .rela.plt {
+    0x4000 R_X86_64_JUMP_SLOT n0x_local_fn 0x0
+    0x4000 R_X86_64_JUMP_SLOT n0x_ext_fn 0x0
+  }
+]

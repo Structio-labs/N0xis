@@ -814,7 +814,7 @@ fn vtable_shows_virtual_bases(
 /// sees is either reported or refused, never dropped.
 ///
 /// `relocated` is the set of words the image's loader writes
-/// ([`RelocatedWords`], `StaticElf::relocated_words`): what tells a zero the
+/// ([`RelocatedWords`], `ImageSource::relocated_words`): what tells a zero the
 /// loader fills from a zero that stays.
 ///
 /// `code` is every executable range of the image (`MemorySource::code_ranges`,

@@ -1,0 +1,161 @@
+
+File: crates/n0xis-sources/tests/fixtures/itanium_vtables/vt-armv7-linux-gnueabihf.so
+Format: elf32-littlearm
+Arch: arm
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_ARM (0x28)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x12E8
+  Flags [ (0x5000400)
+    0x400
+    0x1000000
+    0x4000000
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 10
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 21
+  StringTableSectionIndex: 19
+}
+ProgramHeaders [
+  ProgramHeader {
+    Type: PT_PHDR (0x6)
+    Offset: 0x34
+    VirtualAddress: 0x34
+    PhysicalAddress: 0x34
+    FileSize: 320
+    MemSize: 320
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 2461
+    MemSize: 2461
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 65536
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x9A0
+    VirtualAddress: 0x109A0
+    PhysicalAddress: 0x109A0
+    FileSize: 256
+    MemSize: 256
+    Flags [ (0x5)
+      PF_R (0x4)
+      PF_X (0x1)
+    ]
+    Alignment: 65536
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0xAA0
+    VirtualAddress: 0x20AA0
+    PhysicalAddress: 0x20AA0
+    FileSize: 316
+    MemSize: 1376
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 65536
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0xBDC
+    VirtualAddress: 0x30BDC
+    PhysicalAddress: 0x30BDC
+    FileSize: 16
+    MemSize: 16
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 65536
+  }
+  ProgramHeader {
+    Type: PT_DYNAMIC (0x2)
+    Offset: 0xB70
+    VirtualAddress: 0x20B70
+    PhysicalAddress: 0x20B70
+    FileSize: 104
+    MemSize: 104
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_GNU_RELRO (0x6474E552)
+    Offset: 0xAA0
+    VirtualAddress: 0x20AA0
+    PhysicalAddress: 0x20AA0
+    FileSize: 316
+    MemSize: 1376
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 1
+  }
+  ProgramHeader {
+    Type: PT_GNU_STACK (0x6474E551)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 0
+    MemSize: 0
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 0
+  }
+  ProgramHeader {
+    Type: PT_NOTE (0x4)
+    Offset: 0x174
+    VirtualAddress: 0x174
+    PhysicalAddress: 0x174
+    FileSize: 36
+    MemSize: 36
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_ARM_EXIDX (0x70000001)
+    Offset: 0x8EC
+    VirtualAddress: 0x8EC
+    PhysicalAddress: 0x8EC
+    FileSize: 120
+    MemSize: 120
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+]

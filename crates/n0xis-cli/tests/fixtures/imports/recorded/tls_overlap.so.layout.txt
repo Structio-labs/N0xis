@@ -1,0 +1,181 @@
+
+File: crates/n0xis-sources/tests/fixtures/tls_overlap.so
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 64-bit (0x2)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_X86_64 (0x3E)
+  Version: 1
+  Entry: 0x0
+  ProgramHeaderOffset: 0x40
+  SectionHeaderOffset: 0x35F0
+  Flags [ (0x0)
+  ]
+  HeaderSize: 64
+  ProgramHeaderEntrySize: 56
+  ProgramHeaderCount: 12
+  SectionHeaderEntrySize: 64
+  SectionHeaderCount: 29
+  StringTableSectionIndex: 28
+}
+ProgramHeaders [
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 1696
+    MemSize: 1696
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x1000
+    VirtualAddress: 0x1000
+    PhysicalAddress: 0x1000
+    FileSize: 405
+    MemSize: 405
+    Flags [ (0x5)
+      PF_R (0x4)
+      PF_X (0x1)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x2000
+    VirtualAddress: 0x2000
+    PhysicalAddress: 0x2000
+    FileSize: 272
+    MemSize: 272
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_LOAD (0x1)
+    Offset: 0x2DB0
+    VirtualAddress: 0x3DB0
+    PhysicalAddress: 0x3DB0
+    FileSize: 608
+    MemSize: 616
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 4096
+  }
+  ProgramHeader {
+    Type: PT_DYNAMIC (0x2)
+    Offset: 0x2DE0
+    VirtualAddress: 0x3DE0
+    PhysicalAddress: 0x3DE0
+    FileSize: 464
+    MemSize: 464
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_NOTE (0x4)
+    Offset: 0x2E0
+    VirtualAddress: 0x2E0
+    PhysicalAddress: 0x2E0
+    FileSize: 36
+    MemSize: 36
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_NOTE (0x4)
+    Offset: 0x20E0
+    VirtualAddress: 0x20E0
+    PhysicalAddress: 0x20E0
+    FileSize: 48
+    MemSize: 48
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_TLS (0x7)
+    Offset: 0x2DB0
+    VirtualAddress: 0x3DB0
+    PhysicalAddress: 0x3DB0
+    FileSize: 0
+    MemSize: 64
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 16
+  }
+  ProgramHeader {
+    Type: PT_GNU_PROPERTY (0x6474E553)
+    Offset: 0x20E0
+    VirtualAddress: 0x20E0
+    PhysicalAddress: 0x20E0
+    FileSize: 48
+    MemSize: 48
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 8
+  }
+  ProgramHeader {
+    Type: PT_GNU_EH_FRAME (0x6474E550)
+    Offset: 0x2000
+    VirtualAddress: 0x2000
+    PhysicalAddress: 0x2000
+    FileSize: 52
+    MemSize: 52
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 4
+  }
+  ProgramHeader {
+    Type: PT_GNU_STACK (0x6474E551)
+    Offset: 0x0
+    VirtualAddress: 0x0
+    PhysicalAddress: 0x0
+    FileSize: 0
+    MemSize: 0
+    Flags [ (0x6)
+      PF_R (0x4)
+      PF_W (0x2)
+    ]
+    Alignment: 16
+  }
+  ProgramHeader {
+    Type: PT_GNU_RELRO (0x6474E552)
+    Offset: 0x2DB0
+    VirtualAddress: 0x3DB0
+    PhysicalAddress: 0x3DB0
+    FileSize: 592
+    MemSize: 592
+    Flags [ (0x4)
+      PF_R (0x4)
+    ]
+    Alignment: 1
+  }
+]

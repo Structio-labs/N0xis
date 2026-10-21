@@ -9,7 +9,7 @@
 //! front doors naming the same function differently.
 
 use n0xis_contracts::{Symbol, Va};
-use n0xis_sources::{StaticImage, SymbolProvider};
+use n0xis_sources::{ImageSource, SymbolProvider};
 
 use crate::annotation_syms::LocalNames;
 use crate::pdb_syms::PdbSymbols;
@@ -30,7 +30,7 @@ impl<'a> StaticNames<'a> {
         local: &'a LocalNames,
         pdb: Option<&'a PdbSymbols>,
         managed: Option<&'a dyn SymbolProvider>,
-        image: &'a StaticImage,
+        image: &'a ImageSource,
         signatures: Option<&'a dyn SymbolProvider>,
     ) -> Self {
         let mut layers: Vec<&'a dyn SymbolProvider> = vec![local];
