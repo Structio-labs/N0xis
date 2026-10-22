@@ -191,6 +191,7 @@ impl ImageSource {
     pub fn module_identity(&self) -> Option<&str> {
         match &self.tables {
             FormatTables::Native => None,
+            #[cfg(feature = "static-wasm")]
             FormatTables::Wasm(module) => Some(module.identity()),
         }
     }
@@ -250,6 +251,7 @@ impl ImageSource {
     pub fn text_range(&self) -> Option<(Va, u64)> {
         match &self.tables {
             FormatTables::Native => self.section_range(".text"),
+            #[cfg(feature = "static-wasm")]
             FormatTables::Wasm(_) => self.image.sections().iter().find(|s| s.executable).map(|s| (s.va, s.size)),
         }
     }

@@ -319,7 +319,7 @@ impl Src {
     /// so decode a non-x64 image as x86-64 whenever `--arch` is omitted.
     ///
     /// **A WebAssembly module is decoded by an architecture built from it**
-    /// (`n0xis_arch::Wasm`): the same bytes decode differently by where they
+    /// (`n0xis_wasm_arch::Wasm`): the same bytes decode differently by where they
     /// are in the module, so no architecture picked by name can decode one.
     /// An explicit `--arch` that names another instruction set is refused, not
     /// obeyed: the module declares its machine, and decoding its bytes as x86
@@ -334,8 +334,8 @@ impl Src {
             && let n0xis_sources::FormatTables::Wasm(module) = img.tables()
         {
             return match explicit {
-                None => Ok(Box::new(n0xis_arch::Wasm::new(module.shared(), module.identity()))),
-                Some(a) if a.eq_ignore_ascii_case("wasm") => Ok(Box::new(n0xis_arch::Wasm::new(module.shared(), module.identity()))),
+                None => Ok(Box::new(n0xis_wasm_arch::Wasm::new(module.shared(), module.identity()))),
+                Some(a) if a.eq_ignore_ascii_case("wasm") => Ok(Box::new(n0xis_wasm_arch::Wasm::new(module.shared(), module.identity()))),
                 Some(other) => Err(format!(
                     "the image is a WebAssembly module, which declares its own instruction set; `--arch {other}` would decode its \
                      bytes as another one, so it is refused (omit `--arch`, or pass `--arch wasm`)"

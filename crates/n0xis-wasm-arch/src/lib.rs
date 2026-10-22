@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use n0xis_contracts::Va;
 use n0xis_wasm::{Body, FuncIdx, Instr, Module};
 
-use crate::{Arch, CallConv, DecodeError, DecodedInsn, InsnKind, Lifting, RegisterFile};
+use n0xis_arch::{Arch, CallConv, DecodeError, DecodedInsn, IndexedFunction, IndexedTarget, InsnKind, Lifting, RegisterFile};
 
 /// What a command that needs the lift says when it refuses a module.
 pub const WASM_NOT_LIFTED: &str = "the WebAssembly stack-machine lift is stage 3 of docs/design/WASM.md; this build decodes a module's \
@@ -149,7 +149,7 @@ impl Wasm {
     fn insn(&self, start: usize, end: usize, instr: &Instr) -> DecodedInsn {
         let callee = |f: &FuncIdx| self.module.body_start(*f).map(|b| Va(b as u64));
         let target_function = match instr {
-            Instr::Call(f) | Instr::ReturnCall(f) | Instr::RefFunc(f) => Some(crate::IndexedTarget { index: f.0, body: callee(f) }),
+            Instr::Call(f) | Instr::ReturnCall(f) | Instr::RefFunc(f) => Some(IndexedTarget { index: f.0, body: callee(f) }),
             _ => None,
         };
         let (kind, target) = match instr {
@@ -227,9 +227,9 @@ impl Arch for Wasm {
         Lifting::DecodeOnly { why: WASM_NOT_LIFTED }
     }
 
-    fn indexed_function(&self, va: Va) -> Option<crate::IndexedFunction> {
+    fn indexed_function(&self, va: Va) -> Option<IndexedFunction> {
         let (func, range) = self.module.function_containing(usize::try_from(va.0).ok()?)?;
-        Some(crate::IndexedFunction { index: func.0, body: Va(range.start as u64), end: Va(range.end as u64) })
+        Some(IndexedFunction { index: func.0, body: Va(range.start as u64), end: Va(range.end as u64) })
     }
 
     fn decode(&self, bytes: &[u8], va: Va) -> Result<DecodedInsn, DecodeError> {

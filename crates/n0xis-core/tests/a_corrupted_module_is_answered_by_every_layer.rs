@@ -149,7 +149,7 @@ fn run(bytes: Vec<u8>) -> Result<bool, String> {
             n0xis_sources::Extent::Unknown => (s.va.0, s.va.0),
         })
         .collect();
-    let arch = n0xis_arch::Wasm::new(module.shared(), module.identity());
+    let arch = n0xis_wasm_arch::Wasm::new(module.shared(), module.identity());
     let loaded = image.loaded_bytes();
     // Every body, from its start; then the code section as one range.
     for &(start, end) in starts.iter().filter(|(s, e)| e > s) {

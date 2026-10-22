@@ -91,6 +91,7 @@ n0xis-pdb = { path = "crates/n0xis-pdb" }
 # into (an image for `.wasm`, an architecture for its stack machine) is not
 # decided.
 n0xis-wasm = { path = "crates/n0xis-wasm" }
+n0xis-wasm-arch = { path = "crates/n0xis-wasm-arch" }
 
 [profile.release]
 lto = "thin"

@@ -26,6 +26,7 @@ n0xis-pdb = { workspace = true }
 # A WebAssembly module's own structure, reached through the image's
 # `FormatTables::Wasm` for the profile's module block.
 n0xis-wasm = { workspace = true }
+n0xis-wasm-arch = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -35,10 +36,10 @@ serde_json = { workspace = true }
 # Android have an adapter behind `trait LiveTarget` too. Anything else (macOS,
 # BSD) still builds, with `Src::Live` simply never constructed.
 [target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
-n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+n0xis-sources = { workspace = true, features = ["static-pe", "static-wasm", "live"] }
 
 [target.'cfg(not(any(windows, target_os = "linux", target_os = "android")))'.dependencies]
-n0xis-sources = { workspace = true, features = ["static-pe"] }
+n0xis-sources = { workspace = true, features = ["static-pe", "static-wasm"] }
 
 # n0xis-project's `live` feature gates its `locator` module, which still takes a
 # concrete Win32 `LiveProcess`; until that is relaxed to the seam it stays

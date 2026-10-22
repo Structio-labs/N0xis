@@ -24,7 +24,6 @@ mod frame;
 mod insn;
 mod microir;
 mod switch;
-mod wasm;
 mod x64;
 mod x64_lift;
 
@@ -37,7 +36,6 @@ pub use microir::{
     MicroExpr, MicroStmt, Shift, UnOp, UnliftedReads,
 };
 pub use switch::{SwitchDispatch, SwitchKind};
-pub use wasm::{Wasm, WASM_NOT_LIFTED};
 pub use x64::{X64, x64reg};
 
 use n0xis_contracts::{Reg, Va};

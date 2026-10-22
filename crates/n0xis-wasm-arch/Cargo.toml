@@ -1,0 +1,12 @@
+[package]
+name = "n0xis-wasm-arch"
+description = "WebAssembly as an n0xis architecture: decodes a module's function bodies at their module offsets and resolves call targets by function index; lifts nothing yet (stage 3). An adapter: it joins the ISA seam (n0xis-arch) to the module reader (n0xis-wasm), so the pure crates name neither."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n0xis-contracts = { workspace = true }
+n0xis-arch = { workspace = true }
+n0xis-wasm = { workspace = true }

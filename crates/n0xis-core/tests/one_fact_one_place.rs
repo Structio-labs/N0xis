@@ -177,7 +177,7 @@ fn every_architecture_that_lifts_declares_a_calling_convention() {
         ("arm64", Box::new(n0xis_arch::Arm64::new())),
         ("arm32", Box::new(n0xis_arch::Arm32::a32())),
         ("thumb", Box::new(n0xis_arch::Arm32::thumb())),
-        ("wasm", Box::new(n0xis_arch::Wasm::new(module, "test"))),
+        ("wasm", Box::new(n0xis_wasm_arch::Wasm::new(module, "test"))),
     ];
     for (name, arch) in arches {
         let ccs: Vec<&str> = arch.calling_conventions().iter().map(|c| c.name).collect();

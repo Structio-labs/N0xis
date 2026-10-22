@@ -116,7 +116,7 @@ pub fn wasm_profile(img: &n0xis_sources::ImageSource, with_exports: bool) -> Opt
     let advisories = vec![n0xis_core::Advisory {
         command: "decomp pseudo, ir, function summary/typeflow/layout/trace/noreturn, analyze, const identify, bindings list, sig gen".into(),
         verdict: "ineffective".into(),
-        reason: format!("each refuses this module with `not-lifted`: {}", n0xis_arch::WASM_NOT_LIFTED),
+        reason: format!("each refuses this module with `not-lifted`: {}", n0xis_wasm_arch::WASM_NOT_LIFTED),
     }];
 
     let (memories, segments) = match &image.machine().address_model {

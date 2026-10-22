@@ -55,7 +55,9 @@ mod image_source;
 pub use image_source::ImageSource;
 // The WebAssembly reader: OS-free, and over a reader of this workspace's own,
 // so it is compiled whatever the features (the registry lists it either way).
+#[cfg(feature = "static-wasm")]
 mod static_wasm;
+#[cfg(feature = "static-wasm")]
 pub use static_wasm::{ElementPlaced, ElementPlacement, WasmModule};
 #[cfg(feature = "static-pe")]
 mod static_pe;

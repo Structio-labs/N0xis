@@ -864,6 +864,7 @@ pub enum FormatTables {
     Native,
     /// A WebAssembly module, read: the index spaces, the bodies and the
     /// instructions an architecture for the module decodes from.
+    #[cfg(feature = "static-wasm")]
     Wasm(std::sync::Arc<crate::WasmModule>),
 }
 
@@ -891,6 +892,7 @@ pub enum OpenError {
 pub const SNIFF_LEN: usize = 64;
 
 /// How a WebAssembly module is named when nothing is recognized.
+#[cfg(feature = "static-wasm")]
 const WASM_DESCRIBED: &str = "a WebAssembly module (\\0asm)";
 
 /// One entry of the registry: how a format is recognized and opened.
@@ -915,20 +917,14 @@ pub struct Format {
 /// read (`pe_exports.rs`, `ExportDirectory::from_header`). Until a step names
 /// those, §6's "format detection exists once" has no step that reaches it.
 pub fn formats() -> &'static [Format] {
-    #[cfg(feature = "static-pe")]
-    {
-        &[
-            Format { format: ImageFormat::Pe, described: "a PE (MZ)", sniff: crate::static_pe::sniff, open: crate::static_pe::open },
-            Format { format: ImageFormat::Elf, described: "an ELF (\\x7fELF)", sniff: crate::static_elf::sniff, open: crate::static_elf::open },
-            Format { format: ImageFormat::Wasm, described: WASM_DESCRIBED, sniff: crate::static_wasm::sniff, open: crate::static_wasm::open },
-        ]
-    }
-    // The WebAssembly reader is OS-free and depends on no parser outside this
-    // workspace, so it needs no feature of its own.
-    #[cfg(not(feature = "static-pe"))]
-    {
-        &[Format { format: ImageFormat::Wasm, described: WASM_DESCRIBED, sniff: crate::static_wasm::sniff, open: crate::static_wasm::open }]
-    }
+    &[
+        #[cfg(feature = "static-pe")]
+        Format { format: ImageFormat::Pe, described: "a PE (MZ)", sniff: crate::static_pe::sniff, open: crate::static_pe::open },
+        #[cfg(feature = "static-pe")]
+        Format { format: ImageFormat::Elf, described: "an ELF (\\x7fELF)", sniff: crate::static_elf::sniff, open: crate::static_elf::open },
+        #[cfg(feature = "static-wasm")]
+        Format { format: ImageFormat::Wasm, described: WASM_DESCRIBED, sniff: crate::static_wasm::sniff, open: crate::static_wasm::open },
+    ]
 }
 
 /// The first format whose signature `bytes` carry. Each sniff is shown the

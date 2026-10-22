@@ -8,9 +8,10 @@ repository.workspace = true
 
 [dependencies]
 n0xis-contracts = { workspace = true }
-# The WebAssembly reader behind the third `Image`: OS-free, depends on
-# `thiserror` alone, so it is not behind a feature.
-n0xis-wasm = { workspace = true }
+# The WebAssembly reader behind the third `Image`, behind `static-wasm` like
+# every other format parser here: n0xis-core depends on this crate for its
+# seams, and the boundary law keeps format parsers out of the core's build.
+n0xis-wasm = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -40,6 +41,9 @@ oracle = []
 # StaticPe (goblin) — file-backed PE source. goblin is cross-platform (not an OS
 # dep), but gated anyway so the default build stays minimal.
 static-pe = ["dep:goblin"]
+# The WebAssembly module reader (n0xis-wasm) — the third `Image`. OS-free, but a
+# format parser, so gated for the same reason as static-pe.
+static-wasm = ["dep:n0xis-wasm"]
 # Live process attach. Kept off by default so that `cargo test -p n0xis-core`
 # links zero OS APIs (the boundary exit test).
 #

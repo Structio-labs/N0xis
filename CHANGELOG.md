@@ -68,6 +68,10 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Changed
 
+- **The WebAssembly architecture is its own adapter crate, `n0xis-wasm-arch`, and the module reader sits
+  behind `n0xis-sources`' `static-wasm` feature.** Stage 2 had made `n0xis-arch` depend on the format crate
+  `n0xis-wasm`, and `n0xis-sources` pull it unconditionally into `n0xis-core`, which the boundary law
+  (`scripts/check_boundary.sh`, CONCEPT §4) forbids; answers are unchanged.
 - **The format seam, for the static path** (docs/design/IMAGE_FORMATS.md §5 step 3). The PE and
   ELF readers answer one `Image` trait with no default methods; a file is opened through one
   registry of readers; and one adapter, `ImageSource`, replaces the `StaticImage` enum and

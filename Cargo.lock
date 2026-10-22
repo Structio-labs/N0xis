@@ -596,7 +596,6 @@ dependencies = [
  "disarm64_defn",
  "iced-x86",
  "n0xis-contracts",
- "n0xis-wasm",
  "serde",
  "serde_json",
  "thiserror",
@@ -652,6 +651,7 @@ dependencies = [
  "n0xis-contracts",
  "n0xis-sources",
  "n0xis-wasm",
+ "n0xis-wasm-arch",
  "rustc-demangle",
  "serde",
  "serde_json",
@@ -676,6 +676,7 @@ dependencies = [
  "n0xis-project",
  "n0xis-sources",
  "n0xis-wasm",
+ "n0xis-wasm-arch",
  "serde",
  "serde_json",
 ]
@@ -783,6 +784,15 @@ name = "n0xis-wasm"
 version = "0.3.5"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "n0xis-wasm-arch"
+version = "0.3.5"
+dependencies = [
+ "n0xis-arch",
+ "n0xis-contracts",
+ "n0xis-wasm",
 ]
 
 [[package]]

@@ -34,7 +34,7 @@ rmcp = { version = "2.2.0", features = ["schemars", "transport-io"] }
 # (n0xis-project's `live` feature only gates its `locator` module, which this
 # crate doesn't use, so it's never requested here.)
 [target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
-n0xis-sources = { workspace = true, features = ["static-pe", "live"] }
+n0xis-sources = { workspace = true, features = ["static-pe", "static-wasm", "live"] }
 
 [target.'cfg(not(any(windows, target_os = "linux", target_os = "android")))'.dependencies]
-n0xis-sources = { workspace = true, features = ["static-pe"] }
+n0xis-sources = { workspace = true, features = ["static-pe", "static-wasm"] }
