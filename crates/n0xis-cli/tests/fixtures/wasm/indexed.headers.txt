@@ -1,0 +1,13 @@
+
+indexed.wasm:	file format wasm 0x1
+
+Sections:
+
+     Type start=0x0000000a end=0x00000010 (size=0x00000006) count: 1
+   Import start=0x00000012 end=0x0000001d (size=0x0000000b) count: 1
+ Function start=0x0000001f end=0x00000025 (size=0x00000006) count: 5
+    Table start=0x00000027 end=0x0000002b (size=0x00000004) count: 1
+   Export start=0x0000002d end=0x0000004d (size=0x00000020) count: 3
+     Elem start=0x0000004f end=0x0000005b (size=0x0000000c) count: 2
+     Code start=0x0000005d end=0x000000bc (size=0x0000005f) count: 5
+   Custom start=0x000000be end=0x000000f2 (size=0x00000034) "name"

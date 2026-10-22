@@ -355,9 +355,14 @@ pub fn discovered_cached(ctx: &Ctx, start: Va, size: usize, label: &str) -> Resu
     size.hash(&mut h);
     ctx.arch.decoder_id().hash(&mut h);
     if let Some(declared) = ctx.functions {
-        for (s, e) in declared {
+        for (s, e) in declared.extents {
             s.0.hash(&mut h);
             e.0.hash(&mut h);
+        }
+        // Hashed only where it is not the default, so every native image keeps
+        // the key it had before the coverage was stated.
+        if declared.coverage == n0xis_sources::StartCoverage::Every {
+            "every function declared".hash(&mut h);
         }
     }
     if let Ok(bytes) = ctx.source.read(start, size) {

@@ -27,6 +27,12 @@ pub enum Problem {
     Magic,
     #[error("binary format version {0}; the core module format is version 1")]
     Version(u32),
+    /// The preamble of a component: the component model's binary format puts
+    /// a version (`0x0d` for its drafts) and a layer, 1, where a core module
+    /// has its version, 1 (`(version, layer)` are the two little-endian
+    /// halves of what a core module reads as one `u32`).
+    #[error("a component (preamble version {version:#x}, layer {layer}): the component model's format, which wraps core modules; this reader reads a core module, binary format version 1")]
+    Component { version: u16, layer: u16 },
     #[error("{needed} bytes needed, {available} left in the enclosing item")]
     End { needed: usize, available: usize },
     #[error("a {bits}-bit LEB128 runs past the longest encoding the format allows")]
@@ -108,6 +114,8 @@ pub enum Problem {
     NotEnded,
     #[error("{0} bytes after the final `end` of a function body")]
     BytesAfterEnd(usize),
+    #[error("{0} bytes after the item that fills a custom section")]
+    BytesAfterItem(usize),
     #[error("a data index in code, and no data count section")]
     DataIndexWithoutDataCount,
 }

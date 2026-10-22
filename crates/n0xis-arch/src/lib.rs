@@ -24,18 +24,20 @@ mod frame;
 mod insn;
 mod microir;
 mod switch;
+mod wasm;
 mod x64;
 mod x64_lift;
 
 pub use arm32::{Arm32, arm32reg};
 pub use arm64::{Arm64, arm64reg};
 pub use frame::FrameInfo;
-pub use insn::{DecodeError, DecodedInsn, InsnKind};
+pub use insn::{DecodeError, DecodedInsn, IndexedTarget, InsnKind};
 pub use microir::{
     BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MemEffect,
     MicroExpr, MicroStmt, Shift, UnOp, UnliftedReads,
 };
 pub use switch::{SwitchDispatch, SwitchKind};
+pub use wasm::{Wasm, WASM_NOT_LIFTED};
 pub use x64::{X64, x64reg};
 
 use n0xis_contracts::{Reg, Va};
@@ -49,6 +51,31 @@ use n0xis_contracts::{Reg, Va};
 pub struct RegAccess {
     pub reads: Vec<String>,
     pub writes: Vec<String>,
+}
+
+/// A function of a code space that identifies functions by index
+/// ([`Arch::indexed_function`]): its index, and where its body starts and
+/// ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexedFunction {
+    /// Its index in the module's function index space.
+    pub index: u32,
+    /// Where its body starts: its position.
+    pub body: Va,
+    /// Where its body ends, exclusive: the last instruction of the body ends
+    /// here, and what follows is the next body's size.
+    pub end: Va,
+}
+
+/// Whether an [`Arch`] lifts what it decodes ([`Arch::lifting`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lifting {
+    /// Every instruction it decodes has a lift (an instruction it does not
+    /// model lifts to `MicroStmt::Unlifted`, which the passes report as such).
+    Lifts,
+    /// It decodes, and lifts nothing yet: `why` is what a command that needs
+    /// the lift says when it refuses.
+    DecodeOnly { why: &'static str },
 }
 
 /// One register description: its interned id, canonical name, and width.
@@ -201,13 +228,47 @@ pub trait Arch {
     /// to the IR cache: the same ARM64 image analysed as x64 and then as arm64
     /// got the first answer both times, silently.
     fn decoder_id(&self) -> String {
-        format!("{}/{}", self.name(), self.pointer_size())
+        match self.pointer_size() {
+            Some(bytes) => format!("{}/{bytes}", self.name()),
+            None => self.name().to_string(),
+        }
     }
 
-    /// Native pointer size in bytes.
-    fn pointer_size(&self) -> u8 {
-        8
-    }
+    /// The native pointer's width in bytes: what the lift and the passes over
+    /// it take a machine word and a code pointer to be.
+    ///
+    /// `None` for an architecture whose code has no one pointer width. A
+    /// WebAssembly module addresses each linear memory with that memory's own
+    /// index type (`i32`, or `i64` under memory64, side by side in one module),
+    /// and its code is no address space at all (docs/design/WASM.md §5
+    /// decisions 1 and 2); a number here would be a width the module never
+    /// states. Required, with no default: the default of 8 this had would have
+    /// answered for a new architecture without its knowing.
+    fn pointer_size(&self) -> Option<u8>;
+
+    /// Whether this architecture lifts what it decodes (docs/design/WASM.md §5
+    /// decision 5). Required, with no default: every architecture says, and an
+    /// architecture that only decodes says why, so a command that needs the
+    /// lift refuses with that reason instead of running the lift's default —
+    /// one `MicroStmt::Unlifted` per instruction, which reads as `ok: true`.
+    fn lifting(&self) -> Lifting;
+
+    /// The function whose body holds `va`, by its index and its body's start,
+    /// for an architecture whose code space identifies a function by its index
+    /// rather than its address — a WebAssembly module, whose `call 3` names
+    /// function 3 (docs/design/WASM.md §5 decision 1: every answer carries the
+    /// index beside the position). `None` outside every body, and everywhere
+    /// on an architecture whose functions are their addresses.
+    ///
+    /// One question, not two: "which function starts here" is this answer
+    /// with `body == va`, so the index of an entry and the index of an
+    /// instruction inside it cannot come from two rules.
+    ///
+    /// On the architecture, not the symbol seam, because the architecture is
+    /// the one seam every `Ctx` has: a WebAssembly architecture is built from
+    /// its module, so a context built without symbols still names a function
+    /// by its index (`n0xis_core::unnamed_at`).
+    fn indexed_function(&self, va: Va) -> Option<IndexedFunction>;
 
     /// Re-encode the instructions in `bytes` — decoded as if they began at
     /// `from` — so that they execute **identically** when placed at `to`.

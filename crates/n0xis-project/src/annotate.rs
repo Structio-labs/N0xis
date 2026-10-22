@@ -8,9 +8,24 @@
 //! is always answerable. Complements `patch` (Phase 2's already-versioned
 //! byte-level journal, `applied`/`undone` with timestamps) rather than
 //! replacing it — together they're the "names/types/comments/patches"
-//! versioned truth ROADMAP Phase 6 asks for. Storage: a single
-//! `.n0x/annotations.json` (`BTreeMap<va-hex, AnnotationRecord>`), same
-//! storage-only split as [`selection`](crate::selection)/[`table`](crate::table).
+//! versioned truth ROADMAP Phase 6 asks for. Storage: the same storage-only
+//! split as [`selection`](crate::selection)/[`table`](crate::table), one map
+//! of records keyed by address per [`Scope`]:
+//!
+//! - **native targets** (PE, ELF, live processes, snapshots) share
+//!   `.n0x/annotations.json` (`BTreeMap<va-hex, AnnotationRecord>`), exactly
+//!   as every record lived before scopes existed;
+//! - **each WebAssembly module** has a map of its own, under the module's
+//!   identity, in `.n0x/annotations-modules.json`
+//!   (`BTreeMap<identity, BTreeMap<va-hex, AnnotationRecord>>`).
+//!
+//! A module's positions are offsets into the module, so every module's code
+//! sits at small numbers from 0: two modules in one project keyed by address
+//! alone would share keys, and a rename saved on one would land on whatever
+//! the other has at that offset (docs/design/WASM.md §5 decision 1). The
+//! modules have their own file so that a build from before scopes, which
+//! reads `annotations.json` alone, never reads a module's record as a native
+//! one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -460,34 +475,94 @@ impl AnnotationRecord {
     }
 }
 
-fn path() -> Result<std::path::PathBuf> {
-    Ok(resolve()?.dir.join("annotations.json"))
+/// Which target a record belongs to.
+///
+/// Every reader and writer of the store names one, so none can read or write
+/// without saying whose records it means.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// Every native target: the project-wide address map records have always
+    /// lived in, read and written exactly as before scopes.
+    Native,
+    /// One WebAssembly module, by its identity (its `build_id` section, else a
+    /// hash of its bytes): a map of its own. A native record never applies to
+    /// a module, and a module's never to anything else.
+    Module(String),
 }
 
-fn load_all() -> Result<BTreeMap<String, AnnotationRecord>> {
-    let path = path()?;
+/// The file native records are kept in.
+pub const NATIVE_STORE: &str = "annotations.json";
+/// The file every module's records are kept in, by identity.
+pub const MODULE_STORE: &str = "annotations-modules.json";
+
+fn store_path(name: &str) -> Result<std::path::PathBuf> {
+    Ok(resolve()?.dir.join(name))
+}
+
+/// A store file's contents, or the empty map when it does not exist or holds
+/// nothing.
+fn read_store<T: Default + serde::de::DeserializeOwned>(name: &str) -> Result<T> {
+    let path = store_path(name)?;
     if !path.exists() {
-        return Ok(BTreeMap::new());
+        return Ok(T::default());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     if raw.trim().is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(T::default());
     }
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
 }
 
-fn save_all(records: &BTreeMap<String, AnnotationRecord>) -> Result<()> {
-    let path = path()?;
-    let json = serde_json::to_string_pretty(records).context("serialize annotations.json")?;
+fn write_store<T: Serialize>(name: &str, value: &T) -> Result<()> {
+    let path = store_path(name)?;
+    let json = serde_json::to_string_pretty(value).with_context(|| format!("serialize {name}"))?;
     fs::write(&path, json).with_context(|| format!("write {}", path.display()))
+}
+
+type Records = BTreeMap<String, AnnotationRecord>;
+
+fn load_all(scope: &Scope) -> Result<Records> {
+    match scope {
+        Scope::Native => read_store(NATIVE_STORE),
+        Scope::Module(identity) => Ok(read_store::<BTreeMap<String, Records>>(MODULE_STORE)?.remove(identity).unwrap_or_default()),
+    }
+}
+
+fn save_all(scope: &Scope, records: &Records) -> Result<()> {
+    match scope {
+        Scope::Native => write_store(NATIVE_STORE, records),
+        Scope::Module(identity) => {
+            let mut modules: BTreeMap<String, Records> = read_store(MODULE_STORE)?;
+            if records.is_empty() {
+                modules.remove(identity);
+            } else {
+                modules.insert(identity.clone(), records.clone());
+            }
+            write_store(MODULE_STORE, &modules)
+        }
+    }
+}
+
+/// Every module identity the store holds records for, with how many: what a
+/// listing of one scope says it did not list.
+pub fn module_scopes() -> Result<Vec<(String, usize)>> {
+    Ok(read_store::<BTreeMap<String, Records>>(MODULE_STORE)?.into_iter().map(|(id, r)| (id, r.len())).collect())
+}
+
+/// Whether every store file can be read: `Ok` when each is absent or parses.
+/// What a reader that renders without the store checks to say why.
+pub fn readable() -> Result<()> {
+    read_store::<Records>(NATIVE_STORE)?;
+    read_store::<BTreeMap<String, Records>>(MODULE_STORE)?;
+    Ok(())
 }
 
 /// Set one field (`"name"`, `"type"`, or `"comment"`) on the record at `va`,
 /// appending a history entry iff the value actually changes. `value: None`
 /// clears the field (still recorded in history, so "we un-named this" is
 /// visible too). Returns the updated record.
-fn set_field(va: Va, field: &str, value: Option<String>) -> Result<AnnotationRecord> {
-    let mut all = load_all()?;
+fn set_field(scope: &Scope, va: Va, field: &str, value: Option<String>) -> Result<AnnotationRecord> {
+    let mut all = load_all(scope)?;
     let key = va.to_string();
     let record = all.entry(key).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
 
@@ -507,18 +582,18 @@ fn set_field(va: Va, field: &str, value: Option<String>) -> Result<AnnotationRec
         }
     }
     let result = record.clone();
-    save_all(&all)?;
+    save_all(scope, &all)?;
     Ok(result)
 }
 
-pub fn set_name(va: Va, name: Option<String>) -> Result<AnnotationRecord> {
-    set_field(va, "name", name)
+pub fn set_name(scope: &Scope, va: Va, name: Option<String>) -> Result<AnnotationRecord> {
+    set_field(scope, va, "name", name)
 }
-pub fn set_type(va: Va, type_note: Option<String>) -> Result<AnnotationRecord> {
-    set_field(va, "type", type_note)
+pub fn set_type(scope: &Scope, va: Va, type_note: Option<String>) -> Result<AnnotationRecord> {
+    set_field(scope, va, "type", type_note)
 }
-pub fn set_comment(va: Va, comment: Option<String>) -> Result<AnnotationRecord> {
-    set_field(va, "comment", comment)
+pub fn set_comment(scope: &Scope, va: Va, comment: Option<String>) -> Result<AnnotationRecord> {
+    set_field(scope, va, "comment", comment)
 }
 
 /// Rename (or, with `value: None`, clear) one decompiled variable on the function
@@ -532,12 +607,13 @@ pub fn set_comment(va: Va, comment: Option<String>) -> Result<AnnotationRecord> 
 /// annotation that lands on one slot is first settled under that slot's name
 /// ([`AnnotationRecord::placed_vars`] says where each lands).
 pub fn set_var_name<E: std::fmt::Display>(
+    scope: &Scope,
     va: Va,
     key: &str,
     value: Option<String>,
     function_vars: impl FnOnce() -> std::result::Result<Option<BTreeSet<String>>, E>,
 ) -> Result<VarWrite> {
-    set_var(va, VarMap::Names, key, value, function_vars)
+    set_var(scope, va, VarMap::Names, key, value, function_vars)
 }
 
 /// Set (or, with `value: None`/empty, clear) one variable's C type on the
@@ -545,22 +621,24 @@ pub fn set_var_name<E: std::fmt::Display>(
 /// `v3`) or the reserved `"@return"`. Appended to history as `vartype:<key>`.
 /// `function_vars` as for [`set_var_name`].
 pub fn set_var_type<E: std::fmt::Display>(
+    scope: &Scope,
     va: Va,
     key: &str,
     value: Option<String>,
     function_vars: impl FnOnce() -> std::result::Result<Option<BTreeSet<String>>, E>,
 ) -> Result<VarWrite> {
-    set_var(va, VarMap::Types, key, value, function_vars)
+    set_var(scope, va, VarMap::Types, key, value, function_vars)
 }
 
 fn set_var<E: std::fmt::Display>(
+    scope: &Scope,
     va: Va,
     which: VarMap,
     key: &str,
     value: Option<String>,
     function_vars: impl FnOnce() -> std::result::Result<Option<BTreeSet<String>>, E>,
 ) -> Result<VarWrite> {
-    let mut all = load_all()?;
+    let mut all = load_all(scope)?;
     let record = all.entry(va.to_string()).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
     let vars = if record.needs_function_vars() {
         function_vars().map_err(|e| anyhow::anyhow!("the function's variables could not be listed: {e}"))?
@@ -588,14 +666,14 @@ fn set_var<E: std::fmt::Display>(
         }
     }
     let write = VarWrite { record: record.clone(), earlier: record.place_among(vars.as_ref()).earlier };
-    save_all(&all)?;
+    save_all(scope, &all)?;
     Ok(write)
 }
 
 /// Set (or clear) the bookmark flag on `va`. Recorded in history like any other
 /// field so "when did we bookmark this" is answerable.
-pub fn set_bookmark(va: Va, on: bool) -> Result<AnnotationRecord> {
-    let mut all = load_all()?;
+pub fn set_bookmark(scope: &Scope, va: Va, on: bool) -> Result<AnnotationRecord> {
+    let mut all = load_all(scope)?;
     let record = all.entry(va.to_string()).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
     if record.bookmark != on {
         record.history.push(AnnotationChange {
@@ -607,30 +685,30 @@ pub fn set_bookmark(va: Va, on: bool) -> Result<AnnotationRecord> {
         record.bookmark = on;
     }
     let result = record.clone();
-    save_all(&all)?;
+    save_all(scope, &all)?;
     Ok(result)
 }
 
 /// The record at `va`, if anything has ever been asserted about it.
-pub fn get(va: Va) -> Result<Option<AnnotationRecord>> {
-    Ok(load_all()?.remove(&va.to_string()))
+pub fn get(scope: &Scope, va: Va) -> Result<Option<AnnotationRecord>> {
+    Ok(load_all(scope)?.remove(&va.to_string()))
 }
 
 /// Every annotated address, va-sorted (the map is already keyed that way
 /// since `Va::to_string()` zero-pads implicitly via consistent hex width —
 /// re-sorted numerically here to be robust regardless).
-pub fn list() -> Result<Vec<AnnotationRecord>> {
-    let mut records: Vec<AnnotationRecord> = load_all()?.into_values().collect();
+pub fn list(scope: &Scope) -> Result<Vec<AnnotationRecord>> {
+    let mut records: Vec<AnnotationRecord> = load_all(scope)?.into_values().collect();
     records.sort_by_key(|r| r.va.0);
     Ok(records)
 }
 
 /// Drop every field and the full history at `va`. Returns `true` if a record existed.
-pub fn remove(va: Va) -> Result<bool> {
-    let mut all = load_all()?;
+pub fn remove(scope: &Scope, va: Va) -> Result<bool> {
+    let mut all = load_all(scope)?;
     let removed = all.remove(&va.to_string()).is_some();
     if removed {
-        save_all(&all)?;
+        save_all(scope, &all)?;
     }
     Ok(removed)
 }
@@ -658,29 +736,64 @@ mod tests {
     #[test]
     fn set_name_type_comment_and_read_back() {
         in_temp_project(|| {
-            assert!(get(Va(0x1000)).unwrap().is_none());
+            assert!(get(&Scope::Native, Va(0x1000)).unwrap().is_none());
 
-            let rec = set_name(Va(0x1000), Some("parse_header".to_string())).unwrap();
+            let rec = set_name(&Scope::Native, Va(0x1000), Some("parse_header".to_string())).unwrap();
             assert_eq!(rec.name.as_deref(), Some("parse_header"));
             assert_eq!(rec.history.len(), 1);
 
-            let rec = set_type(Va(0x1000), Some("int(char*, size_t)".to_string())).unwrap();
+            let rec = set_type(&Scope::Native, Va(0x1000), Some("int(char*, size_t)".to_string())).unwrap();
             assert_eq!(rec.type_note.as_deref(), Some("int(char*, size_t)"));
-            let rec = set_comment(Va(0x1000), Some("bounds-checks then parses".to_string())).unwrap();
+            let rec = set_comment(&Scope::Native, Va(0x1000), Some("bounds-checks then parses".to_string())).unwrap();
             assert_eq!(rec.comment.as_deref(), Some("bounds-checks then parses"));
             assert_eq!(rec.history.len(), 3, "one history entry per distinct field set");
 
-            let fetched = get(Va(0x1000)).unwrap().expect("record exists");
+            let fetched = get(&Scope::Native, Va(0x1000)).unwrap().expect("record exists");
             assert_eq!(fetched.name.as_deref(), Some("parse_header"));
             assert_eq!(fetched.type_note.as_deref(), Some("int(char*, size_t)"));
+        });
+    }
+
+    /// Two modules in one project, one offset, two names — and a native
+    /// record at the same number: each reads back its own and nothing else
+    /// (docs/design/WASM.md §5 decision 1). A module's code sits at small
+    /// offsets from 0 whatever the module, so keyed by the offset alone the
+    /// second rename overwrote the first, and either showed on the other
+    /// module and on every native image with a function at `0x95`.
+    #[test]
+    fn two_modules_keep_two_names_at_one_offset() {
+        in_temp_project(|| {
+            let a = Scope::Module("build-id:0011".into());
+            let b = Scope::Module("fnv1a64:00000000deadbeef".into());
+            set_name(&a, Va(0x95), Some("parse".into())).unwrap();
+            set_name(&b, Va(0x95), Some("render".into())).unwrap();
+            set_name(&Scope::Native, Va(0x95), Some("native_entry".into())).unwrap();
+
+            assert_eq!(get(&a, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("parse"));
+            assert_eq!(get(&b, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("render"));
+            assert_eq!(get(&Scope::Native, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("native_entry"));
+            assert_eq!(list(&a).unwrap().len(), 1);
+            assert!(get(&Scope::Module("build-id:ffff".into()), Va(0x95)).unwrap().is_none(), "an unknown module has no records");
+
+            // The native file holds the native record and nothing else, so a
+            // build from before scopes, which reads it alone, never sees a
+            // module's record as a native one.
+            let native: Records = read_store(NATIVE_STORE).unwrap();
+            assert_eq!(native.len(), 1);
+            assert_eq!(native["0x95"].name.as_deref(), Some("native_entry"));
+            assert_eq!(module_scopes().unwrap().len(), 2);
+
+            assert!(remove(&a, Va(0x95)).unwrap());
+            assert_eq!(module_scopes().unwrap(), vec![("fnv1a64:00000000deadbeef".to_string(), 1)], "an emptied module leaves the store");
+            assert_eq!(get(&b, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("render"));
         });
     }
 
     #[test]
     fn renaming_never_loses_the_old_name_versioned_truth() {
         in_temp_project(|| {
-            set_name(Va(0x2000), Some("sub_2000".to_string())).unwrap();
-            let rec = set_name(Va(0x2000), Some("compute_checksum".to_string())).unwrap();
+            set_name(&Scope::Native, Va(0x2000), Some("sub_2000".to_string())).unwrap();
+            let rec = set_name(&Scope::Native, Va(0x2000), Some("compute_checksum".to_string())).unwrap();
             assert_eq!(rec.name.as_deref(), Some("compute_checksum"));
             assert_eq!(rec.history.len(), 2);
             assert_eq!(rec.history[0].old, None);
@@ -693,8 +806,8 @@ mod tests {
     #[test]
     fn setting_the_same_value_again_does_not_grow_history() {
         in_temp_project(|| {
-            set_name(Va(0x3000), Some("f".to_string())).unwrap();
-            let rec = set_name(Va(0x3000), Some("f".to_string())).unwrap();
+            set_name(&Scope::Native, Va(0x3000), Some("f".to_string())).unwrap();
+            let rec = set_name(&Scope::Native, Va(0x3000), Some("f".to_string())).unwrap();
             assert_eq!(rec.history.len(), 1, "idempotent set must not add a duplicate history entry");
         });
     }
@@ -722,7 +835,7 @@ mod tests {
 
     /// Plant a whole `annotations.json` in the temp project.
     fn plant(records: &[AnnotationRecord]) {
-        save_all(&records.iter().map(|r| (r.va.to_string(), r.clone())).collect()).unwrap();
+        save_all(&Scope::Native, &records.iter().map(|r| (r.va.to_string(), r.clone())).collect()).unwrap();
     }
 
     /// The four places a version-1 `local_<hex>` can land, by which of its two
@@ -813,7 +926,7 @@ mod tests {
             record.earlier_var_types = names(&[("local_8", "int64_t")]);
             plant(&[record]);
 
-            let write = set_var_name(Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
+            let write = set_var_name(&Scope::Native, Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
             let record = write.record;
             assert_eq!(record.var_names, names(&[("local_neg_8", "saved"), ("rcx", "counter")]));
             assert_eq!(record.var_types, names(&[("local_neg_8", "int64_t")]));
@@ -833,12 +946,12 @@ mod tests {
         in_temp_project(|| {
             plant(&[version_1(&[("local_8", "earlier")])]);
             let both = || Ok::<_, String>(Some(vars(&["local_8", "local_neg_8"])));
-            let write = set_var_name(Va(0x1000), "local_8", Some("current".into()), both).unwrap();
+            let write = set_var_name(&Scope::Native, Va(0x1000), "local_8", Some("current".into()), both).unwrap();
             assert_eq!(write.record.var_names, names(&[("local_8", "current")]));
             assert_eq!(write.record.earlier_var_names, names(&[("local_8", "earlier")]));
             assert!(matches!(write.earlier[0].outcome, EarlierOutcome::Ambiguous(_)), "{:?}", write.earlier);
 
-            let raw: serde_json::Value = serde_json::from_str(&fs::read_to_string(path().unwrap()).unwrap()).unwrap();
+            let raw: serde_json::Value = serde_json::from_str(&fs::read_to_string(store_path(NATIVE_STORE).unwrap()).unwrap()).unwrap();
             assert_eq!(raw["0x1000"]["var_key_version"], 2);
             assert_eq!(raw["0x1000"]["var_names"]["local_8"], "current");
             assert_eq!(raw["0x1000"]["earlier_var_names"]["local_8"], "earlier");
@@ -851,11 +964,11 @@ mod tests {
     fn a_later_write_settles_a_key_once_the_image_disambiguates() {
         in_temp_project(|| {
             plant(&[version_1(&[("local_8", "earlier")])]);
-            let unchecked = set_var_name(Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(None)).unwrap();
+            let unchecked = set_var_name(&Scope::Native, Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(None)).unwrap();
             assert_eq!(unchecked.record.earlier_var_names, names(&[("local_8", "earlier")]));
             assert_eq!(unchecked.earlier[0].outcome, EarlierOutcome::Unchecked);
 
-            let settled = set_var_type(Va(0x1000), "rcx", Some("int".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
+            let settled = set_var_type(&Scope::Native, Va(0x1000), "rcx", Some("int".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
             assert_eq!(settled.record.var_names, names(&[("local_neg_8", "earlier"), ("rcx", "counter")]));
             assert!(settled.record.earlier_var_names.is_empty());
         });
@@ -868,29 +981,29 @@ mod tests {
     fn an_unreadable_store_refuses_every_write() {
         in_temp_project(|| {
             let newer = r#"{ "0x2000": { "va": "0x2000", "var_names": { "local_8": "kept" }, "var_key_version": 99 } }"#;
-            fs::write(path().unwrap(), newer).unwrap();
-            assert!(get(Va(0x1000)).is_err());
-            assert!(list().is_err());
-            assert!(set_name(Va(0x1000), Some("f".into())).is_err());
-            assert!(set_var_name(Va(0x1000), "rcx", Some("x".into()), || Ok::<_, String>(None)).is_err());
-            assert!(set_bookmark(Va(0x1000), true).is_err());
-            assert!(remove(Va(0x2000)).is_err());
-            assert_eq!(fs::read_to_string(path().unwrap()).unwrap(), newer, "the file keeps its bytes");
+            fs::write(store_path(NATIVE_STORE).unwrap(), newer).unwrap();
+            assert!(get(&Scope::Native, Va(0x1000)).is_err());
+            assert!(list(&Scope::Native).is_err());
+            assert!(set_name(&Scope::Native, Va(0x1000), Some("f".into())).is_err());
+            assert!(set_var_name(&Scope::Native, Va(0x1000), "rcx", Some("x".into()), || Ok::<_, String>(None)).is_err());
+            assert!(set_bookmark(&Scope::Native, Va(0x1000), true).is_err());
+            assert!(remove(&Scope::Native, Va(0x2000)).is_err());
+            assert_eq!(fs::read_to_string(store_path(NATIVE_STORE).unwrap()).unwrap(), newer, "the file keeps its bytes");
         });
     }
 
     #[test]
     fn list_is_va_sorted_and_remove_drops_everything() {
         in_temp_project(|| {
-            set_name(Va(0x3000), Some("c".to_string())).unwrap();
-            set_name(Va(0x1000), Some("a".to_string())).unwrap();
-            set_name(Va(0x2000), Some("b".to_string())).unwrap();
-            let all = list().unwrap();
+            set_name(&Scope::Native, Va(0x3000), Some("c".to_string())).unwrap();
+            set_name(&Scope::Native, Va(0x1000), Some("a".to_string())).unwrap();
+            set_name(&Scope::Native, Va(0x2000), Some("b".to_string())).unwrap();
+            let all = list(&Scope::Native).unwrap();
             assert_eq!(all.iter().map(|r| r.va).collect::<Vec<_>>(), vec![Va(0x1000), Va(0x2000), Va(0x3000)]);
 
-            assert!(remove(Va(0x2000)).unwrap());
-            assert!(!remove(Va(0x2000)).unwrap(), "already removed");
-            assert_eq!(list().unwrap().len(), 2);
+            assert!(remove(&Scope::Native, Va(0x2000)).unwrap());
+            assert!(!remove(&Scope::Native, Va(0x2000)).unwrap(), "already removed");
+            assert_eq!(list(&Scope::Native).unwrap().len(), 2);
         });
     }
 }

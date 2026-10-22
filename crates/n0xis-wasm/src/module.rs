@@ -290,6 +290,8 @@ pub struct Module {
     data: Vec<DataSegment>,
     names: Option<Names>,
     findings: Vec<Finding>,
+    /// How many functions are imported: the index of the first defined one.
+    imported_functions: u32,
 }
 
 impl Module {
@@ -304,6 +306,24 @@ impl Module {
             SectionKind::Custom { name } => Some((name.as_str(), s)),
             _ => None,
         })
+    }
+
+    /// The id the module's `build_id` custom section states, when it has one
+    /// (the tool conventions' `build_id ::= section_0("build_id", vec(byte))`):
+    /// `None` without the section, an error where its contents are not one
+    /// `vec(byte)` filling it exactly. The first such section answers.
+    pub fn build_id(&self) -> Option<Result<&[u8], Error>> {
+        let (_, section) = self.custom_sections().find(|(name, _)| *name == "build_id")?;
+        Some(guarded_ref(|| {
+            let mut r = Reader::over(&self.bytes, section.contents.clone());
+            r.name()?;
+            let len = r.u32()? as usize;
+            let id = r.take(len)?;
+            if !r.at_end() {
+                return Err(r.error(r.offset(), Problem::BytesAfterItem(r.remaining())));
+            }
+            Ok(id)
+        }))
     }
 
     /// The type index space: every subtype of every recursion group, in
@@ -343,8 +363,43 @@ impl Module {
 
     /// How many functions are imported; the first defined one has this index.
     pub fn imported_functions(&self) -> u32 {
-        // The index space is at most 2^32 entries (checked as it was built).
-        self.functions.iter().filter(|f| matches!(f.origin, FuncOrigin::Imported { .. })).count() as u32
+        self.imported_functions
+    }
+
+    /// Where the body of function `func` starts in the file: the offset of
+    /// its locals declaration, the first byte after the body's size. `None`
+    /// for an imported function, which has an index and no position, and for
+    /// an index past the index space.
+    ///
+    /// With [`Self::function_at`] this is the one table between a function's
+    /// index, its identity, and its position (docs/design/WASM.md §5 decision
+    /// 1); every reader of the module asks it here.
+    pub fn body_start(&self, func: FuncIdx) -> Option<usize> {
+        match self.function(func)?.origin {
+            FuncOrigin::Defined { body } => self.bodies.get(body).map(|r| r.start),
+            FuncOrigin::Imported { .. } => None,
+        }
+    }
+
+    /// The defined function whose body starts at `offset`, if one does.
+    pub fn function_at(&self, offset: usize) -> Option<FuncIdx> {
+        let i = self.bodies.partition_point(|r| r.start < offset);
+        self.bodies.get(i).filter(|r| r.start == offset)?;
+        // `i` is below the function section's u32 count.
+        Some(FuncIdx(self.imported_functions + i as u32))
+    }
+
+    /// The defined function whose body holds `offset`, with the body's range
+    /// in the file: the body that `offset` is in, or one of size 0 that starts
+    /// there (which only a corrupted module states, and which holds no offset
+    /// but is still a function, at its start).
+    pub fn function_containing(&self, offset: usize) -> Option<(FuncIdx, Range<usize>)> {
+        // Bodies are laid out in order and do not overlap: each is a slice of
+        // the code section after the one before it, and a size precedes each,
+        // so two bodies never start at one offset.
+        let i = self.bodies.partition_point(|r| r.start <= offset).checked_sub(1)?;
+        let range = self.bodies.get(i).filter(|r| offset < r.end || (r.is_empty() && r.start == offset))?;
+        Some((FuncIdx(self.imported_functions + i as u32), range.clone()))
     }
 
     /// The table index space, imports first. The position is the [`TableIdx`].
@@ -425,6 +480,12 @@ impl Module {
     }
 }
 
+/// Run a read that borrows from the module. A stop inside it is a defect of
+/// the reader, reported as one, as [`crate::read`] reports it.
+fn guarded_ref<T>(work: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|stop| Err(crate::internal(stop)))
+}
+
 fn decode_body(bytes: &[u8], range: Range<usize>, data_indices: DataIndices) -> Result<Body, Error> {
     let mut instructions = Vec::new();
     let locals = body::body(Reader::over(bytes, range.clone()), data_indices, |l| instructions.push(l))?;
@@ -443,7 +504,13 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
     }
     let version = u32::from_le_bytes(r.array()?);
     if version != VERSION {
-        return Err(r.error(4, Problem::Version(version)));
+        // The component model's layer field, 1, in the upper half: a
+        // component, refused as one, not as a core module of an unknown version.
+        let problem = match (version as u16, (version >> 16) as u16) {
+            (version, layer @ 1) => Problem::Component { version, layer },
+            _ => Problem::Version(version),
+        };
+        return Err(r.error(4, problem));
     }
 
     let mut m = Module {
@@ -465,6 +532,7 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
         data: Vec::new(),
         names: None,
         findings: Vec::new(),
+        imported_functions: 0,
     };
     // The function section's count, which the code section must match.
     let mut declared_functions: u32 = 0;
@@ -684,6 +752,10 @@ pub(crate) fn read_unguarded(bytes: &[u8]) -> Result<Module, Error> {
     {
         return Err(r.error(r.offset(), Problem::DataCount { declared, segments: m.data.len() as u32 }));
     }
+
+    // The index space is at most 2^32 entries (checked as it was built), and
+    // the imported functions are its first entries.
+    m.imported_functions = m.functions.iter().take_while(|f| matches!(f.origin, FuncOrigin::Imported { .. })).count() as u32;
 
     // Every body is decoded once here, keeping nothing, so that `read`
     // answers for the module's whole structure. A body that breaks is a

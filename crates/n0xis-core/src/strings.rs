@@ -107,7 +107,12 @@ impl Run {
     fn end(&mut self, end: usize, base: Va, min: usize, encoding: StringEncoding, out: &mut Vec<FoundString>) {
         if self.chars >= min.max(1) {
             out.push(FoundString {
-                address: Va(base.0 + self.start as u64),
+                // Wrapping: a caller may scan at another space's coordinate
+                // (a WebAssembly data segment at its linear-memory address,
+                // which a 64-bit memory may place anywhere) and move the
+                // answer back, and an addition that panicked there would be a
+                // panic on a byte of the input.
+                address: Va(base.0.wrapping_add(self.start as u64)),
                 encoding,
                 length: self.chars,
                 size: end - self.start,

@@ -45,13 +45,18 @@ pub use plugin::{
 // are what `static-pe` adds to the registry.
 mod image;
 pub use image::{
-    formats, recognize, Access, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, Format, Image, ImageFormat,
-    ImageSymbol, ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, Library, LibraryRef, LibrarySource, LoadedBytes,
-    Machine, OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartReason, SymbolKind,
-    SymbolTable, UnlistedSlot, Unread,
+    formats, recognize, Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DataSegment, DeclaredStart, Export, ExportTo, Extent,
+    Finding, Format, FormatTables, Image, ImageFormat, ImageSymbol, ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa,
+    ItemKind, Library, LibraryRef, LibrarySource, LinearMemory, LoadedBytes, Machine, MemoryAddress, OpenError, OpenOptions, Opened, Partial,
+    Placement, PointerWidth, Reach, Section, Segment, SegmentPlacement, Segments, StartCoverage, StartReason, SymbolKind, SymbolTable,
+    UnlistedSlot, Unread,
 };
 mod image_source;
 pub use image_source::ImageSource;
+// The WebAssembly reader: OS-free, and over a reader of this workspace's own,
+// so it is compiled whatever the features (the registry lists it either way).
+mod static_wasm;
+pub use static_wasm::{ElementPlaced, ElementPlacement, WasmModule};
 #[cfg(feature = "static-pe")]
 mod static_pe;
 #[cfg(feature = "static-pe")]

@@ -24,6 +24,47 @@ All notable changes to N0xis are recorded here. Versions follow
   `llvm-readobj` and `llvm-objdump` on 16 committed images, three of them planted for it (a PE32
   importing by ordinal only, the library it imports from, and a shared object needing two
   libraries in a stated order).
+- **WebAssembly modules open with `--file`** (docs/design/WASM.md stage 2): a third reader
+  behind the format seam, over the stage-1 reader. A module's positions are its own offsets, and
+  a function is its index with its body's offset beside it. `function discover` lists every
+  defined function at its body with its exact extent, its index and its name as the module
+  states it (the `name` section's, else an export's, verbatim: `Vec::push(int)`, `a-b`; else
+  `func_<index>`), and nothing else, since the code section declares them all;
+  `disasm --addr <body>` decodes the body's locals declaration and then every instruction, a
+  call's callee by index (`target_function`) and a defined callee's body as its `target`, with
+  the index of the function it is in beside the answer, and an offset where no instruction starts
+  is `decode-failed`; `xref to` lists the direct calls and tail calls to a body and the `ref.func`s
+  of it, `xref from` the function a call names, an imported one by its index alone, every
+  reference with the indices of the functions it is from and to; `imports` gives each import by
+  module, its kind, and the index that reaches it;
+  `profile` adds a module block (identity, start function, exports of every kind with their
+  index, memories with their index type, tables, data and element segments with where each is
+  placed or why it is not, custom sections, and findings: a start function or an export naming
+  an index past its space, a segment placed past its memory or table, which instantiation traps
+  on); `strings` reads the data segments, wide text at its linear-memory alignment, and gives each
+  string's place in linear memory (memory and address) beside its module offset, or `not
+  placed` and why. Every command that needs the lift (stage 3) refuses a module with
+  `not-lifted`, naming stage 3, `snapshot dump` refuses one (a snapshot records no format), and
+  `--arch` naming another instruction set is refused (and `--arch wasm` on a target that is not
+  a module, saying so). A component (preamble version `0x0d`, layer 1) is refused as a
+  component, not as a core module of version 65549. Checked fact by fact against
+  `wasm-objdump -h`, `-x` and `-d` (docs/VERIFICATION.md): on the modules built here from known
+  source that wabt reads, and on the real modules found on this machine with no known source
+  (rung 3), every one of their functions disassembled and compared; and planted modules: data and
+  element segments placed by an imported global, which are answered as not placed, every way
+  code names a function by index, and broken modules (an out-of-order name map, bodies of size
+  0, indices past their space, a segment past its memory).
+- **Annotations of a WebAssembly module are its own**: kept under the module's identity
+  (`build-id:<hex>` of its `build_id` section, else `fnv1a64:<hex>` of its bytes) in
+  `.n0x/annotations-modules.json`, so two modules in one project, whose code all sits at small
+  offsets, never share a rename. `annotate name|type|comment|bookmark|list|rm` take the same
+  optional target flags as `annotate show` (`--file`, `--pid`, `--snapshot`, `--remote-cmd`); with
+  no target, or a native one, they read and write `annotations.json` exactly as before, and
+  `annotate list` notes how many records the modules hold apart. With no target named, the
+  target `attach` (or `serve`) holds is the one meant, a module's records its own. The MCP
+  `annotate_set` tool goes through the registry and takes the same optional target, and
+  `annotate_list` takes one too. A module's annotation answers carry `function`, the index of the
+  function the record's position is in.
 
 ### Changed
 
@@ -34,6 +75,40 @@ All notable changes to N0xis are recorded here. Versions follow
   gives the passes, and the answers of eleven commands, were recorded on 495 images before and
   after (42 committed ELF fixtures and 3 PE, 300 system ELF images, 150 PE32 and PE32+ DLLs) and
   are identical.
+
+- **An unnamed function has one name, `sub_` and its address in upper-case hex, everywhere.**
+  It was formatted in five places with two spellings: the function list, the `.pdata` list and
+  the summaries wrote `sub_1400010A0`, and a callee in decompiled code and the decompiler's own
+  signature line `sub_1400010a0`. Answers change where an address has a hex letter, in `decomp
+  pseudo` (callee names and the signature line) and in `diff functions`: measured on 495 images
+  (the format seam's recording), 3 233 lines of 306 images changed, every one of them only from
+  `sub_<lower-case hex>` to `sub_<UPPER-CASE HEX>`, and nothing else changed.
+- **`imports` states what each import is**: a `kind` on every reference — `function` or `data`
+  from an ELF symbol's type (`STT_FUNC`/`STT_GNU_IFUNC`; `STT_OBJECT`/`STT_COMMON`/`STT_TLS`),
+  `not_stated` for `STT_NOTYPE` and for every PE import, whose descriptor names code and
+  variables alike — checked against `llvm-readobj`'s symbol types on the committed fixtures.
+  `stated_by` gains `import_module` (a WebAssembly import's module).
+- A file no reader recognizes is refused as `not a PE (MZ), an ELF (\x7fELF) or a WebAssembly
+  module (\0asm)`; it was `not a PE (MZ) or ELF (\x7fELF) image`.
+- For the crates' users: `DecodedInsn::len` and the IR's instruction length are `u32` (a
+  WebAssembly `br_table` in a real module here is 525 bytes), and `DecodedInsn` gains
+  `target_function` (an `IndexedTarget`: the index a WebAssembly `call`, `return_call` or
+  `ref.func` names, with its body where it has one); `Arch` gains the required methods `lifting`
+  and `indexed_function` (an `IndexedFunction`: the index and the body of the function an offset
+  is in), and `pointer_size` is required and answers `Option<u8>`; `XrefEntry::to` is an
+  `Option<Va>` (absent only for a call to an imported WebAssembly function) beside the new
+  `from_function` and `to_function`, built by `n0xis_core::xref_entry`; `ExportInfo` and
+  `FoldedExports` gain `index`;
+  `Image::machine` returns its `Machine` by reference, whose pointer width is now an
+  `AddressModel`; `Image` gains `start_coverage`; `Export::target` is an `ExportTo`;
+  `ImageSource::is_64` is gone and `pointer_size` answers `Option<u8>`; `Ctx::with_stated_functions`
+  takes the coverage beside the list; the annotation store's functions take a `Scope`.
+
+### Fixed
+
+- **`diff functions` decoded both files as x86-64**, whatever they declared: an AArch64 pair was
+  diffed as x86 (`// asm: std`, `rax.1 = …` over A64 instructions), `ok: true`. Each side is now
+  decoded as its own image declares, and `--arch` is checked against it like everywhere else.
 
 ## [0.3.5] — 2026-10-20
 

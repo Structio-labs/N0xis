@@ -230,6 +230,12 @@ pub enum RttiRefusal {
     /// either byte order — and this one refuses. Narrowing it to images that
     /// have Itanium vtables to read is an open item.
     BigEndian,
+    /// An image with no one address space for an object to point into: a
+    /// WebAssembly module, whose positions are module offsets and whose data
+    /// lives in linear memories (docs/design/WASM.md §5 decision 2). Every
+    /// RTTI reader here reads vtables and type descriptors as pointers into the
+    /// image's own space at its pointer width, and a module has neither.
+    NoNativePointers,
 }
 
 impl RttiRefusal {
@@ -237,6 +243,7 @@ impl RttiRefusal {
     pub fn code(self) -> &'static str {
         match self {
             RttiRefusal::BigEndian => "big-endian-image",
+            RttiRefusal::NoNativePointers => "no-native-pointers",
         }
     }
     /// The message a command answers with, naming the byte order.
@@ -244,6 +251,10 @@ impl RttiRefusal {
         match self {
             RttiRefusal::BigEndian => "the image is big-endian (ELF EI_DATA = 2, ELFDATA2MSB); C++ RTTI is read only from \
                                       little-endian images, and reading this one would byte-swap every pointer"
+                .to_string(),
+            RttiRefusal::NoNativePointers => "the image has no one address space for an object to point into (a WebAssembly \
+                                              module: its positions are module offsets and its data is in linear memories); \
+                                              C++ RTTI is read as pointers into a native image's own space"
                 .to_string(),
         }
     }

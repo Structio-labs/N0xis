@@ -23,6 +23,9 @@ n0xis-il2cpp = { workspace = true }
 # Program databases (PDB): names and stated function extents for a PE image
 # whose CodeView record names one (gap-closing item 1).
 n0xis-pdb = { workspace = true }
+# A WebAssembly module's own structure, reached through the image's
+# `FormatTables::Wasm` for the profile's module block.
+n0xis-wasm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

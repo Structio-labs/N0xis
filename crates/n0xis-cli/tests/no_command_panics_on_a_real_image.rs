@@ -188,6 +188,11 @@ fn no_command_panics_with_overflow_checks_on() {
         // much less than it looks like it does.
         None => eprintln!("panic sweep: no system library — only the purpose-built shape was checked"),
     }
+    // WebAssembly modules, built here from known source: every command meets
+    // the third format, its decode-only architecture and its refusals.
+    for stem in ["ctarget-O2", "shapes"] {
+        targets.push(repo_root().join(format!("crates/n0xis-wasm/tests/fixtures/{stem}.wasm")).display().to_string());
+    }
 
     let (mut total, mut panics) = (0usize, Vec::new());
     for t in &targets {

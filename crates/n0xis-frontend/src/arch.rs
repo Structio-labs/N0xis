@@ -32,6 +32,12 @@ pub fn resolve_arch(name: Option<&str>) -> Result<Box<dyn Arch>, String> {
         "arm64" | "aarch64" => Ok(Box::new(Arm64::new())),
         "arm32" | "armv7" | "aarch32" | "arm" => Ok(Box::new(Arm32::a32())),
         "thumb" | "thumb2" | "t32" => Ok(Box::new(Arm32::thumb())),
+        // Not a name this resolves to a decoder: a WebAssembly module's
+        // architecture is built from the module (`Src::pick_arch`), and a
+        // target that reaches here is not one.
+        "wasm" => Err("`wasm` is a WebAssembly module's own instruction set, decoded from the module itself; this target is not a \
+                       module, so it has none (expected x64|x86|arm64|arm32|thumb)"
+            .to_string()),
         other => Err(format!("unknown arch '{other}', expected x64|x86|arm64|arm32|thumb")),
     }
 }
@@ -79,6 +85,23 @@ pub fn pick_arch_for(
         return Ok(Box::new(X64::x86()));
     }
     resolve_arch(None)
+}
+
+/// The refusal a command that needs the lift answers on an architecture that
+/// does not lift (docs/design/WASM.md §5 decision 5): `(code, message)`, or
+/// `None` for an architecture that lifts. One place, so every command that
+/// needs the lift refuses alike, with the architecture's own reason — on a
+/// WebAssembly module, that the lift is stage 3 — rather than running the
+/// lift's default, an `Unlifted` statement per instruction, and answering
+/// `ok: true` over it.
+pub fn lift_refusal(arch: &dyn Arch) -> Option<(String, String)> {
+    match arch.lifting() {
+        n0xis_arch::Lifting::Lifts => None,
+        n0xis_arch::Lifting::DecodeOnly { why } => Some((
+            "not-lifted".to_string(),
+            format!("this command needs the lift, and the `{}` architecture decodes without one: {why}", arch.name()),
+        )),
+    }
 }
 
 /// [`pick_arch_for`] for a caller that has no machine declaration to offer.

@@ -41,8 +41,22 @@ pub struct XrefInput {
 #[derive(Clone, Debug, Serialize)]
 pub struct XrefEntry {
     pub from: Va,
-    pub to: Va,
-    /// `call` / `jmp` / `cond_jmp` / `data`.
+    /// The index of the function `from` is in, beside the position, on an
+    /// image whose functions are identified by index (a WebAssembly module:
+    /// docs/design/WASM.md §5 decision 1). Absent on a native image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_function: Option<u32>,
+    /// What is referenced. Absent only for a reference to an imported
+    /// WebAssembly function, which has an index (`to_function`) and no
+    /// position: a `call 0` to an import is a call, and is listed as one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<Va>,
+    /// The index of the function referenced, on an image whose functions are
+    /// identified by index; absent on a native image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_function: Option<u32>,
+    /// `call` / `jmp` / `cond_jmp` / `data` (a `ref.func`, which takes a
+    /// function as a value, is `data`, as taking an address is natively).
     pub kind: String,
     pub text: String,
     /// The `to` target's symbol name, when the symbol layer has one at exactly
@@ -70,6 +84,32 @@ const MAX_INSN_BYTES: usize = 16;
 /// Cross-reference pass.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct XrefPass;
+
+/// One reference, with what every reference states beside its positions: the
+/// function indices where the image identifies functions by index, and the
+/// referenced function's symbol name. The one constructor, so the pass and
+/// the index lookup in the frontend cannot state an entry two ways.
+///
+/// `to` is `None` only with `to_function` naming an imported function.
+pub fn xref_entry(ctx: &Ctx, from: Va, to: Option<Va>, to_function: Option<u32>, kind: &str, text: String) -> XrefEntry {
+    let to_function = to_function.or_else(|| to.and_then(|t| ctx.arch.indexed_function(t)).filter(|f| Some(f.body) == to).map(|f| f.index));
+    XrefEntry {
+        from,
+        from_function: ctx.arch.indexed_function(from).map(|f| f.index),
+        to,
+        to_function,
+        kind: kind.to_string(),
+        text,
+        sym: to.and_then(|t| crate::ir::symbol_on_entry(ctx, t)).map(|sy| sy.name),
+    }
+}
+
+/// Whether `ins` references the function `index` by index without a branch
+/// target to it: a `ref.func`, or a call to an import (which has no body to
+/// be a target).
+fn names_function(ins: &n0xis_arch::DecodedInsn, index: Option<u32>) -> bool {
+    index.is_some() && ins.target_function.map(|f| f.index) == index
+}
 
 fn branch_kind(k: InsnKind) -> Option<&'static str> {
     match k {
@@ -115,54 +155,41 @@ impl Pass for XrefPass {
         let insns = ctx.arch.decode_range(&bytes, scan_start, bytes.len());
         let mut refs = Vec::new();
 
-        // The `to` target's name, when the symbol layer has one at exactly that
-        // address (recovered RTTI method, user rename, export).
-        let name_of = |va: Va| crate::ir::symbol_on_entry(ctx, va).map(|sy| sy.name);
+        // The function that starts at `addr`, where functions are identified
+        // by index: a `ref.func` names it by that index alone.
+        let addr_index = ctx.arch.indexed_function(input.addr).filter(|f| f.body == input.addr).map(|f| f.index);
+        let target = Some(input.addr);
 
         for ins in &insns {
+            let named = ins.target_function.map(|f| f.index);
             match input.dir {
                 XrefDir::To => {
-                    if ins.target == Some(input.addr) {
+                    if ins.target == target {
                         let kind = branch_kind(ins.kind).unwrap_or("branch");
-                        refs.push(XrefEntry {
-                            from: ins.va,
-                            to: input.addr,
-                            kind: kind.to_string(),
-                            text: ins.text.clone(),
-                            sym: name_of(input.addr),
-                        });
-                    } else if ins.rip_target == Some(input.addr) {
-                        refs.push(XrefEntry {
-                            from: ins.va,
-                            to: input.addr,
-                            kind: "data".to_string(),
-                            text: ins.text.clone(),
-                            sym: name_of(input.addr),
-                        });
+                        refs.push(xref_entry(ctx, ins.va, target, named, kind, ins.text.clone()));
+                    } else if ins.rip_target == target || names_function(ins, addr_index) {
+                        refs.push(xref_entry(ctx, ins.va, target, named, "data", ins.text.clone()));
                     }
                 }
                 XrefDir::From => {
                     if ins.va != input.addr {
                         continue;
                     }
-                    if let Some(t) = ins.target {
-                        let kind = branch_kind(ins.kind).unwrap_or("branch");
-                        refs.push(XrefEntry {
-                            from: input.addr,
-                            to: t,
-                            kind: kind.to_string(),
-                            text: ins.text.clone(),
-                            sym: name_of(t),
-                        });
+                    match (ins.target, ins.target_function) {
+                        (Some(t), _) => {
+                            let kind = branch_kind(ins.kind).unwrap_or("branch");
+                            refs.push(xref_entry(ctx, input.addr, Some(t), named, kind, ins.text.clone()));
+                        }
+                        // Named by index with no branch target: a call to an
+                        // import, which has no position, or a `ref.func`.
+                        (None, Some(f)) => {
+                            let kind = branch_kind(ins.kind).unwrap_or("data");
+                            refs.push(xref_entry(ctx, input.addr, f.body, Some(f.index), kind, ins.text.clone()));
+                        }
+                        (None, None) => {}
                     }
                     if let Some(t) = ins.rip_target {
-                        refs.push(XrefEntry {
-                            from: input.addr,
-                            to: t,
-                            kind: "data".to_string(),
-                            text: ins.text.clone(),
-                            sym: name_of(t),
-                        });
+                        refs.push(xref_entry(ctx, input.addr, Some(t), None, "data", ins.text.clone()));
                     }
                 }
             }
@@ -253,6 +280,13 @@ pub fn build_xref_index(ctx: &Ctx, ranges: &[(Va, u64)]) -> XrefIndex {
                 if let Some(t) = ins.rip_target {
                     idx.edges.entry(t.0).or_default().push(ins.va.0);
                 }
+                // A function named by index with no branch to it (`ref.func`)
+                // references its body all the same.
+                if ins.target.is_none()
+                    && let Some(body) = ins.target_function.and_then(|f| f.body)
+                {
+                    idx.edges.entry(body.0).or_default().push(ins.va.0);
+                }
                 advanced = ins.va.0.saturating_add(ins.len.max(1) as u64);
             }
             // Resume after the last kept instruction; guarantee forward progress
@@ -289,7 +323,7 @@ mod tests {
         let tight = run(Va(0x1000), 16);
         let wide = run(Va(0x1000), 4096);
         assert_eq!(tight.count, 1, "the call at 0x1000 references 0x1008");
-        assert_eq!(tight.refs[0].to, Va(0x1008));
+        assert_eq!(tight.refs[0].to, Some(Va(0x1008)));
         // Same answer no matter how much the caller asked us to sweep.
         assert_eq!(format!("{:?}", tight.refs), format!("{:?}", wide.refs));
 

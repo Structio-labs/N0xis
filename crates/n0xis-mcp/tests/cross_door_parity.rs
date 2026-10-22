@@ -556,3 +556,46 @@ fn disasm_out_of_image_error_agrees_across_doors() {
     assert_eq!(c["error"]["code"], m["error"]["code"], "out-of-image error code must match across doors");
     assert!(m["error"]["hint"].is_string(), "MCP must carry the CLI's actionable image-base hint");
 }
+
+// ---- WebAssembly: a session's module is the annotation target -------------
+
+/// `mix32`'s body in the stage-1 fixture (wasm-objdump -d: `0003d1 func[7]
+/// <mix32>:`).
+const MODULE_BODY: &str = "0x3d1";
+
+/// A rename made over MCP on a module the session attached, with no `file`
+/// in the request, is the module's: it renames the module's function, keeps
+/// out of the map every native target shares, and is listed — with the
+/// function's index beside its position — when the attached module's records
+/// are asked for. It went to the native map (`annotations.json`), where it
+/// renamed nothing in the module and would rename whatever a native image has
+/// at that number, `ok: true`.
+///
+/// Calibration: drop the session from `project_caps::scope_for` and the
+/// discover assertion fails on its own line (the module still lists `mix32`);
+/// drop the index from the annotation answer and its assertion fails.
+#[test]
+fn an_attached_modules_rename_over_mcp_is_the_modules() {
+    let Some(p) = new_project("wasm-attach") else { return };
+    let module = p.dir.join("ctarget-O2.wasm");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../n0xis-wasm/tests/fixtures/ctarget-O2.wasm"), &module).expect("fixture");
+    let mut mcp = McpClient::spawn(&p.dir);
+    let attached = mcp.call("attach", json!({ "file": module.to_str().unwrap() }));
+    assert_eq!(attached["ok"], true, "{attached}");
+    let set = mcp.call("annotate_set", json!({ "addr": MODULE_BODY, "field": "name", "value": "mcp_attached" }));
+    assert_eq!(set["ok"], true, "{set}");
+
+    let found = mcp.call("function_discover", json!({}));
+    let at = found["data"]["functions"].as_array().unwrap_or_else(|| panic!("{found}")).iter().find(|f| f["va"] == MODULE_BODY).cloned();
+    assert_eq!(at.map(|f| f["name"].clone()), Some(json!("mcp_attached")), "the attached module's function is renamed: {found}");
+
+    let native = std::fs::read_to_string(p.dir.join(".n0x/annotations.json")).unwrap_or_default();
+    assert!(!native.contains("mcp_attached"), "the module's rename is not a native record: {native}");
+    assert_eq!(set["data"]["function"], 7, "the record's answer names func[7] beside its position: {set}");
+
+    let listed = mcp.call("annotate_list", json!({}));
+    assert_eq!(listed["ok"], true, "{listed}");
+    let records = listed["data"]["records"].as_array().unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(records.len(), 1, "{listed}");
+    assert_eq!((records[0]["va"].clone(), records[0]["function"].clone()), (json!(MODULE_BODY), json!(7)), "{listed}");
+}

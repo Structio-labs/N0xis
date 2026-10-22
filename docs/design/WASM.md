@@ -124,7 +124,11 @@ and V8's inspector as node v26.10.0 ships it.
      as image addresses (`crates/n0xis-core/src/decomp.rs:826-830`), so a slot lifted as
      `Indirect` would be looked up as the body at that module offset, with no signature check.
    - **On the wire a code position is (module identity, module offset)**, with the function
-     index beside it. The name of an unnamed function gets one home first; it is formatted in
+     index beside it. *Stage 2 (decided 2026-10-23):* every stage-2 command answers about one
+     module, the one `meta.source` names, so the identity is not repeated on each answer yet;
+     it goes on the wire, as a field of the envelope's `meta`, with the first door that can
+     answer about two modules at once (a stage-4 session). The annotation store already keys by
+     it. The name of an unnamed function gets one home first; it is formatted in
      five places with two spellings (`sub_{:X}` at `crates/n0xis-core/src/discover.rs:123,
      300` and `summary.rs:186`, `sub_{:x}` at `crates/n0xis-core/src/render.rs:306` and
      `decomp.rs:521`).

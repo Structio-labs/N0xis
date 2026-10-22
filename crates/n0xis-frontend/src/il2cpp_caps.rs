@@ -615,6 +615,13 @@ impl Plugin for Il2CppTools {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
                 };
+                // The runtime's structures are pointers into one address space;
+                // an image with none to point into (a WebAssembly module, whose
+                // positions are module offsets) holds no such structure there.
+                if resolved.src.pointer_size().is_none() {
+                    let refused = n0xis_core::RttiRefusal::NoNativePointers;
+                    return Response::error(refused.code(), refused.message());
+                }
                 let arch = match crate::resolve_arch(args.get("arch").and_then(Value::as_str)) {
                     Ok(a) => a,
                     Err(e) => return Response::error("bad-arch", e),

@@ -402,6 +402,21 @@ pub struct AnnotateSetRequest {
     /// New value; omit to clear the field.
     #[serde(default)]
     pub value: Option<String>,
+    /// The image the address is in. It says whose records are written: a
+    /// WebAssembly module keeps its own, under its identity, since every
+    /// module's offsets start near 0; every native target shares one map.
+    /// With no image named, the attached session's target says; with neither,
+    /// the native map.
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -425,6 +440,23 @@ pub struct AnnotateShowRequest {
     /// Instruction set to decode: `"x64"` (default) or `"arm64"`.
     #[serde(default)]
     pub arch: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnnotateListRequest {
+    /// The image whose records to list: a WebAssembly module keeps its own,
+    /// under its identity. With no image named, the attached session's
+    /// target; with neither, the records every native target shares.
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// Reload a captured `snapshot dump` by name.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[serde(default)]
+    pub remote_cmd: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1009,20 +1041,18 @@ impl N0xisServer {
                         \"name\", \"type\", or \"comment\"."
     )]
     fn annotate_set(&self, Parameters(a): Parameters<AnnotateSetRequest>) -> String {
-        let va = match Va::parse(&a.addr) {
-            Ok(v) => v,
-            Err(e) => return bad_addr(e),
-        };
-        let result = match a.field.as_str() {
-            "name" => n0xis_project::annotate::set_name(va, a.value.clone()),
-            "type" => n0xis_project::annotate::set_type(va, a.value.clone()),
-            "comment" => n0xis_project::annotate::set_comment(va, a.value.clone()),
-            other => return err("bad-field", format!("unknown field '{other}', expected name|type|comment")),
-        };
-        match result {
-            Ok(rec) => emit(Response::success(schema::v1::ANNOTATION, rec)),
-            Err(e) => err("annotate-failed", format!("{e:#}")),
-        }
+        // Dispatched through the shared registry — the same `annotate.set`
+        // the CLI runs. It wrote the store itself, with no target, so it could
+        // not keep a WebAssembly module's records under the module's identity
+        // the way the CLI does, and a rename made here would have landed in
+        // the map every native image shares (docs/design/WASM.md §5 decision 1).
+        emit(n0xis_frontend::build_registry().dispatch(
+            "annotate.set",
+            &json!({
+                "addr": a.addr, "field": a.field, "value": a.value,
+                "file": a.file, "pid": a.pid, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd,
+            }),
+        ))
     }
 
     #[tool(description = "The current name/type/comment + full history recorded at an address, if any.")]
@@ -1036,9 +1066,12 @@ impl N0xisServer {
         ))
     }
 
-    #[tool(description = "Every annotated address, va-sorted.")]
-    fn annotate_list(&self) -> String {
-        emit(n0xis_frontend::build_registry().dispatch("annotate.list", &json!({})))
+    #[tool(description = "Every annotated address of a target, va-sorted: a WebAssembly module's own records when `file` (or the attached session) names one, else the records native targets share.")]
+    fn annotate_list(&self, Parameters(a): Parameters<AnnotateListRequest>) -> String {
+        emit(n0xis_frontend::build_registry().dispatch(
+            "annotate.list",
+            &json!({ "file": a.file, "pid": a.pid, "snapshot": a.snapshot, "remote_cmd": a.remote_cmd }),
+        ))
     }
 
     #[tool(description = "Every registered analysis plugin (name -> spawn command + declared artifact kinds), from .n0x/plugins.json.")]

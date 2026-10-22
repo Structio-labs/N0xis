@@ -1,0 +1,17 @@
+
+names-cpp.wasm:	file format wasm 0x1
+module name: <names-cpp.wasm>
+
+Sections:
+
+     Type start=0x0000000a end=0x0000001e (size=0x00000014) count: 4
+   Import start=0x00000020 end=0x00000030 (size=0x00000010) count: 1
+ Function start=0x00000032 end=0x00000038 (size=0x00000006) count: 5
+   Memory start=0x0000003a end=0x0000003d (size=0x00000003) count: 1
+   Global start=0x0000003f end=0x00000047 (size=0x00000008) count: 1
+   Export start=0x00000049 end=0x0000005b (size=0x00000012) count: 2
+     Code start=0x0000005e end=0x00000161 (size=0x00000103) count: 5
+     Data start=0x00000163 end=0x00000173 (size=0x00000010) count: 1
+   Custom start=0x00000176 end=0x00000226 (size=0x000000b0) "name"
+   Custom start=0x00000228 end=0x0000024e (size=0x00000026) "producers"
+   Custom start=0x00000251 end=0x000002e5 (size=0x00000094) "target_features"

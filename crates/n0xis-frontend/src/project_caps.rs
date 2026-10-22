@@ -11,6 +11,7 @@
 //! `decomp.pseudo` are the same kind of call.
 
 use n0xis_contracts::{Response, TableEntry, TableLocator, TableValueType, Va, schema};
+use n0xis_project::annotate::Scope;
 use serde_json::{Value, json};
 
 use crate::registry::{Capability, Origin, Plugin, Registry};
@@ -60,6 +61,81 @@ struct ListedVar {
 /// Whether the request names an image the function can be decompiled from.
 fn names_image(args: &Value) -> bool {
     SOURCE_KEYS.iter().any(|k| args.get(*k).is_some_and(|v| !v.is_null()))
+}
+
+/// Whose records a request reads and writes ([`Scope`]): the target it names,
+/// the way every other command names one; naming none, the session's target
+/// (`attach`, which every other command falls back to the same way); with
+/// neither, the native map, as every `annotate` command did before scopes
+/// existed.
+///
+/// A WebAssembly module is always named, by the request or by the session:
+/// its offsets mean nothing without the module, and a module's records are
+/// kept under its identity, which only the module can give. Not consulting
+/// the session wrote an MCP rename of an attached module (`annotate_set` with
+/// no `file`) into the native map, where it applied to no module and to any
+/// native image at that address.
+/// `(code, message)` when the target cannot be opened.
+fn scope_for(args: &Value) -> Result<Target, crate::source::FrontendError> {
+    if !names_image(args) {
+        // A process is a native target: its scope needs no attach. A session
+        // file that cannot be read is an error, as it is for every command
+        // that falls back to it, not a silent native scope.
+        let session = n0xis_project::session::current().map_err(|e| ("session-unreadable".to_string(), format!("{e:#}")))?;
+        match session {
+            Some(s) if s.pid.is_none() && s.file.is_some() => {}
+            _ => return Ok(Target { scope: Scope::Native, module: None }),
+        }
+    }
+    let resolved = crate::source::resolve(crate::registry::spec_of(args))?;
+    let module = match &resolved.src {
+        crate::Src::Static(img) => match img.tables() {
+            n0xis_sources::FormatTables::Wasm(module) => Some(std::sync::Arc::clone(module)),
+            n0xis_sources::FormatTables::Native => None,
+        },
+        _ => None,
+    };
+    Ok(Target { scope: crate::annotation_syms::scope_of(&resolved.src), module })
+}
+
+/// Whose records a request reads and writes, and for a WebAssembly module the
+/// module itself, which states the function each record's position is in.
+struct Target {
+    scope: Scope,
+    module: Option<std::sync::Arc<n0xis_sources::WasmModule>>,
+}
+
+impl Target {
+    /// An annotation answer, with the index of the function each record's
+    /// position is in beside it (`function`) where the target is a
+    /// WebAssembly module: every wasm answer carries the function index
+    /// beside the position (docs/design/WASM.md §5 decision 1), and a record
+    /// at a module offset is one. The records themselves stay keyed by
+    /// position alone: the index is the module's to state, read from it here.
+    /// A native target's answer is unchanged.
+    fn answer<T: serde::Serialize>(&self, data: T) -> Response<Value> {
+        let mut v = match serde_json::to_value(data) {
+            Ok(v) => v,
+            Err(e) => return err_pair("serialize", e.to_string()),
+        };
+        if let Some(module) = &self.module {
+            let index_of = |va: &Value| -> Option<u32> {
+                let at = Va::parse(va.as_str()?).ok()?;
+                let (f, _) = module.module().function_containing(usize::try_from(at.0).ok()?)?;
+                Some(f.0)
+            };
+            let mut place = |row: &mut Value| {
+                if let Some(index) = row.get("va").and_then(index_of) {
+                    row["function"] = json!(index);
+                }
+            };
+            place(&mut v);
+            if let Some(records) = v.get_mut("records").and_then(Value::as_array_mut) {
+                records.iter_mut().for_each(&mut place);
+            }
+        }
+        Response::success(schema::v1::ANNOTATION, v)
+    }
 }
 
 /// The variables of the function at `addr` in every decompiler style (each
@@ -128,9 +204,9 @@ fn placement_vars(args: &Value) -> Result<Option<std::collections::BTreeSet<Stri
 /// A variable write's answer: the record, and every note it carries — how
 /// `var` was read, and what became of each of the function's annotations
 /// stored under the earlier stack-local naming.
-fn var_write_answer(write: n0xis_project::annotate::VarWrite, note: Option<String>) -> Response<Value> {
+fn var_write_answer(target: &Target, write: n0xis_project::annotate::VarWrite, note: Option<String>) -> Response<Value> {
     let notes: Vec<String> = note.into_iter().chain(write.earlier.iter().map(|e| e.note())).collect();
-    let answer = ok(schema::v1::ANNOTATION, write.record);
+    let answer = target.answer(write.record);
     if notes.is_empty() { answer } else { answer.with_note(notes.join("; ")) }
 }
 
@@ -167,7 +243,7 @@ impl Plugin for ProjectOps {
 
         reg.add(Capability::new(
             "annotate.set",
-            "Record a `name`, `type` or `comment` at an address. `field` picks which; prior values are kept as history.",
+            "Record a `name`, `type` or `comment` at an address. `field` picks which; prior values are kept as history. With `file` naming a WebAssembly module, in that module's own records (its offsets start near 0 like every module's); otherwise in the records native targets share.",
             Some(schema::v1::ANNOTATION),
             Origin::Builtin,
             Box::new(|args| {
@@ -175,17 +251,22 @@ impl Plugin for ProjectOps {
                     Ok(v) => v,
                     Err(e) => return to_env(e),
                 };
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
                 // `None` clears the field — the CLI's optional `--value` maps
                 // straight through, so "unset" stays expressible.
                 let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
                 let result = match args.get("field").and_then(|v| v.as_str()).unwrap_or("name") {
-                    "name" => n0xis_project::annotate::set_name(va, value),
-                    "type" => n0xis_project::annotate::set_type(va, value),
-                    "comment" => n0xis_project::annotate::set_comment(va, value),
+                    "name" => n0xis_project::annotate::set_name(scope, va, value),
+                    "type" => n0xis_project::annotate::set_type(scope, va, value),
+                    "comment" => n0xis_project::annotate::set_comment(scope, va, value),
                     other => return err_pair("bad-field", format!("unknown field '{other}' (name|type|comment)")),
                 };
                 match result {
-                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                    Ok(rec) => target.answer(rec),
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
             }),
@@ -215,9 +296,14 @@ impl Plugin for ProjectOps {
                         Err(refusal) => return to_env(refusal),
                     },
                 };
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
                 let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
-                match n0xis_project::annotate::set_var_name(va, &key, value, || placement_vars(args)) {
-                    Ok(write) => var_write_answer(write, note),
+                match n0xis_project::annotate::set_var_name(scope, va, &key, value, || placement_vars(args)) {
+                    Ok(write) => var_write_answer(&target, write, note),
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
             }),
@@ -313,9 +399,14 @@ impl Plugin for ProjectOps {
                         },
                     }
                 };
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
                 let value = args.get("value").and_then(|v| v.as_str()).map(str::to_string);
-                match n0xis_project::annotate::set_var_type(va, &key, value, || placement_vars(args)) {
-                    Ok(write) => var_write_answer(write, note),
+                match n0xis_project::annotate::set_var_type(scope, va, &key, value, || placement_vars(args)) {
+                    Ok(write) => var_write_answer(&target, write, note),
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
             }),
@@ -323,7 +414,7 @@ impl Plugin for ProjectOps {
 
         reg.add(Capability::new(
             "annotate.bookmark",
-            "Bookmark ('favorite') an address so it shows in the Bookmarks/Notes list. `on:false` removes it.",
+            "Bookmark ('favorite') an address so it shows in the Bookmarks/Notes list. `on:false` removes it. A WebAssembly module named by `file` keeps its own records.",
             Some(schema::v1::ANNOTATION),
             Origin::Builtin,
             Box::new(|args| {
@@ -331,9 +422,14 @@ impl Plugin for ProjectOps {
                     Ok(v) => v,
                     Err(e) => return to_env(e),
                 };
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
                 let on = args.get("on").and_then(|v| v.as_bool()).unwrap_or(true);
-                match n0xis_project::annotate::set_bookmark(va, on) {
-                    Ok(rec) => ok(schema::v1::ANNOTATION, rec),
+                match n0xis_project::annotate::set_bookmark(scope, va, on) {
+                    Ok(rec) => target.answer(rec),
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
             }),
@@ -349,7 +445,12 @@ impl Plugin for ProjectOps {
                     Ok(v) => v,
                     Err(e) => return to_env(e),
                 };
-                match n0xis_project::annotate::get(va) {
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
+                match n0xis_project::annotate::get(scope, va) {
                     Ok(Some(rec)) => {
                         // The image is decompiled only when a saved key's place
                         // depends on the function's variables.
@@ -358,7 +459,7 @@ impl Plugin for ProjectOps {
                             Err(e) => return err_pair("not-checked", format!("the function's variables could not be listed: {e}")),
                         };
                         let notes = placed.notes();
-                        let answer = ok(schema::v1::ANNOTATION, rec);
+                        let answer = target.answer(rec);
                         if notes.is_empty() { answer } else { answer.with_note(notes.join("; ")) }
                     }
                     Ok(None) => err_pair("not-found", format!("no annotations recorded at {va}")),
@@ -369,32 +470,54 @@ impl Plugin for ProjectOps {
 
         reg.add(Capability::new(
             "annotate.list",
-            "Every annotated address in the project.",
+            "Every annotated address of a target: a WebAssembly module's own records when `file` names one, else the records every native target shares.",
             Some(schema::v1::ANNOTATION),
             Origin::Builtin,
-            Box::new(|_args| match n0xis_project::annotate::list() {
-                Ok(records) => {
-                    // No function is decompiled here, so a key of the earlier
-                    // stack-local naming cannot be placed; say which records
-                    // hold one.
-                    let pending: Vec<String> = records.iter().filter(|r| r.needs_function_vars()).map(|r| r.va.to_string()).collect();
-                    let answer = ok(schema::v1::ANNOTATION, json!({ "count": records.len(), "records": records }));
-                    if pending.is_empty() {
-                        answer
-                    } else {
-                        answer.with_note(format!(
-                            "{} hold variable names or types stored under keys of the earlier stack-local naming (`earlier_var_names`/`earlier_var_types`; `local_8` was both +8 and -8), which apply only where the function has exactly one of the two; `annotate show --addr <addr> --file <image>` says where each lands",
-                            pending.join(", ")
-                        ))
+            Box::new(|args| {
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
+                match n0xis_project::annotate::list(scope) {
+                    Ok(records) => {
+                        // No function is decompiled here, so a key of the earlier
+                        // stack-local naming cannot be placed; say which records
+                        // hold one.
+                        let pending: Vec<String> = records.iter().filter(|r| r.needs_function_vars()).map(|r| r.va.to_string()).collect();
+                        let mut notes = Vec::new();
+                        if !pending.is_empty() {
+                            notes.push(format!(
+                                "{} hold variable names or types stored under keys of the earlier stack-local naming (`earlier_var_names`/`earlier_var_types`; `local_8` was both +8 and -8), which apply only where the function has exactly one of the two; `annotate show --addr <addr> --file <image>` says where each lands",
+                                pending.join(", ")
+                            ));
+                        }
+                        // A listing of the native records is not every record:
+                        // each module's are kept apart, and are said to exist.
+                        if *scope == Scope::Native {
+                            match n0xis_project::annotate::module_scopes() {
+                                Ok(modules) if !modules.is_empty() => {
+                                    let held: usize = modules.iter().map(|(_, n)| n).sum();
+                                    notes.push(format!(
+                                        "{held} more records belong to {} WebAssembly module(s) and are kept apart from these; name the module (`--file`) to list its records",
+                                        modules.len()
+                                    ));
+                                }
+                                Ok(_) => {}
+                                Err(e) => notes.push(format!("the WebAssembly modules' records could not be read ({e:#})")),
+                            }
+                        }
+                        let answer = target.answer(json!({ "count": records.len(), "records": records }));
+                        if notes.is_empty() { answer } else { answer.with_note(notes.join("; ")) }
                     }
+                    Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
-                Err(e) => err_pair("annotate-failed", format!("{e:#}")),
             }),
         ));
 
         reg.add(Capability::new(
             "annotate.rm",
-            "Drop every annotation at an address.",
+            "Drop every annotation at an address. A WebAssembly module named by `file` keeps its own records.",
             Some(schema::v1::ANNOTATION),
             Origin::Builtin,
             Box::new(|args| {
@@ -402,8 +525,13 @@ impl Plugin for ProjectOps {
                     Ok(v) => v,
                     Err(e) => return to_env(e),
                 };
-                match n0xis_project::annotate::remove(va) {
-                    Ok(removed) => ok(schema::v1::ANNOTATION, json!({ "va": va, "removed": removed })),
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let scope = &target.scope;
+                match n0xis_project::annotate::remove(scope, va) {
+                    Ok(removed) => target.answer(json!({ "va": va, "removed": removed })),
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
             }),

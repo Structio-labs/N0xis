@@ -44,6 +44,11 @@ pub struct DissectField {
     pub confidence: f32,
 }
 
+/// What a dissection on an architecture with no native pointer width says
+/// about its fields: none is a pointer guess, and why.
+pub const NO_NATIVE_POINTERS: &str = "no field is guessed a pointer: a WebAssembly module's positions are its own offsets and hold no data, and a \
+                                      value in its data is a linear-memory value, which is no address of the module (docs/design/WASM.md §5 decision 2)";
+
 pub struct DissectInput {
     pub start: Va,
     pub size: usize,
@@ -124,6 +129,13 @@ fn to_boundary(addr: u64, n: u64) -> usize {
 /// padding *up to* where the next field can begin, and swallowing the boundary
 /// puts everything after it out of phase again.
 fn classify(ctx: &Ctx, chunk: &[u8], addr: u64) -> (GuessedKind, usize, f32) {
+    // A value is a pointer guess only where the image's space is one a
+    // pointer can name. A WebAssembly module's positions are its own offsets
+    // and hold no data (docs/design/WASM.md §5 decision 2): a value in a data
+    // segment is a linear-memory value, never a module offset, and every one
+    // below the module's length was a "pointer" into its code. Its
+    // architecture states no pointer width, which is the fact this reads.
+    let pointers = ctx.arch.pointer_size().is_some();
     let fits8 = to_boundary(addr, 8);
     let fits4 = to_boundary(addr, 4);
     if chunk.iter().all(|&b| b == 0) {
@@ -131,7 +143,7 @@ fn classify(ctx: &Ctx, chunk: &[u8], addr: u64) -> (GuessedKind, usize, f32) {
     }
     if chunk.len() >= 8 && fits8 == 8 {
         let v = u64::from_le_bytes(chunk[..8].try_into().expect("len checked"));
-        if v != 0 && ctx.source.contains(Va(v)) {
+        if pointers && v != 0 && ctx.source.contains(Va(v)) {
             return (GuessedKind::Pointer, 8, 0.9);
         }
         let f = f64::from_le_bytes(chunk[..8].try_into().expect("len checked"));
@@ -141,7 +153,7 @@ fn classify(ctx: &Ctx, chunk: &[u8], addr: u64) -> (GuessedKind, usize, f32) {
     }
     if chunk.len() >= 4 && fits4 == 4 {
         let v32 = u32::from_le_bytes(chunk[..4].try_into().expect("len checked"));
-        if v32 != 0 && ctx.source.contains(Va(v32 as u64)) {
+        if pointers && v32 != 0 && ctx.source.contains(Va(v32 as u64)) {
             // A 32-bit value landing in mapped memory is a weaker signal
             // than the 64-bit case above (more room for coincidence).
             return (GuessedKind::Pointer, 4, 0.6);

@@ -1,0 +1,58 @@
+
+names-cpp.wasm:	file format wasm 0x1
+module name: <names-cpp.wasm>
+
+Section Details:
+
+Type[4]:
+ - type[0] (i32) -> nil
+ - type[1] (i32, i32) -> nil
+ - type[2] (i32) -> i32
+ - type[3] (i64) -> i64
+Import[1]:
+ - func[0] sig=0 <host_log> <- env.host_log
+Function[5]:
+ - func[1] sig=1 <Vec::push(int)>
+ - func[2] sig=2 <Vec::sum() const>
+ - func[3] sig=2 <entry>
+ - func[4] sig=2 <int ns::twice<int>(int)>
+ - func[5] sig=3 <long long ns::twice<long long>(long long)>
+Memory[1]:
+ - memory[0] pages: initial=2
+Global[1]:
+ - global[0] i32 mutable=1 <__stack_pointer> - init i32=65536
+Export[2]:
+ - memory[0] -> "memory"
+ - func[3] <entry> -> "entry"
+Code[5]:
+ - func[1] size=35 <Vec::push(int)>
+ - func[2] size=86 <Vec::sum() const>
+ - func[3] size=118 <entry>
+ - func[4] size=7 <int ns::twice<int>(int)>
+ - func[5] size=7 <long long ns::twice<long long>(long long)>
+Data[1]:
+ - segment[0] <.rodata> memory=0 size=8 - init i32=65536
+  - 0010000: 1000 0100 0000 0000                      ........
+Custom:
+ - name: "name"
+ - module <names-cpp.wasm>
+ - func[0] <host_log>
+ - func[1] <Vec::push(int)>
+ - func[2] <Vec::sum() const>
+ - func[3] <entry>
+ - func[4] <int ns::twice<int>(int)>
+ - func[5] <long long ns::twice<long long>(long long)>
+ - global[0] <__stack_pointer>
+ - dataseg[0] <.rodata>
+Custom:
+ - name: "producers"
+Custom:
+ - name: "target_features"
+  - [+] bulk-memory
+  - [+] bulk-memory-opt
+  - [+] call-indirect-overlong
+  - [+] multivalue
+  - [+] mutable-globals
+  - [+] nontrapping-fptoint
+  - [+] reference-types
+  - [+] sign-ext

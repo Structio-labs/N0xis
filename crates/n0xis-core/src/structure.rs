@@ -934,7 +934,7 @@ mod tests {
         let ctx = PassCtx::new(&snap, &arch);
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
-        let names = RenderNames::new(&cfg.callsites);
+        let names = RenderNames::new(&cfg.callsites, &crate::UnnamedFunction::Address);
         structure(&cfg, &ssa.blocks, &names)
     }
 

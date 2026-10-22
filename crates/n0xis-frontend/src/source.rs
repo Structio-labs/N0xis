@@ -131,6 +131,23 @@ impl Src {
         }
     }
 
+    /// The primary code window of a named module, the default a range-scoped
+    /// command scans: a native module's `.text`, as [`Self::section_range_in`]
+    /// answers it, and a WebAssembly module's code section
+    /// ([`n0xis_sources::ImageSource::text_range`]), which no section name of
+    /// a native format names.
+    pub fn text_range_in(&self, module: Option<&str>) -> Option<(Va, u64)> {
+        match self {
+            // A static image is one module: a name that matches it asks for
+            // its own window, as `section_range_in` reads the name.
+            Src::Static(img) => {
+                let named = module.is_none_or(|m| img.module().name.to_lowercase().contains(&m.to_lowercase()));
+                named.then(|| img.text_range()).flatten()
+            }
+            _ => self.section_range_in(module, ".text"),
+        }
+    }
+
     /// A named section's range (`.rdata`, `.data`, …), when the source is a
     /// mapped image.
     pub fn section_range(&self, name: &str) -> Option<(Va, u64)> {
@@ -200,15 +217,24 @@ impl Src {
         }
     }
 
-    /// Pointer width in bytes, derived from [`Src::is_64`] so the two can never
-    /// disagree.
+    /// The width of the source's data pointers in bytes, where it has one
+    /// address space for them to point into. A static image answers from its
+    /// own header — 4 for PE32 and `ELFCLASS32`, 8 for PE32+ and
+    /// `ELFCLASS64` — and a WebAssembly module answers `None`: its data lives
+    /// in linear memories, each with its own index type, and no width is the
+    /// module's ([`n0xis_sources::AddressModel`]). A live process, snapshot or
+    /// remote agent says 8: this seam does not carry their width yet, so they
+    /// stay x64 as before.
     ///
     /// A *structural* fact, not a formatting one: MSVC's RTTI is a different
     /// layout at each width — 4-byte slots and absolute pointers on 32-bit
     /// against 8-byte slots and image-relative RVAs on 64-bit — so reading one
     /// as the other finds nothing at all rather than something slightly wrong.
-    pub fn pointer_size(&self) -> u8 {
-        if self.is_64() { 8 } else { 4 }
+    pub fn pointer_size(&self) -> Option<u8> {
+        match self {
+            Src::Static(img) => img.pointer_size(),
+            Src::Live(_) | Src::Snap(_) | Src::Remote(_) => Some(8),
+        }
     }
 
     /// The image's Itanium C++ vtables, from its own `_ZTV` symbols and read at
@@ -234,16 +260,19 @@ impl Src {
         if img.format() != n0xis_sources::ImageFormat::Elf {
             return Ok(None);
         }
-        Ok(Some(n0xis_core::scan_itanium_rtti(self.as_mem(), &img.data_symbols(), &self.code_ranges(), self.pointer_size(), img.relocated_words())))
+        let pointer_size = self.pointer_size().ok_or(n0xis_core::RttiRefusal::NoNativePointers)?;
+        Ok(Some(n0xis_core::scan_itanium_rtti(self.as_mem(), &img.data_symbols(), &self.code_ranges(), pointer_size, img.relocated_words())))
     }
 
     /// Why this source's C++ RTTI is not read at all, if it is not: a
     /// big-endian image, whose pointers every RTTI reader would read
-    /// byte-swapped. Asked by every RTTI path — `rtti scan`, `analyze`'s RTTI
+    /// byte-swapped, and an image with no pointer width (a WebAssembly
+    /// module). Asked by every RTTI path — `rtti scan`, `analyze`'s RTTI
     /// naming, and the decompiler's vtable map and subclass set — through
     /// [`Self::itanium_vtables`] or directly.
     pub fn rtti_refusal(&self) -> Option<n0xis_core::RttiRefusal> {
         match self {
+            Src::Static(img) if img.pointer_size().is_none() => Some(n0xis_core::RttiRefusal::NoNativePointers),
             Src::Static(img) if img.byte_order() == n0xis_sources::ByteOrder::Big => Some(n0xis_core::RttiRefusal::BigEndian),
             _ => None,
         }
@@ -257,30 +286,15 @@ impl Src {
     /// machine is asked, as decided: an ARM PE (`0x01c0`/`0x01c4`, which
     /// [`n0xis_sources::ImageSource::machine`] also calls `arm`; ARMNT is
     /// Thumb-2 only) is not covered yet — an open item.
-    pub fn vtable_slots(&self) -> n0xis_core::VtableSlots {
-        let arm_elf = matches!(self, Src::Static(img) if img.format() == n0xis_sources::ImageFormat::Elf && img.machine() == "arm");
-        n0xis_core::VtableSlots {
-            pointer_size: self.pointer_size(),
-            code_pointers: if arm_elf { n0xis_core::CodePointers::ArmInterworking } else { n0xis_core::CodePointers::Address },
-        }
-    }
-
-    /// Whether the source's data pointers are 8 bytes. A static image answers
-    /// from its own header — PE32 and `ELFCLASS32` are `false`, PE32+ and
-    /// `ELFCLASS64` are `true`. A live process, snapshot or remote agent says
-    /// `true`: this seam does not carry their width yet, so they stay x64 as
-    /// before.
     ///
-    /// Readers: [`Self::pointer_size`], and the bitness fallback of
-    /// [`crate::pick_arch_for`], which a static image never reaches: an
-    /// `EM_386`, `EM_ARM`, `EM_X86_64` or `EM_AARCH64` image is decoded by its
-    /// machine field whatever its class, and any other machine is refused
-    /// without `--arch`.
-    pub fn is_64(&self) -> bool {
-        match self {
-            Src::Static(img) => img.is_64(),
-            _ => true,
-        }
+    /// `None` for an image with no pointer width, whose slots there is no
+    /// width to read with: a WebAssembly module.
+    pub fn vtable_slots(&self) -> Option<n0xis_core::VtableSlots> {
+        let arm_elf = matches!(self, Src::Static(img) if img.format() == n0xis_sources::ImageFormat::Elf && img.machine() == "arm");
+        Some(n0xis_core::VtableSlots {
+            pointer_size: self.pointer_size()?,
+            code_pointers: if arm_elf { n0xis_core::CodePointers::ArmInterworking } else { n0xis_core::CodePointers::Address },
+        })
     }
 
     /// What instruction set the target says it holds, when it can say.
@@ -303,8 +317,32 @@ impl Src {
     /// file-analyzing command must use — prefer it over the raw
     /// [`crate::resolve_arch`]/[`crate::pick_arch`], which ignore the header and
     /// so decode a non-x64 image as x86-64 whenever `--arch` is omitted.
+    ///
+    /// **A WebAssembly module is decoded by an architecture built from it**
+    /// (`n0xis_arch::Wasm`): the same bytes decode differently by where they
+    /// are in the module, so no architecture picked by name can decode one.
+    /// An explicit `--arch` that names another instruction set is refused, not
+    /// obeyed: the module declares its machine, and decoding its bytes as x86
+    /// is the confident wrong answer IMAGE_FORMATS.md §7 decision 2 rules out
+    /// (the lead's DECISIONS item 5).
+    ///
+    /// The bitness fallback reads [`Self::pointer_size`]: 4 bytes is a 32-bit
+    /// source, and every source that reaches the fallback (one that declares
+    /// no machine) answers 8.
     pub fn pick_arch(&self, explicit: Option<&str>) -> Result<Box<dyn n0xis_arch::Arch>, String> {
-        crate::arch::pick_arch_for(explicit, self.declared_machine().as_deref(), !self.is_64())
+        if let Src::Static(img) = self
+            && let n0xis_sources::FormatTables::Wasm(module) = img.tables()
+        {
+            return match explicit {
+                None => Ok(Box::new(n0xis_arch::Wasm::new(module.shared(), module.identity()))),
+                Some(a) if a.eq_ignore_ascii_case("wasm") => Ok(Box::new(n0xis_arch::Wasm::new(module.shared(), module.identity()))),
+                Some(other) => Err(format!(
+                    "the image is a WebAssembly module, which declares its own instruction set; `--arch {other}` would decode its \
+                     bytes as another one, so it is refused (omit `--arch`, or pass `--arch wasm`)"
+                )),
+            };
+        }
+        crate::arch::pick_arch_for(explicit, self.declared_machine().as_deref(), self.pointer_size() == Some(4))
     }
 }
 
@@ -403,7 +441,7 @@ fn file_mtime(path: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn load_image_cached(path: &std::path::Path) -> Result<std::sync::Arc<ImageSource>, FrontendError> {
+pub(crate) fn load_image_cached(path: &std::path::Path) -> Result<std::sync::Arc<ImageSource>, FrontendError> {
     let mtime = file_mtime(path);
     let mut slot = LAST_IMAGE.lock().unwrap_or_else(|e| e.into_inner());
     match slot.as_ref() {
@@ -714,10 +752,10 @@ mod tests {
     /// `e_machine`. Header-only (no program/section headers) is a valid ELF, and
     /// it is bytes planted on purpose: the machine field is the one fact under
     /// test, so nothing else needs to be real. `ImageSource::machine` reads
-    /// `e_machine` at offset 0x12 directly, and `ImageSource::is_64` reads the
-    /// `ELFCLASS64` planted at `EI_CLASS`, so this exercises the real
-    /// `declared_machine()`/`is_64()` path that `Src::pick_arch` delegates
-    /// through.
+    /// `e_machine` at offset 0x12 directly, and `ImageSource::pointer_size`
+    /// reads the `ELFCLASS64` planted at `EI_CLASS`, so this exercises the real
+    /// `declared_machine()`/`pointer_size()` path that `Src::pick_arch`
+    /// delegates through.
     fn elf64_header(e_machine: u16) -> Vec<u8> {
         let mut b = vec![0u8; 64];
         b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
@@ -797,7 +835,7 @@ mod tests {
             let img = ImageSource::load(&path).expect("a 32-bit header parses");
             let _ = std::fs::remove_file(&path);
             let src = Src::Static(std::sync::Arc::new(img));
-            assert!(!src.is_64(), "the planted header is ELFCLASS32");
+            assert_eq!(src.pointer_size(), Some(4), "the planted header is ELFCLASS32");
             let refused = src.pick_arch(None).map(|a| a.decoder_id().to_string());
             assert!(refused.as_ref().is_err_and(|e| e.contains(&format!("{e_machine:#x}"))), "{e_machine:#x}: {refused:?}");
             assert_eq!(src.pick_arch(Some("x86")).unwrap().decoder_id(), "x86-32", "{e_machine:#x}: --arch is the declaration");

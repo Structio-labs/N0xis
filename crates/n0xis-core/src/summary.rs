@@ -181,9 +181,7 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
     };
 
     // One answer to "what is this called" — see `ir::symbol_on_entry`.
-    let name = crate::ir::symbol_on_entry(ctx, va)
-        .map(|s| crate::render::render_callee_name(&s.name))
-        .unwrap_or_else(|| format!("sub_{:X}", va.0));
+    let name = crate::function_name(ctx, va);
 
     Some(FunctionSummary {
         va,

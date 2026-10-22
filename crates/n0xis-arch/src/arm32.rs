@@ -1493,8 +1493,16 @@ impl Arch for Arm32 {
         }
     }
 
-    fn pointer_size(&self) -> u8 {
-        4
+    fn pointer_size(&self) -> Option<u8> {
+        Some(4)
+    }
+
+    fn lifting(&self) -> crate::Lifting {
+        crate::Lifting::Lifts
+    }
+
+    fn indexed_function(&self, _va: Va) -> Option<crate::IndexedFunction> {
+        None
     }
 
     fn regs(&self) -> &RegisterFile {
@@ -1653,7 +1661,7 @@ impl Arch for Arm32 {
                 // four to get here; none is a direct branch.
                 let text = o.text();
                 let mnemonic = text.split_whitespace().next().unwrap_or("").to_string();
-                return Ok(DecodedInsn { va, len: 4, bytes: bytes[..4].to_vec(), mnemonic, text, kind: o.kind(), target: None, rip_target: None, cond: cond_name(o.cond), stack_adjust: None });
+                return Ok(DecodedInsn { va, len: 4, bytes: bytes[..4].to_vec(), mnemonic, text, kind: o.kind(), target: None, rip_target: None, cond: cond_name(o.cond), stack_adjust: None, target_function: None });
             }
         };
         let len = inst.len().to_const() as usize;
@@ -1674,7 +1682,7 @@ impl Arch for Arm32 {
         // 32-bit encoding); for a Thumb `IT`-block member this reads `al` here
         // and is corrected by the stateful `decode_stream`.
         let cond = cond_of(&inst);
-        Ok(DecodedInsn { va, len: len as u8, bytes: bytes[..len].to_vec(), mnemonic, text, kind, target, rip_target: None, cond, stack_adjust: None })
+        Ok(DecodedInsn { va, len: len as u32, bytes: bytes[..len].to_vec(), mnemonic, text, kind, target, rip_target: None, cond, stack_adjust: None, target_function: None })
     }
 
     fn decode_stream(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
@@ -1721,6 +1729,7 @@ impl Arch for Arm32 {
                         rip_target: None,
                         cond: None,
                         stack_adjust: None,
+                        target_function: None,
                     });
                     break;
                 }
@@ -2993,7 +3002,7 @@ mod tests {
     #[test]
     fn arm32_is_32bit_with_the_aapcs32_abi() {
         let a = Arm32::a32();
-        assert_eq!(a.pointer_size(), 4);
+        assert_eq!(a.pointer_size(), Some(4));
         assert_eq!(a.calling_conventions()[0].name, "aapcs32");
         assert!(a.regs().by_name("lr").is_some());
     }

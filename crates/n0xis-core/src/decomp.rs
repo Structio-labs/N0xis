@@ -269,7 +269,7 @@ impl Pass for DecompPass {
             opt = OptimizePass.run(ctx, ssa.clone())?;
         }
 
-        let mut names = RenderNames::new(&cfg.callsites)
+        let mut names = RenderNames::new(&cfg.callsites, &|va| crate::unnamed_at(ctx, va))
             .with_stack_pointer(ctx.arch.stack_pointer())
             .with_return_register(crate::ir::abi_return_register(ctx).as_deref())
             .with_register_spelling(ctx.arch.display_reg_map())
@@ -371,7 +371,7 @@ impl Pass for DecompPass {
                 .and_then(crate::classlayout::ctor_class_of)
                 .is_some(),
         );
-        let signature = format_signature(cfg.start, &types.signature, own_name.as_deref());
+        let signature = format_signature(crate::unnamed_at(ctx, cfg.start), &types.signature, own_name.as_deref());
 
         let (pseudo, has_loop, fallback_count, delta, printed) = match input.style {
             // (the arms below produce `pseudo`; block-label stripping is applied
@@ -475,7 +475,7 @@ impl Pass for DecompPass {
 /// `name` is the function's own recovered name when a symbol source knows it —
 /// an export table, or an imported IL2CPP index (Phase 12). Absent, the address
 /// stands in as it always did, so a target with no symbols renders unchanged.
-fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> String {
+fn format_signature(unnamed: crate::UnnamedFunction, sig: &RecoveredSignature, name: Option<&str>) -> String {
     // A *demangled* name is already a complete C++ prototype — return type,
     // qualified name, and its own (real, source-level) parameter list, e.g.
     // `unsigned short __cdecl SomeLib::SomeMethod(struct … *, unsigned int,
@@ -518,7 +518,7 @@ fn format_signature(va: Va, sig: &RecoveredSignature, name: Option<&str>) -> Str
     };
     match name {
         Some(n) => format!("{ret} {n}({params})"),
-        None => format!("{ret} sub_{:x}({params})", va.get()),
+        None => format!("{ret} {}({params})", crate::unnamed_function_name(unnamed)),
     }
 }
 
@@ -1430,7 +1430,7 @@ mod tests {
         // `uint32_t <full-prototype>(uint64_t rcx, …)` seen on MSVC exports.
         let sig = RecoveredSignature { params: vec![], ret: ReturnType::Void, ret_registers: vec![], params_known: true };
         let name = "unsigned short __cdecl SomeLib::ReadValue(struct SomeLib::SomeFile *, unsigned int, unsigned int)";
-        assert_eq!(format_signature(Va(0x1940), &sig, Some(name)), name);
+        assert_eq!(format_signature(crate::UnnamedFunction::Address(Va(0x1940)), &sig, Some(name)), name);
     }
 
     #[test]
@@ -1438,7 +1438,7 @@ mod tests {
         // A plain C export (no parenthesized arg list) keeps the recovered
         // `ret name(params)` rendering — only a full prototype is verbatim.
         let sig = RecoveredSignature { params: vec![], ret: ReturnType::Void, ret_registers: vec![], params_known: true };
-        assert_eq!(format_signature(Va(0x1000), &sig, Some("Compress")), "void Compress(void)");
+        assert_eq!(format_signature(crate::UnnamedFunction::Address(Va(0x1000)), &sig, Some("Compress")), "void Compress(void)");
     }
 
     #[test]
@@ -1559,9 +1559,9 @@ mod tests {
     #[test]
     fn an_unmeasured_parameter_list_renders_as_unspecified_not_as_none() {
         let unknown = RecoveredSignature { params: vec![], ret: ReturnType::Void, ret_registers: vec![], params_known: false };
-        assert_eq!(format_signature(Va(0x1000), &unknown, Some("f")), "void f()");
+        assert_eq!(format_signature(crate::UnnamedFunction::Address(Va(0x1000)), &unknown, Some("f")), "void f()");
         let none = RecoveredSignature { params: vec![], ret: ReturnType::Void, ret_registers: vec![], params_known: true };
-        assert_eq!(format_signature(Va(0x1000), &none, Some("f")), "void f(void)");
+        assert_eq!(format_signature(crate::UnnamedFunction::Address(Va(0x1000)), &none, Some("f")), "void f(void)");
     }
 
 }

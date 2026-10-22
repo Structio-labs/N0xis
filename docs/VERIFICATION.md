@@ -67,7 +67,7 @@ layer, under `qemu-aarch64_be-static` and under `wasmtime`.
 | ELF32 i386 gcc, PIE | 624/624 | 29/41; 9 padding false starts and the `.plt` block | 6 (7 wrong, 1 incomplete; 2 read by hand) | 29/29, 52 sites; GOT-relative data 0 | 6/7 | 5 of 29 names rewritten (`.` to `_`); strings 36/36 |
 | ELF64 AArch64 big-endian, clang, static | 317/317 (3 `nop` = `hint #0x0`) | 26/37, names and ends 26/26 | refused (`big-endian-image`, with a reason about RTTI); the same bytes decompile through `--bytes` | 25/25, 36 sites; 0/2 (`adr`) | refused | profile right; ASCII strings 13/13; the UTF-16BE string is not found and there is no option for it |
 | Mach-O, thin (x86-64, arm64) and universal | refused (`load-failed`) | refused | refused | refused | refused | refused, in all 8 operations |
-| WebAssembly (valid: `wasmtime` runs it) | refused (`load-failed`) | refused | refused | refused | refused | refused; the reader crate is not wired to `--file` |
+| WebAssembly (valid: `wasmtime` runs it) | 2026-10-23, stage 2: every instruction of every function agrees with `wasm-objdump -d` (below) | every body, extent, index and name (the list's own, verbatim) agree with `wasm-objdump -x`/`-d` | refused (`not-lifted`, stage 3) | calls and tail calls to and from every function, imports included, and `ref.func`, agree with `-d`; data refused (`not-lifted`) | refused (`no-native-pointers`) | profile, imports, exports, memories, tables, segments agree with `-x`; strings in the data segments with their linear-memory place (UTF-16 hits not checked by any tool) |
 | Raw bytes (`--bytes`) | x86-64 404/404, ARM64 287/287 | with `--start`: 24/37, 24/35, 0 false starts | Win64 slices 11; ARM64 6 (2 wrong, 6 incomplete); SysV x86-64 0, decompiled under the Win64 convention | 20/20 (28 sites), 24/24 (35 sites) | refused (`no-image-base`) | `profile` refused; strings with `--start`/`--size` 14/14 and 1/1 UTF-16LE, refused without a range |
 
 Sources: disasm against `llvm-objdump -d -M intel` (x86) and GNU
@@ -102,6 +102,91 @@ decomp and at `--start` for discover and xref.
 Not measured: decomp of the C++ virtual-dispatch functions, a PDB on PE32 or ARM64,
 images linked against a real MSVC runtime, and Mach-O or WebAssembly code fed as
 `--bytes`.
+
+### WebAssembly modules, stage 2 (2026-10-21; re-measured 2026-10-23 after the fix round)
+
+docs/design/WASM.md stage 2: a module opened with `--file`, before the lift. Two corpora,
+compared fact by fact with wabt 1.0.42's `wasm-objdump` (rung 3) by
+`crates/n0xis-cli/tests/wasm_facts_are_what_wasm_objdump_lists.rs`: sections (title, start,
+end) with `-h`; imports (kind, index in its kind's space, module and name), exports (kind,
+index, name, a function's body or none for an import exported again), memories (index type,
+limits, shared, import), tables, the start function, element segments (table, count,
+placement) and data segments (memory, size, placement, and the bytes at the module offset
+given for them) with `-x`, as `profile` gives them, and `profile`'s image exports (index and
+body) and folded exports (the functions exported under several names); the function list
+(body offset, index, extent, and the name both as the image stores it and as the list gives
+it) with `-x` and `-d`; `disasm` from every body to its end with `-d` (the locals runs, then
+each instruction's offset, bytes and mnemonic; the rest of the text is the stage-1 decoder's,
+which `crates/n0xis-wasm/tests/references.rs` compares with the same recordings and with
+`wasm-tools print`); every `call`/`return_call`'s target, the callee's body or none for an
+import; `xref to` every function's body against the direct calls and tail calls (`call`/`jmp`)
+and the `ref.func`s (`data`) `-d` shows, and on a module under 64 KiB the same question swept
+over the code section as a window, which must give the index's answer; `xref from` at every
+call, tail call and `ref.func`: one reference, to the index `-d` names, at its body or with no
+position for an import, from the function it is in, with the name `-d` prints (`call 0
+<host_log>`); and each `strings` hit against its segment's placement and the file's bytes.
+
+| Corpus | modules | sections | functions | instructions | call targets | imports | exports | data segments | strings | disagreements |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| built here from known source (`crates/n0xis-wasm/tests/fixtures`, recorded) | 13 | 119 | 123 | 4 526 | 93 (65 to an import, 3 `ref.func`) | 28 | 197 | 11 | 2 | 0 |
+| planted here (`crates/n0xis-cli/tests/fixtures/wasm`: `indexed.wat`, `names.cpp`, recorded) | 2 | 19 | 10 | 134 | 10 (3 to an import, 1 `ref.func`) | 2 | 5 | 1 | 0 | 0 |
+| found on this machine, no known source (an editor's parsers, a regex engine, an HTTP parser, Rust and C modules; deduplicated by content) | 46 | 408 | 6 893 | 2 366 436 | 38 249 (759 to an import, no `ref.func` in any) | 487 | 856 | 495 | 239 832 | 0 |
+
+Two answers the real modules made the reader correct before they agreed, each a defect of
+this step, not of the tools: an export named `""` was a function's name (wasm-objdump names
+nothing by an empty name, and neither does the image now), and a module with no code section
+answered `no-range` where its function list is known and empty (it answers an empty list with
+a note now). Where a function is exported under several names and the `name` section names it
+by none (26 functions in the real corpus), wasm-objdump keeps one of them and the image the
+first; either is accepted, and the count is printed. `gc.wasm` is not compared: wabt 1.0.42
+refuses it (`gc.wabt-refuses.txt`).
+
+What the comparison did not see before the fix round, found by three adversarial verifiers
+and each now compared above: the list rendered a name as an identifier (`Vec::push(int)` as
+`Vec__push_int_`, `a-b` and `a_b` both `a_b`; 25 of the 6 893 real functions) while the test
+compared only the stored symbol; a call to an imported function was no reference at all
+(`ok: true`, an empty list; 759 such calls in the real corpus); a `ref.func` was not a
+reference to its function; an export in `profile`'s image block had no index. Of the strings,
+68 561 are UTF-8 and 171 271 UTF-16LE in the real corpus: UTF-16 is now read at even
+addresses of linear memory, where a compiler aligns `char16_t` text, not of the module (two
+builds of one C file, `wide.c`, whose data sit at module offsets of different parity, find the
+string at linear address 0x10000 in both; before, in one). wasm-objdump lists no strings, so
+the UTF-16 hits are checked by placement and byte range only; many in a parser's tables are
+likely `u16` arrays, not text, and no count of real strings among them was made.
+
+A module planted for the purpose (`crates/n0xis-cli/tests/fixtures/wasm/placed-by-import.wat`,
+assembled and validated by `wasm-tools` and `wasm-validate`): its data and element segments
+placed by an imported global are answered `not_placed`, naming the global and its import, and
+the ones placed by a constant beside them are placed, as `-x` prints them. Every lift-dependent
+command refuses a module with `not-lifted`, naming stage 3, and `--arch x64` on one is refused
+(`lift_commands_refuse_a_module.rs`; with the refusal removed, `disasm --arch x64` answered
+`add [rbx],eax` over a body's bytes, `ok: true`). Two modules in one project keep two names at
+one offset (`two_modules_keep_their_own_names.rs`).
+
+Planted broken modules (`crates/n0xis-cli/tests/a_malformed_module_says_what_it_holds.rs`,
+each judged by `wasm-validate` and, for the trap, `wasmtime`, by hand): an out-of-order and a
+repeated `name` map entry are kept as the stage-1 reader keeps them and the finding says so in
+words (it said "left out", in Rust's debug spelling); a body of size 0 is listed (it was
+dropped, and a module of four empty bodies listed none); a start function and an export past
+the index space, and a data segment past its memory's initial size, each carry a finding; a
+module naming 160 000 functions opens in well under a second (a linear search per name made it
+12.9 s). Each of those tests, and each comparison above that the round added, was calibrated by
+reverting its fix: 25 mutations, each failing its own assertion.
+
+Hostile input through the new layers (`crates/n0xis-core/tests/a_corrupted_module_is_answered_by_every_layer.rs`):
+2 000 corrupted copies of each of the 14 fixtures, every one that opens (7 953 of the 28 000)
+asked every image answer, every body decoded, the code section decoded as one range and the
+function list made, under a deadline; no panic, every decoded instruction inside a body with
+the file's bytes, the list exactly the declared bodies, the largest single allocation 105.6
+times the input's length (bound 304). The test found two defects of this step before it
+passed: a body of size 0 was stated with an extent of 0, and decoding a range across it never
+advanced.
+
+Not measured: decompilation and every other lift (stage 3); a module as a live target (stage
+4); DWARF in custom sections; the component format (refused by the reader, as a component).
+Not compared: an element segment as a reference to the functions it places in a table
+(`xref` lists references from code, as it does on a native image); the module identity
+beside a code position, which only `profile` states.
 
 ### Instruction sets
 

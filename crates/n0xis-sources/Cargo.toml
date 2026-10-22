@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 n0xis-contracts = { workspace = true }
+# The WebAssembly reader behind the third `Image`: OS-free, depends on
+# `thiserror` alone, so it is not behind a feature.
+n0xis-wasm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

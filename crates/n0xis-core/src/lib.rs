@@ -62,6 +62,7 @@ mod trace;
 mod trampoline;
 mod typeinfer;
 mod ui_locate;
+mod unnamed;
 mod valueset;
 mod xref;
 mod xref_string;
@@ -97,7 +98,7 @@ pub use classlayout::{
 };
 pub use eh::{landing_pads, scan_eh_frame, scan_pdata, EhFunction, EhRegion};
 pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineHint, ExportInfo, FoldedExports, ImageProfile, SectionInfo};
-pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind};
+pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind, NO_NATIVE_POINTERS};
 pub use dot::{DotArtifact, dot};
 pub use ir::{
     CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
@@ -133,8 +134,9 @@ pub use typeinfer::{
 };
 pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};
+pub use unnamed::{function_name, unnamed_at, unnamed_function_name, UnnamedFunction};
 pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};
-pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, build_xref_index, xref_kind};
+pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, build_xref_index, xref_entry, xref_kind};
 pub use strings::{find_strings, utf16_strings, utf8_strings, FoundString, StringEncoding};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
@@ -212,7 +214,11 @@ pub struct Ctx<'a> {
     ///
     /// **Sorted by start address**, which every consumer relies on to look a
     /// function up rather than walk the list once per query.
-    pub functions: Option<&'a [(n0xis_contracts::Va, n0xis_contracts::Va)]>,
+    ///
+    /// With the image's word on whether they are all its functions
+    /// ([`StatedFunctions::coverage`]): where they are (a WebAssembly
+    /// module's bodies), discovery takes them and nothing else.
+    pub functions: Option<StatedFunctions<'a>>,
     /// Whole-program propagated types ([`TypePropagatePass`]), as
     /// `(function VA, parameter index) → type name` and `VA → return type`.
     /// Consulted **only where local inference found nothing better** — a type a
@@ -228,6 +234,17 @@ pub struct Ctx<'a> {
     /// is what lets a dispatch through `this->impl` resolve at all. `None` =
     /// per-function layout exactly as before.
     pub layout: Option<&'a dyn crate::ClassLayoutLookup>,
+}
+
+/// The function extents an image states, and whether they are all of its
+/// functions ([`n0xis_sources::StartCoverage`]) — one value, so a list
+/// cannot be attached without saying which it is.
+#[derive(Clone, Copy, Debug)]
+pub struct StatedFunctions<'a> {
+    /// `(start, exclusive end)`, sorted by start; `end <= start` is a start
+    /// with no stated extent.
+    pub extents: &'a [(n0xis_contracts::Va, n0xis_contracts::Va)],
+    pub coverage: n0xis_sources::StartCoverage,
 }
 
 /// The recovered vtables a pass may read, and how their slots are read.
@@ -327,9 +344,14 @@ impl<'a> Ctx<'a> {
         self.eh = Some(eh);
         self
     }
-    /// Attach the function starts/ends the image states (see the field docs).
-    pub fn with_stated_functions(mut self, f: &'a [(n0xis_contracts::Va, n0xis_contracts::Va)]) -> Self {
-        self.functions = Some(f);
+    /// Attach the function starts/ends the image states, and whether they are
+    /// every function it has (see the field docs).
+    pub fn with_stated_functions(
+        mut self,
+        extents: &'a [(n0xis_contracts::Va, n0xis_contracts::Va)],
+        coverage: n0xis_sources::StartCoverage,
+    ) -> Self {
+        self.functions = Some(StatedFunctions { extents, coverage });
         self
     }
     /// Attach the whole-program type store (see the field docs).

@@ -195,6 +195,10 @@ fn src_facts(src: &Src, img: &ImageSource, scrub: &dyn Fn(&str) -> String) -> Va
         Err(e) => json!({ "error": scrub(&e) }),
     };
     let slots = src.vtable_slots();
+    // Keys and values as the step-1 recording wrote them for every native
+    // image; an image with no pointer width (a WebAssembly module) answers
+    // null for both.
+    let is_64 = src.pointer_size().map(|p| p == 8);
     let stated: Vec<Value> = n0xis_frontend::stated_functions(src).into_iter().map(|(s, e)| json!([hex(s.0), hex(e.0)])).collect();
     json!({
         "label": scrub(&src.label()),
@@ -218,11 +222,14 @@ fn src_facts(src: &Src, img: &ImageSource, scrub: &dyn Fn(&str) -> String) -> Va
         "base_for_module": { "none": base_for(None), "own_module": base_for(Some(&own)), "absent_module": base_for(Some(ABSENT_MODULE)) },
         "linkage": format!("{:?}", src.linkage()),
         "pointer_size": src.pointer_size(),
-        "is_64": src.is_64(),
+        "is_64": is_64,
         "declared_machine": src.declared_machine(),
         "pick_arch_with_no_flag": pick,
         "rtti_refusal": src.rtti_refusal().map(|r| format!("{r:?}")),
-        "vtable_slots": { "pointer_size": slots.pointer_size, "code_pointers": format!("{:?}", slots.code_pointers) },
+        "vtable_slots": match slots {
+            Some(slots) => json!({ "pointer_size": slots.pointer_size, "code_pointers": format!("{:?}", slots.code_pointers) }),
+            None => Value::Null,
+        },
         "stated_functions": stated,
     })
 }
@@ -236,7 +243,7 @@ fn image_facts(img: &ImageSource, scrub: &dyn Fn(&str) -> String) -> Value {
     let mut o = BTreeMap::new();
     o.insert("format", json!(img.format().name()));
     o.insert("image_base", json!(hex(img.image_base().0)));
-    o.insert("is_64", json!(img.is_64()));
+    o.insert("is_64", json!(img.pointer_size().map(|p| p == 8)));
     o.insert("pointer_size", json!(img.pointer_size()));
     o.insert("byte_order", json!(format!("{:?}", img.byte_order())));
     o.insert("machine", json!(img.machine()));
@@ -264,6 +271,16 @@ fn image_facts(img: &ImageSource, scrub: &dyn Fn(&str) -> String) -> Value {
     match img.format() {
         ImageFormat::Pe => {
             o.insert("degraded", json!(img.degraded()));
+        }
+        // What only a module answers: its identity, every function with its
+        // extent, and its memories and data segments.
+        ImageFormat::Wasm => {
+            o.insert("module_identity", json!(img.module_identity()));
+            o.insert(
+                "every_function",
+                json!(img.every_function().map(|f| f.iter().map(|(s, e)| json!([hex(s.0), hex(e.0)])).collect::<Vec<_>>())),
+            );
+            o.insert("address_model", serde_json::to_value(&img.image().machine().address_model).unwrap_or(Value::Null));
         }
         ImageFormat::Elf => {
             let elf = img;

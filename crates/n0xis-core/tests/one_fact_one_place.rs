@@ -158,22 +158,36 @@ fn the_calling_convention_is_chosen_in_exactly_one_place() {
     );
 }
 
-/// Every architecture declares at least one calling convention.
+/// Every architecture that lifts declares at least one calling convention,
+/// and one that only decodes states why it has none (the lead's DECISIONS
+/// item 6, for the WebAssembly architecture of docs/design/WASM.md stage 2).
 ///
-/// This is what makes `Arch::calling_convention`'s `None` unreachable for a
-/// real architecture, and so what lets the lift take its answer without a
-/// second read of the list to fall back on. Stated as a test rather than left
-/// as a comment, because the guard above is only worth what this invariant is.
+/// This is what makes `Arch::calling_convention`'s `None` unreachable for an
+/// architecture the lift runs on, and so what lets the lift take its answer
+/// without a second read of the list to fall back on. Stated as a test rather
+/// than left as a comment, because the guard above is only worth what this
+/// invariant is. A decode-only architecture is refused by every command that
+/// would read a convention (`n0xis_frontend::lift_refusal`), with the reason
+/// it states here.
 #[test]
-fn every_architecture_declares_a_calling_convention() {
-    let arches: Vec<(&str, Vec<&str>)> = vec![
-        ("x64", n0xis_arch::X64::new().calling_conventions().iter().map(|c| c.name).collect()),
-        ("arm64", n0xis_arch::Arm64::new().calling_conventions().iter().map(|c| c.name).collect()),
-        ("arm32", n0xis_arch::Arm32::a32().calling_conventions().iter().map(|c| c.name).collect()),
-        ("thumb", n0xis_arch::Arm32::thumb().calling_conventions().iter().map(|c| c.name).collect()),
+fn every_architecture_that_lifts_declares_a_calling_convention() {
+    let module = std::sync::Arc::new(n0xis_wasm::read(b"\0asm\x01\0\0\0").expect("the empty module reads"));
+    let arches: Vec<(&str, Box<dyn Arch>)> = vec![
+        ("x64", Box::new(n0xis_arch::X64::new())),
+        ("arm64", Box::new(n0xis_arch::Arm64::new())),
+        ("arm32", Box::new(n0xis_arch::Arm32::a32())),
+        ("thumb", Box::new(n0xis_arch::Arm32::thumb())),
+        ("wasm", Box::new(n0xis_arch::Wasm::new(module, "test"))),
     ];
-    for (name, ccs) in arches {
-        assert!(!ccs.is_empty(), "{name} declares no calling convention");
+    for (name, arch) in arches {
+        let ccs: Vec<&str> = arch.calling_conventions().iter().map(|c| c.name).collect();
+        match arch.lifting() {
+            n0xis_arch::Lifting::Lifts => assert!(!ccs.is_empty(), "{name} lifts and declares no calling convention"),
+            n0xis_arch::Lifting::DecodeOnly { why } => {
+                assert!(!why.trim().is_empty(), "{name} decodes only and does not say why");
+                assert!(ccs.is_empty(), "{name} decodes only, so no lift reads the conventions it declares: {ccs:?}");
+            }
+        }
     }
 }
 
@@ -245,4 +259,59 @@ fn a_stack_locals_name_is_spelled_in_one_place() {
         product_lines(&render).iter().any(|(_, l)| l.contains("stack_local_name(")),
         "the renderer names stack locals without `typeinfer::stack_local_name`"
     );
+}
+
+/// An unnamed function's name has one spelling rule, `n0xis_core::unnamed_function_name`.
+/// It was formatted in five places with two spellings, `sub_{:X}` in the
+/// function list and `sub_{:x}` for a callee and in a decompiled signature, so
+/// a function at an address with a letter in it had two names depending on
+/// which command was asked (docs/design/WASM.md §5 decision 1). A WebAssembly
+/// function's fallback, `func_<index>`, is the same rule's.
+///
+/// Every product line that spells either prefix in a string literal has to be
+/// in `unnamed.rs` — not only as a format string: `format!("{}{:x}", "sub_",
+/// va.0)` is the same copy, and a guard that looked for `sub_{` alone passed
+/// it. And the identity the name is made from is the image's: a site that
+/// builds `UnnamedFunction::Address` itself names a WebAssembly function by
+/// its module offset, where `unnamed_at` names it by its index.
+#[test]
+fn an_unnamed_functions_name_is_spelled_in_one_place() {
+    // Sites that state the address identity themselves, each because no
+    // other identity exists there.
+    const ADDRESS_ONLY: &[(&str, &str)] = &[
+        // the `.pdata` list: a PE's exception directory, native by definition
+        ("discover.rs", "discover_pdata"),
+        // a callee no callsite holds, which the renderer has no context to ask about
+        ("render.rs", "unwrap_or(crate::UnnamedFunction::Address(va))"),
+    ];
+    let mut bad = Vec::new();
+    let mut exempt_seen = vec![false; ADDRESS_ONLY.len()];
+    for (path, text) in workspace_sources() {
+        if path.ends_with("unnamed.rs") {
+            continue;
+        }
+        let file = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let lines = product_lines(&text);
+        for (i, (n, line)) in lines.iter().enumerate() {
+            if line.contains("\"sub_") || line.contains("\"func_") {
+                bad.push(format!("{}:{n}: {}", path.display(), line.trim()));
+            }
+            if line.contains("UnnamedFunction::Address(") {
+                // The exemption names the line, or the function the line is
+                // in (the nearest `fn` above it).
+                let context = lines[..=i].iter().rev().find(|(_, l)| l.contains("fn ")).map_or("", |(_, l)| *l);
+                match ADDRESS_ONLY.iter().position(|(f, at)| *f == file && (line.contains(at) || context.contains(at))) {
+                    Some(k) => exempt_seen[k] = true,
+                    None => bad.push(format!("{}:{n}: {}", path.display(), line.trim())),
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "an unnamed function is named by `n0xis_core::unnamed_function_name` of `unnamed_at`; these spell the name or the identity themselves:\n  {}",
+        bad.join("\n  ")
+    );
+    let stale: Vec<_> = ADDRESS_ONLY.iter().zip(&exempt_seen).filter(|(_, seen)| !**seen).map(|(e, _)| e).collect();
+    assert!(stale.is_empty(), "exemptions that describe no site any more: {stale:?}");
 }

@@ -26,7 +26,8 @@
 //! virtual address space at its preferred base, for a WebAssembly module the
 //! module's own offsets. Nothing here assumes more than that one space per
 //! image; linear memories, which a module may have several of, are not
-//! addressed through it.
+//! addressed through it. Which of the two an image is, it says once, in its
+//! [`Machine::address_model`].
 
 use n0xis_contracts::Va;
 use serde::Serialize;
@@ -117,6 +118,11 @@ pub enum PointerWidth {
 }
 
 impl PointerWidth {
+    /// The width an ELF class or a PE's optional-header magic states.
+    pub fn of_64_bit(is_64: bool) -> Self {
+        if is_64 { PointerWidth::Eight } else { PointerWidth::Four }
+    }
+
     pub fn bytes(self) -> u8 {
         match self {
             PointerWidth::Four => 4,
@@ -138,6 +144,9 @@ pub enum Isa {
     X86,
     Arm64,
     Arm,
+    /// WebAssembly: a module's code is its own instruction set, whatever runs
+    /// it.
+    Wasm,
     /// A machine value this build does not map, as the header holds it.
     Unrecognized { raw: u16 },
     /// The header's machine field could not be read at all.
@@ -155,6 +164,7 @@ impl Isa {
             Isa::X86 => "x86".into(),
             Isa::Arm64 => "arm64".into(),
             Isa::Arm => "arm".into(),
+            Isa::Wasm => "wasm".into(),
             Isa::Unrecognized { raw } => format!("0x{raw:x}"),
             Isa::Unreadable => "unknown".into(),
         }
@@ -164,15 +174,113 @@ impl Isa {
 /// What machine the image is for (§2's first question), as today's readers
 /// answer it. The revision, and one table from the declaration to the set of
 /// decoders the image can hold, are §5 step 2's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Machine {
     pub isa: Isa,
-    pub pointer_width: PointerWidth,
+    /// How the image addresses its data, stated once for the image.
+    pub address_model: AddressModel,
     pub byte_order: ByteOrder,
     /// The calling convention signature recovery reads the image with, as a
     /// `CallConv::name` selector: `win64` for a PE32+, `cdecl` for a PE32,
-    /// `sysv` for every ELF — the readers' own answers, unchanged.
+    /// `sysv` for every ELF — the readers' own answers, unchanged — and
+    /// `wasm` for a WebAssembly module, whose functions take typed parameters
+    /// that no register carries.
     pub abi: &'static str,
+}
+
+/// How an image addresses its data (docs/design/WASM.md §5 decisions 2 and
+/// 7): a typed choice every reader states, so no consumer can take a width
+/// from an image that has none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddressModel {
+    /// One address space, the image's own (`Va`), holding its code and its
+    /// data, with data pointers this wide: every native image.
+    Native(PointerWidth),
+    /// The image's positions (`Va`) are module offsets and hold **no data**:
+    /// a WebAssembly module, whose data lives in linear memories, each an
+    /// address space of its own that starts at 0, with its own index type.
+    /// Each memory is stated, a 32-bit one and a 64-bit one side by side
+    /// alike, and a module with no memory states none; no single pointer
+    /// width is claimed for the module.
+    ///
+    /// `segments` are the module's data segments, the initial contents of its
+    /// memories: where each is placed is an address in one memory, never a
+    /// position in the module.
+    LinearMemories { memories: Vec<LinearMemory>, segments: Vec<DataSegment> },
+}
+
+impl AddressModel {
+    /// The width of the image's data pointers, where it has one address space
+    /// to point into.
+    pub fn pointer_width(&self) -> Option<PointerWidth> {
+        match self {
+            AddressModel::Native(width) => Some(*width),
+            AddressModel::LinearMemories { .. } => None,
+        }
+    }
+}
+
+fn hex_u64<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("{v:#x}"))
+}
+
+/// One linear memory of a module's memory index space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LinearMemory {
+    /// Its position in the memory index space: imported memories first.
+    pub index: u32,
+    /// The type its addresses have: `i32`, or `i64` for a memory64 memory.
+    pub address: MemoryAddress,
+    /// The import that provides it (by position in the import section), or
+    /// `None` for a memory the module defines.
+    pub import: Option<usize>,
+    /// Its limits, in 64 KiB pages.
+    pub min_pages: u64,
+    pub max_pages: Option<u64>,
+    /// Shared between threads (the threads proposal).
+    pub shared: bool,
+}
+
+/// The index type of a linear memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAddress {
+    I32,
+    I64,
+}
+
+/// One data segment of a module: bytes the module holds, and where in which
+/// memory instantiation copies them, when the module says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DataSegment {
+    /// Its position in the data index space.
+    pub index: u32,
+    /// Where its bytes are in the module (a module offset).
+    pub bytes_at: Va,
+    /// How many bytes it holds.
+    pub len: u64,
+    pub placement: SegmentPlacement,
+}
+
+/// Where a segment's bytes go when the module is instantiated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SegmentPlacement {
+    /// Copied into memory `memory` at `address`, an address in that memory,
+    /// computed from the segment's constant offset expression. Written in hex,
+    /// as every address in an answer is; it is not a `Va`, which is a position
+    /// in the image's own space.
+    Placed {
+        memory: u32,
+        #[serde(serialize_with = "hex_u64")]
+        address: u64,
+    },
+    /// The module states no static placement for it, and `why` is the reason:
+    /// a passive segment (placed only when code runs `memory.init`), one whose
+    /// offset reads an imported global (whose value is the host's, at
+    /// instantiation), or an offset expression this reader does not evaluate.
+    NotPlaced { why: String },
 }
 
 /// How the loader maps the image: its preferred base, the span it reserves
@@ -274,6 +382,9 @@ pub enum SymbolTable {
     /// A PE's export table: its named exports, and its unnamed ones that land
     /// in code as `Ordinal<n>`. A PE's COFF symbol table is not read.
     Exports,
+    /// A WebAssembly module's `name` section: the function names it gives the
+    /// functions the module defines, each at its body.
+    NameSection,
 }
 
 /// A name the image gives an address.
@@ -294,7 +405,55 @@ pub struct Export {
     pub name: Option<String>,
     /// The ordinal, where the format numbers its exports.
     pub ordinal: Option<u32>,
-    pub target: ExportTarget,
+    /// What the export is, where the format says.
+    pub kind: ItemKind,
+    pub target: ExportTo,
+}
+
+/// What an import or an export is (docs/design/WASM.md stage 2; decided as
+/// the lead's DECISIONS item 9): stated by every reader, so a non-function
+/// entry can never read as a function reached by nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    Function,
+    Table,
+    Memory,
+    Global,
+    /// A WebAssembly exception tag.
+    Tag,
+    /// A data object (an ELF `STT_OBJECT`, `STT_COMMON` or `STT_TLS` symbol).
+    Data,
+    /// The format does not say: a PE import or export names code or a variable
+    /// alike, and an ELF symbol of type `STT_NOTYPE` says neither.
+    NotStated,
+}
+
+/// What an export leads to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportTo {
+    /// An address in this image (a PE export).
+    Local(Va),
+    /// A PE forwarder: resolved by the loader in another module, with no code
+    /// in this image ([`ExportTarget::Forwarded`]).
+    Forwarded { string: Va, to: String },
+    /// A WebAssembly function, by its index (the identity), with its body's
+    /// module offset (the position) beside it — or `None` for an imported
+    /// function the module exports again, which has an index and no position.
+    Function { index: u32, body: Option<Va> },
+    /// An entry of a non-function index space — the export's [`ItemKind`]
+    /// says which — by its index. It has no position in the image.
+    Entry { index: u32 },
+}
+
+impl From<ExportTarget> for ExportTo {
+    fn from(t: ExportTarget) -> Self {
+        match t {
+            ExportTarget::Local(va) => ExportTo::Local(va),
+            ExportTarget::Forwarded { string, to } => ExportTo::Forwarded { string, to },
+        }
+    }
 }
 
 /// How an image's imports are bound to the libraries that provide them.
@@ -320,6 +479,9 @@ pub enum LibrarySource {
     /// Named only by an ELF version requirement (`.gnu.version_r`), by no
     /// `DT_NEEDED` entry: listed so the reference naming it can point at it.
     VersionRequirementOnly,
+    /// The module name of a WebAssembly import: what the host resolves the
+    /// import's name in.
+    ImportModule,
 }
 
 /// A library the image needs.
@@ -382,9 +544,10 @@ pub enum Reach {
     Stub(Va),
     /// The pointer the loader binds (a PE IAT entry, an ELF GOT slot).
     Slot(Va),
-    /// By index, with no address at all: a WebAssembly import is function
-    /// `n` of the module's function index space (docs/design/WASM.md §5
-    /// decision 1).
+    /// By index, with no address at all: a WebAssembly import is entry `n`
+    /// of the index space its [`ImportReference::kind`] names — a function
+    /// import is function `n` of the function index space, which `call n`
+    /// names (docs/design/WASM.md §5 decision 1).
     Index(u32),
 }
 
@@ -393,6 +556,10 @@ pub enum Reach {
 pub struct ImportReference {
     #[serde(flatten)]
     pub name: ImportName,
+    /// What it is, where the format says: a WebAssembly import states it; an
+    /// ELF symbol's type does (`STT_FUNC` a function, `STT_OBJECT` data); a PE
+    /// import does not.
+    pub kind: ItemKind,
     pub library: LibraryRef,
     /// Every way the image reaches it that the reader reads. An ELF's reach is
     /// the slots a `GLOB_DAT` or `JUMP_SLOT` relocation binds to it and the PLT
@@ -432,6 +599,26 @@ pub enum StartReason {
     /// A stub that only jumps through `slot` (an x86-64 ELF PLT entry whose
     /// slot an import or a self-bound `JUMP_SLOT` relocation names).
     Stub { slot: Va },
+    /// A WebAssembly function body in the code section, of function `function`
+    /// (its index, the identity; the start is its position). A body starts at
+    /// its locals declaration, before its first instruction (decision 1).
+    Body { function: u32 },
+}
+
+/// Whether the image's declared starts are all of its functions — a typed
+/// property the image states (the lead's DECISIONS item 10), read by function
+/// discovery: where every function is declared, the gap heuristics that find
+/// undeclared ones have nothing to find, and only invent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartCoverage {
+    /// Some functions are declared; others may not be, and discovery looks for
+    /// them. Every native image.
+    Some,
+    /// Every function is declared, with its extent, and nothing else in the
+    /// code is a function: a WebAssembly module, whose code section holds one
+    /// body per defined function and nothing between them but their sizes.
+    Every,
 }
 
 /// A place the image's own tables say code starts.
@@ -521,6 +708,11 @@ pub enum Finding {
     /// pick one silently (§4 rule 4): `what` says which, and what the answers
     /// built on them do about it.
     Contradiction { what: String },
+    /// A part of the image that could not be read, while the rest could:
+    /// `part` names it as the format does (`the name section`, `the body of
+    /// function 7`), `why` says what was wrong. What that part would have
+    /// stated is missing from the answers, not empty.
+    PartNotRead { part: String, why: String },
 }
 
 /// An image's CodeView record: which program database (PDB) the linker wrote
@@ -605,7 +797,7 @@ impl MemorySource for LoadedBytes<'_> {
 
 /// The questions every image reader answers (IMAGE_FORMATS.md §2).
 pub trait Image: std::fmt::Debug + Send + Sync {
-    fn machine(&self) -> Machine;
+    fn machine(&self) -> &Machine;
     fn linkage(&self) -> Linkage;
     fn segments(&self) -> &Segments;
     fn sections(&self) -> &[Section];
@@ -617,6 +809,8 @@ pub trait Image: std::fmt::Debug + Send + Sync {
     /// Where the image says code starts, and the kinds of start it states
     /// that were not read (the entry point, an unwind table, PLT stubs).
     fn declared_starts(&self) -> &Partial<Vec<DeclaredStart>>;
+    /// Whether [`Self::declared_starts`] are every function the image has.
+    fn start_coverage(&self) -> StartCoverage;
     fn loaded_bytes(&self) -> LoadedBytes<'_>;
     fn findings(&self) -> &[Finding];
     /// What the slot at `slot` is bound to.
@@ -633,6 +827,7 @@ pub trait Image: std::fmt::Debug + Send + Sync {
 pub enum ImageFormat {
     Pe,
     Elf,
+    Wasm,
 }
 
 impl ImageFormat {
@@ -640,6 +835,7 @@ impl ImageFormat {
         match self {
             ImageFormat::Pe => "pe",
             ImageFormat::Elf => "elf",
+            ImageFormat::Wasm => "wasm",
         }
     }
 }
@@ -654,7 +850,21 @@ pub struct OpenOptions {}
 /// step 6), and every match on this then has to answer it.
 #[derive(Debug)]
 pub enum Opened {
-    Thin(Box<dyn Image>),
+    Thin { image: Box<dyn Image>, tables: FormatTables },
+}
+
+/// What a format states beyond the format-neutral questions of [`Image`],
+/// for the consumers that need it by name (the lead's DECISIONS item 4): a
+/// typed case per format, never a downcast and never a format name compared
+/// as a string. The trait stays format-neutral; this is where a format's own
+/// structure is reached.
+#[derive(Clone, Debug)]
+pub enum FormatTables {
+    /// A native image: everything it states is an [`Image`] answer.
+    Native,
+    /// A WebAssembly module, read: the index spaces, the bodies and the
+    /// instructions an architecture for the module decodes from.
+    Wasm(std::sync::Arc<crate::WasmModule>),
 }
 
 /// Why an opener refused the bytes.
@@ -679,6 +889,9 @@ pub enum OpenError {
 /// this sees a short slice and recognizes nothing, which its own format's
 /// tests would show.
 pub const SNIFF_LEN: usize = 64;
+
+/// How a WebAssembly module is named when nothing is recognized.
+const WASM_DESCRIBED: &str = "a WebAssembly module (\\0asm)";
 
 /// One entry of the registry: how a format is recognized and opened.
 pub struct Format {
@@ -706,12 +919,15 @@ pub fn formats() -> &'static [Format] {
     {
         &[
             Format { format: ImageFormat::Pe, described: "a PE (MZ)", sniff: crate::static_pe::sniff, open: crate::static_pe::open },
-            Format { format: ImageFormat::Elf, described: "ELF (\\x7fELF)", sniff: crate::static_elf::sniff, open: crate::static_elf::open },
+            Format { format: ImageFormat::Elf, described: "an ELF (\\x7fELF)", sniff: crate::static_elf::sniff, open: crate::static_elf::open },
+            Format { format: ImageFormat::Wasm, described: WASM_DESCRIBED, sniff: crate::static_wasm::sniff, open: crate::static_wasm::open },
         ]
     }
+    // The WebAssembly reader is OS-free and depends on no parser outside this
+    // workspace, so it needs no feature of its own.
     #[cfg(not(feature = "static-pe"))]
     {
-        &[]
+        &[Format { format: ImageFormat::Wasm, described: WASM_DESCRIBED, sniff: crate::static_wasm::sniff, open: crate::static_wasm::open }]
     }
 }
 

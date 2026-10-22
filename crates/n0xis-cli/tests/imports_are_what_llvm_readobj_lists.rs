@@ -73,6 +73,9 @@ enum Lib {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Reference {
     name: Name,
+    /// What it is, where the format says: an ELF symbol's type; never for a
+    /// PE import, whose descriptor names code and variables alike.
+    kind: String,
     library: Lib,
     slots: BTreeSet<u64>,
     stubs: BTreeSet<u64>,
@@ -125,7 +128,7 @@ fn pe_expected(text: &str) -> Answered {
             let (name, n) = symbol.rsplit_once(" (").map(|(a, b)| (a.trim(), b.trim_end_matches(')'))).unwrap_or(("", symbol.trim_matches(|c| c == '(' || c == ')')));
             let name = if name.is_empty() { Name::Ordinal(n.parse().expect("an ordinal")) } else { Name::Named(name.to_string()) };
             let slot = base + iat.expect("an IAT before its symbols") + index * ptr;
-            references.push(Reference { name, library: Lib::Binds(libraries.len() - 1), slots: [slot].into(), stubs: BTreeSet::new() });
+            references.push(Reference { name, kind: "not_stated".into(), library: Lib::Binds(libraries.len() - 1), slots: [slot].into(), stubs: BTreeSet::new() });
             index += 1;
         }
     }
@@ -170,19 +173,28 @@ fn elf_expected(text: &str, plt: &str) -> (Answered, bool) {
         }
     }
 
-    // Dynamic symbols and their versions, both in symbol-table order.
-    let symbols: Vec<(String, bool)> = {
+    // Dynamic symbols, their types and their versions, all in symbol-table
+    // order. A type is `Function (0x2)`, `Object (0x1)`, `TLS (0x6)`, …: what
+    // it says is code or data, the kind the engine states for the import.
+    let symbols: Vec<(String, String, bool)> = {
         let lines = block(text, "DynamicSymbols [");
         let mut out = Vec::new();
-        let mut name = None;
+        let (mut name, mut kind) = (None, String::new());
         for line in lines {
             if let Some(n) = field(line, "Name:") {
                 // `<name>[@<version>] (<string-table offset>)`; an empty name
                 // leaves only the parentheses.
                 let n = if n.starts_with('(') { "" } else { n.rsplit_once(" (").map_or(n, |(a, _)| a) };
                 name = Some(n.split('@').next().unwrap_or_default().to_string());
+            } else if let Some(ty) = field(line, "Type:") {
+                kind = match ty.split_whitespace().next().unwrap_or_default() {
+                    "Function" | "GNU_IFunc" => "function",
+                    "Object" | "Common" | "TLS" => "data",
+                    _ => "not_stated",
+                }
+                .to_string();
             } else if let Some(s) = field(line, "Section:") {
-                out.push((name.take().expect("a name before its section"), s.starts_with("Undefined")));
+                out.push((name.take().expect("a name before its section"), kind.clone(), s.starts_with("Undefined")));
             }
         }
         out
@@ -209,7 +221,7 @@ fn elf_expected(text: &str, plt: &str) -> (Answered, bool) {
     }
 
     let mut references = Vec::new();
-    for (index, (name, undefined)) in symbols.iter().enumerate().skip(1) {
+    for (index, (name, kind, undefined)) in symbols.iter().enumerate().skip(1) {
         if !undefined || name.is_empty() {
             continue;
         }
@@ -219,7 +231,7 @@ fn elf_expected(text: &str, plt: &str) -> (Answered, bool) {
         };
         let slots = slots.get(name).cloned().unwrap_or_default();
         let stubs = if x86_64 && !slots.is_empty() { stubs.get(name).cloned().unwrap_or_default() } else { BTreeSet::new() };
-        references.push(Reference { name: Name::Named(name.clone()), library, slots, stubs });
+        references.push(Reference { name: Name::Named(name.clone()), kind: kind.clone(), library, slots, stubs });
     }
     (Answered { format: "elf".into(), binding: "flat".into(), libraries, references }, x86_64)
 }
@@ -278,7 +290,8 @@ fn engine(fixture: &str) -> (Answered, Unread) {
             };
             let reach = r["reach"]["read"].as_array().unwrap_or_else(|| panic!("{fixture}: reach not read: {r}"));
             let at = |key: &str| reach.iter().filter_map(|x| x[key].as_str()).map(hex).collect::<BTreeSet<u64>>();
-            Reference { name, library, slots: at("slot"), stubs: at("stub") }
+            let kind = r["kind"].as_str().unwrap_or_else(|| panic!("{fixture}: a reference with no kind: {r}")).to_string();
+            Reference { name, kind, library, slots: at("slot"), stubs: at("stub") }
         })
         .collect();
     let answered = Answered {

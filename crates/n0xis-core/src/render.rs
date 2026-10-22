@@ -27,6 +27,12 @@ use crate::typeinfer::{is_stack_root, stack_local_name, TypeArtifact};
 /// `*(type*)(addr)` field access, `return rax;` always shown).
 pub struct RenderNames {
     callee_names: HashMap<u64, String>,
+    /// How each callee the CFG saw is identified when no symbol names it, as
+    /// [`crate::unnamed_at`] answers it for the image: by address on a native
+    /// one, by index in a WebAssembly module. Asked once per callsite where
+    /// the context is at hand, because rendering has none, so the fallback
+    /// name of a callee is the one rule's and not a copy of it.
+    unnamed: HashMap<u64, crate::UnnamedFunction>,
     /// IAT-slot address → the import reached through it. Separate from
     /// `callee_names` because the key is a *pointer to* the callee, not the
     /// callee — conflating the two would name a function by the address of a
@@ -132,7 +138,12 @@ pub struct PrintedVar {
 }
 
 impl RenderNames {
-    pub fn new(callsites: &[Callsite]) -> Self {
+    /// `unnamed` says how the image identifies a function at an address that
+    /// nothing names: [`crate::unnamed_at`] of the context the callsites were
+    /// found in (`&|va| unnamed_at(ctx, va)`), or `&UnnamedFunction::Address`
+    /// where every function is its address.
+    pub fn new(callsites: &[Callsite], unnamed: &dyn Fn(Va) -> crate::UnnamedFunction) -> Self {
+        let unnamed = callsites.iter().filter_map(|c| c.target).map(|t| (t.get(), unnamed(t))).collect();
         let callee_names = callsites
             .iter()
             .filter_map(|c| Some((c.target?.get(), c.target_name.clone()?)))
@@ -143,6 +154,7 @@ impl RenderNames {
             .collect();
         RenderNames {
             callee_names,
+            unnamed,
             slot_names,
             locals: HashMap::new(),
             structs: HashMap::new(),
@@ -303,7 +315,11 @@ impl RenderNames {
     fn callee(&self, va: Va) -> String {
         match self.callee_names.get(&va.get()) {
             Some(name) => render_callee_name(name),
-            None => format!("sub_{:x}", va.get()),
+            // A callee no callsite holds — a devirtualized method comes named
+            // (`with_extra_callees`), so this is a direct call the CFG did not
+            // list, and one is named by its address: a WebAssembly call is an
+            // instruction of the function, which the CFG lists as a callsite.
+            None => crate::unnamed_function_name(self.unnamed.get(&va.get()).copied().unwrap_or(crate::UnnamedFunction::Address(va))),
         }
     }
 
@@ -1054,7 +1070,7 @@ mod tests {
     /// so only a constant displacement is dropped.
     #[test]
     fn frame_bookkeeping_is_not_a_statement_but_alloca_is() {
-        let names = RenderNames::new(&[]).with_stack_pointer(Some("rsp"));
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_stack_pointer(Some("rsp"));
         let constant = MicroStmt::Assign {
             dst: "rsp.1".into(),
             value: MicroExpr::Binary(
@@ -1077,13 +1093,13 @@ mod tests {
 
         // And with no stack pointer named, nothing is dropped that was not
         // dropped before.
-        let unnamed = RenderNames::new(&[]);
+        let unnamed = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         assert!(render_stmt(&constant, &unnamed).is_some(), "unchanged when the ISA names no stack pointer");
     }
 
     #[test]
     fn renders_a_field_load_through_a_call_result() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let expr = MicroExpr::load(
             MicroExpr::binary(
                 BinOp::Add,
@@ -1098,7 +1114,7 @@ mod tests {
 
     #[test]
     fn stack_relative_load_renders_as_a_local() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let expr = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)), 64, false);
         assert_eq!(render_expr(&expr, &names), "local_20");
     }
@@ -1109,7 +1125,7 @@ mod tests {
     /// declare `local_8` twice and use both under one name.
     #[test]
     fn a_slot_and_its_mirror_render_as_two_names_the_declarations_share() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let at = |off: i128| {
             render_expr(&MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp.1"), MicroExpr::constant(off, 64)), 64, false), &names)
         };
@@ -1142,7 +1158,7 @@ mod tests {
             target_name: Some("kernel32!CloseHandle".to_string()),
             via_slot: None,
         }];
-        let names = RenderNames::new(&callsites);
+        let names = RenderNames::new(&callsites, &crate::UnnamedFunction::Address);
         // The lift always passes all 4 register slots positionally;
         // `CloseHandle` only takes one — the extra 3 must be trimmed, not
         // shown as noise, and the known `HANDLE` param should be named.
@@ -1168,7 +1184,7 @@ mod tests {
             target_name: Some("kernel32!CloseHandle".to_string()),
             via_slot: Some(Va(0x3000)),
         }];
-        let names = RenderNames::new(&callsites);
+        let names = RenderNames::new(&callsites, &crate::UnnamedFunction::Address);
         let call = MicroExpr::Call {
             target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x3000, 64), 64, false))),
             args: vec![MicroExpr::var("rcx.0"), MicroExpr::var("rdx.0"), MicroExpr::var("r8.0"), MicroExpr::var("r9.0")],
@@ -1204,7 +1220,7 @@ mod tests {
     /// …but an indirect call through an *unknown* slot must stay honest.
     #[test]
     fn an_unknown_indirect_call_still_renders_as_a_dereference() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let call = MicroExpr::Call {
             target: CallTarget::Indirect(Box::new(MicroExpr::load(MicroExpr::constant(0x3000, 64), 64, false))),
             args: vec![MicroExpr::var("rcx.0")],
@@ -1225,7 +1241,7 @@ mod tests {
                 params_known: true,
             },
         };
-        let names = RenderNames::new(&[]).with_types(&types);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_types(&types);
         // Unknown callee, args = (rcx.0 [parameter], rdx.1 [computed], r8.0, r9.0 [padding]).
         let call = MicroExpr::Call {
             target: CallTarget::Direct { va: Va(0x5000) },
@@ -1252,7 +1268,7 @@ mod tests {
                 params_known: true,
             },
         };
-        let names = RenderNames::new(&[]).with_types(&types);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_types(&types);
         // rdx.0 is a real parameter forwarded straight through — it must NOT be
         // trimmed even though it is a trailing bare entry value.
         let call = MicroExpr::Call {
@@ -1275,7 +1291,7 @@ mod tests {
                 params_known: true,
             },
         };
-        let names = RenderNames::new(&[]).with_types(&types);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_types(&types);
         // The entry version `rcx.0` *is* the parameter -> rendered as its name.
         assert_eq!(render_expr(&MicroExpr::var("rcx.0"), &names), "rcx");
         // A later definition `rcx.1` is a different value -> keeps its subscript
@@ -1294,7 +1310,7 @@ mod tests {
 
     #[test]
     fn a_stack_pointer_xor_renders_as_the_named_stack_guard_idiom() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         // `mov rax, __security_cookie; xor rax, rsp` — the canary setup.
         let cookie = MicroExpr::load(MicroExpr::constant(0x1421173c8, 64), 64, false);
         let setup = MicroExpr::binary(BinOp::Xor, cookie, MicroExpr::var("rsp.1"));
@@ -1311,7 +1327,7 @@ mod tests {
 
     #[test]
     fn a_compare_select_over_its_own_operands_renders_as_min_or_max() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let sel = |op, a: &str, b: &str| {
             MicroExpr::select(
                 MicroExpr::binary(op, MicroExpr::var("rax.1"), MicroExpr::var("rbx.1")),
@@ -1330,7 +1346,7 @@ mod tests {
     fn a_select_whose_branches_are_not_the_compared_values_stays_a_ternary() {
         // Soundness: the min/max fold requires the branches to *be* the compared
         // operands; an unrelated select must render as a plain `?:`.
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let sel = MicroExpr::select(
             MicroExpr::binary(BinOp::Ult, MicroExpr::var("rax.1"), MicroExpr::var("rbx.1")),
             MicroExpr::var("rcx.1"),
@@ -1341,7 +1357,7 @@ mod tests {
 
     #[test]
     fn a_scaled_pointer_load_renders_as_an_array_subscript() {
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         // *(uint32_t*)(v9 + (idx * 4))  →  v9[idx]  (stride 4 == sizeof u32)
         let load = MicroExpr::Load {
             addr: Box::new(MicroExpr::binary(
@@ -1377,7 +1393,7 @@ mod tests {
             structs: vec![crate::typeinfer::RecoveredType { base_var: "rcx.1".into(), type_name: "struct_rcx_1".into(), fields: vec![] }],
             signature: RecoveredSignature { params: vec![], ret: crate::typeinfer::ReturnType::Void, ret_registers: vec![], params_known: true },
         };
-        let names = RenderNames::new(&[]).with_types(&types);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_types(&types);
         let addr = MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(-8, 64));
         let load = MicroExpr::load(addr, 64, false);
         // Not `field_0xfffffffffffffffffffffffffffffff8`.
@@ -1395,7 +1411,7 @@ mod tests {
         // its class instead of reading as an opaque pointer.
         let mut vtables = HashMap::new();
         vtables.insert(0x180021548u64, "std::exception".to_string());
-        let names = RenderNames::new(&[]).with_vtables(std::sync::Arc::new(vtables));
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_vtables(std::sync::Arc::new(vtables));
         // Both the `lea`-shaped AddrOf(Const) and a bare Const of the same
         // address resolve to the class.
         assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "&std::exception::vtable");
@@ -1408,7 +1424,7 @@ mod tests {
     fn without_the_rtti_map_a_pointer_constant_reads_exactly_as_before() {
         // Soundness/regression: with no vtable map attached, the address renders
         // as the raw pointer constant it always did.
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x180021548, 64))), &names), "(void*)0x180021548");
     }
 
@@ -1421,7 +1437,7 @@ mod tests {
         // stored `&`-prefixed, the form its pointer-*value* use wants.
         let mut data_refs = HashMap::new();
         data_refs.insert(0x2010u64, "&CSWTCH_1".to_string());
-        let names = RenderNames::new(&[]).with_data_refs(data_refs);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_data_refs(data_refs);
         // `*(uint32_t*)(&CSWTCH_1 + rdi*4)` — the shape `as_array_index` matches
         // (base is the `lea`-shaped AddrOf(Const), index term is `rdi * 4`).
         let base = MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x2010, 64)));
@@ -1439,7 +1455,7 @@ mod tests {
     fn a_plain_xor_of_two_data_registers_is_never_mistaken_for_a_stack_guard() {
         // Soundness: the recognizer keys strictly on a stack-pointer operand, so
         // ordinary `xor rax, rbx` arithmetic renders as itself, not as a guard.
-        let names = RenderNames::new(&[]);
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let plain = MicroExpr::binary(BinOp::Xor, MicroExpr::var("rax.2"), MicroExpr::var("rbx.1"));
         assert_eq!(render_expr(&plain, &names), "(rax.2 ^ rbx.1)");
     }

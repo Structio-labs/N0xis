@@ -11,7 +11,7 @@
 //!
 //! The ground truth is `tests/fixtures/native_pe.dll` — a tiny, deterministic
 //! PE built once with mingw (see `native_pe.c`) at image base 0x140000000, with
-//! an unnamed internal function `mid` (`sub_14000102a`) that calls an unnamed
+//! an unnamed internal function `mid` (`sub_14000102A`) that calls an unnamed
 //! internal `leaf` (`sub_140001000`). It is committed FROZEN and never rebuilt
 //! in CI; the tests only READ it.
 //!
@@ -107,7 +107,7 @@ impl Scratch {
 /// the committed fixture, so a future rebuild of the fixture cannot silently
 /// desync a pinned address. Returns the caller's VA as a hex string and the
 /// callee's RVA. On the committed `native_pe.dll` this is `mid`
-/// (`sub_14000102a`) calling `leaf` (`sub_140001000`, RVA 0x1000).
+/// (`sub_14000102A`) calling `leaf` (`sub_140001000`, RVA 0x1000).
 ///
 /// Side effect by design: the `decomp pseudo` calls here populate the artifact
 /// cache *before* any index exists, which is exactly the state the cache-key
@@ -133,7 +133,9 @@ fn find_call_pair(s: &Scratch) -> (String, u64) {
             continue;
         }
         let body = v["data"]["pseudo"].to_string();
-        let self_name = format!("sub_{}", addr.trim_start_matches("0x"));
+        // The name an unnamed function is given (`n0xis_core::unnamed_function_name`):
+        // `sub_` and the address in upper-case hex, in a signature as in a call.
+        let self_name = format!("sub_{:X}", u64::from_str_radix(addr.trim_start_matches("0x"), 16).expect("hex address"));
         // A call to some *other* function is what we need — the function's own
         // header names itself and proves nothing about symbol resolution.
         if let Some(i) = body.match_indices("sub_1").map(|(i, _)| i).find(|&i| !body[i..].starts_with(&self_name)) {
@@ -165,7 +167,7 @@ fn an_imported_index_names_call_targets_in_decompiled_output() {
     assert!(ok, "{v}");
     let body = v["data"]["pseudo"].to_string();
     assert!(body.contains("PlayerHealth"), "the call target should carry its managed name, got: {body}");
-    assert!(!body.contains(&format!("sub_{:x}", IMAGE_BASE + callee_rva)), "the raw address name should be gone: {body}");
+    assert!(!body.contains(&format!("sub_{:X}", IMAGE_BASE + callee_rva)), "the raw address name should be gone: {body}");
 
     // And the answer must say where the names came from — `meta.note` exists
     // for results that are easy to misread, and "these names are from a file
@@ -189,7 +191,7 @@ fn importing_an_index_takes_effect_on_already_analyzed_functions() {
     let (v, ok) = s.run(&["decomp", "pseudo", "--file", &fixture(), "--addr", &caller]);
     assert!(ok, "{v}");
     assert!(
-        v["data"]["pseudo"].to_string().contains(&format!("sub_{:x}", IMAGE_BASE + callee_rva)),
+        v["data"]["pseudo"].to_string().contains(&format!("sub_{:X}", IMAGE_BASE + callee_rva)),
         "precondition: the callee is unnamed before any index exists"
     );
 

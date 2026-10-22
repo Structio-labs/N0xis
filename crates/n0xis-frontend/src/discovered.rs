@@ -30,7 +30,7 @@ static KEPT: Mutex<Option<(String, Arc<Discovered>)>> = Mutex::new(None);
 pub fn discovered_ranges(ctx: &Ctx, src: &Src, label: &str, ranges: &[(Va, usize)]) -> Result<Arc<Discovered>, CoreError> {
     let id = src.as_mem().identity();
     let windows: Vec<String> = ranges.iter().map(|(start, size)| format!("{:#x}+{size:#x}", start.0)).collect();
-    let key = id.map(|id| format!("{id}|{}|{}|{}", windows.join(","), ctx.arch.decoder_id(), ctx.functions.map_or(0, <[_]>::len)));
+    let key = id.map(|id| format!("{id}|{}|{}|{}", windows.join(","), ctx.arch.decoder_id(), ctx.functions.map_or(0, |f| f.extents.len())));
     if let Some(key) = &key
         && let Ok(kept) = KEPT.lock()
         && let Some((k, found)) = kept.as_ref()
@@ -59,6 +59,20 @@ pub fn discovered_ranges(ctx: &Ctx, src: &Src, label: &str, ranges: &[(Va, usize
     }
     Ok(found)
 }
+
+/// The answer for an image that declares every function it has and declares
+/// none — a WebAssembly module with no code section, which only imports what
+/// it exports or holds data: there is no code range to scan, and "no range"
+/// would say the question could not be asked, where its answer is known and
+/// empty. `None` for every other source, which goes on to its ranges.
+pub fn declares_no_functions(src: &Src) -> Option<n0xis_core::DiscoverArtifact> {
+    let Src::Static(img) = src else { return None };
+    let every = img.every_function()?;
+    every.is_empty().then(|| n0xis_core::DiscoverArtifact { start: Va(0), scanned_bytes: 0, count: 0, functions: Vec::new(), truncated: false })
+}
+
+/// What an empty function list says, so it does not read as an unexamined one.
+pub const DECLARES_NO_FUNCTIONS: &str = "the module defines no functions: it has no code section, and every function a module has is a body there";
 
 /// The windows a whole-image function scan covers: every executable range of
 /// `src`, since `.text` is not the only code on every image, or the one window

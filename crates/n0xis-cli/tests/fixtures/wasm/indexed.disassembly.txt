@@ -1,0 +1,40 @@
+
+indexed.wasm:	file format wasm 0x1
+
+Code Disassembly:
+
+00005f func[1] <target>:
+ 000060: 20 00                      | local.get 0
+ 000062: 0b                         | end
+000064 func[2] <a-b>:
+ 000065: 20 00                      | local.get 0
+ 000067: 10 00                      | call 0 <imp>
+ 000069: 1a                         | drop
+ 00006a: 20 00                      | local.get 0
+ 00006c: 10 01                      | call 1 <target>
+ 00006e: 1a                         | drop
+ 00006f: d2 01                      | ref.func 1
+ 000071: 1a                         | drop
+ 000072: 20 00                      | local.get 0
+ 000074: 12 01                      | return_call 1
+ 000076: 0b                         | end
+000078 func[3] <a_b>:
+ 000079: 20 00                      | local.get 0
+ 00007b: 12 00                      | return_call 0
+ 00007d: 0b                         | end
+00007f func[4] <legalstub$x>:
+ 000080: 20 00                      | local.get 0
+ 000082: 41 00                      | i32.const 0
+ 000084: 11 00 00                   | call_indirect 0 (type 0)
+ 000087: 0b                         | end
+000089 func[5] <switch>:
+ 00008a: 02 40                      | block
+ 00008c: 20 00                      |   local.get 0
+ 00008e: 0e 27 00 00 00 00 00 00 00 |   br_table 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+ 000097: 00 00 00 00 00 00 00 00 00 | 
+ 0000a0: 00 00 00 00 00 00 00 00 00 | 
+ 0000a9: 00 00 00 00 00 00 00 00 00 | 
+ 0000b2: 00 00 00 00 00 00          | 
+ 0000b8: 0b                         | end
+ 0000b9: 41 07                      | i32.const 7
+ 0000bb: 0b                         | end

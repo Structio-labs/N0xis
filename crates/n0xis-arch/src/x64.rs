@@ -653,7 +653,7 @@ fn build_insn(
 
     DecodedInsn {
         va: Va(instr.ip()),
-        len: len as u8,
+        len: len as u32,
         bytes: raw,
         mnemonic,
         text,
@@ -668,6 +668,7 @@ fn build_insn(
             Mnemonic::Ret | Mnemonic::Retf if instr.op_count() > 0 => Some(instr.immediate16()),
             _ => None,
         },
+        target_function: None,
     }
 }
 
@@ -1002,8 +1003,16 @@ impl Arch for X64 {
         &self.regfile
     }
 
-    fn pointer_size(&self) -> u8 {
-        (self.bitness / 8) as u8
+    fn pointer_size(&self) -> Option<u8> {
+        Some((self.bitness / 8) as u8)
+    }
+
+    fn lifting(&self) -> crate::Lifting {
+        crate::Lifting::Lifts
+    }
+
+    fn indexed_function(&self, _va: Va) -> Option<crate::IndexedFunction> {
+        None
     }
 
     fn calling_conventions(&self) -> &[CallConv] {

@@ -750,7 +750,8 @@ struct ConstIdentifyArgs {
 /// For a command that picks its decoder with `Src::pick_arch`/`pick_arch_for`.
 const ARCH_HELP: &str = "Instruction set to decode: `x64`, `x86`, `arm64`, `arm32` (A32) or `thumb` (T32). \
     Omitted: a file is decoded as its header declares, and refused if it declares a machine this build does not decode; \
-    anything else (a live process, a snapshot, `--bytes`) as `x64`.";
+    anything else (a live process, a snapshot, `--bytes`) as `x64`. A WebAssembly module is decoded as its own \
+    instruction set (`--arch wasm` names it, on a module only), and another `--arch` on one is refused.";
 
 /// For a command that resolves `--arch` with `resolve_arch` alone, so the
 /// header is not consulted and an ARM file decodes as x86-64 unless told.
@@ -1159,7 +1160,9 @@ struct DiffFunctionsArgs {
     /// `goto` (default: stable/deterministic, best for diffing), `structured`, or `ssa`.
     #[arg(long, value_enum, default_value_t = PseudoStyle::Goto)]
     style: PseudoStyle,
-    #[arg(long, help = ARCH_HELP_NO_HEADER)]
+    // Each side is decoded as its own image declares (it read no header
+    // before, and decoded an AArch64 pair as x86-64).
+    #[arg(long, help = ARCH_HELP)]
     arch: Option<String>,
 }
 
@@ -1321,8 +1324,9 @@ enum AnnotateCmd {
     Bookmark(AnnotateBookmarkArgs),
     /// Show the current facts + full history for one address.
     Show(AnnotateShowArgs),
-    /// List every annotated address.
-    List,
+    /// List every annotated address of a target: a WebAssembly module's own
+    /// with `--file <module>`, else the records native targets share.
+    List(AnnotateListArgs),
     /// Remove all annotations (and history) at an address.
     Rm(AnnotateRmArgs),
 }
@@ -1334,6 +1338,14 @@ struct AnnotateSetArgs {
     /// New value; omit to clear the field.
     #[arg(long)]
     value: Option<String>,
+    #[command(flatten)]
+    image: AnnotateImageArgs,
+}
+
+#[derive(Args)]
+struct AnnotateListArgs {
+    #[command(flatten)]
+    image: AnnotateImageArgs,
 }
 
 #[derive(Args)]
@@ -1348,21 +1360,27 @@ struct AnnotateShowArgs {
 struct AnnotateRmArgs {
     #[arg(long)]
     addr: String,
+    #[command(flatten)]
+    image: AnnotateImageArgs,
 }
 
-// The image an `annotate` command decompiles the function at `--addr` from,
-// to check what it stores or shows against the function's own variables. A
-// plain comment, not a doc comment: a flattened struct's doc could reach the
-// help of the command it is flattened into.
+// The target an `annotate` command reads and writes the records of, and the
+// image it decompiles the function at `--addr` from, to check what it stores
+// or shows against the function's own variables. A plain comment, not a doc
+// comment: a flattened struct's doc could reach the help of the command it is
+// flattened into.
 #[derive(Args)]
 struct AnnotateImageArgs {
-    /// The image the function is in. With one (a `serve` session supplies its
-    /// own), a variable is checked against the function's variables: `var` and
-    /// `vartype` refuse a name that is not one and store a name the page shows
-    /// under its key; a saved name or type keyed by the earlier stack-local
-    /// naming (`local_8` was both +8 and -8) is placed on the slot it means, or
-    /// named in the note when it cannot be. Without one nothing is checked, and
-    /// the answer says so.
+    /// The image the address is in (a `serve` session supplies its own). It
+    /// says whose records are read and written: a WebAssembly module keeps its
+    /// own, under its identity, since every module's offsets start near 0;
+    /// every native target shares one map, the one used without `--file`.
+    /// With an image, a variable is also checked against the function's
+    /// variables: `var` and `vartype` refuse a name that is not one and store
+    /// a name the page shows under its key; a saved name or type keyed by the
+    /// earlier stack-local naming (`local_8` was both +8 and -8) is placed on
+    /// the slot it means, or named in the note when it cannot be. Without one
+    /// nothing is checked, and the answer says so.
     #[arg(long)]
     file: Option<String>,
     #[arg(long)]
@@ -1395,6 +1413,8 @@ struct AnnotateBookmarkArgs {
     /// Remove the bookmark instead of setting it.
     #[arg(long)]
     off: bool,
+    #[command(flatten)]
+    image: AnnotateImageArgs,
 }
 
 #[derive(Args)]
@@ -1456,7 +1476,7 @@ struct RemoteServeArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Static PE/ELF to load once and keep resident for the session.
+    /// Static image to load once and keep resident for the session: a PE, an ELF or a WebAssembly module.
     #[arg(long)]
     file: String,
 }
@@ -2922,7 +2942,7 @@ struct DisasmArgs {
     /// Live process id.
     #[arg(long)]
     pid: Option<u32>,
-    /// Executable image on disk (PE or ELF).
+    /// Executable image on disk (PE or ELF), or a WebAssembly module.
     #[arg(long)]
     file: Option<String>,
     #[arg(long, help = ARCH_HELP)]
@@ -3182,7 +3202,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Annotate(AnnotateCmd::Vartype(a)) => cmd_annotate_vartype(a, pretty),
         Command::Annotate(AnnotateCmd::Bookmark(a)) => cmd_annotate_bookmark(a, pretty),
         Command::Annotate(AnnotateCmd::Show(a)) => cmd_annotate_show(a, pretty),
-        Command::Annotate(AnnotateCmd::List) => cmd_annotate_list(pretty),
+        Command::Annotate(AnnotateCmd::List(a)) => cmd_annotate_list(a, pretty),
         Command::Annotate(AnnotateCmd::Rm(a)) => cmd_annotate_rm(a, pretty),
         Command::Snapshot(SnapshotCmd::Dump(a)) => cmd_snapshot_dump(a, pretty),
         Command::Snapshot(SnapshotCmd::Info(a)) => cmd_snapshot_info(a, pretty),
@@ -3329,6 +3349,20 @@ fn guide_workflows() -> Vec<serde_json::Value> {
             ]
         }),
         json!({
+            "name": "a WebAssembly module, read before the lift",
+            "when": "you have a .wasm file. Its addresses are module offsets, a function is its index with its body's offset beside it, and every command that needs the lift (decomp, ir, function summary/trace) refuses it until stage 3 with `not-lifted`.",
+            "maps_to": "docs/design/WASM.md stage 2 — every fact these give agreed with wasm-objdump on the modules measured (docs/VERIFICATION.md).",
+            "steps": [
+                "profile --file <m.wasm>                       # imports by module, exports, memories, data segments and where each is placed, start function",
+                "function discover --file <m.wasm> --limit 0   # every function at its body, with its index and its exact extent",
+                "disasm --file <m.wasm> --addr <body> --count 200   # the locals declaration, then each instruction to the body's end",
+                "xref to --file <m.wasm> --addr <body>         # the direct calls and tail calls to it, and the ref.func of it",
+                "xref from --file <m.wasm> --addr <call>       # the function a call names, by index; an import has no position",
+                "strings --file <m.wasm>                       # data-segment text, with its linear-memory address",
+                "annotate name --file <m.wasm> --addr <body> --value <name>   # kept under this module's identity, never another's"
+            ]
+        }),
+        json!({
             "name": "transition-diff localization (find an address)",
             "when": "you need the address of a value you can toggle on screen (a flag, a counter, a state). The only technique that reliably returns exactly one result.",
             "maps_to": "RE_METHOD W1 — the change is the signal; the value is not.",
@@ -3444,6 +3478,7 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
         "architectures": [
             "x64 — iced-x86, full pipeline: CFG / SSA / type recovery / optimized decompile. A 32-bit PE32 auto-selects i386 (or force with --arch x86)",
             "arm64 — disarm64, CFG / discover / xref / goto+structured decompile (SSA optimization is x64-only so far); pass --arch arm64",
+            "wasm — a WebAssembly module, decoded by n0xis-wasm from the module itself (decode only): disasm, function discover from the code section, xref to a function's body and from a call; the stack-machine lift is stage 3, so decomp, ir and the other lift commands refuse a module with `not-lifted`. Chosen from the file; another --arch on a module is refused",
             "arm32 / thumb — yaxpeax-arm, AArch32/ARMv7: decode, CFG, lift, goto/structured/ssa decompile. The A32 media class (extends, bitfields, pack, parallel add/sub, saturation, reversal, dual multiplies, divide, udf) and the halfword multiplies are decoded by n0xis itself, checked word by word against llvm-mc. Lifted: data-processing (shifted operands included), pre-indexed word ldr/str, cmp/tst, push/pop, bl/bx lr, predication and Thumb IT blocks, and in A32 uxtb/uxth/sxtb/sxth (any rotation) and their add forms, ubfx/sbfx/bfi/bfc, pkhbt/pkhtb, smulbb/smulbt/smultb/smultt and rev/rev16/revsh; everything else (rotates, byte/halfword loads, ldm/stm beyond push/pop, VFP/NEON, Thumb shift instructions, the SIMD-within-a-register, saturating, accumulating and dual multiply forms, divides, rbit) stays asm. The instruction set is chosen up front, not followed across interworking branches. The A32 extend/bitfield/pack/halfword-multiply/reverse lifts are checked against an emulated ARM processor (qemu user mode); the rest is not yet checked against a processor. --arch arm32 (A32) or --arch thumb (T32)"
         ],
         "categories": categories,
@@ -3755,7 +3790,7 @@ fn il2cpp_metadata_version(path: &str) -> Option<u32> {
 
 fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
     if a.pid.is_none() && a.file.is_none() {
-        return ir_err("no-source", "profile needs a PE image: pass --file <pe> or --pid <n>", pretty);
+        return ir_err("no-source", "profile needs an image: pass --file <image> or --pid <n>", pretty);
     }
     // `build_source` first so the arch pick can read the image header: a static
     // PE/ELF states its own machine, and `Src::pick_arch` honours it when no
@@ -3798,6 +3833,14 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
         _ => None,
     };
 
+    // A WebAssembly module: the format-neutral profile, and what only a module
+    // states beside it (`image_caps::wasm_profile` says what has no meaning).
+    if let Src::Static(img) = &src
+        && let Some(data) = n0xis_frontend::image_caps::wasm_profile(img, a.exports)
+    {
+        return emit(&Response::success(schema::v1::PROFILE, data).with_source(label.clone()), pretty);
+    }
+
     // Build the same profile from the ELF source's own parsed section table and
     // symbols, and share the format-agnostic assembly with the PE path.
     if let Src::Static(elf) = &src
@@ -3823,7 +3866,7 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
         let exports: Vec<n0xis_core::ExportInfo> = elf
             .named_functions()
             .into_iter()
-            .map(|(va, name)| n0xis_core::ExportInfo { name, va, forwarder: None, thunk_target: None, thunk_kind: None })
+            .map(|(va, name)| n0xis_core::ExportInfo { name, va, index: None, forwarder: None, thunk_target: None, thunk_kind: None })
             .collect();
         let profile = n0xis_core::assemble_profile(elf.image_base(), elf.machine(), sections, exports, None, a.exports);
         let advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
@@ -3894,7 +3937,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     // a confident wrong answer, not an error. The header states the ISA; only a
     // raw `--bytes`/live target with no declaration falls back to the default,
     // and an explicit `--arch` still wins outright.
-    let arch = match n0xis_frontend::pick_arch_for(a.arch.as_deref(), src.declared_machine().as_deref(), !src.is_64()) {
+    let arch = match src.pick_arch(a.arch.as_deref()) {
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
@@ -3961,7 +4004,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         };
         // Project-local names (recovered RTTI + user renames) as the primary
         // provider, so the discovered list renders them over the PE's own names.
-        let local = n0xis_frontend::annotation_syms::LocalNames::load();
+        let local = n0xis_frontend::annotation_syms::LocalNames::load(&n0xis_frontend::annotation_syms::scope_of(&src));
         // …and the managed names, when the project holds an IL2CPP index. Every
         // command that goes through the capability registry gets this; this one
         // does not, so it had to ask. Without it a user who has just imported an
@@ -3997,6 +4040,15 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     };
     // Every executable range, not only `.text`: the same windows `analyze` scans.
     let ranges = n0xis_frontend::discovered::image_code_ranges(&src, default_text, region_len, explicit_start, a.size, bytes_base);
+    if ranges.is_empty()
+        && let Some(none) = n0xis_frontend::discovered::declares_no_functions(&src)
+    {
+        let resp = Response::success(schema::v1::FUNCTION_DISCOVER, none)
+            .with_source(label.clone())
+            .with_page(0, 0)
+            .with_note(n0xis_frontend::discovered::DECLARES_NO_FUNCTIONS);
+        return emit(&resp, pretty);
+    }
     if ranges.is_empty() {
         return ir_err("no-range", "could not resolve a scan range; pass --start and --size", pretty);
     }
@@ -4023,7 +4075,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
     // prologue-scan path saw only the image's symbols, so a function `analyze` had
     // already named `QFSFileEngine::vf31` still listed as `sub_1166A0` — the
     // recovered classes never reached the list on any target discovered this way.
-    let local = n0xis_frontend::annotation_syms::LocalNames::load();
+    let local = n0xis_frontend::annotation_syms::LocalNames::load(&n0xis_frontend::annotation_syms::scope_of(&src));
     // The managed layer too, for the same reason as the `.pdata` path above.
     let il2cpp = n0xis_frontend::il2cpp_caps::attach_for(&json!({}), &src);
     let managed = il2cpp.symbols();
@@ -4045,7 +4097,7 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
             // of this is how the two front doors came to disagree about how
             // many functions the same image has.
             let stated = n0xis_frontend::stated_functions(&src);
-            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_stated_functions(&stated))
+            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src)))
         }
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref()).with_symbols(&local)),
@@ -4094,6 +4146,11 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         Ok(a) => a,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
+    // Its phases — RTTI naming, type propagation, the IR cache — are the
+    // lift's.
+    if let Some((code, message)) = n0xis_frontend::lift_refusal(arch.as_ref()) {
+        return ir_err(&code, &message, pretty);
+    }
     let Src::Static(pe) = &src else {
         return ir_err("unsupported", "analyze needs a static PE image (--file)", pretty);
     };
@@ -4116,7 +4173,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // a PE it counted 6 681 where `function discover` lists 8 258.
     progress("discovering", 0, 0);
     let stated = n0xis_frontend::stated_functions(&src);
-    let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated);
+    let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src));
     let ranges = n0xis_frontend::discovered::image_code_ranges(&src, pe.text_range(), region_len, None, None, Va(0));
     let funcs = match n0xis_frontend::discovered::discovered_ranges(&dctx, &src, &label, &ranges) {
         Ok(found) => found.page(&dctx, 0, 0).functions,
@@ -4142,6 +4199,12 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         Ok(scan) => scan,
         Err(refused) => return ir_err(refused.code(), &refused.message(), pretty),
     };
+    // An image with no pointer width was refused just above, by its reason;
+    // every image past here has one.
+    let (Some(slots), Some(pointer_size)) = (src.vtable_slots(), src.pointer_size()) else {
+        let refused = n0xis_core::RttiRefusal::NoNativePointers;
+        return ir_err(refused.code(), &refused.message(), pretty);
+    };
     // Counted rather than dropped: a class not reported and a slot not named
     // are answers too (see `n0xis_core::VtableRefusal`, `VtableSlots`).
     let (mut refused_virtual_bases, mut refused_first_slot_not_code, mut refused_first_slot_empty, mut thumb_slots_refused) =
@@ -4154,7 +4217,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
             let vts = scan.vtables;
             let n = vts.len();
             let n0xis_core::RttiSymbols { mut functions, data, thumb_slots_refused: thumb } =
-                n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range(), src.vtable_slots());
+                n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range(), slots);
             thumb_slots_refused = thumb;
             functions.retain(|va, _| {
                 ctx.symbols.and_then(|s| s.symbol_at(Va(*va))).is_none_or(|sym| sym.va.0 != *va)
@@ -4167,10 +4230,10 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         }
         (None, Some(rd)) => {
             let _ = rd;
-            let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size());
+            let vts = n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), pointer_size);
             let n = vts.len();
             let n0xis_core::RttiSymbols { mut functions, data, thumb_slots_refused: thumb } =
-                n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range(), src.vtable_slots());
+                n0xis_core::rtti_symbol_map(src.as_mem(), &vts, src.text_range(), slots);
             thumb_slots_refused = thumb;
             functions.retain(|va, _| {
                 ctx.symbols.and_then(|s| s.symbol_at(Va(*va))).is_none_or(|sym| sym.va.0 != *va)
@@ -4247,12 +4310,12 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // layout pass matched **960** methods on the stale context and **2 682** on
     // one that sees the names, because a method's class is read off its own
     // symbol and most of those symbols are the ones RTTI had just persisted.
-    let local = n0xis_frontend::annotation_syms::LocalNames::load();
+    let local = n0xis_frontend::annotation_syms::LocalNames::load(&n0xis_frontend::annotation_syms::scope_of(&src));
     // The image's PDB, when one matches, names everything RTTI and FLIRT did not.
     let pdb = n0xis_frontend::pdb_syms::lookup(pe.as_ref());
     let named = n0xis_frontend::static_names::StaticNames::new(&local, pdb.symbols(), None, pe.as_ref(), None);
     let vtables = std::sync::Arc::new(n0xis_frontend::annotation_syms::persisted_vtable_map());
-    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables, src.vtable_slots());
+    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables, slots);
 
     // Phase 2c — whole-program type propagation, PERSISTED (priority 3b).
     //
@@ -5487,7 +5550,7 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
 // ============================================================================
 
 fn cmd_annotate_set(field: &str, a: AnnotateSetArgs, pretty: bool) -> bool {
-    run_capability("annotate.set", json!({ "field": field, "addr": a.addr, "value": a.value }), pretty)
+    run_capability("annotate.set", a.image.into_json(json!({ "field": field, "addr": a.addr, "value": a.value })), pretty)
 }
 
 fn annotate_var_json(a: AnnotateVarArgs) -> serde_json::Value {
@@ -5503,19 +5566,19 @@ fn cmd_annotate_vartype(a: AnnotateVarArgs, pretty: bool) -> bool {
 }
 
 fn cmd_annotate_bookmark(a: AnnotateBookmarkArgs, pretty: bool) -> bool {
-    run_capability("annotate.bookmark", json!({ "addr": a.addr, "on": !a.off }), pretty)
+    run_capability("annotate.bookmark", a.image.into_json(json!({ "addr": a.addr, "on": !a.off })), pretty)
 }
 
 fn cmd_annotate_show(a: AnnotateShowArgs, pretty: bool) -> bool {
     run_capability("annotate.show", a.image.into_json(json!({ "addr": a.addr })), pretty)
 }
 
-fn cmd_annotate_list(pretty: bool) -> bool {
-    run_capability("annotate.list", json!({}), pretty)
+fn cmd_annotate_list(a: AnnotateListArgs, pretty: bool) -> bool {
+    run_capability("annotate.list", a.image.into_json(json!({})), pretty)
 }
 
 fn cmd_annotate_rm(a: AnnotateRmArgs, pretty: bool) -> bool {
-    run_capability("annotate.rm", json!({ "addr": a.addr }), pretty)
+    run_capability("annotate.rm", a.image.into_json(json!({ "addr": a.addr })), pretty)
 }
 
 // ============================================================================
@@ -5532,6 +5595,23 @@ fn cmd_snapshot_dump(a: SnapshotDumpArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err((c, m)) => return ir_err(&c, &m, pretty),
     };
+    // A snapshot keeps bytes at addresses and nothing of the format they came
+    // from, and `--snapshot` decodes them as x86-64 (the default for bytes
+    // with no header). A module's code captured this way was decompiled as
+    // x86 pseudo-C, `ok: true`, past every refusal of a module, which sits on
+    // the architecture the module builds. Its linear memory, the capture a
+    // module has, is stage 4 of docs/design/WASM.md (a snapshot schema with a
+    // space per region).
+    if let Src::Static(img) = &src
+        && img.module_identity().is_some()
+    {
+        return ir_err(
+            "unsupported",
+            "a WebAssembly module is not captured as a snapshot: a snapshot records no format, and its code reloaded would be \
+             decoded as x86-64; analyse the module with --file (a module's linear memory is captured in stage 4)",
+            pretty,
+        );
+    }
     let default_text = src.text_range();
     let (start, size) = scan_range(default_text, None, explicit_start, a.size, bytes_base);
     if size == 0 {
@@ -5716,7 +5796,7 @@ impl TargetSource {
     fn meaning(self) -> &'static str {
         match self {
             Self::Pid => "<a live process>",
-            Self::File => "<a file on disk: an executable image (PE or ELF) for the commands that analyse one; for archive, script and bytecode readers the file their own help names>",
+            Self::File => "<a file on disk: an executable image (PE or ELF) or a WebAssembly module for the commands that analyse one; for archive, script and bytecode readers the file their own help names>",
             Self::Snapshot => "<the name of a dump captured by `snapshot dump`>",
             Self::RemoteCmd => "\"<argv of a remote agent, e.g. ssh host n0xis remote-serve --pid N>\"",
             Self::Bytes => "\"<hex>\" <inline bytes>",
@@ -6885,6 +6965,10 @@ fn cmd_const_identify(a: ConstIdentifyArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
+    // The literals are read off the decompile, which is the lift's.
+    if let Some((code, message)) = n0xis_frontend::lift_refusal(arch.as_ref()) {
+        return ir_err(&code, &message, pretty);
+    }
     let input = CfgInput { start: addr, max_bytes: a.func_size, auto_end: true };
     let run = |ctx: &Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
@@ -6927,6 +7011,10 @@ fn cmd_bindings_list(a: BindingsListArgs, pretty: bool) -> bool {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
+    // Bindings are recognized in the lifted IR.
+    if let Some((code, message)) = n0xis_frontend::lift_refusal(arch.as_ref()) {
+        return ir_err(&code, &message, pretty);
+    }
 
     let default_text = match &src {
         Src::Static(pe) => pe.text_range(),
@@ -7108,13 +7196,21 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
     };
     // Honour the image's own machine field, not just its bitness: a signature
     // library must fingerprint an AArch64 image with the AArch64 decoder, never
-    // x86-64. Its declared machine goes into `pick_arch_for` directly (an
-    // explicit `--arch` still wins).
-    let declared = img.machine();
-    let arch = match n0xis_frontend::pick_arch_for(a.arch.as_deref(), Some(declared.as_str()), !img.is_64()) {
+    // x86-64. The image's own pick (an explicit `--arch` still wins).
+    let arch = match resolved.src.pick_arch(a.arch.as_deref()) {
         Ok(x) => x,
         Err(e) => return ir_err("bad-arch", &e, pretty),
     };
+    // A pattern leaves out the bytes a relocation writes, which are known per
+    // instruction set from the instructions' semantics; an architecture that
+    // models none says so, and no pattern is made of bytes it cannot read.
+    if let n0xis_arch::Lifting::DecodeOnly { why } = arch.lifting() {
+        return ir_err(
+            "not-lifted",
+            &format!("a signature masks the operand bytes a relocation writes, which the `{}` architecture does not model: {why}", arch.name()),
+            pretty,
+        );
+    }
 
     let funcs = img.named_functions();
     let mut lines: Vec<String> = Vec::new();

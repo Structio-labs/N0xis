@@ -1,0 +1,123 @@
+
+names-cpp.wasm:	file format wasm 0x1
+module name: <names-cpp.wasm>
+
+Code Disassembly:
+
+000060 func[1] <Vec::push(int)>:
+ 000061: 01 7f                      | local[2] type=i32
+ 000063: 20 00                      | local.get 0
+ 000065: 20 00                      | local.get 0
+ 000067: 28 02 04                   | i32.load 2 4
+ 00006a: 22 02                      | local.tee 2
+ 00006c: 41 01                      | i32.const 1
+ 00006e: 6a                         | i32.add
+ 00006f: 36 02 04                   | i32.store 2 4
+ 000072: 20 00                      | local.get 0
+ 000074: 28 02 00                   | i32.load 2 0
+ 000077: 20 02                      | local.get 2
+ 000079: 41 02                      | i32.const 2
+ 00007b: 74                         | i32.shl
+ 00007c: 6a                         | i32.add
+ 00007d: 20 01                      | local.get 1
+ 00007f: 36 02 00                   | i32.store 2 0
+ 000082: 0b                         | end
+000084 func[2] <Vec::sum() const>:
+ 000085: 04 7f                      | local[1..4] type=i32
+ 000087: 02 40                      | block
+ 000089: 02 40                      |   block
+ 00008b: 20 00                      |     local.get 0
+ 00008d: 28 02 04                   |     i32.load 2 4
+ 000090: 22 01                      |     local.tee 1
+ 000092: 41 01                      |     i32.const 1
+ 000094: 4e                         |     i32.ge_s
+ 000095: 0d 00                      |     br_if 0
+ 000097: 41 00                      |     i32.const 0
+ 000099: 21 02                      |     local.set 2
+ 00009b: 0c 01                      |     br 1
+ 00009d: 0b                         |   end
+ 00009e: 20 00                      |   local.get 0
+ 0000a0: 28 02 00                   |   i32.load 2 0
+ 0000a3: 21 00                      |   local.set 0
+ 0000a5: 20 01                      |   local.get 1
+ 0000a7: 21 01                      |   local.set 1
+ 0000a9: 41 00                      |   i32.const 0
+ 0000ab: 21 03                      |   local.set 3
+ 0000ad: 03 40                      |   loop
+ 0000af: 20 00                      |     local.get 0
+ 0000b1: 22 00                      |     local.tee 0
+ 0000b3: 28 02 00                   |     i32.load 2 0
+ 0000b6: 20 03                      |     local.get 3
+ 0000b8: 6a                         |     i32.add
+ 0000b9: 22 03                      |     local.tee 3
+ 0000bb: 21 02                      |     local.set 2
+ 0000bd: 20 00                      |     local.get 0
+ 0000bf: 41 04                      |     i32.const 4
+ 0000c1: 6a                         |     i32.add
+ 0000c2: 21 00                      |     local.set 0
+ 0000c4: 20 01                      |     local.get 1
+ 0000c6: 41 7f                      |     i32.const 4294967295
+ 0000c8: 6a                         |     i32.add
+ 0000c9: 22 04                      |     local.tee 4
+ 0000cb: 21 01                      |     local.set 1
+ 0000cd: 20 03                      |     local.get 3
+ 0000cf: 21 03                      |     local.set 3
+ 0000d1: 20 04                      |     local.get 4
+ 0000d3: 0d 00                      |     br_if 0
+ 0000d5: 0b                         |   end
+ 0000d6: 0b                         | end
+ 0000d7: 20 02                      | local.get 2
+ 0000d9: 0b                         | end
+0000db func[3] <entry>:
+ 0000dc: 02 7f                      | local[1..2] type=i32
+ 0000de: 01 7e                      | local[3] type=i64
+ 0000e0: 23 80 80 80 80 00          | global.get 0 <__stack_pointer>
+ 0000e6: 41 10                      | i32.const 16
+ 0000e8: 6b                         | i32.sub
+ 0000e9: 22 01                      | local.tee 1
+ 0000eb: 24 80 80 80 80 00          | global.set 0 <__stack_pointer>
+ 0000f1: 20 01                      | local.get 1
+ 0000f3: 41 00                      | i32.const 0
+ 0000f5: 29 03 80 80 84 80 00       | i64.load 3 65536
+ 0000fc: 37 03 08                   | i64.store 3 8
+ 0000ff: 20 01                      | local.get 1
+ 000101: 41 08                      | i32.const 8
+ 000103: 6a                         | i32.add
+ 000104: 20 00                      | local.get 0
+ 000106: 10 81 80 80 80 00          | call 1 <Vec::push(int)>
+ 00010c: 20 01                      | local.get 1
+ 00010e: 41 08                      | i32.const 8
+ 000110: 6a                         | i32.add
+ 000111: 20 00                      | local.get 0
+ 000113: 10 84 80 80 80 00          | call 4 <int ns::twice<int>(int)>
+ 000119: 10 81 80 80 80 00          | call 1 <Vec::push(int)>
+ 00011f: 20 00                      | local.get 0
+ 000121: 10 80 80 80 80 00          | call 0 <host_log>
+ 000127: 20 01                      | local.get 1
+ 000129: 41 08                      | i32.const 8
+ 00012b: 6a                         | i32.add
+ 00012c: 10 82 80 80 80 00          | call 2 <Vec::sum() const>
+ 000132: 21 02                      | local.set 2
+ 000134: 20 00                      | local.get 0
+ 000136: ac                         | i64.extend_i32_s
+ 000137: 10 85 80 80 80 00          | call 5 <long long ns::twice<long long>(long long)>
+ 00013d: 21 03                      | local.set 3
+ 00013f: 20 01                      | local.get 1
+ 000141: 41 10                      | i32.const 16
+ 000143: 6a                         | i32.add
+ 000144: 24 80 80 80 80 00          | global.set 0 <__stack_pointer>
+ 00014a: 20 02                      | local.get 2
+ 00014c: 20 03                      | local.get 3
+ 00014e: a7                         | i32.wrap_i64
+ 00014f: 6a                         | i32.add
+ 000150: 0b                         | end
+000152 func[4] <int ns::twice<int>(int)>:
+ 000153: 20 00                      | local.get 0
+ 000155: 41 01                      | i32.const 1
+ 000157: 74                         | i32.shl
+ 000158: 0b                         | end
+00015a func[5] <long long ns::twice<long long>(long long)>:
+ 00015b: 20 00                      | local.get 0
+ 00015d: 42 01                      | i64.const 1
+ 00015f: 86                         | i64.shl
+ 000160: 0b                         | end

@@ -105,7 +105,8 @@ pub struct Successor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IrInsn {
     pub va: Va,
-    pub len: u8,
+    /// [`DecodedInsn::len`](n0xis_arch::DecodedInsn::len), as wide.
+    pub len: u32,
     pub mnemonic: String,
     pub text: String,
     /// Flow classification (`seq` / `call` / `jump` / `cond_jump` / `ret` / …).
@@ -552,7 +553,7 @@ fn declared_extent(ctx: &Ctx, start: Va) -> Option<u64> {
     }
     // Sorted by start (see `Ctx::functions`), so this is a lookup, not a walk:
     // a linear scan would be 15 467 comparisons per function on a Qt-sized image.
-    let f = ctx.functions?;
+    let f = ctx.functions?.extents;
     let i = f.binary_search_by(|(s, _)| s.0.cmp(&start.0)).ok()?;
     Some(f[i].1.0).filter(|e| *e > start.0)
 }
@@ -1536,7 +1537,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1008))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = CfgPass
             .run(&ctx, CfgInput { start: Va(0x1000), max_bytes: 0x20, auto_end: true })
             .unwrap();
@@ -1561,7 +1562,7 @@ mod tests {
         let ctx = Ctx::new(&snap, &arch);
         // A stated extent that stops right after the branch.
         let stated = [(Va(0x1000), Va(0x1009))];
-        let ctx = ctx.with_stated_functions(&stated);
+        let ctx = ctx.with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 9)).expect("cfg builds");
 
         let blocks: std::collections::BTreeSet<u64> = art.blocks.iter().map(|b| b.start.0).collect();

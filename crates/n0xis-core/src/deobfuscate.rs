@@ -34,7 +34,8 @@ use crate::{CoreError, Ctx, Pass};
 #[derive(Clone, Debug, Serialize)]
 pub struct JunkInsn {
     pub va: Va,
-    pub len: u8,
+    /// [`DecodedInsn::len`](n0xis_arch::DecodedInsn::len), as wide.
+    pub len: u32,
     /// Human-readable reason, e.g. `"self-move (mov eax, eax)"`.
     pub reason: String,
 }

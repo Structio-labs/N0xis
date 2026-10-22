@@ -45,7 +45,7 @@ results on measured inputs · **refused**: a typed error · **not yet**: no code
 | PE32+, PE32 (x86-64, x86, ARM64) | partial: the gaps and wrong answers below | Windows: not measured for this table |
 | ELF64, ELF32 (x86-64, x86, AArch64, ARMv7) | partial: the gaps and wrong answers below; big-endian: decompile and RTTI refused | Linux x86-64: partial: the live entries below; other ISAs not measured |
 | Mach-O, thin and universal | refused (`load-failed`) | not yet |
-| WebAssembly | refused (`load-failed`); its reader is a library crate, not wired to `--file` yet | not yet |
+| WebAssembly | partial: the function list, disassembly, calls to and from a function, imports, exports, `profile` and `strings` (with each string's place in linear memory) agreed with `wasm-objdump` on every module measured; decompile, IR and the other commands that need the lift refused (`not-lifted`: the lift is stage 3) | not yet |
 | Raw bytes (`--bytes`) | disassemble, cross-references, strings with a range; discover and decompile partial; `profile` and `rtti scan` refused | — |
 
 | ISA | Disassemble | Discover functions | Decompile |
@@ -55,6 +55,7 @@ results on measured inputs · **refused**: a typed error · **not yet**: no code
 | AArch64, little- and big-endian | yes | little-endian yes with `.eh_frame`; big-endian partial: misses functions `.eh_frame` declares; partial without; on PE `--pdata` is wrong | partial; big-endian refused |
 | ARMv7 A32 | partial: no NEON, data in code decoded as code | partial | wrong: jump tables, tail calls |
 | ARMv7 Thumb-2 (`--arch thumb`) | wrong: branch targets, IT conditions | partial: no names or ends | wrong: an IT-predicated return ends the function |
+| WebAssembly | yes; a branch's target is a label depth, not given until stage 3 | yes: every body, its extent, index and name | refused (stage 3) |
 
 - **Wrong with `ok:true`**: Itanium RTTI in a MinGW PE (reported absent), `--pdata` on ARM64 PE, long
   MinGW section names in `profile` (`/4`), the export list of an ELF shared object and the

@@ -42,7 +42,26 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use n0xis_contracts::{SymKind, Symbol, Va};
+use n0xis_project::annotate::Scope;
 use n0xis_sources::SymbolProvider;
+
+use crate::source::Src;
+
+/// Whose annotations a source reads and writes: a WebAssembly module's own,
+/// under its identity, or the native map every other target shares
+/// (docs/design/WASM.md §5 decision 1).
+///
+/// The one place a target's scope is decided, so a reader and a writer of one
+/// target cannot disagree about which records are its.
+pub fn scope_of(src: &Src) -> Scope {
+    match src {
+        Src::Static(img) => match img.module_identity() {
+            Some(identity) => Scope::Module(identity.to_string()),
+            None => Scope::Native,
+        },
+        Src::Live(_) | Src::Snap(_) | Src::Remote(_) => Scope::Native,
+    }
+}
 
 /// An address→(name, kind) map, shared cheaply across the Ctxs built for one
 /// target within a process.
@@ -70,20 +89,33 @@ static RTTI_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
 static FLIRT_MEMO: Mutex<Option<(u64, Arc<NameMap>)>> = Mutex::new(None);
 
 impl LocalNames {
-    /// Load every project-local name for the current `.n0x/` (resolved by walk-up
-    /// from the process cwd, the same door `annotate` writes through). Each source
-    /// is served from its memo when its file is unchanged since the last load.
-    pub fn load() -> Self {
+    /// Load every project-local name of `scope` for the current `.n0x/`
+    /// (resolved by walk-up from the process cwd, the same door `annotate`
+    /// writes through). Each source is served from its memo when its file is
+    /// unchanged since the last load.
+    ///
+    /// A module's scope has its user names and nothing else: the recovered
+    /// RTTI and signature names are what `analyze` persisted, keyed by
+    /// address alone for a native image, and `analyze` does not run on a
+    /// module — read for one, they would name its functions after whatever
+    /// a native image has at the same numbers.
+    pub fn load(scope: &Scope) -> Self {
         let root = n0xis_project::resolve().ok();
         let dir = root.as_ref().map(|r| r.dir.clone());
 
-        let user_sig = file_signature(dir.as_deref(), "annotations.json");
-        let rtti_sig = file_signature(dir.as_deref(), "rtti-symbols.json");
-        let flirt_sig = file_signature(dir.as_deref(), "flirt-symbols.json");
-
-        let user = memoized(&USER_MEMO, user_sig, build_user);
-        let rtti = memoized(&RTTI_MEMO, rtti_sig, build_rtti);
-        let flirt = memoized(&FLIRT_MEMO, flirt_sig, build_flirt);
+        let user_sig = match scope {
+            Scope::Native => file_signature(dir.as_deref(), n0xis_project::annotate::NATIVE_STORE),
+            Scope::Module(identity) => fnv1a(file_signature(dir.as_deref(), n0xis_project::annotate::MODULE_STORE), identity.as_bytes()),
+        };
+        let user = memoized(&USER_MEMO, user_sig, || build_user(scope));
+        let (rtti_sig, flirt_sig, rtti, flirt) = match scope {
+            Scope::Native => {
+                let rtti_sig = file_signature(dir.as_deref(), "rtti-symbols.json");
+                let flirt_sig = file_signature(dir.as_deref(), "flirt-symbols.json");
+                (rtti_sig, flirt_sig, memoized(&RTTI_MEMO, rtti_sig, build_rtti), memoized(&FLIRT_MEMO, flirt_sig, build_flirt))
+            }
+            Scope::Module(_) => (0, 0, Arc::new(NameMap::new()), Arc::new(NameMap::new())),
+        };
 
         // The token varies with any file's (len, mtime); empty only when there
         // are no local names at all, so it perturbs the cache key exactly when a
@@ -150,7 +182,7 @@ impl SymbolProvider for LocalNames {
 
 /// Serve a source from its memo, or (re)build and store it. The build closure is
 /// only called on a signature miss.
-fn memoized(memo: &Mutex<Option<(u64, Arc<NameMap>)>>, sig: u64, build: fn() -> NameMap) -> Arc<NameMap> {
+fn memoized(memo: &Mutex<Option<(u64, Arc<NameMap>)>>, sig: u64, build: impl FnOnce() -> NameMap) -> Arc<NameMap> {
     {
         let guard = memo.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached_sig, data)) = guard.as_ref()
@@ -165,12 +197,12 @@ fn memoized(memo: &Mutex<Option<(u64, Arc<NameMap>)>>, sig: u64, build: fn() -> 
     data
 }
 
-/// User renames from `annotations.json`. Non-fatal: a store that cannot be
-/// read yields no names, and [`unreadable_store_note`] — which every registry
-/// answer carries — says why.
-fn build_user() -> NameMap {
+/// User renames of `scope`. Non-fatal: a store that cannot be read yields no
+/// names, and [`unreadable_store_note`] — which every registry answer carries
+/// — says why.
+fn build_user(scope: &Scope) -> NameMap {
     let mut map = NameMap::new();
-    if let Ok(records) = n0xis_project::annotate::list() {
+    if let Ok(records) = n0xis_project::annotate::list(scope) {
         for rec in records {
             if let Some(name) = rec.name.filter(|n| !n.trim().is_empty()) {
                 map.insert(rec.va.0, (name, SymKind::Function));
@@ -180,8 +212,8 @@ fn build_user() -> NameMap {
     map
 }
 
-/// The last `annotations.json` checked, by its file signature, and why it could
-/// not be read (`None`: it could).
+/// The last annotation store checked, by its files' signature, and why it
+/// could not be read (`None`: it could).
 static STORE_ERROR_MEMO: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None);
 
 /// Why the project's annotation store cannot be read, as the note an answer
@@ -194,14 +226,17 @@ static STORE_ERROR_MEMO: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None)
 /// side is never silent.
 pub fn unreadable_store_note() -> Option<String> {
     let dir = n0xis_project::resolve().ok().map(|r| r.dir);
-    let sig = file_signature(dir.as_deref(), "annotations.json");
+    let sig = fnv1a(
+        file_signature(dir.as_deref(), n0xis_project::annotate::NATIVE_STORE),
+        &file_signature(dir.as_deref(), n0xis_project::annotate::MODULE_STORE).to_le_bytes(),
+    );
     let mut guard = STORE_ERROR_MEMO.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((cached, note)) = guard.as_ref()
         && *cached == sig
     {
         return note.clone();
     }
-    let note = n0xis_project::annotate::list().err().map(|e| {
+    let note = n0xis_project::annotate::readable().err().map(|e| {
         format!("the project's annotations could not be read ({e:#}); nothing saved in them — names, comments, variable names and types — is shown, and writes to them are refused")
     });
     *guard = Some((sig, note.clone()));
@@ -243,12 +278,7 @@ pub fn project_file_signature(name: &str) -> u64 {
 /// value that still differs from a present one, so creating it later invalidates.
 fn file_signature(dir: Option<&std::path::Path>, name: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut feed = |bytes: &[u8]| {
-        for &b in bytes {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    };
+    let mut feed = |bytes: &[u8]| hash = fnv1a(hash, bytes);
     match dir {
         Some(dir) => {
             let path = dir.join(name);
@@ -263,6 +293,15 @@ fn file_signature(dir: Option<&std::path::Path>, name: &str) -> u64 {
             }
         }
         None => feed(name.as_bytes()),
+    }
+    hash
+}
+
+/// FNV-1a 64, continued from `hash` over `bytes`.
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
 }

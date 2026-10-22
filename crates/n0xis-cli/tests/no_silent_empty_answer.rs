@@ -146,6 +146,59 @@ fn no_operation_reports_success_with_an_empty_answer() {
     );
 }
 
+/// The answers a WebAssembly module cannot honestly leave empty, on modules of
+/// `crates/n0xis-wasm/tests/fixtures/` whose contents wasm-objdump lists
+/// (`*.details.txt`, `*.disassembly.txt` beside each): `{target}` is the
+/// module, and every address is a body or a call wasm-objdump -d shows.
+const MUST_ANSWER_ON_A_MODULE: &[(&str, MustAnswer)] = &[
+    ("core", MustAnswer { args: &["function", "discover", "--file", "{target}"], field: "functions" }),
+    ("core", MustAnswer { args: &["disasm", "--file", "{target}", "--addr", "0x5d"], field: "insns" }),
+    // `0000c6: 10 01 | call 1`, and func[1]'s body is at 0x105.
+    ("core", MustAnswer { args: &["xref", "to", "--file", "{target}", "--addr", "0x105"], field: "refs" }),
+    ("shapes", MustAnswer { args: &["imports", "--file", "{target}"], field: "imports" }),
+    ("shapes", MustAnswer { args: &["profile", "--file", "{target}"], field: "module" }),
+    // `passive` is segment 1's bytes (shapes.details.txt).
+    ("shapes", MustAnswer { args: &["strings", "--file", "{target}"], field: "strings" }),
+    ("shapes", MustAnswer { args: &["module", "list", "--file", "{target}"], field: "modules" }),
+];
+
+#[test]
+fn no_operation_on_a_module_reports_success_with_an_empty_answer() {
+    if !n0xis_exe().exists() {
+        eprintln!("empty-answer sweep: skipping — {} is not built", n0xis_exe().display());
+        return;
+    }
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../n0xis-wasm/tests/fixtures");
+    let mut silent = Vec::new();
+    for (stem, m) in MUST_ANSWER_ON_A_MODULE {
+        let target = fixtures.join(format!("{stem}.wasm")).to_string_lossy().to_string();
+        let mut args: Vec<String> = m.args.iter().map(|a| a.replace("{target}", &target)).collect();
+        args.push("--quiet".into());
+        let what = format!("{} on {stem}", m.args.join(" "));
+        let Some(v) = run(&args) else {
+            silent.push(format!("{what}: no envelope at all"));
+            continue;
+        };
+        if v["ok"] != Value::Bool(true) {
+            silent.push(format!("{what}: failed with {}", v["error"]["code"]));
+            continue;
+        }
+        let empty = match &v["data"][m.field] {
+            Value::Array(a) => a.is_empty(),
+            Value::Object(o) => o.is_empty(),
+            Value::Null => {
+                silent.push(format!("{what}: `data.{}` is not in the answer at all", m.field));
+                continue;
+            }
+            _ => false,
+        };
+        if empty {
+            silent.push(format!("{what}: ok:true and `data.{}` is empty", m.field));
+        }
+    }
+    assert!(silent.is_empty(), "these succeeded and said nothing:\n  {}", silent.join("\n  "));
+}
+
 /// The list of legitimate emptinesses must carry a reason, not just a name —
 /// otherwise it becomes the place defects go to be forgotten.
 #[test]

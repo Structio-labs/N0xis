@@ -11,6 +11,15 @@
 //! the answer says which ranges were read. The whole list is kept for a source
 //! with an identity (a file, a snapshot), so a front end paging through it, or
 //! filtering it as the user types, pays for the scan once.
+//!
+//! **A WebAssembly module's data is its data segments** (the lead's DECISIONS
+//! item 8): by default each segment's bytes are read, and every string found
+//! in one is reported at its module offset (`address`, the image's own space,
+//! what `mem read` reads) with its place in linear memory beside it — the
+//! memory's index and the address there — or, for a segment the module places
+//! nowhere statically, `not placed` and why. The module's sections, custom
+//! ones included, are read only when asked for by name, with `all_sections`
+//! or with a range, and their strings have module offsets only.
 
 use std::sync::{Arc, Mutex};
 
@@ -28,8 +37,10 @@ pub const DEFAULT_MIN_CHARS: usize = 4;
 /// The most an explicit range may cover; it is read whole.
 pub const MAX_STRINGS_RANGE: u64 = 256 << 20;
 
-/// A range to read: its name (a section's, or `range`), start and size.
-type ReadRange = (String, Va, u64);
+/// A range to read: its name (a section's, a data segment's, or `range`),
+/// start and size, and for a WebAssembly data segment where in linear memory
+/// its bytes are placed.
+type ReadRange = (String, Va, u64, Option<n0xis_sources::SegmentPlacement>);
 
 /// What was read, and every string found in it, in address order.
 struct Scanned {
@@ -116,18 +127,33 @@ fn strings(args: &Value) -> Response<Value> {
         .skip(offset)
         .take(if limit == 0 { usize::MAX } else { limit })
         .map(|(s, i)| {
-            json!({
+            let (_, range_start, _, placement) = &scanned.ranges[*i];
+            let mut row = json!({
                 "address": s.address,
                 "section": scanned.ranges[*i].0,
                 "encoding": s.encoding.name(),
                 "length": s.length,
                 "size": s.size,
                 "text": s.text,
-            })
+            });
+            if let Some(placement) = placement {
+                row["linear_memory"] = linear_memory(placement, s.address.0 - range_start.0);
+            }
+            row
         })
         .collect();
     let returned = page.len();
-    let read: Vec<Value> = scanned.ranges.iter().map(|(name, va, size)| json!({ "name": name, "address": va, "size": size })).collect();
+    let read: Vec<Value> = scanned
+        .ranges
+        .iter()
+        .map(|(name, va, size, placement)| {
+            let mut r = json!({ "name": name, "address": va, "size": size });
+            if let Some(placement) = placement {
+                r["linear_memory"] = linear_memory(placement, 0);
+            }
+            r
+        })
+        .collect();
     Response::success(schema::v1::STRINGS, json!({ "count": returned, "min": min, "ranges": read, "strings": page }))
         .with_source(resolved.label)
         .with_page(total, returned)
@@ -142,7 +168,7 @@ fn ranges(src: &Src, args: &Value, start: Option<Va>) -> Result<Vec<ReadRange>, 
         (Some(start), Some(size)) if size > MAX_STRINGS_RANGE => {
             Err(("bad-arg", format!("a range of {size} bytes at {start} is more than {MAX_STRINGS_RANGE} read at once")))
         }
-        (Some(start), Some(size)) => Ok(vec![("range".to_string(), start, size)]),
+        (Some(start), Some(size)) => Ok(vec![("range".to_string(), start, size, None)]),
         (Some(_), None) | (None, Some(_)) => Err(("bad-arg", "a range needs both start and size".to_string())),
         (None, None) => {
             let Src::Static(img) = src else {
@@ -151,10 +177,19 @@ fn ranges(src: &Src, args: &Value, start: Option<Va>) -> Result<Vec<ReadRange>, 
             if let Some(name) = args.get("section").and_then(Value::as_str) {
                 return img
                     .section_range(name)
-                    .map(|(va, size)| vec![(name.to_string(), va, size)])
+                    .map(|(va, size)| vec![(name.to_string(), va, size, None)])
                     .ok_or_else(|| ("no-section", format!("the image has no section named {name:?}")));
             }
             let all = args.get("all_sections").and_then(Value::as_bool).unwrap_or(false);
+            // A module's data is its segments, not its sections.
+            if !all
+                && let n0xis_sources::AddressModel::LinearMemories { segments, .. } = &img.image().machine().address_model
+            {
+                return Ok(segments
+                    .iter()
+                    .map(|s| (format!("data[{}]", s.index), s.bytes_at, s.len, Some(s.placement.clone())))
+                    .collect());
+            }
             let code = src.as_mem().code_ranges();
             let holds_code = |va: Va| code.iter().any(|(s, n)| va.0 >= s.0 && va.0 - s.0 < *n);
             Ok(img
@@ -162,9 +197,21 @@ fn ranges(src: &Src, args: &Value, start: Option<Va>) -> Result<Vec<ReadRange>, 
                 .into_iter()
                 .filter(|(_, va, _)| all || !holds_code(*va))
                 // A PE's headers are a range of their own with no name.
-                .map(|(name, va, size)| (if name.is_empty() { "(headers)".to_string() } else { name }, va, size))
+                .map(|(name, va, size)| (if name.is_empty() { "(headers)".to_string() } else { name }, va, size, None))
                 .collect())
         }
+    }
+}
+
+/// Where the byte `delta` bytes into a data segment lands in linear memory:
+/// the memory and the address there, or the segment's reason for having no
+/// static place.
+fn linear_memory(placement: &n0xis_sources::SegmentPlacement, delta: u64) -> Value {
+    match placement {
+        n0xis_sources::SegmentPlacement::Placed { memory, address } => {
+            json!({ "memory": memory, "address": format!("{:#x}", address.wrapping_add(delta)) })
+        }
+        n0xis_sources::SegmentPlacement::NotPlaced { why } => json!({ "not_placed": why }),
     }
 }
 
@@ -172,10 +219,30 @@ fn ranges(src: &Src, args: &Value, start: Option<Va>) -> Result<Vec<ReadRange>, 
 /// across a gap.
 fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncoding]) -> Result<Scanned, String> {
     let mut strings = Vec::new();
-    for (i, (_, start, size)) in ranges.iter().enumerate() {
+    for (i, (_, start, size, placement)) in ranges.iter().enumerate() {
         let runs = n0xis_sources::read_runs(src.as_mem(), *start, *size as usize).map_err(|e| e.to_string())?;
         for (va, bytes) in runs {
-            strings.extend(n0xis_core::find_strings(&bytes, va, min, encodings).into_iter().map(|s| (s, i)));
+            // Wide text is read at even addresses of the space the bytes are
+            // laid out in (`find_strings`), and a data segment's bytes are laid
+            // out in linear memory, not in the module: where they sit in the
+            // file depends on every byte before them, so a module offset's
+            // parity says nothing about the text's alignment. Scanned at the
+            // segment's own coordinate and moved back to module offsets after.
+            let delta = va.0.wrapping_sub(start.0);
+            let laid_out = match placement {
+                // The address the bytes take in their memory.
+                Some(n0xis_sources::SegmentPlacement::Placed { address, .. }) => address.wrapping_add(delta),
+                // An address the module computes when it runs (`memory.init`,
+                // an imported base), which a producer aligns as the segment's
+                // contents need: the segment's start is the one even point.
+                Some(n0xis_sources::SegmentPlacement::NotPlaced { .. }) => delta,
+                None => va.0,
+            };
+            let found = n0xis_core::find_strings(&bytes, Va(laid_out), min, encodings);
+            strings.extend(found.into_iter().map(|mut s| {
+                s.address = Va(s.address.0.wrapping_sub(laid_out).wrapping_add(va.0));
+                (s, i)
+            }));
         }
     }
     strings.sort_by_key(|(s, _)| s.address.0);

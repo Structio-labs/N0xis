@@ -224,7 +224,7 @@ impl Registry {
 /// Pull the standard target arguments out of a capability's JSON. Every
 /// analysis capability takes the same five, by the same names the CLI flags
 /// and MCP tool arguments already use.
-fn spec_of(args: &Value) -> SourceSpec<'_> {
+pub(crate) fn spec_of(args: &Value) -> SourceSpec<'_> {
     SourceSpec {
         pid: args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
         file: args.get("file").and_then(|v| v.as_str()),
@@ -247,8 +247,11 @@ fn spec_of(args: &Value) -> SourceSpec<'_> {
 /// a `--bytes` source or a directory outside a project simply carries none. A
 /// store that cannot be read carries none too, and `Registry::dispatch` puts
 /// the reason on the answer.
-fn attach_comments(val: &mut Value) {
-    let Ok(records) = n0xis_project::annotate::list() else { return };
+///
+/// The comments are the target's own ([`crate::annotation_syms::scope_of`]): a
+/// module's offsets are not a native image's addresses.
+fn attach_comments(val: &mut Value, scope: &n0xis_project::annotate::Scope) {
+    let Ok(records) = n0xis_project::annotate::list(scope) else { return };
     let comments: std::collections::BTreeMap<u64, String> = records
         .into_iter()
         .filter_map(|r| r.comment.filter(|c| !c.trim().is_empty()).map(|c| (r.va.0, c)))
@@ -372,9 +375,9 @@ fn subclassed_classes(src: &Src) -> std::sync::Arc<n0xis_core::Subclasses> {
     {
         return m.clone();
     }
-    let subclasses = match (src.module_base(), src.section_range(".rdata")) {
-        (Some(base), Some(_)) => n0xis_core::Subclasses::of(
-            &n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size()),
+    let subclasses = match (src.module_base(), src.section_range(".rdata"), src.pointer_size()) {
+        (Some(base), Some(_), Some(pointer_size)) => n0xis_core::Subclasses::of(
+            &n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), pointer_size),
             0,
             src.linkage(),
         ),
@@ -421,8 +424,8 @@ fn rtti_vtable_map(src: &Src) -> Result<std::sync::Arc<std::collections::HashMap
     let map: std::collections::HashMap<u64, String> = if !persisted.is_empty() {
         persisted
     } else {
-        match (src.module_base(), src.section_range(".rdata")) {
-            (Some(base), Some(_)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), src.pointer_size())
+        match (src.module_base(), src.section_range(".rdata"), src.pointer_size()) {
+            (Some(base), Some(_), Some(pointer_size)) => n0xis_core::scan_msvc_rtti(src.as_mem(), base, &src.data_ranges_of(None), src.text_range(), pointer_size)
                 .into_iter()
                 .map(|v| (v.vtable.get(), v.name))
                 .collect(),
@@ -597,9 +600,26 @@ pub fn stated_functions(src: &Src) -> Vec<(Va, Va)> {
         }
         out.extend(img.declared_entry_points().into_iter().map(|va| (va, va)));
     }
+    if let Src::Static(img) = src
+        && let Some(every) = img.every_function()
+    {
+        out.extend(every);
+    }
     out.sort_unstable();
     out.dedup();
     out
+}
+
+/// Whether [`stated_functions`] are every function the image has: the image's
+/// own word ([`n0xis_sources::StartCoverage`]), `Every` for a WebAssembly
+/// module, `Some` for every other source. Asked beside the list wherever one
+/// is attached, so discovery cannot take a module's bodies for some of its
+/// functions and go looking for more.
+pub fn stated_coverage(src: &Src) -> n0xis_sources::StartCoverage {
+    match src {
+        Src::Static(img) => img.image().start_coverage(),
+        Src::Live(_) | Src::Snap(_) | Src::Remote(_) => n0xis_sources::StartCoverage::Some,
+    }
 }
 
 /// A remark when the requested address is inside the image but in **no section
@@ -761,7 +781,7 @@ fn function_var_keys(
 /// image, as `decomp.pseudo` reads them).
 pub(crate) fn function_var_keys_at(args: &Value) -> Result<std::collections::BTreeSet<String>, String> {
     let mut keys = None;
-    let answer = with_cfg_ctx(args, RttiUse::Answers, |ctx, input, _| {
+    let answer = with_cfg_ctx(args, RttiUse::Answers, |ctx, input, _, _| {
         let struct_defs = n0xis_project::types_db::field_maps().into_iter().collect();
         keys = Some(function_var_keys(ctx, input, &struct_defs));
         Response::success("", Value::Null)
@@ -799,7 +819,7 @@ enum RttiUse {
 fn with_cfg_ctx(
     args: &Value,
     rtti: RttiUse,
-    work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str) -> Response<Value>,
+    work: impl FnOnce(&n0xis_core::Ctx, n0xis_core::CfgInput, &str, &n0xis_project::annotate::Scope) -> Response<Value>,
 ) -> Response<Value> {
     let addr = match required_addr(args, "addr") {
         Ok(v) => v,
@@ -820,14 +840,15 @@ fn with_cfg_ctx(
     };
     // Arch is picked *after* the source so a 32-bit PE auto-selects the i386
     // decoder instead of being mis-read as x64 (the silent-garbage bug).
-    let arch = match crate::pick_arch_for(
-        args.get("arch").and_then(|v| v.as_str()),
-        resolved.src.declared_machine().as_deref(),
-        !resolved.src.is_64(),
-    ) {
+    let arch = match resolved.src.pick_arch(args.get("arch").and_then(|v| v.as_str())) {
         Ok(a) => a,
         Err(e) => return Response::error("bad-arch", e),
     };
+    // Every command built on this one reads the control-flow graph, the IR or
+    // the decompiler, and each of those is the lift's.
+    if let Some((code, message)) = crate::lift_refusal(arch.as_ref()) {
+        return Response::error(&code, message);
+    }
     let start = if addr_rva {
         match crate::source::base_for_module(&resolved.src, args.get("addr_module").and_then(|v| v.as_str())) {
             Ok(base) => base.offset(addr.0),
@@ -898,7 +919,8 @@ fn with_cfg_ctx(
     // a rename wins over a recovered name wins over an export wins over `sub_…`.
     // Owns its data, so it wraps whatever binary-derived chain the source yields
     // as one unit — no 2^N match on which sources happen to be present.
-    let local = crate::annotation_syms::LocalNames::load();
+    let scope = crate::annotation_syms::scope_of(&resolved.src);
+    let local = crate::annotation_syms::LocalNames::load(&scope);
 
     let resp = match &resolved.src {
         Src::Static(pe) => {
@@ -918,13 +940,13 @@ fn with_cfg_ctx(
                 .with_symbols(&full)
                 .with_modules(pe.as_ref())
                 .with_eh(eh_regions)
-                .with_stated_functions(&stated)
+                .with_stated_functions(&stated, stated_coverage(&resolved.src))
                 .with_type_flow(&flow)
                 .with_layout(&layout);
-            if let (Some(vtables), Some(subclassed)) = (&vtables, &subclassed) {
+            if let (Some(vtables), Some(subclassed), Some(slots)) = (&vtables, &subclassed, slots) {
                 ctx = ctx.with_vtables(vtables, slots).with_subclassed(subclassed);
             }
-            work(&ctx, input, &label)
+            work(&ctx, input, &label, &scope)
         }
         Src::Live(l) => {
             let full;
@@ -932,10 +954,10 @@ fn with_cfg_ctx(
                 Some(m) => { full = n0xis_sources::ChainedSymbols::new(&local, m); &full }
                 None => &local,
             };
-            work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(sym), input, &label)
+            work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(sym), input, &label, &scope)
         }
-        Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(&local), input, &label),
-        Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local), input, &label),
+        Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(&local), input, &label, &scope),
+        Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local), input, &label, &scope),
     };
     let resp = add_note(resp, outside_code_note(&resolved.src, start));
     spelled(&*arch, attach.annotate(resp))
@@ -965,9 +987,23 @@ fn merge_string_hits(acc: &mut n0xis_core::StringXrefArtifact, next: n0xis_core:
     acc.count = acc.hits.len();
 }
 
+/// Whether a command's answer rests on the lift — the question [`with_src_ctx`]
+/// asks every caller, so none can be added without answering, and a
+/// decode-only architecture (a WebAssembly module's) is refused here, once,
+/// by every command that needs the lift (docs/design/WASM.md §5 decision 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lift {
+    /// The command builds control-flow graphs, SSA or a decompile.
+    Needed,
+    /// The command decodes instructions and reads their fields, and nothing
+    /// more: function discovery, cross-references, string references.
+    NotNeeded,
+}
+
 fn with_src_ctx(
     args: &Value,
     bytes_base: Va,
+    lift: Lift,
     work: impl FnOnce(&n0xis_core::Ctx, &Src, Option<usize>, &str) -> Response<Value>,
 ) -> Response<Value> {
     let mut spec = spec_of(args);
@@ -977,14 +1013,15 @@ fn with_src_ctx(
         Err((c, m)) => return Response::error(&c, m),
     };
     // 32-bit PE auto-selects the i386 decoder (see `pick_arch`).
-    let arch = match crate::pick_arch_for(
-        args.get("arch").and_then(|v| v.as_str()),
-        resolved.src.declared_machine().as_deref(),
-        !resolved.src.is_64(),
-    ) {
+    let arch = match resolved.src.pick_arch(args.get("arch").and_then(|v| v.as_str())) {
         Ok(a) => a,
         Err(e) => return Response::error("bad-arch", e),
     };
+    if lift == Lift::Needed
+        && let Some((code, message)) = crate::lift_refusal(arch.as_ref())
+    {
+        return Response::error(&code, message);
+    }
     let (src, label, region_len) = (resolved.src, resolved.label, resolved.region_len);
     // Phase 12 item 2, second half. The function-scoped helper above chained
     // the managed index; this range-scoped one did not — so `xref to`,
@@ -998,7 +1035,7 @@ fn with_src_ctx(
     // Project-local names as the primary provider, so `xref to/from` and call-graph
     // traces render user renames and recovered RTTI class names too — the
     // range-scoped twin of the wiring in `with_cfg_ctx`.
-    let local = crate::annotation_syms::LocalNames::load();
+    let local = crate::annotation_syms::LocalNames::load(&crate::annotation_syms::scope_of(&src));
 
     // …and the same for an ad-hoc signature corpus. `ir manifest` is the triage
     // surface — a per-function index over the *whole* image — so it is exactly
@@ -1035,8 +1072,8 @@ fn with_src_ctx(
             // build a CFG per function, and without these the extent heuristic
             // stretched an 82-byte function to the whole decode window.
             let stated = stated_functions(&src);
-            let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_stated_functions(&stated);
-            if let (Some(vtables), Some(subclassed)) = (&vtables, &subclassed) {
+            let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_stated_functions(&stated, stated_coverage(&src));
+            if let (Some(vtables), Some(subclassed), Some(slots)) = (&vtables, &subclassed, slots) {
                 ctx = ctx.with_vtables(vtables, slots).with_subclassed(subclassed);
             }
             work(&ctx, &src, region_len, &label)
@@ -1070,11 +1107,12 @@ fn with_scan_ctx(
     size: Option<usize>,
     work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str) -> Response<Value>,
 ) -> Response<Value> {
-    let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
-        Ok(a) => a,
-        Err(e) => return Response::error("bad-arch", e),
-    };
+    let explicit = args.get("arch").and_then(|v| v.as_str());
     if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) {
+        let arch = match crate::resolve_arch(explicit) {
+            Ok(a) => a,
+            Err(e) => return Response::error("bad-arch", e),
+        };
         let live = match crate::source::attach_live(pid) {
             Ok(l) => l,
             Err((c, m)) => return Response::error(&c, m),
@@ -1095,12 +1133,27 @@ fn with_scan_ctx(
             Ok(v) => v,
             Err(e) => return Response::error("bad-addr", e.to_string()),
         };
-        let pe = match n0xis_sources::ImageSource::load(std::path::Path::new(file)) {
+        let pe = match crate::source::load_image_cached(std::path::Path::new(file)) {
             Ok(p) => p,
-            Err(e) => return Response::error("load-failed", e.to_string()),
+            Err((c, m)) => return Response::error(&c, m),
         };
-        let label = n0xis_sources::MemorySource::label(&pe);
-        let ctx = n0xis_core::Ctx::new(&pe, arch.as_ref());
+        let label = n0xis_sources::MemorySource::label(pe.as_ref());
+        // A WebAssembly module's architecture is the one built from it, never
+        // the default: the image picks it, as for every other command, and it
+        // states no pointer width, which `scan dissect` reads. A native file
+        // keeps the flag's choice, as before — these scans read bytes, and
+        // refusing a machine this build does not decode would refuse a value
+        // search on it.
+        let arch = if matches!(pe.tables(), n0xis_sources::FormatTables::Wasm(_)) {
+            Src::Static(pe.clone()).pick_arch(explicit)
+        } else {
+            crate::resolve_arch(explicit)
+        };
+        let arch = match arch {
+            Ok(a) => a,
+            Err(e) => return Response::error("bad-arch", e),
+        };
+        let ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref());
         return work(&ctx, vec![(start_va, size)], &label);
     }
     Response::error("missing-source", "provide pid or file")
@@ -1108,16 +1161,26 @@ fn with_scan_ctx(
 
 /// Decompile one side of a diff: resolve its own target, build the CFG, render
 /// pseudo-C. Returns `(lines, provenance label)`.
+///
+/// Each side's instruction set is its own image's ([`Src::pick_arch`]): the
+/// two builds a diff compares need not be one machine, and the default this
+/// took for both — x86-64 whatever the files declared — decompiled an AArch64
+/// pair as x86, `ok: true`.
 fn decompile_side(
     spec: SourceSpec<'_>,
     addr: Va,
     size: usize,
     style: n0xis_core::DecompStyle,
-    arch: &dyn n0xis_arch::Arch,
+    explicit_arch: Option<&str>,
 ) -> Result<(Vec<String>, String), (String, String)> {
     let mut spec = spec;
     spec.bytes_base = Some(addr);
     let resolved = resolve(spec)?;
+    let arch = resolved.src.pick_arch(explicit_arch).map_err(|e| ("bad-arch".to_string(), e))?;
+    if let Some(refused) = crate::lift_refusal(arch.as_ref()) {
+        return Err(refused);
+    }
+    let arch = arch.as_ref();
     let input = n0xis_core::CfgInput { start: addr, max_bytes: size, auto_end: true };
     let run = |ctx: &n0xis_core::Ctx| -> Result<Vec<String>, (String, String)> {
         let (cfg, _cached) = n0xis_pipeline::cfg_cached(ctx, input).map_err(|e| ("ir-failed".to_string(), e.to_string()))?;
@@ -1132,6 +1195,18 @@ fn decompile_side(
         Src::Remote(r) => run(&n0xis_core::Ctx::new(r.as_ref(), arch)),
     }?;
     Ok((pseudo, resolved.label))
+}
+
+/// The name of each imported function a reference names by index alone (a
+/// WebAssembly `call n` to an import, which has no position for the symbol
+/// layer to name), as the module states it
+/// ([`n0xis_sources::WasmModule::imported_function_name`]).
+fn name_imported_functions(refs: &mut [n0xis_core::XrefEntry], src: &Src) {
+    let Src::Static(img) = src else { return };
+    let n0xis_sources::FormatTables::Wasm(module) = img.tables() else { return };
+    for r in refs.iter_mut().filter(|r| r.to.is_none() && r.sym.is_none()) {
+        r.sym = r.to_function.and_then(|index| module.imported_function_name(index));
+    }
 }
 
 fn to_hex_spaced(bytes: &[u8]) -> String {
@@ -1208,11 +1283,7 @@ impl Plugin for AnalysisPasses {
                 if let Some(refusal) = refuse_unreadable(&resolved.src, addr) {
                     return refusal;
                 }
-                let arch = match crate::pick_arch_for(
-        args.get("arch").and_then(|v| v.as_str()),
-        resolved.src.declared_machine().as_deref(),
-        !resolved.src.is_64(),
-    ) {
+                let arch = match resolved.src.pick_arch(args.get("arch").and_then(|v| v.as_str())) {
                     Ok(a) => a,
                     Err(e) => return Response::error("bad-arch", e),
                 };
@@ -1222,7 +1293,7 @@ impl Plugin for AnalysisPasses {
                 match n0xis_core::Pass::run(&n0xis_core::DecodePass, &ctx, input) {
                     Ok(out) => match serde_json::to_value(out) {
                         Ok(mut v) => {
-                            attach_comments(&mut v);
+                            attach_comments(&mut v, &crate::annotation_syms::scope_of(&resolved.src));
                             add_note(
                                 Response::success(n0xis_contracts::schema::v1::DECODE, v).with_source(resolved.label),
                                 note,
@@ -1271,7 +1342,13 @@ impl Plugin for AnalysisPasses {
                         return Response::error("no-rdata", "no .rdata section — MSVC RTTI lives there".to_string());
                     };
                     let _ = rdata;
-                    n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.data_ranges_of(None), text, resolved.src.pointer_size())
+                    // A source with no pointer width was refused by
+                    // `itanium_vtables` above, with its reason.
+                    let Some(pointer_size) = resolved.src.pointer_size() else {
+                        let refused = n0xis_core::RttiRefusal::NoNativePointers;
+                        return Response::error(refused.code(), refused.message());
+                    };
+                    n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.data_ranges_of(None), text, pointer_size)
                 };
                 let payload = json!({
                     "count": vtables.len(),
@@ -1342,7 +1419,7 @@ impl Plugin for AnalysisPasses {
                     Err((c, m)) => return Response::error(c, m),
                 };
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
-                with_src_ctx(args, Va(0), move |ctx, src, _region_len, label| {
+                with_src_ctx(args, Va(0), Lift::Needed, move |ctx, src, _region_len, label| {
                     // One address summarizes just that function; without it the
                     // whole discovered set up to `limit`.
                     let functions: Vec<Va> = match explicit {
@@ -1378,7 +1455,7 @@ impl Plugin for AnalysisPasses {
                 let limit = usize_arg(args, "limit", 400);
                 let max_bytes = usize_arg(args, "max_bytes", 4096);
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
-                with_src_ctx(args, Va(0), move |ctx, src, _region_len, label| {
+                with_src_ctx(args, Va(0), Lift::Needed, move |ctx, src, _region_len, label| {
                     let functions = crate::discovered_functions(ctx, src, module.as_deref(), limit);
                     if functions.is_empty() {
                         return Response::error("no-functions", "no functions discovered to propagate types over".to_string());
@@ -1414,7 +1491,7 @@ impl Plugin for AnalysisPasses {
                     Ok(v) => v,
                     Err((c, m)) => return Response::error(c, m),
                 };
-                with_src_ctx(args, Va(0), move |ctx, src, _region_len, label| {
+                with_src_ctx(args, Va(0), Lift::Needed, move |ctx, src, _region_len, label| {
                     // One address reports what that single function contributes —
                     // the audit answer to "why does this class have that field?",
                     // which a merged store deliberately cannot give.
@@ -1455,7 +1532,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::IR_CFG),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| match n0xis_pipeline::cfg_cached(ctx, input) {
                     Ok((art, _cached)) => ok_json(n0xis_contracts::schema::v1::IR_CFG, art, label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
@@ -1468,7 +1545,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::IR_EXPLAIN),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| match n0xis_pipeline::cfg_cached(ctx, input) {
                     Ok((art, _)) => ok_json(n0xis_contracts::schema::v1::IR_EXPLAIN, json!({ "lines": n0xis_core::explain(&art) }), label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
@@ -1481,7 +1558,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::IR_DOT),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| match n0xis_pipeline::cfg_cached(ctx, input) {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| match n0xis_pipeline::cfg_cached(ctx, input) {
                     Ok((art, _)) => ok_json(n0xis_contracts::schema::v1::IR_DOT, n0xis_core::dot(&art), label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
@@ -1494,7 +1571,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::VALUE_SET),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| {
                     let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
@@ -1517,7 +1594,7 @@ impl Plugin for AnalysisPasses {
             Some(n0xis_contracts::schema::v1::DEOBFUSCATE),
             Origin::Builtin,
             Box::new(|args| {
-                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| {
                     let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
@@ -1543,7 +1620,7 @@ impl Plugin for AnalysisPasses {
                     Ok(v) => v,
                     Err((c, m)) => return Response::error(c, m),
                 };
-                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| {
                     let start = input.start;
                     let art = match n0xis_pipeline::cfg_cached(ctx, input) {
                         Ok((a, _)) => a,
@@ -1570,7 +1647,7 @@ impl Plugin for AnalysisPasses {
                     return Response::error("bad-style", format!("unknown style '{requested}', expected goto|structured|ssa"));
                 };
                 let explain = bool_arg(args, "explain");
-                with_cfg_ctx(args, RttiUse::Answers, |ctx, input, label| {
+                with_cfg_ctx(args, RttiUse::Answers, |ctx, input, label, scope| {
                     let fn_start = input.start;
                     // The project's struct catalog (field names) — the decompiler
                     // also synthesizes `vftable@0` for RTTI classes on its own.
@@ -1586,7 +1663,7 @@ impl Plugin for AnalysisPasses {
                     //
                     // A store that cannot be read renders the function without
                     // it; `Registry::dispatch` puts the reason on the answer.
-                    let rec = n0xis_project::annotate::get(fn_start).unwrap_or(None);
+                    let rec = n0xis_project::annotate::get(scope, fn_start).unwrap_or(None);
                     let placed = match rec.as_ref().map(|r| r.placed_vars(|| function_var_keys(ctx, input, &struct_defs).map(Some))) {
                         None => n0xis_project::annotate::PlacedVars::default(),
                         Some(Ok(placed)) => placed,
@@ -1930,6 +2007,14 @@ impl Plugin for AnalysisPasses {
                 let start_s = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 with_scan_ctx(args, start_s.as_deref(), Some(size), move |ctx, _regions, label| {
                     match n0xis_core::Pass::run(&n0xis_core::DissectPass, ctx, n0xis_core::DissectInput { start, size }) {
+                        // An architecture with no native pointer width (a
+                        // WebAssembly module's) has no value that is a pointer
+                        // into the image (`DissectPass` guesses none), and the
+                        // answer says why its fields hold none.
+                        Ok(art) if ctx.arch.pointer_size().is_none() => add_note(
+                            ok_json(n0xis_contracts::schema::v1::DISSECT, art, label),
+                            Some(n0xis_core::NO_NATIVE_POINTERS.to_string()),
+                        ),
                         Ok(art) => ok_json(n0xis_contracts::schema::v1::DISSECT, art, label),
                         Err(e) => Response::error("dissect-failed", e.to_string()),
                     }
@@ -2163,7 +2248,7 @@ impl Plugin for AnalysisPasses {
                 // main module is a thin launcher and the code is in a DLL.
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_start.unwrap_or(Va(0));
-                with_src_ctx(args, base, |ctx, src, region_len, label| {
+                with_src_ctx(args, base, Lift::NotNeeded, |ctx, src, region_len, label| {
                     // Every executable section, not just `.text` — see
                     // `scan_ranges_or`. A cross-reference search that silently
                     // skips 89% of the code answers "no references" to a
@@ -2191,10 +2276,6 @@ impl Plugin for AnalysisPasses {
                         && matches!(src, Src::Static(_) | Src::Snap(_))
                     {
                         let idx = n0xis_pipeline::xref_index_for(ctx, &code_ranges, label);
-                        // The queried target's own name (all rows here reference
-                        // `addr`), so the "referenced by" view can title itself with
-                        // a real name instead of a bare address.
-                        let to_sym = ctx.symbols.and_then(|s| s.symbol_at(addr)).filter(|sy| sy.va == addr).map(|sy| sy.name);
                         let refs = idx
                             .to(addr)
                             .into_iter()
@@ -2202,28 +2283,28 @@ impl Plugin for AnalysisPasses {
                                 // The index stores only source addresses; re-derive the
                                 // reference kind and instruction text by decoding just
                                 // this one `from` instruction (aligned, so exact).
-                                let (kind, text) = ctx
+                                let (kind, named, text) = ctx
                                     .source
                                     .read(from, 16)
                                     .ok()
                                     .and_then(|b| ctx.arch.decode_range(&b, from, b.len()).into_iter().next())
                                     .map(|i| {
-                                        let kind = if i.rip_target == Some(addr) && i.target != Some(addr) {
-                                            "data".to_string()
-                                        } else {
-                                            n0xis_core::xref_kind(i.kind).to_string()
-                                        };
-                                        (kind, i.text)
+                                        // Indexed by a branch target, or else by a
+                                        // data reference: a RIP-relative operand, or
+                                        // a `ref.func` naming the function's body.
+                                        let data = i.rip_target == Some(addr) || i.target_function.is_some_and(|f| f.body == Some(addr));
+                                        let kind = if data && i.target != Some(addr) { "data" } else { n0xis_core::xref_kind(i.kind) };
+                                        (kind, i.target_function.map(|f| f.index), i.text)
                                     })
-                                    .unwrap_or_else(|| ("branch".to_string(), String::new()));
-                                n0xis_core::XrefEntry { from, to: addr, kind, text, sym: to_sym.clone() }
+                                    .unwrap_or(("branch", None, String::new()));
+                                n0xis_core::xref_entry(ctx, from, Some(addr), named, kind, text)
                             })
                             .collect::<Vec<_>>();
                         let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs };
                         return ok_json(n0xis_contracts::schema::v1::XREF, art, label);
                     }
                     let windows =
-                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_start, explicit_size, base);
+                        crate::source::scan_ranges_or(&code_ranges, src.text_range_in(module.as_deref()), region_len, explicit_start, explicit_size, base);
                     if windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     }
@@ -2243,6 +2324,7 @@ impl Plugin for AnalysisPasses {
                     match merged {
                         Some(mut art) => {
                             art.count = art.refs.len();
+                            name_imported_functions(&mut art.refs, src);
                             ok_json(n0xis_contracts::schema::v1::XREF, art, label)
                         }
                         None => Response::error("no-range", "could not resolve a scan range; pass start and size"),
@@ -2277,7 +2359,11 @@ impl Plugin for AnalysisPasses {
                 // main module is a thin launcher and the code is in a DLL.
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_data_start.or(explicit_code_start).unwrap_or(Va(0));
-                with_src_ctx(args, base, move |ctx, src, region_len, label| {
+                // Needed on a module: its code reaches a string by an address in
+                // linear memory that its instructions compute, which only the
+                // lift follows (a native image's reference is an operand the
+                // decoder reads, and every native architecture lifts).
+                with_src_ctx(args, base, Lift::Needed, move |ctx, src, region_len, label| {
                     // String literals and the code pointing at them sit in
                     // different sections, and *neither* is a single section. The
                     // data side spans every initialized/read-only data range
@@ -2301,7 +2387,7 @@ impl Plugin for AnalysisPasses {
                         return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
                     }
                     let code_windows =
-                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_code_start, code_size_arg, base);
+                        crate::source::scan_ranges_or(&code_ranges, src.text_range_in(module.as_deref()), region_len, explicit_code_start, code_size_arg, base);
                     // The primary data section (first in `data_ranges_of`) is the
                     // single-window default: `.rdata` on a PE, `.rodata` on an ELF.
                     let data_windows =
@@ -2367,7 +2453,7 @@ impl Plugin for AnalysisPasses {
                 // main module is a thin launcher and the code is in a DLL.
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 let base = explicit_start.unwrap_or(Va(0));
-                with_src_ctx(args, base, move |ctx, src, region_len, label| {
+                with_src_ctx(args, base, Lift::Needed, move |ctx, src, region_len, label| {
                     // Triage must see the whole image, or it ranks the tenth of
                     // it that happens to be `.text` and calls that the program.
                     let code_ranges = src.code_ranges_of(module.as_deref());
@@ -2380,7 +2466,7 @@ impl Plugin for AnalysisPasses {
                         return Response::error("no-module", format!("no loaded module matches {name:?}; run `module list` to see what is loaded"));
                     }
                     let windows =
-                        crate::source::scan_ranges_or(&code_ranges, src.section_range_in(module.as_deref(), ".text"), region_len, explicit_start, explicit_size, base);
+                        crate::source::scan_ranges_or(&code_ranges, src.text_range_in(module.as_deref()), region_len, explicit_start, explicit_size, base);
                     if windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     }
@@ -2425,7 +2511,7 @@ impl Plugin for AnalysisPasses {
                 let depth = usize_arg(args, "depth", 3);
                 let max_nodes = usize_arg(args, "max_nodes", 500);
                 let max_bytes = usize_arg(args, "max_bytes", 4096);
-                with_src_ctx(args, addr, move |ctx, src, _region_len, label| {
+                with_src_ctx(args, addr, Lift::Needed, move |ctx, src, _region_len, label| {
                     let root = if addr_rva {
                         match src.module_base() {
                             Some(base) => base.offset(addr.0),
@@ -2463,7 +2549,10 @@ impl Plugin for AnalysisPasses {
                     "ssa" => n0xis_core::DecompStyle::Ssa,
                     other => return Response::error("bad-style", format!("unknown style '{other}', expected goto|structured|ssa")),
                 };
-                let arch = match crate::resolve_arch(args.get("arch").and_then(|v| v.as_str())) {
+                let explicit_arch = args.get("arch").and_then(|v| v.as_str());
+                // The comparison itself decodes nothing: this is the empty
+                // context it runs in, each side having picked its own.
+                let arch = match crate::resolve_arch(explicit_arch.filter(|a| !a.eq_ignore_ascii_case("wasm"))) {
                     Ok(a) => a,
                     Err(e) => return Response::error("bad-arch", e),
                 };
@@ -2476,11 +2565,11 @@ impl Plugin for AnalysisPasses {
                     bytes: args.get(format!("{prefix}_bytes")).and_then(|v| v.as_str()),
                     ..Default::default()
                 };
-                let (pseudo_a, label_a) = match decompile_side(side("a"), a_addr, size, style, arch.as_ref()) {
+                let (pseudo_a, label_a) = match decompile_side(side("a"), a_addr, size, style, explicit_arch) {
                     Ok(x) => x,
                     Err((c, m)) => return Response::error(format!("a-{c}"), m),
                 };
-                let (pseudo_b, label_b) = match decompile_side(side("b"), b_addr, size, style, arch.as_ref()) {
+                let (pseudo_b, label_b) = match decompile_side(side("b"), b_addr, size, style, explicit_arch) {
                     Ok(x) => x,
                     Err((c, m)) => return Response::error(format!("b-{c}"), m),
                 };
@@ -2512,8 +2601,15 @@ impl Plugin for AnalysisPasses {
                 let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
                 let limit = usize_arg(args, "limit", 64);
                 let offset = usize_arg(args, "offset", 0);
-                with_src_ctx(args, explicit_start.unwrap_or(Va(0)), move |ctx, src, region_len, label| {
+                with_src_ctx(args, explicit_start.unwrap_or(Va(0)), Lift::NotNeeded, move |ctx, src, region_len, label| {
                     let ranges = crate::discovered::image_code_ranges(src, src.text_range(), region_len, explicit_start, explicit_size, Va(0));
+                    if ranges.is_empty()
+                        && let Some(none) = crate::discovered::declares_no_functions(src)
+                    {
+                        return ok_json(n0xis_contracts::schema::v1::FUNCTION_DISCOVER, none, label)
+                            .with_page(0, 0)
+                            .with_note(crate::discovered::DECLARES_NO_FUNCTIONS);
+                    }
                     if ranges.is_empty() {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     }
@@ -2541,14 +2637,14 @@ impl Plugin for AnalysisPasses {
                     Ok(r) => r,
                     Err((c, m)) => return Response::error(&c, m),
                 };
-                let arch = match crate::pick_arch_for(
-        args.get("arch").and_then(|v| v.as_str()),
-        resolved.src.declared_machine().as_deref(),
-        !resolved.src.is_64(),
-    ) {
+                let arch = match resolved.src.pick_arch(args.get("arch").and_then(|v| v.as_str())) {
                     Ok(a) => a,
                     Err(e) => return Response::error("bad-arch", e),
                 };
+                // The fixpoint walks every function's control-flow graph.
+                if let Some((code, message)) = crate::lift_refusal(arch.as_ref()) {
+                    return Response::error(&code, message);
+                }
                 // A *whole-program* fixpoint defaults to the whole program.
                 // Capping it silently made a partial answer indistinguishable
                 // from a complete one; `truncated` now says, and the default
@@ -2595,7 +2691,7 @@ impl Plugin for AnalysisPasses {
                         break 'entries Vec::new();
                     };
                     let dstated = stated_functions(&resolved.src);
-                    let dctx = n0xis_core::Ctx::new(mem, arch.as_ref()).with_stated_functions(&dstated);
+                    let dctx = n0xis_core::Ctx::new(mem, arch.as_ref()).with_stated_functions(&dstated, stated_coverage(&resolved.src));
                     let di = n0xis_core::DiscoverInput { start, size, limit, offset: 0 };
                     // Ask for everything, then cap — otherwise `available`
                     // would be the cap and the truncation invisible.

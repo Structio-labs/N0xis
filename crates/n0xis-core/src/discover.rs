@@ -44,6 +44,11 @@ pub struct FunctionCandidate {
     /// an exact `--size` to `decomp`/`ir` instead of guessing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<Va>,
+    /// The function's index, beside its position, on an image whose functions
+    /// are identified by index (a WebAssembly module: `call 3` names function
+    /// 3). Absent on a native image, whose functions are their addresses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
 }
 
 /// Authoritative function discovery from the PE exception directory (the
@@ -56,7 +61,7 @@ pub struct FunctionCandidate {
 ///
 /// ⚠️ Takes a bare [`MemorySource`], not a [`Ctx`], so it has no symbol seam to
 /// consult: its candidates are always `sub_<addr>`. The prologue scan below
-/// names its own through [`name_at`]. Closing this asymmetry means giving the
+/// names its own through [`crate::function_name`]. Closing this asymmetry means giving the
 /// CLI's hand-written `--pdata` handler a symbol-carrying context, which it
 /// does not build today — a known gap, stated here rather than left to be
 /// discovered as "why does `--pdata` lose the names".
@@ -120,9 +125,10 @@ pub fn discover_pdata(source: &dyn MemorySource, module_base: Va) -> Result<Vec<
         }
         let va = module_base.offset(begin as u64);
         out.push(FunctionCandidate {
-            name: format!("sub_{:X}", va.0),
+            name: crate::unnamed_function_name(crate::UnnamedFunction::Address(va)),
             va,
             end: Some(module_base.offset(end as u64)),
+            index: None,
         });
     }
     Ok(out)
@@ -294,12 +300,6 @@ fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeSet<u64> {
     out
 }
 
-fn name_at(ctx: &Ctx, va: Va) -> String {
-    crate::ir::symbol_on_entry(ctx, va)
-        .map(|sym| crate::render::render_callee_name(&sym.name))
-        .unwrap_or_else(|| format!("sub_{:X}", va.0))
-}
-
 /// The discovery artifact (`n0xis.function.discover.v1`).
 #[derive(Clone, Debug, Serialize)]
 pub struct DiscoverArtifact {
@@ -372,7 +372,12 @@ impl Discovered {
                 .and_then(|n| va.0.checked_add(n))
                 .map(Va)
                 .or(stated_end);
-            functions.push(FunctionCandidate { name: name_at(ctx, va), va, end });
+            functions.push(FunctionCandidate {
+                name: crate::function_name(ctx, va),
+                va,
+                end,
+                index: ctx.arch.indexed_function(va).filter(|f| f.body == va).map(|f| f.index),
+            });
         }
         DiscoverArtifact {
             start: self.start,
@@ -396,13 +401,20 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // with an authoritative extent (see `Ctx::functions`).
         let mut found: BTreeMap<u64, Option<Va>> = BTreeMap::new();
         let mut declared: Vec<(u64, u64)> = Vec::new();
-        for (s, e) in ctx.functions.unwrap_or(&[]) {
+        let every = ctx.functions.is_some_and(|f| f.coverage == n0xis_sources::StartCoverage::Every);
+        for (s, e) in ctx.functions.map_or(&[][..], |f| f.extents) {
             // `end <= start` is a declared *start* with no stated length — a PE
             // export, say, on an image with no `.pdata` to give extents. It
             // seeds the start and leaves the extent to be inferred; it must not
             // overwrite a real extent already recorded for the same address.
             let extent = (e.0 > s.0).then_some(*e);
-            if range.contains(&s.0) {
+            // A function of no bytes at the window's end — a corrupted
+            // module's last body of size 0, which starts where the code
+            // section ends — holds no byte of any window and is in this one,
+            // where the image declares every function: left out, it was a
+            // declared function no list showed.
+            let at_end = every && extent.is_none() && s.0 == range.end;
+            if range.contains(&s.0) || at_end {
                 found.entry(s.0).and_modify(|slot| { if slot.is_none() { *slot = extent } }).or_insert(extent);
             }
             if e.0 > s.0 {
@@ -410,6 +422,22 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             }
         }
         declared.sort_unstable();
+
+        // Where the image declares every function it has, with its extent (a
+        // WebAssembly module: one body per defined function, and between the
+        // bodies only their sizes), the declarations are the answer. Every rule
+        // below exists to find a function nothing declares, and here there is
+        // none to find: the instruction after a body's end is the next body's
+        // size, decoded as code, and each would invent a function a few bytes
+        // before a real one (the lead's DECISIONS item 10).
+        if every {
+            return Ok(Discovered {
+                start: input.start,
+                scanned_bytes: bytes.len(),
+                entries: found.into_iter().map(|(va, end)| (Va(va), end)).collect(),
+            });
+        }
+
         // A declared extent settles every address inside it: whatever the scan
         // matches there is part of *that* function, not the start of another
         // one. This is the same rule as trusting a declared start, applied to
@@ -678,7 +706,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1004))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x15, limit: 100, offset: 0 })
             .unwrap();
@@ -698,7 +726,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1004)), (Va(0x1030), Va(0x1034))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x40, limit: 100, offset: 0 })
             .unwrap();
@@ -717,7 +745,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1004))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x20, limit: 100, offset: 0 })
             .unwrap();
@@ -758,7 +786,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1024))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x24, limit: 100, offset: 0 })
             .unwrap();
@@ -798,7 +826,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1030))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
             .unwrap();
@@ -829,7 +857,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1040))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
             .unwrap();
@@ -855,7 +883,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1000), Va(0x1040))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
             .unwrap();
@@ -875,7 +903,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
         let stated = [(Va(0x1023), Va(0x1030))];
-        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
             .unwrap();

@@ -30,3 +30,5 @@ serde_json = { workspace = true }
 # Tests only: the real PE loader, to validate the NativeAOT reader against a
 # on-disk image. Kept out of the library build so the core stays IO-free.
 n0xis-sources = { workspace = true, features = ["static-pe"] }
+# Tests only: a module to build the WebAssembly architecture from.
+n0xis-wasm = { workspace = true }

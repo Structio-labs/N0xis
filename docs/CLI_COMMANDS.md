@@ -63,7 +63,8 @@ A command that reads a target takes **one** source. The full set:
 
 - `--pid <u32>` — a live process (VAs respect ASLR).
 - `--file <path>` — a file on disk: an executable image (PE or ELF; VAs use the image's
-  preferred base) for the commands that analyse one; for the archive, script and bytecode
+  preferred base) or a WebAssembly module (addresses are module offsets; see *WebAssembly
+  modules* below) for the commands that analyse one; for the archive, script and bytecode
   readers (`bundle`, `lua disasm`, `lua patch`) the file their own help names.
 - `--snapshot <name>` — reload a captured `snapshot dump`.
 - `--remote-cmd "<argv>"` — attach over the remote-agent transport, e.g.
@@ -98,6 +99,56 @@ with `bad-arch`, naming the machine, by every command that decodes (`disasm`, `d
 `function *`, `analyze`, `profile`, …); `find`, a byte search, still searches it. With `--arch` the
 flag is the declaration. Such an image used to be decoded as x86 by its bitness, `ok: true`.
 
+A WebAssembly module is decoded by an architecture built from the module (`wasm`): the same
+bytes decode differently by where they are in it, so no instruction set named by itself can.
+`--arch wasm` names it, on a module only (on any other target it is `bad-arch`: that target has
+no such instruction set); any other `--arch` on a module is refused with `bad-arch`, never obeyed.
+
+### WebAssembly modules
+
+A `.wasm` file (magic `\0asm`, version 1) opens with `--file` like any image. What differs, and
+why (docs/design/WASM.md §5, decisions 1 and 2):
+
+- **Addresses are module offsets.** The image's positions are the module's own bytes from 0;
+  `mem read` reads them, `disasm` decodes them. They hold no data: a module's data lives in its
+  linear memories, each its own address space, and an address there is never written as a module
+  offset (`strings` gives both, below).
+- **A function is its index; its body is its position.** `function discover` lists every defined
+  function at its body (the locals declaration, where its decoded stream begins), with its exact
+  extent and its `index`; the list is the code section's, and nothing else is a function, so no
+  discovery heuristic runs. A function's `name` is the module's own text, as its `name` section
+  or an export states it and `wasm-objdump` prints it (`Vec::push(int)`, `a-b`,
+  `legalstub$x`): not rendered as an identifier, as a native symbol's is. A function no name
+  section or export names is `func_<index>`. A body a corrupted module states with size 0 is
+  still listed, with no `end` (the `profile` findings name it). An imported function has an
+  index and no position: it is in `imports`, reached by `{"index": n}`. `disasm --addr <body>`
+  starts with the body's `locals` declaration and stops at the body's last `end`; a `call` or
+  `return_call` carries its callee as `target_function` (`{"index": n, "body": "0x…"}`, no
+  `body` for an import) and a defined callee's body as `target`, a `ref.func` its function as
+  `target_function`; and the answer has the index of the function `start` is in as `function`.
+  `xref to --addr <body>` lists the direct calls and tail calls to it (`call`/`jmp`) and the
+  `ref.func`s of it (`data`), not the element segments that place it in a table; `xref from` at
+  a call to an import lists that call, with `to_function` and no `to`. Every reference carries
+  `from_function`, and `to_function` beside `to`.
+- **Every code position carries its function's index** — the function list, `disasm`, `xref`,
+  `profile`'s exports and folded exports, and the annotation records (`function` beside `va`) —
+  but not yet the module identity beside it, which only `profile`'s `module.identity` states.
+- **The lift is stage 3.** Every command that needs it — `decomp pseudo`, `ir *`, `function
+  summary|typeflow|layout|trace|noreturn`, `ir manifest`, `xref string`, `diff functions`,
+  `analyze`, `const identify`, `bindings list`, `sig gen` — refuses a module with `not-lifted`,
+  naming stage 3. `rtti scan` and `il2cpp obj` refuse with `no-native-pointers`.
+- **Annotations are the module's own.** A module's renames, comments and bookmarks are kept
+  under its identity (`build-id:<hex>` from its `build_id` section, else `fnv1a64:<hex>` of its
+  bytes), so two modules in one project never share them: `annotate … --file <module>`, or with
+  no source the target `attach` or `serve` holds (the MCP `annotate_set`/`annotate_list` too). A
+  record written with no target and no module session, or for a native image, never applies to a
+  module.
+- **Data is linear memory's.** `scan dissect` over a module's bytes guesses no field a pointer
+  (a value in a data segment is a linear-memory value, no module offset), and its `meta.note`
+  says so. `snapshot dump` refuses a module (`unsupported`): a snapshot records no format, and
+  its bytes reloaded would be decoded as x86-64.
+- **Sections** are named as `wasm-objdump -h` titles them (`Type`, `Import`, `Code`, `Data`, …),
+  and a custom section `custom:<name>` (`custom:name`, `custom:producers`).
 ### Schema / compatibility
 
 - New v1 payloads are `n0xis.*.vN` (`crates/n0xis-contracts/src/schema.rs`, mod `v1` — the single
@@ -120,7 +171,7 @@ Environment / readiness check (arch decoders, project resolution).
 - Args: none.
 - Schema: `n0xis.doctor.v1`
 
-### `profile --file <pe> | --pid <u32> [--arch <isa>] [--exports]`
+### `profile --file <image> | --pid <u32> [--arch <isa>] [--exports]`
 **Run this first on an unfamiliar target.** Reports what the image *is* and which commands
 will not work on it — the answer that is otherwise assembled from a sequence of empty
 results.
@@ -143,6 +194,24 @@ results.
   Every entry is derived from the evidence above, never a static list.
 - `--exports` — include the full export table (name → address → branch target); off by
   default because a runtime DLL exports hundreds of names.
+- **A WebAssembly module** answers `data.image` from the module's sections and its exported
+  defined functions (at their bodies), and beside it `data.module`: its `identity`, `linkage`
+  (`SharedLibrary` for a side module, one with a `dylink.0` section), the counts of imported and
+  defined functions, the `start` function (index and body), `imports` (as `imports` gives them),
+  every `export` with its kind and index (a function's body beside it, none for an import
+  exported again), `memories` (index type, limits in pages, shared, import), `tables`,
+  `data_segments` (where each one's bytes are in the module, and `placed` in a memory at an
+  address, or `not_placed` with why: a passive segment, one placed by an imported global, an
+  offset this reader does not evaluate), `element_segments` (the same, in a table), the custom
+  sections' names and the reader's `findings`: a part not read (a body that does not decode, a
+  `name` section problem, said as what the reader did with the names), and a contradiction (a
+  start function or an export naming an index past its space; a data or element segment placed
+  past its memory's or table's size at instantiation, which traps). What the image block shows
+  with no meaning for a module: `module_base` 0 and `image_end` the module's length; `pdata_*`,
+  `thunk_count` and `detoured_exports` false, 0 or empty; a section's `virtual_size` and
+  `raw_size` both its contents' size. `folded` lists each function exported under more than one
+  name, with its `index`, and each export in `--exports` carries its `index` beside `va`.
+  `data.advisories` names the commands refused until the lift.
 - Schema: `n0xis.profile.v1`
 
 ### `guide [<topic>] [--brief]`
@@ -218,7 +287,7 @@ question, never one per container): the libraries in the order the image states 
 imported name with the library it is attributed to and how the image reaches it. Through the
 registry (`imports`), so `serve` and an MCP client (`capability_run`) get the same answer.
 - Sources: `--file`.
-- `data.format` — `pe` or `elf`, the reader that opened the image.
+- `data.format` — `pe`, `elf` or `wasm`, the reader that opened the image.
 - `data.imports` — `{"read": {...}}`, or `{"not_read": {"why": "..."}}` where the table was not
   read: a PE that only a permissive parse opened, whose import table is missing rather than empty;
   a PE with a delay-load import table, which is not read, so its import table alone is not
@@ -229,19 +298,25 @@ registry (`imports`), so `serve` and an MCP client (`capability_run`) get the sa
     `flat` (an ELF: the loader looks every name up in every loaded object in order, so the library
     named for a symbol is informative, not authoritative).
   - `libraries[]` — `name` and `stated_by`: `import_descriptor` (PE, in descriptor order),
-    `needed` (ELF `DT_NEEDED`, in the dynamic table's order) or `version_requirement_only` (named
-    by an ELF version requirement and by no `DT_NEEDED` entry, listed after the others); and
+    `needed` (ELF `DT_NEEDED`, in the dynamic table's order), `version_requirement_only` (named
+    by an ELF version requirement and by no `DT_NEEDED` entry, listed after the others) or
+    `import_module` (a WebAssembly import's module name, in first-use order); and
     `references_not_read` — `[{"part": "...", "why": "..."}]`, the entries of the library's table
     that `references` does not hold as the table does: a PE import lookup table holding more
     entries than the PE parser returned (it skips an entry whose hint/name entry lies in no
     section, and numbers the slots after it from the skipped one's), with both counts; the
     library's references from the first such entry on then carry a `reach` of `not_read`. Empty
     when the table was read whole, and always for an ELF.
-  - `references[]` — `name`, or `ordinal` for a PE import by ordinal only; `library`:
+  - `references[]` — `name`, or `ordinal` for a PE import by ordinal only; `kind` — what it is,
+    where the format says: `function`, `table`, `memory`, `global` or `tag` for a WebAssembly
+    import, `function` or `data` from an ELF symbol's type (`STT_FUNC`/`STT_GNU_IFUNC`;
+    `STT_OBJECT`/`STT_COMMON`/`STT_TLS`), `not_stated` for an ELF `STT_NOTYPE` symbol and for
+    every PE import (a descriptor names code and variables alike); `library`:
     `{"binds": i}` (PE), `{"named": i}` (an ELF version requirement names `libraries[i]`) or
     `{"unattributed": {"why": "..."}}`; `reach` — `{"read": [...]}` of `{"slot": "0x…"}` (the
     pointer the loader binds: an IAT entry, a GOT slot), `{"stub": "0x…"}` (an x86-64 PLT entry
-    that jumps through it) and, for a WebAssembly module once one is read, `{"index": n}`; or
+    that jumps through it) and, for a WebAssembly import, `{"index": n}`, its index in the index
+    space of its `kind` (a function import is the `n` a `call n` names; it has no address); or
     `{"not_read": {"why": ...}}` on an ELF machine whose import relocations are not read, and on
     a PE library's references from the first entry its `references_not_read` names.
     An ELF lists every undefined dynamic symbol; its reach is the slots a `GLOB_DAT` or
@@ -267,6 +342,13 @@ Linear disassembly.
 - `--addr` (required) — start address.
 - `--count` — number of instructions to decode (default 20).
 - Sources: `--pid` | `--file` | `--bytes`.
+- On a WebAssembly module, `--addr` is a module offset: a body's start decodes its `locals`
+  declaration first (`text`: `locals 3 i32, 1 f64`), then each instruction in the canonical text
+  spelling of `n0xis-wasm`, to the body's last `end`, however long an instruction is (a
+  `br_table` is as long as its targets). An offset where no instruction starts (inside an
+  instruction or the locals declaration, the size between two bodies, any other section) is
+  `decode-failed`. `data.function` is the index of the function `--addr` is in; a `call`'s
+  `target` is the callee's body, and `target_function` its index.
 - Schema: `n0xis.decode.v1`
 
 ### `ir build` / `ir explain` / `ir dot`
@@ -325,6 +407,9 @@ Discover functions by prologue scanning (`.text` by default).
   code bytes themselves, so the next session on the same bytes does not scan at all. Names and
   sizes are attached per page, so a rename shows on the next page asked for. A live or remote
   process is scanned on every request.
+- On a WebAssembly module the list is the module's own: every defined function at its body, its
+  extent exact, its `index` beside it, and nothing found beyond them (the default range is the
+  code section). A module with no code section answers an empty list, with a note saying so.
 
 ### `function trace --addr <hex>`
 Walk the call graph from a root function.
@@ -353,6 +438,10 @@ Pseudo-C for one function.
 Who references `--addr` (`to`) / what `--addr` references (`from`).
 - `--addr` (required); `--start`/`--size` — code window to scan (defaults to `.text`).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
+- On a WebAssembly module (see *WebAssembly modules*) each reference carries `from_function` and
+  `to_function`, the indices of the functions it is from and to; a call to an imported function
+  has `to_function` and no `to` (an import has no position), and its `sym` is the import's name
+  (its `name` section's, else `module.field`); a `ref.func` is a `data` reference.
 - Schema: `n0xis.xref.v1`
 
 ### `xref string --query <str>`
@@ -388,6 +477,13 @@ Text in the image: runs of printable characters, each with its address.
   <name>` reads one, `--start`/`--size` one range (at most 256 MiB; the only choice for a
   process). `data.ranges` names what was read; a string never runs across a gap.
 - Each string: `address`, `section`, `encoding`, `length` (characters), `size` (bytes), `text`.
+- On a WebAssembly module, what is read by default is its data segments, the initial contents
+  of its linear memories (`section`: `data[<index>]`). `address` is the module offset of the
+  string's bytes, and `linear_memory` says where they are when the module runs:
+  `{"memory": m, "address": "0x…"}`, the segment's placement plus the string's offset into it,
+  or `{"not_placed": "<why>"}` for a passive segment or one placed by an imported global. Its
+  sections, custom ones included, are read only with `--section` (`custom:name`),
+  `--all-sections` or a range, at module offsets alone.
 - The whole list is kept for a file or a snapshot, so paging and filtering it scan once.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.strings.v1`
@@ -584,6 +680,8 @@ Find stable multi-level pointer chains resolving to an address.
 Heuristically type each field of a live region (pointer/float/int).
 - `--start` (required); `--size` (default 64).
 - Sources: `--pid` | `--file`.
+- On a WebAssembly module no field is guessed a pointer, and `meta.note` says why: a module's
+  positions hold no data, and a value in its data is a linear-memory value, never a module offset.
 - Schema: `n0xis.scan.dissect.v1`
 
 > **Not a command:** `scan structural` is an **internal core primitive** (schema
@@ -631,20 +729,33 @@ module+function + decompiled statement (Phase 4c — watchpoint × decompiler, f
 ### `annotate name --addr <hex> [--value <str>]`
 Assert (or clear, with no `--value`) a function/variable name at an address (versioned with full
 history).
+- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
+  session supplies its own. They say whose records are read and written: a WebAssembly module
+  keeps its own, under its identity; every native target shares one map, the one used without a
+  source, as before.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate type --addr <hex> [--value <str>]`
 Assert (or clear) a type note at an address, e.g. `"int(char*, size_t)"`.
+- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
+  session supplies its own. They say whose records are read and written: a WebAssembly module
+  keeps its own, under its identity; every native target shares one map, the one used without a
+  source, as before.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate comment --addr <hex> [--value <str>]`
 Assert (or clear) a free-text comment at an address.
+- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
+  session supplies its own. They say whose records are read and written: a WebAssembly module
+  keeps its own, under its identity; every native target shares one map, the one used without a
+  source, as before.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate show --addr <hex>`
 Show the current facts + full history for one address.
 - Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
-  session supplies its own. Stack locals were once named by the offset's magnitude (`local_8`
+  session supplies its own. They say whose records are shown (a WebAssembly module's own, or the
+  native map). Stack locals were once named by the offset's magnitude (`local_8`
   was both `+8` and `-8`; now `local_8` / `local_neg_8`). A variable name or type stored under
   a key of that naming is kept apart, in `earlier_var_names` / `earlier_var_types`, and is never
   read as a current key: it applies only where the function has exactly one of the slots it
@@ -659,11 +770,21 @@ Show the current facts + full history for one address.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate list`
-List every annotated address. No args.
+List every annotated address of a target: with `--file <module>`, a WebAssembly module's own
+records; without, the records native targets share, and `meta.note` says how many records the
+modules' own maps hold, which this listing leaves out.
+- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
+  session supplies its own. They say whose records are read and written: a WebAssembly module
+  keeps its own, under its identity; every native target shares one map, the one used without a
+  source, as before.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate rm --addr <hex>`
 Remove all annotations (and history) at an address.
+- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
+  session supplies its own. They say whose records are read and written: a WebAssembly module
+  keeps its own, under its identity; every native target shares one map, the one used without a
+  source, as before.
 - Schema: `n0xis.annotation.v1`
 
 ### `snapshot dump --name <str>`
@@ -672,6 +793,9 @@ reloadable `.n0x/dumps/snapshot/<name>.json`.
 - `--start`/`--size` — region (defaults to the module's `.text`); `--name` (required);
   `--force`.
 - Sources: `--pid` | `--file`.
+- A WebAssembly module is refused (`unsupported`): a snapshot records bytes at addresses and no
+  format, and a module's code reloaded with `--snapshot` would be decoded as x86-64. A module's
+  own capture, its linear memory with a space per region, is stage 4 of docs/design/WASM.md.
 - Schema: `n0xis.snapshot.v1`
 
 ### `snapshot info <name>`
@@ -965,7 +1089,7 @@ sections above document a subset in depth; every command has `--help`, and
 |---|---|
 | `n0x annotate bookmark` | Bookmark ("favorite") an address so it shows in the Bookmarks/Notes list. `--off` removes the bookmark |
 | `n0x annotate comment` | Assert (or clear) a free-text comment at an address |
-| `n0x annotate list` | List every annotated address |
+| `n0x annotate list` | List every annotated address of a target: a WebAssembly module's own with `--file <module>`, else the records native targets share |
 | `n0x annotate name` | Assert (or clear, with no `--value`) a function/variable name at an address |
 | `n0x annotate rm` | Remove all annotations (and history) at an address |
 | `n0x annotate show` | Show the current facts + full history for one address |

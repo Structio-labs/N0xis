@@ -21,9 +21,10 @@ use goblin::elf::Elf;
 use n0xis_contracts::Va;
 
 use crate::image::{
-    Access, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, Image, ImageSymbol, ImportBinding, ImportName,
-    ImportRef, ImportReference, Imports, Isa, Library, LibraryRef, LibrarySource, LoadedBytes, Machine, OpenError, OpenOptions, Opened,
-    Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartReason, SymbolKind, SymbolTable, UnlistedSlot, Unread,
+    Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, FormatTables, Image, ImageSymbol,
+    ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, ItemKind, Library, LibraryRef, LibrarySource, LoadedBytes, Machine,
+    OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
+    SymbolTable, UnlistedSlot, Unread,
 };
 
 
@@ -295,7 +296,7 @@ pub(crate) struct StaticElf {
 
 /// Parse an ELF file's bytes.
 pub(crate) fn open(bytes: Vec<u8>, _opts: &OpenOptions) -> Result<Opened, OpenError> {
-    StaticElf::parse(bytes).map(|elf| Opened::Thin(Box::new(elf)))
+    StaticElf::parse(bytes).map(|elf| Opened::Thin { image: Box::new(elf), tables: FormatTables::Native })
 }
 
 /// The ELF `e_machine`, mapped onto the same names the PE reader reports
@@ -579,7 +580,12 @@ impl StaticElf {
                     let stubs = slots.iter().flat_map(|s| stub_of_slot.get(s).into_iter().flatten());
                     Answer::Read(slots.iter().map(|&s| Reach::Slot(Va(s))).chain(stubs.map(|&s| Reach::Stub(Va(s)))).collect())
                 };
-                Some(ImportReference { name: ImportName::Named(name.to_string()), library: library_ref(provider_of(index)), reach })
+                Some(ImportReference {
+                    name: ImportName::Named(name.to_string()),
+                    kind: import_kind(sym.st_type()),
+                    library: library_ref(provider_of(index)),
+                    reach,
+                })
             })
             .collect();
 
@@ -620,7 +626,7 @@ impl StaticElf {
         // one it finds.
         let machine = Machine {
             isa: elf_machine(&bytes),
-            pointer_width: if elf.is_64 { PointerWidth::Eight } else { PointerWidth::Four },
+            address_model: AddressModel::Native(PointerWidth::of_64_bit(elf.is_64)),
             byte_order: if elf.little_endian { ByteOrder::Little } else { ByteOrder::Big },
             abi: "sysv", // ELF → System V.
         };
@@ -690,6 +696,18 @@ impl StaticElf {
             relocated,
             findings,
         })
+    }
+}
+
+/// What an undefined dynamic symbol's `st_type` says it is: code
+/// (`STT_FUNC`, `STT_GNU_IFUNC`, whose resolver yields a function), data
+/// (`STT_OBJECT`, `STT_COMMON`, `STT_TLS` — a thread-local variable is still a
+/// variable), and nothing for `STT_NOTYPE` or a type this reader does not name.
+fn import_kind(st_type: u8) -> ItemKind {
+    match st_type {
+        2 | 10 => ItemKind::Function,
+        1 | 5 | 6 => ItemKind::Data,
+        _ => ItemKind::NotStated,
     }
 }
 
@@ -779,8 +797,8 @@ fn libraries_of(elf: &Elf) -> Vec<Library> {
 }
 
 impl Image for StaticElf {
-    fn machine(&self) -> Machine {
-        self.machine
+    fn machine(&self) -> &Machine {
+        &self.machine
     }
     fn linkage(&self) -> crate::Linkage {
         self.linkage
@@ -802,6 +820,11 @@ impl Image for StaticElf {
     }
     fn declared_starts(&self) -> &Partial<Vec<DeclaredStart>> {
         &self.starts
+    }
+    /// Function symbols and stubs are some functions: a stripped image has
+    /// none, and a static function may have no symbol.
+    fn start_coverage(&self) -> StartCoverage {
+        StartCoverage::Some
     }
     fn loaded_bytes(&self) -> LoadedBytes<'_> {
         LoadedBytes { file: &self.bytes, placed: &self.placed, written_by_loader: &self.relocated }

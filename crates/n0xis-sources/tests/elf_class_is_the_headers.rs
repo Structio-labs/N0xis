@@ -24,7 +24,7 @@
 
 use std::path::PathBuf;
 
-use n0xis_sources::{ByteOrder, ImageSource, Linkage, PointerWidth};
+use n0xis_sources::{AddressModel, ByteOrder, ImageSource, Linkage, PointerWidth};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/itanium_vtables")
@@ -70,10 +70,11 @@ fn the_pointer_size_is_the_elf_class() {
         let img = ImageSource::load(&path).expect("the fixture loads");
         // The reader's own answer...
         let elf = img.image().machine();
-        assert_eq!(elf.pointer_width.bytes(), want, "{image}: llvm-readobj says Class {class}");
-        assert_eq!(elf.pointer_width == PointerWidth::Eight, want == 8, "{image}");
+        let AddressModel::Native(width) = elf.address_model else { panic!("{image}: an ELF states one address space") };
+        assert_eq!(width.bytes(), want, "{image}: llvm-readobj says Class {class}");
+        assert_eq!(width == PointerWidth::Eight, want == 8, "{image}");
         // ...and the adapter's, which is what every front end asks.
-        assert_eq!((img.pointer_size(), img.is_64()), (want, want == 8), "{image}: through ImageSource");
+        assert_eq!(img.pointer_size(), Some(want), "{image}: through ImageSource");
         let order = match encoding.as_str() {
             "LittleEndian (0x1)" => ByteOrder::Little,
             "BigEndian (0x2)" => ByteOrder::Big,

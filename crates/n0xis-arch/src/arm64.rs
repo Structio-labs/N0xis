@@ -300,6 +300,7 @@ fn build_insn(bits: u32, va: Va) -> DecodedInsn {
                 rip_target: None, // ARM64 has no separate "RIP-relative memory operand" concept the way x64 does; ADR/ADRP recovery is a documented follow-on.
                 cond: None,
                 stack_adjust: None,
+                target_function: None,
             }
         }
         None => DecodedInsn {
@@ -313,6 +314,7 @@ fn build_insn(bits: u32, va: Va) -> DecodedInsn {
             rip_target: None,
             cond: None,
             stack_adjust: None,
+            target_function: None,
         },
     }
 }
@@ -827,6 +829,18 @@ fn named_gpr_writes(op: &decoder::Opcode) -> Vec<String> {
 impl Arch for Arm64 {
     fn name(&self) -> &'static str {
         "arm64"
+    }
+
+    fn pointer_size(&self) -> Option<u8> {
+        Some(8)
+    }
+
+    fn lifting(&self) -> crate::Lifting {
+        crate::Lifting::Lifts
+    }
+
+    fn indexed_function(&self, _va: Va) -> Option<crate::IndexedFunction> {
+        None
     }
 
     fn decode(&self, bytes: &[u8], va: Va) -> Result<DecodedInsn, DecodeError> {

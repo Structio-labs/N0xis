@@ -228,6 +228,15 @@ impl Pass for TypeInferPass {
     }
 
     fn run(&self, ctx: &Ctx, input: TypeInferInput) -> Result<TypeArtifact, CoreError> {
+        // Every default width below is the target's word ([`word_bits`]); an
+        // architecture with none has no default to give, so it is refused
+        // here, the one door into the inference, rather than given one.
+        if ctx.arch.pointer_size().is_none() {
+            return Err(CoreError::Other(format!(
+                "{} has no native pointer width, and type recovery takes its default widths from one",
+                ctx.arch.name()
+            )));
+        }
         Ok(infer(ctx, &input.cfg, &input.blocks, input.float_return, input.float_return_pair))
     }
 }
@@ -735,7 +744,8 @@ fn callee_cleanup_arity(ctx: &Ctx, cfg: &CfgArtifact) -> Option<usize> {
         }
     }
     let bytes = stated?;
-    let word = ctx.arch.pointer_size() as u16;
+    // No native word (an architecture that does not lift), no slot count.
+    let word = u16::from(ctx.arch.pointer_size()?);
     // A cleanup that is not a whole number of argument slots is something this
     // does not understand; refusing beats rounding.
     (bytes > 0 && word > 0 && bytes % word == 0).then(|| (bytes / word) as usize)
@@ -1310,8 +1320,12 @@ fn param_ctype(pname: &str, ev: &ParamEvidence<'_>) -> CType {
 /// kept its literal 64 after that fix, so every A32 signature still read
 /// `uint64_t r0`. A default is still a default, but it has to be the target's
 /// — so it is computed here, once, for all three.
+///
+/// An architecture with no native pointer width never gets here:
+/// `TypeInferPass::run`, the one way in, refuses it first. The `0` is that
+/// unreachable case, not a width.
 fn word_bits(ctx: &Ctx) -> Bits {
-    ctx.arch.pointer_size() as Bits * 8
+    ctx.arch.pointer_size().map_or(0, |bytes| Bits::from(bytes) * 8)
 }
 
 /// The byte window scanned when analyzing a callee's signature — generously

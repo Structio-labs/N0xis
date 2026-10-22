@@ -134,7 +134,22 @@ fn a_command_gives_the_same_answer_through_the_cli_and_the_registry() {
     std::fs::create_dir_all(&tmp).expect("temp dir");
     let Some(target) = build_target(&tmp) else { return };
     let target = target.to_string_lossy().to_string();
+    let mut disagreements = disagreements_on(&target);
+    // The same questions of a WebAssembly module, the third format: its
+    // function list and its disassembly go through the same two doors.
+    let module = repo_root().join("crates/n0xis-wasm/tests/fixtures/ctarget-O2.wasm").to_string_lossy().to_string();
+    disagreements.extend(disagreements_on(&module));
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(
+        disagreements.is_empty(),
+        "one command, two answers — the CLI is not going through the registry:\n  {}",
+        disagreements.join("\n  ")
+    );
+}
 
+/// Every pair asked of `target`, and each that the two doors answered apart.
+fn disagreements_on(target: &str) -> Vec<String> {
+    let target = target.to_string();
     // An address the image really holds, taken from the tool's own function
     // list — a wrong one would make both doors fail identically, which this
     // test would then call agreement.
@@ -162,7 +177,7 @@ fn a_command_gives_the_same_answer_through_the_cli_and_the_registry() {
                 // the *answer* is `data` and the failure code.
                 if a["data"] != b["data"] || a["ok"] != b["ok"] || a["error"]["code"] != b["error"]["code"] {
                     disagreements.push(format!(
-                        "{}:\n      cli: ok={} err={} data={}\n      reg: ok={} err={} data={}",
+                        "{} on {target}:\n      cli: ok={} err={} data={}\n      reg: ok={} err={} data={}",
                         pair.what,
                         a["ok"],
                         a["error"]["code"],
@@ -176,12 +191,7 @@ fn a_command_gives_the_same_answer_through_the_cli_and_the_registry() {
             (a, b) => disagreements.push(format!("{}: one door produced no envelope (cli={}, reg={})", pair.what, a.is_some(), b.is_some())),
         }
     }
-    let _ = std::fs::remove_dir_all(&tmp);
-    assert!(
-        disagreements.is_empty(),
-        "one command, two answers — the CLI is not going through the registry:\n  {}",
-        disagreements.join("\n  ")
-    );
+    disagreements
 }
 
 /// A short, comparable rendering — a whole function list is unreadable in a

@@ -65,6 +65,12 @@ pub struct ExportInfo {
     /// that is the address of the forwarder *string*, not of code: it is kept as
     /// the table states it, and the `forwarder` field is what says so.
     pub va: Va,
+    /// The exported function's index, beside its position, on an image whose
+    /// functions are identified by index (a WebAssembly module's export names
+    /// a function by index: docs/design/WASM.md §5 decision 1). Absent on a
+    /// native image.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
     /// Set when the export is a **forwarder**: its table entry points inside the
     /// export directory itself, at an ASCII string such as `OTHERDLL.Function`
     /// naming where the loader resolves it, and this image holds no code for it.
@@ -101,6 +107,9 @@ pub struct ExportInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct FoldedExports {
     pub va: Va,
+    /// The function's index beside `va`, as [`ExportInfo::index`] states it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
     pub names: Vec<String>,
 }
 
@@ -304,17 +313,19 @@ pub fn assemble_profile(
     let code_exports: Vec<&ExportInfo> = exports.iter().filter(|e| e.forwarder.is_none()).collect();
     let forwarded_count = exports.len() - code_exports.len();
 
-    let mut by_addr: HashMap<u64, Vec<String>> = HashMap::new();
+    let mut by_addr: HashMap<u64, (Option<u32>, Vec<String>)> = HashMap::new();
     for e in &code_exports {
-        by_addr.entry(e.va.get()).or_default().push(e.name.clone());
+        let entry = by_addr.entry(e.va.get()).or_default();
+        entry.0 = entry.0.or(e.index);
+        entry.1.push(e.name.clone());
     }
     let mut folded: Vec<FoldedExports> = by_addr
         .iter()
-        .filter(|(_, names)| names.len() > 1)
-        .map(|(va, names)| {
+        .filter(|(_, (_, names))| names.len() > 1)
+        .map(|(va, (index, names))| {
             let mut names = names.clone();
             names.sort();
-            FoldedExports { va: Va(*va), names }
+            FoldedExports { va: Va(*va), index: *index, names }
         })
         .collect();
     folded.sort_by_key(|f| f.va.get());
@@ -375,14 +386,14 @@ fn read_exports(source: &dyn MemorySource, arch: &dyn Arch, base: Va, dir: Expor
             let name = e.name?;
             Some(match e.target {
                 ExportTarget::Forwarded { string, to } => {
-                    ExportInfo { name, va: string, forwarder: Some(to), thunk_target: None, thunk_kind: None }
+                    ExportInfo { name, va: string, index: None, forwarder: Some(to), thunk_target: None, thunk_kind: None }
                 }
                 ExportTarget::Local(va) => {
                     let (thunk_target, thunk_kind) = match thunk_target_at(source, arch, va) {
                         Some((t, k)) => (Some(t), Some(k)),
                         None => (None, None),
                     };
-                    ExportInfo { name, va, forwarder: None, thunk_target, thunk_kind }
+                    ExportInfo { name, va, index: None, forwarder: None, thunk_target, thunk_kind }
                 }
             })
         })

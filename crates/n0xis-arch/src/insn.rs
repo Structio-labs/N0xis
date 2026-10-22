@@ -34,7 +34,10 @@ pub enum InsnKind {
 #[derive(Clone, Debug, Serialize)]
 pub struct DecodedInsn {
     pub va: Va,
-    pub len: u8,
+    /// Bytes the instruction takes. Not a `u8`: a WebAssembly `br_table` is
+    /// as long as its target list, and one in a real module (a parser built
+    /// for the editor here, at module offset `0x1f82`) is 525 bytes.
+    pub len: u32,
     #[serde(serialize_with = "ser_hex_bytes")]
     pub bytes: Vec<u8>,
     /// Lowercased mnemonic, e.g. `"mov"`.
@@ -72,6 +75,25 @@ pub struct DecodedInsn {
     /// parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_adjust: Option<u16>,
+    /// The function an instruction names by its index (WebAssembly `call n`
+    /// and `return_call n`, and `ref.func n`, which takes one as a value),
+    /// with its body where it has one (docs/design/WASM.md §5 decision 1). An
+    /// imported function has an index and no body, so a call to one carries
+    /// this and no `target`, and is still a call to a stated function. On a
+    /// call or tail call to a defined function `target` is the same body.
+    /// `None` on every architecture whose functions are their addresses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_function: Option<IndexedTarget>,
+}
+
+/// A function named by its index ([`DecodedInsn::target_function`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct IndexedTarget {
+    /// Its index in the module's function index space.
+    pub index: u32,
+    /// Where its body starts; `None` for an imported function, which has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<Va>,
 }
 
 fn ser_hex_bytes<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {

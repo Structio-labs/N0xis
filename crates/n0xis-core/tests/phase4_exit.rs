@@ -129,7 +129,7 @@ fn labeled_known_api_call_gets_named_and_trimmed() {
         target_name: Some("kernel32!CloseHandle".to_string()),
         via_slot: None,
     }];
-    let names = RenderNames::new(&callsites);
+    let names = RenderNames::new(&callsites, &n0xis_core::UnnamedFunction::Address);
     let call = MicroExpr::Call {
         target: CallTarget::Direct { va: Va(0x3000) },
         args: vec![

@@ -22,9 +22,10 @@ use goblin::pe::PE;
 use n0xis_contracts::Va;
 
 use crate::image::{
-    Access, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, Image, ImageSymbol, ImportBinding, ImportName,
-    ImportRef, ImportReference, Imports, Isa, Library, LibraryRef, LibrarySource, LoadedBytes, Machine, OpenError, OpenOptions, Opened,
-    Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartReason, SymbolKind, SymbolTable, UnlistedSlot, Unread,
+    Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, FormatTables, Image, ImageSymbol,
+    ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, ItemKind, Library, LibraryRef, LibrarySource, LoadedBytes, Machine,
+    OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
+    SymbolTable, UnlistedSlot, Unread,
 };
 use crate::MemorySource;
 use crate::{try_read_export_table, ExportDirectory, ExportTarget, PeExport, RelocatedWords, RelocationsNotRead};
@@ -86,7 +87,7 @@ const MAX_PDB_PATH: usize = 4096;
 
 /// Parse a PE file's bytes.
 pub(crate) fn open(bytes: Vec<u8>, _opts: &OpenOptions) -> Result<Opened, OpenError> {
-    StaticPe::parse(bytes).map(|pe| Opened::Thin(Box::new(pe)))
+    StaticPe::parse(bytes).map(|pe| Opened::Thin { image: Box::new(pe), tables: FormatTables::Native })
 }
 
 impl StaticPe {
@@ -212,7 +213,11 @@ impl StaticPe {
                         table: SymbolTable::Exports,
                     })
                     .collect();
-                let exports = table.into_iter().map(|e| Export { name: e.name, ordinal: Some(e.ordinal), target: e.target }).collect();
+                // A PE export names an address, code or a variable alike.
+                let exports = table
+                    .into_iter()
+                    .map(|e| Export { name: e.name, ordinal: Some(e.ordinal), kind: ItemKind::NotStated, target: e.target.into() })
+                    .collect();
                 (Answer::Read(exports), Answer::Read(Partial { read: symbols, not_read: coff_symbols.iter().cloned().collect() }), named)
             }
             Err(why) => (Answer::NotRead { why: why.to_string() }, Answer::NotRead { why: why.to_string() }, BTreeMap::new()),
@@ -277,7 +282,7 @@ impl StaticPe {
 
         let machine = Machine {
             isa: coff_machine(&bytes),
-            pointer_width: if is_64 { PointerWidth::Eight } else { PointerWidth::Four },
+            address_model: AddressModel::Native(PointerWidth::of_64_bit(is_64)),
             byte_order: ByteOrder::Little,
             // 64-bit PE → Win64 register ABI; 32-bit PE → cdecl (stack-based args).
             abi: if is_64 { "win64" } else { "cdecl" },
@@ -468,7 +473,8 @@ fn read_imports(
             },
             None => Answer::Read(vec![Reach::Slot(Va(slot_va))]),
         };
-        references.push(ImportReference { name, library, reach });
+        // An import descriptor's entry names a function or a variable alike.
+        references.push(ImportReference { name, kind: ItemKind::NotStated, library, reach });
     }
     let partly = libraries.iter().any(|l| !l.references_not_read.is_empty());
     let not_read = match degraded {
@@ -585,8 +591,8 @@ fn lookup_disagreement(view: &LoadedBytes<'_>, image_base: u64, walked: &Option<
 }
 
 impl Image for StaticPe {
-    fn machine(&self) -> Machine {
-        self.machine
+    fn machine(&self) -> &Machine {
+        &self.machine
     }
     fn linkage(&self) -> crate::Linkage {
         self.linkage
@@ -608,6 +614,11 @@ impl Image for StaticPe {
     }
     fn declared_starts(&self) -> &Partial<Vec<DeclaredStart>> {
         &self.starts
+    }
+    /// Exports and `.pdata` entries are some functions: a leaf function has
+    /// no unwind entry and a static no export.
+    fn start_coverage(&self) -> StartCoverage {
+        StartCoverage::Some
     }
     fn loaded_bytes(&self) -> LoadedBytes<'_> {
         LoadedBytes { file: &self.bytes, placed: &self.placed, written_by_loader: &self.relocated }
@@ -885,8 +896,8 @@ mod tests {
         // pointers, and a `cdecl` ABI.
         let p = temp("pe32", &minimal_pe(0x10b));
         let pe = ImageSource::load(&p).expect("a PE32 now loads");
-        assert!(!pe.is_64(), "a PE32 must report 32-bit");
-        assert_eq!(pe.pointer_size(), 4);
+        assert!(pe.pointer_size() != Some(8), "a PE32 must report 32-bit");
+        assert_eq!(pe.pointer_size(), Some(4));
         assert_eq!(MemorySource::abi_name(&pe), "cdecl");
         let _ = std::fs::remove_file(&p);
     }
@@ -1040,7 +1051,7 @@ mod tests {
         let p = temp("permissive", &b);
         match ImageSource::load(&p) {
             Ok(pe) => {
-                assert!(pe.is_64(), "the image still opens and reports its bitness");
+                assert!(pe.pointer_size() == Some(8), "the image still opens and reports its bitness");
                 // Whether goblin's strict pass rejects this exact shape is its
                 // business; what must hold is that a rejection is *recorded*,
                 // never silently turned into an empty result.
@@ -1104,8 +1115,8 @@ mod tests {
     fn a_pe32plus_reports_64bit_and_win64() {
         let p = temp("pe32plus", &minimal_pe(0x20b));
         let pe = ImageSource::load(&p).expect("a PE32+ loads");
-        assert!(pe.is_64());
-        assert_eq!(pe.pointer_size(), 8);
+        assert!(pe.pointer_size() == Some(8));
+        assert_eq!(pe.pointer_size(), Some(8));
         assert_eq!(MemorySource::abi_name(&pe), "win64");
         let _ = std::fs::remove_file(&p);
     }

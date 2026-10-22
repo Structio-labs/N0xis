@@ -51,7 +51,25 @@ pub struct ResolvedSwitch {
 
 /// Read the jump table for `disp` through the source seam and resolve cases.
 pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
-    let entry_size = disp.kind.entry_size(ctx.arch.pointer_size());
+    // An architecture with no native pointer width (a WebAssembly module's)
+    // recognizes no jump table — `detect_switch` is how it would, and it
+    // lifts nothing — so it does not get here. Were it to, a table of
+    // pointers has no width to be read with, and nothing is read: the switch
+    // stays unresolved, with no entry size.
+    let Some(pointer_size) = ctx.arch.pointer_size() else {
+        return ResolvedSwitch {
+            at: disp.at,
+            kind: disp.kind.as_str().to_string(),
+            table: disp.table,
+            index_reg: disp.index_reg.clone(),
+            scale: disp.scale,
+            bound: disp.bound,
+            entry_size: 0,
+            resolved: false,
+            cases: Vec::new(),
+        };
+    };
+    let entry_size = disp.kind.entry_size(pointer_size);
     let mut out = ResolvedSwitch {
         at: disp.at,
         kind: disp.kind.as_str().to_string(),

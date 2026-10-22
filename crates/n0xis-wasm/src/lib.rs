@@ -123,7 +123,7 @@ fn guarded<T>(work: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|stop| Err(internal(stop)))
 }
 
-fn internal(stop: Box<dyn std::any::Any + Send>) -> Error {
+pub(crate) fn internal(stop: Box<dyn std::any::Any + Send>) -> Error {
     let why = stop
         .downcast_ref::<&str>()
         .map(|s| s.to_string())

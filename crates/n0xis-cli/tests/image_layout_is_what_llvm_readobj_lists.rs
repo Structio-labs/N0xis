@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use n0xis_contracts::Va;
-use n0xis_sources::{Answer, ExportTarget, ImageSource, StartReason, Unread};
+use n0xis_sources::{Answer, ExportTo, ImageSource, StartReason, Unread};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -131,8 +131,9 @@ fn every_image_is_loaded_and_exports_what_llvm_readobj_lists() {
                 .iter()
                 .map(|e| {
                     let target = match &e.target {
-                        ExportTarget::Local(va) => Ok(va.0),
-                        ExportTarget::Forwarded { to, .. } => Err(to.clone()),
+                        ExportTo::Local(va) => Ok(va.0),
+                        ExportTo::Forwarded { to, .. } => Err(to.clone()),
+                        other @ (ExportTo::Function { .. } | ExportTo::Entry { .. }) => panic!("{fixture}: a PE export is an address, not {other:?}"),
                     };
                     (u64::from(e.ordinal.expect("a PE numbers its exports")), (e.name.clone(), target))
                 })

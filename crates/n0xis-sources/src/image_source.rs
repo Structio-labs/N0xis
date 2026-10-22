@@ -22,7 +22,10 @@ use std::path::Path;
 
 use n0xis_contracts::{Module, SymKind, Symbol, Va};
 
-use crate::image::{Binding, CodeView, Extent, Finding, Image, ImageFormat, OpenError, OpenOptions, Opened, SNIFF_LEN, StartReason, SymbolKind};
+use crate::image::{
+    Binding, CodeView, Extent, Finding, FormatTables, Image, ImageFormat, OpenError, OpenOptions, Opened, SNIFF_LEN, StartCoverage, StartReason,
+    SymbolKind,
+};
 use crate::{ByteOrder, Linkage, MemorySource, ModuleProvider, RelocatedWords, SourceError, SourceId, SymbolProvider};
 
 /// Module name a symbol carries for an import whose provider library the image
@@ -36,6 +39,8 @@ const UNKNOWN_PROVIDER: &str = "extern";
 pub struct ImageSource {
     format: ImageFormat,
     image: Box<dyn Image>,
+    /// What the format states beyond the [`Image`] questions.
+    tables: FormatTables,
     /// What the file holds, for keying what is kept between requests.
     id: SourceId,
     /// The file name, the module's and the label's.
@@ -65,13 +70,13 @@ impl ImageSource {
             Ok(Some(found)) => found,
             Ok(None) => {
                 let known: Vec<&str> = crate::image::formats().iter().map(|f| f.described).collect();
-                return Err(SourceError::Load(format!("'{}': not {} image", path.display(), known.join(" or "))));
+                return Err(SourceError::Load(format!("'{}': not {}", path.display(), one_of(&known))));
             }
             Err(e) => return Err(SourceError::Load(format!("read '{}': {e}", path.display()))),
         };
         let id = SourceId::of(&bytes);
-        let image = match (format.open)(bytes, &OpenOptions::default()) {
-            Ok(Opened::Thin(image)) => image,
+        let (image, tables) = match (format.open)(bytes, &OpenOptions::default()) {
+            Ok(Opened::Thin { image, tables }) => (image, tables),
             Err(OpenError::Parse(e)) => return Err(SourceError::Load(format!("parse '{}': {e}", path.display()))),
             Err(OpenError::Refused(why)) => return Err(SourceError::Load(why)),
         };
@@ -82,6 +87,7 @@ impl ImageSource {
         let mut source = ImageSource {
             format: format.format,
             image,
+            tables,
             id,
             module_name,
             modules,
@@ -156,7 +162,7 @@ impl ImageSource {
                         });
                     }
                 }
-                StartReason::Symbol | StartReason::UnwindEntry => {}
+                StartReason::Symbol | StartReason::UnwindEntry | StartReason::Body { .. } => {}
             }
         }
         self.entry_points.sort_unstable();
@@ -169,6 +175,51 @@ impl ImageSource {
     /// role or a metadata unit will answer (§5 steps 4 and 5).
     pub fn format(&self) -> ImageFormat {
         self.format
+    }
+
+    /// What the format states beyond the [`Image`] questions: the one way
+    /// to reach a WebAssembly module's own structure (its index spaces, its
+    /// bodies) from an image source.
+    pub fn tables(&self) -> &FormatTables {
+        &self.tables
+    }
+
+    /// The identity a WebAssembly module's annotations are kept under: its
+    /// `build_id` section, else a hash of its bytes (docs/design/WASM.md §5
+    /// decision 1). `None` for a native image, whose annotations are keyed by
+    /// address alone, as they always were.
+    pub fn module_identity(&self) -> Option<&str> {
+        match &self.tables {
+            FormatTables::Native => None,
+            FormatTables::Wasm(module) => Some(module.identity()),
+        }
+    }
+
+    /// Every function the image has, as `(start, exclusive end)`, where it
+    /// declares them all ([`StartCoverage::Every`]: a WebAssembly module's
+    /// bodies); `None` where it declares only some, and the rest are found by
+    /// discovery. Native images answer `None`, so nothing they answer changes.
+    ///
+    /// A start whose extent is not stated is `(start, start)`, the form a
+    /// declared start with no length takes in `Ctx::functions`: still a
+    /// function, with no end. Leaving it out dropped a function from the
+    /// list without a word — a corrupted module's body of size 0, which the
+    /// image's findings name and the list did not.
+    pub fn every_function(&self) -> Option<Vec<(Va, Va)>> {
+        match self.image.start_coverage() {
+            StartCoverage::Some => None,
+            StartCoverage::Every => Some(
+                self.image
+                    .declared_starts()
+                    .read
+                    .iter()
+                    .map(|s| match s.extent {
+                        Extent::Stated(n) => (s.va, s.va.0.checked_add(n).map_or(s.va, Va)),
+                        Extent::Unknown => (s.va, s.va),
+                    })
+                    .collect(),
+            ),
+        }
     }
 
     /// The reader's own answers.
@@ -192,9 +243,15 @@ impl ImageSource {
         &self.modules[0]
     }
 
-    /// Virtual address range of the `.text` section `(start, size)`.
+    /// The primary code extent `(start, size)`: a native image's `.text`
+    /// section; a WebAssembly module's code section, its one section of code
+    /// (whose contents hold the bodies and, between them, their sizes, which
+    /// the module's architecture decodes past).
     pub fn text_range(&self) -> Option<(Va, u64)> {
-        self.section_range(".text")
+        match &self.tables {
+            FormatTables::Native => self.section_range(".text"),
+            FormatTables::Wasm(_) => self.image.sections().iter().find(|s| s.executable).map(|s| (s.va, s.size)),
+        }
     }
 
     /// The named function symbols the image carries (`(va, name)`, address-
@@ -264,27 +321,22 @@ impl ImageSource {
     pub fn degraded(&self) -> Option<&str> {
         self.image.findings().iter().find_map(|f| match f {
             Finding::StrictParseRefused { why } => Some(why.as_str()),
-            Finding::Contradiction { .. } => None,
+            Finding::Contradiction { .. } | Finding::PartNotRead { .. } => None,
         })
     }
 
-    /// Are the image's data pointers 8 bytes? PE32+ and `ELFCLASS64` → `true`;
-    /// PE32 and `ELFCLASS32` → `false`.
+    /// The image's data pointer size in bytes: 4 for PE32 and `ELFCLASS32`, 8
+    /// for PE32+ and `ELFCLASS64`; `None` for a WebAssembly module, which has
+    /// no one address space to point into ([`crate::AddressModel`]).
     ///
     /// The format's own statement of width — not the decoder's: an x32 ELF is
     /// `ELFCLASS32` with x86-64 code, and the decoder is chosen from the machine
-    /// field ([`Self::machine`]), never from this. It used to answer `true` for
+    /// field ([`Self::machine`]), never from this. It used to answer 8 for
     /// every ELF, a documented simplification that waited for a reader; the
     /// Itanium RTTI scan was that reader, and on a 32-bit ELF it answered
     /// `ok: true` with no classes or with the wrong vtable addresses.
-    pub fn is_64(&self) -> bool {
-        self.pointer_size() == 8
-    }
-
-    /// The image's data pointer size in bytes: 4 for PE32 and `ELFCLASS32`, 8
-    /// for PE32+ and `ELFCLASS64` (see [`Self::is_64`]).
-    pub fn pointer_size(&self) -> u8 {
-        self.image.machine().pointer_width.bytes()
+    pub fn pointer_size(&self) -> Option<u8> {
+        self.image.machine().address_model.pointer_width().map(crate::PointerWidth::bytes)
     }
 
     /// What instruction set the image says it holds (`x64`, `x86`, `arm64`,
@@ -317,6 +369,15 @@ impl ImageSource {
     /// one. Empty is a normal answer — a stripped image declares nothing.
     pub fn declared_entry_points(&self) -> Vec<Va> {
         self.entry_points.clone()
+    }
+}
+
+/// `a`, `a or b`, `a, b or c`: the formats a refusal names.
+fn one_of(names: &[&str]) -> String {
+    match names {
+        [] => "a format this build reads".to_string(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
 }
 
@@ -479,6 +540,22 @@ mod tests {
         let p = temp("junk", b"junkjunk");
         let err = ImageSource::load(&p).unwrap_err();
         assert!(format!("{err}").contains("not a PE"), "{err}");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A file named like a module is recognized by its bytes, never its name:
+    /// one found on this machine as `vsda_bg.wasm` begins `f0 f1 d5 26`, and
+    /// is refused as no format at all, the three that exist named. A module cut
+    /// short after its magic reaches the WebAssembly reader, which refuses it.
+    #[test]
+    fn a_module_is_recognized_by_its_magic_not_its_name() {
+        let p = temp("named.wasm", &[0xf0, 0xf1, 0xd5, 0x26, 0x94, 0xd7, 0x68, 0xab]);
+        let err = ImageSource::load(&p).unwrap_err().to_string();
+        assert!(err.contains("not a PE (MZ), an ELF (\\x7fELF) or a WebAssembly module (\\0asm)"), "{err}");
+        let _ = std::fs::remove_file(&p);
+        let p = temp("cut.wasm", b"\0asm\x01\0\0");
+        let err = ImageSource::load(&p).unwrap_err().to_string();
+        assert!(err.contains("parse") && !err.contains("not a PE"), "the WebAssembly reader refuses it: {err}");
         let _ = std::fs::remove_file(&p);
     }
 
