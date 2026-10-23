@@ -66,6 +66,7 @@ mod unnamed;
 mod valueset;
 mod xref;
 mod xref_string;
+mod sweep;
 
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
 pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};

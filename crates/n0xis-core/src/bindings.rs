@@ -22,9 +22,13 @@
 //! decode the registrar itself — that would be a per-engine effort, honestly
 //! out of scope here (the same sound-over-complete line `detect_switch` draws).
 
+use std::collections::VecDeque;
+use std::ops::ControlFlow;
+
 use n0xis_contracts::Va;
 use serde::Serialize;
 
+use crate::sweep::{SWEEP_CHUNK, sweep_code};
 use crate::{Ctx, CoreError, Pass};
 
 #[derive(Clone, Debug)]
@@ -114,9 +118,59 @@ impl Pass for BindingsPass {
     }
 
     fn run(&self, ctx: &Ctx, input: BindingsInput) -> Result<BindingsArtifact, CoreError> {
+        self.run_in(ctx, input, SWEEP_CHUNK)
+    }
+}
+
+/// What the pairing reads of one swept instruction, and nothing more: the
+/// instruction itself is gone with its window (`crate::sweep`).
+struct Seen {
+    va: Va,
+    /// A `call`: the registrar consuming the loads.
+    call: bool,
+    /// The code address a `lea reg,[cfunc]` loads, when it lands in the code
+    /// window: a function-pointer load.
+    code_ptr: Option<Va>,
+}
+
+/// A `lea reg,[name]` whose target reads a candidate name, by its index in
+/// the sweep.
+struct NameSite {
+    at: usize,
+    name_addr: Va,
+    name: String,
+}
+
+/// The instructions around the name loads still to be paired: the last ones
+/// swept, by their index in the sweep. A name load at index `i` reads indices
+/// `i - 2·window ..= i + 2·window` (its function-pointer load is within
+/// `window` of it, and the `call` within `window` of either), so nothing
+/// older than the oldest open site's lower bound is kept.
+struct Recent {
+    first: usize,
+    seen: VecDeque<Seen>,
+}
+
+impl Recent {
+    fn get(&self, k: usize) -> &Seen {
+        &self.seen[k - self.first]
+    }
+    fn len(&self) -> usize {
+        self.first + self.seen.len()
+    }
+    fn forget_before(&mut self, k: usize) {
+        while self.first < k && !self.seen.is_empty() {
+            self.seen.pop_front();
+            self.first += 1;
+        }
+    }
+}
+
+impl BindingsPass {
+    /// [`Pass::run`] with the sweep's window size given, so a test can show the
+    /// answer does not depend on it.
+    pub(crate) fn run_in(&self, ctx: &Ctx, input: BindingsInput, chunk: u64) -> Result<BindingsArtifact, CoreError> {
         let data = ctx.source.read(input.data_start, input.data_size)?;
-        let code = ctx.source.read(input.code_start, input.code_size)?;
-        let insns = ctx.arch.decode_range(&code, input.code_start, code.len());
 
         let code_lo = input.code_start.0;
         let code_hi = input.code_start.0.saturating_add(input.code_size as u64);
@@ -124,84 +178,94 @@ impl Pass for BindingsPass {
         let data_hi = input.data_start.0.saturating_add(data.len() as u64);
         let in_code = |va: Va| va.0 >= code_lo && va.0 < code_hi;
         let is_lea = |ins: &n0xis_arch::DecodedInsn| ins.mnemonic == "lea";
+        let w = input.window;
 
         // If the caller restricted to specific names, index them for O(1) member
         // tests (case-sensitive — binding names are exact).
         let restrict: Option<std::collections::HashSet<&str>> =
             if input.names.is_empty() { None } else { Some(input.names.iter().map(String::as_str).collect()) };
 
-        // One linear pass over the decoded stream: every `lea reg,[name]` whose
-        // target lands in the data window and reads a valid identifier there is a
-        // name-load site. This replaces the old O(names × insns) rescan with a
-        // single O(insns) sweep — essential on a real module with thousands of
-        // candidate strings (matches the "index once" perf discipline elsewhere).
-        struct NameSite {
-            insn_idx: usize,
-            name_addr: Va,
-            name: String,
-        }
-        let mut sites: Vec<NameSite> = Vec::new();
-        for (i, ins) in insns.iter().enumerate() {
-            let Some(t) = ins.rip_target else { continue };
-            if !is_lea(ins) || t.0 < data_lo || t.0 >= data_hi {
-                continue;
-            }
-            let off = (t.0 - data_lo) as usize;
-            let Some(name) = read_identifier_at(&data, off, 2, 64) else { continue };
-            if let Some(set) = &restrict
-                && !set.contains(name.as_str())
-            {
-                continue;
-            }
-            sites.push(NameSite { insn_idx: i, name_addr: t, name });
-        }
-
         let mut bindings = Vec::new();
         let mut seen: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
-        for site in &sites {
-            let i = site.insn_idx;
-            // Search the neighborhood for the nearest lea of a code pointer.
-            let lo = i.saturating_sub(input.window);
-            let hi = (i + input.window + 1).min(insns.len());
-            let mut best: Option<(usize, &n0xis_arch::DecodedInsn)> = None;
-            for (k, cand) in insns[lo..hi].iter().enumerate() {
-                let ki = lo + k;
-                if ki == i {
+        // Pair one name load with the nearest function-pointer load within
+        // `window` instructions of it (the earlier one on a tie), and look for
+        // a `call` within `window` of either. `n` is how many instructions the
+        // sweep has handed out so far, which bounds every index at the end.
+        let mut pair = |site: &NameSite, recent: &Recent, n: usize| {
+            let i = site.at;
+            let lo = i.saturating_sub(w);
+            let hi = i.saturating_add(w).saturating_add(1).min(n);
+            let mut best: Option<usize> = None;
+            for k in lo..hi {
+                if k == i || recent.get(k).code_ptr.is_none() {
                     continue;
                 }
-                let Some(t) = cand.rip_target else { continue };
-                if !is_lea(cand) || !in_code(t) {
-                    continue;
-                }
-                let dist = ki.abs_diff(i);
                 match best {
-                    Some((bi, _)) if bi.abs_diff(i) <= dist => {}
-                    _ => best = Some((ki, cand)),
+                    Some(b) if b.abs_diff(i) <= k.abs_diff(i) => {}
+                    _ => best = Some(k),
                 }
             }
-            let Some((cfunc_idx, cfunc_ins)) = best else { continue };
-            let cfunc = cfunc_ins.rip_target.unwrap();
+            let Some(cfunc_idx) = best else { return };
+            let cfunc_ins = recent.get(cfunc_idx);
+            let cfunc = cfunc_ins.code_ptr.expect("chosen for its code pointer");
             if !seen.insert((site.name_addr.0, cfunc.0)) {
-                continue;
+                return;
             }
             let distance = cfunc_idx.abs_diff(i);
             // Is there a `call` in the neighborhood (the registrar consuming the
             // argument loads it set up)? Search the window spanning both loads.
-            let (a, b) = (i.min(cfunc_idx).saturating_sub(input.window), (i.max(cfunc_idx) + input.window + 1).min(insns.len()));
-            let call_nearby = insns[a..b].iter().any(|x| x.kind == n0xis_arch::InsnKind::Call);
-            let proximity = 1.0 - (distance as f32 / (input.window as f32 + 1.0)).min(1.0);
+            let (a, b) = (i.min(cfunc_idx).saturating_sub(w), i.max(cfunc_idx).saturating_add(w).saturating_add(1).min(n));
+            let call_nearby = (a..b).any(|k| recent.get(k).call);
+            let proximity = 1.0 - (distance as f32 / (w as f32 + 1.0)).min(1.0);
             let confidence = (0.5 * proximity + if call_nearby { 0.4 } else { 0.0 } + 0.1).min(1.0);
 
             bindings.push(Binding {
                 name: site.name.clone(),
                 name_addr: site.name_addr,
-                name_ref_site: insns[i].va,
+                name_ref_site: recent.get(i).va,
                 cfunc,
                 cfunc_ref_site: cfunc_ins.va,
                 distance_insns: distance,
                 call_nearby,
                 confidence,
             });
+        };
+
+        // One linear pass over the swept stream: every `lea reg,[name]` whose
+        // target lands in the data window and reads a valid identifier there is
+        // a name-load site. This replaces the old O(names × insns) rescan with a
+        // single O(insns) sweep — essential on a real module with thousands of
+        // candidate strings (matches the "index once" perf discipline
+        // elsewhere). A site is paired as soon as the instructions it can read
+        // have been swept (`2·window` past it), in sweep order, so the answer is
+        // the one pairing over the whole decoded range gave.
+        let reach = w.saturating_mul(2);
+        let mut recent = Recent { first: 0, seen: VecDeque::new() };
+        let mut open: VecDeque<NameSite> = VecDeque::new();
+        sweep_code(ctx, input.code_start, input.code_size as u64, chunk, |ins| {
+            let at = recent.len();
+            let code_ptr = ins.rip_target.filter(|&t| is_lea(ins) && in_code(t));
+            recent.seen.push_back(Seen { va: ins.va, call: ins.kind == n0xis_arch::InsnKind::Call, code_ptr });
+            if let Some(t) = ins.rip_target
+                && is_lea(ins)
+                && t.0 >= data_lo
+                && t.0 < data_hi
+                && let Some(name) = read_identifier_at(&data, (t.0 - data_lo) as usize, 2, 64)
+                && restrict.as_ref().is_none_or(|set| set.contains(name.as_str()))
+            {
+                open.push_back(NameSite { at, name_addr: t, name });
+            }
+            let n = recent.len();
+            while open.front().is_some_and(|s| s.at.saturating_add(reach) < n) {
+                let site = open.pop_front().expect("checked");
+                pair(&site, &recent, n);
+            }
+            recent.forget_before(open.front().map_or(n, |s| s.at).saturating_sub(reach));
+            ControlFlow::Continue(())
+        })?;
+        let n = recent.len();
+        for site in &open {
+            pair(site, &recent, n);
         }
 
         bindings.sort_by(|a, b| {

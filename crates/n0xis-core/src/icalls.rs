@@ -55,9 +55,12 @@
 //! something even when the caching shape differs — but it is reported *as*
 //! slotless rather than paired with a guess.
 
+use std::ops::ControlFlow;
+
 use n0xis_contracts::Va;
 use serde::Serialize;
 
+use crate::sweep::{SWEEP_CHUNK, sweep_code};
 use crate::{CoreError, Ctx, Pass};
 
 /// Instructions to look ahead from a name load for the caching store. The
@@ -183,9 +186,28 @@ impl Pass for IcallPass {
     }
 
     fn run(&self, ctx: &Ctx, input: IcallInput) -> Result<IcallArtifact, CoreError> {
+        self.run_in(ctx, input, SWEEP_CHUNK)
+    }
+}
+
+/// A name load whose forward walk for the resolver call and the caching store
+/// is still open.
+struct Walk {
+    name: String,
+    name_addr: Va,
+    site: Va,
+    resolver: Option<Va>,
+    slot: Option<Va>,
+    distance: Option<usize>,
+    /// Instructions walked past the name load so far.
+    walked: usize,
+}
+
+impl IcallPass {
+    /// [`Pass::run`] with the sweep's window size given, so a test can show the
+    /// answer does not depend on it.
+    pub(crate) fn run_in(&self, ctx: &Ctx, input: IcallInput, chunk: u64) -> Result<IcallArtifact, CoreError> {
         let data = ctx.source.read(input.data_start, input.data_size)?;
-        let code = ctx.source.read(input.code_start, input.code_size)?;
-        let insns = ctx.arch.decode_range(&code, input.code_start, code.len());
 
         let data_lo = input.data_start.0;
         let data_hi = data_lo.saturating_add(data.len() as u64);
@@ -207,58 +229,64 @@ impl Pass for IcallPass {
         let mut icalls: Vec<Icall> = Vec::new();
         let mut resolver_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
 
-        for (i, ins) in insns.iter().enumerate() {
-            if ins.mnemonic != "lea" {
-                continue;
-            }
-            let Some(t) = ins.rip_target else { continue };
-            if t.0 < data_lo || t.0 >= data_hi {
-                continue;
-            }
-            let Some(name) = read_icall_name(&data, (t.0 - data_lo) as usize) else { continue };
-
-            // Walk forward for the resolver call and the caching store. Stop at
-            // the next name load: that is the next site, and crossing into it
-            // would attribute one call's slot to another's name.
-            let mut resolver = None;
-            let mut slot = None;
-            let mut distance = None;
-            for (d, next) in insns.iter().enumerate().skip(i + 1).take(window) {
-                let (d, next) = (d - i, next);
-                if next.mnemonic == "lea"
-                    && next.rip_target.map(|r| r.0 >= data_lo && r.0 < data_hi).unwrap_or(false)
-                    && read_icall_name(&data, (next.rip_target.expect("checked").0 - data_lo) as usize).is_some()
-                {
-                    break;
-                }
-                if resolver.is_none()
-                    && next.kind == n0xis_arch::InsnKind::Call
-                    && let Some(target) = next.target
-                {
-                    resolver = Some(target);
-                }
-                // The caching store: `mov [rip+disp], rax`. Matched on the
-                // formatted text because the decoder's structured form does not
-                // distinguish load from store — narrow and documented rather
-                // than a silent assumption.
-                if next.mnemonic == "mov"
-                    && let Some(dest) = next.rip_target
-                    && in_slot_window(dest)
-                    && next.text.replace(' ', "").ends_with(",rax")
-                {
-                    slot = Some(dest);
-                    distance = Some(d);
-                    break;
-                }
-            }
-
-            if let Some(r) = resolver {
+        // Walk forward from each name load for the resolver call and the
+        // caching store, and stop at the next name load: that is the next
+        // site, and crossing into it would attribute one call's slot to
+        // another's name. So at most one walk is open at a time, and the sweep
+        // keeps nothing else of what it has passed.
+        let mut open: Option<Walk> = None;
+        let mut close = |walk: Walk| {
+            if let Some(r) = walk.resolver {
                 *resolver_counts.entry(r.0).or_default() += 1;
             }
-            icalls.push(Icall { name, name_addr: t, site: ins.va, resolver, slot, distance_insns: distance });
-            if input.limit != 0 && icalls.len() >= input.limit {
-                break;
+            icalls.push(Icall {
+                name: walk.name,
+                name_addr: walk.name_addr,
+                site: walk.site,
+                resolver: walk.resolver,
+                slot: walk.slot,
+                distance_insns: walk.distance,
+            });
+            if input.limit != 0 && icalls.len() >= input.limit { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        };
+        sweep_code(ctx, input.code_start, input.code_size as u64, chunk, |ins| {
+            let name = (ins.mnemonic == "lea")
+                .then_some(ins.rip_target)
+                .flatten()
+                .filter(|t| t.0 >= data_lo && t.0 < data_hi)
+                .and_then(|t| read_icall_name(&data, (t.0 - data_lo) as usize).map(|name| (t, name)));
+            if let Some((name_addr, name)) = name {
+                if let Some(walk) = open.take() {
+                    close(walk)?;
+                }
+                open = Some(Walk { name, name_addr, site: ins.va, resolver: None, slot: None, distance: None, walked: 0 });
+                return ControlFlow::Continue(());
             }
+            let Some(walk) = open.as_mut() else { return ControlFlow::Continue(()) };
+            walk.walked += 1;
+            if walk.resolver.is_none()
+                && ins.kind == n0xis_arch::InsnKind::Call
+                && let Some(target) = ins.target
+            {
+                walk.resolver = Some(target);
+            }
+            // The caching store: `mov [rip+disp], rax`. Matched on the
+            // formatted text because the decoder's structured form does not
+            // distinguish load from store — narrow and documented rather
+            // than a silent assumption.
+            let stored = ins.mnemonic == "mov" && ins.rip_target.is_some_and(in_slot_window) && ins.text.replace(' ', "").ends_with(",rax");
+            if stored {
+                walk.slot = ins.rip_target;
+                walk.distance = Some(walk.walked);
+            }
+            if stored || walk.walked >= window {
+                let walk = open.take().expect("open");
+                return close(walk);
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(walk) = open.take() {
+            let _ = close(walk);
         }
 
         // Count the names the data window holds, so a zero-site result can say

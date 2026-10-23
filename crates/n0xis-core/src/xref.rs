@@ -10,11 +10,13 @@
 //! hand-scanned `48 8D … mod/rm` for `lea`. Works over any source.
 
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 
 use n0xis_arch::InsnKind;
 use n0xis_contracts::Va;
 use serde::{Deserialize, Serialize};
 
+use crate::sweep::{SWEEP_CHUNK, sweep_code};
 use crate::{Ctx, CoreError, Pass};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -129,52 +131,59 @@ impl Pass for XrefPass {
     }
 
     fn run(&self, ctx: &Ctx, input: XrefInput) -> Result<XrefArtifact, CoreError> {
-        // `From` reports ONLY the single instruction at `addr` — the match arm
-        // below skips every other `ins.va`. Decoding the caller's whole window to
-        // then discard all of it is pure waste, and for a whole-program query
-        // (the shape `xref from` gets from the frontend, which has no reverse-index
-        // fast path for this direction) that window is the entire `.text`:
-        // measured at **16 s and +2.8 GB per call** on the Qt desktop PE, for a 0.2 KB answer.
-        // Reading one instruction's worth instead is identical by construction —
-        // `XrefArtifact` exposes no scan range, so the narrowing is invisible.
-        //
-        // The window bound is still honoured: a caller that sweeps several code
-        // ranges must not get the same refs back once per range.
-        let (scan_start, size) = match input.dir {
-            XrefDir::From => {
-                let end = input.scan_start.get().saturating_add(input.size as u64);
-                if input.addr.get() < input.scan_start.get() || input.addr.get() >= end {
-                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new() });
-                }
-                (input.addr, MAX_INSN_BYTES)
-            }
-            XrefDir::To => (input.scan_start, input.size),
-        };
-        let bytes = ctx.source.read(scan_start, size)?;
-        // Generous instruction cap: a full window can be large.
-        let insns = ctx.arch.decode_range(&bytes, scan_start, bytes.len());
-        let mut refs = Vec::new();
+        self.run_in(ctx, input, SWEEP_CHUNK)
+    }
+}
 
-        // The function that starts at `addr`, where functions are identified
-        // by index: a `ref.func` names it by that index alone.
-        let addr_index = ctx.arch.indexed_function(input.addr).filter(|f| f.body == input.addr).map(|f| f.index);
+impl XrefPass {
+    /// [`Pass::run`] with the sweep's window size given, so a test can show the
+    /// answer does not depend on it.
+    pub(crate) fn run_in(&self, ctx: &Ctx, input: XrefInput, chunk: u64) -> Result<XrefArtifact, CoreError> {
         let target = Some(input.addr);
-
-        for ins in &insns {
-            let named = ins.target_function.map(|f| f.index);
-            match input.dir {
-                XrefDir::To => {
+        let mut refs = Vec::new();
+        match input.dir {
+            XrefDir::To => {
+                // The function that starts at `addr`, where functions are
+                // identified by index: a `ref.func` names it by that index alone.
+                let addr_index = ctx.arch.indexed_function(input.addr).filter(|f| f.body == input.addr).map(|f| f.index);
+                // Swept, not decoded whole: only the hits are kept, and their
+                // text is the only text cloned (`crate::sweep`).
+                sweep_code(ctx, input.scan_start, input.size as u64, chunk, |ins| {
+                    let named = ins.target_function.map(|f| f.index);
                     if ins.target == target {
                         let kind = branch_kind(ins.kind).unwrap_or("branch");
                         refs.push(xref_entry(ctx, ins.va, target, named, kind, ins.text.clone()));
                     } else if ins.rip_target == target || names_function(ins, addr_index) {
                         refs.push(xref_entry(ctx, ins.va, target, named, "data", ins.text.clone()));
                     }
+                    ControlFlow::Continue(())
+                })?;
+            }
+            XrefDir::From => {
+                // `From` reports ONLY the single instruction at `addr`. Decoding
+                // the caller's whole window to then discard all of it is pure
+                // waste, and for a whole-program query (the shape `xref from`
+                // gets from the frontend, which has no reverse-index fast path
+                // for this direction) that window is the entire `.text`:
+                // measured at **16 s and +2.8 GB per call** on the Qt desktop
+                // PE, for a 0.2 KB answer. Reading one instruction's worth
+                // instead is identical by construction — `XrefArtifact` exposes
+                // no scan range, so the narrowing is invisible. Bounded, so not
+                // a sweep.
+                //
+                // The window bound is still honoured: a caller that sweeps
+                // several code ranges must not get the same refs back once per
+                // range.
+                let end = input.scan_start.get().saturating_add(input.size as u64);
+                if input.addr.get() < input.scan_start.get() || input.addr.get() >= end {
+                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new() });
                 }
-                XrefDir::From => {
+                let bytes = ctx.source.read(input.addr, MAX_INSN_BYTES)?;
+                for ins in ctx.arch.decode_range(&bytes, input.addr, bytes.len()) {
                     if ins.va != input.addr {
                         continue;
                     }
+                    let named = ins.target_function.map(|f| f.index);
                     match (ins.target, ins.target_function) {
                         (Some(t), _) => {
                             let kind = branch_kind(ins.kind).unwrap_or("branch");
@@ -205,7 +214,7 @@ impl Pass for XrefPass {
 }
 
 /// A reverse-edge map (`referenced VA → the VAs that reference it`), built with
-/// ONE `decode_range` pass over all code ranges. Turns `xref to` from a full
+/// ONE sweep ([`crate::sweep`]) over all code ranges. Turns `xref to` from a full
 /// re-scan of the code section (seconds on a large image) into a map lookup.
 ///
 /// Only the *source addresses* are stored — not the reference kind or the
@@ -237,62 +246,46 @@ pub fn xref_kind(kind: InsnKind) -> &'static str {
     branch_kind(kind).unwrap_or("branch")
 }
 
-/// Bytes decoded per chunk when building the index (8 MiB). A whole code section
-/// can be 100 MB+; decoding it in one `decode_range` call materialized ~30M
-/// `DecodedInsn`s at once (multi-GB — it swapped the box). Chunking caps the live
-/// instruction buffer to one chunk while producing the **identical** edge set,
-/// because each chunk resumes exactly at the previous chunk's last instruction
-/// boundary (a real boundary from the same linear sweep), never mid-instruction.
-const XREF_CHUNK: u64 = 8 * 1024 * 1024;
-/// Overhang past a chunk so the boundary-spanning instruction is decoded whole
-/// (x86 instructions are ≤15 bytes); the next chunk still resumes after it.
-const XREF_OVERLAP: u64 = 16;
-
 /// Build the reverse-xref index over `ranges` (`[(start, size)]`) — a linear
 /// decode per range recording every `target` (branch/call) and `rip_target`
 /// (data) edge, done once for the whole program so queries need no scan at all.
-/// Streamed in [`XREF_CHUNK`]-sized windows so peak memory stays bounded on a
-/// huge image (CLAUDE.md: a parser must be OOM-proof by design).
+/// Swept ([`crate::sweep`]), so peak memory is one window of instructions
+/// whatever the image's size (CLAUDE.md: a parser must be OOM-proof by design).
+///
+/// It was the first chunked sweep, in 8 MiB windows that cost 650-750 MB each
+/// on a real library, resuming *after* the last kept instruction, which is not
+/// where the whole-range decode resumes when an undecodable byte follows it
+/// (`crate::sweep` says why).
 pub fn build_xref_index(ctx: &Ctx, ranges: &[(Va, u64)]) -> XrefIndex {
+    build_xref_index_in(ctx, ranges, SWEEP_CHUNK)
+}
+
+/// [`build_xref_index`] with the sweep's window size given.
+pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64) -> XrefIndex {
     let mut idx = XrefIndex::default();
     for &(start, size) in ranges {
         if size == 0 {
             continue;
         }
-        let end = start.0.saturating_add(size);
-        let mut pos = start.0;
-        while pos < end {
-            let keep_to = pos.saturating_add(XREF_CHUNK).min(end); // keep insns starting before here
-            let read_len = (keep_to.saturating_add(XREF_OVERLAP).min(end) - pos) as usize;
-            let Ok(bytes) = ctx.source.read(Va(pos), read_len) else {
-                break;
-            };
-            let insns = ctx.arch.decode_range(&bytes, Va(pos), bytes.len());
-            let mut advanced = pos;
-            for ins in &insns {
-                if ins.va.0 >= keep_to {
-                    break; // belongs to the next chunk (decoded there, aligned)
-                }
-                idx.insns += 1;
-                if let Some(t) = ins.target {
-                    idx.edges.entry(t.0).or_default().push(ins.va.0);
-                }
-                if let Some(t) = ins.rip_target {
-                    idx.edges.entry(t.0).or_default().push(ins.va.0);
-                }
-                // A function named by index with no branch to it (`ref.func`)
-                // references its body all the same.
-                if ins.target.is_none()
-                    && let Some(body) = ins.target_function.and_then(|f| f.body)
-                {
-                    idx.edges.entry(body.0).or_default().push(ins.va.0);
-                }
-                advanced = ins.va.0.saturating_add(ins.len.max(1) as u64);
+        // A range whose start cannot be read adds nothing, as it did when the
+        // index broke out of its chunk loop on a failed read.
+        let _ = sweep_code(ctx, start, size, chunk, |ins| {
+            idx.insns += 1;
+            if let Some(t) = ins.target {
+                idx.edges.entry(t.0).or_default().push(ins.va.0);
             }
-            // Resume after the last kept instruction; guarantee forward progress
-            // if a chunk decoded nothing (bad bytes) so the loop can't hang.
-            pos = if advanced > pos { advanced } else { keep_to.max(pos + 1) };
-        }
+            if let Some(t) = ins.rip_target {
+                idx.edges.entry(t.0).or_default().push(ins.va.0);
+            }
+            // A function named by index with no branch to it (`ref.func`)
+            // references its body all the same.
+            if ins.target.is_none()
+                && let Some(body) = ins.target_function.and_then(|f| f.body)
+            {
+                idx.edges.entry(body.0).or_default().push(ins.va.0);
+            }
+            ControlFlow::Continue(())
+        });
     }
     idx
 }

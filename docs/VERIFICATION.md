@@ -294,6 +294,68 @@ C, it returned (0,4,int) (4,4,int) (8,8,double) (16,4,int) (20,4,int) (24,8,poin
 4 of 4 runs, 3 of 6 right, and 2 of 6 on a second layout. The earlier 5 of 6 does not
 reproduce; the fix it recorded holds, since no field crosses its alignment.
 
+### Memory of the passes that sweep code (2026-10-23)
+
+The passes that walk a whole code range (`xref to` with its index or over a window, `xref
+string`, `bindings list`, `il2cpp icalls`, and the index `analyze` builds) used to decode the
+range in one call and keep every instruction, about 104 MiB of RSS per MiB of code. They now
+share one sweep (`n0xis_core::sweep`) that holds one 1 MiB window of instructions.
+
+**How it was measured.** Peak RSS is `getrusage(RUSAGE_CHILDREN).ru_maxrss` of each run (rung
+1), every run in its own `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=1G` and
+its own directory with its own `.n0x/`, so each default `xref to` builds its index rather than
+reading one. Before: a release build of `2313b89`; after: the same with the sweep. Code size
+is the `.text` size `readelf -SW` and `objdump -h` give. Runs predicted past 3 GB on the old
+build (104 MiB per MiB) were not started; they are marked "not run".
+
+| Command | Input | Code | Before | After |
+| --- | --- | --- | --- | --- |
+| `xref to` (default: builds the index) | libQt6Gui | 7.6 MiB | 789 MiB | 140 MiB |
+| `xref to` (default) | libavcodec | 16.7 MiB | 863 MiB | 179 MiB |
+| `xref to` (default) | libgallium | 32.4 MiB | 926 MiB | 250 MiB |
+| `xref to` (default) | libLLVM | 79.7 MiB | 1 389 MiB | 554 MiB |
+| `xref to --start --size` | libLLVM, 16 MiB of `.text` | 16 MiB | 1 877 MiB | 305 MiB |
+| `xref to --start --size` | libavcodec, all of `.text` | 16.7 MiB | 1 730 MiB | 145 MiB |
+| `xref to --start --size` | libLLVM, all of `.text` | 79.7 MiB | not run (8.3 GB predicted) | 342 MiB |
+| `xref string` | libQt6Gui | 7.6 MiB | 791 MiB | 155 MiB |
+| `xref string` | libavcodec | 16.7 MiB | 1 733 MiB | 174 MiB |
+| `xref string --start --size` | libgallium, two windows of 16 and 16.4 MiB | 32.4 MiB | 1 724, 1 738 MiB | 195, 202 MiB |
+| `xref string` | libgallium | 32.4 MiB | not run (3.4 GB predicted; 2.9 GB recorded 2026-10-21) | 235 MiB |
+| `xref string` | libLLVM | 79.7 MiB | not run (8.3 GB predicted) | 396 MiB |
+| `bindings list` | libavcodec | 16.7 MiB | 1 731 MiB | 148 MiB |
+| `bindings list` | libLLVM | 79.7 MiB | not run | 382 MiB |
+| `il2cpp icalls` | a 12 MB PE (this tool's Windows build) | 7.5 MiB | 762 MiB | 131 MiB |
+| `analyze` | libz, libpng16, libcurl, libstdc++, libcrypto | 0.2 to 4.6 MiB | 30, 39, 125, 214, 413 MiB | 30, 39, 119, 125, 135 MiB |
+| `analyze` | libQt6Gui, the PE, libavcodec, libgallium | 7.5 to 32.4 MiB | 791, 763, 864, 934 MiB | 142, 145, 180, 256 MiB |
+
+**The answers did not change.** 121 outputs recorded with both builds are byte-identical, with
+no field ignored (none of them carries a timing): `xref to` by the index on ten images (three
+or four addresses each, the busiest call and `lea` targets by `objdump`), `xref to` over all
+of `.text` on eight, and over 16 MiB of libLLVM; `xref string` (`%s` and `error`, all hits and
+the default limit) on eight; `bindings list` (all and the default limit) on eight; `il2cpp
+icalls` (all, `--limit 3`, `--query`) on the PE and on a PE built here whose six resolution
+sites are known (five with a slot, one without; all six found, rung 1); libgallium's `.text`
+in two windows through `xref string`, `bindings list` and `xref to`; `analyze` on the nine
+images above; and the reverse-xref index `analyze` and `xref to` wrote (19 files, 4 026 to
+2 193 775 targets). That sameness is the tool compared with itself (rung 5): it says the
+change moved no answer, not that the answers are right. Two of them were also checked
+against `objdump` (rung 3): 25 717 calls and jumps to libgallium's busiest target and 33 to
+libz's, the counts `xref to` gives. Wall time is unchanged within run-to-run noise (`analyze`
+libQt6Gui 7.8 and 7.7 s before, 7.5 and 7.6 s after), except that `xref string` now sweeps
+the code once for every occurrence of the text instead of once per occurrence: libgallium's
+first window with `%s`, 112 s before and 5.6 s after.
+
+**Guards.** `crates/n0xis-core/tests/a_code_sweep_holds_one_window.rs` runs each of the five
+passes on 64 MiB of planted code with the answer planted at its end, in a child whose heap is
+capped at the image plus 96 MiB: with the sweep the largest peak is 37 MiB; with the four
+passes restored to `2313b89`, all five are refused (the index's first 8 MiB window asks for
+88 MiB at once). The unit tests in `src/sweep.rs` show the sweep hands out what one
+whole-range decode does on every window size from one byte, on random bytes for five
+instruction sets, on the committed WebAssembly modules and on one planted with a 45-byte
+`br_table` (where `wasm-objdump -d` puts it), and that every sweeping pass answers the same at
+the default window and at 44 others; with the earlier resume rule (after the last kept
+instruction, as the index did) they fail on their own assertions.
+
 ### The three numbers the README quotes
 
 1. **The decoder: 10 498 instructions on 10 images, every difference a documented

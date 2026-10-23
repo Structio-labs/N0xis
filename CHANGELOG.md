@@ -72,6 +72,18 @@ All notable changes to N0xis are recorded here. Versions follow
   behind `n0xis-sources`' `static-wasm` feature.** Stage 2 had made `n0xis-arch` depend on the format crate
   `n0xis-wasm`, and `n0xis-sources` pull it unconditionally into `n0xis-core`, which the boundary law
   (`scripts/check_boundary.sh`, CONCEPT §4) forbids; answers are unchanged.
+- **Commands that sweep a whole code range hold one 1 MiB window of decoded instructions, not
+  the range.** `xref to` (its reverse-xref index, and a scan over `--start`/`--size`), `xref
+  string`, `bindings list`, `il2cpp icalls` and `analyze` decoded each range in one piece and
+  kept every instruction, about 104 MiB of memory per MiB of code: `bindings list` needed
+  1.73 GB on a library with 16.7 MiB of code, and a 32 MiB `.text` passed 3 GB. They now share
+  one sweep that hands each instruction on and drops it with its window: 148 MiB for the same
+  `bindings list`, 235 MiB for `xref string` on the 32 MiB `.text`, 396 MiB on 80 MiB of code;
+  the index went from 789 to 140 MiB on a 7.6 MiB `.text`, and 1 389 to 554 MiB on 80 MiB.
+  No answer changes: 121 outputs of these commands on ten real images and a planted one are
+  byte-identical before and after (docs/VERIFICATION.md). `xref string` also sweeps the code
+  once for all occurrences of the text rather than once per occurrence (112 s to 6 s for `%s`
+  on 16 MiB of code).
 - **The format seam, for the static path** (docs/design/IMAGE_FORMATS.md §5 step 3). The PE and
   ELF readers answer one `Image` trait with no default methods; a file is opened through one
   registry of readers; and one adapter, `ImageSource`, replaces the `StaticImage` enum and
