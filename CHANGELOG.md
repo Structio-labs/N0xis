@@ -7,6 +7,22 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Added
 
+- **`why --addr <va>`: where each fact about an address came from** (docs/design/WHY.md, step
+  1). For the function the address is in: every source that found its start — a declaration
+  (`export`, `unwind` with its table, `.pdata` or `.eh_frame`, `pdb`, a WebAssembly `body`) and
+  every rule (`after_declared_end`, `gap_sweep`, `call_target` with the first call that names
+  it, `prologue`), not only the first; the one source of its end (`symbol_size` and whose,
+  `unwind`, `body`, or `not_stated` with the control-flow graph's own end); and the layer that
+  named it (`user`, `rtti`, `flirt`, `pdb`, `managed`, `image` with its table, `stub`,
+  `fallback`), with every other layer that names it. A category, not a grade. Each source is
+  recorded where its rule fires and carried to the answer: discovery keeps every source of a
+  start, the function list kept on disk carries them (in a new format, under a new key, so a
+  list kept by an earlier build misses rather than misreads), and the composed name layers say
+  which of them answered. `function discover` and every other answer are unchanged, byte for
+  byte, on 525 recorded images. Through the registry, so `serve` and an MCP client get the
+  same answer. Every `unwind`, `export`, `.symtab`/`.dynsym` and `st_size` claim, and every WebAssembly
+  `body` claim, on 80 images checked against `objdump --dwarf=frames`, `llvm-readobj`,
+  `llvm-nm` and `wasm-objdump`: 228 506 claims, none wrong (docs/VERIFICATION.md).
 - **`imports`: what an image file needs from other images,** the same command for every format.
   Its libraries in the order the image states them, and each imported name with the library it
   is attributed to and how the image reaches it: a PE's import descriptors, each entry's name or

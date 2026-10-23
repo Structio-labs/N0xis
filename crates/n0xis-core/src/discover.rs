@@ -14,6 +14,7 @@ use n0xis_arch::{DecodedInsn, InsnKind};
 use n0xis_contracts::Va;
 use serde::Serialize;
 
+use crate::origin::{EndFrom, Sources, StartSource, StatedBy};
 use crate::{Ctx, CoreError, Pass};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -265,7 +266,8 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
     out
 }
 
-/// Every address a direct `call` in `bytes` names, as a sorted set.
+/// Every address a direct `call` in `bytes` names, each with the first call
+/// that names it (in address order) — the instruction `n0x why` cites.
 ///
 /// The sweep is linear and resynchronizing ([`Arch::decode_range`]) — data in a
 /// code section decodes as nonsense, and nonsense that happens to look like
@@ -276,9 +278,9 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
 ///
 /// Decoded in windows rather than all at once: a 10 MB code section is millions
 /// of instructions, and only the handful of call targets is kept.
-fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeSet<u64> {
+fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeMap<u64, Va> {
     const WINDOW_INSNS: usize = 8192;
-    let mut out = BTreeSet::new();
+    let mut out = BTreeMap::new();
     let mut at = 0usize;
     while at < bytes.len() {
         let base = start.0.saturating_add(at as u64);
@@ -289,7 +291,7 @@ fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeSet<u64> {
             if ins.kind == n0xis_arch::InsnKind::Call
                 && let Some(t) = ins.target
             {
-                out.insert(t.0);
+                out.entry(t.0).or_insert(ins.va);
             }
         }
         if consumed == 0 {
@@ -334,18 +336,57 @@ impl Pass for DiscoverPass {
 }
 
 /// Every function start discovery finds in `[start, start + size)`, in address
-/// order, each with the extent a declaration states. This is the expensive half
-/// of discovery, and it reads only bytes, the architecture and the declared
-/// functions, never a name; so it can be kept for an image that cannot change
-/// and paged with names attached per page ([`Discovered::page`]).
+/// order, each with the extent a declaration states and every source that
+/// found it. This is the expensive half of discovery, and it reads only bytes,
+/// the architecture and the declared functions, never a name; so it can be kept
+/// for an image that cannot change and paged with names attached per page
+/// ([`Discovered::page`]).
+///
+/// Also the format of the kept list on disk: its key carries a format tag, so a
+/// list kept before the sources were recorded misses rather than misreads.
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct Discovered {
     pub start: Va,
     pub scanned_bytes: usize,
-    pub entries: Vec<(Va, Option<Va>)>,
+    pub entries: Vec<DiscoveredStart>,
+}
+
+/// One function start, as discovery found it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct DiscoveredStart {
+    pub va: Va,
+    /// The extent a declaration states, when one does.
+    pub stated_end: Option<StatedEnd>,
+    /// Every declaration and every rule that produced this start, in the order
+    /// discovery ran them — never only the first.
+    pub sources: Sources<StartSource>,
+}
+
+/// An exclusive end a declaration states, and what states it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct StatedEnd {
+    pub end: Va,
+    pub by: Sources<StatedBy>,
 }
 
 impl Discovered {
+    /// The end the function list gives `entry`, and where it came from.
+    ///
+    /// A stated size (ELF `st_size`, a PE `.pdata` entry) makes `end` a fact —
+    /// so a scanned image gets exact extents instead of leaving every consumer
+    /// to infer one. The symbol seam's length is asked first, then the extent a
+    /// declaration handed to discovery states. The one rule for both
+    /// [`Self::page`] and `n0x why`, so the two cannot give one function two
+    /// ends. `None`: nothing states one.
+    pub fn end_of(ctx: &Ctx, entry: &DiscoveredStart) -> Option<(Va, EndFrom)> {
+        let va = entry.va;
+        ctx.symbols
+            .and_then(|s| s.symbol_size(va))
+            .and_then(|n| va.0.checked_add(n))
+            .map(|end| (Va(end), EndFrom::SymbolSize))
+            .or_else(|| entry.stated_end.as_ref().map(|s| (s.end, EndFrom::Stated(s.by.clone()))))
+    }
+
     /// How many functions were found, all pages together.
     pub fn total(&self) -> usize {
         self.entries.len()
@@ -358,25 +399,18 @@ impl Discovered {
         let unlimited = limit == 0;
         let mut functions = Vec::new();
         let mut hit_limit = false;
-        for &(va, stated_end) in self.entries.iter().skip(offset) {
+        for entry in self.entries.iter().skip(offset) {
             if !unlimited && functions.len() >= limit {
                 hit_limit = true;
                 break;
             }
-            // A stated size (ELF `st_size`, a PE `.pdata` entry) makes `end` a
-            // fact here — so a scanned image gets exact extents instead of
-            // leaving every consumer to infer one.
-            let end = ctx
-                .symbols
-                .and_then(|s| s.symbol_size(va))
-                .and_then(|n| va.0.checked_add(n))
-                .map(Va)
-                .or(stated_end);
+            let va = entry.va;
+            let end = Self::end_of(ctx, entry).map(|(end, _)| end);
             functions.push(FunctionCandidate {
                 name: crate::function_name(ctx, va),
                 va,
                 end,
-                index: ctx.arch.indexed_function(va).filter(|f| f.body == va).map(|f| f.index),
+                index: function_index(ctx, va),
             });
         }
         DiscoverArtifact {
@@ -389,6 +423,13 @@ impl Discovered {
     }
 }
 
+/// The index of the function that starts at `va`, on an image whose functions
+/// are identified by index (a WebAssembly module); `None` on a native image.
+/// What the function list gives beside each start, and `why` beside its one.
+pub fn function_index(ctx: &Ctx, va: Va) -> Option<u32> {
+    ctx.arch.indexed_function(va).filter(|f| f.body == va).map(|f| f.index)
+}
+
 /// Find every function start in `[start, start + size)`. See [`Discovered`].
 pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered, CoreError> {
     let input = DiscoverInput { start, size, limit: 0, offset: 0 };
@@ -399,15 +440,20 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
 
         // Facts first. A start the image declares is not a guess, and it comes
         // with an authoritative extent (see `Ctx::functions`).
-        let mut found: BTreeMap<u64, Option<Va>> = BTreeMap::new();
+        //
+        // Every rule below **adds** its source to a start it finds, including
+        // one already found: a start keeps everything that found it, never
+        // only the first (docs/design/WHY.md §3).
+        let mut found: BTreeMap<u64, Found> = BTreeMap::new();
         let mut declared: Vec<(u64, u64)> = Vec::new();
         let every = ctx.functions.is_some_and(|f| f.coverage == n0xis_sources::StartCoverage::Every);
-        for (s, e) in ctx.functions.map_or(&[][..], |f| f.extents) {
+        for f in ctx.functions.map_or(&[][..], |f| f.extents) {
+            let (s, e) = (f.start, f.end);
             // `end <= start` is a declared *start* with no stated length — a PE
             // export, say, on an image with no `.pdata` to give extents. It
             // seeds the start and leaves the extent to be inferred; it must not
             // overwrite a real extent already recorded for the same address.
-            let extent = (e.0 > s.0).then_some(*e);
+            let extent = (e.0 > s.0).then(|| StatedEnd { end: e, by: f.stated_by.clone() });
             // A function of no bytes at the window's end — a corrupted
             // module's last body of size 0, which starts where the code
             // section ends — holds no byte of any window and is in this one,
@@ -415,7 +461,13 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             // declared function no list showed.
             let at_end = every && extent.is_none() && s.0 == range.end;
             if range.contains(&s.0) || at_end {
-                found.entry(s.0).and_modify(|slot| { if slot.is_none() { *slot = extent } }).or_insert(extent);
+                for by in f.stated_by.iter() {
+                    record(&mut found, s.0, StartSource::Stated(*by));
+                }
+                let slot = found.get_mut(&s.0).expect("recorded just above");
+                if slot.stated_end.is_none() {
+                    slot.stated_end = extent;
+                }
             }
             if e.0 > s.0 {
                 declared.push((s.0, e.0));
@@ -431,11 +483,7 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // size, decoded as code, and each would invent a function a few bytes
         // before a real one (the lead's DECISIONS item 10).
         if every {
-            return Ok(Discovered {
-                start: input.start,
-                scanned_bytes: bytes.len(),
-                entries: found.into_iter().map(|(va, end)| (Va(va), end)).collect(),
-            });
+            return Ok(Discovered { start: input.start, scanned_bytes: bytes.len(), entries: entries(found) });
         }
 
         // A declared extent settles every address inside it: whatever the scan
@@ -492,7 +540,7 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // about where the next one begins.
         for va in after_declared_ends(ctx, &bytes, input.start, &declared) {
             if range.contains(&va) && !inside_a_declared_function(va) {
-                found.entry(va).or_insert(None);
+                record(&mut found, va, StartSource::AfterDeclaredEnd);
             }
         }
 
@@ -517,7 +565,7 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // n0xis did not from 478 to 5.
         for va in sweep_declared_gaps(ctx, &bytes, input.start, &declared) {
             if range.contains(&va) && !inside_a_declared_function(va) {
-                found.entry(va).or_insert(None);
+                record(&mut found, va, StartSource::GapSweep);
             }
         }
 
@@ -535,9 +583,9 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         //
         // A declared extent still wins: an address a function table places
         // *inside* a function is not a second function, whatever branches at it.
-        for va in direct_call_targets(ctx, &bytes, input.start) {
+        for (va, from) in direct_call_targets(ctx, &bytes, input.start) {
             if range.contains(&va) && !inside_a_declared_function(va) {
-                found.entry(va).or_insert(None);
+                record(&mut found, va, StartSource::CallTarget { from });
             }
         }
 
@@ -566,7 +614,7 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
                     Some((from, _)) => marker && after_a_call(from, va) != Some(true),
                 };
                 if va.is_multiple_of(align) && entry {
-                    found.entry(va).or_insert(None);
+                    record(&mut found, va, StartSource::Prologue);
                 }
                 // Skip ahead so overlapping patterns in one prologue count once.
                 i += 8;
@@ -575,17 +623,36 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             i += 1;
         }
 
-        Ok(Discovered {
-            start: input.start,
-            scanned_bytes: bytes.len(),
-            entries: found.into_iter().map(|(va, end)| (Va(va), end)).collect(),
-        })
+        Ok(Discovered { start: input.start, scanned_bytes: bytes.len(), entries: entries(found) })
     }
+}
+
+/// A start while discovery runs: what the declarations state about its end,
+/// and everything that found it so far.
+struct Found {
+    stated_end: Option<StatedEnd>,
+    sources: Sources<StartSource>,
+}
+
+/// Record that `source` found a start at `va` — the one way any rule adds a
+/// start, so none can add one without naming its category.
+fn record(found: &mut BTreeMap<u64, Found>, va: u64, source: StartSource) {
+    match found.entry(va) {
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert(Found { stated_end: None, sources: Sources::one(source) });
+        }
+        std::collections::btree_map::Entry::Occupied(mut slot) => slot.get_mut().sources.add(source),
+    }
+}
+
+fn entries(found: BTreeMap<u64, Found>) -> Vec<DiscoveredStart> {
+    found.into_iter().map(|(va, f)| DiscoveredStart { va: Va(va), stated_end: f.stated_end, sources: f.sources }).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::origin::StatedFunction;
     use n0xis_arch::X64;
     use n0xis_sources::Snapshot;
 
@@ -705,7 +772,7 @@ mod tests {
         code.extend_from_slice(&[0x48, 0x8B, 0x47, 0x08, 0xC3]);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1004))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1004))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x15, limit: 100, offset: 0 })
@@ -725,7 +792,7 @@ mod tests {
         code.resize(0x40, 0x00);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1004)), (Va(0x1030), Va(0x1034))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1004)), (Va(0x1030), Va(0x1034))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x40, limit: 100, offset: 0 })
@@ -744,7 +811,7 @@ mod tests {
         code.resize(0x20, 0xCC);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1004))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1004))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x20, limit: 100, offset: 0 })
@@ -785,7 +852,7 @@ mod tests {
         code.extend_from_slice(&[0x48, 0x8B, 0x07, 0xC3]);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1024))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1024))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 0x24, limit: 100, offset: 0 })
@@ -825,7 +892,7 @@ mod tests {
         code.resize(0x40, 0x90);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1030))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1030))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
@@ -856,7 +923,7 @@ mod tests {
         code.resize(0x40, 0x90);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1040))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1040))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
@@ -882,7 +949,7 @@ mod tests {
         code.resize(0x40, 0x90);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1040))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1040))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
@@ -902,7 +969,7 @@ mod tests {
         let code = vec![0x90; 0x40];
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1023), Va(0x1030))];
+        let stated = crate::origin::fdes(&[(Va(0x1023), Va(0x1030))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = DiscoverPass
             .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
@@ -928,6 +995,171 @@ mod tests {
         // resolves symbols by exact address, so it can never return a covering
         // one. It is asserted where a span-attributing provider actually exists
         // — `phase12_il2cpp.rs`, against a real imported index.
+    }
+
+    // ---- Where each start came from (docs/design/WHY.md §4, rung 1) ----
+    //
+    // Each image below is planted so that exactly one rule can produce the
+    // start asked about — the answer is known before the question — and the
+    // sources are asserted whole, not as "contains": a rule that also fired
+    // where it cannot have is as wrong as one that did not fire.
+
+    /// Every source discovery recorded for the start at `va`.
+    fn sources_at(found: &Discovered, va: u64) -> Vec<StartSource> {
+        let entry = found.entries.iter().find(|e| e.va.0 == va).unwrap_or_else(|| panic!("no start at {va:#x}"));
+        entry.sources.iter().copied().collect()
+    }
+
+    /// A start only the unwind table declares: nothing calls it, it matches no
+    /// prologue, no declared function ends before it.
+    #[test]
+    fn a_start_only_the_unwind_table_states_has_that_one_source() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x90; 0x40]).build();
+        let arch = X64::new();
+        let stated = crate::origin::fdes(&[(Va(0x1023), Va(0x1030))]);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let found = discover_entries(&ctx, Va(0x1000), 0x40).unwrap();
+        assert_eq!(sources_at(&found, 0x1023), vec![StartSource::Stated(StatedBy::EhFrame)]);
+        assert_eq!(found.entries[0].stated_end, Some(StatedEnd { end: Va(0x1030), by: Sources::one(StatedBy::EhFrame) }));
+    }
+
+    /// A start only a call reaches: no prologue, no declaration.
+    #[test]
+    fn a_start_only_a_call_reaches_names_the_call() {
+        // 0x1000: push rbp ; mov rbp,rsp ; call 0x1020 ; ret
+        // 0x1020: mov rax,[rdi] ; ret
+        let mut code = vec![0x55, 0x48, 0x8B, 0xEC, 0xE8, 0x17, 0x00, 0x00, 0x00, 0xC3];
+        code.resize(0x20, 0x90);
+        code.extend_from_slice(&[0x48, 0x8B, 0x07, 0xC3]);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let found = discover_entries(&Ctx::new(&snap, &arch), Va(0x1000), 0x24).unwrap();
+        assert_eq!(sources_at(&found, 0x1020), vec![StartSource::CallTarget { from: Va(0x1004) }]);
+        assert_eq!(sources_at(&found, 0x1000), vec![StartSource::Prologue]);
+    }
+
+    /// The call cited is the first one in address order, wherever the others
+    /// are.
+    #[test]
+    fn a_call_target_cites_its_first_caller() {
+        // 0x1000: call 0x1020 ; call 0x1020 ; ret     0x1020: ret
+        let mut code = vec![0xE8, 0x1B, 0x00, 0x00, 0x00, 0xE8, 0x16, 0x00, 0x00, 0x00, 0xC3];
+        code.resize(0x20, 0x90);
+        code.push(0xC3);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let found = discover_entries(&Ctx::new(&snap, &arch), Va(0x1000), 0x21).unwrap();
+        assert_eq!(sources_at(&found, 0x1020), vec![StartSource::CallTarget { from: Va(0x1000) }]);
+    }
+
+    /// A start only a prologue pattern matches.
+    #[test]
+    fn a_start_only_a_prologue_matches_says_prologue() {
+        let snap = Snapshot::builder().region(Va(0x1000), two_prologues()).build();
+        let arch = X64::new();
+        let found = discover_entries(&Ctx::new(&snap, &arch), Va(0x1000), 0x15).unwrap();
+        assert_eq!(sources_at(&found, 0x1000), vec![StartSource::Prologue]);
+        assert_eq!(sources_at(&found, 0x1010), vec![StartSource::Prologue]);
+    }
+
+    /// The first instruction after a declared end, with no declared function
+    /// after it — so no gap to sweep.
+    #[test]
+    fn a_start_only_after_a_declared_end_says_so() {
+        // 0x1000: mov rax,[rdi] ; ret   (declared)   0x1010: mov rax,[rdi+8] ; ret
+        let mut code = vec![0x48, 0x8B, 0x07, 0xC3];
+        code.resize(0x10, 0xCC);
+        code.extend_from_slice(&[0x48, 0x8B, 0x47, 0x08, 0xC3]);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1004))]);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let found = discover_entries(&ctx, Va(0x1000), 0x15).unwrap();
+        assert_eq!(sources_at(&found, 0x1010), vec![StartSource::AfterDeclaredEnd]);
+        assert_eq!(found.entries[1].stated_end, None, "nothing states its end");
+    }
+
+    /// A start only the gap sweep finds: the second helper of a run between
+    /// two declared functions. The first is also the instruction after a
+    /// declared end, so it has both sources.
+    #[test]
+    fn a_start_only_the_gap_sweep_finds_says_gap_sweep() {
+        // 0x1000 declared: mov rax,[rdi] ; ret ; filler
+        // 0x1010: mov rax,[rdi+8] ; ret ; filler     first after the end
+        // 0x1020: mov rax,[rdi+16] ; ret ; filler    only the sweep reaches it
+        // 0x1040 declared: ret
+        let mut code = vec![0x48, 0x8B, 0x07, 0xC3];
+        code.resize(0x10, 0xCC);
+        code.extend_from_slice(&[0x48, 0x8B, 0x47, 0x08, 0xC3]);
+        code.resize(0x20, 0xCC);
+        code.extend_from_slice(&[0x48, 0x8B, 0x47, 0x10, 0xC3]);
+        code.resize(0x40, 0xCC);
+        code.push(0xC3);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1004)), (Va(0x1040), Va(0x1041))]);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let found = discover_entries(&ctx, Va(0x1000), 0x41).unwrap();
+        assert_eq!(sources_at(&found, 0x1020), vec![StartSource::GapSweep]);
+        assert_eq!(sources_at(&found, 0x1010), vec![StartSource::AfterDeclaredEnd, StartSource::GapSweep]);
+        assert_eq!(found.entries.iter().map(|e| e.va.0).collect::<Vec<_>>(), vec![0x1000, 0x1010, 0x1020, 0x1040]);
+    }
+
+    /// A start several sources find keeps every one of them, in the order
+    /// discovery ran: the declarations (sorted by extent), then each rule.
+    /// Before, the first to reach a start was its only record.
+    #[test]
+    fn a_start_several_sources_find_keeps_them_all() {
+        // 0x1000: push rbp ; mov rbp,rsp ; call 0x1000 (itself) ; ret
+        let mut code = vec![0x55, 0x48, 0x8B, 0xEC, 0xE8, 0xF7, 0xFF, 0xFF, 0xFF, 0xC3];
+        code.resize(0x20, 0x90);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let stated = StatedFunction::merged(vec![
+            StatedFunction::new(Va(0x1000), Va(0x100A), StatedBy::EhFrame),
+            StatedFunction::new(Va(0x1000), Va(0x1000), StatedBy::Image(n0xis_sources::StartReason::Export)),
+            StatedFunction::new(Va(0x1000), Va(0x1000), StatedBy::Pdb),
+        ]);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let found = discover_entries(&ctx, Va(0x1000), 0x20).unwrap();
+        assert_eq!(
+            sources_at(&found, 0x1000),
+            vec![
+                StartSource::Stated(StatedBy::Image(n0xis_sources::StartReason::Export)),
+                StartSource::Stated(StatedBy::Pdb),
+                StartSource::Stated(StatedBy::EhFrame),
+                StartSource::CallTarget { from: Va(0x1004) },
+                StartSource::Prologue,
+            ]
+        );
+        assert_eq!(found.entries[0].stated_end, Some(StatedEnd { end: Va(0x100A), by: Sources::one(StatedBy::EhFrame) }));
+    }
+
+    /// A function list kept on disk before the sources were recorded — bare
+    /// `(start, end)` pairs — does not load as one with sources: a miss, never
+    /// a list whose starts were found by nothing. (Its key misses too, under
+    /// another format tag; this holds even where a key would not.)
+    #[test]
+    fn a_list_kept_in_the_earlier_format_does_not_load() {
+        let earlier = r#"{"start":"0x1000","scanned_bytes":64,"entries":[["0x1000",null],["0x1010","0x1020"]]}"#;
+        assert!(serde_json::from_str::<Discovered>(earlier).is_err(), "an earlier list must miss, not misread");
+        let snap = Snapshot::builder().region(Va(0x1000), two_prologues()).build();
+        let arch = X64::new();
+        let now = discover_entries(&Ctx::new(&snap, &arch), Va(0x1000), 0x15).unwrap();
+        let kept: Discovered = serde_json::from_str(&serde_json::to_string(&now).unwrap()).expect("this format loads");
+        assert_eq!(kept.entries, now.entries);
+    }
+
+    /// The end the list gives and its source are one rule: the symbol seam's
+    /// stated length first, then a declaration's extent.
+    #[test]
+    fn the_end_says_whether_a_length_or_a_declaration_gave_it() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x90; 0x40]).build();
+        let arch = X64::new();
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1010))]);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let found = discover_entries(&ctx, Va(0x1000), 0x40).unwrap();
+        assert_eq!(Discovered::end_of(&ctx, &found.entries[0]), Some((Va(0x1010), EndFrom::Stated(Sources::one(StatedBy::EhFrame)))));
     }
 
     /// The blob from the test above, three prologues instead of two, so a

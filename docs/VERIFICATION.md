@@ -356,6 +356,100 @@ instruction sets, on the committed WebAssembly modules and on one planted with a
 the default window and at 44 others; with the earlier resume rule (after the last kept
 instruction, as the index did) they fail on their own assertions.
 
+### `why`: where each fact about an address came from (2026-10-23)
+
+`n0x why --addr <va>` (docs/design/WHY.md, step 1) names, for the function an address is in,
+every source of its start, the source of its end and the layer that named it. Each source is
+recorded where its rule fires and read back, so what is measured is whether those records
+are true and whether recording them moved any other answer.
+
+**Planted (rung 1).** `crates/n0xis-core/src/discover.rs`: six images, each built so that one
+rule alone can produce the start asked about — the unwind table (`a_start_only_the_unwind_table_…`),
+a call (`…_a_call_reaches_…`, citing the call's address), a prologue, the instruction after a
+declared end, the gap sweep — and one start that a PE export, a PDB, an FDE, a call and a
+prologue all find; each answer asserted whole. Calibrated by six mutations of discovery, each
+failing its test on its own assertion: keeping only the first source of a start (the
+behaviour before this change), labelling the gap sweep as after-a-declared-end and the reverse,
+labelling the prologue scan as the gap sweep, labelling a declaration as a prologue, citing the
+last call instead of the first. The name layers: a rename planted in a project is reported as
+`user` with the image's own name beside it in `also` (`why_names_the_tables_it_read.rs`); the
+composition's tie rule is held by `static_names.rs`, failing when a later layer wins a tie.
+`why_on_committed_images.rs` pins the whole answer on `tests/fixtures/native_pe.dll` and the
+module `core.wasm`, whose tables are quoted in the test, and runs in CI.
+
+**Against the image's own tables (rung 3).** `crates/n0xis-cli/tests/why_names_the_tables_it_read.rs`
+(feature `oracle`) asks `why` about every function `function discover` lists and checks every
+claim that a table states something against a reader that is not this tool: an `.eh_frame`
+start or end against GNU `objdump --dwarf=frames`, a `.pdata` start or end against
+`llvm-readobj --unwind`, an export against `llvm-readobj --coff-exports` and `--file-headers`,
+a `.symtab` or `.dynsym` name and an `st_size` end against `llvm-nm` and `llvm-nm -D`, a module's
+body, export and name against `wasm-objdump -d` and `-x`. 80 images: `oracle/sysv.c` built by
+gcc, by x86_64 and by i686 mingw (with their C runtimes), `/usr/lib/libz.so.1`, `core.wasm`,
+and 75 of the seam corpus chosen across its kinds (10 fixtures, 18 `/usr/lib`, 8 `/usr/bin`, 7
+`/usr/lib32`, 11 Wine PE32+, 11 Wine PE32, 10 WebAssembly modules from outside this
+repository; the list is `N0XIS_WHY_IMAGES` of that run). 107 885 functions.
+
+| Claim | Checked | Wrong |
+| --- | --- | --- |
+| start: `unwind` `eh_frame` | 90 858 | 0 |
+| start: `unwind` `pdata` | 6 998 | 0 |
+| start: `export` | 4 083 | 0 |
+| start: `body` | 570 | 0 |
+| end: `unwind` `eh_frame` | 67 510 | 0 |
+| end: `unwind` `pdata` | 6 998 | 0 |
+| end: `symbol_size` `st_size` | 23 348 | 0 |
+| end: `body` | 570 | 0 |
+| name: `image` `dynamic` (`.dynsym`) | 23 253 | 0 |
+| name: `image` `static` (`.symtab`) | 104 | 0 |
+| name: `image` `exports` | 4 111 | 0 |
+| name: `image` `name_section` | 103 | 0 |
+| **all table claims** | **228 506** | **0** |
+
+The empty-success sweep on the same run: every one of the 107 885 listed functions has a
+non-empty `start_sources`, is the function `why` answers for its own start, and has the end
+the list gives it (or `not_stated` where the list gives none). One image, a resource-only DLL
+with no code section, has no list: `function discover` and `why` both refuse it `no-range`.
+The checker was calibrated on its own target: labelling `.eh_frame` functions as `.pdata` gave
+406 wrong claims on the first four images, labelling every image name `.dynsym` gave 24,
+emptying `start_sources` 376, shifting a body's function index by one 5 on `core.wasm`.
+
+Twice the measurement was wrong and the engine right, both in the checker's reading of
+`wasm-objdump`: it read a module's exports only from a PE (28 "wrong" export names), and it
+read `size=332 <J>` as no size (262 "wrong" bodies). Both were fixed in the checker, and the
+claims they had flagged are among the 0 above.
+
+**Not checked.** The rule sources — `after_declared_end` (97 210 starts on that run),
+`prologue` (70 145), `call_target` (14 724), `gap_sweep` (7 012) — have no table to check
+against; they are held only by the planted images. A `call_target`'s `from` could be checked
+against `objdump -d` and is not yet. Names from `stub` (938), `pdb`, `managed`, `rtti`,
+`flirt` and `fallback` (79 376), and ends from a PDB length, were not checked here; no image in
+the run had a PDB. `why` on a live process, a snapshot or a remote one was not run.
+
+**No other answer moved.** The seam corpus's recording (its recorder and its 495 images are
+kept outside the repository, so this cannot be re-run from a clone: the image-layer facts of
+`crates/n0xis-frontend/examples/image_facts.rs` and `profile`, `module list`, `function discover`, `function discover --pdata`,
+`ir manifest`, `disasm`, `decomp pseudo`, `xref to`, `strings`, `rtti scan`, `symbols add`) of
+495 images, and of 30 WebAssembly modules, with a release build of `cfd815c` and with this
+change: 0 differences on 525 images (816 014 listed functions). That is the tool compared with
+itself (rung 5): it says nothing moved, not that anything is right. The same comparison of
+this change against the corpus's older baseline finds 3 233 differences on 306 images, so a
+zero here is not a comparison that cannot see. The function list kept on disk changed format
+(each start carries its sources): it is kept under a new key, and a list in the earlier format
+does not load (`a_list_kept_in_the_earlier_format_does_not_load`).
+
+**A trap the scout read in the code, refuted.** `Ctx::functions` can hold one start twice, with
+an extent (an FDE, a `.pdata` entry) and without (an export), and the end of a control-flow
+graph is looked up there by a binary search, which the standard library documents as free to
+return either match; returning the one without an extent would hand a stated function to the
+end heuristic. On a planted PE32 (i686 mingw: FDEs and exports, no `.pdata`, so no symbol length
+answers first), `ir build` gave each exported function its FDE end. The current search returns
+the last equal entry, which in a list sorted by `(start, end)` is the extent, and
+`a_start_declared_with_and_without_an_extent_keeps_the_extent` now holds that on all 144
+placements of the pair among 0 to 11 functions before and after it; it fails when the lookup
+takes the first entry of a start. Not a wrong answer today, so nothing was changed in the
+lookup. Not measured: two different extents stated for one start, where the function list takes
+the smaller end and the lookup the larger.
+
 ### The three numbers the README quotes
 
 1. **The decoder: 10 498 instructions on 10 images, every difference a documented

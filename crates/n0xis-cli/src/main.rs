@@ -140,6 +140,15 @@ enum Command {
     /// permissive parse opened, a PE with a delay-load import table, an ELF
     /// relocatable object.
     Imports(ImportsArgs),
+    /// For one address: the function it is in, and where each fact about it
+    /// came from, as a category from a closed list — every source of its
+    /// start (a declaration such as `.pdata`, an `.eh_frame` FDE, an export, a
+    /// PDB, a WebAssembly body; or a rule: after a declared end, a gap sweep, a
+    /// call target, a prologue), the one source of its end (or `not_stated`,
+    /// the control-flow graph's own end), and the layer that named it, with
+    /// every other layer that names it. No confidence numbers: a category says
+    /// what produced a fact, not how likely it is.
+    Why(WhyArgs),
     /// Live process inspection.
     #[command(subcommand)]
     Process(ProcessCmd),
@@ -2912,6 +2921,42 @@ struct ImportsArgs {
 }
 
 #[derive(Args)]
+struct WhyArgs {
+    /// The address asked about (hex `0x…`, `…h`, or decimal).
+    #[arg(long)]
+    addr: String,
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long, help = ARCH_HELP)]
+    arch: Option<String>,
+    /// Inline bytes source; requires `--start` for the base address.
+    #[arg(long)]
+    bytes: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// The function list's scan range start, as `function discover --start`
+    /// (defaults to every executable range). The answer is about the list
+    /// discovery gives over this range, so the same range gives the same
+    /// function.
+    #[arg(long)]
+    start: Option<String>,
+    /// The function list's scan range size, as `function discover --size`.
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
+    size: Option<usize>,
+    /// FLIRT-class signature database(s) (`.npat`), as `function discover
+    /// --flirt`: a name one of them gives is reported as `flirt`, given by
+    /// the argument.
+    #[arg(long = "flirt")]
+    flirt: Vec<String>,
+}
+
+#[derive(Args)]
 struct SymbolsAddArgs {
     /// The image the PDB belongs to.
     #[arg(long)]
@@ -3119,6 +3164,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Project(ProjectCmd::Cache(a)) => cmd_project_cache(a, pretty),
         Command::Symbols(SymbolsCmd::Add(a)) => cmd_symbols_add(a, pretty),
         Command::Imports(a) => cmd_imports(a, pretty),
+        Command::Why(a) => cmd_why(a, pretty),
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
@@ -3250,7 +3296,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" | "why" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -3561,6 +3607,26 @@ fn cmd_project_cache(a: ProjectCacheArgs, pretty: bool) -> bool {
 /// `imports`: through the registry, so `serve` and an agent read the same answer.
 fn cmd_imports(a: ImportsArgs, pretty: bool) -> bool {
     run_capability("imports", json!({ "file": a.file }), pretty)
+}
+
+/// `why`: through the registry, so `serve` and an agent read the same answer.
+fn cmd_why(a: WhyArgs, pretty: bool) -> bool {
+    run_capability(
+        "why",
+        json!({
+            "addr": a.addr,
+            "pid": a.pid,
+            "file": a.file,
+            "arch": a.arch,
+            "bytes": a.bytes,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+            "start": a.start,
+            "size": a.size,
+            "flirt": a.flirt,
+        }),
+        pretty,
+    )
 }
 
 /// `symbols add`: through the registry, so `serve` and an agent reach the same check.

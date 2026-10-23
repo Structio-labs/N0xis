@@ -63,6 +63,7 @@ mod trampoline;
 mod typeinfer;
 mod ui_locate;
 mod unnamed;
+mod origin;
 mod valueset;
 mod xref;
 mod xref_string;
@@ -90,7 +91,8 @@ pub use demangle::demangle;
 pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, KlassArtifact, KlassField, KlassInput, KlassPass, LayoutEvidence};
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};
-pub use discover::{discover_entries, discover_pdata, DiscoverArtifact, DiscoverInput, DiscoverPass, Discovered, FunctionCandidate};
+pub use discover::{discover_entries, discover_pdata, function_index, DiscoverArtifact, DiscoverInput, DiscoverPass, Discovered, DiscoveredStart, FunctionCandidate, StatedEnd};
+pub use origin::{EndFrom, NameFrom, Sources, StartSource, StatedBy, StatedFunction};
 pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
 pub use devirt::{devirtualize, Devirtualized};
 pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};
@@ -135,7 +137,7 @@ pub use typeinfer::{
 };
 pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};
-pub use unnamed::{function_name, unnamed_at, unnamed_function_name, UnnamedFunction};
+pub use unnamed::{function_name, function_name_and_source, listed_name, unnamed_at, unnamed_function_name, UnnamedFunction};
 pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, build_xref_index, xref_entry, xref_kind};
 pub use strings::{find_strings, utf16_strings, utf8_strings, FoundString, StringEncoding};
@@ -242,9 +244,10 @@ pub struct Ctx<'a> {
 /// cannot be attached without saying which it is.
 #[derive(Clone, Copy, Debug)]
 pub struct StatedFunctions<'a> {
-    /// `(start, exclusive end)`, sorted by start; `end <= start` is a start
-    /// with no stated extent.
-    pub extents: &'a [(n0xis_contracts::Va, n0xis_contracts::Va)],
+    /// Sorted by `(start, exclusive end)`, one entry per distinct pair
+    /// ([`StatedFunction::merged`]), each with what states it; `end <= start`
+    /// is a start with no stated extent.
+    pub extents: &'a [StatedFunction],
     pub coverage: n0xis_sources::StartCoverage,
 }
 
@@ -349,7 +352,7 @@ impl<'a> Ctx<'a> {
     /// every function it has (see the field docs).
     pub fn with_stated_functions(
         mut self,
-        extents: &'a [(n0xis_contracts::Va, n0xis_contracts::Va)],
+        extents: &'a [StatedFunction],
         coverage: n0xis_sources::StartCoverage,
     ) -> Self {
         self.functions = Some(StatedFunctions { extents, coverage });

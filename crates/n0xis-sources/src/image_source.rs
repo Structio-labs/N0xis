@@ -22,9 +22,11 @@ use std::path::Path;
 
 use n0xis_contracts::{Module, SymKind, Symbol, Va};
 
+use serde::Serialize;
+
 use crate::image::{
     Binding, CodeView, Extent, Finding, FormatTables, Image, ImageFormat, OpenError, OpenOptions, Opened, SNIFF_LEN, StartCoverage, StartReason,
-    SymbolKind,
+    SymbolKind, SymbolTable,
 };
 use crate::{ByteOrder, Linkage, MemorySource, ModuleProvider, RelocatedWords, SourceError, SourceId, SymbolProvider};
 
@@ -33,6 +35,36 @@ use crate::{ByteOrder, Linkage, MemorySource, ModuleProvider, RelocatedWords, So
 /// resolution is a *flat* namespace, so an unversioned import genuinely has no
 /// named provider — this says so instead of guessing one from `DT_NEEDED`.
 const UNKNOWN_PROVIDER: &str = "extern";
+
+/// Where the image states the name an address answers to (`n0x why`): read
+/// where the name is recorded, in [`ImageSource::index`], because the
+/// [`Symbol`] a lookup answers carries no table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageName {
+    /// A symbol table: the first one at the address names it.
+    Table(SymbolTable),
+    /// A stub that only jumps through `slot`, named after the import the slot
+    /// is bound to (an x86-64 ELF PLT entry with no symbol of its own).
+    Stub { slot: Va },
+}
+
+/// A name the image gives an address, and where it gives it.
+#[derive(Clone, Debug)]
+struct Named {
+    symbol: Symbol,
+    by: ImageName,
+}
+
+/// A function the image declares, where it declares them all
+/// ([`ImageSource::every_declared_function`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeclaredFunction {
+    pub start: Va,
+    /// Exclusive; equal to `start` where no extent is stated.
+    pub end: Va,
+    pub why: StartReason,
+}
 
 /// An image on disk, served at its preferred base.
 #[derive(Debug)]
@@ -47,10 +79,11 @@ pub struct ImageSource {
     module_name: String,
     /// Exactly one module — the image itself (kept as a slice for the trait).
     modules: Vec<Module>,
-    /// The name each address answers to.
-    symbols: BTreeMap<u64, Symbol>,
-    /// The stated size of the function at each address.
-    sizes: BTreeMap<u64, u64>,
+    /// The name each address answers to, with where the image states it.
+    symbols: BTreeMap<u64, Named>,
+    /// The stated size of the function at each address, with the declaration
+    /// that states it.
+    sizes: BTreeMap<u64, (u64, StartReason)>,
     /// The stated size of the data object [`Self::symbols`] names at an address.
     data_sizes: BTreeMap<u64, u64>,
     /// Stub → the definition in this image its slot is bound to.
@@ -116,7 +149,7 @@ impl ImageSource {
                         SymbolKind::Function | SymbolKind::NotStated => SymKind::Export,
                         SymbolKind::Object => SymKind::Data,
                     };
-                    slot.insert(Symbol { va: s.va, module: own.clone(), name: s.name.clone(), kind });
+                    slot.insert(Named { symbol: Symbol { va: s.va, module: own.clone(), name: s.name.clone(), kind }, by: ImageName::Table(s.table) });
                     if let (SymbolKind::Object, Extent::Stated(n)) = (s.kind, s.extent) {
                         self.data_sizes.insert(s.va.0, n);
                     }
@@ -127,7 +160,7 @@ impl ImageSource {
             // Aliases at one address agree on the size; the first stated one
             // is kept, and disagreement would mean a malformed table.
             if let Extent::Stated(n) = start.extent {
-                self.sizes.entry(start.va.0).or_insert(n);
+                self.sizes.entry(start.va.0).or_insert((n, start.why));
             }
             match start.why {
                 StartReason::Export => self.entry_points.push(start.va),
@@ -154,11 +187,14 @@ impl ImageSource {
                         self.thunks.insert(start.va.0, target.0);
                     }
                     if let Some(import) = import {
-                        self.symbols.entry(start.va.0).or_insert_with(|| Symbol {
-                            va: start.va,
-                            module: import.library.clone().unwrap_or_else(|| UNKNOWN_PROVIDER.to_string()),
-                            name: import.name.symbol_name(),
-                            kind: SymKind::Import,
+                        self.symbols.entry(start.va.0).or_insert_with(|| Named {
+                            symbol: Symbol {
+                                va: start.va,
+                                module: import.library.clone().unwrap_or_else(|| UNKNOWN_PROVIDER.to_string()),
+                                name: import.name.symbol_name(),
+                                kind: SymKind::Import,
+                            },
+                            by: ImageName::Stub { slot },
                         });
                     }
                 }
@@ -207,6 +243,12 @@ impl ImageSource {
     /// list without a word — a corrupted module's body of size 0, which the
     /// image's findings name and the list did not.
     pub fn every_function(&self) -> Option<Vec<(Va, Va)>> {
+        self.every_declared_function().map(|all| all.into_iter().map(|f| (f.start, f.end)).collect())
+    }
+
+    /// [`Self::every_function`], each with the image's reason for it — what
+    /// `n0x why` names as the source of the start and of the end.
+    pub fn every_declared_function(&self) -> Option<Vec<DeclaredFunction>> {
         match self.image.start_coverage() {
             StartCoverage::Some => None,
             StartCoverage::Every => Some(
@@ -214,13 +256,31 @@ impl ImageSource {
                     .declared_starts()
                     .read
                     .iter()
-                    .map(|s| match s.extent {
-                        Extent::Stated(n) => (s.va, s.va.0.checked_add(n).map_or(s.va, Va)),
-                        Extent::Unknown => (s.va, s.va),
+                    .map(|s| DeclaredFunction {
+                        start: s.va,
+                        end: match s.extent {
+                            Extent::Stated(n) => s.va.0.checked_add(n).map_or(s.va, Va),
+                            Extent::Unknown => s.va,
+                        },
+                        why: s.why,
                     })
                     .collect(),
             ),
         }
+    }
+
+    /// The name [`SymbolProvider::symbol_at`] answers for `va` with, and where
+    /// the image states it: the table it was read from, or the import a stub is
+    /// named after. `None` where the image names nothing there.
+    pub fn named_at(&self, va: Va) -> Option<(Symbol, ImageName)> {
+        self.symbols.get(&va.0).map(|n| (n.symbol.clone(), n.by))
+    }
+
+    /// The length [`SymbolProvider::symbol_size`] answers for `va` with, and
+    /// the declaration that states it: an ELF `STT_FUNC` symbol's `st_size`, a
+    /// PE `.pdata` entry, a WebAssembly body.
+    pub fn stated_size(&self, va: Va) -> Option<(u64, StartReason)> {
+        self.sizes.get(&va.0).copied()
     }
 
     /// The reader's own answers.
@@ -272,7 +332,7 @@ impl ImageSource {
     /// fingerprinting it put 126 signatures made of forwarder text into a
     /// 1 554-signature library built from a 0.9 MB x64 system DLL.
     pub fn named_functions(&self) -> Vec<(Va, String)> {
-        self.symbols.values().filter(|s| s.kind == SymKind::Export).map(|s| (s.va, s.name.clone())).collect()
+        self.symbols.values().map(|n| &n.symbol).filter(|s| s.kind == SymKind::Export).map(|s| (s.va, s.name.clone())).collect()
     }
 
     /// A named section's range `(start, size)` — e.g. `.rdata` for
@@ -307,6 +367,7 @@ impl ImageSource {
     pub fn data_symbols(&self) -> Vec<crate::DataSymbol> {
         self.symbols
             .values()
+            .map(|n| &n.symbol)
             .filter(|s| s.kind == SymKind::Data)
             .map(|s| crate::DataSymbol { va: s.va, name: s.name.clone(), size: self.data_sizes.get(&s.va.get()).copied() })
             .collect()
@@ -454,7 +515,7 @@ impl MemorySource for ImageSource {
 
 impl SymbolProvider for ImageSource {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
-        self.symbols.get(&va.0).cloned()
+        self.named_at(va).map(|(symbol, _)| symbol)
     }
 
     /// The imported symbol a slot is bound to: a PE IAT entry, an ELF GOT
@@ -477,7 +538,7 @@ impl SymbolProvider for ImageSource {
     /// PE `.pdata` entry. Only an exact hit on a start answers; a PLT stub is
     /// a thunk and states none.
     fn symbol_size(&self, va: Va) -> Option<u64> {
-        self.sizes.get(&va.0).copied()
+        self.stated_size(va).map(|(n, _)| n)
     }
 
     fn thunk_to(&self, va: Va) -> Option<Va> {

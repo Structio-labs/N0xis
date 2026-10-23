@@ -43,6 +43,7 @@ pub mod source;
 pub mod static_names;
 pub mod strings_caps;
 pub mod symbols_caps;
+pub mod why;
 
 pub use arch::{lift_refusal, pick_arch, pick_arch_for, resolve_arch};
 pub use registry::{Capability, Diagnostic, Origin, Plugin, Registry, build_registry, stated_coverage, stated_functions};

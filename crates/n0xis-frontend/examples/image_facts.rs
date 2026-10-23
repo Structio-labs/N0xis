@@ -199,7 +199,9 @@ fn src_facts(src: &Src, img: &ImageSource, scrub: &dyn Fn(&str) -> String) -> Va
     // image; an image with no pointer width (a WebAssembly module) answers
     // null for both.
     let is_64 = src.pointer_size().map(|p| p == 8);
-    let stated: Vec<Value> = n0xis_frontend::stated_functions(src).into_iter().map(|(s, e)| json!([hex(s.0), hex(e.0)])).collect();
+    // One entry per distinct extent, as the pairs were (what states each is
+    // not part of this recording's format).
+    let stated: Vec<Value> = n0xis_frontend::stated_functions(src).into_iter().map(|f| json!([hex(f.start.0), hex(f.end.0)])).collect();
     json!({
         "label": scrub(&src.label()),
         "text_range": opt_range(src.text_range()),

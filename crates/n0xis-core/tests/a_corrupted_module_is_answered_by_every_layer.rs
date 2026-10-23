@@ -172,11 +172,17 @@ fn run(bytes: Vec<u8>) -> Result<bool, String> {
         }
     }
     // The function list: the declared starts, and nothing else.
-    let extents: Vec<(Va, Va)> = starts.iter().map(|&(s, e)| (Va(s), Va(e))).collect();
+    let extents: Vec<n0xis_core::StatedFunction> = n0xis_core::StatedFunction::merged(
+        starts
+            .iter()
+            .zip(&image.declared_starts().read)
+            .map(|(&(s, e), declared)| n0xis_core::StatedFunction::new(Va(s), Va(e), n0xis_core::StatedBy::Image(declared.why)))
+            .collect(),
+    );
     let ctx = n0xis_core::Ctx::new(&loaded, &arch).with_stated_functions(&extents, image.start_coverage());
     for s in image.sections().iter().filter(|s| s.executable) {
         let found = n0xis_core::discover_entries(&ctx, s.va, s.size as usize).map_err(|e| e.to_string())?;
-        let listed: Vec<u64> = found.entries.iter().map(|(va, _)| va.0).collect();
+        let listed: Vec<u64> = found.entries.iter().map(|e| e.va.0).collect();
         let declared: Vec<u64> = starts.iter().map(|&(s, _)| s).filter(|&v| v >= found.start.0 && v < found.start.0 + found.scanned_bytes as u64).collect();
         if listed != declared {
             return Err(format!("discovery listed {listed:x?}, the module declares {declared:x?}"));

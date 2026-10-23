@@ -168,10 +168,36 @@ fn vtable_class(name: &str) -> Option<&str> {
     (tail.is_empty() || tail.starts_with("_off")).then_some(class)
 }
 
+/// Which of the project's three name maps an answer of [`LocalNames`] comes
+/// from (`n0x why`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalLayer {
+    /// The user's rename.
+    User,
+    /// A name `analyze` recovered from RTTI.
+    Rtti,
+    /// A signature match `analyze --flirt` kept.
+    Flirt,
+}
+
+impl LocalNames {
+    /// Every map that names `va`, in the order [`SymbolProvider::symbol_at`]
+    /// consults them — the first is its answer, by construction: it is read
+    /// from this list.
+    ///
+    /// Lazy, so the lookup every name takes stops at the first map that
+    /// answers, as it always did.
+    pub fn names_at(&self, va: Va) -> impl Iterator<Item = (LocalLayer, &(String, SymKind))> + '_ {
+        // User truth first, then structural (RTTI), then heuristic (signature).
+        [(LocalLayer::User, &self.user), (LocalLayer::Rtti, &self.rtti), (LocalLayer::Flirt, &self.flirt)]
+            .into_iter()
+            .filter_map(move |(layer, map)| map.get(&va.0).map(|entry| (layer, entry)))
+    }
+}
+
 impl SymbolProvider for LocalNames {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
-        // User truth first, then structural (RTTI), then heuristic (signature).
-        let (name, kind) = self.user.get(&va.0).or_else(|| self.rtti.get(&va.0)).or_else(|| self.flirt.get(&va.0))?;
+        let (_, (name, kind)) = self.names_at(va).next()?;
         Some(Symbol { va, module: String::new(), name: name.clone(), kind: *kind })
     }
 

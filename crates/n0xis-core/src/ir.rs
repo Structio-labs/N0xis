@@ -370,12 +370,18 @@ fn fold_cold_partitions(ctx: &Ctx, start: Va, mut instrs: Vec<DecodedInsn>) -> V
 /// One decode of the target, and only for a call whose callee is otherwise
 /// nameless.
 pub(crate) fn thunk_import(ctx: &Ctx, target: Va) -> Option<n0xis_contracts::Symbol> {
+    thunk_import_slot(ctx, target).map(|(_, sym)| sym)
+}
+
+/// [`thunk_import`], with the slot the stub jumps through.
+fn thunk_import_slot(ctx: &Ctx, target: Va) -> Option<(Va, n0xis_contracts::Symbol)> {
     let bytes = ctx.source.read(target, 16).ok()?;
     let ins = ctx.arch.decode(&bytes, target).ok()?;
     if ins.kind != InsnKind::Jump || ins.target.is_some() {
         return None;
     }
-    ctx.symbols.and_then(|s| s.iat_slot(ins.rip_target?))
+    let slot = ins.rip_target?;
+    ctx.symbols.and_then(|s| s.iat_slot(slot)).map(|sym| (slot, sym))
 }
 
 /// The symbol on a function **entry**, including the import an entry that is
@@ -387,7 +393,16 @@ pub(crate) fn thunk_import(ctx: &Ctx, target: Va) -> Option<n0xis_contracts::Sym
 /// the import's name while the function at that very address listed as
 /// `sub_180049BFC`.
 pub(crate) fn symbol_on_entry(ctx: &Ctx, va: Va) -> Option<n0xis_contracts::Symbol> {
-    ctx.symbols.and_then(|s| s.symbol_at(va)).filter(|sym| sym.va == va).or_else(|| thunk_import(ctx, va))
+    entry_symbol(ctx, va).map(|(sym, _)| sym)
+}
+
+/// [`symbol_on_entry`], with which of its two rules answered — what `n0x why`
+/// reports as the name's source, read from the rule rather than re-derived.
+pub(crate) fn entry_symbol(ctx: &Ctx, va: Va) -> Option<(n0xis_contracts::Symbol, crate::NameFrom)> {
+    match ctx.symbols.and_then(|s| s.symbol_at(va)).filter(|sym| sym.va == va) {
+        Some(sym) => Some((sym, crate::NameFrom::Symbol)),
+        None => thunk_import_slot(ctx, va).map(|(slot, sym)| (sym, crate::NameFrom::Import { slot })),
+    }
 }
 
 fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
@@ -554,8 +569,8 @@ fn declared_extent(ctx: &Ctx, start: Va) -> Option<u64> {
     // Sorted by start (see `Ctx::functions`), so this is a lookup, not a walk:
     // a linear scan would be 15 467 comparisons per function on a Qt-sized image.
     let f = ctx.functions?.extents;
-    let i = f.binary_search_by(|(s, _)| s.0.cmp(&start.0)).ok()?;
-    Some(f[i].1.0).filter(|e| *e > start.0)
+    let i = f.binary_search_by(|f| f.start.0.cmp(&start.0)).ok()?;
+    Some(f[i].end.0).filter(|e| *e > start.0)
 }
 
 fn compute_leaders(instrs: &[DecodedInsn], valid: &BTreeSet<u64>) -> BTreeSet<u64> {
@@ -1526,6 +1541,42 @@ mod tests {
         assert_eq!(art.stats.noreturn_calls, 0);
     }
 
+    /// A start the image declares twice — once with an extent (an FDE, a
+    /// `.pdata` entry) and once without (an export) — is two entries with one
+    /// start in `Ctx::functions`, and a lookup by start may land on either.
+    /// Landing on the one without an extent would drop the stated end and hand
+    /// the function to the heuristic. Checked on every placement of the pair
+    /// among other functions, since where a binary search lands depends on
+    /// the list around it.
+    #[test]
+    fn a_start_declared_with_and_without_an_extent_keeps_the_extent() {
+        let mut code = vec![0x90u8; 0x200];
+        code[0x10] = 0xC3; // a `ret` past the declared end: the heuristic's cut
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        for before in 0..12u64 {
+            for after in 0..12u64 {
+                let mut all = Vec::new();
+                for i in 0..before {
+                    all.push(crate::StatedFunction::new(Va(0x800 + i * 8), Va(0x804 + i * 8), crate::StatedBy::EhFrame));
+                }
+                all.push(crate::StatedFunction::new(Va(0x1000), Va(0x1008), crate::StatedBy::EhFrame));
+                all.push(crate::StatedFunction::new(
+                    Va(0x1000),
+                    Va(0x1000),
+                    crate::StatedBy::Image(n0xis_sources::StartReason::Export),
+                ));
+                for i in 0..after {
+                    all.push(crate::StatedFunction::new(Va(0x1100 + i * 8), Va(0x1104 + i * 8), crate::StatedBy::EhFrame));
+                }
+                let stated = crate::StatedFunction::merged(all);
+                let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+                let art = CfgPass.run(&ctx, CfgInput { start: Va(0x1000), max_bytes: 0x20, auto_end: true }).unwrap();
+                assert_eq!(art.end, Va(0x1008), "{before} functions before the pair, {after} after: the stated end was dropped");
+            }
+        }
+    }
+
     #[test]
     fn an_unwind_declared_extent_cuts_the_function_when_no_symbol_does() {
         // A stripped or partially-symbolized image still carries unwind
@@ -1536,7 +1587,7 @@ mod tests {
         code[0x10] = 0xC3; // a `ret` well past the declared end
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let arch = X64::new();
-        let stated = [(Va(0x1000), Va(0x1008))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1008))]);
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = CfgPass
             .run(&ctx, CfgInput { start: Va(0x1000), max_bytes: 0x20, auto_end: true })
@@ -1561,7 +1612,7 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();
         let ctx = Ctx::new(&snap, &arch);
         // A stated extent that stops right after the branch.
-        let stated = [(Va(0x1000), Va(0x1009))];
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1009))]);
         let ctx = ctx.with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let art = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 9)).expect("cfg builds");
 

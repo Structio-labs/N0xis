@@ -52,7 +52,7 @@ pub use image::{
     UnlistedSlot, Unread,
 };
 mod image_source;
-pub use image_source::ImageSource;
+pub use image_source::{DeclaredFunction, ImageName, ImageSource};
 // The WebAssembly reader: OS-free, and over a reader of this workspace's own,
 // so it is compiled whatever the features (the registry lists it either way).
 #[cfg(feature = "static-wasm")]

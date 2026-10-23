@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **118 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **119 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -329,6 +329,56 @@ registry (`imports`), so `serve` and an MCP client (`capability_run`) get the sa
     them (the references' reach is still the slots read). Empty when nothing was left out.
 - A source that is not an image file is `not-an-image`.
 - Schema: `n0xis.imports.v1`
+
+### `why --addr <va>`
+For one address, the function it is in and **where each fact about it came from**, as a
+category from a closed list (docs/design/WHY.md). A category says what produced a fact and is
+checkable by someone else ("an `.eh_frame` FDE states this start" against `llvm-readobj`); it
+is not a grade, and there are no confidence numbers. Every source is the one recorded where its
+rule fired, read from the function list `function discover` gives over the same range — `why`
+runs no discovery of its own. Through the registry (`why`), so `serve` and an MCP client
+(`capability_run`) get the same answer.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd` | `--bytes`; `--start`/`--size`
+  as `function discover` takes them (the list over that range is the one asked about);
+  `--flirt` as `function discover` takes it.
+- `data.addr` — the address asked about.
+- `data.function` — `{"found": {...}}`, or `{"none": {"why": "..."}}` when no listed function
+  contains the address (it lies before the first start, or past the end of the nearest start
+  at or below it and of every earlier one whose end is stated). The function is the nearest
+  listed start at or below the address whose end is past it; an earlier start counts only when
+  its end is stated.
+  - `start`, and `index` on a WebAssembly module (as `function discover` gives them);
+    `addr_is_start`.
+  - `start_sources` — everything that found the start, never only the first, in the order
+    discovery ran: declarations first — `{"source": "export"}` (a PE export in an executable
+    section), `{"source": "unwind", "table": "pdata"}` (a PE32+ `RUNTIME_FUNCTION`),
+    `{"source": "unwind", "table": "eh_frame"}` (an FDE), `{"source": "pdb"}`,
+    `{"source": "body", "function": n}` (a WebAssembly body) — then rules:
+    `{"source": "after_declared_end"}` (the first instruction after a declared function's end),
+    `{"source": "gap_sweep"}` (a linear sweep between two declared functions),
+    `{"source": "call_target", "from": "0x…"}` (a direct call names it; `from` is the first such
+    call in the scanned code, in address order), `{"source": "prologue"}`. Never empty.
+    `symbol` (an ELF `STT_FUNC` symbol) and `stub` (a PLT entry) are in the list but never
+    appear today: discovery does not take a start from either.
+  - `end` — the end the function list gives, with the one source it came from:
+    `{"va": "0x…", "source": "symbol_size", "of": "st_size" | "pdb" | "managed" | "flirt" |
+    "project"}` (the symbol layers' stated length, and whose), `{"va": "0x…", "source":
+    "unwind", "table": "pdata" | "eh_frame"}`, `{"va": "0x…", "source": "body", "function":
+    n}`; `also` lists other declarations of the same extent when there are any. Where nothing
+    states one: `{"source": "not_stated", "cfg": {"end": "0x…"}}`, the end of the control-flow
+    graph `ir build` builds from the start by default (its end heuristic), or
+    `{"not_built": {"why": "..."}}` where none can be built (a WebAssembly module has no lift).
+  - `name` — the name the function list gives, and the layer that gave it: `user` (a rename),
+    `rtti`, `flirt` with `given_by` `project` (kept by `analyze --flirt`) or `argument`
+    (`--flirt`), `pdb`, `managed`, `image` with its `table` (`static`: `.symtab`; `dynamic`:
+    `.dynsym`; `exports`; `name_section`), `stub` with the `slot` it jumps through (named after
+    the import the slot is bound to), or `fallback` (`sub_…`, `func_N`). `also` — every other
+    layer that names the start, most trusted first, each with the name it gives; empty when none
+    does.
+- A list of starts whose stated length no layer of the names states, or a name no layer gives,
+  is `why-inconsistent` (never expected: it would mean the function list and the answer read
+  two different compositions).
+- Schema: `n0xis.why.v1`
 
 ### `module list`
 List modules of a live process (`--pid`) or the one module an image file is (`--file`). What an
@@ -988,7 +1038,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**118 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**119 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -1010,7 +1060,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x project cache` | How much disk the project's caches use, per kind; `--clear` removes them. Only what the engine can rebuild from the image is a cache: names, comments, types, patches and tables are never touched |
 | `n0x remote-serve` | Serve a live process over the remote-agent stdio protocol — the remote-side half of `--remote-cmd` (Phase 6). Typically invoked over SSH by the *other* machine, not run directly: e.g. locally, run `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...` |
 
-### Static analysis & decompilation (30)
+### Static analysis & decompilation (31)
 
 | Command | What it does |
 |---|---|
@@ -1042,6 +1092,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x type list` | List every defined struct and enum |
 | `n0x type rm` | Remove a struct or enum by name |
 | `n0x type struct` | Define (or replace) a struct. Repeat `--field "OFFSET:NAME[:CTYPE]"` (offset hex `0x68` or decimal). e.g. `--field 0x0:vftable:void* --field 0x68:count:int` |
+| `n0x why` | For one address: the function it is in, and where each fact about it came from, as a category from a closed list — every source of its start (a declaration such as `.pdata`, an `.eh_frame` FDE, an export, a PDB, a WebAssembly body; or a rule: after a declared end, a gap sweep, a call target, a prologue), the one source of its end (or `not_stated`, the control-flow graph's own end), and the layer that named it, with every other layer that names it. No confidence numbers: a category says what produced a fact, not how likely it is |
 | `n0x xref from` | What `--addr` references |
 | `n0x xref string` | Find a string literal and who references it via `lea` |
 | `n0x xref to` | Who references `--addr` |
@@ -1190,6 +1241,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.strings.v1` | strings |
 | `n0xis.symbols.add.v1` | symbols add |
 | `n0xis.imports.v1` | imports |
+| `n0xis.why.v1` | why |
 | `n0xis.diff.v1` | diff functions |
 | `n0xis.mem.read.v1` | mem read |
 | `n0xis.mem.span.v1` | mem span |
@@ -1241,5 +1293,5 @@ optimization delta; inlined into `decomp pseudo --style ssa`, and exposed standa
 
 Source of truth for this reference: `crates/n0xis-cli/src/main.rs` (clap enums + `main()`
 dispatch), `crates/n0xis-contracts/src/schema.rs` (mod `v1` / mod `v0`), cross-checked against
-`n0x guide --pretty` from this binary (`command_count: 118`). When in doubt, run `n0x
+`n0x guide --pretty` from this binary (`command_count: 119`). When in doubt, run `n0x
 guide` or `n0x <cmd> --help` — those are generated from the binary and never drift.

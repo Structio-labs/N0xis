@@ -335,11 +335,22 @@ fn sweep_stale_xref_once() {
 /// Generation prefix for kept function discovery, for the same reason as
 /// [`xref_cache_generation`]: a rebuilt scanner never reads a previous build's
 /// answer.
+///
+/// It also names the **format** of what is kept ([`DISCOVERED_FORMAT`]), on
+/// its own and not only through the build's fingerprint: a kept list written
+/// in another format must miss, never be read as this one, even by a build the
+/// fingerprint cannot tell apart (one whose mtime was carried over). Every
+/// generation but this one is swept by name.
 fn discover_cache_generation() -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     analysis_fingerprint().hash(&mut h);
-    format!("disc-{:08x}-", h.finish() as u32)
+    format!("disc{DISCOVERED_FORMAT}-{:08x}-", h.finish() as u32)
 }
+
+/// The format of a kept [`n0xis_core::Discovered`]: 2 since each start carries
+/// its sources (`n0x why`); 1 was bare `(start, end)` pairs, under the prefix
+/// `disc-`.
+const DISCOVERED_FORMAT: u32 = 2;
 
 /// Function discovery over `[start, start + size)` of an image that cannot
 /// change, kept on disk under `.n0x/discover-cache/`. The key hashes the
@@ -355,9 +366,14 @@ pub fn discovered_cached(ctx: &Ctx, start: Va, size: usize, label: &str) -> Resu
     size.hash(&mut h);
     ctx.arch.decoder_id().hash(&mut h);
     if let Some(declared) = ctx.functions {
-        for (s, e) in declared.extents {
-            s.0.hash(&mut h);
-            e.0.hash(&mut h);
+        // What states each function is part of the answer now, so it is part
+        // of the key: the same extents stated by other tables are another list.
+        for f in declared.extents {
+            f.start.0.hash(&mut h);
+            f.end.0.hash(&mut h);
+            for by in f.stated_by.iter() {
+                by.hash(&mut h);
+            }
         }
         // Hashed only where it is not the default, so every native image keeps
         // the key it had before the coverage was stated.

@@ -4551,7 +4551,7 @@ replaces.
 #### Every command, and what its answer was checked against
 
 The claim "all sixty closed" is only checkable if the list is written down, so
-here is the whole surface — all **118** commands, not only the sixty, since the
+here is the whole surface — all **119** commands, not only the sixty, since the
 sixty are a subset and this way none of them can be missing by omission. Every
 row names the source its answer was checked against, and none of those sources
 is n0xis. Two rows say **not checkable here**, and each says why; three say
@@ -4655,6 +4655,7 @@ phase from its first mistake on.
 | `sig gen` | Spec-first method tooling | `nm` on the unstripped binary — 10 of 10 names correct in a stripped copy |
 | `module list` | Static analysis & decompilation | the file's own header (base, size, path) |
 | `imports` | Static analysis & decompilation | `llvm-readobj` on the committed images `crates/n0xis-cli/tests/fixtures/imports/fixtures.txt` lists, among them three planted for it (a PE32 importing by name and by ordinal only, and the library it imports from; a shared object needing libm then libc, importing from each by a versioned name): a PE's descriptors, names, ordinals and slots against `--coff-imports`; an ELF's libraries in `DT_NEEDED` order against `--dynamic-table` and `--needed-libs`, its undefined dynamic symbols against `--dyn-syms`, their libraries against `--version-info`, their slots against `--relocations`, and its x86-64 PLT stubs against `llvm-objdump`'s names; on the other ELF machines the engine reads no stubs and llvm-objdump names some, recorded as a gap |
+| `why` | Static analysis & decompilation | planted images in which one rule alone can produce each start (unwind table, call, prologue, gap sweep, after a declared end) and one start five sources find, asserted whole; on 80 images (`oracle/sysv.c` built by gcc and by both mingw targets, 75 from the seam corpus, libz, a committed module), 228 506 claims against GNU `objdump --dwarf=frames` (FDE starts and ends), `llvm-readobj --unwind` (`.pdata`), `--coff-exports`, `llvm-nm` and `-D` (`.symtab`, `.dynsym`, `st_size`) and `wasm-objdump` (bodies, exports, names) — 0 wrong; the rule sources (`call_target`, `prologue`, `gap_sweep`, `after_declared_end`) only on the planted images |
 | `disasm` | Static analysis & decompilation | objdump — 1 200 instructions, every address and length |
 | `ir build` | Static analysis & decompilation | objdump's decode + the compiler's DWARF extents |
 | `ir explain` | Static analysis & decompilation | the frame and callsites of a function of known source |

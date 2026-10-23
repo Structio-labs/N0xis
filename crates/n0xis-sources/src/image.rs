@@ -372,7 +372,7 @@ pub enum Extent {
 }
 
 /// The table a symbol was read from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SymbolTable {
     /// ELF `.symtab`.
@@ -587,7 +587,11 @@ pub struct Imports {
 }
 
 /// Why the image says code starts at an address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+///
+/// `Deserialize` and ordered because a function start carries it into the
+/// function list discovery keeps on disk (`n0xis_core::StatedBy`): the reason
+/// is recorded where the image states it, never recomputed for `why`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StartReason {
     /// A PE export that lands in an executable section.

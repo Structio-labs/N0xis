@@ -448,7 +448,7 @@ fn rtti_vtable_map(src: &Src) -> Result<std::sync::Arc<std::collections::HashMap
 /// vtable map above. `.eh_frame` is walked once (14 355 FDEs on `libQt6Core.so.6`)
 /// and every later function looks its regions up by address, so attaching
 /// exception edges costs one scan per process rather than one per decompile.
-type EhMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<Vec<n0xis_core::EhFunction>>)>;
+type EhMemo = Option<(n0xis_sources::SourceId, std::sync::Arc<Option<UnwindFunctions>>)>;
 static EH_MEMO: std::sync::Mutex<EhMemo> = std::sync::Mutex::new(None);
 
 /// A PE's preferred image base — `.pdata` and `.xdata` are written entirely in
@@ -512,6 +512,22 @@ fn itanium_vtable_map(src: &Src) -> std::collections::HashMap<u64, String> {
 /// still contributes the protected ranges it describes — neither table is a
 /// superset of the other.
 fn scan_unwind(src: &Src) -> Option<Vec<n0xis_core::EhFunction>> {
+    scan_unwind_stated(src).map(|u| u.functions)
+}
+
+/// The function extents an unwind table states, and which table states them.
+struct UnwindFunctions {
+    /// `.pdata` (the image's own `UnwindEntry`) or an `.eh_frame` FDE: the
+    /// table the extents come from, which is what `n0x why` names. Where both
+    /// are present `.pdata` states the functions and `.eh_frame` only adds
+    /// regions, so it is `.pdata`.
+    by: n0xis_core::StatedBy,
+    functions: Vec<n0xis_core::EhFunction>,
+}
+
+/// [`scan_unwind`], with the table that states the extents — decided here, by
+/// the branch that reads it, and nowhere else.
+fn scan_unwind_stated(src: &Src) -> Option<UnwindFunctions> {
     let eh_frame = src.section_range(".eh_frame");
     let pdata = match (src.section_range(".pdata"), pe_image_base(src)) {
         (Some(range), Some(base)) => Some((range, base)),
@@ -523,9 +539,9 @@ fn scan_unwind(src: &Src) -> Option<Vec<n0xis_core::EhFunction>> {
             if let Some(eh) = eh {
                 merge_regions(&mut fns, n0xis_core::scan_eh_frame(src.as_mem(), eh));
             }
-            Some(fns)
+            Some(UnwindFunctions { by: n0xis_core::StatedBy::Image(n0xis_sources::StartReason::UnwindEntry), functions: fns })
         }
-        (None, Some(eh)) => Some(n0xis_core::scan_eh_frame(src.as_mem(), eh)),
+        (None, Some(eh)) => Some(UnwindFunctions { by: n0xis_core::StatedBy::EhFrame, functions: n0xis_core::scan_eh_frame(src.as_mem(), eh) }),
         (None, None) => None,
     }
 }
@@ -554,7 +570,19 @@ fn merge_regions(into: &mut [n0xis_core::EhFunction], extra: Vec<n0xis_core::EhF
     }
 }
 
-fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
+/// The protected ranges of the unwind-stated function `start` lies in (empty
+/// where none): what a control-flow graph of the function at `start` attaches.
+fn eh_regions_at(eh_all: &Option<UnwindFunctions>, start: Va) -> &[n0xis_core::EhRegion] {
+    eh_all
+        .as_ref()
+        .map_or(&[][..], |u| u.functions.as_slice())
+        .iter()
+        .find(|f| start.get() >= f.start.get() && start.get() < f.end.get())
+        .map(|f| f.regions.as_slice())
+        .unwrap_or(&[])
+}
+
+fn eh_map(src: &Src) -> std::sync::Arc<Option<UnwindFunctions>> {
     let id = src.as_mem().identity();
     if let Some(id) = id
         && let Ok(memo) = EH_MEMO.lock()
@@ -563,8 +591,7 @@ fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
     {
         return m.clone();
     }
-    let map = scan_unwind(src).unwrap_or_default();
-    let arc = std::sync::Arc::new(map);
+    let arc = std::sync::Arc::new(scan_unwind_stated(src));
     if let Some(id) = id
         && let Ok(mut memo) = EH_MEMO.lock()
     {
@@ -588,26 +615,35 @@ fn eh_map(src: &Src) -> std::sync::Arc<Vec<n0xis_core::EhFunction>> {
 /// doors answered differently about the same image — 2 394 functions through
 /// one and 2 396 through the other. A fact the file states is not a per-frontend
 /// opinion.
-pub fn stated_functions(src: &Src) -> Vec<(Va, Va)> {
-    let mut out: Vec<(Va, Va)> = eh_map(src).iter().map(|f| (f.start, f.end)).collect();
+///
+/// Each function carries what states it ([`n0xis_core::StatedBy`]), recorded
+/// here where each table is read, so `n0x why` names the table and does not
+/// work it out again.
+pub fn stated_functions(src: &Src) -> Vec<n0xis_core::StatedFunction> {
+    use n0xis_core::{StatedBy, StatedFunction};
+    use n0xis_sources::StartReason;
+    let mut out: Vec<StatedFunction> = match eh_map(src).as_ref() {
+        Some(unwind) => unwind.functions.iter().map(|f| StatedFunction::new(f.start, f.end, unwind.by)).collect(),
+        None => Vec::new(),
+    };
     if let Src::Static(img) = src {
         // The PDB's functions, where the image's own table states no extent: a
         // leaf function has no unwind entry, and a static has no export. Where
         // the image states one, its own table stands.
-        let extents: std::collections::HashSet<u64> = out.iter().filter(|(s, e)| e.0 > s.0).map(|(s, _)| s.0).collect();
+        let extents: std::collections::HashSet<u64> = out.iter().filter(|f| f.end.0 > f.start.0).map(|f| f.start.0).collect();
         if let Some(pdb) = crate::pdb_syms::lookup(img).symbols() {
-            out.extend(pdb.functions().into_iter().filter(|(s, _)| !extents.contains(&s.0)));
+            out.extend(pdb.functions().into_iter().filter(|(s, _)| !extents.contains(&s.0)).map(|(s, e)| StatedFunction::new(s, e, StatedBy::Pdb)));
         }
-        out.extend(img.declared_entry_points().into_iter().map(|va| (va, va)));
+        out.extend(img.declared_entry_points().into_iter().map(|va| StatedFunction::new(va, va, StatedBy::Image(StartReason::Export))));
     }
     if let Src::Static(img) = src
-        && let Some(every) = img.every_function()
+        && let Some(every) = img.every_declared_function()
     {
-        out.extend(every);
+        out.extend(every.into_iter().map(|f| StatedFunction::new(f.start, f.end, StatedBy::Image(f.why))));
     }
-    out.sort_unstable();
-    out.dedup();
-    out
+    // Sorted by `(start, end)`, one entry per extent with all its sources:
+    // the same list of extents the bare pairs were, sorted and deduplicated.
+    StatedFunction::merged(out)
 }
 
 /// Whether [`stated_functions`] are every function the image has: the image's
@@ -897,11 +933,7 @@ fn with_cfg_ctx(
     let layout = crate::PersistedLayout::load();
 
     let eh_all = eh_map(&resolved.src);
-    let eh_regions: &[n0xis_core::EhRegion] = eh_all
-        .iter()
-        .find(|f| start.get() >= f.start.get() && start.get() < f.end.get())
-        .map(|f| f.regions.as_slice())
-        .unwrap_or(&[]);
+    let eh_regions = eh_regions_at(&eh_all, start);
 
     // FLIRT-class signature naming (Phase 10 priority 8): if a `flirt` database
     // is supplied, statically-linked CRT/STL functions that carry no symbol get
@@ -1006,6 +1038,19 @@ fn with_src_ctx(
     lift: Lift,
     work: impl FnOnce(&n0xis_core::Ctx, &Src, Option<usize>, &str) -> Response<Value>,
 ) -> Response<Value> {
+    with_src_ctx_names(args, bytes_base, lift, |ctx, src, region_len, label, _| work(ctx, src, region_len, label))
+}
+
+/// [`with_src_ctx`], also handing over the name composition the `Ctx`'s
+/// symbols are: what `why` asks which layer gave a name or a length. The same
+/// object, not a second one built beside it, so the layer it names is the one
+/// that answered.
+fn with_src_ctx_names(
+    args: &Value,
+    bytes_base: Va,
+    lift: Lift,
+    work: impl FnOnce(&n0xis_core::Ctx, &Src, Option<usize>, &str, &crate::static_names::StaticNames) -> Response<Value>,
+) -> Response<Value> {
     let mut spec = spec_of(args);
     spec.bytes_base = Some(bytes_base);
     let resolved = match resolve(spec) {
@@ -1076,18 +1121,24 @@ fn with_src_ctx(
             if let (Some(vtables), Some(subclassed), Some(slots)) = (&vtables, &subclassed, slots) {
                 ctx = ctx.with_vtables(vtables, slots).with_subclassed(subclassed);
             }
-            work(&ctx, &src, region_len, &label)
+            work(&ctx, &src, region_len, &label, &full)
         }
+        // The project's names, then a managed index where one fits: the
+        // composition's rules for two layers are the ones `ChainedSymbols`
+        // applied here, kept (static_names.rs tests them), and one rule for
+        // every source is what lets `why` name the layer on each.
         Src::Live(l) => {
-            let full;
-            let sym: &dyn n0xis_sources::SymbolProvider = match managed {
-                Some(m) => { full = n0xis_sources::ChainedSymbols::new(&local, m); &full }
-                None => &local,
-            };
-            work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(sym), &src, region_len, &label)
+            let names = crate::static_names::StaticNames::without_image(&local, managed);
+            work(&n0xis_core::Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&names), &src, region_len, &label, &names)
         }
-        Src::Snap(s) => work(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(&local), &src, region_len, &label),
-        Src::Remote(r) => work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&local), &src, region_len, &label),
+        Src::Snap(s) => {
+            let names = crate::static_names::StaticNames::without_image(&local, None);
+            work(&n0xis_core::Ctx::new(s, arch.as_ref()).with_symbols(&names), &src, region_len, &label, &names)
+        }
+        Src::Remote(r) => {
+            let names = crate::static_names::StaticNames::without_image(&local, None);
+            work(&n0xis_core::Ctx::new(r.as_ref(), arch.as_ref()).with_symbols(&names), &src, region_len, &label, &names)
+        }
     };
     spelled(&*arch, attach.annotate(resp))
 }
@@ -2622,6 +2673,60 @@ impl Plugin for AnalysisPasses {
                             ok_json(n0xis_contracts::schema::v1::FUNCTION_DISCOVER, page, label).with_page(found.total(), returned)
                         }
                         Err(e) => Response::error("discover-failed", e.to_string()),
+                    }
+                })
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "why",
+            "For one address: the function it is in, and where each fact about it came from — every source of its start, the source of its end, the layer that named it (docs/design/WHY.md).",
+            Some(n0xis_contracts::schema::v1::WHY),
+            Origin::Builtin,
+            Box::new(|args| {
+                let addr = match required_addr(args, "addr") {
+                    Ok(v) => v,
+                    Err((code, msg)) => return Response::error(code, msg),
+                };
+                // The function list `function discover` gives, over the same
+                // windows and through the same door: `why` reads the sources
+                // that list recorded and never runs a discovery of its own.
+                let explicit_start = args.get("start").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok());
+                let explicit_size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
+                with_src_ctx_names(args, explicit_start.unwrap_or(Va(0)), Lift::NotNeeded, move |ctx, src, region_len, label, names| {
+                    let ranges = crate::discovered::image_code_ranges(src, src.text_range(), region_len, explicit_start, explicit_size, Va(0));
+                    if ranges.is_empty() {
+                        if crate::discovered::declares_no_functions(src).is_some() {
+                            let none = crate::why::WhyArtifact {
+                                addr,
+                                function: crate::why::Containing::None { why: crate::discovered::DECLARES_NO_FUNCTIONS.to_string() },
+                            };
+                            return ok_json(n0xis_contracts::schema::v1::WHY, none, label);
+                        }
+                        return Response::error("no-range", "could not resolve a scan range; pass start and size");
+                    }
+                    let found = match crate::discovered::discovered_ranges(ctx, src, label, &ranges) {
+                        Ok(found) => found,
+                        Err(e) => return Response::error("discover-failed", e.to_string()),
+                    };
+                    // A start nothing states an end for ends where its
+                    // control-flow graph does — built as `ir cfg` builds it
+                    // by default (a 4 KiB window, the end heuristic on, the
+                    // unwind regions of the function it lies in attached).
+                    let eh_all = eh_map(src);
+                    let cfg_end = |start: Va| -> crate::why::CfgEnd {
+                        if let Some((_, message)) = crate::lift_refusal(ctx.arch) {
+                            return crate::why::CfgEnd::NotBuilt { why: message };
+                        }
+                        let cfg_ctx = ctx.with_eh(eh_regions_at(&eh_all, start));
+                        match n0xis_core::Pass::run(&n0xis_core::CfgPass, &cfg_ctx, n0xis_core::CfgInput::new(start, 4096)) {
+                            Ok(cfg) => crate::why::CfgEnd::End(cfg.end),
+                            Err(e) => crate::why::CfgEnd::NotBuilt { why: e.to_string() },
+                        }
+                    };
+                    match crate::why::answer(ctx, names, &found, addr, &cfg_end) {
+                        Ok(art) => ok_json(n0xis_contracts::schema::v1::WHY, art, label),
+                        Err(crate::why::Inconsistent(m)) => Response::error("why-inconsistent", m),
                     }
                 })
             }),

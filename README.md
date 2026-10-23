@@ -111,7 +111,7 @@ n0xis provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty   # li
 
 A command names its target with `--file`, `--pid`, `--snapshot`, `--remote-cmd` or `--bytes`; its `--help`
 lists the ones it takes. Output is Unix plumbing: `n0xis function discover --file app.exe --pdata | jq -r '.data.functions[].va'`
-feeds the next command. `n0xis guide` lists all 118 commands, generated from the binary, and a test fails the
+feeds the next command. `n0xis guide` lists all 119 commands, generated from the binary, and a test fails the
 build if this README, `MAP.md`, `CONCEPT.md` or `docs/CLI_COMMANDS.md` states another count. On Linux, with Yama `ptrace_scope=1`, reading another process needs
 root or `CAP_SYS_PTRACE` unless it allows tracing, as `config-demo` does.
 

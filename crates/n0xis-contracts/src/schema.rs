@@ -82,6 +82,9 @@ pub mod v1 {
     pub const SYMBOLS_ADD: &str = "n0xis.symbols.add.v1";
     /// What an image needs from other images, grouped by library (`imports`).
     pub const IMPORTS: &str = "n0xis.imports.v1";
+    /// Where each fact the engine states about the function an address is in
+    /// came from: its start's sources, its end's, its name's layer (`why`).
+    pub const WHY: &str = "n0xis.why.v1";
     /// Software-breakpoint hit report (`debug await-hit`).
     pub const DEBUG_AWAIT_HIT: &str = "n0xis.debug.await_hit.v1";
     /// SSA form (`ir ssa`, ROADMAP Phase 3).

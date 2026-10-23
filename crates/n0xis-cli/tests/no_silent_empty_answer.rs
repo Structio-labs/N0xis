@@ -65,6 +65,8 @@ const MUST_ANSWER: &[MustAnswer] = &[
     MustAnswer { args: &["ir", "manifest", "--file", "{target}"], field: "entries" },
     MustAnswer { args: &["xref", "from", "--file", "{target}", "--addr", "{entry}"], field: "refs" },
     MustAnswer { args: &["module", "list", "--file", "{target}"], field: "modules" },
+    // A listed start is in a function, so `function` is `{"found": ...}`.
+    MustAnswer { args: &["why", "--file", "{target}", "--addr", "{entry}"], field: "function" },
 ];
 
 /// Answers that are empty here for a reason, so the sweep covers them
@@ -155,6 +157,8 @@ const MUST_ANSWER_ON_A_MODULE: &[(&str, MustAnswer)] = &[
     ("core", MustAnswer { args: &["disasm", "--file", "{target}", "--addr", "0x5d"], field: "insns" }),
     // `0000c6: 10 01 | call 1`, and func[1]'s body is at 0x105.
     ("core", MustAnswer { args: &["xref", "to", "--file", "{target}", "--addr", "0x105"], field: "refs" }),
+    // func[1]'s body, which the code section declares with its extent.
+    ("core", MustAnswer { args: &["why", "--file", "{target}", "--addr", "0x105"], field: "function" }),
     ("shapes", MustAnswer { args: &["imports", "--file", "{target}"], field: "imports" }),
     ("shapes", MustAnswer { args: &["profile", "--file", "{target}"], field: "module" }),
     // `passive` is segment 1's bytes (shapes.details.txt).

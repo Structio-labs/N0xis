@@ -19,7 +19,7 @@
 
 use n0xis_contracts::Va;
 
-use crate::Ctx;
+use crate::{Ctx, NameFrom};
 
 /// How the image identifies the function the name stands for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,11 +74,24 @@ pub fn unnamed_at(ctx: &Ctx, va: Va) -> UnnamedFunction {
 /// `xref` (reading the symbol itself) did not share — and made `a-b` and
 /// `a_b` one name.
 pub fn function_name(ctx: &Ctx, va: Va) -> String {
-    match crate::ir::symbol_on_entry(ctx, va) {
-        Some(sym) if ctx.arch.indexed_function(va).is_some() => sym.name,
-        Some(sym) => crate::render::render_callee_name(&sym.name),
-        None => unnamed_function_name(unnamed_at(ctx, va)),
+    function_name_and_source(ctx, va).0
+}
+
+/// [`function_name`], with how the name was found ([`NameFrom`]): the one
+/// rule, so `n0x why` reports the source of the name the list shows and not of
+/// a name it worked out again.
+pub fn function_name_and_source(ctx: &Ctx, va: Va) -> (String, NameFrom) {
+    match crate::ir::entry_symbol(ctx, va) {
+        Some((sym, from)) => (listed_name(ctx, va, &sym.name), from),
+        None => (unnamed_function_name(unnamed_at(ctx, va)), NameFrom::Fallback),
     }
+}
+
+/// How a function list spells the name `raw` a symbol source gives the
+/// function at `va` (see [`function_name`]): verbatim for a WebAssembly
+/// function, as a callee renders for a native one.
+pub fn listed_name(ctx: &Ctx, va: Va, raw: &str) -> String {
+    if ctx.arch.indexed_function(va).is_some() { raw.to_string() } else { crate::render::render_callee_name(raw) }
 }
 
 #[cfg(test)]

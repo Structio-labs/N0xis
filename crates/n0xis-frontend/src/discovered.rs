@@ -48,10 +48,22 @@ pub fn discovered_ranges(ctx: &Ctx, src: &Src, label: &str, ranges: &[(Va, usize
         scanned_bytes += part.scanned_bytes;
         entries.extend(part.entries);
     }
-    entries.sort_by_key(|(va, _)| va.0);
-    entries.dedup_by_key(|(va, _)| va.0);
+    // One start found in two windows is one start: the first window's entry
+    // stands, as it always did, and keeps the second's sources too.
+    entries.sort_by_key(|e: &n0xis_core::DiscoveredStart| e.va.0);
+    let mut merged: Vec<n0xis_core::DiscoveredStart> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match merged.last_mut() {
+            Some(last) if last.va == entry.va => {
+                for source in entry.sources.iter() {
+                    last.sources.add(*source);
+                }
+            }
+            _ => merged.push(entry),
+        }
+    }
     let start = ranges.first().map_or(Va(0), |(start, _)| *start);
-    let found = Arc::new(Discovered { start, scanned_bytes, entries });
+    let found = Arc::new(Discovered { start, scanned_bytes, entries: merged });
     if let Some(key) = key
         && let Ok(mut kept) = KEPT.lock()
     {
