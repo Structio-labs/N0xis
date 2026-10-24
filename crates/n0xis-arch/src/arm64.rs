@@ -38,6 +38,10 @@ use crate::insn::{DecodeError, DecodedInsn, InsnKind};
 use crate::switch::SwitchDispatch;
 use crate::{Arch, CallConv, RegAccess, RegDesc, RegisterFile};
 
+/// The length of every A64 instruction, and the step a sweep takes past one
+/// that does not decode.
+const A64_INSN_BYTES: std::num::NonZeroUsize = std::num::NonZeroUsize::new(4).unwrap();
+
 /// Interned register ids for AArch64. Passes refer to registers *only*
 /// through these ids resolved against the [`RegisterFile`] — never by name
 /// literal (same discipline as [`crate::x64reg`]).
@@ -871,6 +875,12 @@ impl Arch for Arm64 {
             }
         }
         out
+    }
+
+    /// A word. Every A64 instruction is four bytes on a four-byte boundary,
+    /// an undefined word included, so the next one begins four bytes on.
+    fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
+        A64_INSN_BYTES
     }
 
     fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {

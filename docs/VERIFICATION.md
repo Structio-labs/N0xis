@@ -356,6 +356,56 @@ instruction sets, on the committed WebAssembly modules and on one planted with a
 the default window and at 44 others; with the earlier resume rule (after the last kept
 instruction, as the index did) they fail on their own assertions.
 
+### Where a code sweep resumes after bytes that do not decode (2026-10-24)
+
+`Arch::decode_range`, the sweep every section-wide pass reads, stepped one byte past an
+undecodable instruction on every instruction set, and two when a run began on one. Each
+instruction set now states the step (`Arch::resync_step`): one byte on x86, a word on AArch64
+and A32, on Thumb the width the first halfword states. Reference: `llvm-objdump` 23.1.1 (rung
+3), `-d -z`, with `--mattr=+vfp3,+neon` for ARMv7 (an oracle without the extension prints
+VFP as data); the n0xis side is `crates/n0xis-frontend/examples/sweep_listing.rs`, one
+`decode_range` over each code range, joined by address. Before: a release build of `d3ed019`;
+after: the same with the change.
+
+**Planted bytes, every instruction set** (`crates/n0xis-arch/tests/a_sweep_resynchronizes_where_the_isa_says.rs`,
+rung 1 with `llvm-objdump`'s listing of the same bytes quoted beside each case): undecodable
+bytes at the start of the range, twice in a row and after good instructions. The old default
+fails five of the seven tests on their own assertions; a flat two-byte Thumb step fails two.
+
+| Input | Instructions where none can begin, before → after | Inside a real instruction | Real instructions lost | Direct calls found (of `llvm-objdump`'s) |
+| --- | --- | --- | --- | --- |
+| 277 AArch64 shared objects, `/usr/aarch64-linux-gnu` (889 235 instructions) | 0 → 0 | 0 → 0 | 0 → 0 | not counted |
+| AArch64 `.so`, gcc 16, the oracle sources and a SHA-256 constant table in `.text` | 41 → 0 | 1 → 0 | 2 → 0 | not counted |
+| the same, stripped (no mapping symbols, so `llvm-objdump` decodes the table too) | 41 → 0 | 15 → 0 | 26 → 1 | not counted |
+| A32 `.so`, clang 23 `-O2`, the oracle sources with their literal pools | 329 → 0 | 311 → 0 | 320 → 25 | 17 of 22 and 1 made up → 22 of 22 |
+| Thumb `.so`, the same, `--arch thumb` (`.text` only; its `.plt` is A32) | 455 → 0 | 458 → 0 | 329 → 23 | 20 of 22 → 22 of 22 (and one pool word read as `bl.w` in both) |
+
+Every instruction the change removed from these listings (41, 41, 329 and 459) is one
+`llvm-objdump` does not list. Of the ones it added (28, 28, 309, 306), the ones it does not
+list as instructions are data words decoded as code at their own aligned address: 26 in the
+AArch64 table, 3 words of the stripped copy's table that `llvm-objdump` rejects, 14 in A32
+literal pools. The instructions still lost are VFP and `dmb` in A32 and Thumb (the
+ARMv7 decoder does not decode them) and on the stripped AArch64 copy one table word that
+`llvm-objdump` reads as `umulh x7, x21, x28` with its should-be-one `Ra` field not all ones,
+which n0xis rejects. The 17 Thumb instructions still at addresses `llvm-objdump` lists none at
+are halfwords inside literal-pool words. With a flat two-byte Thumb step, 23 instructions would
+be listed inside real 32-bit ones, one per VFP instruction the decoder rejects (`vldr d0, [r0,
+#8]`, `ed90 0b02`, read on as `lsrs`). `function discover` finds 5 → 6 functions on each ARMv7
+build; the new one is `emu_h_lvl1` in `.symtab`, called by a `bl` the old sweep lost; on the
+AArch64 builds it is unchanged (136).
+
+**x86 did not change where it was right.** The 495 images of the format-seam corpus, recorded
+with both builds by `private/seam-2026-10/record.py` (`function discover`, `xref to` on two
+functions, and the rest of its commands): 0 differences. The sweep listing itself, on the 478
+x86 images of that corpus with at most 16 MiB of code (four larger ones not listed): the same
+on 476; on two 64-bit DLLs (Wine's `msvcr100.dll` and `msvcr71.dll`) 80 and 69 instructions
+gone, none an instruction `llvm-objdump` lists, and 86 and 83 new, all of them ones it lists.
+Planted, the one-byte x86 step agrees with `llvm-objdump` after single-byte invalids (`06` in
+64-bit mode) and not after longer ones, where `llvm-objdump` steps past the bytes its own
+decoder read (two for `8d c0` and for `fe ff`): the planted i386 case lists `inc ebx` one
+byte into `fe ff c3` where `llvm-objdump` lists `ret` at its third byte. That length is the
+decoder's, not the architecture's (iced gives `0f 0a 90` a length of three, LLVM two).
+
 ### `why`: where each fact about an address came from (2026-10-23)
 
 `n0x why --addr <va>` (docs/design/WHY.md, step 1) names, for the function an address is in,

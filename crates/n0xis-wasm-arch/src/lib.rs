@@ -265,6 +265,14 @@ impl Arch for Wasm {
         out
     }
 
+    /// One byte: an instruction can begin at any byte of a body. Nothing reads
+    /// this today, because [`decode_range`](Arch::decode_range) below decodes
+    /// each body from its start and never resynchronizes; it is the answer the
+    /// default sweep would need if it ran here.
+    fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::MIN
+    }
+
     /// Exact, not resynchronizing: every body in `[va, va + bytes.len())`
     /// decoded from its start (or, for one the range starts inside, from its
     /// first instruction in the range), and nothing between the bodies, which

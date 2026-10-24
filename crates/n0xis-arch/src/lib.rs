@@ -38,6 +38,8 @@ pub use microir::{
 pub use switch::{SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};
 
+use std::num::NonZeroUsize;
+
 use n0xis_contracts::{Reg, Va};
 
 /// Registers an instruction reads and writes, normalized to full-width names
@@ -321,37 +323,64 @@ pub trait Arch {
     /// sites, which reads as three codegen variants and is really three places
     /// where one sweep happened to die.
     ///
-    /// Default: repeatedly `decode_stream`, and on an invalid instruction skip a
-    /// single byte and start again — the standard linear-sweep recovery. An ISA
-    /// with fixed-width instructions can override with something exact.
+    /// Default: repeatedly `decode_stream`, keep every instruction of the run
+    /// but an invalid one that ends it, and try again
+    /// [`resync_step`](Arch::resync_step) bytes past where the run stopped —
+    /// one rule, whether the invalid instruction ends a run of good ones or is
+    /// the first thing the run met.
+    ///
+    /// It used to be two rules. The step was one byte after a run of good
+    /// instructions and two when a run *began* on an invalid one (the kept
+    /// length was raised to one before the step was added), so two invalid
+    /// positions in a row jumped over the byte after them; and one byte was
+    /// the step on every instruction set. On AArch64, whose instructions are
+    /// 4-byte words on 4-byte boundaries, one undefined word put the sweep one
+    /// byte into the next word, where it read made-up `fnmsub`/`fmadd` from
+    /// the bytes of real instructions, off the word boundary until three more
+    /// decodes had failed (found 2026-10-23 on planted bytes).
+    ///
+    /// An ISA whose code space is not a byte stream to resynchronize in can
+    /// override this with something exact (WebAssembly decodes each body from
+    /// its start).
     fn decode_range(&self, bytes: &[u8], va: Va, max: usize) -> Vec<DecodedInsn> {
         let mut out: Vec<DecodedInsn> = Vec::new();
         let mut at = 0usize;
         while at < bytes.len() && out.len() < max {
-            let chunk = self.decode_stream(&bytes[at..], Va(va.0 + at as u64), max - out.len());
-            if chunk.is_empty() {
-                at += 1;
-                continue;
-            }
-            // Advance past everything decoded. When the run ended on an invalid
-            // instruction, that entry is dropped and the sweep restarts one byte
-            // later: an instruction may well begin inside what the decoder just
-            // rejected.
-            let consumed: usize = chunk.iter().map(|i| i.len as usize).sum();
-            let ended_invalid = chunk.last().is_some_and(|i| i.kind == InsnKind::Invalid);
+            let mut run = self.decode_stream(&bytes[at..], Va(va.0 + at as u64), max - out.len());
+            let ended_invalid = run.last().is_some_and(|i| i.kind == InsnKind::Invalid);
             if ended_invalid {
-                let keep = chunk.len() - 1;
-                let kept_bytes: usize = chunk.iter().take(keep).map(|i| i.len as usize).sum();
-                out.extend(chunk.into_iter().take(keep));
-                at += kept_bytes.max(1);
-                at += 1;
-            } else {
-                out.extend(chunk);
-                at += consumed.max(1);
+                run.pop();
+            }
+            let kept: usize = run.iter().map(|i| i.len as usize).sum();
+            out.extend(run);
+            at += kept;
+            // Nothing decoded here (an invalid instruction, or bytes too few
+            // for one): step to where the next instruction may begin. A run
+            // that kept nothing steps too, so the sweep always moves.
+            if ended_invalid || kept == 0 {
+                at += self.resync_step(&bytes[at..]).get();
             }
         }
         out
     }
+
+    /// How many bytes [`decode_range`](Arch::decode_range) steps past an
+    /// instruction that does not decode at the front of `bytes`, before it
+    /// tries again: the place the next instruction can begin, as far as the
+    /// instruction set says.
+    ///
+    /// Required, with no default: the answer is a fact about the instruction
+    /// set, and a wrong one is silent. A step that lands inside an instruction
+    /// reads made-up instructions out of its bytes and loses the real ones
+    /// after it, and every section-wide pass (the reverse-xref index, `xref
+    /// to`, `function discover`'s call targets) answers from those. One byte
+    /// was everyone's step until 2026-10-24, which on AArch64 and A32 left the
+    /// word boundary (see [`decode_range`](Arch::decode_range)).
+    /// `NonZeroUsize`, because a step of zero is a sweep that never ends.
+    ///
+    /// `bytes` starts at the instruction that did not decode and may be
+    /// shorter than one instruction, or empty.
+    fn resync_step(&self, bytes: &[u8]) -> NonZeroUsize;
 
     /// Lower one instruction to micro-IR. Default: preserves the instruction
     /// verbatim (sound, uninterpreted) — ISA impls override per-mnemonic.

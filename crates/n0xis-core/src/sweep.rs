@@ -23,15 +23,17 @@
 //! construction, for these reasons:
 //!
 //! - **A window resumes at the start of the last instruction the previous one
-//!   handed out**, which it decodes again and does not hand out again. It does
-//!   not resume after it. `decode_range` resynchronizes past an undecodable
-//!   instruction one byte on when it ends a run of good ones, but two bytes on
-//!   when a run *begins* with it (`at += kept_bytes.max(1)`, then `at += 1`),
-//!   so a window that began exactly at an undecodable byte would take a step the
-//!   whole-range decode never takes, and every instruction after it could
-//!   differ. A window that begins at an instruction which decodes is in the
-//!   state the whole-range decode was in when it reached it. (The reverse-xref
-//!   index resumed after the last kept instruction until this module existed.)
+//!   handed out**, which it decodes again and does not hand out again: a
+//!   window that begins at an instruction which decodes is in the state the
+//!   whole-range decode was in when it reached it. Resuming *after* it was
+//!   wrong until 2026-10-24, when `decode_range` stepped one byte past an
+//!   undecodable instruction that ended a run of good ones but two past one a
+//!   run *began* with, so a window that began exactly at an undecodable byte
+//!   took a step the whole-range decode never took. It now steps
+//!   [`Arch::resync_step`](n0xis_arch::Arch::resync_step) either way, so both
+//!   would agree; resuming at the instruction is kept because it does not
+//!   depend on that. (The reverse-xref index resumed after the last kept
+//!   instruction until this module existed.)
 //! - **[`SWEEP_OVERLAP`] bytes past the window are read**, so an instruction
 //!   that starts inside the window is decoded whole: x86 tops out at 15 bytes,
 //!   the ARM encodings at 4. An instruction longer than that (a WebAssembly
@@ -193,7 +195,19 @@ mod tests {
             let snap = Snapshot::builder().region(Va(base), bytes.clone()).build();
             for (name, arch, with_cond) in &arches {
                 let ctx = Ctx::new(&snap, arch.as_ref());
-                let whole: Vec<String> = arch.decode_range(&bytes, Va(base), bytes.len()).iter().map(|i| line(i, *with_cond)).collect();
+                let decoded = arch.decode_range(&bytes, Va(base), bytes.len());
+                // Every instruction starts where the instruction set lets one
+                // start, past every resynchronization: a one-byte step put
+                // AArch64 and A32 off the word boundary until 2026-10-24.
+                let align = match *name {
+                    "arm64" | "a32" => 4,
+                    "thumb" => 2,
+                    _ => 1,
+                };
+                if let Some(off) = decoded.iter().find(|i| !(i.va.0 - base).is_multiple_of(align)) {
+                    panic!("{name}, seed {seed}: an instruction at {:#x}, off the {align}-byte grid", off.va.0);
+                }
+                let whole: Vec<String> = decoded.iter().map(|i| line(i, *with_cond)).collect();
                 assert!(whole.len() > 100, "{name}: the noise decodes to something");
                 for chunk in (1..=70).chain([97, 1000, 4096, SWEEP_CHUNK]) {
                     let got = swept(&ctx, Va(base), bytes.len() as u64, chunk, *with_cond);
@@ -262,10 +276,11 @@ mod tests {
         }
     }
 
-    /// The case the resume rule exists for, planted: a window boundary right
-    /// after a good instruction that an undecodable byte follows. A window that
-    /// resumed *after* the last kept instruction began a run with the bad byte
-    /// and skipped two bytes where the whole-range decode skips one.
+    /// The case the resume rule was made for, planted: a window boundary right
+    /// after a good instruction that an undecodable byte follows. Until
+    /// 2026-10-24 a window that resumed *after* the last kept instruction began
+    /// a run with the bad byte and skipped two bytes where the whole-range
+    /// decode skipped one; `decode_range` now steps the same in both places.
     #[test]
     fn a_window_that_ends_before_an_undecodable_byte_resumes_as_the_whole_decode_does() {
         // 0x1000: nop; 0x1001: 06 (invalid in 64-bit mode); then four nops.
@@ -276,10 +291,10 @@ mod tests {
         let ctx = Ctx::new(&snap, &arch);
         let whole: Vec<u64> = arch.decode_range(&bytes, Va(0x1000), bytes.len()).iter().map(|i| i.va.0).collect();
         assert_eq!(whole, [0x1000, 0x1002, 0x1003, 0x1004, 0x1005], "the whole-range decode resumes one byte past the 06");
-        // Resuming after the nop (at the 06) is what the earlier rule did, and
-        // it loses the instruction at 0x1002.
+        // A decode begun at the 06 resumes one byte on as well. Before
+        // 2026-10-24 it skipped two and lost the instruction at 0x1002.
         let after: Vec<u64> = arch.decode_range(&bytes[1..], Va(0x1001), bytes.len() - 1).iter().map(|i| i.va.0).collect();
-        assert_eq!(after, [0x1003, 0x1004, 0x1005], "a decode begun at the 06 skips two bytes");
+        assert_eq!(after, [0x1002, 0x1003, 0x1004, 0x1005], "a decode begun at the 06 steps one byte, as one that meets it after a nop does");
         let mut got = Vec::new();
         sweep_code(&ctx, Va(0x1000), bytes.len() as u64, 1, |i| {
             got.push(i.va.0);
@@ -287,6 +302,39 @@ mod tests {
         })
         .unwrap();
         assert_eq!(got, whole);
+    }
+
+    /// AArch64 code with undefined words planted among real ones, one, two and
+    /// three in a row and one last, swept at every window size from one byte:
+    /// the sweep hands out exactly the real words, each at its own address.
+    /// Until 2026-10-24 the whole-range decode itself stepped one byte past an
+    /// undefined word and read made-up instructions from the next ones, so the
+    /// window-size test above, which compares the sweep with that decode,
+    /// could not see it.
+    #[test]
+    fn an_arm64_sweep_steps_over_undefined_words_at_every_window_size() {
+        // `llvm-objdump --triple=aarch64` prints `<unknown>` for this word.
+        const UNDEFINED: u32 = 0xffff_ffff;
+        // nop; mov x0, x1; add x0, x1, #1; ret
+        let real = [0xd503_201f_u32, 0xaa01_03e0, 0x9100_0420, 0xd65f_03c0];
+        let mut words = Vec::new();
+        for rep in 0..24 {
+            words.extend(std::iter::repeat_n(UNDEFINED, rep % 4));
+            words.extend_from_slice(&real[..=rep % 4]);
+        }
+        words.push(UNDEFINED);
+        let base = 0x40_0000u64;
+        let want: Vec<u64> = (0u64..).zip(&words).filter(|&(_, w)| *w != UNDEFINED).map(|(i, _)| base + 4 * i).collect();
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let arch = Arm64::new();
+        let decoded = arch.decode_range(&bytes, Va(base), bytes.len());
+        assert_eq!(decoded.iter().map(|i| i.va.0).collect::<Vec<_>>(), want, "the whole-range decode lists every real word and nothing else");
+        let whole: Vec<String> = decoded.iter().map(|i| line(i, true)).collect();
+        let snap = Snapshot::builder().region(Va(base), bytes.clone()).build();
+        let ctx = Ctx::new(&snap, &arch);
+        for chunk in (1..=70).chain([97, 1000, SWEEP_CHUNK]) {
+            assert_eq!(swept(&ctx, Va(base), bytes.len() as u64, chunk, true), whole, "a {chunk}-byte window changed the sweep");
+        }
     }
 
     /// The range ends where the region holding its start does, as the single

@@ -744,6 +744,15 @@ impl Arch for X64 {
         out
     }
 
+    /// One byte, in both bitnesses. An x86 instruction can begin at any byte,
+    /// and an encoding that does not decode has no length the architecture
+    /// defines: how many bytes a decoder read before giving up is that
+    /// decoder's (iced gives `0f 0a 90` a length of three, llvm-objdump two), so the only
+    /// step that is not a guess is the smallest.
+    fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::MIN
+    }
+
     fn reg_access(&self, insn: &DecodedInsn) -> RegAccess {
         self.access(insn).map(|(regs, ..)| regs).unwrap_or_default()
     }

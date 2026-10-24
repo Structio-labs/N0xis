@@ -138,6 +138,29 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A sweep over a code range picked up at the wrong place after bytes that do not decode.**
+  The one linear sweep the section-wide passes read (the reverse-xref index, `xref to`, `xref
+  string`, `bindings list`, `il2cpp icalls`, `why`, and the call targets `function discover`
+  collects) stepped one byte past an undecodable instruction on every instruction set, and two
+  when a run of instructions began on one. On AArch64 and A32 one byte is inside the next
+  4-byte word: the sweep read made-up instructions out of the real ones' bytes and lost the real
+  ones until three more decodes failed; on Thumb it read odd addresses. Each instruction set
+  now states its step, and the compiler makes each one answer: a word on AArch64 and A32, on
+  Thumb the width the first halfword states (2 or 4 bytes), one byte on x86; the step is the
+  same wherever the bad instruction falls. Against `llvm-objdump` 23.1.1: on the 277 AArch64
+  shared objects under `/usr/aarch64-linux-gnu` (889 235 instructions) nothing changes, because
+  every word there decodes. On images built here with data inside their code (AArch64 with a
+  constant table in `.text`, A32 and Thumb with their literal pools), instructions listed where
+  none can begin go from 41, 329 and 455 to 0 (Thumb: odd addresses; inside a real instruction,
+  458 to 0), the real instructions lost from 2, 320 and 329 to 0, 25 and 23 (the 48 left are
+  VFP and `dmb`, which the ARMv7 decoder does not decode), direct calls
+  found from 17 and 20 of 22 to 22 of 22 (A32, Thumb), and `function discover` finds one more
+  function in each ARMv7 build, a real one. On x86 the sweep lists other instructions in 2 of
+  478 images (two 64-bit DLLs: 149 gone, none an instruction `llvm-objdump` lists; 169 new, all
+  of them ones it lists; four more images, each over 16 MiB of code, were not listed), and none
+  of the answers recorded for 495 images changed. A Thumb
+  `(bad)` from `disasm` is now as long as the encoding it starts (4 bytes for a 32-bit one; it
+  was always 2).
 - **`diff functions` decoded both files as x86-64**, whatever they declared: an AArch64 pair was
   diffed as x86 (`// asm: std`, `rax.1 = …` over A64 instructions), `ok: true`. Each side is now
   decoded as its own image declares, and `--arch` is checked against it like everywhere else.

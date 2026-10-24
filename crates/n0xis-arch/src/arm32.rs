@@ -39,6 +39,8 @@
 use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, RegShiftStyle, ShiftStyle};
 
+use std::num::NonZeroUsize;
+
 use n0xis_contracts::{Reg, Va};
 
 mod own;
@@ -1718,9 +1720,11 @@ impl Arch for Arm32 {
                 Err(_) => {
                     // Emit an Invalid marker (never silently drop bytes) and
                     // stop — a function ends at the first byte that isn't code.
+                    // As long as the instruction set says the instruction is:
+                    // the same answer the sweep steps by.
                     out.push(DecodedInsn {
                         va: Va(va.0 + off as u64),
-                        len: if self.thumb { 2 } else { 4 },
+                        len: self.resync_step(&bytes[off..]).get() as u32,
                         bytes: Vec::new(),
                         mnemonic: "(bad)".to_string(),
                         text: "(bad)".to_string(),
@@ -1736,6 +1740,28 @@ impl Arch for Arm32 {
             }
         }
         out
+    }
+
+    /// The width of the instruction that did not decode, which the instruction
+    /// set states whether or not the rest of it decodes: four bytes in A32;
+    /// in Thumb, four when the first halfword's bits 15..11 are `0b11101`,
+    /// `0b11110` or `0b11111` and two otherwise (ARM ARM, "Thumb instruction
+    /// set encoding"). `llvm-objdump` steps the same way.
+    ///
+    /// Not a flat two in Thumb, because the decoder here rejects real 32-bit
+    /// instructions (`vldr d0, [pc, #8]`, `ed9f 0b02`, is one), and two bytes
+    /// on is the middle of that instruction: its second halfword `0b02` reads
+    /// as `lsrs r2, r0, #12`, an instruction the code does not have.
+    fn resync_step(&self, bytes: &[u8]) -> NonZeroUsize {
+        const TWO: NonZeroUsize = NonZeroUsize::new(2).unwrap();
+        const FOUR: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+        if !self.thumb {
+            return FOUR;
+        }
+        match bytes.first_chunk::<2>().map(|h| u16::from_le_bytes(*h) >> 11) {
+            Some(0b11101..=0b11111) => FOUR,
+            _ => TWO,
+        }
     }
 }
 
