@@ -1,7 +1,8 @@
 # `why`: where each fact about an address came from
 
 Status: accepted 2026-10-23 (the owner approved the form: a category of source, shown on
-request, no confidence numbers). Step 1 below is to be built; step 2 is open.
+request, no confidence numbers). Step 1 built (969bcc6); the owner asked to deepen the
+direction, so §5 is its plan.
 
 ## 1. What it is
 
@@ -62,7 +63,32 @@ rules for one address would be a second copy of discovery, and copies drift. So:
 - The empty-success sweep: every function `function discover` lists must have a non-empty
   start source; an empty one fails.
 
-## 5. Step 2 (open)
+## 5. Built, and what is not (step 1)
 
-Types: which rung of the parameter-type ladder fired (`param_ctype`), user overrides marked;
-fields; an MCP tool. Decided after step 1 is measured.
+Built: starts with every source, the end with its one source, the name with its layer.
+Never fires yet: a `symbol` start (discovery takes no start from an ELF symbol, only its size)
+and a `user` start (an annotation names an address, never creates a start); making either fire
+changes `function discover`, so each is its own decision. Checked: 228 506 table claims on 80
+images against objdump/llvm-readobj/llvm-nm/wasm-objdump, 0 wrong; the rule sources (call
+target, prologue, gap sweep, after a declared end) on planted images only.
+
+## 6. The direction, in order (each step measurable)
+
+1. **Contradictions as facts.** A command listing every place in an image where sources
+   disagree (an unwind end against a symbol size, two declared starts with different extents,
+   two layers naming one address differently): the map of where to doubt. Cheap now that every
+   source of a start is kept.
+2. **Measured accuracy per rule.** On a corpus with known truth (builds here with DWARF/PDB),
+   each start, end and name rule measured on its own ("prologue: X of Y right, corpus C,
+   version V"); the instrument checked in and re-run per release; `why` may cite a rule's
+   measured rate together with its corpus and version, and the README's numbers are pinned the
+   same way.
+3. **Test the direction itself.** Of the facts wrong against the truth, how many carry only a
+   heuristic source? If the category does not predict the error, say so and stop building on it.
+4. **Types and decompiler lines.** Which rung of the parameter-type ladder fired, user
+   overrides marked; each pseudo-C line mapped to its instructions; on request only.
+5. **A fact log as the store.** Every fact with its source, author and history; its own design
+   discussion with the owner before anything is built.
+
+Never: a confidence number nobody measured; a field added to every answer; a source computed
+apart from the rule that produced the fact.
