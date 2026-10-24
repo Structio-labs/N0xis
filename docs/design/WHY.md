@@ -2,7 +2,7 @@
 
 Status: accepted 2026-10-23 (the owner approved the form: a category of source, shown on
 request, no confidence numbers). Step 1 built (969bcc6); the owner asked to deepen the
-direction, so §5 is its plan.
+direction, so §6 is its plan.
 
 ## 1. What it is
 
