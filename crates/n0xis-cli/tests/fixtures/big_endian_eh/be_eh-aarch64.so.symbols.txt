@@ -1,0 +1,22 @@
+
+Symbol table '.dynsym' contains 3 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00000000000103c0     8 FUNC    GLOBAL DEFAULT    9 plain
+     2: 00000000000103d0    36 FUNC    GLOBAL DEFAULT    9 guarded
+
+Symbol table '.symtab' contains 13 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00000000000103c0     0 NOTYPE  LOCAL  DEFAULT    9 $x
+     2: 00000000000103d4     0 NOTYPE  LOCAL  DEFAULT    9 try_begin
+     3: 00000000000103dc     0 NOTYPE  LOCAL  DEFAULT    9 try_end
+     4: 00000000000103dc     0 NOTYPE  LOCAL  DEFAULT    9 unguarded_begin
+     5: 00000000000103e0     0 NOTYPE  LOCAL  DEFAULT    9 unguarded_end
+     6: 00000000000103e8     0 NOTYPE  LOCAL  DEFAULT    9 catch_here
+     7: 0000000000010400     8 FUNC    LOCAL  DEFAULT    9 personality
+     8: 00000000000002f0     0 NOTYPE  LOCAL  DEFAULT    6 $d
+     9: 0000000000000338     0 NOTYPE  LOCAL  DEFAULT    8 $d
+    10: 0000000000020440     0 NOTYPE  LOCAL  HIDDEN    11 _DYNAMIC
+    11: 00000000000103c0     8 FUNC    GLOBAL DEFAULT    9 plain
+    12: 00000000000103d0    36 FUNC    GLOBAL DEFAULT    9 guarded

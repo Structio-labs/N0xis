@@ -91,9 +91,12 @@ pub struct Unread {
 /// little-endian.
 ///
 /// Stated so a reader that only reads one order can refuse the other by name
-/// rather than read it wrongly. Today the Itanium RTTI paths do
-/// (`n0xis_core::RttiRefusal`); every other reader of image data still reads
-/// little-endian whatever this says — an open item, not a decision.
+/// rather than read it wrongly, and so a reader that reads both is told which.
+/// Today the Itanium RTTI paths refuse (`n0xis_core::RttiRefusal`), and
+/// `.eh_frame` with its LSDAs is read in this order
+/// (`n0xis_core::scan_eh_frame` takes it as an argument); every other reader
+/// of image data still reads little-endian whatever this says — an open item,
+/// not a decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ByteOrder {

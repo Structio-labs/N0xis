@@ -156,6 +156,26 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A big-endian image's `.eh_frame` was never read, and the answers said it had none.** The
+  reader took every length, CIE pointer and pointer field little-endian, so on a big-endian
+  image the first length came out past the end of the section and no FDE was read: `function
+  eh` answered `ok: true` with 0 functions, and `function discover`, `why`, `contradictions` and
+  the control-flow graph's declared extents stated nothing from the table. `.eh_frame` and the
+  LSDAs it points at are now read in the byte order the image's header states; the reader takes
+  the order as an argument, so no caller can leave it out. On the big-endian AArch64 shared
+  object of the seam corpus (`readelf --debug-dump=frames`: 14 FDEs) `function eh` goes from 0
+  to 14 functions, every start and end as `readelf` lists them, and `function discover` from 2
+  to 14 functions, all 14 with the FDE's end (its stripped copy the same); `why` at three of its
+  functions said no listed function contained them, and now names the function and the FDE. On
+  big-endian builds made here (clang 23, lld) of `oracle/sysv.c`, `oracle/cxx_this.cpp` and a
+  file with `try`/`catch`: `function eh` 0 to 10 of 10, 0 to 11 of 11 and 0 to 4 of 4 FDEs,
+  with 5 protected ranges where there were none, the same as each one's little-endian build;
+  `function discover` 0 to 10, 0 to 11 and 3 to 4 functions, every one with its FDE's end. On
+  a planted image whose LSDA has a fixed-size call-site table, reading the FDEs right and the
+  LSDA little-endian would have given landing pads at `0x180103d0` for `0x103e8`. The
+  little-endian answers did not move: 494 images and 30 modules of the seam corpus recorded
+  with both builds (12 commands and the image facts each), `contradictions` on 524 of them,
+  and `why` at 1 678 addresses, 0 differences.
 - **A sweep over a code range picked up at the wrong place after bytes that do not decode.**
   The one linear sweep the section-wide passes read (the reverse-xref index, `xref to`, `xref
   string`, `bindings list`, `il2cpp icalls`, `why`, and the call targets `function discover`

@@ -568,7 +568,8 @@ reader reads every length little-endian (`crates/n0xis-core/src/eh.rs`), so on a
 image it finds no FDE and says nothing. The answer's sources there are `st_size` alone, which
 is what the engine read; the tables show the FDEs agree with the sizes on that image, so no
 contradiction was missed, but every big-endian image's unwind table is unread, by
-`function discover` too. Recorded, not fixed here.
+`function discover` too. Recorded, not fixed here; fixed since, and the checker passes on that
+image (below).
 
 **Not checked.** A PE's names: on a PE the engine's name sources are its exports and a PDB
 beside it, and no image here has both (the PDB fixture exports nothing), so `name` is
@@ -589,6 +590,61 @@ three functions each, 1 681 answers): 0 differences between the two builds, and 
 shown to see a build without `why`. Both are the tool compared with itself (rung 5): they say
 nothing moved, not that anything is right.
 
+
+### Big-endian `.eh_frame` (2026-10-24)
+
+The `.eh_frame` reader (`crates/n0xis-core/src/eh.rs`) read every length, CIE pointer and
+pointer field little-endian; on a big-endian image the first length came out past the end of
+the section and no FDE was read, so every answer that reads the table (`function eh`,
+`function discover`, `why`, `contradictions`, a CFG's declared extents) stated nothing from it,
+`ok: true`. It now reads the order the image's header states (`ImageSource::byte_order`), an
+argument the reader cannot be called without.
+
+**Planted (rung 1).** `crates/n0xis-cli/tests/big_endian_eh_frame_is_read.rs`, in CI, on
+`tests/fixtures/big_endian_eh/`: one assembly file built for `aarch64_be` and for `aarch64`
+(clang 23.1.1, ld.lld), three FDEs, one with a hand-written LSDA whose call-site table is
+`udata4` (fixed-size fields in the image's order) with one entry landing at a labelled pad and
+one with none; `plant.sh` records `readelf --debug-dump=frames`, `readelf -sW` and the header's
+data encoding. `function eh` on both builds must list exactly the three FDE ranges `readelf`
+lists and the one protected range at the labels' addresses; `function discover` must list each
+FDE's function with the FDE's end, and `why` name `.eh_frame` among its start's sources.
+`llvm-dwarfdump --eh-frame` lists the same three FDEs. Calibrated by four mutations, each
+failing on its own assertion: the reader ignoring the order (the extents assertion and the
+discover assertion; and in `eh.rs`'s unit tests, the big-endian twin of the unit fixture and
+the `sdata4` cursor case); the caller passing little-endian whatever the image says (the same
+two); the LSDA alone read little-endian, which gives landing pads at `0x180103d0` for `0x103e8`
+— a wrong answer, not an empty one (the landing-pad assertion). The base build answers
+`count: 0` on the big-endian image and finds `guarded` alone, by its prologue.
+
+**Real images (rung 3).** Against `readelf --debug-dump=frames`, before and after, with a
+release build of `41ab220` and of this change (each image in a fresh project):
+
+| Image | FDEs | `function eh` | `function discover`: FDE functions listed with the FDE's end |
+| --- | --- | --- | --- |
+| seam corpus `vt-aarch64_be-linux-gnu.so` (and its stripped copy) | 14 | 0 → 14, exact | 2 → 14 (both) |
+| `oracle/sysv.c`, `-O2 -fasynchronous-unwind-tables -shared -nostdlib` (and stripped) | 10 | 0 → 10, exact | 0 → 10 (both) |
+| `oracle/cxx_this.cpp`, `-O2 -fexceptions` | 11 | 0 → 11, exact | 0 → 11 |
+| a `try`/`catch` file, `-O2 -fexceptions` (and stripped) | 4 | 0 → 4, exact; regions 0 → 5 | 3 → 4 (stripped: 2 with the end → 4) |
+
+The little-endian build of each of the last three gives the same counts with either build, and
+the same `function eh` answer as the big-endian one, protected ranges included (the
+compiler's call-site tables are `uleb128`; their landing pads are checked only against the
+little-endian twin, which is the tool compared with itself — no tool here decodes an LSDA).
+`contradictions_are_what_the_tables_say.rs` (feature `oracle`, the images given in
+`N0XIS_CONTRADICTION_IMAGES`) passes on the corpus image, its stripped copy, the `try`/`catch`
+build and its stripped copy, the `sysv` and `cxx_this` builds and the planted image, 0 wrong
+(on the corpus image it failed before, as recorded above); `why_names_the_tables_it_read.rs`
+(`N0XIS_WHY_IMAGES`) passes on the same seven and the stripped `sysv`, 0 wrong of 419 claims.
+
+**No little-endian answer moved.** The seam corpus recorded with both builds (`record.py`: the
+image facts and 12 commands per image): 1 of 495 images differs, the big-endian one (42
+differences: `function discover` and `ir manifest` 2 → 14 functions, the image facts' stated
+functions 0 → 14), and 0 of 30 modules. `contradictions --limit 0` on the same 525: 1 differs,
+the big-endian one, whose `end` and `overlap` kinds now list `.eh_frame` among their sources
+(still no contradiction). `why --addr` at the 1 681 planned addresses: 3 differ, the three on
+the big-endian image, which said no listed function contained them and now name the function
+and the FDE. Those are the tool compared with itself (rung 5): they say nothing else moved, not
+that anything is right; the big-endian difference is what shows the comparisons can see one.
 
 ### The three numbers the README quotes
 
@@ -643,7 +699,9 @@ Images, names and sections:
   sources give 6 of 6 and 2 of 2 (clang 23 with lld, static; against `llvm-dwarfdump
   --eh-frame` and `llvm-nm`; the check of the README, 2026-10-21, reproduced the same
   day). The formats table's big-endian row was built without unwind tables, so its
-  26/37 does not measure this.
+  26/37 does not measure this. **Fixed 2026-10-24** (`.eh_frame` was not read at all on a
+  big-endian image; "Big-endian `.eh_frame`" above). Those two builds are no longer on the
+  machine and were not re-measured; four other big-endian builds were.
 - `rtti scan` accepts an all-zero `NOBITS` `_ZTV` symbol as a vtable (2, planted by the
   ISA targets' own stubs; not re-examined).
 

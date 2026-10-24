@@ -52,7 +52,7 @@ results on measured inputs · **refused**: a typed error · **not yet**: no code
 | --- | --- | --- | --- |
 | x86-64 | yes | yes with unwind tables; partial without | partial |
 | x86 (i386) | yes | partial: even with `.eh_frame`, GCC's padding and `.plt` listed as functions, dots in names rewritten, an end missing | partial |
-| AArch64, little- and big-endian | yes | little-endian yes with `.eh_frame`; big-endian partial: misses functions `.eh_frame` declares; partial without; on PE `--pdata` is wrong | partial; big-endian refused |
+| AArch64, little- and big-endian | yes | yes with `.eh_frame`, little- and big-endian; partial without; on PE `--pdata` is wrong | partial; big-endian refused |
 | ARMv7 A32 | partial: no NEON, data in code decoded as code | partial | wrong: jump tables, tail calls |
 | ARMv7 Thumb-2 (`--arch thumb`) | wrong: branch targets, IT conditions | partial: no names or ends | wrong: an IT-predicated return ends the function |
 | WebAssembly | yes; a branch's target is a label depth, not given until stage 3 | yes: every body, its extent, index and name | refused (stage 3) |

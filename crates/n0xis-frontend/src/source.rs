@@ -16,6 +16,11 @@ use n0xis_sources::{LiveTarget, MemorySource, ModuleProvider, RemoteAgent, Snaps
 /// is why the codes are part of the contract and not free text.
 pub type FrontendError = (String, String);
 
+/// The byte order of the processor this build runs on, and so of every live
+/// process it attaches to ([`Src::section_in_order`]).
+const HOST_ORDER: n0xis_sources::ByteOrder =
+    if cfg!(target_endian = "big") { n0xis_sources::ByteOrder::Big } else { n0xis_sources::ByteOrder::Little };
+
 fn err(code: &str, message: impl Into<String>) -> FrontendError {
     (code.to_string(), message.into())
 }
@@ -154,6 +159,27 @@ impl Src {
         match self {
             Src::Live(l) => l.section_range(name),
             Src::Static(p) => p.section_range(name),
+            Src::Snap(_) | Src::Remote(_) => None,
+        }
+    }
+
+    /// A named section's range together with the byte order its multi-byte
+    /// fields are written in: the two facts a reader of a section's *tables*
+    /// (`.eh_frame` and the LSDAs it points at) needs, answered by the one
+    /// call so that neither can be had without the other.
+    ///
+    /// A static image's order is the one its header states
+    /// ([`ImageSource::byte_order`]) — not sniffed again here. A live process
+    /// is one this machine is running (`LiveTarget`'s adapters are a Win32
+    /// debuggee and a `/proc` process, never a remote one), and a process the
+    /// processor executes holds its data in the processor's order — the order
+    /// this build was compiled for. `None` exactly where
+    /// [`Self::section_range`] is: a snapshot or a remote agent has no
+    /// sections, so there is no table whose order could go unstated.
+    pub fn section_in_order(&self, name: &str) -> Option<((Va, u64), n0xis_sources::ByteOrder)> {
+        match self {
+            Src::Live(l) => l.section_range(name).map(|r| (r, HOST_ORDER)),
+            Src::Static(p) => p.section_range(name).map(|r| (r, p.byte_order())),
             Src::Snap(_) | Src::Remote(_) => None,
         }
     }

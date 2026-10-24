@@ -30,7 +30,7 @@
 //! format-neutral so it can carry both.
 
 use n0xis_contracts::Va;
-use n0xis_sources::MemorySource;
+use n0xis_sources::{ByteOrder, MemorySource};
 
 /// One protected range and the landing pad it unwinds to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,16 +67,39 @@ const MAX_RECORDS: usize = 2_000_000;
 /// Bound on call-site entries per function — a real one has a handful.
 const MAX_CALLSITES: usize = 100_000;
 
-/// A bounds-checked little-endian cursor over a byte slice. Every read returns
-/// `None` past the end, so a truncated table stops rather than panics.
+/// The byte order of every PE table read here (`.pdata`, `.xdata`, a scope
+/// table, a `FuncInfo`): PE/COFF is little-endian by its specification, so
+/// the format states it and no image can say otherwise.
+const PE_ORDER: ByteOrder = ByteOrder::Little;
+
+/// An unsigned integer of up to eight bytes, in `order`. The one place this
+/// module turns bytes into a number, so no field can be read in an order the
+/// caller did not state.
+fn word(b: &[u8], order: ByteOrder) -> u64 {
+    match order {
+        ByteOrder::Little => b.iter().rev().fold(0, |v, &x| (v << 8) | x as u64),
+        ByteOrder::Big => b.iter().fold(0, |v, &x| (v << 8) | x as u64),
+    }
+}
+
+/// A bounds-checked cursor over a byte slice, reading multi-byte fields in the
+/// byte order it was built with. Every read returns `None` past the end, so a
+/// truncated table stops rather than panics.
+///
+/// The order is a constructor argument with no default on purpose. This was a
+/// little-endian cursor, and on a big-endian image every `.eh_frame` length
+/// read as a byte-swapped number past the section's end: the walk stopped at
+/// the first record and the image answered "no FDEs" — `ok: true`, empty —
+/// exactly as a binary with no unwind table would.
 struct Cur<'a> {
     b: &'a [u8],
     p: usize,
+    order: ByteOrder,
 }
 
 impl<'a> Cur<'a> {
-    fn new(b: &'a [u8]) -> Self {
-        Cur { b, p: 0 }
+    fn new(b: &'a [u8], order: ByteOrder) -> Self {
+        Cur { b, p: 0, order }
     }
     fn u8(&mut self) -> Option<u8> {
         let v = *self.b.get(self.p)?;
@@ -88,14 +111,19 @@ impl<'a> Cur<'a> {
         self.p += n;
         Some(s)
     }
+    /// An unsigned `N`-byte field in the cursor's byte order.
+    fn uint<const N: usize>(&mut self) -> Option<u64> {
+        let b: [u8; N] = self.take(N)?.try_into().ok()?;
+        Some(word(&b, self.order))
+    }
     fn u16(&mut self) -> Option<u64> {
-        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?) as u64)
+        self.uint::<2>()
     }
     fn u32(&mut self) -> Option<u64> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?) as u64)
+        self.uint::<4>()
     }
     fn u64v(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+        self.uint::<8>()
     }
     fn uleb(&mut self) -> Option<u64> {
         let (mut out, mut shift) = (0u64, 0u32);
@@ -173,8 +201,8 @@ struct Cie {
 
 /// Parse a CIE's augmentation. Only the three fields that matter here are kept;
 /// alignment factors and the initial CFI program are the unwinder's business.
-fn parse_cie(content: &[u8]) -> Option<Cie> {
-    let mut c = Cur::new(content);
+fn parse_cie(content: &[u8], order: ByteOrder) -> Option<Cie> {
+    let mut c = Cur::new(content, order);
     if c.u32()? != 0 {
         return None; // CIE id must be 0
     }
@@ -225,12 +253,14 @@ fn parse_cie(content: &[u8]) -> Option<Cie> {
 }
 
 /// Parse the GCC LSDA (`.gcc_except_table`) at `lsda_addr` for a function
-/// starting at `func_start`, returning its landing-pad regions.
-fn parse_lsda(src: &dyn MemorySource, lsda_addr: u64, func_start: u64) -> Vec<EhRegion> {
+/// starting at `func_start`, returning its landing-pad regions. `order` is the
+/// image's: the LSDA's fixed-size fields (a `udata4` call-site table, an
+/// absolute `lpstart`) are in the same byte order as the FDE that points here.
+fn parse_lsda(src: &dyn MemorySource, lsda_addr: u64, func_start: u64, order: ByteOrder) -> Vec<EhRegion> {
     // A generous fixed read: the call-site table of a real function is small,
     // and the size is NOT taken from the parsed header (OOM rule).
     let Ok(buf) = src.read(Va(lsda_addr), 64 * 1024) else { return Vec::new() };
-    let mut c = Cur::new(&buf);
+    let mut c = Cur::new(&buf, order);
     let mut out = Vec::new();
 
     let Some(lp_enc) = c.u8() else { return out };
@@ -290,7 +320,15 @@ fn parse_lsda(src: &dyn MemorySource, lsda_addr: u64, func_start: u64) -> Vec<Eh
 /// Functions with an FDE but no LSDA are still returned (with no regions),
 /// because the FDE's `pc_range` is itself an authoritative function extent —
 /// useful on a stripped binary, where `st_size` is gone but `.eh_frame` remains.
-pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64)) -> Vec<EhFunction> {
+///
+/// `order` is the byte order the image states for its data
+/// ([`n0xis_sources::ImageSource::byte_order`]): DWARF CFI is written in the
+/// target's order, every length, CIE pointer and `sdata4` included. It is a
+/// required argument rather than a default so no caller can leave it
+/// unanswered — read in the wrong order, a big-endian `.eh_frame` yields no
+/// records at all, and an empty list is indistinguishable from an image that
+/// has none.
+pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64), order: ByteOrder) -> Vec<EhFunction> {
     let (base, size) = (eh_frame.0.get(), eh_frame.1.min(MAX_EH_FRAME as u64) as usize);
     let Ok(sec) = src.read(Va(base), size) else { return Vec::new() };
     let mut out: Vec<EhFunction> = Vec::new();
@@ -301,7 +339,7 @@ pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64)) -> Vec<EhFunct
     let mut records = 0usize;
     while off + 4 <= sec.len() && records < MAX_RECORDS {
         records += 1;
-        let len32 = u32::from_le_bytes(sec[off..off + 4].try_into().unwrap());
+        let len32 = word(&sec[off..off + 4], order);
         if len32 == 0 {
             break; // terminator
         }
@@ -320,13 +358,13 @@ pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64)) -> Vec<EhFunct
             off = content_end;
             continue;
         }
-        let id = u32::from_le_bytes(content[0..4].try_into().unwrap());
+        let id = word(&content[0..4], order);
         if id == 0 {
-            if let Some(cie) = parse_cie(content) {
+            if let Some(cie) = parse_cie(content, order) {
                 cies.insert(off, cie);
             }
         } else if let Some(cie) = (content_start).checked_sub(id as usize).and_then(|o| cies.get(&o).copied()) {
-            let mut c = Cur::new(content);
+            let mut c = Cur::new(content, order);
             let _ = c.u32();
             let pc_begin_field = base + (content_start + c.p) as u64;
             if let Some(pc_begin) = c.encoded(cie.fde_enc, pc_begin_field) {
@@ -341,7 +379,7 @@ pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64)) -> Vec<EhFunct
                         }
                         c.p = aug_start.saturating_add(aug_len as usize);
                     }
-                    let regions = lsda.map(|l| parse_lsda(src, l, pc_begin)).unwrap_or_default();
+                    let regions = lsda.map(|l| parse_lsda(src, l, pc_begin, order)).unwrap_or_default();
                     out.push(EhFunction {
                         start: Va(pc_begin),
                         end: Va(pc_begin.saturating_add(pc_range)),
@@ -407,7 +445,7 @@ pub fn scan_pdata(src: &dyn MemorySource, image_base: Va, pdata: (Va, u64)) -> V
     let va = |rva: u64| image_base.get().saturating_add(rva);
 
     let mut out = Vec::new();
-    let mut cur = Cur::new(&table);
+    let mut cur = Cur::new(&table, PE_ORDER);
     let mut records = 0usize;
     while records < MAX_RECORDS {
         records += 1;
@@ -435,7 +473,7 @@ pub fn scan_pdata(src: &dyn MemorySource, image_base: Va, pdata: (Va, u64)) -> V
 fn pe_regions(src: &dyn MemorySource, image_base: Va, unwind_rva: u64, is_code: &impl Fn(u64) -> bool) -> Vec<EhRegion> {
     let va = |rva: u64| image_base.get().saturating_add(rva);
     let Ok(head) = src.read(Va(va(unwind_rva)), 4) else { return Vec::new() };
-    let mut h = Cur::new(&head);
+    let mut h = Cur::new(&head, PE_ORDER);
     let (Some(ver_flags), Some(_prolog), Some(count), Some(_frame)) = (h.u8(), h.u8(), h.u8(), h.u8()) else {
         return Vec::new();
     };
@@ -452,14 +490,14 @@ fn pe_regions(src: &dyn MemorySource, image_base: Va, unwind_rva: u64, is_code: 
     let codes = 2 * ((count as u64 + 1) & !1);
     let data_rva = unwind_rva.saturating_add(4).saturating_add(codes);
     let Ok(head2) = src.read(Va(va(data_rva)), 8) else { return Vec::new() };
-    let mut d = Cur::new(&head2);
+    let mut d = Cur::new(&head2, PE_ORDER);
     let (Some(_handler), Some(first)) = (d.u32(), d.u32()) else { return Vec::new() };
     // For MSVC C++ EH the dword is not data — it is an **RVA to a `FuncInfo`**,
     // and reading it in place is how this first concluded the format was absent
     // from binaries full of it. Dereference before deciding.
     if let Ok(head) = src.read(Va(va(first)), 4)
         && head.len() == 4
-        && matches!(u32::from_le_bytes(head[..4].try_into().unwrap()), 0x1993_0520..=0x1993_0522)
+        && matches!(word(&head[..4], PE_ORDER), 0x1993_0520..=0x1993_0522)
     {
         return cxx_regions(src, image_base, first, is_code);
     }
@@ -471,7 +509,7 @@ fn pe_regions(src: &dyn MemorySource, image_base: Va, unwind_rva: u64, is_code: 
     if body.len() < n * 16 {
         return Vec::new();
     }
-    let mut c = Cur::new(&body);
+    let mut c = Cur::new(&body, PE_ORDER);
     let mut regions = Vec::with_capacity(n.min(MAX_CALLSITES));
     for _ in 0..n {
         let (Some(b), Some(e), Some(handler), Some(jump)) = (c.u32(), c.u32(), c.u32(), c.u32()) else {
@@ -527,7 +565,7 @@ fn cxx_regions(src: &dyn MemorySource, image_base: Va, info_rva: u64, is_code: &
     if head.len() < 28 {
         return Vec::new();
     }
-    let mut h = Cur::new(&head);
+    let mut h = Cur::new(&head, PE_ORDER);
     // magic, maxState, pUnwindMap, nTryBlocks, pTryBlockMap, nIPMapEntries,
     // pIPtoStateMap — the prefix is the same for all three magics; the fields
     // that differ between them come after and are not read.
@@ -545,7 +583,7 @@ fn cxx_regions(src: &dyn MemorySource, image_base: Va, info_rva: u64, is_code: &
     if ips.len() < (n_ip as usize) * 8 {
         return Vec::new();
     }
-    let mut c = Cur::new(&ips);
+    let mut c = Cur::new(&ips, PE_ORDER);
     let mut states: Vec<(u64, i32)> = Vec::with_capacity(n_ip as usize);
     for _ in 0..n_ip {
         let (Some(ip), Some(st)) = (c.u32(), c.u32()) else { return Vec::new() };
@@ -560,7 +598,7 @@ fn cxx_regions(src: &dyn MemorySource, image_base: Va, info_rva: u64, is_code: &
     if blocks.len() < (n_try as usize) * 20 {
         return Vec::new();
     }
-    let mut t = Cur::new(&blocks);
+    let mut t = Cur::new(&blocks, PE_ORDER);
     let mut out = Vec::new();
     for _ in 0..n_try {
         let (Some(low), Some(high), Some(_catch_high), Some(n_catch), Some(handlers)) =
@@ -577,7 +615,7 @@ fn cxx_regions(src: &dyn MemorySource, image_base: Va, info_rva: u64, is_code: &
         if hs.len() < (n_catch as usize) * 20 {
             return Vec::new();
         }
-        let mut hc = Cur::new(&hs);
+        let mut hc = Cur::new(&hs, PE_ORDER);
         let mut pads = Vec::new();
         for _ in 0..n_catch {
             let (Some(_adj), Some(_ty), Some(_disp), Some(addr), Some(_frame)) = (hc.u32(), hc.u32(), hc.u32(), hc.u32(), hc.u32())
@@ -813,13 +851,26 @@ mod tests {
     /// augmentation gcc emits, one FDE pointing at an LSDA with two call-site
     /// entries — one with a landing pad, one without.
     fn fixture() -> (Flat, u64) {
+        fixture_in(ByteOrder::Little)
+    }
+
+    /// [`fixture`], with every fixed-size field written in `order`.
+    fn fixture_in(order: ByteOrder) -> (Flat, u64) {
         const BASE: u64 = 0x1000;
         const FUNC: u64 = 0x4000;
+        let u32b = |v: u32| match order {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        };
+        let u64b = |v: u64| match order {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        };
         let mut b: Vec<u8> = Vec::new();
 
         // --- CIE at offset 0 ---
         let mut cie = Vec::new();
-        cie.extend_from_slice(&0u32.to_le_bytes()); // CIE id
+        cie.extend_from_slice(&u32b(0)); // CIE id
         cie.push(1); // version
         cie.extend_from_slice(b"zLR\0"); // augmentation
         cie.extend(uleb(1)); // code align
@@ -832,25 +883,25 @@ mod tests {
         while cie.len() % 8 != 0 {
             cie.push(0); // DW_CFA_nop padding
         }
-        b.extend_from_slice(&(cie.len() as u32).to_le_bytes());
+        b.extend_from_slice(&u32b(cie.len() as u32));
         b.extend_from_slice(&cie);
 
         // --- FDE at offset `fde_off` ---
         let fde_off = b.len();
         let lsda_addr = 0x8000u64;
         let mut fde = Vec::new();
-        fde.extend_from_slice(&((fde_off + 4) as u32).to_le_bytes()); // CIE ptr (backward distance)
-        fde.extend_from_slice(&FUNC.to_le_bytes()); // pc_begin (absptr)
-        fde.extend_from_slice(&0x100u64.to_le_bytes()); // pc_range
-        let aug = lsda_addr.to_le_bytes();
+        fde.extend_from_slice(&u32b((fde_off + 4) as u32)); // CIE ptr (backward distance)
+        fde.extend_from_slice(&u64b(FUNC)); // pc_begin (absptr)
+        fde.extend_from_slice(&u64b(0x100)); // pc_range
+        let aug = u64b(lsda_addr);
         fde.extend(uleb(aug.len() as u64));
         fde.extend_from_slice(&aug);
         while fde.len() % 8 != 0 {
             fde.push(0);
         }
-        b.extend_from_slice(&(fde.len() as u32).to_le_bytes());
+        b.extend_from_slice(&u32b(fde.len() as u32));
         b.extend_from_slice(&fde);
-        b.extend_from_slice(&0u32.to_le_bytes()); // terminator
+        b.extend_from_slice(&u32b(0)); // terminator
         let eh_len = b.len() as u64;
 
         // --- LSDA at 0x8000 (pad the buffer out to it) ---
@@ -880,7 +931,7 @@ mod tests {
     #[test]
     fn recovers_the_landing_pad_and_skips_the_entry_without_one() {
         let (mem, eh_len) = fixture();
-        let fns = scan_eh_frame(&mem, (Va(0x1000), eh_len));
+        let fns = scan_eh_frame(&mem, (Va(0x1000), eh_len), ByteOrder::Little);
         assert_eq!(fns.len(), 1, "one FDE, one function: {fns:?}");
         let f = &fns[0];
         assert_eq!(f.start, Va(0x4000));
@@ -898,19 +949,39 @@ mod tests {
     fn a_truncated_section_yields_what_it_can() {
         let (mem, eh_len) = fixture();
         for cut in [1u64, 4, 7, 12, 20, eh_len / 2] {
-            let _ = scan_eh_frame(&mem, (Va(0x1000), cut));
+            let _ = scan_eh_frame(&mem, (Va(0x1000), cut), ByteOrder::Little);
         }
         // And a section that is entirely absent is simply no information.
-        assert!(scan_eh_frame(&mem, (Va(0x1000), 0)).is_empty());
+        assert!(scan_eh_frame(&mem, (Va(0x1000), 0), ByteOrder::Little).is_empty());
+    }
+
+    /// A big-endian `.eh_frame` is read in the order the image states, and
+    /// answers exactly what the same table written little-endian answers.
+    ///
+    /// The defect this pins: every field was read little-endian, so on a
+    /// big-endian image the first length came out byte-swapped, past the
+    /// section's end, and the scan returned no functions at all.
+    #[test]
+    fn a_big_endian_table_is_read_in_its_own_order() {
+        let (le, le_len) = fixture_in(ByteOrder::Little);
+        let (be, be_len) = fixture_in(ByteOrder::Big);
+        let want = scan_eh_frame(&le, (Va(0x1000), le_len), ByteOrder::Little);
+        assert_eq!(want.len(), 1, "the little-endian twin is the reference: {want:?}");
+        assert_eq!(scan_eh_frame(&be, (Va(0x1000), be_len), ByteOrder::Big), want);
+        // The fixture is not order-neutral, or the assertion above proves
+        // nothing: read in the other order it yields no record.
+        assert!(scan_eh_frame(&be, (Va(0x1000), be_len), ByteOrder::Little).is_empty());
     }
 
     /// An unmodeled pointer application (`datarel`) must yield nothing rather
     /// than a plausible-looking wrong address.
     #[test]
     fn an_unmodeled_encoding_is_refused_not_guessed() {
-        let mut c = Cur::new(&[0x11, 0x22, 0x33, 0x44]);
+        let mut c = Cur::new(&[0x11, 0x22, 0x33, 0x44], ByteOrder::Little);
         assert_eq!(c.encoded(0x30 | 0x03, 0x1000), None, "datarel is not modeled");
-        let mut c = Cur::new(&[0x11, 0x22, 0x33, 0x44]);
+        let mut c = Cur::new(&[0x11, 0x22, 0x33, 0x44], ByteOrder::Little);
         assert_eq!(c.encoded(0x10 | 0x0b, 0x1000), Some(0x1000 + 0x4433_2211));
+        let mut c = Cur::new(&[0x11, 0x22, 0x33, 0x44], ByteOrder::Big);
+        assert_eq!(c.encoded(0x10 | 0x0b, 0x1000), Some(0x1000 + 0x1122_3344), "sdata4 in the cursor's order");
     }
 }

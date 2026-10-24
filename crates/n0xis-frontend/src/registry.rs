@@ -527,8 +527,14 @@ struct UnwindFunctions {
 
 /// [`scan_unwind`], with the table that states the extents — decided here, by
 /// the branch that reads it, and nowhere else.
+///
+/// `.eh_frame` is read in the byte order the source states for it
+/// ([`Src::section_in_order`]); it was read little-endian whatever the image
+/// said, and a big-endian AArch64 image answered "no FDEs" — every consumer
+/// below (`function discover`, `why`, `contradictions`, `function eh`, a
+/// CFG's declared extents) then stated nothing, as if it had no table.
 fn scan_unwind_stated(src: &Src) -> Option<UnwindFunctions> {
-    let eh_frame = src.section_range(".eh_frame");
+    let eh_frame = src.section_in_order(".eh_frame");
     let pdata = match (src.section_range(".pdata"), pe_image_base(src)) {
         (Some(range), Some(base)) => Some((range, base)),
         _ => None,
@@ -536,12 +542,14 @@ fn scan_unwind_stated(src: &Src) -> Option<UnwindFunctions> {
     match (pdata, eh_frame) {
         (Some((range, base)), eh) => {
             let mut fns = n0xis_core::scan_pdata(src.as_mem(), base, range);
-            if let Some(eh) = eh {
-                merge_regions(&mut fns, n0xis_core::scan_eh_frame(src.as_mem(), eh));
+            if let Some((eh, order)) = eh {
+                merge_regions(&mut fns, n0xis_core::scan_eh_frame(src.as_mem(), eh, order));
             }
             Some(UnwindFunctions { by: n0xis_core::StatedBy::Image(n0xis_sources::StartReason::UnwindEntry), functions: fns })
         }
-        (None, Some(eh)) => Some(UnwindFunctions { by: n0xis_core::StatedBy::EhFrame, functions: n0xis_core::scan_eh_frame(src.as_mem(), eh) }),
+        (None, Some((eh, order))) => {
+            Some(UnwindFunctions { by: n0xis_core::StatedBy::EhFrame, functions: n0xis_core::scan_eh_frame(src.as_mem(), eh, order) })
+        }
         (None, None) => None,
     }
 }
