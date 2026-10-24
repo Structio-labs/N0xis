@@ -7,6 +7,24 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Added
 
+- **`contradictions`: every place in an image where two sources the engine reads disagree**
+  (docs/design/WHY.md §6, item 1), the map of where to doubt. Four kinds, each always
+  answered as checked (with a count and the sorts of source it compared) or not checked (with
+  why): `end`, one start with stated ends that differ (an FDE or a `.pdata` entry against a
+  symbol's size or a PDB length; two FDEs, two `.pdata` entries or two symbols of one start);
+  `overlap`, two stated extents with different starts, one reaching past the other's start;
+  `name`, two sources naming one address with no name in common, compared like with like (an
+  ELF version suffix cut off, a mangled name as the qualified name it stands for, a
+  WebAssembly name as the module states it; `compared_as` says the form); and `image`, the
+  image reader's own contradictions, passed on. Each entry names both sources with their
+  values, in `why`'s categories; the user's renames are counted apart, as `overrides`. Every
+  value is the one a source handed the engine where it was read: the image layer now keeps
+  every name and every stated length it reads for an address beside the first (which every
+  lookup still answers with), and the name composition answers with all of them. Every other
+  answer is unchanged, byte for byte, on 525 recorded images, and `why` on 1 681 addresses.
+  Through the registry, so `serve` and an MCP client get the same answer. Checked against
+  `objdump --dwarf=frames`, `readelf`, `llvm-readobj`, `llvm-pdbutil` and `wasm-objdump`
+  (docs/VERIFICATION.md).
 - **`why --addr <va>`: where each fact about an address came from** (docs/design/WHY.md, step
   1). For the function the address is in: every source that found its start — a declaration
   (`export`, `unwind` with its table, `.pdata` or `.eh_frame`, `pdb`, a WebAssembly `body`) and

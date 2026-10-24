@@ -85,6 +85,9 @@ pub mod v1 {
     /// Where each fact the engine states about the function an address is in
     /// came from: its start's sources, its end's, its name's layer (`why`).
     pub const WHY: &str = "n0xis.why.v1";
+    /// Every place in an image where two sources the engine reads disagree,
+    /// by kind, each with both sources and their values (`contradictions`).
+    pub const CONTRADICTIONS: &str = "n0xis.contradictions.v1";
     /// Software-breakpoint hit report (`debug await-hit`).
     pub const DEBUG_AWAIT_HIT: &str = "n0xis.debug.await_hit.v1";
     /// SSA form (`ir ssa`, ROADMAP Phase 3).

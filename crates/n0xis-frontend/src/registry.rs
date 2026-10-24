@@ -2733,6 +2733,46 @@ impl Plugin for AnalysisPasses {
         ));
 
         reg.add(Capability::new(
+            "contradictions",
+            "Every place in an image where two sources the engine reads disagree — a start with two stated ends, two stated extents that overlap, two sources naming one address differently, the image reader's own contradictions — each with both sources and their values, and the user's renames counted apart as overrides (docs/design/WHY.md §6).",
+            Some(n0xis_contracts::schema::v1::CONTRADICTIONS),
+            Origin::Builtin,
+            Box::new(|args| {
+                let limit = usize_arg(args, "limit", crate::contradictions::DEFAULT_LIMIT);
+                let offset = usize_arg(args, "offset", 0);
+                // Where inline bytes are placed; nothing else (the whole
+                // target is asked about, never a window of it).
+                let base = args.get("start").and_then(|v| v.as_str()).and_then(|s| Va::parse(s).ok()).unwrap_or(Va(0));
+                with_src_ctx_names(args, base, Lift::NotNeeded, move |ctx, src, region_len, label, names| {
+                    // The function list `function discover` gives over its
+                    // default windows: read, never run again here.
+                    let ranges = crate::discovered::image_code_ranges(src, src.text_range(), region_len, None, None, base);
+                    let found = if ranges.is_empty() {
+                        None
+                    } else {
+                        match crate::discovered::discovered_ranges(ctx, src, label, &ranges) {
+                            Ok(found) => Some(found),
+                            Err(e) => return Response::error("discover-failed", e.to_string()),
+                        }
+                    };
+                    let image = match src {
+                        Src::Static(img) => Some(img.as_ref()),
+                        Src::Live(_) | Src::Snap(_) | Src::Remote(_) => None,
+                    };
+                    let inputs = crate::contradictions::Inputs {
+                        ctx,
+                        names,
+                        image,
+                        listed: found.as_ref().map_or(&[][..], |f| f.entries.as_slice()),
+                    };
+                    let (art, total) = crate::contradictions::answer(&inputs, offset, limit);
+                    let returned = art.count;
+                    ok_json(n0xis_contracts::schema::v1::CONTRADICTIONS, art, label).with_page(total, returned)
+                })
+            }),
+        ));
+
+        reg.add(Capability::new(
             "function.noreturn",
             "Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that flags every function proven never to return — including a program's own `FatalError`/`Assert` wrappers, not just named imports. Feeds correct CFG fall-through pruning (ROADMAP Phase 10, priority 0).",
             Some(n0xis_contracts::schema::v1::FUNCTION_NORETURN),

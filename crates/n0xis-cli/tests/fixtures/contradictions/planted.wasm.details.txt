@@ -1,0 +1,25 @@
+
+planted.wasm:	file format wasm 0x1
+
+Section Details:
+
+Type[1]:
+ - type[0] () -> i32
+Function[2]:
+ - func[0] sig=0 <agreed>
+ - func[1] sig=0 <internal_name>
+Memory[1]:
+ - memory[0] pages: initial=1 max=1
+Export[2]:
+ - func[0] <agreed> -> "agreed"
+ - func[1] <internal_name> -> "exported_name"
+Code[2]:
+ - func[0] size=4 <agreed>
+ - func[1] size=4 <internal_name>
+Data[1]:
+ - segment[0] memory=0 size=10 - init i32=65530
+  - 000fffa: 3031 3233 3435 3637 3839                 0123456789
+Custom:
+ - name: "name"
+ - func[0] <agreed>
+ - func[1] <internal_name>

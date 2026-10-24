@@ -110,6 +110,25 @@ impl<'a> Layer<'a> {
             _ => self.symbol_at(va).filter(|(s, _)| s.va == va).map(|(s, layer)| LayerName { layer, name: s.name }).into_iter().collect(),
         }
     }
+
+    /// [`Self::names_at`], with every name the image's tables give `va`
+    /// rather than the first: the other layers state one name per address,
+    /// and the image states one per entry of each table.
+    fn every_name_at(self, va: Va) -> Vec<LayerName> {
+        match self {
+            Layer::Image(i) => i.every_name_at(va).into_iter().map(|(s, by)| LayerName { layer: NameLayer::Image(by), name: s.name }).collect(),
+            _ => self.names_at(va),
+        }
+    }
+
+    /// Every length this layer states for `va`, its own answer first: the
+    /// image states one per declaration, every other layer at most one.
+    fn every_size_at(self, va: Va) -> Vec<(u64, SizeLayer)> {
+        match self {
+            Layer::Image(i) => i.every_stated_size(va).into_iter().map(|(n, why)| (n, SizeLayer::Image(why))).collect(),
+            _ => self.symbol_size(va).into_iter().collect(),
+        }
+    }
 }
 
 /// The image's name sources, most trusted first. Consulted the way
@@ -190,6 +209,42 @@ impl<'a> StaticNames<'a> {
     /// for `va` with.
     pub fn size_layer(&self, va: Va) -> Option<SizeLayer> {
         self.size_answer(va).map(|(_, layer)| layer)
+    }
+
+    /// Every address a layer that can list what it names names a function at,
+    /// or states a function's length for: the project's names, the PDB's
+    /// functions, the starts the image's tables declare. A managed index and
+    /// a signature database answer for an address asked about and list
+    /// nothing, so what they name is reached only through the addresses the
+    /// others and the function list give.
+    pub fn listed_starts(&self) -> std::collections::BTreeSet<u64> {
+        let mut out = std::collections::BTreeSet::new();
+        for layer in &self.layers {
+            match layer {
+                Layer::Local(l) => out.extend(l.function_addresses().into_iter().map(|va| va.0)),
+                Layer::Pdb(p) => out.extend(p.functions().into_iter().map(|(start, _)| start.0)),
+                Layer::Image(i) => out.extend(i.declared_function_starts().into_iter().map(|va| va.0)),
+                Layer::Managed(_) | Layer::Signatures(_) => {}
+            }
+        }
+        out
+    }
+
+    /// Every name every layer gives exactly `va`, the layers in the order
+    /// they are trusted and each layer's names in the order it states them —
+    /// every entry of the image's tables, not only the first
+    /// (`n0x contradictions`). The answer [`SymbolProvider::symbol_at`] gives
+    /// is not singled out: which name wins is [`Self::names_at`]'s question.
+    pub fn every_name_at(&self, va: Va) -> Vec<LayerName> {
+        self.layers.iter().flat_map(|l| l.every_name_at(va)).collect()
+    }
+
+    /// Every length every layer states for a function at `va`, with the layer
+    /// (and, for the image, the declaration) that states it, in the order the
+    /// layers are trusted: the first is [`SymbolProvider::symbol_size`]'s
+    /// answer (`n0x contradictions`).
+    pub fn every_size_at(&self, va: Va) -> Vec<(u64, SizeLayer)> {
+        self.layers.iter().flat_map(|l| l.every_size_at(va)).collect()
     }
 }
 

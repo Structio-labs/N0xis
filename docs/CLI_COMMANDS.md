@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **119 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **120 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -379,6 +379,51 @@ runs no discovery of its own. Through the registry (`why`), so `serve` and an MC
   is `why-inconsistent` (never expected: it would mean the function list and the answer read
   two different compositions).
 - Schema: `n0xis.why.v1`
+
+### `contradictions`
+Every place in an image where two sources the engine reads disagree — the map of where to
+doubt (docs/design/WHY.md §6). Each value compared is the one a source handed the engine
+where it was read, named in `why`'s categories; nothing is parsed a second time and nothing
+is graded. Through the registry (`contradictions`), so `serve` and an MCP client
+(`capability_run`) get the same answer.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd`; `--flirt` as `function discover`
+  takes it. `--limit` (default 1000; 0 for all) and `--offset` page the list; `meta.total` is
+  how many there are.
+- `data.kinds` — one entry per kind, always all four: `{"checked": {"count": n}}` or
+  `{"not_checked": {"why": "..."}}` — never "none found" for a kind that could not be found
+  here — with `sources`, every sort of source of that kind of fact that stated one on this
+  image (what was compared, or all there was), and, for `name`, `not_compared`: a sort of
+  source whose names were not compared, with why (an RTTI name is `Class::vfN`, a slot, not a
+  name; a PE export by ordinal only is `Ordinal<n>`, not a name).
+- `data.contradictions` — grouped by kind in this order, each kind in address order:
+  - `{"kind": "end", "start": "0x…", "ends": [{"end": "0x…", "by": [...]}, ...]}` — one start
+    with two or more different stated ends, each with everything that states it: an unwind
+    range (`{"source": "unwind", "table": "eh_frame" | "pdata"}`), a symbol's length
+    (`{"source": "symbol_size", "of": "st_size" | "pdb" | ...}`), a PDB procedure, a
+    WebAssembly body. Two FDEs, two `.pdata` entries or two symbols of one start count. A PDB
+    length reaches the engine two ways, as a stated function (`{"source": "pdb"}`, where the
+    image's own table states no extent) and as a length of its names (`{"source":
+    "symbol_size", "of": "pdb"}`), and is named as each, as `why` names it.
+  - `{"kind": "overlap", "first": {"start", "end", "by"}, "second": {...}}` — two stated
+    extents with different starts, the first reaching past the second's start. Every source
+    of extents above takes part, so a symbol's size can overlap an FDE.
+  - `{"kind": "name", "addr": "0x…", "names": [{"source": ..., "name": "...", "compared_as":
+    "..."}, ...]}` — every name the compared sources give one address, two of those sources
+    with no name in common (the names one source gives an address are its aliases). Compared
+    like with like: a WebAssembly function's name as the module states it; a native name with
+    an ELF version suffix cut off (`.symtab`, `.dynsym`), and a mangled one as the qualified
+    name it stands for, with no return type and no parameter list (`compared_as`).
+  - `{"kind": "image", "what": "..."}` — the image reader's own report that two of the image's
+    statements disagree (a data segment past its memory, an export of an index nothing has, a
+    slot two relocations bind), passed on with its text.
+- `data.overrides` — `{"count": n, "at": [{"addr", "name", "overrode": {"source", "name"}}]}`:
+  where the user's rename replaces a layer's name, with the most trusted layer it replaces.
+  A rename is a decision, not a disagreement, so it is never a `name` contradiction.
+- Addresses asked about: every start the function list holds (as `function discover` gives
+  it), every start the stated functions hold, and every function address the project's names,
+  the PDB and the image's tables list. A managed index and a signature database list nothing,
+  so what they name is compared only at those addresses.
+- Schema: `n0xis.contradictions.v1`
 
 ### `module list`
 List modules of a live process (`--pid`) or the one module an image file is (`--file`). What an
@@ -1038,7 +1083,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**119 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**120 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -1060,11 +1105,12 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x project cache` | How much disk the project's caches use, per kind; `--clear` removes them. Only what the engine can rebuild from the image is a cache: names, comments, types, patches and tables are never touched |
 | `n0x remote-serve` | Serve a live process over the remote-agent stdio protocol — the remote-side half of `--remote-cmd` (Phase 6). Typically invoked over SSH by the *other* machine, not run directly: e.g. locally, run `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...` |
 
-### Static analysis & decompilation (31)
+### Static analysis & decompilation (32)
 
 | Command | What it does |
 |---|---|
 | `n0x analyze` | Whole-program analysis: discover functions, recover MSVC RTTI class names, build the reverse-xref index, and warm the IR cache — materializing the `.n0x/` summary layer once so later `xref`/`decomp` are fast. Streams `[n0x]`-prefixed phase/progress JSON to stderr; resumable (content- addressed work already done is skipped). Static x64 PE (`--file`). Of the RTTI phase it reports `rtti_classes`, `rtti_refused_virtual_bases` (classes not named because they have virtual bases, so their vtable's address point is not where the scan reads it), `rtti_refused_first_slot_not_code` (classes not named because the word where their first method would be is an address outside every executable section), `rtti_refused_first_slot_empty` (classes not named because that word is zero, no relocation writes it, and the word before it is no `type_info` pointer) and `rtti_thumb_slots_refused` (32-bit ARM vtable slots holding a Thumb method, walked and not named until bit 0 is cleared by one rule for symbols and slots); a big-endian ELF is refused with `big-endian-image` |
+| `n0x contradictions` | Every place in an image where two sources the engine reads disagree — the map of where to doubt: a start with two stated ends (an unwind range against a symbol size or a PDB length), two stated extents that overlap, two sources naming one address differently (compared like with like: an ELF version suffix cut off, a mangled name as the qualified name it stands for), and the image reader's own contradictions. Each with both sources and their values, in `why`'s categories; each kind says whether it was checked here. The user's renames are counted apart, as overrides. No confidence numbers |
 | `n0x decomp pseudo` | Pseudo-C for one function (`n0x.decomp.pseudo.v1`). A big-endian ELF is refused with `big-endian-image`, whether or not it holds C++: the decompiler reads the image's vtable map, and the RTTI readers read only little-endian images |
 | `n0x diff functions` | Decompile two functions (from two sources/addresses) and diff their pseudo-C line-by-line |
 | `n0x disasm` | Linear disassembly |
@@ -1242,6 +1288,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0xis.symbols.add.v1` | symbols add |
 | `n0xis.imports.v1` | imports |
 | `n0xis.why.v1` | why |
+| `n0xis.contradictions.v1` | contradictions |
 | `n0xis.diff.v1` | diff functions |
 | `n0xis.mem.read.v1` | mem read |
 | `n0xis.mem.span.v1` | mem span |
@@ -1293,5 +1340,5 @@ optimization delta; inlined into `decomp pseudo --style ssa`, and exposed standa
 
 Source of truth for this reference: `crates/n0xis-cli/src/main.rs` (clap enums + `main()`
 dispatch), `crates/n0xis-contracts/src/schema.rs` (mod `v1` / mod `v0`), cross-checked against
-`n0x guide --pretty` from this binary (`command_count: 119`). When in doubt, run `n0x
+`n0x guide --pretty` from this binary (`command_count: 120`). When in doubt, run `n0x
 guide` or `n0x <cmd> --help` — those are generated from the binary and never drift.

@@ -29,6 +29,7 @@
 
 pub mod annotation_syms;
 pub mod arch;
+pub mod contradictions;
 pub mod discovered;
 pub mod doctor;
 pub mod flirt_syms;

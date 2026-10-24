@@ -87,7 +87,7 @@ pub use ui_locate::{
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
 pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBranch};
-pub use demangle::demangle;
+pub use demangle::{demangle, elf_unversioned, qualified_name_only};
 pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, KlassArtifact, KlassField, KlassInput, KlassPass, LayoutEvidence};
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};

@@ -164,6 +164,10 @@ const MUST_ANSWER_ON_A_MODULE: &[(&str, MustAnswer)] = &[
     // `passive` is segment 1's bytes (shapes.details.txt).
     ("shapes", MustAnswer { args: &["strings", "--file", "{target}"], field: "strings" }),
     ("shapes", MustAnswer { args: &["module", "list", "--file", "{target}"], field: "modules" }),
+    // Data segment 3 is placed at 4294967300 with 3 bytes in memory 1, which
+    // is defined with one page (shapes.details.txt): the image reader's own
+    // contradiction, passed on.
+    ("shapes", MustAnswer { args: &["contradictions", "--file", "{target}"], field: "contradictions" }),
 ];
 
 #[test]

@@ -49,6 +49,34 @@ pub fn demangle_msvc_name_only(name: &str) -> Option<String> {
     msvc_demangler::demangle(name, flags).ok()
 }
 
+/// `name` with an ELF symbol-version suffix cut off: `memcpy@@GLIBC_2.14` and
+/// `memcpy@GLIBC_2.2.5` are `memcpy`. For an ELF name only — an MSVC-mangled
+/// name is made of `@`s. The one rule for it: the Itanium RTTI scan strips a
+/// version before the demangler (which declines a versioned name), and `n0x
+/// contradictions` before it compares a `.symtab` name with a `.dynsym` one.
+pub fn elf_unversioned(name: &str) -> &str {
+    name.split('@').next().unwrap_or(name)
+}
+
+/// A demangled name cut back to the part before its parameter list:
+/// `QPixmap::QPixmap(int, int)` is `QPixmap::QPixmap`.
+pub fn without_parameters(demangled: &str) -> &str {
+    demangled.split('(').next().unwrap_or(demangled).trim()
+}
+
+/// The qualified name a mangled symbol stands for, with no return type and no
+/// parameter list: `?isNull@QPixmap@@QEBA_NXZ` and `_ZNK7QPixmap6isNullEv` are
+/// both `QPixmap::isNull`. `None` for a name that is not mangled: it is
+/// already the name it states. What makes a mangled name and a demangled one
+/// (a PDB procedure's) comparable.
+pub fn qualified_name_only(name: &str) -> Option<String> {
+    if let Some(n) = demangle_msvc_name_only(name) {
+        return Some(n);
+    }
+    let full = demangle(name);
+    (full != name).then(|| without_parameters(&full).to_string())
+}
+
 /// If `name` is a **non-static C++ member function**, the class it belongs to —
 /// the type of its implicit `this` (the first argument under the x64 ABI). This
 /// is the seam for whole-program `this`-type propagation:

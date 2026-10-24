@@ -195,6 +195,18 @@ impl LocalNames {
     }
 }
 
+impl LocalNames {
+    /// Every address one of the three maps names as a function, in address
+    /// order (`n0x contradictions` asks each layer that can list its names).
+    pub fn function_addresses(&self) -> Vec<Va> {
+        let all: std::collections::BTreeSet<u64> = [&self.user, &self.rtti, &self.flirt]
+            .into_iter()
+            .flat_map(|map| map.iter().filter(|(_, (_, kind))| !matches!(kind, SymKind::Data)).map(|(va, _)| *va))
+            .collect();
+        all.into_iter().map(Va).collect()
+    }
+}
+
 impl SymbolProvider for LocalNames {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         let (_, (name, kind)) = self.names_at(va).next()?;

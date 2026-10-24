@@ -221,7 +221,7 @@ fn qualified_name(ctx: &Ctx, va: Va) -> Option<String> {
     let sym = ctx.symbols?.symbol_at(va).filter(|s| s.va == va)?;
     let bare = sym.name.rsplit('!').next().unwrap_or(&sym.name).to_string();
     let full = crate::demangle::demangle(&bare);
-    let name = full.split('(').next().unwrap_or(&full).trim();
+    let name = crate::demangle::without_parameters(&full);
     (!name.is_empty()).then(|| name.to_string())
 }
 

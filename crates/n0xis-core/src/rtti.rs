@@ -850,7 +850,7 @@ pub fn scan_itanium_rtti(
     let in_code = |va: u64| code.is_empty() || code.iter().any(|(t, n)| va >= t.get() && va < t.get() + n);
     // Strip an ELF symbol-version suffix (`_ZTVFoo@@GLIBCXX_3.4`) before a name
     // reaches the demangler, which would otherwise decline the whole name.
-    let bare = |s: &DataSymbol| s.name.split('@').next().unwrap_or(&s.name).to_string();
+    let bare = |s: &DataSymbol| crate::demangle::elf_unversioned(&s.name).to_string();
 
     // `_ZTI` address → class name and size, so a base pointer read out of a
     // type_info can be named and the type_info's layout known. Built first

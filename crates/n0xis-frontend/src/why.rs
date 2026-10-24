@@ -374,7 +374,7 @@ fn start_category(s: StartSource) -> StartCategory {
     }
 }
 
-fn declared(by: StatedBy) -> Declared {
+pub(crate) fn declared(by: StatedBy) -> Declared {
     match by {
         StatedBy::Image(reason) => image_reason(reason),
         StatedBy::EhFrame => Declared::Unwind { table: UnwindTable::EhFrame },
@@ -392,7 +392,7 @@ fn image_reason(reason: StartReason) -> Declared {
     }
 }
 
-fn size_by(layer: SizeLayer) -> EndBy {
+pub(crate) fn size_by(layer: SizeLayer) -> EndBy {
     match layer {
         SizeLayer::Image(StartReason::Symbol) => EndBy::Length(Length::SymbolSize { of: SizeOf::StSize }),
         SizeLayer::Image(reason) => EndBy::Declared(image_reason(reason)),
@@ -403,7 +403,7 @@ fn size_by(layer: SizeLayer) -> EndBy {
     }
 }
 
-fn name_source(layer: NameLayer) -> NameSource {
+pub(crate) fn name_source(layer: NameLayer) -> NameSource {
     match layer {
         NameLayer::Local(LocalLayer::User) => NameSource::User,
         NameLayer::Local(LocalLayer::Rtti) => NameSource::Rtti,

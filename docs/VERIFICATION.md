@@ -500,6 +500,96 @@ takes the first entry of a start. Not a wrong answer today, so nothing was chang
 lookup. Not measured: two different extents stated for one start, where the function list takes
 the smaller end and the lookup the larger.
 
+### `contradictions`: where two sources the engine reads disagree (2026-10-24)
+
+`n0x contradictions` (docs/design/WHY.md §6, item 1) lists every place two sources disagree:
+a start with different stated ends, two stated extents that overlap, two sources naming one
+address with no name in common, and the image reader's own contradictions. What is measured
+is whether each reported value is what its table holds, whether every disagreement the
+tables hold is reported, and whether carrying every source moved any other answer.
+
+**Planted (rung 1).** `crates/n0xis-cli/tests/contradictions_on_planted_images.rs`, in CI, on
+committed images whose tables are recorded beside them (`tests/fixtures/contradictions/`,
+`plant.sh` builds them and records `objdump --dwarf=frames`, `readelf -sW` and `wasm-objdump
+-x`): an ELF written in assembly with a hand-written `.eh_frame` — `ends_twice` of 8 bytes by
+`.size` and 16 by its FDE, `outer`'s FDE of 16 bytes reaching past `inner`'s start, one
+address `.symtab` names `symtab_name` and `.dynsym` `exported_name` — reported as exactly one
+`end`, one `overlap` and one `name`; an ELF whose own tables state three ends for one start
+(two FDEs of 16 and 8 bytes, two symbols of 16 and 12); a module whose name section and export
+name function 1 apart and whose data segment lies past its one-page memory; `n0xis-pdb`'s
+image with `main`'s `.pdata` end moved 4 bytes in, against its PDB's 139 bytes (and with the
+PDB taken away, nothing to disagree with); the contested-slot ELF of `n0xis-sources`, whose
+reader reports two relocations at one slot; two renames, reported as overrides of the layer
+they replace and never as name contradictions; a target with no image file, on which every
+kind says it was not checked. Each answer asserted whole, so an empty list fails. Calibrated
+by seven mutations, each failing on its own assertion: the image layer handing over only the
+first name of an address (the ELF and module name assertions, and the overrides' kind list),
+the size layers left out of the ends (the ELF and PE end assertions), no overlaps, no image
+findings, the user's names compared as a source (the overrides' kind list), every length one
+byte long (every end assertion, and the checker below), and only the first stated length of an
+address kept (the three-ends assertion). One more mutation, turning the user's arm into a no-op
+arm, changed nothing, because the arm already did nothing: a mutation that missed, redone.
+`no_silent_empty_answer.rs` holds the answer non-empty on the committed module `shapes.wasm`
+(a data segment of memory 1 placed at 4294967300).
+
+**Against the tables (rung 3).** `crates/n0xis-cli/tests/contradictions_are_what_the_tables_say.rs`
+(feature `oracle`) reads each image's tables with tools that are not this one, works out every
+disagreement among them, and requires the answer to be exactly that set: FDE ranges from GNU
+`objdump --dwarf=frames`, `RUNTIME_FUNCTION`s from `llvm-readobj --unwind`, `STT_FUNC` sizes
+and both tables' names from `readelf -sW`, a PDB's procedure lengths from `llvm-pdbutil dump
+--symbols` with `llvm-readobj --sections`, a module's bodies, names, exports, memories and data
+segments from `wasm-objdump -d` and `-x`, slots from `llvm-readobj -r`. Which tables state
+extents is the engine's rule restated (`.pdata` on a PE that has one, else `.eh_frame`), and the
+answer's own list of sources must equal the tables that are not empty.
+
+535 images: the seam corpus's 495 images and 30 WebAssembly modules, `oracle/sysv.c` built by
+gcc and by both mingw targets, `n0xis-pdb`'s image with its PDB as built and with the end
+moved, `/usr/lib/libz.so.1`, and the four planted images. The tables held 785 789 distinct
+stated extents and 203 296 named addresses; every disagreement among them is in the answer,
+and every one in the answer is among them:
+
+| Kind | Reported and in the tables | Of them, outside the planted images | Wrong | Missed |
+| --- | --- | --- | --- | --- |
+| `end` | 8 | 5 | 0 | 0 |
+| `overlap` | 6 | 5 | 0 | 0 |
+| `name` | 24 | 22 | 0 | 0 |
+| `image` | 3 | 1 | 0 | 0 |
+
+The real ones: a C library, as a 64-bit and a 32-bit build, where five functions' symbol sizes
+reach past the end of their FDE — in four of them into one or two further FDEs that start
+inside the symbol (the five `overlap`s), in the fifth over bytes no FDE covers; a module from
+outside this repository whose 21 exported functions are exported under short names the name
+section names otherwise (one function under sixteen); `eh.wasm`, one function its name section
+calls `several` and its export `run`; `shapes.wasm`, its planted data segment past its memory.
+
+One image fails the checker, and the answer is not what is wrong: on a big-endian AArch64
+shared object `objdump --dwarf=frames` lists FDEs and the engine reads none — its `.eh_frame`
+reader reads every length little-endian (`crates/n0xis-core/src/eh.rs`), so on a big-endian
+image it finds no FDE and says nothing. The answer's sources there are `st_size` alone, which
+is what the engine read; the tables show the FDEs agree with the sizes on that image, so no
+contradiction was missed, but every big-endian image's unwind table is unread, by
+`function discover` too. Recorded, not fixed here.
+
+**Not checked.** A PE's names: on a PE the engine's name sources are its exports and a PDB
+beside it, and no image here has both (the PDB fixture exports nothing), so `name` is
+`not_checked` on all 153 PE images of the corpus — the answer says so; a PDB's names against
+an export were never compared. Names recovered from RTTI and from signatures, a managed
+index's, and the user's names against a layer's beyond the planted overrides: no image in the
+run carried them (each run had a fresh project). One module (`gc.wasm`) `wasm-objdump` cannot
+read; its answer was not checked. Image findings other than a data segment past its memory and
+a slot two relocations bind (an export or the start function naming no function, an element
+segment past its table) have no reader here. `contradictions` on a live process, a snapshot or
+a remote one was not run beyond the planted bytes target.
+
+**No other answer moved.** The seam corpus's recording (as for `why` above: kept outside the
+repository) of 495 images and 30 modules, with a release build of `3a8c65a` and with this
+change: 0 differences on 525 images; the comparison was shown to see a planted one-name
+change. `why --addr` at every planned address of the same 525 images (the entry point and up to
+three functions each, 1 681 answers): 0 differences between the two builds, and the comparison
+shown to see a build without `why`. Both are the tool compared with itself (rung 5): they say
+nothing moved, not that anything is right.
+
+
 ### The three numbers the README quotes
 
 1. **The decoder: 10 498 instructions on 10 images, every difference a documented

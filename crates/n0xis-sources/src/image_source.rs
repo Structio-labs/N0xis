@@ -81,9 +81,20 @@ pub struct ImageSource {
     modules: Vec<Module>,
     /// The name each address answers to, with where the image states it.
     symbols: BTreeMap<u64, Named>,
+    /// Every other name the image gives an address [`Self::symbols`] names,
+    /// in the order the image lists them: what `n0x contradictions` compares.
+    /// Kept beside the first rather than in its place, so the name every
+    /// lookup answers with stays the one it was.
+    aliases: BTreeMap<u64, Vec<Named>>,
     /// The stated size of the function at each address, with the declaration
     /// that states it.
     sizes: BTreeMap<u64, (u64, StartReason)>,
+    /// Every other size the image states for a function at an address
+    /// [`Self::sizes`] holds, each once, where it is not the one kept: a
+    /// second `.pdata` entry for one start, two symbols of one address with
+    /// different `st_size`. What `n0x contradictions` compares; the length
+    /// every lookup answers with stays the first.
+    other_sizes: BTreeMap<u64, Vec<(u64, StartReason)>>,
     /// The stated size of the data object [`Self::symbols`] names at an address.
     data_sizes: BTreeMap<u64, u64>,
     /// Stub → the definition in this image its slot is bound to.
@@ -125,7 +136,9 @@ impl ImageSource {
             module_name,
             modules,
             symbols: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             sizes: BTreeMap::new(),
+            other_sizes: BTreeMap::new(),
             data_sizes: BTreeMap::new(),
             thunks: BTreeMap::new(),
             entry_points: Vec::new(),
@@ -144,15 +157,19 @@ impl ImageSource {
         // was read, and say nothing about the rest.
         if let Some(symbols) = self.image.symbols().read() {
             for s in &symbols.read {
-                if let std::collections::btree_map::Entry::Vacant(slot) = self.symbols.entry(s.va.0) {
-                    let kind = match s.kind {
-                        SymbolKind::Function | SymbolKind::NotStated => SymKind::Export,
-                        SymbolKind::Object => SymKind::Data,
-                    };
-                    slot.insert(Named { symbol: Symbol { va: s.va, module: own.clone(), name: s.name.clone(), kind }, by: ImageName::Table(s.table) });
-                    if let (SymbolKind::Object, Extent::Stated(n)) = (s.kind, s.extent) {
-                        self.data_sizes.insert(s.va.0, n);
+                let kind = match s.kind {
+                    SymbolKind::Function | SymbolKind::NotStated => SymKind::Export,
+                    SymbolKind::Object => SymKind::Data,
+                };
+                let named = Named { symbol: Symbol { va: s.va, module: own.clone(), name: s.name.clone(), kind }, by: ImageName::Table(s.table) };
+                match self.symbols.entry(s.va.0) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(named);
+                        if let (SymbolKind::Object, Extent::Stated(n)) = (s.kind, s.extent) {
+                            self.data_sizes.insert(s.va.0, n);
+                        }
                     }
+                    std::collections::btree_map::Entry::Occupied(_) => self.aliases.entry(s.va.0).or_default().push(named),
                 }
             }
         }
@@ -160,7 +177,13 @@ impl ImageSource {
             // Aliases at one address agree on the size; the first stated one
             // is kept, and disagreement would mean a malformed table.
             if let Extent::Stated(n) = start.extent {
-                self.sizes.entry(start.va.0).or_insert((n, start.why));
+                let kept = *self.sizes.entry(start.va.0).or_insert((n, start.why));
+                if kept != (n, start.why) {
+                    let others = self.other_sizes.entry(start.va.0).or_default();
+                    if !others.contains(&(n, start.why)) {
+                        others.push((n, start.why));
+                    }
+                }
             }
             match start.why {
                 StartReason::Export => self.entry_points.push(start.va),
@@ -281,6 +304,33 @@ impl ImageSource {
     /// PE `.pdata` entry, a WebAssembly body.
     pub fn stated_size(&self, va: Va) -> Option<(u64, StartReason)> {
         self.sizes.get(&va.0).copied()
+    }
+
+    /// Every name the image gives exactly `va`, with where it gives it: the one
+    /// [`Self::named_at`] answers with first, then every other in the order the
+    /// image lists them (a `.symtab` alias, the `.dynsym` entry, an export of
+    /// a function the name section names). Empty where nothing names `va`.
+    pub fn every_name_at(&self, va: Va) -> Vec<(Symbol, ImageName)> {
+        let first = self.named_at(va);
+        let rest = self.aliases.get(&va.0).into_iter().flatten().map(|n| (n.symbol.clone(), n.by));
+        first.into_iter().chain(rest).collect()
+    }
+
+    /// Every length the image states for a function at `va`, each with the
+    /// declaration that states it: the one [`Self::stated_size`] answers with
+    /// first, then each other, once.
+    pub fn every_stated_size(&self, va: Va) -> Vec<(u64, StartReason)> {
+        let rest = self.other_sizes.get(&va.0).into_iter().flatten().copied();
+        self.stated_size(va).into_iter().chain(rest).collect()
+    }
+
+    /// Every address the image names a function at or states a function's
+    /// length for, in address order: the starts its own tables declare.
+    pub fn declared_function_starts(&self) -> Vec<Va> {
+        let named = self.symbols.values().filter(|n| n.symbol.kind != SymKind::Data).map(|n| n.symbol.va.0);
+        let sized = self.sizes.keys().copied();
+        let all: std::collections::BTreeSet<u64> = named.chain(sized).collect();
+        all.into_iter().map(Va).collect()
     }
 
     /// The reader's own answers.

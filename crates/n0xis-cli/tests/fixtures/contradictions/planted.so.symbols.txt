@@ -1,0 +1,20 @@
+
+Symbol table '.dynsym' contains 5 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 0000000000001020    16 FUNC    GLOBAL DEFAULT    5 exported_name
+     2: 0000000000001000     8 FUNC    GLOBAL DEFAULT    5 ends_twice
+     3: 0000000000001018     8 FUNC    GLOBAL DEFAULT    5 inner
+     4: 0000000000001010     0 FUNC    GLOBAL DEFAULT    5 outer
+
+Symbol table '.symtab' contains 9 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 0000000000000000     0 FILE    LOCAL  DEFAULT  ABS planted.o
+     2: 0000000000001020    16 FUNC    LOCAL  DEFAULT    5 symtab_name
+     3: 0000000000000000     0 FILE    LOCAL  DEFAULT  ABS 
+     4: 0000000000003f28     0 OBJECT  LOCAL  DEFAULT    8 _DYNAMIC
+     5: 0000000000003fe8     0 OBJECT  LOCAL  DEFAULT    9 _GLOBAL_OFFSET_TABLE_
+     6: 0000000000001000     8 FUNC    GLOBAL DEFAULT    5 ends_twice
+     7: 0000000000001018     8 FUNC    GLOBAL DEFAULT    5 inner
+     8: 0000000000001010     0 FUNC    GLOBAL DEFAULT    5 outer

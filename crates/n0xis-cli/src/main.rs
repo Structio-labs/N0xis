@@ -149,6 +149,16 @@ enum Command {
     /// every other layer that names it. No confidence numbers: a category says
     /// what produced a fact, not how likely it is.
     Why(WhyArgs),
+    /// Every place in an image where two sources the engine reads disagree —
+    /// the map of where to doubt: a start with two stated ends (an unwind
+    /// range against a symbol size or a PDB length), two stated extents that
+    /// overlap, two sources naming one address differently (compared like
+    /// with like: an ELF version suffix cut off, a mangled name as the
+    /// qualified name it stands for), and the image reader's own
+    /// contradictions. Each with both sources and their values, in `why`'s
+    /// categories; each kind says whether it was checked here. The user's
+    /// renames are counted apart, as overrides. No confidence numbers.
+    Contradictions(ContradictionsArgs),
     /// Live process inspection.
     #[command(subcommand)]
     Process(ProcessCmd),
@@ -2957,6 +2967,34 @@ struct WhyArgs {
 }
 
 #[derive(Args)]
+struct ContradictionsArgs {
+    #[arg(long)]
+    pid: Option<u32>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long, help = ARCH_HELP)]
+    arch: Option<String>,
+    /// Reload a captured `snapshot dump` by name.
+    #[arg(long)]
+    snapshot: Option<String>,
+    /// Attach over a remote transport, e.g. `"ssh host n0xis remote-serve --pid 1234"`.
+    #[arg(long)]
+    remote_cmd: Option<String>,
+    /// FLIRT-class signature database(s) (`.npat`), as `function discover
+    /// --flirt`: the names they give are compared with the other sources'.
+    #[arg(long = "flirt")]
+    flirt: Vec<String>,
+    /// How many contradictions to return; 0 for all. `meta.total` is how many
+    /// there are.
+    #[arg(long, default_value_t = n0xis_frontend::contradictions::DEFAULT_LIMIT)]
+    limit: usize,
+    /// How many to skip, counted over the whole list (grouped by kind, each
+    /// kind in address order).
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
+}
+
+#[derive(Args)]
 struct SymbolsAddArgs {
     /// The image the PDB belongs to.
     #[arg(long)]
@@ -3165,6 +3203,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Symbols(SymbolsCmd::Add(a)) => cmd_symbols_add(a, pretty),
         Command::Imports(a) => cmd_imports(a, pretty),
         Command::Why(a) => cmd_why(a, pretty),
+        Command::Contradictions(a) => cmd_contradictions(a, pretty),
         Command::Process(ProcessCmd::Ps(a)) => cmd_process_ps(a, pretty),
         Command::Module(ModuleCmd::List(a)) => cmd_module_list(a, pretty),
         Command::Disasm(a) => cmd_disasm(a, pretty),
@@ -3296,7 +3335,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 fn guide_category(top: &str) -> &'static str {
     match top {
         "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
-        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" | "why" => "Static analysis & decompilation",
+        "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" | "why" | "contradictions" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
         "concept" | "locate" | "input" | "const" | "bindings" | "sig" => "Spec-first method tooling (Phase 8)",
@@ -3624,6 +3663,24 @@ fn cmd_why(a: WhyArgs, pretty: bool) -> bool {
             "start": a.start,
             "size": a.size,
             "flirt": a.flirt,
+        }),
+        pretty,
+    )
+}
+
+/// `contradictions`: through the registry, so `serve` and an agent read the same answer.
+fn cmd_contradictions(a: ContradictionsArgs, pretty: bool) -> bool {
+    run_capability(
+        "contradictions",
+        json!({
+            "pid": a.pid,
+            "file": a.file,
+            "arch": a.arch,
+            "snapshot": a.snapshot,
+            "remote_cmd": a.remote_cmd,
+            "flirt": a.flirt,
+            "limit": a.limit,
+            "offset": a.offset,
         }),
         pretty,
     )
