@@ -65,6 +65,12 @@ check that quietly does nothing is worse than no check.
 `oracle/build.sh` builds the same targets by hand, for measuring outside the
 test harness.
 
+`oracle/rule-accuracy/` is a separate instrument: it builds C and C++ already on
+the machine (these programs among them) with debug information, strips them, and
+measures how often each function-discovery rule is right against the DWARF of
+the unstripped build. Its README says how to run it; its numbers are in
+docs/VERIFICATION.md, "How often each rule is right".
+
 ## On real Windows
 
 `oracle/windows/` checks the Windows build on a Windows machine over SSH.
