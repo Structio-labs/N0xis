@@ -744,7 +744,8 @@ First scan: find every address matching a criterion.
 - `--value` / `--min` / `--max`; `--align` (byte stride; defaults to the value's natural size).
 - Region: `--start`/`--size`, given together. On `--pid`, omitting both scans **every committed
   writable region** (the conventional default scan set); either one alone is refused (`bad-region`).
-  `--start` is required for `--file`.
+  An explicit window on `--pid` reads every mapping in it, read-only ones too, and states the gaps
+  and the parts that will not read (see below). `--start` is required for `--file`.
 - `--save-as` (required) — persist result under `.n0x/dumps/scan/<name>.json`; `--force` to
   overwrite.
 - Sources: `--pid` | `--file`.
@@ -794,6 +795,9 @@ none of it, except that a window of which nothing reads is `nothing-readable` th
 - `regions_read_short`, and `read_short: [{start, size, read}]`: regions that gave `read` bytes of
   `size`. What the read did give is scanned; the rest was not looked at.
 - Each list holds at most 64 entries (`NOT_READ_SHOWN`); the counts are always the true ones.
+
+A window on `--pid` is cut where the process's map changes, so each gap and each mapping in it is one
+region here, read or stated. The default set, with no window, stays the writable mappings.
 
 A region is judged by what the read returned, never by its path or kind: two device mappings side
 by side can differ, one reading and the next faulting on its first byte.

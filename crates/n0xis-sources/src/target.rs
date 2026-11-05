@@ -59,6 +59,10 @@ pub fn is_default_scan_region(protect: &str) -> bool {
     matches!(protect, "rw-" | "rwx" | "rc-" | "rcx")
 }
 
+/// More regions than any process has: what to ask [`LiveTarget::regions`] for when
+/// the question is about the whole map, not a page of it.
+pub const ALL_REGIONS: usize = 1_000_000;
+
 /// An attached, live process address space.
 ///
 /// Supertraits carry the byte/symbol/module access; this trait adds only what
@@ -107,7 +111,7 @@ pub trait LiveTarget: MemorySource + ModuleProvider + SymbolProvider {
     /// value could be anywhere in dynamically-allocated memory. One definition
     /// of "the default region set", not a copy per caller.
     fn default_writable_regions(&self) -> Vec<(Va, usize)> {
-        self.regions(1_000_000)
+        self.regions(ALL_REGIONS)
             .into_iter()
             .filter(|r| r.state == "commit" && is_default_scan_region(&r.protect))
             .map(|r| (r.base, r.size as usize))

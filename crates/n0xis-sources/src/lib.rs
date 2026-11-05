@@ -72,7 +72,7 @@ mod static_elf;
 // therefore *name* the seam on any platform, and only the implementations come
 // and go with the target.
 mod target;
-pub use target::{LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
+pub use target::{ALL_REGIONS, LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
 
 /// Does this build have a live-process adapter behind [`LiveTarget`]?
 ///

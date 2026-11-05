@@ -102,6 +102,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Changed
 
+- **A live window reads every mapping in it, and states what it did not read.** It was cut down to the
+  writable mappings, and the rest dropped in silence: `scan aob --pid P --start A --size 8192` over a
+  `r--` page then a `rw-` page read 4096 bytes, answered `regions_not_read: 0`, and missed a pattern in
+  the first page. It now reads both, and a gap or a mapping with no read permission in the window is
+  listed in `not_read` with the read's reason, where it used to count for nothing. A window wholly of
+  those is `nothing-readable`. `find --pid` reads across mappings the same way, where it used to stop
+  at the first and say `read_short`. The default set, with no window, stays the writable mappings.
+  Changes a live answer only: a window of a file is one read, as before.
 - **`--size` without `--start` is refused on a live target.** It was ignored, and the whole default
   region set was scanned: `scan aob --pid P --size 256 --pattern ...` read 348 160 bytes on the process
   it was measured on, and answered as if that was what was asked. `--start` alone was already refused;

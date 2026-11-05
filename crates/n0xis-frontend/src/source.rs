@@ -592,13 +592,8 @@ pub fn module_base_of(src: &Src) -> Option<Va> {
 
 /// The regions a value/AOB scan should cover in a live process.
 ///
-/// With an explicit window, the window is **clipped to the process's committed
-/// regions**, and that clipping is the whole point: a live range routinely
-/// spans unmapped gaps (LuaJIT's arena is many small committed blocks), and a
-/// single `ReadProcessMemory` across a gap fails *wholesale* — silently
-/// yielding zero hits. Intersecting with the region map turns one doomed read
-/// into per-block reads that actually land. With no window, it is every
-/// committed writable region — the conventional default scan set.
+/// With no window it is every committed writable region, the conventional default
+/// scan set. With one, it is [`live_window_regions`].
 pub fn live_scan_regions(live: &dyn LiveTarget, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
     // A size with nowhere to start is half a window. It used to be dropped, so
     // `--size 256` scanned every writable region of the process, 348 160 bytes on
@@ -609,29 +604,49 @@ pub fn live_scan_regions(live: &dyn LiveTarget, start: Option<&str>, size: Optio
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;
         let sz = size.ok_or("provide size with start")?;
-        let lo = va.0;
-        let hi = va.0.saturating_add(sz as u64);
-        let mut clipped: Vec<(Va, usize)> = Vec::new();
-        for (rb, rs) in live.default_writable_regions() {
-            let a = rb.0.max(lo);
-            let b = (rb.0 + rs as u64).min(hi);
-            if a < b {
-                clipped.push((Va(a), (b - a) as usize));
-            }
-        }
-        if clipped.is_empty() {
-            // No committed writable page in the window — fall back to the raw
-            // range so a deliberate single-region read (an RX/RO area outside
-            // the writable set) still works.
-            return Ok(vec![(va, sz)]);
-        }
-        return Ok(clipped);
+        return Ok(live_window_regions(live, va, sz));
     }
     let regions = live.default_writable_regions();
     if regions.is_empty() {
         return Err("no committed writable regions found (and no start/size given)".to_string());
     }
     Ok(regions)
+}
+
+/// A window of a live process, cut where the process's map changes: every mapping
+/// in it, whatever its protection, and every gap between them, in address order and
+/// adding up to the window.
+///
+/// One read across a boundary stops there, so the window has to be cut. It used to
+/// be cut down to the writable mappings, so a window spanning a read-only mapping
+/// then a writable one read the second half and said `regions_not_read: 0`, and a
+/// pattern in the first was missed in silence. Nothing is left out here on what the
+/// map says: a gap or a mapping with no read permission goes in with the rest, its
+/// read fails, and the sweep states it as not read, with the read's own reason.
+pub fn live_window_regions(live: &dyn LiveTarget, start: Va, size: usize) -> Vec<(Va, usize)> {
+    let end = start.0.saturating_add(size as u64);
+    if start.0 == end {
+        return vec![(start, 0)];
+    }
+    let mut map = live.regions(n0xis_sources::ALL_REGIONS);
+    map.sort_by_key(|r| r.base.0);
+    let mut parts = Vec::new();
+    let mut at = start.0;
+    for r in map {
+        let (from, to) = (r.base.0.max(at), r.end.0.min(end));
+        if from >= to {
+            continue;
+        }
+        if from > at {
+            parts.push((Va(at), (from - at) as usize));
+        }
+        parts.push((Va(from), (to - from) as usize));
+        at = to;
+    }
+    if at < end {
+        parts.push((Va(at), (end - at) as usize));
+    }
+    parts
 }
 
 /// Choose a scan `(start, size)`: explicit values win, else `default`

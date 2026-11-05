@@ -4668,7 +4668,15 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
     // The ranges to scan: an explicit `--start`/`--size`, one `--section`, or —
     // by default — every file-backed section of a static image.
     let ranges: Vec<(String, Va, u64)> = if let (Some(st), Some(sz)) = (explicit_start, a.size) {
-        vec![("range".to_string(), st, sz as u64)]
+        match &src {
+            // One read stops where a mapping ends, so a window of a process is
+            // cut at its map, as for every scan of one.
+            Src::Live(live) => n0xis_frontend::source::live_window_regions(live.as_ref(), st, sz)
+                .into_iter()
+                .map(|(va, size)| ("range".to_string(), va, size as u64))
+                .collect(),
+            _ => vec![("range".to_string(), st, sz as u64)],
+        }
     } else if let Some(sec) = a.section.as_deref() {
         match &src {
             Src::Static(pe) => match pe.section_range(sec) {

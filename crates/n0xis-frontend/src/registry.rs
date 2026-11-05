@@ -2206,7 +2206,7 @@ impl Plugin for AnalysisPasses {
                         roots.push(n0xis_core::PointerRoot { label: m.name.clone(), start: m.base, size: m.size });
                     }
                     let search_regions: Vec<(Va, usize)> = live
-                        .regions(1_000_000)
+                        .regions(n0xis_sources::ALL_REGIONS)
                         .into_iter()
                         .filter(|r| r.state == "commit" && matches!(r.protect.as_str(), "rw-" | "rwx" | "rc-" | "rcx" | "r--" | "r-x"))
                         .map(|r| (r.base, r.size as usize))
