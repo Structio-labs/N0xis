@@ -48,7 +48,9 @@ def why_through_serve(image: str, addrs: list, cwd: str) -> dict:
     """`why` at every address, one session, one answer per request, in lockstep
     (so no pipe can fill). A session that dies leaves what it did not answer as
     an answer with no envelope, which the scorer does not take for a function."""
-    argv = ["timeout", "500", corpus.ENGINE, "serve", "--file", image]
+    # The bound is per start: a flat one cuts a big image's session mid-list, and
+    # every start it leaves unanswered then reads as a function not found.
+    argv = ["timeout", str(max(500, len(addrs) // 4)), corpus.ENGINE, "serve", "--file", image]
     p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=corpus.TOOL_ENV)
     out = {}
     p.stdout.readline()  # the session's banner
