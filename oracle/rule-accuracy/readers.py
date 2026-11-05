@@ -15,6 +15,7 @@ reads its DWARF as it does an ELF's. An image's first bytes say which.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import re
 import subprocess
@@ -24,6 +25,15 @@ from corpus import TOOL_ENV
 
 def run(argv: list, timeout: int = 540) -> str:
     return subprocess.run(argv, env=TOOL_ENV, check=True, capture_output=True, text=True, timeout=timeout).stdout
+
+
+def lines_of(argv: list, timeout: int = 3000):
+    """A tool's output line by line: a big image's DWARF dump or disassembly is
+    gigabytes of text, which no parser here should hold as one string."""
+    p = subprocess.Popen(["timeout", str(timeout)] + argv, env=TOOL_ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace")
+    yield from p.stdout
+    if p.wait() != 0:
+        raise subprocess.CalledProcessError(p.returncode, argv)
 
 
 # --- sections ---------------------------------------------------------------
@@ -166,7 +176,6 @@ def subprograms(path: str) -> list:
     DIE its `abstract_origin`/`specification` names (where an out-of-line copy
     of an inlined function keeps its attributes).
     """
-    text = run(["llvm-dwarfdump", "--debug-info", path], timeout=540)
     out = []
     cur = None  # (offset, tag, attrs) of the DIE being read
     last_attr = None
@@ -205,7 +214,8 @@ def subprograms(path: str) -> list:
         origins = [int(m.group(1), 16) for k in ("DW_AT_abstract_origin", "DW_AT_specification") if k in a for m in [re.match(r"0x([0-9a-f]+)", a[k])] if m]
         out.append({"entry": entry, "ranges": ranges, "name": _quoted(name), "die": cur[0], "origins": origins})
 
-    for line in text.splitlines():
+    for line in lines_of(["llvm-dwarfdump", "--debug-info", path]):
+        line = line.rstrip("\n")
         m = _DIE.match(line)
         if m:
             flush()
@@ -305,15 +315,26 @@ def fde_ranges(path: str) -> list:
     return out
 
 
-def instructions(path: str) -> dict:
+def instructions(path: str, near: set | None = None) -> dict:
     """objdump's linear disassembly of every code section: address ->
     (length, text). `--insn-width=15` keeps an instruction's bytes on one line
-    (a wrapped row would read as a second, shorter instruction)."""
+    (a wrapped row would read as a second, shorter instruction). `near`: keep
+    only what lies at or up to 16 bytes before one of these addresses, all a
+    reader of one address asks, where a whole big image would not fit in memory."""
     out = {}
-    text = run([objdump_for(path), "-d", "--insn-width=15", path], timeout=540)
+    kept = sorted(near) if near is not None else None
     # x86 rows print bytes (`48 83 ec 08`), AArch64 rows one 32-bit word
     # (`d503233f`): the length is the hex digits over two either way.
-    for m in re.finditer(r"^\s*([0-9a-f]+):\t((?:[0-9a-f]{2,8} ?)+)\s*\t?(.*)$", text, re.M):
+    row = re.compile(r"^\s*([0-9a-f]+):\t((?:[0-9a-f]{2,8} ?)+)\s*\t?(.*)$")
+    for line in lines_of([objdump_for(path), "-d", "--insn-width=15", path]):
+        m = row.match(line)
+        if not m:
+            continue
+        va = int(m.group(1), 16)
+        if kept is not None:
+            i = bisect.bisect_left(kept, va)
+            if i == len(kept) or kept[i] - va > 16:
+                continue
         nbytes = sum(len(tok) // 2 for tok in m.group(2).split())
-        out[int(m.group(1), 16)] = (nbytes, m.group(3).strip())
+        out[va] = (nbytes, m.group(3).strip())
     return out

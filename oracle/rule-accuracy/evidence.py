@@ -53,7 +53,6 @@ def main() -> int:
     start_shapes = Counter()
     end_shapes = Counter()
     examples = defaultdict(list)
-    cache = {}
     # A wrong start that the unstripped build's own symbol table names would
     # accuse the reference, not the engine: counted, and printed when non-zero.
     named_wrong = []
@@ -71,10 +70,8 @@ def main() -> int:
         tj = json.load(open(os.path.join(os.path.dirname(sp), f"truth-{corpus.VARIANTS[cfg['variant']]['truth']}.json")))
         noreturn = {f["start"] for f in tj["functions"] if f.get("noreturn")}
         dwarf_starts = {f["start"] for f in tj["functions"] if f["tier"] == "dwarf"}
-        if tf not in cache:
-            cache.clear()
-            cache[tf] = readers.instructions(tf)
-        ins = cache[tf]
+        near = {r["va"] for r in bad} | {r["end"] for r in bad if r["end"]} | {t for r in bad if r["truth_end"] for t in r["truth_end"]}
+        ins = readers.instructions(tf, near)
         for r in bad:
             va = r["va"]
             ev = {"config": cfg["id"], "variant": cfg["variant"], "va": va, "sources": r["sources"], "class": r["class"]}
