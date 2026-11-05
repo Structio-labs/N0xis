@@ -33,6 +33,47 @@ use crate::{Ctx, CoreError, Pass};
 /// budget, not a tuned magic constant, so it stays generous).
 const MAX_ROUNDS: usize = 16;
 
+/// How deep an expression may grow by propagation, statement included. Past it
+/// the value stays in its own variable, which is the same program in more
+/// lines. A register updated N times in one block, each value used once, would
+/// otherwise become one expression N levels deep, and everything that walks an
+/// expression recurses: 1 365 `add eax,1` took 2 to 4 MiB of stack in a release
+/// build and killed the process with no answer where the main thread has 1 MiB.
+/// Nobody reads an expression nested this far. Only propagation grows one, so
+/// bounding it here bounds every walk after it.
+const MAX_PROPAGATED_DEPTH: usize = 64;
+
+/// Levels in an expression: a leaf is 1.
+fn expr_depth(e: &MicroExpr) -> usize {
+    depth_with(e, None)
+}
+
+/// Levels in `e` once the variable in `inlined` holds an expression of the
+/// given depth. A constant put in place of a variable adds nothing, whatever
+/// the depth it lands at.
+fn depth_with(e: &MicroExpr, inlined: Option<(&str, usize)>) -> usize {
+    let deepest = |children: &[&MicroExpr]| children.iter().map(|c| depth_with(c, inlined)).max().unwrap_or(0);
+    match e {
+        MicroExpr::Var(name) => inlined.filter(|(var, _)| var == name).map_or(1, |(_, depth)| depth),
+        MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => 1,
+        MicroExpr::Load { addr: inner, .. } | MicroExpr::Unary(_, inner) | MicroExpr::Cast { expr: inner, .. } | MicroExpr::AddrOf(inner) => {
+            1 + depth_with(inner, inlined)
+        }
+        MicroExpr::Binary(_, l, r) => 1 + deepest(&[l, r]),
+        MicroExpr::Compare { lhs, rhs, .. } => 1 + deepest(&[lhs, rhs]),
+        MicroExpr::Select { cond, a, b } => 1 + deepest(&[cond, a, b]),
+        MicroExpr::Call { target, args } => {
+            let target_depth = if let CallTarget::Indirect(inner) = target { depth_with(inner, inlined) } else { 0 };
+            1 + target_depth.max(args.iter().map(|a| depth_with(a, inlined)).max().unwrap_or(0))
+        }
+    }
+}
+
+/// The deepest expression a statement reads.
+fn stmt_read_depth(stmt: &MicroStmt) -> usize {
+    stmt_read_exprs(stmt).into_iter().map(expr_depth).max().unwrap_or(0)
+}
+
 /// One explainable change a sub-pass made. `at` anchors it to the statement's
 /// original address when known (a removed statement still reports where it
 /// used to live).
@@ -497,6 +538,12 @@ fn expr_prop_round(
                     continue 'stmts;
                 }
                 if expr_uses_var(stmt_read_exprs(&b.stmts[j].stmt), &dst) {
+                    let inlined = Some((dst.as_str(), expr_depth(&def_expr)));
+                    let grown = stmt_read_exprs(&b.stmts[j].stmt).into_iter().map(|e| depth_with(e, inlined)).max();
+                    if grown.is_some_and(|depth| depth > MAX_PROPAGATED_DEPTH) {
+                        i += 1;
+                        continue 'stmts;
+                    }
                     let at = b.stmts[i].va;
                     let mut did_inline = false;
                     b.stmts[j].stmt = map_stmt_exprs(&b.stmts[j].stmt.clone(), &mut |e| match &e {
@@ -506,6 +553,18 @@ fn expr_prop_round(
                         }
                         _ => e,
                     });
+                    // A constant folds here and not in the next round: a chain
+                    // of them collapses in this one walk instead of one bound's
+                    // worth per round, and the rounds are limited.
+                    if matches!(def_expr, MicroExpr::Const { .. }) {
+                        b.stmts[j].stmt = map_stmt_exprs(&b.stmts[j].stmt.clone(), &mut |e| match fold_once(&e) {
+                            Some(folded) => {
+                                delta.push(OptDeltaEntry { pass: "const-fold", at: None, summary: format!("{e:?} -> {folded:?}") });
+                                folded
+                            }
+                            None => e,
+                        });
+                    }
                     delta.push(OptDeltaEntry {
                         pass: "expr-prop",
                         at: Some(at),
@@ -1081,10 +1140,12 @@ fn mem_forward_round(
         for s in b.stmts.iter_mut() {
             // 1. Forward loads in this statement's read positions.
             let mut hit: Option<(String, i128, bool)> = None;
+            let read_depth = stmt_read_depth(&s.stmt);
             let rewritten = map_stmt_exprs(&s.stmt, &mut |e| {
                 if let MicroExpr::Load { addr, bits, .. } = &e
                     && let Some((base, off)) = mem_key(addr)
                     && let Some(a) = avail.iter().find(|a| same_slot(a, &base, off, *bits))
+                    && read_depth + expr_depth(&a.value) <= MAX_PROPAGATED_DEPTH
                 {
                     hit = Some((base, off, a.from_seed));
                     return a.value.clone();
@@ -1416,6 +1477,99 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg).unwrap();
         OptimizePass.run(&ctx, ssa).unwrap()
+    }
+
+    /// Every expression the statements of `opt` read.
+    fn deepest_read(opt: &OptArtifact) -> usize {
+        opt.blocks.iter().flat_map(|b| &b.stmts).map(|s| stmt_read_depth(&s.stmt)).max().unwrap_or(0)
+    }
+
+    fn optimize_all(code: Vec<u8>) -> OptArtifact {
+        let size = code.len();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), size)).unwrap();
+        let ssa = SsaPass.run(&ctx, cfg).unwrap();
+        OptimizePass.run(&ctx, ssa).unwrap()
+    }
+
+    /// `add eax,1` a thousand times, then `ret`: each value is used once, by
+    /// the next one, so propagation would nest them all.
+    #[test]
+    fn a_long_chain_through_a_register_stops_nesting_at_the_bound() {
+        let mut code = [0x83, 0xc0, 0x01].repeat(1000);
+        code.push(0xc3);
+        let opt = optimize_all(code);
+        let deepest = deepest_read(&opt);
+        assert!(deepest <= MAX_PROPAGATED_DEPTH, "nested {deepest} levels");
+        assert!(deepest > MAX_PROPAGATED_DEPTH / 2, "propagation still runs up to the bound: {deepest}");
+    }
+
+    /// `mov [rbp-8],rdi`, then `add [rbp-8],rsi` a thousand times: the same
+    /// chain carried by a frame slot, grown by forwarding each store into the
+    /// next load. The first store is what makes the slot's value known (without
+    /// it every load stays a load), the addend is a register because constants
+    /// fold and the chain would stay flat, and the last `mov rax,[rbp-8]` keeps
+    /// the value alive: an unread slot's stores are removed as dead at the end.
+    #[test]
+    fn a_long_chain_through_a_frame_slot_stops_nesting_at_the_bound() {
+        let mut code = vec![0x48, 0x89, 0x7d, 0xf8];
+        code.extend([0x48, 0x01, 0x75, 0xf8].repeat(1000));
+        code.extend([0x48, 0x8b, 0x45, 0xf8, 0xc3]);
+        let opt = optimize_all(code);
+        let deepest = deepest_read(&opt);
+        assert!(deepest <= MAX_PROPAGATED_DEPTH, "nested {deepest} levels");
+    }
+
+    /// `xor eax,eax`, then `add eax,1` a thousand times: a constant all the way,
+    /// which the bound must not leave in pieces.
+    #[test]
+    fn a_long_constant_chain_folds_to_one_constant() {
+        let mut code = vec![0x31, 0xc0];
+        code.extend([0x83, 0xc0, 0x01].repeat(1000));
+        code.push(0xc3);
+        let opt = optimize_all(code);
+        let value = opt.blocks.iter().flat_map(|b| &b.stmts).find_map(|s| match &s.stmt {
+            MicroStmt::Return(Some(MicroExpr::Const { value, .. })) => Some(*value),
+            MicroStmt::Assign { value: MicroExpr::Const { value, .. }, .. } => Some(*value),
+            _ => None,
+        });
+        assert_eq!(value, Some(1000), "{:?}", opt.blocks[0].stmts.iter().map(|s| &s.stmt).take(4).collect::<Vec<_>>());
+    }
+
+    /// A constant replaces a variable at any depth: it adds no level, so an
+    /// expression already at the bound still takes one.
+    #[test]
+    fn inlining_a_constant_adds_no_level() {
+        let deep = (0..MAX_PROPAGATED_DEPTH - 1).fold(MicroExpr::var("v.1"), |e, _| MicroExpr::Unary(UnOp::Not, Box::new(e)));
+        assert_eq!(expr_depth(&deep), MAX_PROPAGATED_DEPTH);
+        assert_eq!(depth_with(&deep, Some(("v.1", 1))), MAX_PROPAGATED_DEPTH);
+        assert_eq!(depth_with(&deep, Some(("v.1", 2))), MAX_PROPAGATED_DEPTH + 1);
+        assert_eq!(depth_with(&deep, Some(("other", 9))), MAX_PROPAGATED_DEPTH);
+    }
+
+    /// The value left in a variable at the bound is still there: the chain's
+    /// statements are split, nothing is dropped.
+    #[test]
+    fn the_bound_splits_a_chain_and_keeps_every_step() {
+        let mut code = [0x83, 0xc0, 0x01].repeat(1000);
+        code.push(0xc3);
+        let opt = optimize_all(code);
+        let adds: usize = opt.blocks.iter().flat_map(|b| &b.stmts).map(|s| count_adds(&s.stmt)).sum();
+        assert_eq!(adds, 1000, "each `add` is in the answer exactly once");
+    }
+
+    fn count_adds(stmt: &MicroStmt) -> usize {
+        fn in_expr(e: &MicroExpr) -> usize {
+            match e {
+                MicroExpr::Binary(BinOp::Add, l, r) => 1 + in_expr(l) + in_expr(r),
+                MicroExpr::Binary(_, l, r) => in_expr(l) + in_expr(r),
+                MicroExpr::Cast { expr, .. } => in_expr(expr),
+                _ => 0,
+            }
+        }
+        stmt_read_exprs(stmt).into_iter().map(in_expr).sum()
     }
 
     #[test]
