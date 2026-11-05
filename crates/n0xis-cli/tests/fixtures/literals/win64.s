@@ -1,5 +1,6 @@
 # The register pairs of x86_64.s under Win64, whose order is rcx, rdx, r8, r9.
     .section .rdata, "dr"
+    .asciz "/rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/lib.rs"
     .byte 0
 reg_true_a: .ascii "REG_TRUE"
 reg_true_b: .ascii "REG_REST"

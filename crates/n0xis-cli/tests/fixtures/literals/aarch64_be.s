@@ -1,5 +1,6 @@
 # The data pairs of x86_64.s in big-endian words.
     .section .rodata
+    .asciz "/rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/lib.rs"
     .byte 0
 data_one_a: .ascii "DATA_ONE_A"
 data_one_b: .ascii "DATA_ONE_B"

@@ -1,4 +1,7 @@
 # The data pairs of x86_64.s in 32-bit words.
+    .section .comment
+    .asciz "rustc version 1.99.0 (planted)"
+
     .section .rodata
     .byte 0
 data_one_a: .ascii "DATA_ONE_A"

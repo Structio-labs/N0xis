@@ -26,14 +26,26 @@
 //! A reference is never believed past its run, nor when it starts or ends inside
 //! a character: a `&str` is valid UTF-8 by its type, so such a word is not one.
 //! Wide text has no such references and is not cut.
+//!
+//! **Only an image that shows it holds such literals is cut at all**
+//! ([`LiteralCuts`]). A C string table has references with lengths too, and a
+//! rule read from them moved rows in every C and C++ library it was measured on;
+//! the caller asks the image first, and where it shows nothing no reference is
+//! looked for and no run is touched.
+//!
+//! **An odd immediate in code is not yet a length.** `eprintln!` of 20 bytes is
+//! `lea rdi; mov esi,0x29` (read from a planted build, rustc 1.99): 2n+1, and a
+//! length taken from it runs past its literal. [`LiteralEvidence::into_refs`]
+//! settles each by what the rest of the evidence says.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
 use n0xis_arch::{DecodedInsn, InsnKind};
 use n0xis_contracts::Va;
-use n0xis_sources::{AddressWords, ByteOrder, MemorySource, PointerWidth, RelocatedWords};
-use serde::Serialize;
+use n0xis_sources::{AddressWords, ByteOrder, MemorySource, PointerWidth, RelocatedWords, RustcEvidence};
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
 
 use crate::sweep::{SWEEP_CHUNK, sweep_code};
 use crate::{CoreError, Ctx, FoundString, StringEncoding};
@@ -49,6 +61,56 @@ pub const CODE_PAIR_WINDOW: u32 = 6;
 /// The longest length an immediate is taken for, in bytes. A longer immediate is
 /// not a length here, not the end of the search for one.
 pub const CODE_PAIR_MAX_LEN: u64 = 0x1_0000;
+
+/// The registers a two-word value comes back in on x86-64, both ABIs: a `&str`
+/// returned by a function. rustc's own convention on Win64 too, where C's would
+/// use memory (read from a build for `x86_64-pc-windows-gnu`, rustc 1.99).
+const RETURN_PAIR: [&str; 2] = ["rax", "rdx"];
+
+/// Why an answer's runs were not cut, where the reason is not that the image
+/// showed no such literals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotCut {
+    /// A running process or loose bytes: no image to ask.
+    NotAnImage,
+    /// A module's words are addresses in a linear memory, not in the module.
+    WasmModule,
+    /// The image shows such literals, may load anywhere, and its relocations
+    /// were not read, so nothing tells a pointer from a number.
+    RelocationsNotRead,
+}
+
+/// Whether the runs of one answer were cut where references state lengths, and
+/// why. One per answer, never per row: it is a fact about the image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralCuts {
+    Applied { because: RustcEvidence },
+    /// With no reason when the image was asked and showed no such literals.
+    NotApplied { because: Option<NotCut> },
+}
+
+/// `{"applied": true, "because": ...}`, or `{"applied": false}` with `because`
+/// only where there is a reason. A hand-written form so `Applied` cannot go
+/// without its reason.
+impl Serialize for LiteralCuts {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            LiteralCuts::Applied { because } => {
+                map.serialize_entry("applied", &true)?;
+                map.serialize_entry("because", because)?;
+            }
+            LiteralCuts::NotApplied { because } => {
+                map.serialize_entry("applied", &false)?;
+                if let Some(because) = because {
+                    map.serialize_entry("because", because)?;
+                }
+            }
+        }
+        map.end()
+    }
+}
 
 /// What a reference's length was read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -74,6 +136,9 @@ pub struct LiteralEvidence<'a> {
     /// The UTF-8 runs that may be cut, by address.
     runs: Vec<(u64, &'a str)>,
     refs: LiteralRefs,
+    /// Odd immediates of code pairs, `(start, immediate)`, not yet known to be
+    /// lengths, with their first evidence ([`Self::into_refs`]).
+    odd: BTreeMap<(u64, u64), Va>,
 }
 
 impl<'a> LiteralEvidence<'a> {
@@ -81,7 +146,7 @@ impl<'a> LiteralEvidence<'a> {
     pub fn new(found: impl Iterator<Item = &'a FoundString>) -> Self {
         let mut runs: Vec<(u64, &str)> = found.filter(|s| s.encoding == StringEncoding::Utf8).map(|s| (s.address.0, s.text.as_str())).collect();
         runs.sort_by_key(|&(start, _)| start);
-        Self { runs, refs: LiteralRefs::default() }
+        Self { runs, refs: LiteralRefs::default(), odd: BTreeMap::new() }
     }
 
     /// Whether no run can be referred to, so nothing need be looked for.
@@ -110,6 +175,20 @@ impl<'a> LiteralEvidence<'a> {
         let cut = CutBy { kind, at };
         self.refs.0.entry((start, len)).and_modify(|had| *had = if at.0 < had.at.0 { cut } else { *had }).or_insert(cut);
         true
+    }
+
+    /// A code pair: an even immediate is a length, an odd one waits for
+    /// [`Self::into_refs`]. What is kept for one is as bounded as [`Self::add`]:
+    /// a start inside a run, and an immediate at most twice what is left of it.
+    fn code_pair(&mut self, start: u64, immediate: u64, at: Va) {
+        if immediate % 2 == 0 {
+            self.add(start, immediate, CutKind::CodePair, at);
+            return;
+        }
+        let Some((run, text)) = self.run_at(start) else { return };
+        if (immediate - 1) / 2 <= text.len() as u64 - (start - run) {
+            self.odd.entry((start, immediate)).and_modify(|had| *had = Va(had.0.min(at.0))).or_insert(at);
+        }
     }
 
     /// A word a relative relocation writes `value` at: a data pair when `value`
@@ -150,7 +229,7 @@ impl<'a> LiteralEvidence<'a> {
     ///
     /// `Err` when a read fails.
     pub fn x64_code_pairs(&mut self, ctx: &Ctx, start: Va, size: u64, words: AddressWords) -> Result<(), CoreError> {
-        let mut reader = X64Pairs::new(&crate::typeinfer::abi_arg_regs(ctx), words == AddressWords::Stored);
+        let mut reader = X64Pairs::new(&crate::typeinfer::abi_arg_regs(ctx), RETURN_PAIR, words == AddressWords::Stored);
         sweep_code(ctx, start, size, SWEEP_CHUNK, |ins| {
             reader.step(ins, self);
             ControlFlow::Continue(())
@@ -159,9 +238,35 @@ impl<'a> LiteralEvidence<'a> {
         Ok(())
     }
 
-    /// The references found. They no longer borrow the runs, which [`cut_run`]
-    /// consumes.
-    pub fn into_refs(self) -> LiteralRefs {
+    /// The references found, each odd immediate settled: with `(n-1)/2` when that
+    /// ends at a boundary, or else with `n` when that does, and with no reference
+    /// when neither does. A boundary is the end of the run, a start or an end of
+    /// a reference already known, or the start of another odd one: its length is
+    /// in question and where it starts is not. An end settled here is one of these
+    /// already, so the answer does not depend on which was settled first.
+    ///
+    /// The order is what was measured: `(n-1)/2` first, because where literals
+    /// sit side by side a doubled length often lands at the run's end as well.
+    ///
+    /// They no longer borrow the runs, which [`cut_run`] consumes.
+    pub fn into_refs(mut self) -> LiteralRefs {
+        let odd = std::mem::take(&mut self.odd);
+        let boundaries: BTreeSet<u64> =
+            self.refs.0.keys().flat_map(|&(start, len)| [start, start + len]).chain(odd.keys().map(|&(start, _)| start)).collect();
+        for (&(start, n), &at) in &odd {
+            let Some((run, text)) = self.run_at(start) else { continue };
+            let run_end = run + text.len() as u64;
+            let ends_at_boundary = |len: u64| start.checked_add(len).is_some_and(|end| end == run_end || boundaries.contains(&end));
+            let halved = (n - 1) / 2;
+            let len = if halved > 0 && ends_at_boundary(halved) {
+                halved
+            } else if ends_at_boundary(n) {
+                n
+            } else {
+                continue;
+            };
+            self.add(start, len, CutKind::CodePair, at);
+        }
         self.refs
     }
 }
@@ -284,7 +389,7 @@ struct Loaded {
 }
 
 impl Loaded {
-    /// What this load's length is, strongest evidence first.
+    /// What this load's immediate is, strongest evidence first.
     fn decided(&self) -> Option<u64> {
         self.in_memory.or(self.length)
     }
@@ -301,6 +406,13 @@ struct Moved<T> {
 struct X64Pairs {
     /// The registers the image's ABI passes arguments in, in order.
     args: Vec<u8>,
+    /// The registers a two-word value is returned in: the address in the first,
+    /// the length in the second.
+    returns: [Option<u8>; 2],
+    /// The immediate in the second of [`Self::returns`], moved there before or
+    /// after the load and written over by nothing since. A pair only at a `ret`:
+    /// anywhere else `rax` and `rdx` hold what they happen to hold.
+    returned: Option<Moved<()>>,
     /// Whether an immediate can be a run's address ([`AddressWords::Stored`]).
     /// Where the image may load anywhere it is a number, whatever it equals.
     immediate_addresses: bool,
@@ -310,10 +422,12 @@ struct X64Pairs {
 }
 
 impl X64Pairs {
-    /// Over `args`, the ABI's argument registers by name, in order.
-    fn new(args: &[&str], immediate_addresses: bool) -> Self {
+    /// Over `args`, the ABI's argument registers by name, in order, and `returns`,
+    /// the two it returns a pair in.
+    fn new(args: &[&str], returns: [&str; 2], immediate_addresses: bool) -> Self {
         let args = args.iter().filter_map(|name| gpr(name)).map(|(reg, _)| reg).collect();
-        Self { args, immediate_addresses, open: Vec::new(), regs: Vec::new(), slots: Vec::new() }
+        let returns = returns.map(|name| gpr(name).map(|(reg, _)| reg));
+        Self { args, returns, returned: None, immediate_addresses, open: Vec::new(), regs: Vec::new(), slots: Vec::new() }
     }
 
     /// The register an address is in when `reg` holds its length: the one before
@@ -328,6 +442,9 @@ impl X64Pairs {
     }
 
     fn step(&mut self, ins: &DecodedInsn, evidence: &mut LiteralEvidence) {
+        if ins.kind == InsnKind::Ret {
+            self.at_return(evidence);
+        }
         if ins.kind != InsnKind::Seq {
             self.retire_all(evidence);
             return;
@@ -339,6 +456,10 @@ impl X64Pairs {
         self.regs.iter_mut().for_each(|m| m.age += 1);
         self.slots.iter_mut().for_each(|m| m.age += 1);
         self.regs.retain(|m| m.age <= CODE_PAIR_WINDOW);
+        if let Some(m) = &mut self.returned {
+            m.age += 1;
+        }
+        self.returned = self.returned.take().filter(|m| m.age <= CODE_PAIR_WINDOW);
         self.slots.retain(|m| m.age <= CODE_PAIR_WINDOW);
 
         let Some((dst, src)) = ins.text.split_once(' ').and_then(|(_, ops)| ops.split_once(',')) else { return };
@@ -347,6 +468,9 @@ impl X64Pairs {
         if let Some((reg, _)) = dst_reg {
             self.retire(|o| o.reg == Some(reg), evidence);
             self.regs.retain(|m| m.to != reg);
+            if Some(reg) == self.returns[1] {
+                self.returned = None;
+            }
             let holder = self.holder(reg);
             if let Some(load) = self.open.iter_mut().find(|o| o.reg.is_some() && o.reg == holder) {
                 load.length = None;
@@ -372,6 +496,9 @@ impl X64Pairs {
                 let imm = raw.filter(|&v| v <= CODE_PAIR_MAX_LEN);
                 match (dst_reg, slot(dst), imm) {
                     (Some((reg, _)), _, Some(value)) => {
+                        if Some(reg) == self.returns[1] {
+                            self.returned = Some(Moved { to: (), value, age: 0 });
+                        }
                         // One at most: a register holds one load, and a write
                         // to it ended the last.
                         let holder = self.holder(reg);
@@ -416,6 +543,15 @@ impl X64Pairs {
         self.open.push(Loaded { va, reg, start, age: 0, stored, in_memory, length: None });
     }
 
+    /// A `ret`: a load in the first register the ABI returns in, with an immediate
+    /// in the second, is a value returned, unless it has a length of its own.
+    fn at_return(&mut self, evidence: &mut LiteralEvidence) {
+        let Some(moved) = &self.returned else { return };
+        if let Some(load) = self.open.iter().find(|o| o.reg.is_some() && o.reg == self.returns[0] && o.decided().is_none()) {
+            evidence.code_pair(load.start, moved.value, load.va);
+        }
+    }
+
     /// Decide and forget the loads `done` says are over.
     fn retire(&mut self, done: impl Fn(&Loaded) -> bool, evidence: &mut LiteralEvidence) {
         self.open.retain(|o| {
@@ -423,7 +559,7 @@ impl X64Pairs {
                 return true;
             }
             if let Some(len) = o.decided() {
-                evidence.add(o.start, len, CutKind::CodePair, o.va);
+                evidence.code_pair(o.start, len, o.va);
             }
             false
         });
@@ -434,6 +570,7 @@ impl X64Pairs {
         self.retire(|_| true, evidence);
         self.regs.clear();
         self.slots.clear();
+        self.returned = None;
     }
 }
 
@@ -555,7 +692,7 @@ mod tests {
     fn pairs_under(abi: &[&str], run_start: u64, listing: &[(&str, Option<u64>)]) -> Vec<(u64, u64, u64)> {
         let found = run(run_start, &"x".repeat(64));
         let mut evidence = LiteralEvidence::new(std::iter::once(&found));
-        let mut reader = X64Pairs::new(abi, false);
+        let mut reader = X64Pairs::new(abi, RETURN_PAIR, false);
         for (i, (text, rip)) in listing.iter().enumerate() {
             let ins = DecodedInsn {
                 va: Va(0x5000 + i as u64),
@@ -563,7 +700,12 @@ mod tests {
                 bytes: vec![0],
                 mnemonic: text.split(' ').next().unwrap().to_string(),
                 text: (*text).to_string(),
-                kind: if text.starts_with("call") || text.starts_with("ret") { InsnKind::Call } else { InsnKind::Seq },
+                kind: match text.split(' ').next() {
+                    Some("ret") => InsnKind::Ret,
+                    Some("call") => InsnKind::Call,
+                    Some("jmp") => InsnKind::Jump,
+                    _ => InsnKind::Seq,
+                },
                 target: None,
                 rip_target: rip.map(Va),
                 cond: None,
@@ -643,6 +785,94 @@ mod tests {
     #[test]
     fn an_immediate_into_the_same_register_ends_the_load() {
         assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov edi,0Dh", None), ("call rax", None)]), []);
+    }
+
+    #[test]
+    fn a_pair_returned_is_a_pair_only_at_a_ret() {
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("ret", None)]), [(0x110, 12, 0x5000)]);
+        assert_eq!(pairs(0x100, &[("mov edx,0Ch", None), ("lea rax,[110h]", Some(0x110)), ("ret", None)]), [(0x110, 12, 0x5001)]);
+        // An epilogue between them.
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("add rsp,8", None), ("ret", None)]), [(0x110, 12, 0x5000)]);
+        // Anywhere but a `ret`, the same two registers say nothing.
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("call rcx", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("jmp rcx", None)]), []);
+    }
+
+    #[test]
+    fn a_pair_returned_is_in_the_two_registers_and_no_others() {
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov ecx,0Ch", None), ("ret", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rcx,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("ret", None)]), []);
+        // Written over before the `ret`: `rdx` no longer holds it.
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("mov rdx,rcx", None), ("ret", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov edx,0Ch", None), ("mov rax,rcx", None), ("ret", None)]), []);
+        // Too far from it.
+        let mut far = vec![("mov edx,0Ch", None), ("lea rax,[110h]", Some(0x110))];
+        far.extend(std::iter::repeat_n(("add rcx,rbx", None), CODE_PAIR_WINDOW as usize));
+        far.push(("ret", None));
+        assert_eq!(pairs(0x100, &far), []);
+    }
+
+    /// What `refs` says after each odd immediate of `odd` is settled, over one
+    /// run at `0x100`: `(start, immediate)`.
+    fn settled(text: &str, firm: &[(u64, u64)], odd: &[(u64, u64)]) -> Vec<(u64, u64)> {
+        let found = run(0x100, text);
+        let mut evidence = LiteralEvidence::new(std::iter::once(&found));
+        for &(s, l) in firm {
+            evidence.add(s, l, CutKind::DataPair, Va(0x9000));
+        }
+        for &(s, n) in odd {
+            evidence.code_pair(s, n, Va(0x8000));
+        }
+        evidence.into_refs().0.keys().copied().filter(|r| !firm.contains(r)).collect()
+    }
+
+    #[test]
+    fn an_odd_immediate_is_doubled_where_half_of_it_ends_at_a_boundary() {
+        // Half ends where another reference starts, or ends, or at the run's end.
+        assert_eq!(settled(&"x".repeat(64), &[(0x105, 2)], &[(0x100, 11)]), [(0x100, 5)]);
+        assert_eq!(settled(&"x".repeat(64), &[(0x101, 4)], &[(0x100, 11)]), [(0x100, 5)]);
+        assert_eq!(settled(&"x".repeat(5), &[], &[(0x100, 11)]), [(0x100, 5)]);
+        // The start of another odd one is a boundary, whatever its length proves to be.
+        assert_eq!(settled(&"x".repeat(6), &[], &[(0x100, 7), (0x103, 7)]), [(0x100, 3), (0x103, 3)]);
+    }
+
+    #[test]
+    fn an_odd_immediate_is_itself_where_only_it_ends_at_a_boundary() {
+        assert_eq!(settled(&"x".repeat(64), &[(0x10b, 2)], &[(0x100, 11)]), [(0x100, 11)]);
+        assert_eq!(settled(&"x".repeat(11), &[], &[(0x100, 11)]), [(0x100, 11)]);
+    }
+
+    #[test]
+    fn half_is_taken_where_both_end_at_a_boundary() {
+        assert_eq!(settled(&"x".repeat(11), &[(0x105, 2)], &[(0x100, 11)]), [(0x100, 5)]);
+    }
+
+    #[test]
+    fn an_odd_immediate_with_no_boundary_is_no_reference() {
+        assert_eq!(settled(&"x".repeat(64), &[], &[(0x100, 11)]), []);
+        // One: no half to take, and itself only with a boundary after it.
+        assert_eq!(settled(&"x".repeat(64), &[], &[(0x100, 1)]), []);
+        assert_eq!(settled(&"x".repeat(64), &[(0x101, 2)], &[(0x100, 1)]), [(0x100, 1)]);
+    }
+
+    #[test]
+    fn an_even_immediate_and_a_data_pair_are_taken_as_they_stand() {
+        let found = run(0x100, &"x".repeat(64));
+        let mut evidence = LiteralEvidence::new(std::iter::once(&found));
+        evidence.code_pair(0x100, 12, Va(0x8000));
+        evidence.add(0x120, 13, CutKind::DataPair, Va(0x9000));
+        assert_eq!(evidence.into_refs().0.keys().copied().collect::<Vec<_>>(), [(0x100, 12), (0x120, 13)]);
+    }
+
+    #[test]
+    fn the_answer_states_the_gate_as_one_field() {
+        let of = |cuts: LiteralCuts| serde_json::to_string(&cuts).unwrap();
+        assert_eq!(of(LiteralCuts::Applied { because: RustcEvidence::RustcPath }), r#"{"applied":true,"because":"rustc_path"}"#);
+        assert_eq!(of(LiteralCuts::Applied { because: RustcEvidence::RustcComment }), r#"{"applied":true,"because":"rustc_comment"}"#);
+        assert_eq!(of(LiteralCuts::NotApplied { because: None }), r#"{"applied":false}"#);
+        assert_eq!(of(LiteralCuts::NotApplied { because: Some(NotCut::WasmModule) }), r#"{"applied":false,"because":"wasm_module"}"#);
+        assert_eq!(of(LiteralCuts::NotApplied { because: Some(NotCut::RelocationsNotRead) }), r#"{"applied":false,"because":"relocations_not_read"}"#);
+        assert_eq!(of(LiteralCuts::NotApplied { because: Some(NotCut::NotAnImage) }), r#"{"applied":false,"because":"not_an_image"}"#);
     }
 
     #[test]

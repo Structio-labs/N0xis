@@ -25,12 +25,15 @@
 //! a reference with its length ([`n0xis_core::cut_run`]). A row cut on one says
 //! which (`cut_by`, first evidence). Only an image on disk can say it: a running
 //! process or loose bytes have no relocation table to tell a pointer from a
-//! number, and their runs stay whole.
+//! number, and their runs stay whole. And only an image that shows it holds
+//! literals a length delimits is cut at all ([`n0xis_sources::rustc_evidence`]):
+//! with no such evidence no reference is looked for. The answer says which, once
+//! ([`n0xis_core::LiteralCuts`]).
 
 use std::sync::{Arc, Mutex};
 
 use n0xis_contracts::{Response, Va, schema};
-use n0xis_core::{FoundString, StringEncoding};
+use n0xis_core::{FoundString, LiteralCuts, LiteralRefs, NotCut, StringEncoding};
 use serde_json::{Value, json};
 
 use crate::registry::{Capability, Origin, Plugin, Registry};
@@ -53,6 +56,8 @@ struct Scanned {
     ranges: Vec<ReadRange>,
     /// Each string with the index of the range it was found in.
     strings: Vec<(FoundString, usize)>,
+    /// Whether the runs were cut, and why.
+    literal_cuts: LiteralCuts,
     /// What each range gave. Stated only about a running process, and about a
     /// file only when no range gave a byte.
     read: n0xis_sources::RegionCoverage,
@@ -71,7 +76,7 @@ impl Plugin for StringTools {
     fn register(&self, reg: &mut Registry) {
         reg.add(Capability::new(
             "strings",
-            "Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `section`, `all_sections`, or `start`+`size` for others. In an image on disk a run is cut where a reference states a length (`cut_by`). `contains` filters (any case); `limit`/`offset` page.",
+            "Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `section`, `all_sections`, or `start`+`size` for others. In an image that shows it holds literals a length delimits (`literal_cuts`), a run is cut where a reference states a length (`cut_by`). `contains` filters (any case); `limit`/`offset` page.",
             Some(schema::v1::STRINGS),
             Origin::Builtin,
             Box::new(strings),
@@ -166,7 +171,7 @@ fn strings(args: &Value) -> Response<Value> {
             r
         })
         .collect();
-    let answer = json!({ "count": returned, "min": min, "ranges": read, "strings": page });
+    let answer = json!({ "count": returned, "literal_cuts": scanned.literal_cuts, "min": min, "ranges": read, "strings": page });
     let swept = n0xis_sources::Swept { answer, read: scanned.read.clone() };
     let data = match resolved.src {
         Src::Live(_) | Src::Remote(_) => swept.live().map(|stated| serde_json::to_value(stated).unwrap_or(Value::Null)),
@@ -274,15 +279,21 @@ fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncodi
             }));
         }
     }
-    let refs = literal_refs(src, &text);
-    let mut strings: Vec<(FoundString, usize)> = text
-        .into_iter()
-        .flat_map(|(s, i, ended_by_nul)| n0xis_core::cut_run(s, ended_by_nul, &refs, min).into_iter().map(move |piece| (piece, i)))
-        .collect();
+    let (literal_cuts, refs) = literal_refs(src, &text);
+    let mut strings: Vec<(FoundString, usize)> = match &refs {
+        Some(refs) => text
+            .into_iter()
+            .flat_map(|(s, i, ended_by_nul)| n0xis_core::cut_run(s, ended_by_nul, refs, min).into_iter().map(move |piece| (piece, i)))
+            .collect(),
+        None => text.into_iter().map(|(s, i, _)| (s, i)).collect(),
+    };
     strings.sort_by_key(|(s, _)| s.address.0);
-    Ok(Scanned { ranges, strings, read })
+    Ok(Scanned { ranges, strings, literal_cuts, read })
 }
 
+/// Whether `src` is an image whose runs may be cut, and if so the references that
+/// cut them: no references without the evidence for looking ([`LiteralCuts`]).
+///
 /// The references with their lengths an image on disk states into `runs`: every
 /// data pair in its sections that hold no code, and, on x86-64, every code pair
 /// in its code. A run in a section that holds code is not one to cut: what looks
@@ -291,16 +302,16 @@ fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncodi
 ///
 /// A section or a code range that does not read gives no evidence and no error:
 /// the scan has its answer, and with no evidence that answer is the run whole.
-fn literal_refs(src: &Src, runs: &[(FoundString, usize, bool)]) -> n0xis_core::LiteralRefs {
-    let Src::Static(img) = src else { return n0xis_core::LiteralRefs::default() };
+fn literal_refs(src: &Src, runs: &[(FoundString, usize, bool)]) -> (LiteralCuts, Option<LiteralRefs>) {
+    let not_applied = |because| (LiteralCuts::NotApplied { because }, None);
+    let Src::Static(img) = src else { return not_applied(Some(NotCut::NotAnImage)) };
+    let machine = img.image().machine();
+    let Some(width) = machine.address_model.pointer_width() else { return not_applied(Some(NotCut::WasmModule)) };
+    let Some(because) = n0xis_sources::rustc_evidence(img.image()) else { return not_applied(None) };
+    let applied = LiteralCuts::Applied { because };
     let code = src.as_mem().code_ranges();
     let holds_code = |va: Va| code.iter().any(|(s, n)| va.0 >= s.0 && va.0 - s.0 < *n);
     let mut evidence = n0xis_core::LiteralEvidence::new(runs.iter().map(|(s, ..)| s).filter(|s| !holds_code(s.address)));
-    let machine = img.image().machine();
-    let Some(width) = machine.address_model.pointer_width() else { return n0xis_core::LiteralRefs::default() };
-    if evidence.is_empty() {
-        return n0xis_core::LiteralRefs::default();
-    }
     let order = machine.byte_order;
     let data: Vec<(Va, u64)> = img.sections().into_iter().map(|(_, va, size)| (va, size)).filter(|(va, _)| !holds_code(*va)).collect();
     let in_data = |va: u64| data.iter().any(|(s, n)| va >= s.0 && va - s.0 < *n);
@@ -309,6 +320,12 @@ fn literal_refs(src: &Src, runs: &[(FoundString, usize, bool)]) -> n0xis_core::L
             evidence.relocated_word(src.as_mem(), img.relocated_words(), at, value, width, order);
         }
     });
+    if how == n0xis_sources::AddressWords::NotStated {
+        return not_applied(Some(NotCut::RelocationsNotRead));
+    }
+    if evidence.is_empty() {
+        return (applied, None);
+    }
     if how == n0xis_sources::AddressWords::Stored {
         for (va, size) in &data {
             for (at, bytes) in n0xis_sources::read_runs(src.as_mem(), *va, *size as usize).unwrap_or_default() {
@@ -324,5 +341,5 @@ fn literal_refs(src: &Src, runs: &[(FoundString, usize, bool)]) -> n0xis_core::L
             let _ = evidence.x64_code_pairs(&ctx, *start, *size, how);
         }
     }
-    evidence.into_refs()
+    (applied, Some(evidence.into_refs()))
 }

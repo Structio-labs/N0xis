@@ -590,11 +590,23 @@ Text in the image: runs of printable characters, each with its address.
   is almost always instructions that happen to print); `--all-sections` adds those, `--section
   <name>` reads one, `--start`/`--size` one range (at most 256 MiB; the only choice for a
   process). `data.ranges` names what was read; a string never runs across a gap.
-- Literals with no terminator sit side by side, so in an image on disk a run of UTF-8 text is cut
-  where a reference states a length: a pointer-sized word in a section that holds no code with the
-  length in the next word, or on x86-64 an instruction loading the address near an immediate length,
+- Literals with no terminator sit side by side, so an image on disk that shows it holds them has a
+  run of UTF-8 text cut where a reference states a length. **Which images:** those showing rustc built
+  at least part of them, by `rustc version ` in `.comment`, or a `/rustc/<40 hex>/` path in a section
+  that holds no code (panic locations; stripping leaves them). `data.literal_cuts` says which, once per
+  answer: `{"applied": true, "because": "rustc_comment"|"rustc_path"}`, or `{"applied": false}` where
+  the image shows nothing, in which case no reference is looked for and every run is whole. A reason
+  comes with `applied: false` when the question could not be asked: `because` is `wasm_module`,
+  `relocations_not_read` (an image that shows rustc, may load anywhere, and whose relocations this
+  reader did not read) or `not_an_image` (a process, a snapshot, loose bytes). A Rust image built to
+  leave out both (`-C strip` of `.comment` and locations with their paths remapped) is not cut.
+- A reference with its length is a pointer-sized word in a section that holds no code with the
+  length in the next word, or on x86-64 an instruction loading the address near an immediate length:
   in the next register of the image's calling convention (System V `rdi rsi rdx rcx r8 r9`, Win64
-  `rcx rdx r8 r9`) or in the stack slot beside the pointer's. In a run no NUL ends, a cut at `c` needs
+  `rcx rdx r8 r9`), in the stack slot beside the pointer's, or a value returned, in `rax` and `rdx` at
+  a `ret`. An odd immediate is not yet a length, since `eprintln!` of 20 bytes states `0x29`: it is
+  `(n-1)/2` where that ends at a boundary (the run's end, a start or end of a reference, the start of
+  another odd one), or else `n` where that does, and no reference when neither does. In a run no NUL ends, a cut at `c` needs
   `c` to be the start or the end of such a reference; in a run a NUL ends, the start of one and the
   end of another, so neither a partial length on a C string nor a reference to a merged string tail
   cuts anything. A piece a reference states carries `cut_by`, `{"kind": "data_pair"|"code_pair",

@@ -146,7 +146,7 @@ pub use unnamed::{function_name, function_name_and_source, listed_name, unnamed_
 pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};
 pub use xref::{XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, build_xref_index, xref_entry, xref_kind};
 pub use strings::{find_strings, utf16_strings, utf8_strings, FoundString, StringEncoding};
-pub use literals::{cut_run, CutBy, CutKind, LiteralEvidence, LiteralRefs, CODE_PAIR_MAX_LEN, CODE_PAIR_WINDOW};
+pub use literals::{cut_run, CutBy, CutKind, LiteralCuts, LiteralEvidence, LiteralRefs, NotCut, CODE_PAIR_MAX_LEN, CODE_PAIR_WINDOW};
 pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
 use n0xis_arch::Arch;
