@@ -190,11 +190,23 @@ pub fn locate_strings(
     Ok(Swept { answer: LocatedStrings { layout, strings }, read })
 }
 
-/// The candidate with the most references. Nothing referred to, or two alike, chooses none.
+/// The fewest references that decide a layout when none of them is a Lua value. One
+/// word equal to an address is what chance gives: a process's own stack did it, and
+/// the answer named a base for a string nothing referred to.
+const REFERENCES_WITHOUT_A_VALUE: usize = 2;
+
+/// The candidate with the most references, among those a reference can be believed of.
+/// Nothing referred to, or two alike, chooses none.
 fn choose(candidates: &[LayoutCandidate]) -> LayoutChoice {
     let most = candidates.iter().map(|c| c.referred.references).max().unwrap_or(0);
     if most == 0 {
         return LayoutChoice::Undecided("no candidate layout's bases are referred to by anything read".to_string());
+    }
+    let believed = |c: &LayoutCandidate| c.referred.in_values > 0 || c.referred.references >= REFERENCES_WITHOUT_A_VALUE;
+    if !candidates.iter().any(believed) {
+        return LayoutChoice::Undecided(format!(
+            "the bases are referred to only by {most} word that is no Lua value, which chance can give"
+        ));
     }
     let tied: Vec<&LayoutCandidate> = candidates.iter().filter(|c| c.referred.references == most).collect();
     match tied.as_slice() {
@@ -339,6 +351,19 @@ mod tests {
     /// The answer is known before the question: each layout, planted, is the one chosen,
     /// with the planted bases and exactly the planted references, and no other has any.
     #[test]
+    fn one_word_outside_a_value_decides_nothing() {
+        let candidate = |len_offset, references, in_values| LayoutCandidate {
+            len_offset,
+            strings: 8,
+            referred: References { references, in_values },
+        };
+        let lone = choose(&[candidate(0x0c, 1, 0), candidate(0x10, 0, 0), candidate(0x14, 0, 0)]);
+        assert!(matches!(&lone, LayoutChoice::Undecided(why) if why.contains("referred")), "{lone:?}");
+        assert_eq!(choose(&[candidate(0x0c, 1, 1), candidate(0x10, 0, 0)]), LayoutChoice::ByReferences(0x0c), "a value is believed");
+        assert_eq!(choose(&[candidate(0x0c, 2, 0), candidate(0x10, 0, 0)]), LayoutChoice::ByReferences(0x0c), "two words are");
+    }
+
+    #[test]
     fn each_layout_is_chosen_by_what_refers_to_it() {
         for off in GCSTR_LEN_OFFSETS {
             let (snap, up, down) = planted(off, true);
@@ -403,11 +428,12 @@ mod tests {
         let (snap, up, _) = planted(0x14, false);
         let mut mem = snap.read(Va(REGION), 0x1000).unwrap();
         mem[0x900..0x908].copy_from_slice(&up.to_le_bytes());
+        mem[0x908..0x910].copy_from_slice(&up.to_le_bytes());
         let snap = Snapshot::builder().region(Va(REGION), mem).build();
         let got = locate(&snap, None);
         assert_eq!(got.layout.choice, LayoutChoice::ByReferences(0x14), "{:?}", got.layout);
         let hit = got.strings.iter().find(|s| s.text == "up").unwrap();
-        assert_eq!(hit.referred, References { references: 1, in_values: 0 });
+        assert_eq!(hit.referred, References { references: 2, in_values: 0 });
 
         // In low memory, a packed 4-byte reference, at an address that is not on 8.
         let low = 0x3000_0000u64;
@@ -415,10 +441,11 @@ mod tests {
         mem[0x114..0x118].copy_from_slice(&2u32.to_le_bytes());
         mem[0x118..0x11a].copy_from_slice(b"up");
         mem[0x804..0x808].copy_from_slice(&((low + 0x100) as u32).to_le_bytes());
+        mem[0x80c..0x810].copy_from_slice(&((low + 0x100) as u32).to_le_bytes());
         let snap = Snapshot::builder().region(Va(low), mem).build();
         let got = locate_strings(&snap, &[(Va(low), 0x1000)], None, 1, 16, |t| t == "up").unwrap().answer;
         assert_eq!(got.layout.choice, LayoutChoice::ByReferences(0x14), "{:?}", got.layout);
-        assert_eq!(got.strings[0].referred, References { references: 1, in_values: 0 });
+        assert_eq!(got.strings[0].referred, References { references: 2, in_values: 0 });
     }
 
     /// A false hit, where no candidate can put a base, is not listed at all. Shape of

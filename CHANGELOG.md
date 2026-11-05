@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **One stray word could pick LuaJIT's string layout.** A word equal to a candidate base, in no Lua value, chose that layout, and `lua strings` and
+  `lua combo` named a base for a string nothing referred to. It now takes two references, or one in a Lua value; less is answered as undecided.
 - **A run that wanted too much memory was killed by the kernel, with no answer and a desktop alarm.** The engine now counts what it
   holds and stops itself at a ceiling, answering `out-of-memory` in the usual envelope: three quarters of the machine's memory, or
   `N0X_MEMORY_MAX`, and never more than three quarters of the tightest cgroup limit. Every allocation is counted, so a length read from a
