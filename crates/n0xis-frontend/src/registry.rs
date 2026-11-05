@@ -1158,15 +1158,18 @@ enum ScanTarget {
     /// answer says what it read, and reading nothing is an error.
     Live,
     /// One window the caller named in an image file. Its answer states no
-    /// coverage: what a file holds does not change, and this answer is byte for
-    /// byte the one it has always been.
+    /// coverage, since what a file holds does not change; a window that misses
+    /// the image is still an error.
     File,
 }
 
 impl ScanTarget {
     fn answer<T: serde::Serialize>(self, schema: &str, swept: n0xis_sources::Swept<T>, label: &str) -> Response<Value> {
         match self {
-            ScanTarget::File => ok_json(schema, swept.answer, label),
+            ScanTarget::File => match swept.window() {
+                Ok(answer) => ok_json(schema, answer, label),
+                Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
+            },
             ScanTarget::Live => match swept.live() {
                 Ok(stated) => ok_json(schema, stated, label),
                 Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),

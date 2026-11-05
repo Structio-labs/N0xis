@@ -531,9 +531,8 @@ fn a_refused_target_is_an_error_not_an_empty_scan() {
     assert!(failure.contains("denied"), "{failure}");
 }
 
-/// A window of a file is not a sweep of a process: its answer is the two fields
-/// it has always been. A calibrated pin on the shape, beside the byte-for-byte
-/// comparison against the previous build recorded with this change.
+/// A window of a file states no coverage: what a file holds does not come and go.
+/// Its answer is the two fields it has always been.
 #[test]
 fn a_file_window_states_no_coverage() {
     let bytes = std::fs::read(target_exe()).expect("read the image");
@@ -542,25 +541,14 @@ fn a_file_window_states_no_coverage() {
     let dir = std::env::temp_dir().join(format!("n0xis-unreadable-file-{}", std::process::id()));
     std::fs::create_dir_all(dir.join(".n0x")).expect("scratch dir");
     let exe = target_exe().to_str().expect("a path").to_string();
-    let run = |start: &str| -> Value {
-        let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
-            .args(["scan", "aob", "--file", &exe, "--start", start, "--size", "64", "--pattern", "??"])
-            .current_dir(&dir)
-            .output()
-            .expect("run n0xis");
-        serde_json::from_slice(&out.stdout).expect("one JSON object")
-    };
-    let keys = |v: &Value| -> Vec<String> { v["data"].as_object().expect("an object").keys().cloned().collect() };
-
-    let v = run(&hex(text.sh_addr));
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
+        .args(["scan", "aob", "--file", &exe, "--start", &hex(text.sh_addr), "--size", "64", "--pattern", "??"])
+        .current_dir(&dir)
+        .output()
+        .expect("run n0xis");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("one JSON object");
     assert_eq!(v["data"]["bytes_scanned"], 64, "the window has to have been read: {v}");
-    assert_eq!(keys(&v), ["bytes_scanned", "matches"], "{v}");
-
-    // Nor does a window outside the image say anything new: an empty answer, as
-    // before. Recorded as a gap: if this becomes a refusal, this line should fail.
-    let v = run("0x10");
-    assert_eq!(v["ok"], true, "{v}");
-    assert_eq!(v["data"]["bytes_scanned"], 0, "{v}");
-    assert_eq!(keys(&v), ["bytes_scanned", "matches"], "{v}");
+    let keys: Vec<String> = v["data"].as_object().expect("an object").keys().cloned().collect();
+    assert_eq!(keys, ["bytes_scanned", "matches"], "{v}");
     let _ = std::fs::remove_dir_all(&dir);
 }

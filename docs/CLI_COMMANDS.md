@@ -770,7 +770,8 @@ AOB (array-of-bytes) signature scan with `??` wildcards, e.g. `"48 8B ?? 68"`.
   region; `--start` required for `--file`).
 - Sources: `--pid` | `--file`.
 - `data`: `matches`, `bytes_scanned`. On `--pid`, also what the scan did not read, below. On
-  `--file`, those two fields and nothing more; a window outside the image is `bytes_scanned: 0`.
+  `--file`, those two fields and nothing more; a window outside the image is the error
+  `nothing-readable`.
 - Schema: `n0xis.scan.aob.v1`
 
 #### What a scan of a process did not read
@@ -779,7 +780,9 @@ A process's regions come and go, and some will not read. A sweep of them goes on
 that gives nothing, and states it, in the same object as its result. This goes for `scan aob`,
 `scan value`, `scan filter`, `scan group`, `scan pointer-path`, `locate by-transition`, `lua
 strings`, `lua combo`, `lua seedscan`, `il2cpp classes` and `ui locate`, and for `find` and
-`strings` on `--pid` or `--remote-cmd`. An answer about a file or a snapshot states none of it.
+`strings` on `--pid` or `--remote-cmd`. An answer about a window of a file or a snapshot states
+none of it, except that a window of which nothing reads is `nothing-readable` there too: `scan aob`,
+`scan value`, `scan group`, `find` and `strings`.
 
 - `regions_scanned`: regions a read gave at least one byte of.
 - `regions_not_read`, and `not_read: [{start, size, why}]`: regions that gave nothing; `why` is

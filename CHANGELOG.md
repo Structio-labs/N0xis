@@ -102,6 +102,21 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Changed
 
+- **A window outside the image is now an error, not an empty success.** Asked about a window of a
+  file that gives no byte, these answered `ok: true` with nothing in it, and answer the error
+  `nothing-readable`, naming the address, as the same window of a process does. `scan value` saves
+  nothing under `--save-as` then. A window that misses a snapshot in `find` and `strings` too.
+  - `scan aob --file f --start 0x10 --size 64 --pattern 90`: before `{"bytes_scanned":0,"matches":[]}`
+  - `scan value`: before `{"exhaustive":true,"matches":[],"regions":0,"shown":0,"total_matches":0,...}`
+  - `scan group`: before `{"bytes_scanned":0,"field_count":1,"hits":[],"total_hits":0,"window":256}`
+  - `find`: before `{"bytes_scanned":0,"count":0,"matches":[],...}`
+  - `strings`: before `{"count":0,"min":4,"ranges":[...],"strings":[]}`
+
+  After, each: `{"ok":false,"error":{"code":"nothing-readable","message":"nothing was readable: ...
+  address 0x10 is not mapped in this source"}}`. A section with no file bytes (`find --section .bss`) answers the same. A `--size 0` window
+  stays `ok: true`, since nothing was asked. `mem span` stays too: its question is what in the window
+  reads, and `read: 0` of `size` says that.
+
 - **The WebAssembly architecture is its own adapter crate, `n0xis-wasm-arch`, and the module reader sits
   behind `n0xis-sources`' `static-wasm` feature.** Stage 2 had made `n0xis-arch` depend on the format crate
   `n0xis-wasm`, and `n0xis-sources` pull it unconditionally into `n0xis-core`, which the boundary law

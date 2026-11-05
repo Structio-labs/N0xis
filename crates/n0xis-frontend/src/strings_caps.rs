@@ -47,8 +47,8 @@ struct Scanned {
     ranges: Vec<ReadRange>,
     /// Each string with the index of the range it was found in.
     strings: Vec<(FoundString, usize)>,
-    /// What each range gave. Stated only about a running process: a file's
-    /// ranges are the file's own, and their answer is what it was.
+    /// What each range gave. Stated only about a running process, and about a
+    /// file only when no range gave a byte.
     read: n0xis_sources::RegionCoverage,
 }
 
@@ -158,15 +158,14 @@ fn strings(args: &Value) -> Response<Value> {
         })
         .collect();
     let answer = json!({ "count": returned, "min": min, "ranges": read, "strings": page });
+    let swept = n0xis_sources::Swept { answer, read: scanned.read.clone() };
     let data = match resolved.src {
-        Src::Live(_) | Src::Remote(_) => {
-            let swept = n0xis_sources::Swept { answer, read: scanned.read.clone() };
-            match swept.live() {
-                Ok(stated) => serde_json::to_value(stated).unwrap_or(Value::Null),
-                Err(nothing) => return Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
-            }
-        }
-        Src::Static(_) | Src::Snap(_) => answer,
+        Src::Live(_) | Src::Remote(_) => swept.live().map(|stated| serde_json::to_value(stated).unwrap_or(Value::Null)),
+        Src::Static(_) | Src::Snap(_) => swept.window(),
+    };
+    let data = match data {
+        Ok(data) => data,
+        Err(nothing) => return Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
     };
     Response::success(schema::v1::STRINGS, data)
         .with_source(resolved.label)

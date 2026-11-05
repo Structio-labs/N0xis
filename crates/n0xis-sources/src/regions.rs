@@ -25,8 +25,8 @@
 //! real process, one reads and the next faults on its first byte, so a list of
 //! names to leave out would hide memory that reads.
 //!
-//! [`Swept`] is what a sweep hands back. It does not serialize: an answer about a
-//! live target goes through [`Swept::live`], which is where a sweep that read
+//! [`Swept`] is what a sweep hands back. It does not serialize: an answer goes
+//! through [`Swept::live`] or [`Swept::window`], which is where a sweep that read
 //! nothing becomes [`NothingReadable`] instead of an empty result.
 
 use n0xis_contracts::Va;
@@ -176,9 +176,9 @@ impl Serialize for RegionCoverage {
 
 /// A sweep's result beside what the sweep read.
 ///
-/// Not serializable. A frontend answering about a live target has to pass through
-/// [`live`](Self::live), and a file's window, whose answer states no coverage, takes
-/// [`answer`](Self::answer) by name; neither can come about by forgetting.
+/// Not serializable, so that an answer has to say which it is: [`live`](Self::live)
+/// about a running process, [`window`](Self::window) about a window of an image.
+/// Either way, reading nothing is a refusal and cannot come about by forgetting.
 #[derive(Clone, Debug)]
 pub struct Swept<T> {
     pub answer: T,
@@ -193,6 +193,17 @@ impl<T> Swept<T> {
             return Err(NothingReadable(self.read));
         }
         Ok(LiveAnswer { answer: self.answer, read: self.read })
+    }
+
+    /// The answer about a window of an image or a snapshot: the result alone, since
+    /// what a file holds does not come and go, or the same refusal. A window that
+    /// misses the image has read nothing, and `ok: true` with nothing in it is the
+    /// worst shape an answer can take.
+    pub fn window(self) -> Result<T, NothingReadable> {
+        if self.read.nothing_read() {
+            return Err(NothingReadable(self.read));
+        }
+        Ok(self.answer)
     }
 
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Swept<U> {

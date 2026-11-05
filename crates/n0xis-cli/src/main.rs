@@ -4743,7 +4743,10 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
     match src {
         // A process: a named window may not read, or may stop part-way.
         Src::Live(_) | Src::Remote(_) => emit_swept(schema::v1::FIND, n0xis_sources::Swept { answer: data, read }, label, pretty),
-        Src::Static(_) | Src::Snap(_) => emit(&Response::success(schema::v1::FIND, data).with_source(label), pretty),
+        Src::Static(_) | Src::Snap(_) => match (n0xis_sources::Swept { answer: data, read }).window() {
+            Ok(data) => emit(&Response::success(schema::v1::FIND, data).with_source(label), pretty),
+            Err(nothing) => ir_err(n0xis_sources::NOTHING_READABLE, &nothing.to_string(), pretty),
+        },
     }
 }
 

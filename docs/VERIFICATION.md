@@ -1218,7 +1218,6 @@ sentence is stale.
 | A function whose symbol spans several FDEs | Measured 2026-10-20: 2 of libc's 3 777 FDEs (`setcontext`, `__clone`) end at the symbol's `st_size`, and their inner FDE starts are listed as functions too, so two pairs of extents overlap. | `llvm-dwarfdump --eh-frame`, `llvm-nm -S` |
 | `disasm` stops after `(bad)` without saying so | Measured 2026-10-20: `--count 60000` on the stripped browser binary returned 20 005 instructions, stopping at the `(bad)` inside an embedded string, with no note and no truncation flag. | `objdump` over the same range |
 | `disasm` decodes past a PE section's `VirtualSize` | Measured 2026-10-20: it keeps decoding the file's zero padding (44 extra `add [rax],al` on one DLL), where `objdump` stops at `VirtualSize`. | `objdump`, the section table |
-| A `scan aob --file` window outside the image | Answers `ok:true` with `bytes_scanned: 0`, where the same window on a process is `nothing-readable`. Kept so that a file's answer did not change; pinned by the same test. | the same test |
 | `scan dissect` field types | Measured 2026-10-20: 3 of 6 fields on the harness's six-field layout (two floats read as one double, a u64 as two ints), 2 of 6 on a second layout; offsets never cross alignment. | a C target of known layout |
 | `--explain` entries without an address | Measured 2026-10-20: 8 of 12 entries on one MinGW function carry an address; the 4 without are two constant folds and two dead-phi removals. Whether every rewrite is recorded is not measured. | — |
 
