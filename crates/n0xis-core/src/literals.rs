@@ -720,30 +720,30 @@ mod tests {
 
     #[test]
     fn a_load_with_a_register_immediate_is_a_pair() {
-        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("call rax", None)]), [(0x110, 13, 0x5000)]);
-        assert_eq!(pairs(0x100, &[("mov esi,0Dh", None), ("lea rdi,[110h]", Some(0x110)), ("call rax", None)]), [(0x110, 13, 0x5001)]);
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Eh", None), ("call rax", None)]), [(0x110, 14, 0x5000)]);
+        assert_eq!(pairs(0x100, &[("mov esi,0Eh", None), ("lea rdi,[110h]", Some(0x110)), ("call rax", None)]), [(0x110, 14, 0x5001)]);
     }
 
     #[test]
     fn a_load_stored_beside_its_length_is_a_pair() {
-        let listing = [("lea rax,[110h]", Some(0x110)), ("mov [rsp+50h],rax", None), ("mov edx,3", None), ("mov qword ptr [rsp+58h],0Dh", None)];
-        assert_eq!(pairs(0x100, &listing), [(0x110, 13, 0x5000)]);
-        let before = [("mov qword ptr [rsp+8],0Dh", None), ("lea rax,[110h]", Some(0x110)), ("mov [rsp],rax", None)];
-        assert_eq!(pairs(0x100, &before), [(0x110, 13, 0x5001)]);
+        let listing = [("lea rax,[110h]", Some(0x110)), ("mov [rsp+50h],rax", None), ("mov edx,3", None), ("mov qword ptr [rsp+58h],0Eh", None)];
+        assert_eq!(pairs(0x100, &listing), [(0x110, 14, 0x5000)]);
+        let before = [("mov qword ptr [rsp+8],0Eh", None), ("lea rax,[110h]", Some(0x110)), ("mov [rsp],rax", None)];
+        assert_eq!(pairs(0x100, &before), [(0x110, 14, 0x5001)]);
     }
 
     #[test]
     fn a_length_in_a_slot_not_beside_the_pointer_is_no_pair() {
-        let listing = [("lea rax,[110h]", Some(0x110)), ("mov [rsp+50h],rax", None), ("mov qword ptr [rsp+60h],0Dh", None)];
+        let listing = [("lea rax,[110h]", Some(0x110)), ("mov [rsp+50h],rax", None), ("mov qword ptr [rsp+60h],0Eh", None)];
         assert_eq!(pairs(0x100, &listing), []);
     }
 
     #[test]
     fn nothing_crosses_a_control_transfer_or_the_window() {
-        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("call rax", None), ("mov esi,0Dh", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("call rax", None), ("mov esi,0Eh", None)]), []);
         let mut far = vec![("lea rdi,[110h]", Some(0x110))];
         far.extend(std::iter::repeat_n(("add rax,rbx", None), CODE_PAIR_WINDOW as usize));
-        far.push(("mov esi,0Dh", None));
+        far.push(("mov esi,0Eh", None));
         assert_eq!(pairs(0x100, &far), []);
     }
 
@@ -753,17 +753,17 @@ mod tests {
         assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov edx,4", None), ("call rax", None)]), []);
         assert_eq!(pairs(0x100, &[("mov edx,4", None), ("lea rdi,[110h]", Some(0x110)), ("call rax", None)]), []);
         // Nor is an address outside the argument registers one of a pair...
-        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov esi,0Eh", None), ("call rax", None)]), []);
         // ...or in the last of them, with no register after it.
-        assert_eq!(pairs(0x100, &[("lea r9,[110h]", Some(0x110)), ("mov edi,0Dh", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea r9,[110h]", Some(0x110)), ("mov edi,0Eh", None), ("call rax", None)]), []);
     }
 
     #[test]
     fn the_next_register_is_the_abi_s() {
-        let win = [("lea rcx,[110h]", Some(0x110)), ("mov edx,0Dh", None), ("call rax", None)];
-        assert_eq!(pairs_under(WIN64, 0x100, &win), [(0x110, 13, 0x5000)]);
+        let win = [("lea rcx,[110h]", Some(0x110)), ("mov edx,0Eh", None), ("call rax", None)];
+        assert_eq!(pairs_under(WIN64, 0x100, &win), [(0x110, 14, 0x5000)]);
         assert_eq!(pairs_under(SYSV, 0x100, &win), []);
-        let sysv = [("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("call rax", None)];
+        let sysv = [("lea rdi,[110h]", Some(0x110)), ("mov esi,0Eh", None), ("call rax", None)];
         assert_eq!(pairs_under(WIN64, 0x100, &sysv), []);
     }
 
@@ -771,20 +771,20 @@ mod tests {
     fn two_addresses_each_take_the_register_after_their_own() {
         // `f(&str, &str)`: which immediate is whose was a guess before the ABI
         // said, and is not one now.
-        let listing = [("lea rdi,[110h]", Some(0x110)), ("lea rdx,[118h]", Some(0x118)), ("mov esi,0Dh", None), ("mov ecx,5", None), ("call rax", None)];
-        assert_eq!(pairs(0x100, &listing), [(0x110, 13, 0x5000), (0x118, 5, 0x5001)]);
+        let listing = [("lea rdi,[110h]", Some(0x110)), ("lea rdx,[118h]", Some(0x118)), ("mov esi,0Eh", None), ("mov ecx,6", None), ("call rax", None)];
+        assert_eq!(pairs(0x100, &listing), [(0x110, 14, 0x5000), (0x118, 6, 0x5001)]);
     }
 
     #[test]
     fn a_length_written_over_before_the_call_is_no_length() {
-        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("mov rsi,rax", None), ("call rax", None)]), []);
-        assert_eq!(pairs(0x100, &[("mov esi,0Dh", None), ("lea rdi,[110h]", Some(0x110)), ("mov rsi,rax", None), ("call rax", None)]), []);
-        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("mov esi,5", None), ("call rax", None)]), [(0x110, 5, 0x5000)]);
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Eh", None), ("mov rsi,rax", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("mov esi,0Eh", None), ("lea rdi,[110h]", Some(0x110)), ("mov rsi,rax", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Eh", None), ("mov esi,6", None), ("call rax", None)]), [(0x110, 6, 0x5000)]);
     }
 
     #[test]
     fn an_immediate_into_the_same_register_ends_the_load() {
-        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov edi,0Dh", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov edi,0Eh", None), ("call rax", None)]), []);
     }
 
     #[test]
