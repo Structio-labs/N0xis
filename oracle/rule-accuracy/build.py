@@ -87,7 +87,8 @@ def build_config(cfg: corpus.Config) -> dict:
         if corpus.PROGRAMS[cfg.program].lang not in spec["langs"]:
             continue
         m["truth_ok"][v] = spec["measured"] == spec["truth"] or checks[f"{spec['measured']} == {spec['truth']}"]["same"]
-    m["comment"] = readers.run(["readelf", "-p", ".comment", cfg.file("u.g")]).strip().splitlines()[1:]
+    # A PE keeps its toolchain's strings in `.rdata$zzz`, not a `.comment`.
+    m["comment"] = [] if readers.is_pe(cfg.file("u.g")) else readers.run(["readelf", "-p", ".comment", cfg.file("u.g")]).strip().splitlines()[1:]
     json.dump(m, open(manifest_path, "w"), indent=1)
     return m
 

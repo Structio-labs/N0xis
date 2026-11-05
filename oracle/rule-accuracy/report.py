@@ -5,7 +5,8 @@
 arch x compiler x -O level, per start source, per end source, per name layer,
 and the direction's test. Writes RESULTS/report.md and RESULTS/totals.json.
 
-Usage: report.py
+Usage: report.py   (RULE_ACCURACY_BEFORE=<results of an earlier run> adds
+RESULTS/before-after.md)
 """
 
 from __future__ import annotations
@@ -26,9 +27,9 @@ def pct(a: int, b: int) -> str:
     return "-" if b == 0 else f"{100.0 * a / b:.1f}%"
 
 
-def load() -> list:
+def load(results: str = corpus.RESULTS) -> list:
     out = []
-    for p in sorted(glob.glob(os.path.join(corpus.RESULTS, "*", "*", "*", "?.summary.json"))):
+    for p in sorted(glob.glob(os.path.join(results, "*", "*", "*", "?.summary.json"))):
         s = json.load(open(p))
         if "config" in s:
             out.append(s)
@@ -73,22 +74,31 @@ def group(summaries: list, keyf) -> dict:
     return g
 
 
+def found_of(found: int, truth: int) -> str:
+    """Recall, with what it is of: `3 / 4 (75.0%)`."""
+    return f"{found} / {truth} ({pct(found, truth)})"
+
+
 def starts_table(g: dict, title: str, keyname: str) -> list:
-    out = [f"### {title}", "", f"| {keyname} | runs | listed | true | wrong (interior / outside) | fragment | plt0 | precision | DWARF fns found | CRT fns found | PLT entries found |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+    """Precision by both readings of a wrong start: strict (a `.cold` fragment
+    and a PLT header are neither right nor wrong) and broad (both count as
+    wrong). Recall per tier of truth beside it."""
+    out = [f"### {title}", "", f"| {keyname} | runs | listed | true | wrong, strict (interior / outside) | fragment | plt0 | wrong, broad | precision, strict | precision, broad | recall: DWARF fns | recall: CRT fns | recall: PLT entries |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for k in sorted(g):
         c = g[k]
         wrong = c["interior"] + c["outside"]
+        broad = wrong + c["fragment"] + c["plt0"]
         out.append(
-            f"| {k} | {c['runs']} | {c['listed']} | {c['true']} | {wrong} ({c['interior']} / {c['outside']}) | {c['fragment']} | {c['plt0']} | "
-            f"{pct(c['true'], c['true'] + wrong)} | {c['dwarf_found']} / {c['dwarf_truth']} | {c['symtab_found']} / {c['symtab_truth']} | {c['plt_found']} / {c['plt_truth']} |"
+            f"| {k} | {c['runs']} | {c['listed']} | {c['true']} | {wrong} ({c['interior']} / {c['outside']}) | {c['fragment']} | {c['plt0']} | {broad} | "
+            f"{pct(c['true'], c['true'] + wrong)} | {pct(c['true'], c['true'] + broad)} | {found_of(c['dwarf_found'], c['dwarf_truth'])} | {found_of(c['symtab_found'], c['symtab_truth'])} | {found_of(c['plt_found'], c['plt_truth'])} |"
         )
     return out + [""]
 
 
 def sources_table(g: dict, title: str, keyname: str) -> list:
-    out = [f"### {title}", "", "Precision = true / (true + wrong); a fragment or a PLT header is neither. `alone`: the starts this source alone produced.", ""]
-    out.append(f"| {keyname} | source | produced | true | wrong | fragment | plt0 | precision | alone produced | alone true | alone wrong |")
-    out.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    out = [f"### {title}", "", "Precision, strict = true / (true + wrong), where a fragment or a PLT header is neither; broad counts both as wrong. Recall = the DWARF functions this source found, of all the DWARF functions in the row. `alone`: the starts this source alone produced.", ""]
+    out.append(f"| {keyname} | source | produced | true | wrong | fragment | plt0 | precision, strict | precision, broad | recall: DWARF fns | alone produced | alone true | alone wrong |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for k in sorted(g):
         c = g[k]
         for src in SOURCES:
@@ -101,7 +111,7 @@ def sources_table(g: dict, title: str, keyname: str) -> list:
             a = c[f"src|{src}|alone"]
             at = c[f"src|{src}|alone_true"]
             aw = c[f"src|{src}|alone_interior"] + c[f"src|{src}|alone_outside"]
-            out.append(f"| {k} | {src} | {p} | {t} | {w} | {fr} | {p0} | {pct(t, t + w)} | {a} | {at} | {aw} |")
+            out.append(f"| {k} | {src} | {p} | {t} | {w} | {fr} | {p0} | {pct(t, t + w)} | {pct(t, t + w + fr + p0)} | {found_of(c[f'foundby|dwarf|{src}'], c['dwarf_truth'])} | {a} | {at} | {aw} |")
     return out + [""]
 
 
@@ -135,7 +145,7 @@ def direction_rows(c: Counter) -> dict:
         wrong = c[f"dir|starts|{kind}|interior"] + c[f"dir|starts|{kind}|outside"]
         d[kind] = {"all": allc, "true": c[f"dir|starts|{kind}|true"], "wrong": wrong, "fragment": c[f"dir|starts|{kind}|fragment"], "plt0": c[f"dir|starts|{kind}|plt0"]}
     for kind in ("declared", "heuristic"):
-        d[f"end_{kind}"] = {"all": c[f"dir|ends|{kind}|all"], "right": c[f"dir|ends|{kind}|right"], "wrong": c[f"dir|ends|{kind}|wrong"]}
+        d[f"end_{kind}"] = {"all": c[f"dir|ends|{kind}|all"], "right": c[f"dir|ends|{kind}|right"], "wrong": c[f"dir|ends|{kind}|wrong"], "absent": c[f"dir|ends|{kind}|absent"]}
     for kind in ("heuristic_only", "any_declared"):
         d[f"end_by_start_{kind}"] = {"right": c[f"dir|ends_by_start|{kind}|right"], "wrong": c[f"dir|ends_by_start|{kind}|wrong"]}
     return d
@@ -143,15 +153,15 @@ def direction_rows(c: Counter) -> dict:
 
 def direction_table(g: dict, title: str, keyname: str) -> list:
     out = [f"### {title}", "",
-           f"| {keyname} | wrong starts: heuristic only | wrong starts: any declared | heuristic-only starts wrong | declared starts wrong | wrong ends: heuristic (`not_stated`) | wrong ends: declared | heuristic ends wrong | declared ends wrong |",
-           "|---|---|---|---|---|---|---|---|---|"]
+           f"| {keyname} | wrong starts: heuristic only | wrong starts: any declared | heuristic-only starts wrong | declared starts wrong | wrong ends: heuristic (`not_stated`) | wrong ends: declared | heuristic ends wrong | declared ends wrong | heuristic ends cut (no end stated) |",
+           "|---|---|---|---|---|---|---|---|---|---|"]
     for k in sorted(g):
         d = direction_rows(g[k])
         h, a = d["heuristic_only"], d["any_declared"]
         eh, ed = d["end_heuristic"], d["end_declared"]
         out.append(
             f"| {k} | {h['wrong']} | {a['wrong']} | {h['wrong']} / {h['all']} ({pct(h['wrong'], h['all'])}) | {a['wrong']} / {a['all']} ({pct(a['wrong'], a['all'])}) | "
-            f"{eh['wrong']} | {ed['wrong']} | {eh['wrong']} / {eh['all']} ({pct(eh['wrong'], eh['all'])}) | {ed['wrong']} / {ed['all']} ({pct(ed['wrong'], ed['all'])}) |"
+            f"{eh['wrong']} | {ed['wrong']} | {eh['wrong']} / {eh['all']} ({pct(eh['wrong'], eh['all'])}) | {ed['wrong']} / {ed['all']} ({pct(ed['wrong'], ed['all'])}) | {eh['absent']} |"
         )
     return out + [""]
 
@@ -159,9 +169,8 @@ def direction_table(g: dict, title: str, keyname: str) -> list:
 def vkey(c: dict) -> str:
     """The variant as the ledger groups it: (c) apart for C and C++, since the
     flags of (c) leave C++'s FDEs in place (corpus.py, variant d)."""
-    lang = corpus.PROGRAMS[c["program"]].lang
     if c["variant"] == "c":
-        return "c (C)" if lang == "c" else "c (C++)"
+        return "c (C)" if corpus.lang_of(c["program"]) == "c" else "c (C++)"
     return c["variant"]
 
 
@@ -187,11 +196,19 @@ def doc_tables(ss: list) -> list:
         tot.update(c)
     out += [f"| all | | {tot['configs']} | {tot['dwarf']} | {tot['symtab']} | {tot['plt']} |", ""]
     g = group(ss, vkey)
-    out += starts_table(g, "Starts, per variant", "variant")
-    out += sources_table({k: v for k, v in g.items() if k != "b"}, "Start sources, per variant ((b) is (a): stripping changes no start)", "variant")
+    # Never a sum across variants: (b) is (a)'s code again, and a codebase built
+    # six ways on three machines is one codebase, so these rows are not that
+    # many independent samples. Hence the per-codebase tables.
+    out += starts_table(g, "Starts, per variant (each row its own; (b) is (a)'s code stripped, so no total counts both)", "variant")
+    gp = group(ss, lambda c: f"{vkey(c)} {c['program']}")
+    out += starts_table(gp, "Starts, per variant x codebase", "variant codebase")
+    out += sources_table({k: v for k, v in g.items() if k != "b"}, "Start sources, per variant ((b) is (a)'s code stripped, left out)", "variant")
+    out += sources_table({k: v for k, v in gp.items() if not k.startswith("b ")}, "Start sources, per variant x codebase", "variant codebase")
     # Per variant x compiler x level, one row each, a cell per source.
     gv = group(ss, lambda c: (vkey(c), c["compiler"], c["opt"]))
-    srcs = ["unwind:eh_frame", "after_declared_end", "gap_sweep", "call_target", "prologue"]
+    # Every source that produced a start somewhere in the run, in SOURCES order:
+    # a source that starts firing gets its column (a fixed list hid `symbol`).
+    srcs = [s for s in SOURCES if any(c[f"src|{s}|produced"] for c in gv.values())]
     out += ["### Per variant x compiler x level: true / produced per start source", "",
             "| variant | cc | -O | " + " | ".join(srcs) + " | wrong starts | DWARF functions found |", "|---|---|---|" + "---|" * (len(srcs) + 2)]
     for k in sorted(gv, key=lambda k: (k[0], k[1], k[2])):
@@ -225,6 +242,47 @@ def doc_tables(ss: list) -> list:
     return out
 
 
+def before_after(ss: list, before: list) -> list:
+    """Two runs on one corpus, side by side: starts per variant x codebase, and
+    per source per variant (each cell before -> after). Keeps only what both
+    measured. No row sums variants, so (b), which is (a)'s code stripped, is
+    never counted with it."""
+    shared = {(s["config"]["id"], s["config"]["variant"]) for s in ss} & {(s["config"]["id"], s["config"]["variant"]) for s in before}
+    keep = lambda run: [s for s in run if (s["config"]["id"], s["config"]["variant"]) in shared]  # noqa: E731
+    new, old = keep(ss), keep(before)
+
+    def strict(c):
+        return pct(c["true"], c["true"] + c["interior"] + c["outside"])
+
+    def broad(c):
+        return pct(c["true"], c["true"] + c["interior"] + c["outside"] + c["fragment"] + c["plt0"])
+
+    out = ["### Before and after: starts, per variant x codebase", "",
+           "| variant | codebase | listed | true | wrong, strict | fragment + plt0 | precision, strict | precision, broad | recall: DWARF fns |", "|---|---|---|---|---|---|---|---|---|"]
+    gn, go = group(new, lambda c: (vkey(c), c["program"])), group(old, lambda c: (vkey(c), c["program"]))
+    for k in sorted(gn):
+        n, o = gn[k], go[k]
+        out.append(
+            f"| {k[0]} | {k[1]} | {o['listed']} → {n['listed']} | {o['true']} → {n['true']} | {o['interior'] + o['outside']} → {n['interior'] + n['outside']} | "
+            f"{o['fragment'] + o['plt0']} → {n['fragment'] + n['plt0']} | {strict(o)} → {strict(n)} | {broad(o)} → {broad(n)} | {found_of(o['dwarf_found'], o['dwarf_truth'])} → {found_of(n['dwarf_found'], n['dwarf_truth'])} |"
+        )
+    out += ["", "### Before and after: per source, per variant x arch", "",
+            "| variant arch | source | produced | true | wrong | precision, strict | recall: DWARF fns |", "|---|---|---|---|---|---|---|"]
+    gn, go = group(new, lambda c: f"{vkey(c)} {c['arch']}"), group(old, lambda c: f"{vkey(c)} {c['arch']}")
+    for k in sorted(gn):
+        n, o = gn[k], go[k]
+        for src in SOURCES:
+            if not (n[f"src|{src}|produced"] or o[f"src|{src}|produced"]):
+                continue
+            w = {x: c[f"src|{src}|interior"] + c[f"src|{src}|outside"] for x, c in (("o", o), ("n", n))}
+            out.append(
+                f"| {k} | {src} | {o[f'src|{src}|produced']} → {n[f'src|{src}|produced']} | {o[f'src|{src}|true']} → {n[f'src|{src}|true']} | {w['o']} → {w['n']} | "
+                f"{pct(o[f'src|{src}|true'], o[f'src|{src}|true'] + w['o'])} → {pct(n[f'src|{src}|true'], n[f'src|{src}|true'] + w['n'])} | "
+                f"{pct(o[f'foundby|dwarf|{src}'], o['dwarf_truth'])} → {pct(n[f'foundby|dwarf|{src}'], n['dwarf_truth'])} |"
+            )
+    return out + [""]
+
+
 def main() -> int:
     ss = load()
     if not ss:
@@ -232,6 +290,9 @@ def main() -> int:
         return 1
     engines = Counter((s["engine"]["sha256"], s["engine"]["version"]) for s in ss)
     lines = ["# Rule accuracy: raw report", "", f"Summaries: {len(ss)}. Engine(s): {dict((f'{k[0]} ({k[1]})', v) for k, v in engines.items())}", ""]
+    labels = sorted({s["corpus_label"] for s in ss if s.get("corpus_label")})
+    if labels:
+        lines += [f"Corpus described from outside the repo: {', '.join(labels)}.", ""]
     by_v = group(ss, lambda c: c["variant"])
     by_vacco = group(ss, lambda c: f"{c['variant']} {c['arch']} {c['compiler']} -{c['opt']}")
     by_vco = group(ss, lambda c: f"{c['variant']} {c['compiler']} -{c['opt']}")
@@ -276,6 +337,10 @@ def main() -> int:
         lines.append(f"- {v}: {by_v[v]['fdes']} `.eh_frame` FDEs over {by_v[v]['runs']} files")
     open(os.path.join(corpus.RESULTS, "report.md"), "w").write("\n".join(lines) + "\n")
     open(os.path.join(corpus.RESULTS, "doc-tables.md"), "w").write("\n".join(doc_tables(ss)) + "\n")
+    # `RULE_ACCURACY_BEFORE`: the results of an earlier run on the same corpus.
+    earlier = os.environ.get("RULE_ACCURACY_BEFORE")
+    if earlier:
+        open(os.path.join(corpus.RESULTS, "before-after.md"), "w").write("\n".join(before_after(ss, load(earlier))) + "\n")
     totals = {"engines": [list(k) + [n] for k, n in engines.items()], "by_variant": {k: dict(v) for k, v in by_v.items()}, "direction": {k: direction_rows(v) for k, v in by_v.items()}}
     json.dump(totals, open(os.path.join(corpus.RESULTS, "totals.json"), "w"), indent=1)
     print(f"report: {len(ss)} summaries -> {os.path.join(corpus.RESULTS, 'report.md')}")

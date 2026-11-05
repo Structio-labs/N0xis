@@ -57,6 +57,49 @@ Variants (c) and (d) are what make the rules carry discovery. Each summary recor
 `.eh_frame` FDEs the measured file holds (the C runtime's objects and the linker's PLT entries
 keep a few), so a variant that is not FDE-free says so.
 
+## The held-out set
+
+`RULE_ACCURACY_SET=heldout`, with a `RULE_ACCURACY_SCRATCH` of its own, measures codebases the
+engine was never tuned on, under the same variants and scorer. The lead chose them apart from
+the tuning, from public source, at these commits (`corpus.py`, `HELDOUT_SOURCES`, which
+`heldout_prepare.py` verifies after fetching):
+
+| project | source | tag | commit |
+| --- | --- | --- | --- |
+| lz4 | https://github.com/lz4/lz4 | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` |
+| nginx | https://github.com/nginx/nginx | release-1.27.3 | `e7bd2557458c26839da89e694067017eeb214348` |
+| ninja | https://github.com/ninja-build/ninja | v1.12.1 | `2daa09ba270b0a43e1929d29b073348aa985dfaa` |
+| LevelDB | https://github.com/google/leveldb | 1.23 | `99b3c03b3284f5886f9ef9a4ef703d57373e61be` |
+| RE2 | https://github.com/google/re2 | 2024-07-02 | `6dcd83d60f7944926bfd308cc13979fc53dd69ca` |
+| tmux | https://github.com/tmux/tmux | 3.5a | `549c35b06165f6ae023115eb76f83f2cbf945395` |
+
+Each is compiled by the instrument's own command from the project's source list and flags, on
+the machines where its dependencies exist: `corpus.py` says where a project is not, and why. The
+PE builds (`pe_x64`, `pe_x86`, mingw gcc, gcc only) are the only PE images in the instrument; gcc
+emits DWARF there too, and the truth is read from it the same way. No project's test suite or
+installer is run; the configure steps of nginx and tmux run, because their headers come from
+them. No `-g`-less copies are built for this set.
+
+They were fetched and built only once the engine of the round was final, and are measured once.
+An engine changed after seeing the result makes the set no longer held out: the report says so
+and names a new one. No fix is tuned against it. Rust is measured apart, by an agent that did not
+tune the engine, through the extra corpus below.
+
+## An extra corpus, described from outside the repo
+
+`RULE_ACCURACY_EXTRA=<file.json>` measures prebuilt images no script here names:
+
+```
+{"label": "...", "entries": [{"name": "...", "lang": "...", "arch": "x86_64", "compiler": "...",
+  "opt": "...", "unstripped": "/path/with/debug/info", "stripped": "/path/stripped"}]}
+```
+
+Each entry is measured as variant (a), the unstripped file, and (b), the stripped one (when
+given, and only when its code sections are the unstripped file's), against the unstripped
+file's DWARF. While the variable is set these entries are the configurations; `build.py` has
+nothing to do for them. Unset, nothing is read and nothing changes. Give it a
+`RULE_ACCURACY_SCRATCH` of its own.
+
 ## What a listed start is scored as
 
 `true` (the entry of a truth function), `fragment`, `plt0`, or wrong: `interior` (inside a
@@ -65,7 +108,9 @@ nothing names). Per source category (`score.py`): starts produced, true, wrong, 
 (true / (true + wrong)), and the same for the starts that source alone produced. Per truth
 function: found or missed, and by which sources; a missed one records whether the measured file
 names it in its own symbol tables. Ends, for true starts and fragments: per end source, exact /
-short / long against the truth extent. Names: per layer, `exact` (the table's name, or its
+short / long against the truth extent. An end `why` does not state — a control-flow graph it
+says was cut by its window (`not_stated(cut)`), or one it could not build — is `no end`: an
+absence, which the direction counts apart from the right and the wrong ends. Names: per layer, `exact` (the table's name, or its
 reading by `c++filt` or by `llvm-cxxfilt` — two independent demanglers, so where they differ the
 engine matching either is not wrong), `spelled` (the same identity in another spelling: an
 undemangled name with every character outside `[A-Za-z0-9_]` as `_`, a stub named after its

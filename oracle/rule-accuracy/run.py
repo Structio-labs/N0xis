@@ -49,10 +49,9 @@ def truth_of(path: str, kept: str) -> dict:
 
 
 def run_config(cfg: corpus.Config, rescore: bool = False) -> list:
-    bj = os.path.join(cfg.dir, "build.json")
-    if not os.path.exists(bj):
+    b = corpus.manifest_of(cfg)
+    if not b:
         return [f"skip  {cfg.id}: not built"]
-    b = json.load(open(bj))
     if not b.get("ok"):
         return [f"skip  {cfg.id}: build failed"]
     out_dir = os.path.join(corpus.RESULTS, cfg.arch, cfg.program, f"{cfg.compiler}-{cfg.opt}")
@@ -77,6 +76,8 @@ def run_config(cfg: corpus.Config, rescore: bool = False) -> list:
             json.dump(m, open(mpath, "w"))
         rows, summary = score.score(t, m, readers.symbols(image))
         fdes = readers.fde_ranges(image)
+        if corpus.EXTRA is not None:
+            summary["corpus_label"] = corpus.EXTRA.get("label")
         summary["config"] = {"id": cfg.id, "arch": cfg.arch, "program": cfg.program, "compiler": cfg.compiler, "opt": cfg.opt, "variant": v}
         summary["measured_file"] = image
         summary["truth_file"] = cfg.file(spec["truth"])

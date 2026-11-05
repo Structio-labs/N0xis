@@ -44,11 +44,16 @@ def end_key(e: dict) -> str:
     if src == "symbol_size":
         return f"symbol_size:{e['of']}"
     if src == "not_stated":
-        return "not_stated" if "end" in e.get("cfg", {}) else "not_stated(no cfg)"
+        cfg = e.get("cfg", {})
+        # `cut`: the graph found no end in its window and says it was cut, not
+        # where the function ends — an absence, scored as no end.
+        return "not_stated" if "end" in cfg else "not_stated(cut)" if "cut" in cfg else "not_stated(no cfg)"
     return src
 
 
 def end_va(e: dict):
+    """The end `why` states: a declared end or the graph's. A graph that was cut
+    states none (its `cut.at` is where its bytes ran out), so None."""
     if "va" in e:
         return int(e["va"], 16)
     cfg = e.get("cfg", {})
@@ -265,8 +270,13 @@ def score(truth: dict, meas: dict, measured_symbols: list | None = None) -> tupl
         kind = "heuristic_only" if r["heuristic_only"] else "any_declared"
         direction[f"starts|{kind}|all"] += 1
         direction[f"starts|{kind}|{r['class']}"] += 1
-        if r["class"] == "true" and r["end_cmp"] in ("exact", "short", "long", "between", "no_end"):
-            ekind = "declared" if r["end_source"].split(":")[0] in ("unwind", "symbol_size", "export", "pdb", "body", "stub") else "heuristic"
+        ekind = "declared" if r["end_source"].split(":")[0] in ("unwind", "symbol_size", "export", "pdb", "body", "stub") else "heuristic"
+        if r["class"] == "true" and r["end_cmp"] == "no_end":
+            # No end stated at all (a graph `why` says was cut, or none built):
+            # an absence, neither right nor wrong. Counted as wrong before any
+            # engine gave one, which would have scored a refusal as an error.
+            direction[f"ends|{ekind}|absent"] += 1
+        elif r["class"] == "true" and r["end_cmp"] in ("exact", "short", "long", "between"):
             direction[f"ends|{ekind}|all"] += 1
             direction[f"ends|{ekind}|{'right' if r['end_cmp'] == 'exact' else 'wrong'}"] += 1
             # The start's own kind, for the question "does a heuristic start

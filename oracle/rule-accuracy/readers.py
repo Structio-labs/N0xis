@@ -7,6 +7,10 @@ that does not come from n0xis.
 --debug-info` (functions), `objdump -d` (PLT labels, and the bytes shown beside
 a reported wrong answer). Each parser here is the only one of its kind in the
 instrument, so the truth and the byte checks read an image one way.
+
+A PE (mingw's, with DWARF) gets the same answers from the tools that read one:
+the mingw `objdump -h` and `nm`, `llvm-readobj --coff-exports`; `llvm-dwarfdump`
+reads its DWARF as it does an ELF's. An image's first bytes say which.
 """
 
 from __future__ import annotations
@@ -24,8 +28,57 @@ def run(argv: list, timeout: int = 540) -> str:
 
 # --- sections ---------------------------------------------------------------
 
+def is_pe(path: str) -> bool:
+    with open(path, "rb") as fh:
+        return fh.read(2) == b"MZ"
+
+
+def _mingw(path: str, tool: str) -> str:
+    """The mingw binutils of a PE's machine (`IMAGE_FILE_HEADER.Machine`)."""
+    with open(path, "rb") as fh:
+        head = fh.read(4096)
+    lfanew = int.from_bytes(head[0x3C:0x40], "little")
+    machine = int.from_bytes(head[lfanew + 4:lfanew + 6], "little")
+    return {0x8664: "x86_64-w64-mingw32-", 0x14C: "i686-w64-mingw32-"}[machine] + tool
+
+
+def _pe_sections(path: str) -> list:
+    out = []
+    for m in re.finditer(r"^\s*\d+\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+[0-9a-f]+\s+([0-9a-f]+)\s+\S+\s+(.*)$", run([_mingw(path, "objdump"), "-h", "-w", path]), re.M):
+        flags = m.group(5)
+        out.append({
+            "name": m.group(1), "type": "PROGBITS" if "CONTENTS" in flags else "NOBITS", "addr": int(m.group(3), 16),
+            "offset": int(m.group(4), 16), "size": int(m.group(2), 16), "entsize": 0, "flags": "X" if "CODE" in flags else "",
+        })
+    return out
+
+
+def _pe_symbols(path: str) -> list:
+    """The COFF symbol table as `nm` reads it (no sizes: COFF has none) under
+    `.symtab`, and the export table under `.dynsym`, what a stripped PE keeps."""
+    out = []
+    for line in run([_mingw(path, "nm"), path]).splitlines():
+        m = re.match(r"([0-9a-f]+) (\S) (.+)$", line)
+        if not m:
+            continue
+        kind = m.group(2)
+        name = m.group(3)
+        out.append({
+            "table": ".symtab", "name": name, "value": int(m.group(1), 16), "size": 0,
+            "type": "SECTION" if name.startswith(".") else "FUNC" if kind in "Tt" else "OBJECT", "bind": "GLOBAL" if kind.isupper() else "LOCAL",
+            "ndx": "ABS" if kind in "Aa" else "TEXT",
+        })
+    text = run(["llvm-readobj", "--file-headers", "--coff-exports", path])
+    base = re.search(r"ImageBase:\s+(0x[0-9A-Fa-f]+)", text)
+    for m in re.finditer(r"Export \{\s*Ordinal: \d+\s*Name: (\S*)\s*RVA: (0x[0-9A-Fa-f]+)", text):
+        out.append({"table": ".dynsym", "name": m.group(1), "value": int(base.group(1), 16) + int(m.group(2), 16), "size": 0, "type": "FUNC", "bind": "GLOBAL", "ndx": "TEXT"})
+    return out
+
+
 def sections(path: str) -> list:
     """Every section header: name, type, addr, offset, size, flags."""
+    if is_pe(path):
+        return _pe_sections(path)
     out = []
     for line in run(["readelf", "-SW", path]).splitlines():
         m = re.match(r"\s*\[\s*(\d+)\]\s+(.*)$", line)
@@ -67,6 +120,8 @@ def same_code(a: str, b: str) -> tuple:
 def symbols(path: str) -> list:
     """Every `.symtab` and `.dynsym` entry with a value: table, name, value,
     size, type, bind, section index."""
+    if is_pe(path):
+        return _pe_symbols(path)
     out = []
     table = None
     for line in run(["readelf", "-sW", path]).splitlines():
@@ -188,7 +243,9 @@ def _quoted(v):
 
 def objdump_for(path: str) -> str:
     """GNU objdump for the image's machine: the host build reads x86 only, so
-    an AArch64 image goes to the cross binutils' objdump."""
+    an AArch64 image goes to the cross binutils' objdump, and a PE to mingw's."""
+    if is_pe(path):
+        return _mingw(path, "objdump")
     machine = re.search(r"Machine:\s+(.*)", run(["readelf", "-h", path]))
     return "aarch64-linux-gnu-objdump" if machine and "AArch64" in machine.group(1) else "objdump"
 
@@ -231,7 +288,7 @@ def fde_ranges(path: str) -> list:
     measured file carries is what decides which rules have work to do."""
     out = []
     try:
-        text = run(["readelf", "--debug-dump=frames", path])
+        text = run([_mingw(path, "objdump"), "--dwarf=frames", path]) if is_pe(path) else run(["readelf", "--debug-dump=frames", path])
     except subprocess.CalledProcessError:
         return out
     section = None
