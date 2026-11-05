@@ -278,9 +278,11 @@ def _ninja(arch: str) -> list:
 
 
 def _ninja_flags(arch: str) -> list:
-    # Its `-fno-exceptions` is left to variant (d), which adds it.
+    # Its `-fno-exceptions` is left to variant (d), which adds it, but on a PE:
+    # without unwind tables, x86-64 mingw's g++ asks for a personality routine
+    # libstdc++ does not have there (`__gxx_personality_v0`), and (c) does not link.
     base = ["-std=c++11", "-fno-rtti", "-DNINJA_PYTHON=\"python\""]
-    return base + (["-D_WIN32_WINNT=0x0601", "-D__USE_MINGW_ANSI_STDIO=1", "-static"] if arch in _PE else ["-fvisibility=hidden", "-DUSE_PPOLL"])
+    return base + (["-fno-exceptions", "-D_WIN32_WINNT=0x0601", "-D__USE_MINGW_ANSI_STDIO=1", "-static"] if arch in _PE else ["-fvisibility=hidden", "-DUSE_PPOLL"])
 
 
 _LEVELDB_CC = (
@@ -301,7 +303,8 @@ def _leveldb_flags(arch: str) -> list:
     # export macro is how it builds its shared library.
     common = ["-std=c++11", "-fno-rtti", "-DLEVELDB_SHARED_LIBRARY", "-DLEVELDB_COMPILE_LIBRARY", "-DHAVE_FULLFSYNC=0", "-DHAVE_CRC32C=0", "-DHAVE_SNAPPY=0", "-DHAVE_ZSTD=0"] + _inc("leveldb", ".", "include")
     if arch in _PE:
-        return common + ["-DLEVELDB_PLATFORM_WINDOWS=1", "-D_UNICODE", "-DUNICODE", "-DHAVE_FDATASYNC=0", "-DHAVE_O_CLOEXEC=0"]
+        # `-fno-exceptions`, its CMakeLists' flag, for the reason `_ninja_flags` says.
+        return common + ["-fno-exceptions", "-DLEVELDB_PLATFORM_WINDOWS=1", "-D_UNICODE", "-DUNICODE", "-DHAVE_FDATASYNC=0", "-DHAVE_O_CLOEXEC=0"]
     return common + ["-DLEVELDB_PLATFORM_POSIX=1", "-DHAVE_FDATASYNC=1", "-DHAVE_O_CLOEXEC=1", "-fvisibility=hidden"]
 
 
