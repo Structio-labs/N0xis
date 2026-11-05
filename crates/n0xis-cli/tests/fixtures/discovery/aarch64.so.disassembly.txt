@@ -1,0 +1,21 @@
+
+aarch64.so:     file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+00000000000001b0 <.text>:
+ 1b0:	d503233f 	paciasp
+ 1b4:	a9bf7bfd 	stp	x29, x30, [sp, #-16]!
+ 1b8:	910003fd 	mov	x29, sp
+ 1bc:	528000e0 	mov	w0, #0x7                   	// #7
+ 1c0:	a8c17bfd 	ldp	x29, x30, [sp], #16
+ 1c4:	d50323bf 	autiasp
+ 1c8:	d65f03c0 	ret
+ 1cc:	d503201f 	nop
+ 1d0:	a9bf7bfd 	stp	x29, x30, [sp, #-16]!
+ 1d4:	a8c17bfd 	ldp	x29, x30, [sp], #16
+ 1d8:	b4000060 	cbz	x0, 1e4 <_DYNAMIC-0x1fd3c>
+ 1dc:	a9bf7bfd 	stp	x29, x30, [sp, #-16]!
+ 1e0:	a8c17bfd 	ldp	x29, x30, [sp], #16
+ 1e4:	d65f03c0 	ret

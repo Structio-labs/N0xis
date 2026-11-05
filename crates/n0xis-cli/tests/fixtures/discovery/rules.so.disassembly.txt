@@ -1,0 +1,106 @@
+
+rules.so:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000001000 <.text>:
+    1000:	31 c0                	xor    %eax,%eax
+    1002:	c3                   	ret
+    1003:	90                   	nop
+    1004:	90                   	nop
+    1005:	90                   	nop
+    1006:	90                   	nop
+    1007:	90                   	nop
+    1008:	90                   	nop
+    1009:	90                   	nop
+    100a:	90                   	nop
+    100b:	90                   	nop
+    100c:	90                   	nop
+    100d:	90                   	nop
+    100e:	90                   	nop
+    100f:	90                   	nop
+    1010:	b8 01 00 00 00       	mov    $0x1,%eax
+    1015:	c3                   	ret
+    1016:	90                   	nop
+    1017:	90                   	nop
+    1018:	90                   	nop
+    1019:	90                   	nop
+    101a:	90                   	nop
+    101b:	90                   	nop
+    101c:	90                   	nop
+    101d:	90                   	nop
+    101e:	90                   	nop
+    101f:	90                   	nop
+    1020:	31 c0                	xor    %eax,%eax
+    1022:	c3                   	ret
+    1023:	90                   	nop
+    1024:	90                   	nop
+    1025:	90                   	nop
+    1026:	90                   	nop
+    1027:	90                   	nop
+    1028:	90                   	nop
+    1029:	90                   	nop
+    102a:	90                   	nop
+    102b:	90                   	nop
+    102c:	90                   	nop
+    102d:	90                   	nop
+    102e:	90                   	nop
+    102f:	90                   	nop
+    1030:	31 c0                	xor    %eax,%eax
+    1032:	eb 01                	jmp    1035 <_DYNAMIC-0x2ef3>
+    1034:	90                   	nop
+    1035:	90                   	nop
+    1036:	c9                   	leave
+    1037:	c3                   	ret
+    1038:	90                   	nop
+    1039:	90                   	nop
+    103a:	90                   	nop
+    103b:	90                   	nop
+    103c:	90                   	nop
+    103d:	90                   	nop
+    103e:	90                   	nop
+    103f:	90                   	nop
+    1040:	31 c0                	xor    %eax,%eax
+    1042:	c3                   	ret
+    1043:	90                   	nop
+    1044:	90                   	nop
+    1045:	90                   	nop
+    1046:	90                   	nop
+    1047:	90                   	nop
+    1048:	90                   	nop
+    1049:	90                   	nop
+    104a:	90                   	nop
+    104b:	90                   	nop
+    104c:	90                   	nop
+    104d:	90                   	nop
+    104e:	90                   	nop
+    104f:	90                   	nop
+    1050:	31 c0                	xor    %eax,%eax
+    1052:	90                   	nop
+    1053:	90                   	nop
+    1054:	90                   	nop
+    1055:	90                   	nop
+    1056:	90                   	nop
+    1057:	90                   	nop
+    1058:	90                   	nop
+    1059:	90                   	nop
+    105a:	90                   	nop
+    105b:	90                   	nop
+    105c:	90                   	nop
+    105d:	90                   	nop
+    105e:	90                   	nop
+    105f:	53                   	push   %rbx
+    1060:	48 83 ec 08          	sub    $0x8,%rsp
+    1064:	48 83 c4 08          	add    $0x8,%rsp
+    1068:	5b                   	pop    %rbx
+    1069:	c3                   	ret
+    106a:	90                   	nop
+    106b:	90                   	nop
+    106c:	90                   	nop
+    106d:	90                   	nop
+    106e:	90                   	nop
+    106f:	90                   	nop
+    1070:	48 83 ec 08          	sub    $0x8,%rsp
+    1074:	48 83 c4 08          	add    $0x8,%rsp
+    1078:	c3                   	ret

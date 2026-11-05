@@ -1,0 +1,15 @@
+
+Symbol table '.dynsym' contains 3 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00010198     8 FUNC    GLOBAL DEFAULT    5 in_arm
+     2: 000101a1     4 FUNC    GLOBAL DEFAULT    5 in_thumb
+
+Symbol table '.symtab' contains 6 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00010198     0 NOTYPE  LOCAL  DEFAULT    5 $a
+     2: 000101a0     0 NOTYPE  LOCAL  DEFAULT    5 $t
+     3: 000201a4     0 NOTYPE  LOCAL  HIDDEN     6 _DYNAMIC
+     4: 00010198     8 FUNC    GLOBAL DEFAULT    5 in_arm
+     5: 000101a1     4 FUNC    GLOBAL DEFAULT    5 in_thumb

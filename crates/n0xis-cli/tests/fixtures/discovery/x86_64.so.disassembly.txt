@@ -1,0 +1,42 @@
+
+x86_64.so:     file format elf64-x86-64
+
+
+Disassembly of section .plt:
+
+0000000000001000 <ext@plt-0x10>:
+    1000:	ff 35 ea 3f 00 00    	push   0x3fea(%rip)        # 4ff0 <_GLOBAL_OFFSET_TABLE_+0x8>
+    1006:	ff 25 ec 3f 00 00    	jmp    *0x3fec(%rip)        # 4ff8 <_GLOBAL_OFFSET_TABLE_+0x10>
+    100c:	0f 1f 40 00          	nopl   0x0(%rax)
+
+0000000000001010 <ext@plt>:
+    1010:	ff 25 ea 3f 00 00    	jmp    *0x3fea(%rip)        # 5000 <ext>
+    1016:	68 00 00 00 00       	push   $0x0
+    101b:	e9 e0 ff ff ff       	jmp    1000 <ext@plt-0x10>
+
+Disassembly of section .text:
+
+0000000000001020 <sym_only>:
+    1020:	b8 01 00 00 00       	mov    $0x1,%eax
+    1025:	c3                   	ret
+    1026:	90                   	nop
+    1027:	90                   	nop
+
+0000000000001028 <zero_size>:
+    1028:	b8 02 00 00 00       	mov    $0x2,%eax
+    102d:	c3                   	ret
+    102e:	90                   	nop
+    102f:	90                   	nop
+
+0000000000001030 <caller>:
+    1030:	48 83 ec 08          	sub    $0x8,%rsp
+    1034:	e8 d7 ff ff ff       	call   1010 <ext@plt>
+    1039:	e8 07 00 00 00       	call   1045 <big>
+    103e:	48 83 c4 08          	add    $0x8,%rsp
+    1042:	c3                   	ret
+    1043:	90                   	nop
+    1044:	90                   	nop
+
+0000000000001045 <big>:
+    2431:	c3                   	ret
+add $0x1,%eax lines left out above: 1700

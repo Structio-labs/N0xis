@@ -1,0 +1,18 @@
+
+Symbol table '.dynsym' contains 5 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 0000000000001044    12 FUNC    GLOBAL DEFAULT    5 wrong_start
+     2: 0000000000001050    32 FUNC    GLOBAL DEFAULT    5 wrong_size
+     3: 0000000000001020    16 FUNC    GLOBAL DEFAULT    5 witnessed
+     4: 0000000000001070    32 FUNC    GLOBAL DEFAULT    5 contested
+
+Symbol table '.symtab' contains 7 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 0000000000003f28     0 OBJECT  LOCAL  DEFAULT    8 _DYNAMIC
+     2: 0000000000003fe8     0 OBJECT  LOCAL  DEFAULT    9 _GLOBAL_OFFSET_TABLE_
+     3: 0000000000001044    12 FUNC    GLOBAL DEFAULT    5 wrong_start
+     4: 0000000000001070    32 FUNC    GLOBAL DEFAULT    5 contested
+     5: 0000000000001050    32 FUNC    GLOBAL DEFAULT    5 wrong_size
+     6: 0000000000001020    16 FUNC    GLOBAL DEFAULT    5 witnessed

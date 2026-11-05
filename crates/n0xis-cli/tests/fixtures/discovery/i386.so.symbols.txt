@@ -1,0 +1,9 @@
+
+Symbol table '.dynsym' contains 1 entry:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+
+Symbol table '.symtab' contains 2 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00003fa0     0 OBJECT  LOCAL  DEFAULT    8 _DYNAMIC

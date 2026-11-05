@@ -1,0 +1,44 @@
+
+i386.so:     file format elf32-i386
+
+
+Disassembly of section .text:
+
+00001000 <.text>:
+    1000:	55                   	push   %ebp
+    1001:	89 e5                	mov    %esp,%ebp
+    1003:	e8 28 00 00 00       	call   1030 <_DYNAMIC-0x2f70>
+    1008:	e8 43 00 00 00       	call   1050 <_DYNAMIC-0x2f50>
+    100d:	5d                   	pop    %ebp
+    100e:	c3                   	ret
+    100f:	2e 8d b4 26 00 00 00 	lea    %cs:0x0(%esi,%eiz,1),%esi
+    1016:	00 
+    1017:	8d b6 00 00 00 00    	lea    0x0(%esi),%esi
+    101d:	8d 76 00             	lea    0x0(%esi),%esi
+    1020:	8b 44 24 04          	mov    0x4(%esp),%eax
+    1024:	c3                   	ret
+    1025:	2e 8d b4 26 00 00 00 	lea    %cs:0x0(%esi,%eiz,1),%esi
+    102c:	00 
+    102d:	8d 76 00             	lea    0x0(%esi),%esi
+    1030:	53                   	push   %ebx
+    1031:	e8 00 00 00 00       	call   1036 <_DYNAMIC-0x2f6a>
+    1036:	5b                   	pop    %ebx
+    1037:	89 d8                	mov    %ebx,%eax
+    1039:	5b                   	pop    %ebx
+    103a:	c3                   	ret
+    103b:	8d 74 26 00          	lea    0x0(%esi,%eiz,1),%esi
+    103f:	90                   	nop
+    1040:	8b 1c 24             	mov    (%esp),%ebx
+    1043:	c3                   	ret
+    1044:	8d b4 26 00 00 00 00 	lea    0x0(%esi,%eiz,1),%esi
+    104b:	8d 74 26 00          	lea    0x0(%esi,%eiz,1),%esi
+    104f:	90                   	nop
+    1050:	e8 eb ff ff ff       	call   1040 <_DYNAMIC-0x2f60>
+    1055:	e8 00 00 00 00       	call   105a <_DYNAMIC-0x2f46>
+    105a:	55                   	push   %ebp
+    105b:	89 e5                	mov    %esp,%ebp
+    105d:	5d                   	pop    %ebp
+    105e:	c3                   	ret
+    105f:	90                   	nop
+    1060:	31 c0                	xor    %eax,%eax
+    1062:	c3                   	ret
