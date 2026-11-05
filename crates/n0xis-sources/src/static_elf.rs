@@ -177,9 +177,25 @@ fn read_relocated_words(elf: &Elf, bytes: &[u8]) -> crate::RelocatedWords {
             add(r, &elf.dynsyms);
         }
     }
-    // RELR tables: by section, and by the dynamic section's address where the
-    // section headers are gone. The same table read twice repeats its words,
-    // which the dedup below removes.
+    let Some(relr) = relr_tables(elf, dyns) else {
+        return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
+    };
+    for (offset, size) in relr {
+        if for_each_relr_word(elf, bytes, offset, size, &mut |word| words.push(word)).is_none() {
+            return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
+        }
+    }
+    words.sort_unstable();
+    words.dedup();
+    copies.sort_unstable();
+    RelocatedWords::Read { words, copies }
+}
+
+/// The `RELR` tables of an image, as `(file offset, bytes)`: by section, and by
+/// the dynamic section's address where the section headers are gone. The same
+/// table may be listed twice. `None` when the dynamic section names a table
+/// that does not fit in the file.
+fn relr_tables(elf: &Elf, dyns: &[goblin::elf::dynamic::Dyn]) -> Option<Vec<(usize, usize)>> {
     let mut relr: Vec<(usize, usize)> =
         elf.section_headers.iter().filter(|s| s.sh_type == SHT_RELR).map(|s| (s.sh_offset as usize, s.sh_size as usize)).collect();
     let tag = |t: u64| dyns.iter().find(|d| d.d_tag == t).map(|d| d.d_val);
@@ -189,50 +205,52 @@ fn read_relocated_words(elf: &Elf, bytes: &[u8]) -> crate::RelocatedWords {
             .iter()
             .filter(|ph| ph.p_type == PT_LOAD)
             .find(|ph| va >= ph.p_vaddr && va.saturating_add(size) <= ph.p_vaddr.saturating_add(ph.p_filesz))
-            .map(|ph| (va - ph.p_vaddr + ph.p_offset) as usize);
-        match offset {
-            Some(o) => relr.push((o, size as usize)),
-            None => return RelocatedWords::NotRead(RelocationsNotRead::Malformed),
-        }
+            .map(|ph| (va - ph.p_vaddr + ph.p_offset) as usize)?;
+        relr.push((offset, size as usize));
     }
-    let ptr: usize = if elf.is_64 { 8 } else { 4 };
-    let word = |at: usize| -> Option<u64> {
-        let b = bytes.get(at..at.checked_add(ptr)?)?;
-        Some(match (ptr, elf.little_endian) {
-            (8, true) => u64::from_le_bytes(b.try_into().ok()?),
-            (8, false) => u64::from_be_bytes(b.try_into().ok()?),
-            (_, true) => u64::from(u32::from_le_bytes(b.try_into().ok()?)),
-            (_, false) => u64::from(u32::from_be_bytes(b.try_into().ok()?)),
-        })
-    };
-    for (offset, size) in relr {
-        // An address entry (bit 0 clear) names one word and sets where the next
-        // bitmap starts; a bitmap entry (bit 0 set) names, by its other bits,
-        // which of the next `8 * ptr - 1` words are relocated.
-        let mut next = 0u64;
-        let step = ptr as u64;
-        for i in 0..size / ptr {
-            let Some(entry) = offset.checked_add(i * ptr).and_then(word) else {
-                return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
-            };
-            if entry & 1 == 0 {
-                words.push(entry);
-                next = entry.saturating_add(step);
-            } else {
-                let bits = 8 * step - 1;
-                for b in 0..bits {
-                    if (entry >> (b + 1)) & 1 != 0 {
-                        words.push(next.saturating_add(b * step));
-                    }
+    Some(relr)
+}
+
+/// Hand `visit` every word one `RELR` table relocates. `None` when the table
+/// does not fit in the file.
+fn for_each_relr_word(elf: &Elf, bytes: &[u8], offset: usize, size: usize, visit: &mut dyn FnMut(u64)) -> Option<()> {
+    let width = crate::PointerWidth::of_64_bit(elf.is_64);
+    let order = if elf.little_endian { ByteOrder::Little } else { ByteOrder::Big };
+    let ptr = usize::from(width.bytes());
+    // An address entry (bit 0 clear) names one word and sets where the next
+    // bitmap starts; a bitmap entry (bit 0 set) names, by its other bits,
+    // which of the next `8 * ptr - 1` words are relocated.
+    let mut next = 0u64;
+    let step = ptr as u64;
+    for i in 0..size / ptr {
+        let at = offset.checked_add(i * ptr)?;
+        let entry = width.read_word(bytes.get(at..)?, order)?;
+        if entry & 1 == 0 {
+            visit(entry);
+            next = entry.saturating_add(step);
+        } else {
+            let bits = 8 * step - 1;
+            for b in 0..bits {
+                if (entry >> (b + 1)) & 1 != 0 {
+                    visit(next.saturating_add(b * step));
                 }
-                next = next.saturating_add(bits * step);
             }
+            next = next.saturating_add(bits * step);
         }
     }
-    words.sort_unstable();
-    words.dedup();
-    copies.sort_unstable();
-    RelocatedWords::Read { words, copies }
+    Some(())
+}
+
+/// The relocation type that writes "the image's base plus a stated address",
+/// on each machine whose relocations are read ([`read_relocated_words`]).
+/// `None` for the others.
+fn relative_reloc_type(e_machine: u16) -> Option<u32> {
+    match e_machine {
+        0x3E | 0x03 => Some(8), // R_X86_64_RELATIVE, R_386_RELATIVE
+        0xB7 => Some(1027),     // R_AARCH64_RELATIVE
+        0x28 => Some(23),       // R_ARM_RELATIVE
+        _ => None,
+    }
 }
 
 /// Every ELF file starts with `\x7fELF`.
@@ -832,6 +850,55 @@ impl Image for StaticElf {
     fn findings(&self) -> &[Finding] {
         &self.findings
     }
+    /// Parsed again for the question, not kept from the first parse: only
+    /// `strings` asks, and a table's values are handed over and dropped, so
+    /// their cost is not a second copy of them for every other command.
+    fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
+        use crate::{AddressWords, RelocatedWords};
+        let Ok(elf) = Elf::parse(&self.bytes) else {
+            return AddressWords::NotStated;
+        };
+        // A fixed image runs where its words say: nothing relocates them.
+        if elf.header.e_type == ET_EXEC {
+            return AddressWords::Stored;
+        }
+        let (RelocatedWords::Read { .. }, Some(relative)) = (&self.relocated, relative_reloc_type(elf.header.e_machine)) else {
+            return AddressWords::NotStated;
+        };
+        let width = crate::PointerWidth::of_64_bit(elf.is_64);
+        let order = self.machine.byte_order;
+        let view = self.loaded_bytes();
+        let stored = |at: u64| -> Option<u64> {
+            let b = crate::MemorySource::read(&view, Va(at), usize::from(width.bytes())).ok()?;
+            width.read_word(&b, order)
+        };
+        let allocated = elf.shdr_relocs.iter().filter(|(idx, _)| elf.section_headers.get(*idx).is_some_and(|sh| sh.sh_flags & SHF_ALLOC != 0));
+        for r in elf.dynrelas.iter().chain(elf.dynrels.iter()).chain(allocated.flat_map(|(_, rs)| rs.iter())) {
+            if r.r_type != relative {
+                continue;
+            }
+            // `RELA` states the value in the table, and a linker may leave the
+            // word itself zero (lld does); `REL` states it in the word.
+            let value = match r.r_addend {
+                Some(addend) => Some(addend as u64),
+                None => stored(r.r_offset),
+            };
+            if let Some(value) = value {
+                relocated(r.r_offset, value);
+            }
+        }
+        let dyns: &[goblin::elf::dynamic::Dyn] = elf.dynamic.as_ref().map(|d| d.dyns.as_slice()).unwrap_or_default();
+        for (offset, size) in relr_tables(&elf, dyns).unwrap_or_default() {
+            // `RELR` has no table of values: the word holds it.
+            let _ = for_each_relr_word(&elf, &self.bytes, offset, size, &mut |word| {
+                if let Some(value) = stored(word) {
+                    relocated(word, value);
+                }
+            });
+        }
+        AddressWords::Relocated
+    }
+
     fn binding_at(&self, slot: Va) -> Binding {
         match self.bindings.get(&slot.0) {
             Some(binding) => binding.clone(),

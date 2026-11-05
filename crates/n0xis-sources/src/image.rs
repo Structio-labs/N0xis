@@ -132,6 +132,17 @@ impl PointerWidth {
             PointerWidth::Eight => 8,
         }
     }
+
+    /// The word at the start of `bytes`, in the image's byte order, or `None`
+    /// when `bytes` is shorter than a word.
+    pub fn read_word(self, bytes: &[u8], order: ByteOrder) -> Option<u64> {
+        Some(match (self, order) {
+            (PointerWidth::Eight, ByteOrder::Little) => u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?),
+            (PointerWidth::Eight, ByteOrder::Big) => u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?),
+            (PointerWidth::Four, ByteOrder::Little) => u64::from(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?)),
+            (PointerWidth::Four, ByteOrder::Big) => u64::from(u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?)),
+        })
+    }
 }
 
 /// The instruction set an image's header names, as today's readers map it.
@@ -835,6 +846,12 @@ pub trait Image: std::fmt::Debug + Send + Sync {
     fn start_coverage(&self) -> StartCoverage;
     fn loaded_bytes(&self) -> LoadedBytes<'_>;
     fn findings(&self) -> &[Finding];
+    /// How a word of this image's data states an address
+    /// ([`crate::AddressWords`]). For [`crate::AddressWords::Relocated`],
+    /// `relocated` has been handed each such word's address and the address it
+    /// comes to hold, in no order and possibly more than once; handed over
+    /// rather than returned, so what it costs is what the caller keeps.
+    fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords;
     /// What the slot at `slot` is bound to.
     fn binding_at(&self, slot: Va) -> Binding;
     /// The image's CodeView record, which names its PDB. Not one of §2's

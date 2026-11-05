@@ -199,6 +199,25 @@ pub enum RelocatedWords {
     NotRead(RelocationsNotRead),
 }
 
+/// How a word of an image's data states an address, which is the question
+/// [`RelocatedWords`] does not answer: it says that a word is written, and a
+/// `RELA` table holds what is written there, with the word itself left zero by
+/// some linkers (`Image::address_words`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddressWords {
+    /// The image runs at the addresses it states (a fixed `ET_EXEC`, a PE at
+    /// its preferred base; a PE's base relocations only move it): a word holds
+    /// the address it states.
+    Stored,
+    /// The image may load anywhere, so a word is an address only if a relative
+    /// relocation writes it, and a stored number that happens to fall inside
+    /// the image is a number.
+    Relocated,
+    /// Neither can be said: an image with no single address space, or one that
+    /// may load anywhere whose relocations were not read.
+    NotStated,
+}
+
 /// Why an image's load-time relocations were not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelocationsNotRead {

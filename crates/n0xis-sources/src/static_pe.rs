@@ -626,6 +626,10 @@ impl Image for StaticPe {
     fn findings(&self) -> &[Finding] {
         &self.findings
     }
+    fn address_words(&self, _relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
+        crate::AddressWords::Stored
+    }
+
     fn binding_at(&self, slot: Va) -> Binding {
         match self.iat.get(&slot.0) {
             Some(import) => Binding::Import(import.clone()),

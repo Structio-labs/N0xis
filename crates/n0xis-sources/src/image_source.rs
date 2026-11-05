@@ -429,6 +429,12 @@ impl ImageSource {
         self.image.loaded_bytes().written_by_loader
     }
 
+    /// How a word of this image's data states an address
+    /// ([`Image::address_words`]).
+    pub fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
+        self.image.address_words(relocated)
+    }
+
     /// Why a strict parse refused this image, when it had to be opened
     /// permissively. `None` on a well-formed image.
     pub fn degraded(&self) -> Option<&str> {
