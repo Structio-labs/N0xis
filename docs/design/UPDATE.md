@@ -31,8 +31,9 @@ from is frozen when it ships. **The client asks; it never derives.**
 
 - Each release publishes `manifest.json`: its version, and for each component and platform the file's URL, size
   and sha256. Unknown fields are ignored, so it can grow. File names and layouts are not in the client.
-- The only thing frozen in the client is the manifest's address, and the repository has moved before: so a
-  second address on another host, and an override in the configuration.
+- The only thing frozen in the client is the manifest's address, and the repository has moved before. So it is a
+  domain the project controls, serving that one static file, with GitHub as the second address and an override in the
+  configuration. The binaries stay in the releases, named by the manifest. No login is needed: the repository is public.
 - The manifest is signed (ed25519). A digest from the same place guards against damage, not against a stolen
   token, and this is a tool that runs on the user's machine. The public keys are in the binary, the private key
   never leaves the owner's machine, and a signed manifest can name the next key, so a key can be replaced.
