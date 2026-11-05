@@ -381,7 +381,9 @@ PROGRAMS = HELDOUT if _SET == "heldout" else TUNED
 #     "unstripped": "/path/with/debug/info", "stripped": "/path/stripped"}]}
 #
 # Each entry is measured as variant (a), its unstripped file, and (b), its
-# stripped one, against the unstripped file's DWARF; `stripped` may be left out.
+# stripped one, against the unstripped file's DWARF; `stripped` may be left out,
+# and `"only_stripped": true` leaves (a) out, for a truth file that is not itself
+# the image of interest.
 # While it is set, these are the configurations (results go under the scratch
 # as usual); with it unset nothing here is read and nothing changes.
 EXTRA_PATH = os.environ.get("RULE_ACCURACY_EXTRA")
@@ -417,7 +419,7 @@ def configs(select: str | None = None) -> list:
     out = []
     if EXTRA is not None:
         for e in EXTRA["entries"]:
-            cfg = Config(e["arch"], e["name"], e["compiler"], e["opt"], (e["unstripped"], e.get("stripped")))
+            cfg = Config(e["arch"], e["name"], e["compiler"], e["opt"], (e["unstripped"], e.get("stripped"), e.get("only_stripped", False)))
             if select is None or any(s in cfg.id for s in select.split(",")):
                 out.append(cfg)
         return out
@@ -453,8 +455,8 @@ def manifest_of(cfg: Config) -> dict:
         return json.load(open(path)) if os.path.exists(path) else {}
     import readers  # readers imports this module for its tool environment
 
-    unstripped, stripped = cfg.extra
-    ok = {"a": True}
+    unstripped, stripped, only_stripped = cfg.extra
+    ok = {} if only_stripped else {"a": True}
     if stripped:
         ok["b"] = readers.same_code(stripped, unstripped)[0]
     return {"ok": True, "truth_ok": ok}

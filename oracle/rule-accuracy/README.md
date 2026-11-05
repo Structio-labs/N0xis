@@ -96,7 +96,7 @@ tune the engine, through the extra corpus below.
 
 Each entry is measured as variant (a), the unstripped file, and (b), the stripped one (when
 given, and only when its code sections are the unstripped file's), against the unstripped
-file's DWARF. While the variable is set these entries are the configurations; `build.py` has
+file's DWARF (`"only_stripped": true` leaves (a) out). While the variable is set these entries are the configurations; `build.py` has
 nothing to do for them. Unset, nothing is read and nothing changes. Give it a
 `RULE_ACCURACY_SCRATCH` of its own.
 
