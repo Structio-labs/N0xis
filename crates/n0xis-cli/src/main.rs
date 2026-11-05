@@ -3027,8 +3027,26 @@ struct DisasmArgs {
     arch: Option<String>,
 }
 
+#[global_allocator]
+static ALLOCATOR: n0xis_core::CeilingAlloc = n0xis_core::CeilingAlloc;
+
 fn main() {
+    let stated = std::env::var("N0X_MEMORY_MAX").ok().and_then(|v| n0xis_core::parse_memory_size(&v));
+    n0xis_core::set_memory_ceiling(n0xis_sources::memory_ceiling(stated), refuse_past_the_ceiling);
     n0xis_core::on_analysis_stack(run);
+}
+
+/// A run past its memory ceiling stops with an answer of the usual shape instead of
+/// being killed by the kernel with none.
+fn refuse_past_the_ceiling(ceiling: u64) {
+    let pretty = std::env::args().any(|a| a == "--pretty");
+    let message = format!("this run needs more memory than its ceiling of {} MiB, so it stopped", ceiling >> 20);
+    emit(
+        &Response::<serde_json::Value>::error("out-of-memory", message)
+            .with_hint("ask for less (a narrower range, a limit, a higher --min), or set N0X_MEMORY_MAX; a cgroup's limit stays the upper bound"),
+        pretty,
+    );
+    std::process::exit(2);
 }
 
 fn run() {

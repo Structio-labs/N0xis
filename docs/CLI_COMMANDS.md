@@ -51,6 +51,10 @@ session stdin is the request channel, so no command reads it: `dump save` with n
 branch on it. Progress is written to **stderr** with a `[n0x]` prefix (safe to ignore in
 pipelines).
 
+A run stops itself at a memory ceiling and answers `out-of-memory` in the same envelope, instead of being killed by the
+kernel with no answer. The ceiling is three quarters of the machine's memory, or `N0X_MEMORY_MAX` (bytes, or with `K`, `M`, `G`) if
+set, and never more than three quarters of the tightest cgroup limit the process runs under.
+
 ### Global flags (accepted on every command)
 
 - `--pretty` — indent the JSON envelope.

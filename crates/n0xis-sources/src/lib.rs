@@ -71,6 +71,9 @@ mod static_elf;
 // LiveTarget` plus the vocabulary its answers are phrased in. Frontends can
 // therefore *name* the seam on any platform, and only the implementations come
 // and go with the target.
+mod host_memory;
+pub use host_memory::memory_ceiling;
+
 mod target;
 pub use target::{ALL_REGIONS, LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
 

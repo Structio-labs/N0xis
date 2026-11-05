@@ -5,6 +5,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run that wanted too much memory was killed by the kernel, with no answer and a desktop alarm.** The engine now counts what it
+  holds and stops itself at a ceiling, answering `out-of-memory` in the usual envelope: three quarters of the machine's memory, or
+  `N0X_MEMORY_MAX`, and never more than three quarters of the tightest cgroup limit. Every allocation is counted, so a length read from a
+  corrupted file is refused the same way as an answer that grew too large. `strings --limit 0 --min 1` on a 13 MB image reached 6.2 GB before;
+  at a ceiling of 3 GiB it now stops with a peak of 2.06 GiB. It stops; it does not yet fit: that answer still takes gigabytes.
+
 ## [0.3.6] — 2026-11-05
 
 **WebAssembly modules open from the command line, `why` and `contradictions` say where each fact came from

@@ -53,6 +53,7 @@ mod typeprop;
 mod slice;
 mod ssa;
 mod structural;
+mod ceiling;
 mod stack;
 mod structure;
 mod strings;
@@ -71,6 +72,7 @@ mod xref_string;
 mod sweep;
 
 pub use stack::{on_analysis_stack, ANALYSIS_STACK_BYTES};
+pub use ceiling::{parse_memory_size, set_memory_ceiling, CeilingAlloc};
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass, AobSweepInput, AobSweepPass};
 pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};
 pub use aslr::{rebase, rva_of, va_at};
