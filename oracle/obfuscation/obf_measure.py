@@ -45,11 +45,23 @@ def engine_identity() -> dict:
 
 class Serve:
     """One `serve --file <image>` session; a command is a JSON argv array, the
-    answer the next line. In lockstep so no pipe fills."""
+    answer the next line. In lockstep so no pipe fills.
+
+    A command that crashes the engine (e.g. the known `decomp pseudo` stack
+    overflow on a deep single-use chain) would otherwise kill the session and
+    leave every later command in it unanswered. So a dead session is detected,
+    the crashing command is recorded as a crash with the engine's exit signal,
+    and the session is restarted for the commands that follow — one defect does
+    not blank the rest of an image's measurement."""
 
     def __init__(self, image: str, cwd: str):
-        argv = ["timeout", "500", corpus.ENGINE, "serve", "--file", image]
-        self.p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.image, self.cwd = image, cwd
+        self.crashes = 0
+        self._start()
+
+    def _start(self):
+        argv = ["timeout", "500", corpus.ENGINE, "serve", "--file", self.image]
+        self.p = subprocess.Popen(argv, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, env=corpus.TOOL_ENV)
         self.p.stdout.readline()  # banner
 
@@ -57,9 +69,19 @@ class Serve:
         try:
             self.p.stdin.write(json.dumps(argv) + "\n")
             self.p.stdin.flush()
-            return json.loads(self.p.stdout.readline())
+            line = self.p.stdout.readline()
+            if line == "":  # the engine closed stdout: it died on this command
+                raise BrokenPipeError("empty line")
+            return json.loads(line)
         except (BrokenPipeError, json.JSONDecodeError, ValueError) as e:
-            return {"ok": False, "error": {"code": "no-envelope", "why": str(e)}}
+            rc = self.p.poll()
+            if self.p.poll() is None:
+                self.p.kill()
+            self.p.wait()
+            self.crashes += 1
+            self._start()  # restart for the commands that follow
+            # A negative return code is the killing signal (-11 SIGSEGV, -6 abort).
+            return {"ok": False, "error": {"code": "crash", "cmd": argv, "exit": rc, "why": str(e)}}
 
     def close(self):
         try:
@@ -118,6 +140,7 @@ def measure(build: dict, truth: dict, run_dir: str) -> dict:
         out["decomp"][a] = s.cmd(["decomp", "pseudo", "--addr", a])
         out["xref_to"][a] = s.cmd(["xref", "to", "--addr", a])
     s.close()
+    out["serve_crashes"] = s.crashes
     out["truth_starts"] = [{"va": hex(va), "end": hex(end) if end else None, "count": n, "names": names}
                            for va, end, n, names in truth_starts]
     return out

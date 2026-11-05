@@ -1466,6 +1466,131 @@ and WebAssembly; the `rtti`, `flirt`, `pdb`, `managed` and `user` name layers (n
 them); `analyze` and the function lists of a live process. `why` does not cite any of these
 numbers; that is the lead's decision.
 
+### Obfuscated code: the first transformation measured (2026-11-05)
+
+The question (`docs/design/OBFUSCATED.md`): on code shaped to mislead a static reader, which answers
+are confidently wrong, and does anything warn of it? The instrument is `oracle/obfuscation/`, which
+reuses this one's readers, truth reader and scorer — a transformation is one more variant, not a
+second instrument. Engine `n0xis-0.3.5` (the wasm preview build), sha256
+`da8b1dc53326ca3bc54fc996843232d6fb6891cd684f86a0ec29a2a539529fa7`. **Only the first transformation
+is measured: junk bytes after unconditional transfers.** The rest (opaque predicates, flattening,
+string encryption, computed-table calls, overlapping instructions, lying tables, a packer stub),
+WebAssembly, combinations, and the owner's projects are **not measured here** — stated as absences
+below.
+
+**Method.** The transformation runs on the assembly the compiler emits, where symbols are still
+labels, so the *obfuscated* build's own unstripped DWARF is correct by construction and is the truth
+for the obfuscated stripped image (rule-accuracy's variant a/b with the obfuscated pair). For the
+instruction boundary, where a linear disassembler desynchronises, the truth is a reference twin: the
+same assembly with the planted dead bytes replaced by equal-length NOPs, read by GNU `objdump`
+(rung 3) — byte-for-byte the obfuscated image outside the planted ranges, checked. Every obfuscated
+and twin build printed exactly the clean build's output (behaviour preserved). Corpus: a dedicated
+`calib.c` (5 functions) and the Lua 5.4.7 interpreter embedded by a driver (~780 listed functions),
+`-O1 -g -fno-pic -no-pie`, on x86-64, i686 and AArch64 (run under qemu), at intensities 0.5 and 1.0,
+each against an identity baseline. The number that matters is **silent or flagged**: of the wrong
+answers, how many carried any warning (a place in `contradictions`, an `ir deobfuscate` junk finding
+at the address, a refusal) versus `ok:true` with nothing.
+
+*Per command, junk versus the baseline (w = wrong, of those s = silent, i.e. `ok:true` with no warning).*
+
+| config (intensity) | function discover w (s) | disasm w (s) | strings w | xref w | ir-deob planted detected | contradictions |
+|---|---|---|---|---|---|---|
+| x86_64 calib — baseline | 0 | 0 | 0 | 0 | 0 / 0 | 0 |
+| x86_64 calib junk 0.5 | 1 (0) | 5 (5) | 0 | 0 | 0 / 6 | 0 |
+| x86_64 calib junk 1.0 | 1 (0) | 5 (5) | 0 | 0 | 0 / 6 | 0 |
+| x86_64 lua — baseline | 0 | 0 | 0 | 0 | 0 / 0 | 0 |
+| x86_64 lua junk 0.5 | 0 | 1119 (1111) | 0 | 4 (4) | 0 / 1582 | 0 |
+| x86_64 lua junk 1.0 | 2 (0) | 2162 (2151) | 0 | 5 (5) | 0 / 2829 | 0 |
+| i686 calib junk 1.0 | 0 | 3 (3) | 0 | 0 | 0 / 6 | 0 |
+| i686 lua junk 0.5 | 0 | 1363 (1358) | 0 | 7 (7) | 0 / 1589 | 0 |
+| i686 lua junk 1.0 | 0 | 2810 (2805) | 0 | 9 (9) | 0 / 2821 | 0 |
+| aarch64 calib junk 1.0 | 1 (0)* | 0 | 0 | 0 | 0 / 8 | 0 |
+| aarch64 lua junk 1.0 | 1 (0)* | 0 | 0 | 0 | 0 / 2785 | 0 |
+
+*The one AArch64 discover wrong is in the baseline too (not caused by junk). Recall is unchanged by
+junk on every configuration. The ir-deob column is planted junk sites detected / planted. The full
+tables are `oracle/obfuscation/results/doc-tables.md`, regenerated with the engine's sha.
+
+**What breaks, and whether it is silent.**
+
+- *`disasm` is the loud failure, and it is silent.* A linear decode that passes a junk `0xe8` reads it
+  as a `call rel32` and swallows the four bytes after it, then emits confident fictitious instructions
+  until it resynchronises: 5 on the small program, ~1 100–2 800 on Lua, and **~99.5% carried no
+  warning** (`contradictions` 0 on every configuration, no `ir deobfuscate` junk finding at the
+  address). Example (x86-64 `calib`): a decode from `add_two` (`0x401140`) reaches `0x401149` and
+  prints `inc dword ptr [rbp+0F0678FFh]`; the twin shows the real instruction there starts at
+  `0x401145` (`mov eax,-1`, 5 bytes). The planted byte sits inside the function's *own* declared
+  extent, so its declared end falls mid-(decoded)-instruction, yet nothing cross-checks the two.
+- *`function discover` stays almost right, and its few wrong answers are flagged by category.* The
+  `0xe8` seen as a `call` adds a spurious call target: 1 wrong start on `calib`, 2 on Lua at 1.0,
+  each carrying only the heuristic source `call_target` — so `why` marks them heuristic. Recall never
+  dropped (no true function was lost).
+- *`ir deobfuscate` detects none of this junk.* 0 of every planted site (1 582 / 2 829 / … ), because
+  the bytes are unreachable — after an unconditional transfer — and its analysis is over the reachable
+  CFG, which never includes them. Its junk findings (34 on clean x86-64 Lua, 33 under junk) are
+  `mov eax,eax` self-movs in honest code; its opaque-predicate findings (2 on `calib`, 2–3 on Lua) are
+  the C runtime's `register_tm_clones`/`deregister_tm_clones` branches, which resolve to a constant in
+  this non-PIC build — a true positive of the rule, a false alarm for "obfuscation". Neither moved
+  materially under junk.
+- *AArch64 is immune by construction.* Fixed-width 32-bit instructions mean a dead aligned word
+  desynchronises nothing; `disasm` wrong is 0 there. Junk-after-transfer is a variable-length-ISA
+  attack. Recorded so the zero is understood, not mistaken for a pass of a test that was never run.
+- *`xref` gains fictitious call edges from the junk.* The `0xe8` read as `call`, and desynced
+  decodes, produce confident call references the program does not have: 4 and 5 on x86-64 Lua (0.5,
+  1.0), 7 and 9 on i686 Lua, 0 on `calib` and 0 in every baseline — all silent. Example (x86-64 Lua):
+  `xref to 0x40c081` lists a `call` from `0x40bfbe`, where the reference twin has a `nop` (the planted
+  dead byte); others originate at addresses that are no instruction boundary at all. This surfaced
+  only after fixing the scorer, which first read only x86 `call`/`jmp` and so counted every AArch64
+  `bl`/`b` as wrong — the metric accusing the engine; corrected, then both sides re-measured, and the
+  baseline fell to 0.
+- *`strings` and `decomp` are controls here* and are unaffected: 0 wrong strings; pseudo-C returned
+  for every function; 0 engine crashes on this corpus (the known `decomp pseudo` stack overflow did
+  not trigger on this build; the harness isolates and records one if it does).
+
+**Verdict on the claims this corpus can test.**
+
+1. *"On this corpus the category still predicts the error"* (the rule-accuracy verdict above) **holds
+   for `function discover` on junk** — every junk-induced wrong start is heuristic-only — **but it is
+   scoped to discovery.** `disasm` and the other commands carry no provenance category at all, so
+   their wrong answers on obfuscated code are silent by construction: a category cannot predict an
+   error on an answer it does not label. The single most common confident wrong answer here, the
+   desynced `disasm` instruction, has no `why` and no category.
+2. *The `OBFUSCATED.md` §1 aim* — "a start that does not decode, an unwind range ending
+   mid-instruction, a call into the middle of a declared function, overlapping decodes ... become
+   kinds of `contradictions`" — **does not hold yet.** `contradictions` returned 0 on every junk
+   configuration though a declared extent's last bytes decode as an instruction crossing its end. The
+   engine does not yet cross-check a declared boundary against the decode. This is a gap to close, not
+   a regression.
+3. *The limit "a declared source is what the table says, not the truth; nothing here says what an
+   obfuscated or hand-edited one does"* is only **partly** addressed: this round measures a non-table
+   transformation (junk in the stream). The table-lying transformations it names remain unmeasured.
+
+**Calibration.** `oracle/obfuscation/obf_calibrate.py` on the single-file `calib`, 0 failures: a
+disasm instruction moved off a true boundary scores one more wrong; a true start moved a byte scores
+one more wrong start and one fewer true; the twin is byte-identical to the obfuscated image outside
+the planted ranges; every counted wrong `disasm` instruction is shown by the bytes against the twin;
+0 wrong starts are named by the measured file's own symbol table (none would accuse the reference).
+The byte-identity check also caught a real instrument bug on the first *multi-file* run: the planted
+labels reset per source file and collided across objects, so `build.json`'s planted-range addresses
+came out wrong (the disasm/discover numbers are invariant to this — a junk start is always a true
+boundary of the twin — but `decoded_dead_bytes` and that check were not). The labels are now unique
+per file; re-verifying the multi-file byte-identity on a rebuilt Lua was left pending because the
+shared build budget was saturated by a concurrent measurement — recorded as pending, not as passed.
+
+Two measurement bugs the instrument found in itself this round, both fixed before any number was
+recorded: the xref scorer first matched only x86 `call`/`jmp`, so every AArch64 `bl`/`b` read as a
+wrong reference (10 on `calib`, the metric accusing the engine) — corrected to the AArch64 mnemonics,
+then re-measured to 0; and a desynced disasm instruction was first credited as "flagged" when its
+function merely had an unrelated opaque-predicate hit — corrected to flag only when a warning names
+the instruction's own address.
+
+**Not measured (absences, not results).** Opaque predicates, control-flow flattening, string
+encryption, computed-table calls, overlapping instructions, lying tables (fake/removed unwind
+entries, false function symbols and sizes, renamed exports), a packer stub (and `upx`, not installed);
+WebAssembly including a forged name section; combinations; copies of the owner's projects (held out
+until their measurement is done). The harness registers one transformation at a time; `junk` and the
+`none` baseline are the only ones built.
+
 ### The three numbers the README quotes
 
 1. **The decoder: 10 498 instructions on 10 images, every difference a documented

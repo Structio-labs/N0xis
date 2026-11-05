@@ -30,8 +30,9 @@ def wrong_triple(cmd: str, c: dict):
     if cmd == "function_discover":
         return c["wrong_starts"], c["wrong_flagged"], c["wrong_silent"]
     if cmd == "ir_deobfuscate":
-        # "wrong" here is the false alarms on honest code; detection is reported apart.
-        return c["false_positives_on_honest"], 0, c["false_positives_on_honest"]
+        # The w/f/s column here is the junk hits on honest code (its base-rate
+        # false alarm); detection of planted junk is reported apart.
+        return c["junk_on_honest"], 0, c["junk_on_honest"]
     return c.get("wrong", 0), c.get("wrong_flagged", 0), c.get("wrong_silent", 0)
 
 
@@ -73,7 +74,7 @@ def main() -> int:
             a = agg[s["transform"]][cmd]
             a[0] += w; a[1] += f; a[2] += si
         irc = s["cmd"]["ir_deobfuscate"]
-        det = f"{irc['detected']}/{irc['functions_with_planted_junk']}"
+        det = f"{irc['detected']}/{irc['planted_ranges']}"
         beh = {True: "same", False: "DIFFERS", None: "not-run"}[s["behaviour_ok"]]
         lines.append(f"| {s['id']} | {beh} | " + " | ".join(cells) + f" | {det} | {s['contradictions_count']} |")
 

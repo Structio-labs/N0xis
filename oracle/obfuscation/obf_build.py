@@ -87,7 +87,7 @@ def build_config(cfg: corpus.Config) -> dict:
             json.dump(m, open(os.path.join(cfg.dir, "build.json"), "w"), indent=1)
             return m
         asm = open(s_clean).read()
-        obf_asm, ref_asm, planted = T["fn"](asm, cfg.intensity)
+        obf_asm, ref_asm, planted = T["fn"](asm, cfg.intensity, tag=base)
         planted_all.append(planted)
         s_obf = os.path.join(cfg.dir, base + ".obf.s")
         open(s_obf, "w").write(obf_asm)

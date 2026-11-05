@@ -58,9 +58,9 @@ def main() -> int:
     build, truth, meas = load(cfg_id)
     ref = obf_score.ref_boundaries(build.get("reference_file"))
     contra = obf_score.contradiction_addrs(meas)
-    irflag = obf_score.ir_flagged(meas)
+    ir_junk = obf_score.ir_junk_addrs(meas)
     planted = build.get("planted", [])
-    base = obf_score.score_disasm(truth, meas, ref, contra, irflag, planted)
+    base = obf_score.score_disasm(truth, meas, ref, contra, ir_junk, planted)
     print(f"[{cfg_id}] baseline disasm wrong {base['wrong']}, discover from rule-accuracy scorer")
 
     # 1. Plant a wrong disasm instruction: take an aligned instruction and move
@@ -79,7 +79,7 @@ def main() -> int:
             mutated = True
             break
     check("the disasm mutation happened", mutated and bad_va is not None, f"moved one instruction onto {hex(bad_va) if bad_va else None} (not a boundary)")
-    s1 = obf_score.score_disasm(truth, m1, ref, contra, irflag, planted)
+    s1 = obf_score.score_disasm(truth, m1, ref, contra, ir_junk, planted)
     check("one more wrong disasm instruction", s1["wrong"] == base["wrong"] + 1, f"{base['wrong']} -> {s1['wrong']}")
 
     # 2. Move a true DWARF function start by one byte (rule-accuracy scorer).
@@ -109,29 +109,30 @@ def main() -> int:
     if not moved:
         print("  (no DWARF true start available to move: start calibration skipped)")
 
-    # 3. The twin is a sound boundary oracle: an untouched function's decode has
-    # zero desync against it.
-    touched_extents = []
-    dwarf = sorted((f["start"], f.get("end") or f["start"] + 0x10000) for f in truth["functions"] if f["tier"] == "dwarf")
-    planted_fn_starts = set()
-    for p in planted:
-        for s_, e_ in dwarf:
-            if s_ <= p["lo"] < e_:
-                planted_fn_starts.add(s_)
-                break
-    untouched = [hex(s_) for s_, e_ in dwarf if s_ not in planted_fn_starts]
-    zero_desync = True
-    checked = 0
-    for a in untouched:
-        d = meas["disasm"].get(a)
-        if not d or not d.get("ok"):
-            continue
-        checked += 1
-        for ins in d["data"]["insns"]:
-            va = int(ins["va"], 16)
-            if va not in ref and va not in junk_starts:
-                zero_desync = False
-    check("untouched functions decode with no desync against the twin", zero_desync or checked == 0, f"{checked} untouched functions checked")
+    # 3. The twin is a sound boundary oracle: its code is byte-for-byte the
+    # obfuscated image's EXCEPT inside the planted (dead) ranges, so an
+    # independent objdump of it reads the real instruction boundaries of the
+    # obfuscated image everywhere a real instruction is. Checked directly on the
+    # bytes (rung 1), not by assuming a decode stays in sync — a linear decode
+    # legitimately overruns a function into a neighbour's junk, which is the
+    # desync the measurement is here to find, not a twin fault.
+    ref_file = build.get("reference_file")
+    differ_outside = 0
+    if ref_file:
+        obf_bytes = open(build["truth_file"], "rb").read()
+        ref_bytes = open(ref_file, "rb").read()
+        obf_secs = {s["name"]: s for s in readers.sections(build["truth_file"])}
+        ranges = [(p["lo"], p["hi"]) for p in planted]
+        for name, s in obf_secs.items():
+            if "X" not in s["flags"] or s["type"] == "NOBITS":
+                continue
+            for off in range(s["size"]):
+                va = s["addr"] + off
+                fo = s["offset"] + off
+                if obf_bytes[fo] != ref_bytes[fo] and not any(lo <= va < hi for lo, hi in ranges):
+                    differ_outside += 1
+    check("twin is byte-identical to the obfuscated image outside the planted ranges",
+          ref_file is not None and differ_outside == 0, f"{differ_outside} bytes differ outside a planted range")
 
     # Wrong by the bytes: every counted wrong disasm instruction, obf bytes vs the twin.
     print("\n== wrong disasm instructions, by the bytes (obfuscated image vs the reference twin)")

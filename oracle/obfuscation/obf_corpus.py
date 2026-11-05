@@ -85,19 +85,24 @@ def _calib(_arch: str) -> list:
 
 
 def _lua_sources(_arch: str) -> list:
-    """The Lua 5.4.7 interpreter: the library plus `lua.c` (its `main`), the
-    crate's own sources. `luac.c` is the other main and is left out."""
+    """The Lua 5.4.7 library (the crate ships no `lua.c`/`luac.c` main) plus the
+    embedding driver `lua_main.c`, which runs a fixed script. No `LUA_USE_LINUX`
+    (that pulls in readline); the script needs none of it."""
     root = os.path.join(ra._registry("lua-src-547.0.0"), "lua-5.4.7")
-    return sorted(f for f in glob.glob(os.path.join(root, "*.c")) if not f.endswith("luac.c"))
+    lib = sorted(glob.glob(os.path.join(root, "*.c")))
+    return lib + [os.path.join(HERE, "lua_main.c")]
 
 
 PROGRAMS = {
     "calib": Program("calib", "exe", sources_for=_calib),
-    # The Lua interpreter, run on a fixed script that prints a deterministic
-    # line: the behaviour check is that line, byte for byte.
-    "lua": Program("lua", "exe", ("-DLUA_USE_LINUX",), ("-lm",), sources_for=_lua_sources,
-                   argv=("-e", "local s=0 for i=1,100 do s=s+i end print('LUA_RESULT '..s)")),
+    # The Lua library embedded by lua_main.c, run on a fixed script whose printed
+    # line is the behaviour check. The include path is the crate's lua dir.
+    "lua": Program("lua", "exe", ("-I@LUA@",), ("-lm",), sources_for=_lua_sources),
 }
+
+
+def _lua_dir() -> str:
+    return os.path.join(ra._registry("lua-src-547.0.0"), "lua-5.4.7")
 
 
 @dataclass(frozen=True)
@@ -144,7 +149,7 @@ def compile_to_asm_argv(cfg: Config, src: str, out_s: str) -> list:
     a = ARCHES[cfg.arch]
     p = PROGRAMS[cfg.program]
     argv = list(a.cc) + [f"-{cfg.opt}", "-g", "-S", "-fno-pic", "-fno-stack-protector"]
-    argv += list(p.flags)
+    argv += [f.replace("@LUA@", _lua_dir()) for f in p.flags]
     argv += ["-w", "-o", out_s, src]
     return argv
 

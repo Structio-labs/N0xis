@@ -86,7 +86,7 @@ def _func_regions(lines: list) -> list:
     return out
 
 
-def junk_after_transfers(asm: str, intensity: float, seed: int = 1) -> tuple:
+def junk_after_transfers(asm: str, intensity: float, seed: int = 1, tag: str = "") -> tuple:
     """J: insert bytes that never execute after each unconditional transfer in a
     chosen share of functions. The bytes are an `0xe8` (x86 `call rel32`, which a
     linear sweep reads as swallowing the four bytes that follow) or an AArch64
@@ -120,7 +120,11 @@ def junk_after_transfers(asm: str, intensity: float, seed: int = 1) -> tuple:
         lbl = region_of.get(i)
         if lbl is not None and uncond.match(ln):
             n += 1
-            lo, hi = f"__obf_junk_{n}_a", f"__obf_junk_{n}_b"
+            # The label carries a per-source-file tag so names are unique across
+            # a multi-file program; without it a local `__obf_junk_1_a` in every
+            # object collapses when the symbol table is read, and the planted
+            # ranges come out wrong (the byte-identity calibration catches this).
+            lo, hi = f"__obf_junk_{tag}_{n}_a", f"__obf_junk_{tag}_{n}_b"
             if arm:
                 junk_bytes = ".byte 0x1f, 0x20, 0x03, 0xd5"  # one 32-bit word, decodes as a nop-ish; a dead word desyncs nothing on fixed-width ARM but is still unreachable code a sweep lists
                 pad_bytes = ".byte 0x1f, 0x20, 0x03, 0xd5"
@@ -135,9 +139,19 @@ def junk_after_transfers(asm: str, intensity: float, seed: int = 1) -> tuple:
     return "\n".join(obf) + "\n", "\n".join(ref) + "\n", planted
 
 
+def identity(asm: str, intensity: float, seed: int = 1, tag: str = "") -> tuple:
+    """The baseline: no transformation. The obfuscated image is the clean one,
+    so the engine's wrong answers here are its normal behaviour, and a
+    transformation's own cost is its number minus this one's. The reference twin
+    is the same assembly, so an independent objdump reads it without desync."""
+    return asm, asm, Planted(kind="none", note="identity baseline")
+
+
 # The registry: name -> (function, applies-to-arches, needs-reference-twin).
 # Each new transformation is added here in its own commit.
 TRANSFORMS = {
+    "none": {"fn": identity, "arches": ("x86_64", "i686", "aarch64"), "twin": True,
+             "desc": "identity: the unobfuscated baseline to compare against"},
     "junk": {"fn": junk_after_transfers, "arches": ("x86_64", "i686", "aarch64"), "twin": True,
              "desc": "junk bytes after unconditional transfers (desynchronises a linear sweep)"},
 }

@@ -74,16 +74,17 @@ def run_config(cfg: corpus.Config, rescore: bool, sha: str) -> str:
     # Score (reuse obf_score's functions).
     ref = obf_score.ref_boundaries(m.get("reference_file"))
     contra = obf_score.contradiction_addrs(meas)
-    irflag = obf_score.ir_flagged(meas)
+    ir_junk = obf_score.ir_junk_addrs(meas)
     planted = m.get("planted", [])
     summary = {
         "id": m["id"], "transform": m["transform"], "intensity": m["intensity"],
         "arch": m["arch"], "program": m["program"], "engine": meas["engine"],
         "behaviour_ok": m.get("behaviour_ok"), "planted_count": m.get("planted_count"),
+        "serve_crashes": meas.get("serve_crashes", 0),
         "contradictions_count": meas.get("contradictions", {}).get("data", {}).get("count"),
         "cmd": {
             "function_discover": obf_score.score_discover(m, t, meas, contra),
-            "disasm": obf_score.score_disasm(t, meas, ref, contra, irflag, planted),
+            "disasm": obf_score.score_disasm(t, meas, ref, contra, ir_junk, planted),
             "strings": obf_score.score_strings(meas, obf_score.EXPECTED_STRINGS.get(m["program"], [])),
             "xref": obf_score.score_xref(t, meas, ref, contra),
             "decomp": obf_score.score_decomp(t, meas, planted),
@@ -96,8 +97,9 @@ def run_config(cfg: corpus.Config, rescore: bool, sha: str) -> str:
     c = summary["cmd"]
     return (f"{cfg.id}: disasm wrong {c['disasm']['wrong']}/{c['disasm']['wrong_silent']} silent, "
             f"discover wrong {c['function_discover']['wrong_starts']} recall {c['function_discover']['recall']}, "
-            f"ir-deob {c['ir_deobfuscate']['detected']}/{c['ir_deobfuscate']['functions_with_planted_junk']} "
-            f"fp {c['ir_deobfuscate']['false_positives_on_honest']}, contradictions {summary['contradictions_count']}")
+            f"ir-deob det {c['ir_deobfuscate']['detected']}/{c['ir_deobfuscate']['planted_ranges']} "
+            f"junk-on-honest {c['ir_deobfuscate']['junk_on_honest']}, contradictions {summary['contradictions_count']}"
+            f"{' CRASHES ' + str(summary['serve_crashes']) if summary['serve_crashes'] else ''}")
 
 
 def main() -> int:
