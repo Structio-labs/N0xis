@@ -171,6 +171,10 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`scan filter --file` could never succeed.** It always answered `missing-region`, asking for a
+  start and a size that the command has no flags for. A filter needs neither: it reads the addresses
+  the saved scan holds. It now works, against the same image or another build of it, and states what
+  it could not read, since saved addresses may not be in the file named now.
 - **`scan value` said `exhaustive: true` having skipped regions.** The field meant only that
   `matches` was all of `total_matches`, where a reader takes it to mean nothing was missed. It is now
   true only when everything was shown and every region was read whole. `scan filter` and the report

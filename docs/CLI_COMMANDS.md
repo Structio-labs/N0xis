@@ -761,7 +761,10 @@ new values to old.
 - `--criterion` (required) — `exact` (needs `--value`), `increased`, `decreased`, `changed`,
   `unchanged`, or `in-range` (needs `--min`/`--max`).
 - `--value`/`--min`/`--max`; `--save-as` (required); `--force`.
-- Sources: `--pid` | `--file`.
+- Sources: `--pid` | `--file`. Reads the addresses the saved scan holds, so it takes no window, and
+  from whichever source is named now: on `--file`, the same image for a value criterion, another
+  build of it for `changed`. Either way the answer states what it could not read (below), and when
+  no saved region reads at all the error is `nothing-readable`.
 - Schema: `n0xis.scan.v1`
 
 ### `scan aob --pattern "<hex>"`
@@ -779,8 +782,8 @@ AOB (array-of-bytes) signature scan with `??` wildcards, e.g. `"48 8B ?? 68"`.
 A process's regions come and go, and some will not read. A sweep of them goes on past a region
 that gives nothing, and states it, in the same object as its result. This goes for `scan aob`,
 `scan value`, `scan filter`, `scan group`, `scan pointer-path`, `locate by-transition`, `lua
-strings`, `lua combo`, `lua seedscan`, `il2cpp classes` and `ui locate`, and for `find` and
-`strings` on `--pid` or `--remote-cmd`. An answer about a window of a file or a snapshot states
+strings`, `lua combo`, `lua seedscan`, `il2cpp classes` and `ui locate`, for `find` and
+`strings` on `--pid` or `--remote-cmd`, and for `scan filter` on `--file`. An answer about a window of a file or a snapshot states
 none of it, except that a window of which nothing reads is `nothing-readable` there too: `scan aob`,
 `scan value`, `scan group`, `find` and `strings`.
 

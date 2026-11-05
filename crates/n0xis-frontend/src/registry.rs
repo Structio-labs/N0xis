@@ -1154,13 +1154,22 @@ fn with_src_ctx_names(
 /// What a scan swept, which decides what its answer has to state.
 #[derive(Clone, Copy)]
 enum ScanTarget {
-    /// A running process: regions come and go, and some will not read, so the
-    /// answer says what it read, and reading nothing is an error.
-    Live,
+    /// Regions that can fail to be there, so the answer says what it read, and
+    /// reading nothing is an error: a running process's, which come and go, and
+    /// those of a saved working set, whose addresses may be from another target.
+    Regions,
     /// One window the caller named in an image file. Its answer states no
     /// coverage, since what a file holds does not change; a window that misses
     /// the image is still an error.
     File,
+}
+
+/// Which addresses a scan reads.
+enum ScanRegions<'a> {
+    /// A caller's window, or on a process every committed writable region.
+    Window { start: Option<&'a str>, size: Option<usize> },
+    /// The ones a saved working set holds, whatever source they are read from.
+    Saved,
 }
 
 impl ScanTarget {
@@ -1170,7 +1179,7 @@ impl ScanTarget {
                 Ok(answer) => ok_json(schema, answer, label),
                 Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
             },
-            ScanTarget::Live => match swept.live() {
+            ScanTarget::Regions => match swept.live() {
                 Ok(stated) => ok_json(schema, stated, label),
                 Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
             },
@@ -1206,8 +1215,7 @@ fn answer_and_save(target: ScanTarget, swept: n0xis_sources::Swept<n0xis_core::S
 /// the default belongs in one place either way.
 fn with_scan_ctx(
     args: &Value,
-    start: Option<&str>,
-    size: Option<usize>,
+    addresses: ScanRegions<'_>,
     work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str, ScanTarget) -> Response<Value>,
 ) -> Response<Value> {
     let explicit = args.get("arch").and_then(|v| v.as_str());
@@ -1220,21 +1228,29 @@ fn with_scan_ctx(
             Ok(l) => l,
             Err((c, m)) => return Response::error(&c, m),
         };
-        let regions = match crate::source::live_scan_regions(live.as_ref(), start, size) {
-            Ok(r) => r,
-            Err(e) => return Response::error("bad-region", e),
+        let regions = match addresses {
+            ScanRegions::Window { start, size } => match crate::source::live_scan_regions(live.as_ref(), start, size) {
+                Ok(r) => r,
+                Err(e) => return Response::error("bad-region", e),
+            },
+            ScanRegions::Saved => Vec::new(),
         };
         let label = n0xis_sources::MemorySource::label(live.as_ref());
         let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
-        return work(&ctx, regions, &label, ScanTarget::Live);
+        return work(&ctx, regions, &label, ScanTarget::Regions);
     }
     if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
-        let (Some(start_s), Some(size)) = (start, size) else {
-            return Response::error("missing-region", "provide start and size for a file source");
-        };
-        let start_va = match Va::parse(start_s) {
-            Ok(v) => v,
-            Err(e) => return Response::error("bad-addr", e.to_string()),
+        let (regions, target) = match addresses {
+            ScanRegions::Window { start, size } => {
+                let (Some(start_s), Some(size)) = (start, size) else {
+                    return Response::error("missing-region", "provide start and size for a file source");
+                };
+                match Va::parse(start_s) {
+                    Ok(v) => (vec![(v, size)], ScanTarget::File),
+                    Err(e) => return Response::error("bad-addr", e.to_string()),
+                }
+            }
+            ScanRegions::Saved => (Vec::new(), ScanTarget::Regions),
         };
         let pe = match crate::source::load_image_cached(std::path::Path::new(file)) {
             Ok(p) => p,
@@ -1257,7 +1273,7 @@ fn with_scan_ctx(
             Err(e) => return Response::error("bad-arch", e),
         };
         let ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref());
-        return work(&ctx, vec![(start_va, size)], &label, ScanTarget::File);
+        return work(&ctx, regions, &label, target);
     }
     Response::error("missing-source", "provide pid or file")
 }
@@ -1985,7 +2001,7 @@ impl Plugin for AnalysisPasses {
                 let align = args.get("align").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or_else(|| value_type.size());
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, target| {
+                with_scan_ctx(args, ScanRegions::Window { start: start.as_deref(), size }, move |ctx, regions, label, target| {
                     let input = n0xis_core::ScanInput { regions, value_type, criterion, align };
                     match n0xis_core::Pass::run(&n0xis_core::ScanPass, ctx, input) {
                         Ok(swept) => answer_and_save(target, swept, &save_as, force, label),
@@ -1997,7 +2013,7 @@ impl Plugin for AnalysisPasses {
 
         reg.add(Capability::new(
             "scan.filter",
-            "Narrow a saved scan (`from`) by a criterion: exact|increased|decreased|changed|unchanged|in-range.",
+            "Narrow a saved scan (`from`) by a criterion: exact|increased|decreased|changed|unchanged|in-range. Reads the addresses the saved scan holds from `pid` or `file`, and states what it could not read.",
             Some(n0xis_contracts::schema::v1::SCAN),
             Origin::Builtin,
             Box::new(|args| {
@@ -2037,8 +2053,10 @@ impl Plugin for AnalysisPasses {
                 let save_as = args.get("save_as").and_then(|v| v.as_str()).unwrap_or(from).to_string();
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(true);
                 // A filter rescans the addresses it already holds, so it needs
-                // no region resolution — only the source they live in.
-                with_scan_ctx(args, None, None, move |ctx, _regions, label, target| {
+                // no region resolution — only the source they live in. A file is
+                // as good a source as a process: the same image for a value
+                // criterion, another build of it for `changed`.
+                with_scan_ctx(args, ScanRegions::Saved, move |ctx, _regions, label, target| {
                     let input = n0xis_core::FilterInput { previous, criterion };
                     match n0xis_core::Pass::run(&n0xis_core::FilterPass, ctx, input) {
                         Ok(swept) => answer_and_save(target, swept, &save_as, force, label),
@@ -2063,7 +2081,7 @@ impl Plugin for AnalysisPasses {
                 };
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, target| {
+                with_scan_ctx(args, ScanRegions::Window { start: start.as_deref(), size }, move |ctx, regions, label, target| {
                     match n0xis_core::Pass::run(&n0xis_core::AobSweepPass, ctx, n0xis_core::AobSweepInput { regions, pattern }) {
                         Ok(swept) => target.answer(n0xis_contracts::schema::v1::AOB_SCAN, swept, label),
                         Err(e) => Response::error("aob-failed", e.to_string()),
@@ -2086,7 +2104,7 @@ impl Plugin for AnalysisPasses {
                 // Pass the window through as the file-source region so a static
                 // dissect needs no separate start/size argument pair.
                 let start_s = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
-                with_scan_ctx(args, start_s.as_deref(), Some(size), move |ctx, _regions, label, _target| {
+                with_scan_ctx(args, ScanRegions::Window { start: start_s.as_deref(), size: Some(size) }, move |ctx, _regions, label, _target| {
                     match n0xis_core::Pass::run(&n0xis_core::DissectPass, ctx, n0xis_core::DissectInput { start, size }) {
                         // An architecture with no native pointer width (a
                         // WebAssembly module's) has no value that is a pointer
@@ -2141,7 +2159,7 @@ impl Plugin for AnalysisPasses {
                 let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(100);
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, target| {
+                with_scan_ctx(args, ScanRegions::Window { start: start.as_deref(), size }, move |ctx, regions, label, target| {
                     let input = n0xis_core::GroupScanInput { regions, fields, window, align, limit };
                     match n0xis_core::Pass::run(&n0xis_core::GroupScanPass, ctx, input) {
                         Ok(swept) => target.answer(n0xis_contracts::schema::v1::SCAN_GROUP, swept, label),
@@ -2197,7 +2215,7 @@ impl Plugin for AnalysisPasses {
                     let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
                     let input = n0xis_core::PointerPathInput { target, search_regions, roots, max_depth, max_offset, pointer_size: 8 };
                     match n0xis_core::Pass::run(&n0xis_core::PointerPathPass, &ctx, input) {
-                        Ok(swept) => ScanTarget::Live.answer(n0xis_contracts::schema::v1::POINTER_PATH, swept, &label),
+                        Ok(swept) => ScanTarget::Regions.answer(n0xis_contracts::schema::v1::POINTER_PATH, swept, &label),
                         Err(e) => Response::error("pointer-path-failed", e.to_string()),
                     }
                 }
