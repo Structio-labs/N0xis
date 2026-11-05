@@ -88,6 +88,12 @@ target, prologue, gap sweep, after a declared end) on planted images only.
    same way.
 3. **Test the direction itself.** Of the facts wrong against the truth, how many carry only a
    heuristic source? If the category does not predict the error, say so and stop building on it.
+   **Measured (`docs/VERIFICATION.md`):** on honest compilers it predicts it. On a table that lies it does not: declared
+   starts came out wrong about as often as heuristic ones, and declared ends more often than others. So a category says who
+   claims a fact, which stayed true (89 696 attributions against `readelf` on tampered files, 0 wrong), and never how far to
+   believe it. Nothing may be built on it as a measure of trust. `contradictions` is likewise only the map of where two tables
+   speak: a lie one table tells consistently is listed nowhere, 21 015 silent wrong answers on that corpus. What would catch those
+   is reading the claim against the code, which `OBFUSCATED.md` §1 asks for and is not built.
 4. **Types and decompiler lines.** Which rung of the parameter-type ladder fired, user
    overrides marked; each pseudo-C line mapped to its instructions; on request only.
 5. **A fact log as the store.** Every fact with its source, author and history; its own design
