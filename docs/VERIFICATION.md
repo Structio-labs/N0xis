@@ -2318,7 +2318,9 @@ about how often real images lie. 0 crashes, no new `ok:false`, no session timed 
 - *`noeh`: unlisted, honestly.* Lua lists 588 functions instead of 778 on x86-64, 758 instead of 780 on
   AArch64; why the two machines differ is not examined. Nothing warns in the list (`contradictions` has
   nothing left to compare), and `why` says no listed function contains the address, which is true. Few answers
-  are false: the start and end rules that take over carry their heuristic category.
+  are false: the start and end rules that take over carry their heuristic category. The one silent `decomp`:
+  AArch64 `calib`, `main` at `0x400580` is no longer listed, and asked for by address it runs to `0x400778`, 126
+  instructions against the truth's 15.
 - *`exports`: the name, everywhere it is printed, silent.* `.dynsym` is the only source of the name in
   a stripped library and it is believed: `0x786c` is printed as `lua_xmove`, the file's `lua_checkstack`.
   It reaches callers: at `0x968b` the pseudo-C reads `lua_pushvalue(...)` where the bytes at `0x96bb` are `call
