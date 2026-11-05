@@ -132,14 +132,32 @@ struct Ctx<'a> {
     indent: usize,
     fallback_count: usize,
     budget: usize,
+    /// How many [`emit_node`] calls are open, up to `depth_limit`.
+    depth: usize,
+    depth_limit: usize,
     /// Blocks whose `// block_N:` anchor must survive, because a `goto` in the
     /// same function targets them. Empty on the first rendering pass — see
     /// [`structure`], which learns the set from that pass and renders again.
     keep_labels: &'a BTreeSet<usize>,
 }
 
+/// How deep the descent over a function's structure may go. It recurses per
+/// nested region and per region following another, and nothing else bounds that
+/// but the function's own shape: past this, a block becomes a `goto` and is laid
+/// out at the top level by the sweep that keeps every block, so the answer stays
+/// whole and the process stays alive. Sized against [`crate::ANALYSIS_STACK_BYTES`]:
+/// a level takes 4 to 8 KiB in a debug build (4 090 nested `if`s overflow 16 MiB
+/// and fit in 32).
+const MAX_EMIT_DEPTH: usize = 4096;
+
+/// Nesting this deep is indented no further: past it an indent carries nothing a
+/// reader can use, and on 4 000 nested loops it made a 12 000-line answer 96 MB.
+/// Real code goes deeper than one might guess: a libc function renders past 64
+/// levels on its way to `else if` folding, so a bound of 64 moved its text.
+const MAX_INDENT: usize = 256;
+
 fn pad(indent: usize) -> String {
-    "    ".repeat(indent)
+    "    ".repeat(indent.min(MAX_INDENT))
 }
 
 fn cond_text(ctx: &Ctx, n: usize) -> String {
@@ -193,13 +211,20 @@ fn emit_node(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         ctx.fallback_count += 1;
         return;
     }
-    ctx.visited[n] = true;
-
-    if ctx.is_header[n] && !ctx.loop_stack.contains(&n) {
-        emit_loop(ctx, n, until);
+    if ctx.depth >= ctx.depth_limit {
+        ctx.out.push(format!("{}goto block_{n};", pad(ctx.indent)));
+        ctx.fallback_count += 1;
         return;
     }
-    emit_block_body_and_terminator(ctx, n, until);
+    ctx.visited[n] = true;
+
+    ctx.depth += 1;
+    if ctx.is_header[n] && !ctx.loop_stack.contains(&n) {
+        emit_loop(ctx, n, until);
+    } else {
+        emit_block_body_and_terminator(ctx, n, until);
+    }
+    ctx.depth -= 1;
 }
 
 /// The most real (non-comment, non-blank) lines a shared tail *region* may hold
@@ -738,6 +763,10 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
 
 /// Structure `blocks` (aligned by index with `cfg.blocks`) into pseudo-C.
 pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) -> StructuredOutput {
+    structure_within(cfg, blocks, names, MAX_EMIT_DEPTH)
+}
+
+fn structure_within(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames, depth_limit: usize) -> StructuredOutput {
     // Two passes, because whether a block needs a label is not known until the
     // whole function has been laid out: the `else if` collapse drops a block's
     // anchor, and only afterwards is it clear that something jumps there. The
@@ -750,14 +779,14 @@ pub fn structure(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) ->
     // the best rendering found rather than looping.
     const ROUNDS: usize = 4;
     let mut keep = BTreeSet::new();
-    let mut out = structure_once(cfg, blocks, names, &keep);
+    let mut out = structure_once(cfg, blocks, names, &keep, depth_limit);
     for _ in 0..ROUNDS {
         let missing = gotos_without_labels(&out.lines);
         if missing.is_empty() || missing.is_subset(&keep) {
             break;
         }
         keep.extend(missing);
-        out = structure_once(cfg, blocks, names, &keep);
+        out = structure_once(cfg, blocks, names, &keep, depth_limit);
     }
     out
 }
@@ -787,6 +816,7 @@ fn structure_once(
     blocks: &[SsaBlock],
     names: &RenderNames,
     keep_labels: &BTreeSet<usize>,
+    depth_limit: usize,
 ) -> StructuredOutput {
     let n = cfg.blocks.len();
     if n == 0 {
@@ -892,6 +922,8 @@ fn structure_once(
         indent: 1,
         fallback_count: 0,
         budget: n.saturating_mul(8) + 64,
+        depth: 0,
+        depth_limit,
         keep_labels,
     };
     emit_node(&mut ctx, 0, None);
@@ -909,10 +941,10 @@ fn structure_once(
     // until a `goto` targets it: then the **label is the content**, and
     // without it the output carried a `goto` to a block it never printed.
     // `keep_labels` names exactly those, learned from the previous pass.
-    while let Some(b) = (0..n).find(|&b| {
-        !ctx.visited[b] && (real_line_count(&ctx, b) > 0 || ctx.keep_labels.contains(&b))
-    }) {
-        emit_node(&mut ctx, b, None);
+    for b in 0..n {
+        if !ctx.visited[b] && (real_line_count(&ctx, b) > 0 || ctx.keep_labels.contains(&b)) {
+            emit_node(&mut ctx, b, None);
+        }
     }
 
     StructuredOutput { lines: ctx.out, has_loop: !loop_body.is_empty(), fallback_count: ctx.fallback_count }
@@ -934,6 +966,58 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let names = RenderNames::new(&cfg.callsites, &crate::UnnamedFunction::Address);
         structure(&cfg, &ssa.blocks, &names)
+    }
+
+    /// `add rax,rsi; jne` past all the rest, `levels` times, each `if` holding the
+    /// next, then one more `add` and a `ret` they all join at.
+    fn nested_ifs(levels: usize, depth_limit: usize) -> StructuredOutput {
+        const LEVEL_BYTES: usize = 9;
+        let mut code = Vec::new();
+        for i in 0..levels {
+            let rel = (levels - 1 - i) * LEVEL_BYTES + 3;
+            code.extend([0x48, 0x01, 0xf0, 0x0f, 0x85]);
+            code.extend((rel as i32).to_le_bytes());
+        }
+        code.extend([0x48, 0x01, 0xf0, 0xc3]);
+        let window = code.len();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = PassCtx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), window)).unwrap();
+        let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
+        let names = RenderNames::new(&cfg.callsites, &crate::UnnamedFunction::Address);
+        structure_within(&cfg, &ssa.blocks, &names, depth_limit)
+    }
+
+    /// Past the bound a block is a `goto`, each `goto` has its label, and every
+    /// statement is still in the answer once.
+    #[test]
+    fn nesting_past_the_bound_becomes_labelled_gotos() {
+        let out = crate::on_analysis_stack(|| nested_ifs(1000, 100));
+        let text = out.lines.join("\n");
+        assert!(text.contains("goto block_"), "the bound fired: {}", &text[..text.len().min(400)]);
+        assert!(out.fallback_count > 0, "and the answer says so");
+        assert!(gotos_without_labels(&out.lines).is_empty(), "every goto has its label");
+        assert!(!text.contains("structural budget"), "nothing was dropped");
+        assert_eq!(text.matches("+ rsi.0").count(), 1001, "each `add` once");
+    }
+
+    /// Under the bound nothing of this: the same shape, nested all the way.
+    #[test]
+    fn nesting_under_the_bound_stays_nested() {
+        let out = crate::on_analysis_stack(|| nested_ifs(1000, MAX_EMIT_DEPTH));
+        let text = out.lines.join("\n");
+        assert_eq!(out.fallback_count, 0, "{}", &text[..text.len().min(400)]);
+        assert!(!text.contains("goto "));
+        assert_eq!(text.matches("+ rsi.0").count(), 1001);
+    }
+
+    /// Indentation stops growing where it stops helping.
+    #[test]
+    fn deep_nesting_is_indented_no_further_than_the_cap() {
+        let out = crate::on_analysis_stack(|| nested_ifs(1000, MAX_EMIT_DEPTH));
+        let deepest = out.lines.iter().map(|l| l.len() - l.trim_start().len()).max().unwrap_or(0);
+        assert_eq!(deepest, MAX_INDENT * 4);
     }
 
     /// Position of a substring, or a panic naming the missing text against the
