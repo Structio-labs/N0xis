@@ -214,7 +214,11 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
     let at = |va: u64| -> Option<DecodedInsn> {
         (va >= lo && va < hi).then(|| ctx.arch.decode(&bytes[(va - lo) as usize..], Va(va)).ok())?
     };
-    for pair in declared.windows(2) {
+    // The window's start brackets the code before its first declared function,
+    // as a declared end does: a section begins with code. A window nothing is
+    // declared in is left out, or every stub of a PLT section would be swept.
+    let before_first = declared.iter().find(|(s, _)| *s >= lo && *s < hi).map(|&(s, _)| [(lo, lo), (s, s)]);
+    for pair in declared.windows(2).chain(before_first.iter().map(|p| p.as_slice())) {
         // **Clip the gap to what was actually read.** The declared table
         // describes the whole image; `bytes` is one section of it, so a
         // declared function can end before the window starts and the next one

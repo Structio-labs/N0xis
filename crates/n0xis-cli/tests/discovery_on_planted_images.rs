@@ -198,6 +198,23 @@ fn an_aarch64_function_that_signs_its_return_address_starts_at_paciasp() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The rules' edges: the section's start brackets the code before the first
+/// declared function; a branch into the filler means what follows the filler
+/// is the same function; an entry pattern the code before runs on into is the
+/// middle of a function, and the same pattern after filler is an entry.
+#[test]
+fn the_gap_sweep_and_the_scan_stop_where_the_code_goes_on() {
+    let dir = project("rules");
+    let image = fixture("rules.so");
+    let starts = listed(&dir, &image);
+    for (head, sources) in [("0x1000", json!([{"source": "gap_sweep"}])), ("0x1010", json!([{"source": "gap_sweep"}])), ("0x1070", json!([{"source": "prologue"}]))] {
+        let got = why(&dir, &image, head);
+        assert_eq!(got["found"]["start"], head, "{got}");
+        assert_eq!(got["found"]["start_sources"], sources, "{head}: {got}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The image's answer behind the first test, read without the CLI: the
 /// functions a symbol declares, with their tables, and the PLT's range.
 /// On 32-bit ARM a Thumb function's `st_value` is one past its code, and such
