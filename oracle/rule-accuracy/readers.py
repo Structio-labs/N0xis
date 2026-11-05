@@ -65,7 +65,9 @@ def _pe_symbols(path: str) -> list:
         name = m.group(3)
         out.append({
             "table": ".symtab", "name": name, "value": int(m.group(1), 16), "size": 0,
-            "type": "SECTION" if name.startswith(".") else "FUNC" if kind in "Tt" else "OBJECT", "bind": "GLOBAL" if kind.isupper() else "LOCAL",
+            # A section's own symbol is local and named after it (`t .text`); a
+            # global named with a dot is a function (`T .weak.__register_frame_info.hmod_libgcc`).
+            "type": "SECTION" if name.startswith(".") and kind.islower() else "FUNC" if kind in "Tt" else "OBJECT", "bind": "GLOBAL" if kind.isupper() else "LOCAL",
             "ndx": "ABS" if kind in "Aa" else "TEXT",
         })
     text = run(["llvm-readobj", "--file-headers", "--coff-exports", path])
