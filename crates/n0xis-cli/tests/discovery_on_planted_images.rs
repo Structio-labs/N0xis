@@ -207,6 +207,7 @@ fn the_gap_sweep_and_the_scan_stop_where_the_code_goes_on() {
     let dir = project("rules");
     let image = fixture("rules.so");
     let starts = listed(&dir, &image);
+    assert!(!starts.contains(&"0x1036".to_string()), "`leave` after a branch into the filler goes on: {starts:?}");
     for (head, sources) in [("0x1000", json!([{"source": "gap_sweep"}])), ("0x1010", json!([{"source": "gap_sweep"}])), ("0x1070", json!([{"source": "prologue"}]))] {
         let got = why(&dir, &image, head);
         assert_eq!(got["found"]["start"], head, "{got}");

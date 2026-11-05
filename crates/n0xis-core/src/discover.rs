@@ -236,6 +236,11 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
         let mut armed = true;
         let mut reach = gap_lo;
         let mut targets: BTreeSet<u64> = BTreeSet::new();
+        // A branch landed in the filler just walked: what follows the filler
+        // is that branch's code going on, not a start. gcc `-O0` writes `jmp
+        // 1f; nop; 1: nop; leave; ret` inside a function, and on the
+        // rule-accuracy corpus that `leave` was listed.
+        let mut filler_targeted = false;
         while va < gap_hi {
             if zero_fill(bytes, (va - lo) as usize) {
                 va += 1;
@@ -246,12 +251,14 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
                 continue;
             };
             if is_filler(ctx, &ins) {
+                filler_targeted |= targets.contains(&va);
                 va = va.saturating_add(u64::from(ins.len));
                 continue;
             }
-            if armed && va >= reach && !targets.contains(&va) {
+            if armed && va >= reach && !targets.contains(&va) && !filler_targeted {
                 out.insert(va);
             }
+            filler_targeted = false;
             if matches!(ins.kind, InsnKind::Jump | InsnKind::CondJump)
                 && let Some(t) = ins.target
                 && t.0 > va
