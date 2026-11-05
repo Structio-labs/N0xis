@@ -386,7 +386,10 @@ pub enum Extent {
 }
 
 /// The table a symbol was read from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+///
+/// `Deserialize` because a start a symbol declares carries its table into the
+/// function list discovery keeps on disk ([`StartReason::Symbol`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SymbolTable {
     /// ELF `.symtab`.
@@ -610,8 +613,9 @@ pub struct Imports {
 pub enum StartReason {
     /// A PE export that lands in an executable section.
     Export,
-    /// An ELF `STT_FUNC` symbol, from either table.
-    Symbol,
+    /// An ELF `STT_FUNC` symbol, and the table it was read from: `n0x why`
+    /// names the table, so the reason is recorded where the table is read.
+    Symbol { table: SymbolTable },
     /// A PE32+ `.pdata` `RUNTIME_FUNCTION`.
     UnwindEntry,
     /// A stub that only jumps through `slot` (an x86-64 ELF PLT entry whose

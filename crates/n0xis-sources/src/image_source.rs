@@ -221,7 +221,7 @@ impl ImageSource {
                         });
                     }
                 }
-                StartReason::Symbol | StartReason::UnwindEntry | StartReason::Body { .. } => {}
+                StartReason::Symbol { .. } | StartReason::UnwindEntry | StartReason::Body { .. } => {}
             }
         }
         self.entry_points.sort_unstable();
@@ -477,11 +477,52 @@ impl ImageSource {
 
     /// Addresses the image itself declares as entry points, with no extent.
     ///
-    /// A PE names its exports; an ELF's `FUNC` symbols already carry sizes and
-    /// reach discovery through the extent seam, so nothing is added here for
-    /// one. Empty is a normal answer — a stripped image declares nothing.
+    /// A PE names its exports; an ELF's `FUNC` symbols carry sizes and reach
+    /// discovery with their extents ([`Self::symbol_functions`]), so nothing
+    /// is added here for one. Empty is a normal answer — a stripped image
+    /// declares nothing.
     pub fn declared_entry_points(&self) -> Vec<Va> {
         self.entry_points.clone()
+    }
+
+    /// The functions the image's symbol tables declare with an extent: every
+    /// ELF `STT_FUNC` symbol with a nonzero `st_size` whose address lies in an
+    /// executable section, each with the table it was read from — a declared
+    /// start with its end, as an unwind table's entry is (the lead's decision,
+    /// docs/design/WHY.md §5). One entry per table that states it: a function
+    /// `.symtab` and `.dynsym` both list is two, of one extent, which the
+    /// stated-function list folds into one with two sources.
+    ///
+    /// Left out, each on purpose:
+    /// - a symbol of size 0: it states a start and nothing about an end, and
+    ///   the assembler gives a label inside other code the same shape (the
+    ///   C runtime's `_init` pieces). Its size, where it has one, still ends a
+    ///   listed function through the symbol seam.
+    /// - a symbol outside every executable section: a function descriptor or
+    ///   a resolver table is not code to list.
+    /// - on 32-bit ARM, an odd address: the ARM ELF ABI sets bit 0 of a Thumb
+    ///   function's `st_value`, and this reader keeps the value as stored, so
+    ///   the start would be one byte past the first instruction. Until the
+    ///   reader reads the Thumb bit, such a symbol declares no start here.
+    ///
+    /// Empty on a PE (its COFF symbol table is not read) and on a WebAssembly
+    /// module (whose bodies are already every function).
+    pub fn symbol_functions(&self) -> Vec<DeclaredFunction> {
+        let code: Vec<(u64, u64)> =
+            self.image.sections().iter().filter(|s| s.executable && s.in_image && s.size > 0).map(|s| (s.va.0, s.va.0.saturating_add(s.size))).collect();
+        let thumb_bit = self.image.machine().isa == crate::Isa::Arm;
+        self.image
+            .declared_starts()
+            .read
+            .iter()
+            .filter_map(|s| match (s.why, s.extent) {
+                (StartReason::Symbol { .. }, Extent::Stated(n)) if n > 0 => Some((s, n)),
+                _ => None,
+            })
+            .filter(|(s, _)| code.iter().any(|&(lo, hi)| s.va.0 >= lo && s.va.0 < hi))
+            .filter(|(s, _)| !(thumb_bit && s.va.0 & 1 == 1))
+            .filter_map(|(s, n)| Some(DeclaredFunction { start: s.va, end: Va(s.va.0.checked_add(n)?), why: s.why }))
+            .collect()
     }
 
     /// The address ranges of the image's PLT sections (`.plt`, `.plt.got`,

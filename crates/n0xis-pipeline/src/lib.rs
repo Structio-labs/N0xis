@@ -347,10 +347,11 @@ fn discover_cache_generation() -> String {
     format!("disc{DISCOVERED_FORMAT}-{:08x}-", h.finish() as u32)
 }
 
-/// The format of a kept [`n0xis_core::Discovered`]: 2 since each start carries
-/// its sources (`n0x why`); 1 was bare `(start, end)` pairs, under the prefix
+/// The format of a kept [`n0xis_core::Discovered`]: 3 since a start an ELF
+/// symbol declares carries the symbol's table; 2 since each start carries its
+/// sources (`n0x why`); 1 was bare `(start, end)` pairs, under the prefix
 /// `disc-`.
-const DISCOVERED_FORMAT: u32 = 2;
+const DISCOVERED_FORMAT: u32 = 3;
 
 /// Function discovery over `[start, start + size)` of an image that cannot
 /// change, kept on disk under `.n0x/discover-cache/`. The key hashes the

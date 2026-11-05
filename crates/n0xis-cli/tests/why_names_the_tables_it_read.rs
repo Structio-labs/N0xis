@@ -15,8 +15,10 @@
 //!   `llvm-readobj --unwind` lists them;
 //! - an `export` — an export at that address in `llvm-readobj --coff-exports`,
 //!   plus the `ImageBase` of `--file-headers`;
-//! - an end from `st_size`, a name from `.symtab` or `.dynsym` — a defined
-//!   symbol at that address (of that size) in `llvm-nm` (`-D` for `.dynsym`);
+//! - a start from a `symbol`, an end from `st_size`, a name from `.symtab` or
+//!   `.dynsym` — a defined symbol at that address (of that size; of a size,
+//!   for a start) in `llvm-nm` (`-D` for `.dynsym`), in the table the claim
+//!   names;
 //! - on a WebAssembly module, a `body` start or end — a body of that function
 //!   at that offset (`wasm-objdump -d`) of that size (`-x`), and a name from
 //!   its exports or its name section — an export of that function (`-x`), a
@@ -318,6 +320,14 @@ fn check_image(file: &Path, work: &Path) -> Option<Tally> {
                 (Some("unwind"), Some("eh_frame")) => tally.claim("start: unwind eh_frame", tables.fdes.contains_key(&va), || format!("{va:#x} has no FDE")),
                 (Some("unwind"), Some("pdata")) => tally.claim("start: unwind pdata", tables.pdata.contains_key(&va), || format!("{va:#x} has no RuntimeFunction")),
                 (Some("export"), _) => tally.claim("start: export", tables.exports.contains_key(&va), || format!("{va:#x} is no export")),
+                (Some("symbol"), Some(table @ ("static" | "dynamic"))) => {
+                    let syms = if table == "static" { tables.symtab.get(&va) } else { tables.dynsym.get(&va) };
+                    tally.claim(
+                        &format!("start: symbol {table}"),
+                        syms.into_iter().flatten().any(|(_, size)| size.is_some_and(|n| n > 0)),
+                        || format!("{va:#x}: no symbol of a size there in the {table} table"),
+                    )
+                }
                 (Some("body"), _) => tally.claim(
                     "start: body",
                     tables.bodies.get(&va).is_some_and(|(index, _)| s["function"].as_u64() == Some(*index)),

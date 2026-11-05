@@ -24,8 +24,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use n0xis_contracts::Va;
-use n0xis_core::{Ctx, DiscoveredStart};
-use n0xis_sources::{Finding, ImageName, ImageSource, SymbolTable};
+use n0xis_core::{Ctx, DiscoveredStart, StatedBy};
+use n0xis_sources::{Finding, ImageName, ImageSource, StartReason, SymbolTable};
 use serde::Serialize;
 
 use crate::annotation_syms::LocalLayer;
@@ -80,7 +80,7 @@ pub struct Kinds {
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum EndSort {
     Export,
-    Symbol,
+    Symbol { table: SymbolTable },
     Unwind { table: UnwindTable },
     Pdb,
     Body,
@@ -93,7 +93,7 @@ impl From<EndBy> for EndSort {
         match by {
             EndBy::Declared(d) => match d {
                 Declared::Export => EndSort::Export,
-                Declared::Symbol => EndSort::Symbol,
+                Declared::Symbol { table } => EndSort::Symbol { table },
                 Declared::Unwind { table } => EndSort::Unwind { table },
                 Declared::Pdb => EndSort::Pdb,
                 Declared::Body { .. } => EndSort::Body,
@@ -391,14 +391,20 @@ fn addresses(inputs: &Inputs) -> BTreeSet<u64> {
 /// Every end stated for a function at `va`, each with everything that states
 /// it, in address order of the end: the extents the stated functions carry,
 /// then every length every name layer states.
+///
+/// A symbol's extent is read once, from the name layers, as `st_size`: the
+/// stated functions carry the same `st_size` as a declared start's end, and
+/// counting it there too would name one fact twice — every symbol's end beside
+/// itself, under two sources. The name layers state every symbol's size
+/// (in code or not, of every table), so nothing is lost.
 fn stated_ends(inputs: &Inputs, va: Va) -> Vec<StatedEnd> {
     let mut by_end: BTreeMap<u64, Vec<EndBy>> = BTreeMap::new();
     let extents = inputs.ctx.functions.map_or(&[][..], |f| f.extents);
     let from = extents.partition_point(|f| f.start < va);
     for f in extents[from..].iter().take_while(|f| f.start == va).filter(|f| f.end > f.start) {
-        let by = by_end.entry(f.end.0).or_default();
-        for s in f.stated_by.iter() {
-            push_once(by, EndBy::Declared(crate::why::declared(*s)));
+        let not_a_symbol = f.stated_by.iter().filter(|s| !matches!(s, StatedBy::Image(StartReason::Symbol { .. })));
+        for s in not_a_symbol {
+            push_once(by_end.entry(f.end.0).or_default(), EndBy::Declared(crate::why::declared(*s)));
         }
     }
     for (len, layer) in inputs.names.every_size_at(va) {

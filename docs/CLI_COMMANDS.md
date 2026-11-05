@@ -351,9 +351,14 @@ runs no discovery of its own. Through the registry (`why`), so `serve` and an MC
     `addr_is_start`.
   - `start_sources` — everything that found the start, never only the first, in the order
     discovery ran: declarations first — `{"source": "export"}` (a PE export in an executable
-    section), `{"source": "unwind", "table": "pdata"}` (a PE32+ `RUNTIME_FUNCTION`),
-    `{"source": "unwind", "table": "eh_frame"}` (an FDE), `{"source": "pdb"}`,
-    `{"source": "body", "function": n}` (a WebAssembly body) — then rules:
+    section), `{"source": "symbol", "table": "static" | "dynamic"}` (an ELF `STT_FUNC` symbol
+    with a nonzero `st_size` in an executable section, from `.symtab` or `.dynsym`; not a
+    symbol of size 0, and not, on 32-bit ARM, one whose `st_value` has the Thumb bit set),
+    `{"source": "unwind", "table": "pdata"}` (a PE32+ `RUNTIME_FUNCTION`),
+    `{"source": "unwind", "table": "eh_frame"}` (an FDE; not one that starts in a PLT section,
+    `.plt`/`.plt.got`/`.plt.sec`, which the linker writes over the section's stubs and is no
+    function's), `{"source": "pdb"}`, `{"source": "body", "function": n}` (a WebAssembly body)
+    — then rules:
     `{"source": "after_declared_end"}` (the first instruction after a declared function's end),
     `{"source": "gap_sweep"}` (a linear sweep between two declared functions),
     `{"source": "call_target", "from": "0x…"}` (a direct call names it; `from` is the first such
@@ -400,7 +405,9 @@ is graded. Through the registry (`contradictions`), so `serve` and an MCP client
     with two or more different stated ends, each with everything that states it: an unwind
     range (`{"source": "unwind", "table": "eh_frame" | "pdata"}`), a symbol's length
     (`{"source": "symbol_size", "of": "st_size" | "pdb" | ...}`), a PDB procedure, a
-    WebAssembly body. Two FDEs, two `.pdata` entries or two symbols of one start count. A PDB
+    WebAssembly body. Two FDEs, two `.pdata` entries or two symbols of one start count. An ELF
+    symbol's size, which also declares a start (`{"source": "symbol"}` in `why`), is named once,
+    as `symbol_size` `st_size`. A PDB
     length reaches the engine two ways, as a stated function (`{"source": "pdb"}`, where the
     image's own table states no extent) and as a length of its names (`{"source":
     "symbol_size", "of": "pdb"}`), and is named as each, as `why` names it.

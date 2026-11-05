@@ -401,7 +401,7 @@ impl StaticElf {
         let mut starts: Vec<DeclaredStart> = symbols
             .iter()
             .filter(|s| s.kind == SymbolKind::Function)
-            .map(|s| DeclaredStart { va: s.va, why: StartReason::Symbol, extent: s.extent })
+            .map(|s| DeclaredStart { va: s.va, why: StartReason::Symbol { table: s.table }, extent: s.extent })
             .collect();
 
         // Symbol-version index -> the library that is expected to provide it

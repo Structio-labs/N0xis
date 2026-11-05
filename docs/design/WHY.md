@@ -66,9 +66,12 @@ rules for one address would be a second copy of discovery, and copies drift. So:
 ## 5. Built, and what is not (step 1)
 
 Built: starts with every source, the end with its one source, the name with its layer.
-Never fires yet: a `symbol` start (discovery takes no start from an ELF symbol, only its size)
-and a `user` start (an annotation names an address, never creates a start); making either fire
-changes `function discover`, so each is its own decision. Checked: 228 506 table claims on 80
+A `symbol` start fires since the discovery accuracy round of 2026-10-25 (the lead's decision):
+an ELF `STT_FUNC` symbol with a nonzero size in an executable section declares a start and its
+extent, with its table; where its size and an FDE disagree, both stay sources of the start and
+`contradictions` names the two ends. Never fires yet: a `user` start (an annotation names an
+address, never creates a start) and a `stub` start (the PLT stubs are not handed to
+discovery); making either fire changes `function discover`, so each is its own decision. Checked: 228 506 table claims on 80
 images against objdump/llvm-readobj/llvm-nm/wasm-objdump, 0 wrong; the rule sources (call
 target, prologue, gap sweep, after a declared end) on planted images only.
 

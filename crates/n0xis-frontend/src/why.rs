@@ -79,8 +79,9 @@ pub enum UnwindTable {
 pub enum Declared {
     /// A PE export in an executable section.
     Export,
-    /// An ELF `STT_FUNC` symbol.
-    Symbol,
+    /// An ELF `STT_FUNC` symbol with a size, in code, and the table it was
+    /// read from.
+    Symbol { table: SymbolTable },
     /// An unwind table entry.
     Unwind { table: UnwindTable },
     /// A procedure in the PDB built with the image.
@@ -385,7 +386,7 @@ pub(crate) fn declared(by: StatedBy) -> Declared {
 fn image_reason(reason: StartReason) -> Declared {
     match reason {
         StartReason::Export => Declared::Export,
-        StartReason::Symbol => Declared::Symbol,
+        StartReason::Symbol { table } => Declared::Symbol { table },
         StartReason::UnwindEntry => Declared::Unwind { table: UnwindTable::Pdata },
         StartReason::Stub { slot } => Declared::Stub { slot },
         StartReason::Body { function } => Declared::Body { function },
@@ -394,7 +395,7 @@ fn image_reason(reason: StartReason) -> Declared {
 
 pub(crate) fn size_by(layer: SizeLayer) -> EndBy {
     match layer {
-        SizeLayer::Image(StartReason::Symbol) => EndBy::Length(Length::SymbolSize { of: SizeOf::StSize }),
+        SizeLayer::Image(StartReason::Symbol { .. }) => EndBy::Length(Length::SymbolSize { of: SizeOf::StSize }),
         SizeLayer::Image(reason) => EndBy::Declared(image_reason(reason)),
         SizeLayer::Pdb => EndBy::Length(Length::SymbolSize { of: SizeOf::Pdb }),
         SizeLayer::Managed => EndBy::Length(Length::SymbolSize { of: SizeOf::Managed }),

@@ -609,9 +609,11 @@ fn eh_map(src: &Src) -> std::sync::Arc<Option<UnwindFunctions>> {
 }
 
 /// Everything the image states about where its functions are, as
-/// `Ctx::functions` wants it: `.eh_frame` FDEs on an ELF, the `.pdata` table on
-/// a PE, the functions of a PE's matching PDB, and every exported entry point. Shares `eh_map`'s memo, so asking for
-/// this costs one scan per binary.
+/// `Ctx::functions` wants it: `.eh_frame` FDEs on an ELF (but the linker's
+/// over its PLT sections), the `.pdata` table on a PE, the functions of a PE's
+/// matching PDB, every exported entry point, and every ELF `STT_FUNC` symbol
+/// with a size in code. Shares `eh_map`'s memo, so asking for this costs one
+/// scan per binary.
 ///
 /// A pair with `end <= start` is a declared *start* of unknown length.
 /// `DiscoverPass` seeds it and leaves the extent to be inferred, which is
@@ -655,6 +657,10 @@ pub fn stated_functions(src: &Src) -> Vec<n0xis_core::StatedFunction> {
             out.extend(pdb.functions().into_iter().filter(|(s, _)| !extents.contains(&s.0)).map(|(s, e)| StatedFunction::new(s, e, StatedBy::Pdb)));
         }
         out.extend(img.declared_entry_points().into_iter().map(|va| StatedFunction::new(va, va, StatedBy::Image(StartReason::Export))));
+        // A symbol with a size in code declares a start and its end, beside
+        // whatever else does: where its size and an FDE disagree, both stay,
+        // as two extents of one start, and `contradictions` names the two.
+        out.extend(img.symbol_functions().into_iter().map(|f| StatedFunction::new(f.start, f.end, StatedBy::Image(f.why))));
     }
     if let Src::Static(img) = src
         && let Some(every) = img.every_declared_function()

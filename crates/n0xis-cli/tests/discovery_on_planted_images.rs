@@ -42,6 +42,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use n0xis_contracts::Va;
+use n0xis_sources::{ImageSource, StartReason, SymbolTable};
 use serde_json::{Value, json};
 
 mod support;
@@ -78,6 +80,51 @@ fn why(dir: &Path, image: &Path, addr: &str) -> Value {
     run(dir, &["why", "--file", image.to_str().expect("a UTF-8 path"), "--addr", addr])["function"].clone()
 }
 
+fn symbol(table: &str) -> Value {
+    json!({"source": "symbol", "table": table})
+}
+
+/// A function only its symbol declares is listed, from the symbol, with the
+/// table it is in: `sym_only` has no FDE, no caller, no prologue pattern, and
+/// nothing ends before it in `.text`. A symbol of size 0 declares no start
+/// (`zero_size` is found by the rules that follow a declared end, not by its
+/// symbol), and one in `.data` is no function of the list.
+#[test]
+fn a_function_only_its_symbol_declares_is_listed_from_the_symbol() {
+    let dir = project("symbol");
+    let image = fixture("x86_64.so");
+    let sym_only = why(&dir, &image, "0x1020");
+    assert_eq!(sym_only["found"]["start"], "0x1020", "{sym_only}");
+    assert_eq!(sym_only["found"]["start_sources"], json!([symbol("static"), symbol("dynamic")]), "{sym_only}");
+    assert_eq!(sym_only["found"]["end"], json!({"va": "0x1026", "source": "symbol_size", "of": "st_size"}), "{sym_only}");
+    let zero_size = why(&dir, &image, "0x1028");
+    assert_eq!(zero_size["found"]["start_sources"], json!([{"source": "after_declared_end"}, {"source": "gap_sweep"}]), "{zero_size}");
+    assert!(!listed(&dir, &image).contains(&"0x5008".to_string()), "`in_data` is in `.data`");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Where a symbol's size and an FDE state two ends for one start, both stay
+/// sources of the start, the symbol's size still gives the end the list
+/// shows (as it did before a symbol declared starts), and the two ends are a
+/// contradiction (`contradictions_on_planted_images.rs` holds that answer
+/// whole). `planted.so`'s `ends_twice`: `.size` 8, FDE 16.
+#[test]
+fn a_symbol_and_an_fde_that_disagree_both_stay_sources() {
+    let dir = project("both");
+    let image = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/contradictions/planted.so");
+    let got = why(&dir, &image, "0x1000");
+    assert_eq!(
+        got["found"]["start_sources"],
+        json!([symbol("static"), symbol("dynamic"), {"source": "unwind", "table": "eh_frame"}]),
+        "{got}"
+    );
+    assert_eq!(got["found"]["end"], json!({"va": "0x1008", "source": "symbol_size", "of": "st_size"}), "{got}");
+    let c = run(&dir, &["contradictions", "--file", image.to_str().expect("a UTF-8 path")]);
+    assert_eq!(c["contradictions"][0]["kind"], "end", "{c}");
+    assert_eq!(c["contradictions"][0]["start"], "0x1000", "{c}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The linker's FDE over `.plt` is the PLT's, not a function's: nothing in
 /// `.plt` is listed (the FDE made `0x1000` a function ending at `0x1020`,
 /// over the stub), and the stub keeps its import's name where it is called.
@@ -86,11 +133,37 @@ fn an_fde_over_the_plt_is_not_a_function() {
     let dir = project("plt");
     let image = fixture("x86_64.so");
     let starts = listed(&dir, &image);
-    assert!(!starts.contains(&"0x1000".to_string()), "nothing below `.text`: {starts:?}");
+    assert_eq!(starts, ["0x1020", "0x1028", "0x1030", "0x1045"], "nothing below `.text`: {starts:?}");
     let plt0 = why(&dir, &image, "0x1000");
     assert!(plt0.get("none").is_some(), "the PLT's header is in no function: {plt0}");
     let pseudo = run(&dir, &["decomp", "pseudo", "--file", image.to_str().expect("a UTF-8 path"), "--addr", "0x1030"]);
     let text = pseudo["pseudo"].as_array().expect("lines").iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
     assert!(text.contains("ext("), "the stub is still named after `ext`: {text}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The image's answer behind the first test, read without the CLI: the
+/// functions a symbol declares, with their tables, and the PLT's range.
+/// On 32-bit ARM a Thumb function's `st_value` is one past its code, and such
+/// a symbol declares no start (an odd address no instruction begins at).
+#[test]
+fn the_symbols_that_declare_functions_are_the_sized_ones_in_code() {
+    let x64 = ImageSource::load(&fixture("x86_64.so")).expect("load x86_64.so");
+    let got: Vec<(u64, u64, StartReason)> = x64.symbol_functions().iter().map(|f| (f.start.0, f.end.0, f.why)).collect();
+    let sym = |table| StartReason::Symbol { table };
+    assert_eq!(
+        got,
+        // In each table's own order (`x86_64.so.symbols.txt`), `.symtab` first.
+        [
+            (0x1030, 0x1043, sym(SymbolTable::Static)),
+            (0x1020, 0x1026, sym(SymbolTable::Static)),
+            (0x1020, 0x1026, sym(SymbolTable::Dynamic)),
+            (0x1030, 0x1043, sym(SymbolTable::Dynamic)),
+        ]
+    );
+    assert_eq!(x64.plt_ranges(), [(Va(0x1000), Va(0x1020))]);
+    let arm = ImageSource::load(&fixture("arm32.so")).expect("load arm32.so");
+    let got: Vec<(u64, u64)> = arm.symbol_functions().iter().map(|f| (f.start.0, f.end.0)).collect();
+    assert_eq!(got, [(0x10198, 0x101a0), (0x10198, 0x101a0)], "`in_arm` from both tables, `in_thumb` from neither");
+    assert!(arm.plt_ranges().is_empty());
 }
