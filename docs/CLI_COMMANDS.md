@@ -742,8 +742,9 @@ First scan: find every address matching a criterion.
 - `--criterion` — `exact` (default, needs `--value`), `in-range` (needs `--min`/`--max`), or
   `unknown` (record every value — the "unknown initial value" scan).
 - `--value` / `--min` / `--max`; `--align` (byte stride; defaults to the value's natural size).
-- Region: `--start`/`--size`. On `--pid`, omitting `--start` scans **every committed writable
-  region** (the conventional default scan set); `--start` is required for `--file`.
+- Region: `--start`/`--size`, given together. On `--pid`, omitting both scans **every committed
+  writable region** (the conventional default scan set); either one alone is refused (`bad-region`).
+  `--start` is required for `--file`.
 - `--save-as` (required) — persist result under `.n0x/dumps/scan/<name>.json`; `--force` to
   overwrite.
 - Sources: `--pid` | `--file`.

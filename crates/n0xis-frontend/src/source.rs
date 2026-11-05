@@ -600,6 +600,12 @@ pub fn module_base_of(src: &Src) -> Option<Va> {
 /// into per-block reads that actually land. With no window, it is every
 /// committed writable region — the conventional default scan set.
 pub fn live_scan_regions(live: &dyn LiveTarget, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
+    // A size with nowhere to start is half a window. It used to be dropped, so
+    // `--size 256` scanned every writable region of the process, 348 160 bytes on
+    // the target it was measured on, and answered as if asked for that.
+    if start.is_none() && size.is_some() {
+        return Err("provide start with size".to_string());
+    }
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;
         let sz = size.ok_or("provide size with start")?;

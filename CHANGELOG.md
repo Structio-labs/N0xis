@@ -102,6 +102,12 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Changed
 
+- **`--size` without `--start` is refused on a live target.** It was ignored, and the whole default
+  region set was scanned: `scan aob --pid P --size 256 --pattern ...` read 348 160 bytes on the process
+  it was measured on, and answered as if that was what was asked. `--start` alone was already refused;
+  this now answers the same way, `bad-region` with `provide start with size`. Every scanner that takes a
+  live window: `scan aob`, `scan value`, `scan group`, `locate by-transition`, `lua strings`, `lua
+  combo`, `lua seedscan`, `ui locate`.
 - **A window outside the image is now an error, not an empty success.** Asked about a window of a
   file that gives no byte, these answered `ok: true` with nothing in it, and answer the error
   `nothing-readable`, naming the address, as the same window of a process does. `scan value` saves
