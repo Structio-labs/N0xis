@@ -140,7 +140,7 @@ class Truth:
                 return True
             if canon_demangled(listed) in (canon_demangled(self.dem.get(n, n)), canon_demangled(self.dem_llvm.get(n, n))):
                 return True
-            if canon_rust(listed) in (canon_rust(self.dem.get(n, n)), canon_rust(self.dem_llvm.get(n, n))):
+            if _RUST_MANGLED.search(n) and canon_rust(listed) in (canon_rust(self.dem.get(n, n)), canon_rust(self.dem_llvm.get(n, n))):
                 return True
         return False
 
@@ -156,6 +156,8 @@ def canon_demangled(s: str) -> str:
     return s.replace(" >", ">")
 
 
+# Only a Rust symbol, so `foo.part.0` and `foo.part.1` in C stay two names.
+_RUST_MANGLED = re.compile(r"^_R|^_ZN.*17h[0-9a-f]{16}E")
 _RUST_CRATE_HASH = re.compile(r"\[[0-9a-f]{1,16}\]")
 _RUST_SUFFIX = re.compile(r"(?: \(\.[^()]*\)|\.llvm\.\d+|\.\d+)$")
 _RUST_LEGACY_HASH = re.compile(r"::h[0-9a-f]{16}$")
