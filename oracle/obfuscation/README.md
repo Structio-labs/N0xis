@@ -48,10 +48,40 @@ in `transforms.py`, one per commit:
   sweep reads it as a `call` swallowing the four following bytes). Desynchronises
   a linear sweep; dead, so behaviour is unchanged.
 
+- **lying tables** (`lying.py`; family `lying`) — edits after the link, on the
+  file's own structures; the code stays byte-identical and the file before
+  tampering is the truth and the reference. Each entry names its `base` (the
+  linked file it edits) and its `baseline` (the configuration that differs from it
+  by the lie alone, whose answers are the control):
+  - `fde_add`: a second FDE from an instruction boundary inside a function to its
+    end; the real FDE stays, so a second source speaks.
+  - `fde_split`: the function's FDE cut in two there; no two claims overlap.
+  - `fde_repoint`: the FDE's start moved there; the real start loses its entry.
+  - `fde_long`: the range run over the whole of the next function; `fde_short`:
+    stopped at that boundary.
+  - `sym_mid`: symbols one byte into an instruction (two on AArch64, where no
+    address is both inside an instruction and decodable: a misaligned start), in a
+    table of nothing else; `sym_mid_full`: added to the whole table.
+  - `sym_size`: the file's own symbols with sizes over the next function;
+    `sym_size_alone`: only those symbols, the next function's FDE still speaking.
+  - `noeh`: `.eh_frame` and `.eh_frame_hdr` gone by `objcopy` at intensity 1; at 0.5
+    the chosen functions' FDEs dropped by the editor, since `objcopy` has no share.
+  - `exports`: names swapped in `.dynsym` of a stripped shared object (value and
+    size move, so `.gnu.hash` stays valid); `exports_sym`: with the true `.symtab`
+    kept.
+  - Combinations, labelled: `sym_size_noeh` and `sym_mid_noeh`, the symbol lies with
+    the unwind tables gone, which is the only way a real compile leaves a symbol
+    alone (`discovery_on_planted_images.rs` pins that on a planted image).
+
+  Growing `.eh_frame` moves it and its header to a new `PT_LOAD`, in the slot of a
+  program header nothing at run time reads. The editor refuses a CIE whose pointers
+  it would have to relocate. `.eh_frame_hdr` is rebuilt to agree, and is the one
+  edit nothing independent reads back: the loader never uses it here (nothing in
+  these programs unwinds) and neither does the engine.
+
 (more transformations are added here as they land: opaque predicates, control-
 flow flattening, string encryption, computed-table calls, overlapping
-instructions, lying tables, a packer stub, and a forged WebAssembly name
-section.)
+instructions, a packer stub, and a forged WebAssembly name section.)
 
 ## Build configuration and its caveats
 
@@ -86,7 +116,26 @@ directories), `results/<id>/` (truth, the engine's answers, the per-command
 summary), `results/report.md` and `results/doc-tables.md`. The scored run is
 resumable and every engine call is bounded by `timeout`.
 
+The lying tables have their own driver line, scorer and report (the readers, the
+truth reader and rule-accuracy's scorer are the same):
+
+```
+OBF_SCRATCH=~/.cache/obfuscation/lying python3 oracle/obfuscation/obf_run.py \
+    --family lying --only x86_64,aarch64 --jobs 3
+OBF_SCRATCH=~/.cache/obfuscation/lying python3 oracle/obfuscation/lie_report.py
+OBF_SCRATCH=~/.cache/obfuscation/lying python3 oracle/obfuscation/lie_calibrate.py x86_64/calib
+OBF_SCRATCH=~/.cache/obfuscation/lying python3 oracle/obfuscation/lie_report.py --bytes x86_64/lua/fde_split/i100
+```
+
+`lie_score.py` says what is scored per command and what a warning is;
+`results/lies-doc.md` holds the tables.
+
 ## Calibration
+
+`lie_calibrate.py` checks three places the lying-tables instrument could measure
+nothing and look clean: the edit check must fail on the file before tampering; each
+kind of wrong answer planted into a copy of a measurement must score, silent or
+flagged; a control with different code must be refused.
 
 `obf_calibrate.py <config-id>` plants a wrong answer into a copy of a
 measurement and requires the scorer to report it (asserting the mutation

@@ -2164,10 +2164,242 @@ the instruction's own address.
 
 **Not measured (absences, not results).** Opaque predicates, control-flow flattening, string
 encryption, computed-table calls, overlapping instructions, lying tables (fake/removed unwind
-entries, false function symbols and sizes, renamed exports), a packer stub (and `upx`, not installed);
+entries, false function symbols and sizes, renamed exports; measured in the next section), a packer stub (and `upx`, not installed);
 WebAssembly including a forged name section; combinations; copies of the owner's projects (held out
 until their measurement is done). The harness registers one transformation at a time; `junk` and the
 `none` baseline are the only ones built.
+
+### Obfuscated code: lying tables (2026-11-05)
+
+The question (`docs/design/OBFUSCATED.md`): the section above reports that a start declared by a table
+was never wrong, on honest compilers, where the table and the truth have one author. A table is a claim.
+When it lies, which answers are confidently wrong, and does anything warn of it? Engine `n0xis 0.3.6`,
+sha256 `598d7240c418988cdafb5c45c24817e0ad4408e3af2bf0952c18b9ead35ceb79`; nothing changed it during the run.
+
+**Method.** The instrument is `oracle/obfuscation/` (`lying.py`, `lie_score.py`, `lie_report.py`,
+`lie_calibrate.py`; its README describes each lie). A lie is an edit of the linked file: code
+byte-identical (checked), the file before tampering the truth (DWARF, symbols, `objdump`). `readelf`
+reads every edit back before anything is measured. Each tampered program ran and printed the same
+output and exit code (x86-64 natively, AArch64 under qemu), 128 of 128 configurations; nothing in these
+programs unwinds, so that says the program runs, not that the lie is harmless to an unwinder. Corpus:
+`calib.c` and Lua 5.4.7, `-O1`, on x86-64 and AArch64; the exports lies in a shared object run through a
+driver with no code of its own. Intensity is the share of the functions whose extent an FDE states
+exactly (5 of `calib`, 769 of Lua). The control is the configuration that differs by the lie alone,
+code checked identical; wrong answers are sets of addresses, so what is charged is the set difference.
+Two configurations are combinations, labelled: `sym_size_noeh`, `sym_mid_noeh`. They are the only way
+a real compile leaves a symbol alone, because everywhere else an FDE speaks too.
+
+*What counts as wrong.* `function discover`: a start no function has, a function no longer listed, an
+end, a name. `why`: on every true start, whether it answers the function that starts there. `decomp
+pseudo`: on every true start, an end moved off the truth, or a function or callee name the lie gave;
+whether the body means the same is not judged. `xref to`: a reference the file does not have, or one
+the control reported and this answer lost. *What counts as a warning.* The address lies in an extent or
+is an address `contradictions` names; `why` gives only a heuristic source for that fact; the command
+refused (`why`'s "no listed function contains" is a refusal, so it flags itself; the miss still counts
+as a silent miss in the list). The table cells are `wrong (silent)`; flagged is the difference.
+
+*x86-64, calib and Lua summed.*
+
+| lie | i | planted | starts | missed | ends | names | why owner | decomp | xref | contradictions (control) | lies named | behaviour |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fde_add | 050 | 386 | 386 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 386 (0) | 386 / 386 | same |
+| fde_add | 100 | 774 | 774 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 774 (0) | 774 / 774 | same |
+| fde_split | 050 | 386 | 386 (386) | 0 | 386 (386) | 0 | 0 | 386 (386) | 0 | 0 (0) | 0 / 386 | same |
+| fde_split | 100 | 774 | 774 (774) | 0 | 774 (774) | 0 | 0 | 774 (774) | 0 | 0 (0) | 0 / 774 | same |
+| fde_repoint | 050 | 386 | 390 (386) | 0 | 22 (0) | 0 | 0 | 22 (0) | 0 | 0 (0) | 0 / 386 | same |
+| fde_repoint | 100 | 774 | 778 (774) | 0 | 47 (0) | 0 | 0 | 47 (0) | 0 | 0 (0) | 0 / 774 | same |
+| fde_long | 050 | 386 | 0 | 0 | 386 (0) | 0 | 0 | 386 (0) | 0 | 386 (0) | 386 / 386 | same |
+| fde_long | 100 | 772 | 0 | 0 | 772 (0) | 0 | 0 | 772 (0) | 0 | 772 (0) | 772 / 772 | same |
+| fde_short | 050 | 386 | 552 (0) | 0 | 386 (386) | 0 | 0 | 386 (386) | 0 | 0 (0) | 0 / 386 | same |
+| fde_short | 100 | 774 | 1066 (0) | 0 | 774 (774) | 0 | 0 | 774 (774) | 0 | 0 (0) | 0 / 774 | same |
+| sym_mid | 050 | 386 | 386 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 386 (0) | 386 / 386 | same |
+| sym_mid | 100 | 774 | 774 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 774 (0) | 774 / 774 | same |
+| sym_mid_full | 050 | 386 | 386 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 386 (0) | 386 / 386 | same |
+| sym_mid_full | 100 | 774 | 774 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 774 (0) | 774 / 774 | same |
+| sym_size | 050 | 386 | 0 | 0 | 386 (0) | 0 | 0 | 386 (0) | 0 | 772 (0) | 386 / 386 | same |
+| sym_size | 100 | 772 | 0 | 0 | 772 (0) | 0 | 0 | 772 (0) | 0 | 2314 (0) | 772 / 772 | same |
+| sym_size_alone | 050 | 386 | 0 | 0 | 386 (0) | 0 | 0 | 386 (0) | 0 | 772 (0) | 386 / 386 | same |
+| sym_size_alone | 100 | 772 | 0 | 0 | 772 (0) | 0 | 0 | 772 (0) | 0 | 2314 (0) | 772 / 772 | same |
+| noeh | 050 | 386 | 16 (0) | 0 | 22 (0) | 0 | 0 | 22 (0) | 0 | 0 (0) | 0 / 386 | same |
+| noeh | 100 | 774 | 2 (0) | 194 (194) | 49 (0) | 0 | 194 (0) | 49 (0) | 0 | 0 (0) | 0 / 774 | same |
+| sym_size_noeh | 050 | 386 | 0 | 284 (284) | 364 (364) | 0 | 284 (284) | 376 (376) | 0 | 0 (0) | 0 / 386 | same |
+| sym_size_noeh | 100 | 772 | 0 | 0 | 725 (0) | 0 | 0 | 747 (0) | 0 | 770 (0) | 772 / 772 | same |
+| sym_mid_noeh | 050 | 386 | 394 (386) | 0 | 0 | 0 | 0 | 0 | 0 | 0 (0) | 0 / 386 | same |
+| sym_mid_noeh | 100 | 774 | 778 (774) | 0 | 0 | 0 | 0 | 0 | 0 | 0 (0) | 0 / 774 | same |
+| exports | 050 | 78 | 0 | 0 | 0 | 78 (78) | 0 | 274 (274) | 0 | 0 (0) | 0 / 78 | same |
+| exports | 100 | 158 | 0 | 0 | 0 | 158 (158) | 0 | 368 (368) | 0 | 0 (0) | 0 / 158 | same |
+| exports_sym | 050 | 78 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 78 (0) | 78 / 78 | same |
+| exports_sym | 100 | 158 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 158 (0) | 158 / 158 | same |
+
+*AArch64, calib and Lua summed.* The same edits apply, with one difference: no address is both inside an
+instruction and decodable, so `sym_mid*` puts the symbol two bytes in, a misaligned start.
+
+| lie | i | planted | starts | missed | ends | names | why owner | decomp | xref | contradictions (control) | lies named | behaviour |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fde_add | 050 | 386 | 386 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 386 (0) | 386 / 386 | same |
+| fde_add | 100 | 774 | 774 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 774 (0) | 774 / 774 | same |
+| fde_split | 050 | 386 | 386 (386) | 0 | 386 (386) | 0 | 0 | 386 (386) | 0 | 0 (0) | 0 / 386 | same |
+| fde_split | 100 | 774 | 774 (774) | 0 | 774 (774) | 0 | 0 | 774 (774) | 0 | 0 (0) | 0 / 774 | same |
+| fde_repoint | 050 | 386 | 401 (386) | 0 | 24 (0) | 0 | 0 | 24 (0) | 0 | 0 (0) | 0 / 386 | same |
+| fde_repoint | 100 | 774 | 802 (774) | 0 | 49 (0) | 0 | 0 | 49 (0) | 0 | 0 (0) | 0 / 774 | same |
+| fde_long | 050 | 386 | 0 | 0 | 386 (0) | 0 | 0 | 386 (0) | 0 | 386 (0) | 386 / 386 | same |
+| fde_long | 100 | 772 | 0 | 0 | 772 (0) | 0 | 0 | 772 (0) | 0 | 772 (0) | 772 / 772 | same |
+| fde_short | 050 | 386 | 537 (0) | 0 | 386 (386) | 0 | 0 | 386 (386) | 0 | 0 (0) | 0 / 386 | same |
+| fde_short | 100 | 774 | 1068 (0) | 0 | 774 (774) | 0 | 0 | 774 (774) | 0 | 0 (0) | 0 / 774 | same |
+| sym_mid | 050 | 386 | 386 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 386 (0) | 386 / 386 | same |
+| sym_mid | 100 | 774 | 774 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 774 (0) | 774 / 774 | same |
+| sym_mid_full | 050 | 386 | 386 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 386 (0) | 386 / 386 | same |
+| sym_mid_full | 100 | 774 | 774 (0) | 0 | 0 | 0 | 0 | 0 | 0 | 774 (0) | 774 / 774 | same |
+| sym_size | 050 | 386 | 0 | 0 | 386 (0) | 0 | 0 | 386 (0) | 0 | 772 (0) | 386 / 386 | same |
+| sym_size | 100 | 772 | 0 | 0 | 772 (0) | 0 | 0 | 772 (0) | 0 | 2314 (0) | 772 / 772 | same |
+| sym_size_alone | 050 | 386 | 0 | 0 | 386 (0) | 0 | 0 | 386 (0) | 0 | 772 (0) | 386 / 386 | same |
+| sym_size_alone | 100 | 772 | 0 | 0 | 772 (0) | 0 | 0 | 772 (0) | 0 | 2314 (0) | 772 / 772 | same |
+| noeh | 050 | 386 | 41 (0) | 0 | 24 (0) | 0 | 0 | 24 (0) | 0 | 0 (0) | 0 / 386 | same |
+| noeh | 100 | 774 | 17 (0) | 44 (44) | 49 (0) | 0 | 44 (0) | 50 (1) | 0 | 0 (0) | 0 / 774 | same |
+| sym_size_noeh | 050 | 386 | 0 | 368 (368) | 363 (362) | 0 | 368 (368) | 374 (374) | 0 | 0 (0) | 0 / 386 | same |
+| sym_size_noeh | 100 | 772 | 0 | 2 (0) | 724 (0) | 0 | 2 (0) | 744 (0) | 0 | 770 (0) | 772 / 772 | same |
+| sym_mid_noeh | 050 | 386 | 412 (386) | 0 | 1 (0) | 0 | 0 | 0 | 0 | 0 (0) | 0 / 386 | same |
+| sym_mid_noeh | 100 | 774 | 792 (774) | 0 | 1 (0) | 0 | 0 | 0 | 0 | 0 (0) | 0 / 774 | same |
+| exports | 050 | 78 | 0 | 0 | 0 | 78 (78) | 0 | 274 (274) | 0 | 0 (0) | 0 / 78 | same |
+| exports | 100 | 158 | 0 | 0 | 0 | 158 (158) | 0 | 368 (368) | 0 | 0 (0) | 0 / 158 | same |
+| exports_sym | 050 | 78 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 78 (0) | 78 / 78 | same |
+| exports_sym | 100 | 158 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 158 (0) | 158 / 158 | same |
+
+*Totals, both machines, every program and intensity; one lie counts once per command it changes.*
+
+| lie | new wrong | flagged | silent |
+|---|---|---|---|
+| fde_add | 2320 | 2320 | 0 |
+| fde_split | 6960 | 0 | 6960 |
+| fde_repoint | 2655 | 335 | 2320 |
+| fde_long | 4632 | 4632 | 0 |
+| fde_short | 7863 | 3223 | 4640 |
+| sym_mid | 2320 | 2320 | 0 |
+| sym_mid_full | 2320 | 2320 | 0 |
+| sym_size | 4632 | 4632 | 0 |
+| sym_size_alone | 4632 | 4632 | 0 |
+| noeh | 841 | 602 | 239 |
+| sym_size_noeh | 5725 | 2945 | 2780 |
+| sym_mid_noeh | 2378 | 58 | 2320 |
+| exports | 1756 | 0 | 1756 |
+| exports_sym | 0 | 0 | 0 |
+| all | 49034 | 28019 | 21015 |
+
+The percentages of a table like this are the editor's, set by how many lies it planted; they say nothing
+about how often real images lie. 0 crashes, no new `ok:false`, no session timed out, under `ulimit -v 4194304`.
+
+**What each lie changes.**
+
+- *`fde_split`, the worst: every answer silent.* One FDE cut in two at an instruction boundary, every
+  byte still covered once, so no two claims meet. The second half is listed as a function, the first
+  half's end is wrong, and `decomp` stops there. x86-64 Lua at full intensity: `f_call` at `0x402854`
+  decompiles to `void sub_402854(void) { }` at quality 1.0, where the file has `4883ec08 sub $8,%rsp`,
+  `8b5608 mov 8(%rsi),%edx`, `488b36 mov (%rsi),%rsi`, and at the false start `0x40285e` `e897ae0000 call
+  luaD_callnoyield`. 44 Lua bodies become empty this way. `luaV_execute` goes from 4 500 instructions to
+  2 305, 3 803 pseudo lines to 1 067, quality 1.0, ending at `0x42540b` (`85c0 test %eax,%eax`), mid-function.
+- *`fde_short`: the same cut with no second entry.* The end and `decomp` are silent as above; the rest of
+  the function is listed by the rule `after_declared_end`, a heuristic-only false start, so that one is
+  flagged. A heuristic's error here has a table's lie as its cause.
+- *`fde_repoint`: a false start, silent.* `luaL_error` at `0x404ba9` gains a start at `0x404c08`
+  (`c744240810000000 movl $0x10,8(%rsp)`) credited to `.eh_frame`. The true start stays listed through the
+  rules; where they got its end wrong (22 to 49 on Lua), the end's category flags it.
+- *`fde_add`, `fde_long`, `sym_mid`, `sym_mid_full`, `sym_size`, `sym_size_alone`: as wrong, and all flagged.*
+  The false start or the wrong end is the same answer (`decomp` runs on past the `return` into the next
+  function under `fde_long`), but a second table states something else, and `contradictions` names every
+  lie as an overlap or an end.
+- *`sym_mid_noeh`: a start no instruction has, silent.* `lie_404c09` is listed and named, its start credited
+  to `.symtab`, one byte into `c744240810000000` at `0x404c08`. On AArch64 `lie_404a1a` is listed at an
+  address not divisible by 4, which needs no decoder to doubt. 2 320 such starts across the configurations, none warned of.
+- *`sym_size_noeh` at 0.5: the hiding `a_lying_table_is_repeated_and_contradicted_only_where_a_second_source_speaks` pins on a planted image, on real code.* A symbol running over a function
+  nothing else declares stops it being listed, and `why` answers the wrong function: 284 true functions on
+  x86-64, 368 on AArch64. `auxsetstr` at `0x402726` (`4154 push %r12`, straight after `c3 ret`) is answered as
+  inside `aux_upvalue`, `addr_is_start: false`, end by `st_size`. At full intensity the same symbols meet
+  each other, overlap, and every lie is named: fewer lies, less warning.
+- *`noeh`: unlisted, honestly.* Lua lists 588 functions instead of 778 on x86-64, 758 instead of 780 on
+  AArch64; why the two machines differ is not examined. Nothing warns in the list (`contradictions` has
+  nothing left to compare), and `why` says no listed function contains the address, which is true. Few answers
+  are false: the start and end rules that take over carry their heuristic category.
+- *`exports`: the name, everywhere it is printed, silent.* `.dynsym` is the only source of the name in
+  a stripped library and it is believed: `0x786c` is printed as `lua_xmove`, the file's `lua_checkstack`.
+  It reaches callers: at `0x968b` the pseudo-C reads `lua_pushvalue(...)` where the bytes at `0x96bb` are `call
+  7c14 <lua_type>`. On Lua at full intensity 154 wrong signatures, 264 functions with a wrong callee.
+  `exports_sym` keeps a true `.symtab`: 0 wrong, every swap a `name` contradiction.
+- *`xref` is unmoved: 0 wrong on every lie,* with 3 547 references reported on the same Lua image. It reads
+  the code and not the tables. That zero is calibrated: a planted reference scores as invented, a removed one as lost.
+
+A lie also reaches functions it did not touch. Under `fde_split` and `fde_short` at 0.5, 7 Lua functions no
+lie names change a signature on x86-64 (`0x407714`, `void *rdi` becomes `uint64_t rdi`); the path of that was
+not traced. They are counted as changed, not as wrong. The other changed pseudo on functions
+no lie touched (about 250 per configuration under `sym_size*` at 0.5) differ only in a called name, a symbol's
+where the control has `sub_`.
+
+**Which claims do not hold.**
+
+1. *"On this corpus the category still predicts the error, for starts and for ends" does not hold on a lying
+   table, and for ends it reverses.* Every fact on every lying image, the rate again set by what was planted:
+
+| lie | declared starts wrong | heuristic starts wrong | declared ends wrong | heuristic ends wrong |
+|---|---|---|---|---|
+| fde_add | 2320 / 5456 | 4 / 38 | 0 / 3120 | 0 / 4 |
+| fde_split | 2320 / 5456 | 4 / 38 | 2320 / 3120 | 0 / 4 |
+| fde_repoint | 2320 / 3136 | 55 / 2409 | 0 / 800 | 142 / 2324 |
+| fde_long | 0 / 3136 | 4 / 38 | 2316 / 3120 | 0 / 4 |
+| fde_short | 0 / 3136 | 3227 / 3261 | 2320 / 3120 | 0 / 4 |
+| sym_mid | 2320 / 5456 | 4 / 38 | 0 / 3120 | 0 / 4 |
+| sym_mid_full | 2320 / 5460 | 0 / 30 | 0 / 3124 | 0 / 0 |
+| sym_size | 0 / 3140 | 0 / 30 | 2316 / 3124 | 0 / 0 |
+| sym_size_alone | 0 / 3136 | 4 / 38 | 2316 / 3120 | 0 / 4 |
+| noeh | 0 / 796 | 78 / 2214 | 0 / 788 | 144 / 2104 |
+| sym_size_noeh | 0 / 2316 | 0 / 58 | 2316 / 2316 | 6 / 20 |
+| sym_mid_noeh | 2320 / 2320 | 82 / 3184 | 0 / 0 | 198 / 3064 |
+| exports | 0 / 3112 | 4 / 36 | 0 / 3096 | 0 / 4 |
+| exports_sym | 0 / 3116 | 0 / 28 | 0 / 3100 | 0 / 0 |
+| all | 13920 / 49172 | 3466 / 11440 | 13904 / 35068 | 490 / 7540 |
+
+   Declared starts are wrong 13 920 of 49 172 (28.3%), heuristic-only 3 466 of 11 440 (30.3%). Declared ends
+   are wrong 13 904 of 35 068 (39.6%), others 490 of 7 540 (6.5%). So "No wrong start carries a declared
+   source ... no declared end is wrong" is a fact about honest compilers, as its limit (2) says; this is that
+   limit measured. On a table that lies, the category cannot tell a true fact from a false one. `WHY.md` §6
+   item 3 says what follows from that: "say so and stop building on it".
+2. *What does hold: the category says who claims a fact.* Every start and end `why` credits to a table against
+   `readelf` on the tampered file: 89 696 claims, 0 wrong, the lies included. `WHY.md` §1, what a category is
+   and that someone else can check it, stands. What a reader may not do is read "declared" as "right".
+3. *`OBFUSCATED.md` §1, "an answer never states a table's claim as truth", holds for `why` alone.* The list
+   and `decomp` state it flat. On the 15 400 `decomp` answers a lie made wrong: no new note; quality below 1.0
+   on 7 699 against 7 670 of the same functions in the control, nearly all AArch64's own baseline; a new flag on
+   5 643. Read under `fde_split` and `fde_short`, the new flags are `has-tail` 2 830 times and `structured-partial`
+   1 980, shapes rather than doubts, and `low-coverage` 152 times, the one that reads like a warning. None counts
+   as a warning above; the definition has no such entry.
+4. *`OBFUSCATED.md` §1, "claims are cross-checked against the code", is not built.* No kind of `contradictions`
+   reads code: a start that does not decode or a misaligned one, an end mid-function, a function declared over
+   another's call target go unremarked. What flags above is two tables disagreeing.
+5. *`contradictions` as "the map of where to doubt" (`WHY.md` §6 item 1) is the map of where two tables
+   speak.* Lies it names: all of `fde_add`, `fde_long`, `sym_mid`, `sym_mid_full`, `sym_size`, `sym_size_alone`,
+   `exports_sym`; none of `fde_split`, `fde_repoint`, `fde_short`, `noeh`, `sym_mid_noeh`, `exports`, or
+   `sym_size_noeh` at 0.5. A liar who edits one table consistently is not seen.
+
+**Calibration.** `lie_calibrate.py`, 0 failures on x86-64 `calib`, x86-64 Lua and AArch64 Lua. The edit check
+fails on the file before tampering, for every lie at both intensities. Each kind of wrong answer planted into a
+copy of a measurement scores one more wrong, silent, and flagged with a warning planted beside it. A control
+scored against itself charges nothing; a control with other code is refused. An attribution planted false
+scores. Each false start checked has no function symbol at that address in the file before tampering.
+
+Bugs the instrument found in itself, fixed before a number was recorded: `is_shared` read the lie's own entry
+and not its base's, so a tampered library was executed directly and crashed; the behaviour check refused 10 of
+60 configurations rather than measure them. Whole-text callee sets called a swap in `main` "changed for no
+reason", since a function calling both names has both before and after; now line by line. `why`'s "no listed
+function" first scored as a silent wrong owner; it claims no function, so it is a refusal. The proof by bytes first
+used `readers.disasm_around`, which starts `objdump` wherever its window begins and on x86 printed garbage
+beside a correct address; `lie_report.around` reads the whole-image listing. That helper in `oracle/rule-accuracy`
+still has the trap.
+
+**Not measured (absences, not results).** `.pdata` and PE; i686; `.debug_frame`; a WebAssembly name section. An
+FDE range ending mid-instruction (the cuts here are at true boundaries). A symbol lying in `.dynsym` of an
+executable. `.eh_frame_hdr` is rebuilt to agree and nothing independent read it back; neither the loader on
+these programs nor the engine reads it. Whether a `decomp` body is semantically right on any function the lie
+did not cut. Any compiler but gcc at `-O1`, and any program but these two: nothing here was tuned against, and
+nothing was fixed. The engine's `ir deobfuscate` was not run on lying tables; they are not in the code it reads.
+Copies of the owner's projects, which wait for a later word.
 
 ### The three numbers the README quotes
 

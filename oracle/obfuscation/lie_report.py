@@ -16,6 +16,7 @@ not only by the instrument's join.
 from __future__ import annotations
 
 import argparse
+import bisect
 import glob
 import json
 import os
@@ -134,20 +135,49 @@ def by_lie_totals(summaries: list) -> str:
     return "\n".join(out) + "\n"
 
 
+def around(ins: dict, va: int, before: int = 3, after: int = 3) -> list:
+    """The real instructions around `va`, from the whole-image listing. Not an
+    `objdump --start-address=` near it: that starts decoding wherever the window
+    happens to begin, and on x86 printed garbage beside a correct address, which
+    would have been shown as the proof that an answer was wrong."""
+    addrs = sorted(ins)
+    i = bisect.bisect_right(addrs, va)
+    out = []
+    for a in addrs[max(0, i - before):i + after]:
+        mark = "<-" if a == va else "  "
+        out.append(f"{a:#x} {mark} {ins[a][1][:60]}")
+    if va not in ins:
+        out.insert(min(before, len(out)), f"{va:#x} <- no instruction starts here")
+    return out
+
+
 def show_bytes(cfg_id: str):
     build = json.load(open(os.path.join(corpus.BUILD, cfg_id, "build.json")))
     s = json.load(open(os.path.join(corpus.RESULTS, cfg_id, "lies.json")))
-    before = build["truth_file"]
+    ins = readers.instructions(build["truth_file"])
     for kind, ex in s["examples"].items():
         if not ex or kind.startswith("xref"):
             continue
         print(f"== {kind}")
         for a, v in list(ex.items())[:2]:
             print(f"  {a}: {json.dumps(v)[:300]}")
-            print("\n".join("    " + ln[:90] for ln in readers.disasm_around(before, int(a, 16), 12, 16).splitlines()[:9]))
+            print("\n".join("    " + ln for ln in around(ins, int(a, 16))))
     for kind in ("xref_lost", "xref_invented"):
         for x in s["examples"].get(kind, [])[:2]:
             print(f"== {kind} {x}")
+
+
+def self_doubt(summaries: list) -> str:
+    """Two answers the verdict stands on: is the source `why` cites really that
+    table's claim; and does `decomp` doubt an answer a lie made wrong?"""
+    rows = [s for s in summaries if s.get("discover_ok") and s["transform"] in lie_order()]
+    chk = sum(s["attribution"]["checked"] for s in rows)
+    wr = sum(s["attribution"]["wrong"] for s in rows)
+    wrong = sum(s["decomp"]["wrong"] for s in rows)
+    d = {k: sum(s["decomp_self_doubt"][k] for s in rows) for k in rows[0]["decomp_self_doubt"]}
+    return (f"`why`'s attribution against `readelf` on the tampered files: {chk} claims, {wr} wrong.\n\n"
+            f"`decomp`, on the {wrong} answers a lie made wrong: quality below 1.0 on {d['quality_below_one']} (control {d['control_quality_below_one']}), "
+            f"a new flag on {d['flags_new']}, a new note on {d['note_new']}.\n")
 
 
 def main() -> int:
@@ -161,7 +191,7 @@ def main() -> int:
     if not summaries:
         print("nothing scored under", corpus.RESULTS)
         return 1
-    doc = tables(summaries) + "\n### Totals, every configuration\n\n" + by_lie_totals(summaries) + "\n### The category of the source, every lying image\n\n" + category(summaries)
+    doc = tables(summaries) + "\n### Totals, every configuration\n\n" + by_lie_totals(summaries) + "\n### The category of the source, every lying image\n\n" + category(summaries) + "\n### What the answers say about themselves\n\n" + self_doubt(summaries)
     open(os.path.join(corpus.RESULTS, "lies-doc.md"), "w").write(doc)
     open(os.path.join(corpus.RESULTS, "lies-report.md"), "w").write(doc + "\n### Every configuration\n\n" + per_config(summaries))
     print(by_lie_totals(summaries))

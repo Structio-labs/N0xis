@@ -27,6 +27,7 @@ import json
 import os
 import sys
 
+import lie_report
 import lie_score
 import lying
 import obf_corpus as corpus
@@ -154,8 +155,30 @@ def calibrate_scorer(prefix: str):
         check("a reference lost", s["xref"]["lost"] == 1, str(s["xref"]))
 
 
+def calibrate_attribution(prefix: str):
+    print("the attribution check can fail")
+    build, _, meas = load(f"{prefix}/none/i100")
+    base = lie_score._attribution(meas, build["measured_file"])
+    check("the control's claims are checked, and hold", base["checked"] > 0 and base["wrong"] == 0, str(base))
+    m = copy.deepcopy(meas)
+    hit = 0
+    for w in m["why"].values():
+        fw = w["data"]["function"].get("found") if w.get("ok") else None
+        if fw and fw["addr_is_start"] and fw["end"].get("source") == "unwind":
+            fw["end"]["va"] = hex(int(fw["end"]["va"], 16) + 1)
+            hit = 1
+            break
+    s = lie_score._attribution(m, build["measured_file"])
+    check("an end credited to an FDE that does not state it", hit == 1 and s["wrong"] == 1, str(s["wrong"]))
+    m = copy.deepcopy(meas)
+    addr = next(a for a, w in m["why"].items() if w.get("ok") and "found" in w["data"]["function"] and not any(x["source"] == "unwind" for x in w["data"]["function"]["found"]["start_sources"]) and w["data"]["function"]["found"]["start"] == a)
+    m["why"][addr]["data"]["function"]["found"]["start_sources"].append({"source": "unwind", "table": "eh_frame"})
+    s = lie_score._attribution(m, build["measured_file"])
+    check("a start credited to an FDE that does not exist", s["wrong"] == 1, f"{addr}: {s['wrong']}")
+
+
 def lie_score_cells() -> list:
-    return ["wrong_start", "missed", "wrong_end", "wrong_name", "why_owner", "decomp", "xref"]
+    return lie_report.CELLS
 
 
 def calibrate_control(prefix: str):
@@ -186,7 +209,7 @@ def wrong_by_the_bytes(prefix: str):
             check(f"{name}: no function symbol at {site:#x} in the file before", site not in funcs)
             inside = site not in ins
             print(f"    {name} {site:#x}: in function {r['name']} {r['function']:#x}..{r['end']:#x}; {'mid-instruction' if inside else 'an instruction boundary'}; new wrong starts {s['wrong_start']['wrong']}")
-            print("\n".join("      " + ln[:80] for ln in readers.disasm_around(build["truth_file"], site, 8, 8).splitlines()[:6]))
+            print("\n".join("      " + ln for ln in lie_report.around(ins, site, 2, 2)))
 
 
 def main() -> int:
@@ -194,6 +217,7 @@ def main() -> int:
     calibrate_editor(prefix)
     calibrate_scorer(prefix)
     calibrate_control(prefix)
+    calibrate_attribution(prefix)
     wrong_by_the_bytes(prefix)
     print(f"\ncalibration: {failures} failure(s)")
     return 1 if failures else 0

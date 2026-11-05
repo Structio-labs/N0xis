@@ -551,7 +551,8 @@ def sym_mid_full(b: Before, intensity: float, out: str) -> list:
 
 def sym_mid_noeh(b: Before, intensity: float, out: str) -> list:
     """A combination, labelled as one: `sym_mid` with the unwind tables gone, so no
-    FDE contradicts the symbol. What FOLLOWUPS 21(a) pinned as a symbol alone."""
+    FDE contradicts the symbol. What `discovery_on_planted_images.rs` pins as a
+    symbol alone."""
     _sym_base(b, out)
     _objcopy(b.arch, *_NO_UNWIND, out)
     elf = Elf(out)
@@ -591,8 +592,9 @@ def sym_size_alone(b: Before, intensity: float, out: str) -> list:
 
 def sym_size_noeh(b: Before, intensity: float, out: str) -> list:
     """A combination, labelled as one: `sym_size_alone` with the unwind tables
-    gone too, which is the only way a real compile reaches the hiding FOLLOWUPS
-    21(a) pinned on a planted image: nothing else declares the next function."""
+    gone too, which is the only way a real compile reaches the hiding
+    `discovery_on_planted_images.rs` pins on a planted image: nothing else
+    declares the next function."""
     _sym_base(b, out)
     _objcopy(b.arch, *_NO_UNWIND, out)
     elf = Elf(out)

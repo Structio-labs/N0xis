@@ -226,6 +226,49 @@ def _xref(meas: dict, base: dict, ref: dict) -> dict:
     return {"refs_reported": total, "invented": invented, "lost": lost}
 
 
+def _attribution(meas: dict, measured: str) -> dict:
+    """`why` says who claims a fact: is that so? Every start and end it credits to
+    a table, against what `readelf` reads in the tampered file. The claim being
+    tested is about the attribution, not the truth: a lie repeated and correctly
+    attributed scores right here."""
+    fdes = {}
+    for sec, lo, hi in readers.fde_ranges(measured):
+        if sec == ".eh_frame":
+            fdes.setdefault(lo, set()).add(hi)
+    tables = {"static": ".symtab", "dynamic": ".dynsym"}
+    syms: dict = {}
+    for s in readers.symbols(measured):
+        if s["type"] in ("FUNC", "IFUNC") and s["ndx"] not in ("UND", "ABS"):
+            syms.setdefault((s["table"], s["value"]), set()).add(s["size"])
+    checked = wrong = 0
+    bad = []
+    for a, w in meas.get("why", {}).items():
+        if not w.get("ok"):
+            continue
+        fw = w["data"]["function"].get("found")
+        if fw is None or int(fw["start"], 16) != int(a, 16):
+            continue
+        va = int(a, 16)
+        for src in fw["start_sources"]:
+            if src["source"] == "unwind" and src.get("table") == "eh_frame":
+                ok = va in fdes
+            elif src["source"] == "symbol" and src.get("table") in tables:
+                ok = (tables[src["table"]], va) in syms
+            else:
+                continue
+            checked += 1
+            if not ok:
+                wrong += 1
+                bad.append([a, src])
+        end = fw["end"]
+        if end.get("source") == "unwind" and end.get("table") == "eh_frame":
+            checked += 1
+            if int(end["va"], 16) not in fdes.get(va, ()):
+                wrong += 1
+                bad.append([a, end])
+    return {"checked": checked, "wrong": wrong, "examples": bad[:4]}
+
+
 def _split(new: dict, flagged) -> dict:
     f = [k for k, v in new.items() if flagged(k, v)]
     silent = [k for k in new if k not in set(f)]
@@ -280,6 +323,17 @@ def score(build: dict, truth: dict, meas: dict, base_build: dict, base_truth: di
     out["decomp"]["same"] = dec["same"]
     out["decomp"]["crashed"] = len(dec["crashed"])
     out["decomp_kinds"] = {k: sum(1 for v in dec["wrong"].values() if k in v) for k in ("end", "name", "callee")}
+    # Does the decompiler's own answer doubt itself? Its quality and its note, on
+    # the answers the lie made wrong, beside the control's.
+    answers = [meas["decomp"][hex(k)] for k in dec["wrong"]]
+    controls = [base_meas["decomp"][hex(k)] for k in dec["wrong"]]
+    out["decomp_self_doubt"] = {
+        "quality_below_one": sum(1 for d in answers if d["data"].get("quality", 1.0) < 1.0),
+        "control_quality_below_one": sum(1 for d in controls if d["data"].get("quality", 1.0) < 1.0),
+        "flags_new": sum(1 for d, c in zip(answers, controls) if set(d["data"].get("flags", [])) - set(c["data"].get("flags", []))),
+        "note_new": sum(1 for d, c in zip(answers, controls) if d.get("meta", {}).get("note") and not c.get("meta", {}).get("note")),
+    }
+    out["attribution"] = _attribution(meas, build["measured_file"])
     x = _xref(meas, base_meas, ref)
     out["xref"] = _split({**{("i",) + k: v for k, v in x["invented"].items()}, **{("l",) + k: v for k, v in x["lost"].items()}},
                          lambda k, v: W.covers(k[1]) or W.covers(k[2]))
