@@ -63,6 +63,14 @@ _FUNC_START = re.compile(r"^\s*\.cfi_startproc\b")
 _FUNC_END = re.compile(r"^\s*\.cfi_endproc\b")
 
 
+def chosen_indices(count: int, intensity: float) -> set:
+    """An exact, evenly-spread share of `count` items (Bresenham selection): index
+    n is chosen when int((n+1)*intensity) > int(n*intensity), which picks
+    round(intensity*count) of them spaced across the list, so 0.5 really touches
+    half even when there are only a handful."""
+    return {n for n in range(count) if int((n + 1) * intensity) > int(n * intensity)}
+
+
 def _is_arm(asm: str) -> bool:
     # AArch64 gcc emits `.arch armv8-a` and uses `x0`/`w0`; x86 uses `%rax`.
     return ".arch armv8" in asm or bool(re.search(r"\bret\b", asm) and "%rax" not in asm and "%eax" not in asm)
@@ -99,11 +107,7 @@ def junk_after_transfers(asm: str, intensity: float, seed: int = 1, tag: str = "
     arm = _is_arm(asm)
     uncond = _UNCOND_ARM if arm else _UNCOND_X86
     regions = _func_regions(lines)
-    # An exact, evenly-spread share of the functions (Bresenham selection): for
-    # len functions, index n is chosen when int((n+1)*intensity) > int(n*intensity),
-    # which picks round(intensity*len) of them spaced across the file, so 0.5
-    # really drops half even when there are only a handful.
-    chosen = {n for n in range(len(regions)) if int((n + 1) * intensity) > int(n * intensity)}
+    chosen = chosen_indices(len(regions), intensity)
     region_of = {}
     chosen_lbls = set()
     for n, (s, e, lbl) in enumerate(regions):
@@ -147,11 +151,41 @@ def identity(asm: str, intensity: float, seed: int = 1, tag: str = "") -> tuple:
     return asm, asm, Planted(kind="none", note="identity baseline")
 
 
+def _lie(post_link: str, base: str, baseline: str, desc: str, intensities: tuple | None = None) -> dict:
+    """A lying table: no rewrite of the assembly; `lying.LIES[post_link]` edits the
+    linked file of the `base` configuration. `baseline`: the configuration that
+    differs from this one by the lie alone, whose answers are the control."""
+    t = {"fn": identity, "arches": ("x86_64", "aarch64"), "twin": False, "family": "lying",
+         "post_link": post_link, "base": base, "baseline": baseline, "desc": desc}
+    if intensities:
+        t["intensities"] = intensities
+    return t
+
+
 # The registry: name -> (function, applies-to-arches, needs-reference-twin).
-# Each new transformation is added here in its own commit.
+# Each new transformation is added here in its own commit. `shared`: built as a
+# shared object run through a driver, not as an executable.
 TRANSFORMS = {
-    "none": {"fn": identity, "arches": ("x86_64", "i686", "aarch64"), "twin": True,
-             "desc": "identity: the unobfuscated baseline to compare against"},
+    "none": {"fn": identity, "arches": ("x86_64", "i686", "aarch64"), "twin": True, "family": "lying",
+             "intensities": (1.0,), "desc": "identity: the unobfuscated baseline to compare against"},
     "junk": {"fn": junk_after_transfers, "arches": ("x86_64", "i686", "aarch64"), "twin": True,
              "desc": "junk bytes after unconditional transfers (desynchronises a linear sweep)"},
+    "none_so": {"fn": identity, "arches": ("x86_64", "aarch64"), "twin": True, "family": "lying", "shared": True,
+                "intensities": (1.0,), "desc": "identity, as a stripped shared object"},
+    "none_sym": _lie("identity_sym", "none", "none", "identity with `.symtab` kept and no DWARF", (1.0,)),
+    "none_so_sym": _lie("identity_sym", "none_so", "none_so", "identity, a shared object with `.symtab` kept", (1.0,)),
+    "fde_add": _lie("fde_add", "none", "none", "a second FDE starting inside a function; the real one stays"),
+    "fde_split": _lie("fde_split", "none", "none", "a function's FDE cut in two, no overlap"),
+    "fde_repoint": _lie("fde_repoint", "none", "none", "the FDE's start moved inside the function"),
+    "fde_long": _lie("fde_long", "none", "none", "an FDE's range run over the next function"),
+    "fde_short": _lie("fde_short", "none", "none", "an FDE's range stopped inside the function"),
+    "sym_mid": _lie("sym_mid", "none", "none", "a symbol mid-instruction in a table of nothing else"),
+    "sym_mid_full": _lie("sym_mid_full", "none", "none_sym", "a symbol mid-instruction added to the whole table"),
+    "sym_size": _lie("sym_size", "none", "none_sym", "the file's own symbols, sizes over the next function"),
+    "sym_size_alone": _lie("sym_size_alone", "none", "none", "only symbols with lying sizes; FDEs stay"),
+    "noeh": _lie("noeh", "none", "none", "unwind tables removed"),
+    "sym_size_noeh": _lie("sym_size_noeh", "none", "noeh", "COMBINATION: only symbols with lying sizes, unwind tables removed"),
+    "sym_mid_noeh": _lie("sym_mid_noeh", "none", "noeh", "COMBINATION: only symbols mid-instruction, unwind tables removed"),
+    "exports": _lie("exports", "none_so", "none_so", "exports' names swapped in .dynsym, stripped"),
+    "exports_sym": _lie("exports_sym", "none_so", "none_so_sym", "exports' names swapped in .dynsym, true .symtab kept"),
 }

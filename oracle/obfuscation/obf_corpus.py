@@ -126,21 +126,32 @@ class Config:
         return os.path.join(BUILD, self.arch, self.program, self.transform, self.tag)
 
 
-def configs(select: str | None = None, transforms: list | None = None) -> list:
+def configs(select: str | None = None, transforms: list | None = None, family: str | None = None) -> list:
     import transforms as T
 
-    chosen = transforms or list(T.TRANSFORMS)
+    chosen = transforms or [n for n, t in T.TRANSFORMS.items() if family is None or t.get("family") == family]
     out = []
     for arch in ARCHES:
         for p in PROGRAMS.values():
             for tname in chosen:
                 if arch not in T.TRANSFORMS[tname]["arches"]:
                     continue
-                for inten in INTENSITIES:
+                for inten in T.TRANSFORMS[tname].get("intensities", INTENSITIES):
                     cfg = Config(arch, p.name, tname, inten)
                     if select is None or any(s in cfg.id for s in select.split(",")):
                         out.append(cfg)
     return out
+
+
+def is_shared(cfg: Config) -> bool:
+    import transforms as T
+
+    # A lie edits its base's file, so it is whatever its base is.
+    t = T.TRANSFORMS[cfg.transform]
+    return bool(T.TRANSFORMS[t.get("base", cfg.transform)].get("shared"))
+
+
+SHARED_NAME = "libobf.so"  # the soname, so a driver finds whichever copy sits beside it
 
 
 def compile_to_asm_argv(cfg: Config, src: str, out_s: str) -> list:
@@ -148,7 +159,8 @@ def compile_to_asm_argv(cfg: Config, src: str, out_s: str) -> list:
     transformation can rewrite it before it is assembled."""
     a = ARCHES[cfg.arch]
     p = PROGRAMS[cfg.program]
-    argv = list(a.cc) + [f"-{cfg.opt}", "-g", "-S", "-fno-pic", "-fno-stack-protector"]
+    pic = "-fPIC" if is_shared(cfg) else "-fno-pic"
+    argv = list(a.cc) + [f"-{cfg.opt}", "-g", "-S", pic, "-fno-stack-protector"]
     argv += [f.replace("@LUA@", _lua_dir()) for f in p.flags]
     argv += ["-w", "-o", out_s, src]
     return argv
@@ -157,8 +169,18 @@ def compile_to_asm_argv(cfg: Config, src: str, out_s: str) -> list:
 def assemble_and_link_argv(cfg: Config, objs: list, out: str, listing: str | None = None) -> list:
     a = ARCHES[cfg.arch]
     p = PROGRAMS[cfg.program]
-    argv = list(a.cc) + [f"-{cfg.opt}", "-g", "-no-pie"]
+    # `-Bsymbolic`: the library's own calls bind at link time, so `.dynsym` is what
+    # it tells others and an edit there cannot change what the library itself runs.
+    how = ["-shared", "-Wl,-Bsymbolic", f"-Wl,-soname,{SHARED_NAME}"] if is_shared(cfg) else ["-no-pie"]
+    argv = list(a.cc) + [f"-{cfg.opt}", "-g"] + how
     argv += objs
     argv += list(p.libs)
     argv += ["-o", out]
     return argv
+
+
+def driver_link_argv(cfg: Config, shared: str, out: str) -> list:
+    """An executable with no code of its own: the C runtime's `main` is the
+    library's, so running it runs the whole program, the same output as the
+    executable build. It finds the library beside itself."""
+    return list(ARCHES[cfg.arch].cc) + ["-no-pie", shared, "-Wl,-rpath,$ORIGIN", "-o", out]

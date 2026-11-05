@@ -31,12 +31,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
+import lying
 import obf_corpus as corpus
 import readers  # rule-accuracy
 import transforms
+import truth as ra_truth  # rule-accuracy
 
 
 def sh(argv: list, timeout: int = 540) -> subprocess.CompletedProcess:
@@ -65,8 +69,65 @@ def junk_addresses(image: str, planted_all: list) -> list:
     return sorted(out, key=lambda r: r["lo"])
 
 
+def run_program(cfg: corpus.Config, path: str) -> dict:
+    """Run the program whose image is `path`: the image itself, or, for a shared
+    object, the configuration's driver beside a copy of it."""
+    if not corpus.is_shared(cfg):
+        return run_image(cfg, path)
+    d = tempfile.mkdtemp(dir=os.path.dirname(path))
+    try:
+        shutil.copy(path, os.path.join(d, corpus.SHARED_NAME))
+        shutil.copy(cfg_driver(cfg), os.path.join(d, "driver"))
+        return run_image(cfg, os.path.join(d, "driver"))
+    finally:
+        shutil.rmtree(d)
+
+
+def cfg_driver(cfg: corpus.Config) -> str:
+    return os.path.join(cfg.dir, "driver")
+
+
+def build_post_link(cfg: corpus.Config, T: dict) -> dict:
+    """A lying table: the linked file of the `base` configuration, edited. Nothing
+    is compiled again. The truth is the file before tampering, and the edit is read
+    back with `readelf` before anything is measured."""
+    os.makedirs(cfg.dir, exist_ok=True)
+    base_cfg = corpus.Config(cfg.arch, cfg.program, T["base"], 1.0)
+    base_json = os.path.join(base_cfg.dir, "build.json")
+    base = json.load(open(base_json)) if os.path.exists(base_json) else build_config(base_cfg)
+    m = {"id": cfg.id, "transform": cfg.transform, "intensity": cfg.intensity, "arch": cfg.arch,
+         "program": cfg.program, "ok": bool(base.get("ok")), "base": base_cfg.id, "planted": [], "planted_count": 0}
+    if not m["ok"]:
+        return m
+    before, stripped = base["truth_file"], base["measured_file"]
+    if corpus.is_shared(base_cfg):
+        shutil.copy(cfg_driver(base_cfg), cfg_driver(cfg))
+    tampered = os.path.join(cfg.dir, "tampered")
+    fact = lying.read_before(cfg.arch, ra_truth.truth(before), before, stripped)
+    m["planted_lies"] = lying.LIES[T["post_link"]](fact, cfg.intensity, tampered)
+    m["planted_count"] = len(m["planted_lies"])
+    m["eligible_functions"] = len(fact.targets)
+    m["truth_file"], m["reference_file"], m["measured_file"] = before, before, tampered
+    m["edit_failures"] = lying.verify(tampered, stripped, before, m["planted_lies"], T["post_link"])
+    if m["edit_failures"]:
+        m["ok"] = False
+    # Behaviour: the tampered program prints what the file before it prints.
+    out_before, out_after = run_program(base_cfg, before), run_program(cfg, tampered)
+    m["run_clean"], m["run_obf"] = out_before, out_after
+    if out_before.get("ran") and out_after.get("ran"):
+        m["behaviour_ok"] = out_before["stdout"] == out_after["stdout"] and out_before["rc"] == out_after["rc"]
+    else:
+        m["behaviour_ok"] = None
+    same, _, _ = readers.same_code(tampered, before)
+    m["truth_ok"] = {"a": False, "b": same}
+    json.dump(m, open(os.path.join(cfg.dir, "build.json"), "w"), indent=1)
+    return m
+
+
 def build_config(cfg: corpus.Config) -> dict:
     T = transforms.TRANSFORMS[cfg.transform]
+    if T.get("post_link"):
+        return build_post_link(cfg, T)
     needs_twin = T["twin"]
     os.makedirs(cfg.dir, exist_ok=True)
     p = corpus.PROGRAMS[cfg.program]
@@ -122,16 +183,19 @@ def build_config(cfg: corpus.Config) -> dict:
         sh(corpus.assemble_and_link_argv(cfg, ref_objs, ref))
         m["reference_file"] = ref if os.path.exists(ref) else None
 
+    if corpus.is_shared(cfg):
+        sh(corpus.driver_link_argv(cfg, clean, cfg_driver(cfg)))
+
     # Behaviour: the obfuscated program prints what the clean one does.
-    out_clean = run_image(cfg, clean)
-    out_obf = run_image(cfg, obf)
+    out_clean = run_program(cfg, clean)
+    out_obf = run_program(cfg, obf)
     m["run_clean"], m["run_obf"] = out_clean, out_obf
     if out_clean.get("ran") and out_obf.get("ran"):
         m["behaviour_ok"] = out_clean["stdout"] == out_obf["stdout"] and out_clean["rc"] == out_obf["rc"]
     else:
         m["behaviour_ok"] = None  # could not run (cross arch without a runner)
     if needs_twin and m.get("reference_file"):
-        out_ref = run_image(cfg, ref)
+        out_ref = run_program(cfg, ref)
         m["run_ref"] = out_ref
         if m["behaviour_ok"] and out_ref.get("ran"):
             m["behaviour_ok"] = out_ref["stdout"] == out_clean["stdout"]
@@ -151,9 +215,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only")
     ap.add_argument("--transform")
+    ap.add_argument("--family")
     args = ap.parse_args()
     tlist = args.transform.split(",") if args.transform else None
-    cfgs = corpus.configs(args.only, tlist)
+    cfgs = corpus.configs(args.only, tlist, args.family)
     bad = 0
     for cfg in cfgs:
         m = build_config(cfg)
