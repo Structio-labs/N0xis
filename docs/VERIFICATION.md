@@ -1466,6 +1466,583 @@ and WebAssembly; the `rtti`, `flirt`, `pdb`, `managed` and `user` name layers (n
 them); `analyze` and the function lists of a live process. `why` does not cite any of these
 numbers; that is the lead's decision.
 
+### Held-out Rust: boundaries and names on programs nothing was tuned on (2026-11-05)
+
+**What this measures, and what it does not.** Function boundaries and names only: where a function
+starts, where it ends, what it is called. It says nothing about whether a function's decompiled
+body is right. Rust was not in the tuning; an agent that did not tune the engine ran this, and the
+engine did not change after.
+
+**The engine.** sha256 `da8b1dc53326ca3bc54fc996843232d6fb6891cd684f86a0ec29a2a539529fa7`, a build of
+main `b4558f1`, recorded in every result. The tables above name `2447860c…`. The two were compared
+behaviourally: the pinned engine asked again on 16 images sampled from those runs answered 17 229
+`why` and every `discover` list identically, so the columns beside these numbers are the same engine's
+(a sample, not the 666 images).
+
+**Corpus.** Built here with rustc 1.99.0 (LLVM 23.1.1, rust-lld on Linux, mingw's GNU ld for PE),
+cargo's own profiles with level-1 debug info added, unstripped and `strip --strip-all`:
+
+| program | size | shapes built |
+|---|---|---|
+| N0xis, commit `4348933` | about 128 000 lines of Rust | 2 binaries release and dev, 1 PE release and dev |
+| ripgrep 14.1.1 (`4649aa970061`) | about 50 000 lines | release, dev, PE, AArch64 |
+| fd v10.2.0 (`b19136871310`) | about 7 700 lines, with a C allocator | release, dev, PE, AArch64 release |
+| a private Rust workspace ("A") | about 49 000 lines, about 42 000 functions over 4 binaries in release (they share code) | release, dev |
+| a private Rust workspace ("B") | about 35 000 lines, about 38 000 functions over 4 binaries in release (they share code) | release, part of dev |
+
+**The four shapes.** *With tables*: as built (a) and stripped (b). *No debug info*: the same flags
+with no debug info, stripped, truth from its own `.symtab`. *No-unwind flags*: `-C panic=abort -C
+force-unwind-tables=no` without debug info, stripped, truth from its `.symtab`; the standard
+library's prebuilt objects keep their FDEs. *No FDE at all*: the same flags with debug info, stripped,
+`.eh_frame` and `.eh_frame_hdr` removed with `objcopy` (the program still runs), truth from the DWARF.
+The last exists because **with debug info rustc writes an FDE for every function even under
+`force-unwind-tables=no`**, and without debug info it still leaves many: of a ripgrep release's 7 702
+functions 2 384 kept an FDE; on the two programs built with LTO almost all did (fd release, fat LTO:
+3 677 of 3 683 listed; N0xis release, thin LTO: 7 056 of 7 074). Only that fourth shape makes the rules
+carry discovery on every project. What the standard library's objects keep was not separated from what
+the flags left on the program's own code; building the library without FDEs (nightly `-Z build-std`) was
+not tried.
+
+**The truth, and how much of it comes from where.** DWARF subprograms read by `llvm-dwarfdump`
+(rung 1); FUNC symbols no DWARF range covers read by `readelf` or mingw's `nm` (rung 3; COFF symbols
+have no size, so a PE's `.symtab` tier has no extent); PLT labels from `objdump`. Rust's traps, each
+checked: 1 418 267 subprograms with `low_pc` 0 and 531 with the other tombstone (a discarded range
+`[1, 1)` in `.debug_ranges`) were dropped; the prebuilt standard library's dependencies have no
+subprogram at all and land in the `.symtab` tier, with the C runtime and the import stubs; aliased
+generics fold onto one start (5 366 starts carry several FUNC names); hand-written assembly is
+`.symtab` only. **Across the 71 truth files DWARF and `.symtab` never disagreed**: every DWARF entry
+has a FUNC symbol, no FUNC symbol lies inside a DWARF range, and all 1 401 520 ELF extents equal
+`st_size` (COFF has no sizes to compare). Every stripped twin's code sections are byte-identical to its truth's: none was
+refused.
+
+**Debug info does change Rust's code.** All 10 binaries compared with and without it differ: 0 to
+6 192 bytes of `.text`; of the functions present by name in both, 84% on fd (its C allocator) and more
+than 99.5% on the others have the same size. So (a) and (b) measure the debug build, not exactly what
+ships; the *no debug info* rows measure what ships, against rung-3 truth, and they come out the same.
+
+**What was fixed in the instrument.** Three faults of the measurement, none of the subject, the first two before any measurement, the third by scoring the kept answers again. A flat 500 s bound on a `serve` session would have cut any image
+past about 25 000 starts and counted the rest as missed. A DWARF dump of gigabytes was held in memory.
+On Rust, c++filt prints crate hashes and llvm-cxxfilt prints linker suffixes in brackets, so 547 of
+ripgrep's 8 649 names read as wrong with none differing in identity; they are `spelled` now. Two names
+remain scored wrong that are the same spelling problem (`.specialized.1`); no engine name in the
+*image* layer differs in identity.
+
+**Calibration.** On these measurements: a true start moved by one byte (declared, heuristic, PE) shows
+as one more interior start in the table, one missed function, under the right kind; an exact end moved
+by a byte shows as one long end; a renamed function as one wrong name; a flipped `.text` byte is
+refused. A `serve` session killed mid-list shows as unanswered starts in the contract row. On a planted
+Rust program the truth reader put an assembly `FUNC` in the `.symtab` tier, took no NOTYPE label,
+and dropped the tombstones. Every result's engine sha, and 0 contract differences on all images.
+
+#### Starts, per program x shape x configuration
+
+| program | shape | config | variant | binaries | FDEs | listed | true | wrong, strict (interior / outside) | fragment | plt0 | precision, strict | precision, broad | recall: DWARF fns | recall: `.symtab` fns |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| N0xis | with tables | dev | a | 2 | 142040 | 142048 | 142048 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 141801 / 141801 (100.0%) | 247 / 251 (98.4%) |
+| N0xis | with tables | dev | b | 2 | 142040 | 142048 | 142048 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 141801 / 141801 (100.0%) | 247 / 251 (98.4%) |
+| N0xis | with tables | dev PE | a | 1 | 0 | 84430 | 84424 | 4 (2 / 2) | 2 | 0 | 100.0% | 100.0% | 83851 / 83927 (99.9%) | 573 / 605 (94.7%) |
+| N0xis | with tables | release | a | 2 | 17058 | 17068 | 17066 | 2 (2 / 0) | 0 | 0 | 100.0% | 100.0% | 16864 / 16864 (100.0%) | 202 / 206 (98.1%) |
+| N0xis | with tables | release | b | 2 | 17058 | 17068 | 17066 | 2 (2 / 0) | 0 | 0 | 100.0% | 100.0% | 16864 / 16864 (100.0%) | 202 / 206 (98.1%) |
+| N0xis | with tables | release PE | a | 1 | 0 | 8871 | 8814 | 55 (55 / 0) | 2 | 0 | 99.4% | 99.4% | 8512 / 8597 (99.0%) | 302 / 305 (99.0%) |
+| N0xis | with tables | release PE | b | 1 | 0 | 8871 | 8814 | 55 (55 / 0) | 2 | 0 | 99.4% | 99.4% | 8512 / 8597 (99.0%) | 302 / 305 (99.0%) |
+| N0xis | no debug info | release | b | 2 | 17058 | 17068 | 17066 | 2 (2 / 0) | 0 | 0 | 100.0% | 100.0% | 1351 / 1351 (100.0%) | 15715 / 15719 (100.0%) |
+| N0xis | no-unwind flags | dev | b | 2 | 20717 | 134575 | 133334 | 1241 (1241 / 0) | 0 | 0 | 99.1% | 99.1% | 1648 / 1648 (100.0%) | 131686 / 137045 (96.1%) |
+| N0xis | no-unwind flags | release | b | 2 | 14811 | 14844 | 14842 | 2 (2 / 0) | 0 | 0 | 100.0% | 100.0% | 1333 / 1333 (100.0%) | 13509 / 13515 (100.0%) |
+| N0xis | no FDE at all | dev | b | 2 | 0 | 67303 | 67303 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 67205 / 138419 (48.6%) | 98 / 240 (40.8%) |
+| N0xis | no FDE at all | release | b | 2 | 0 | 7722 | 7716 | 6 (6 / 0) | 0 | 0 | 99.9% | 99.9% | 7618 / 14640 (52.0%) | 98 / 206 (47.6%) |
+| ripgrep | with tables | dev | a | 1 | 24438 | 24443 | 24443 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 24323 / 24323 (100.0%) | 120 / 121 (99.2%) |
+| ripgrep | with tables | dev | b | 1 | 24438 | 24443 | 24443 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 24323 / 24323 (100.0%) | 120 / 121 (99.2%) |
+| ripgrep | with tables | dev AArch64 | a | 1 | 24245 | 24253 | 24252 | 1 (0 / 1) | 0 | 0 | 100.0% | 100.0% | 24102 / 24102 (100.0%) | 150 / 150 (100.0%) |
+| ripgrep | with tables | dev AArch64 | b | 1 | 24245 | 24252 | 24250 | 2 (1 / 1) | 0 | 0 | 100.0% | 100.0% | 24101 / 24102 (100.0%) | 149 / 150 (99.3%) |
+| ripgrep | with tables | dev PE | a | 1 | 0 | 30052 | 30047 | 3 (1 / 2) | 2 | 0 | 100.0% | 100.0% | 29535 / 29605 (99.8%) | 512 / 547 (93.6%) |
+| ripgrep | with tables | dev PE | b | 1 | 0 | 30052 | 30047 | 3 (1 / 2) | 2 | 0 | 100.0% | 100.0% | 29535 / 29605 (99.8%) | 512 / 547 (93.6%) |
+| ripgrep | with tables | release | a | 1 | 8644 | 8649 | 8649 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 8539 / 8539 (100.0%) | 110 / 111 (99.1%) |
+| ripgrep | with tables | release | b | 1 | 8644 | 8649 | 8649 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 8539 / 8539 (100.0%) | 110 / 111 (99.1%) |
+| ripgrep | with tables | release AArch64 | a | 1 | 8656 | 8664 | 8663 | 1 (0 / 1) | 0 | 0 | 100.0% | 100.0% | 8528 / 8528 (100.0%) | 135 / 135 (100.0%) |
+| ripgrep | with tables | release AArch64 | b | 1 | 8656 | 8663 | 8661 | 2 (1 / 1) | 0 | 0 | 100.0% | 100.0% | 8527 / 8528 (100.0%) | 134 / 135 (99.3%) |
+| ripgrep | with tables | release PE | a | 1 | 0 | 11233 | 11204 | 27 (25 / 2) | 2 | 0 | 99.8% | 99.7% | 10719 / 12846 (83.4%) | 485 / 518 (93.6%) |
+| ripgrep | with tables | release PE | b | 1 | 0 | 11233 | 11204 | 27 (25 / 2) | 2 | 0 | 99.8% | 99.7% | 10719 / 12846 (83.4%) | 485 / 518 (93.6%) |
+| ripgrep | no debug info | release | b | 1 | 8639 | 8644 | 8644 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 789 / 789 (100.0%) | 7855 / 7856 (100.0%) |
+| ripgrep | no-unwind flags | dev | b | 1 | 3206 | 23449 | 23207 | 242 (242 / 0) | 0 | 0 | 99.0% | 99.0% | 803 / 803 (100.0%) | 22404 / 23229 (96.4%) |
+| ripgrep | no-unwind flags | release | b | 1 | 2384 | 7539 | 7358 | 181 (181 / 0) | 0 | 0 | 97.6% | 97.6% | 777 / 777 (100.0%) | 6581 / 6925 (95.0%) |
+| ripgrep | no FDE at all | dev | b | 1 | 0 | 14111 | 14111 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 14060 / 24013 (58.6%) | 51 / 117 (43.6%) |
+| ripgrep | no FDE at all | release | b | 1 | 0 | 2151 | 2151 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 2099 / 7595 (27.6%) | 52 / 111 (46.8%) |
+| fd | with tables | dev | a | 1 | 28551 | 28557 | 28557 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 28439 / 28439 (100.0%) | 118 / 119 (99.2%) |
+| fd | with tables | dev | b | 1 | 28551 | 28557 | 28557 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 28439 / 28439 (100.0%) | 118 / 119 (99.2%) |
+| fd | with tables | dev PE | a | 1 | 0 | 32262 | 32257 | 3 (1 / 2) | 2 | 0 | 100.0% | 100.0% | 31728 / 31801 (99.8%) | 529 / 563 (94.0%) |
+| fd | with tables | dev PE | b | 1 | 0 | 32262 | 32257 | 3 (1 / 2) | 2 | 0 | 100.0% | 100.0% | 31728 / 31801 (99.8%) | 529 / 563 (94.0%) |
+| fd | with tables | release | a | 1 | 4199 | 4205 | 4190 | 0 (0 / 0) | 15 | 0 | 100.0% | 99.6% | 4052 / 4052 (100.0%) | 138 / 139 (99.3%) |
+| fd | with tables | release | b | 1 | 4199 | 4205 | 4190 | 0 (0 / 0) | 15 | 0 | 100.0% | 99.6% | 4052 / 4052 (100.0%) | 138 / 139 (99.3%) |
+| fd | with tables | release AArch64 | a | 1 | 4171 | 4177 | 4177 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 4009 / 4009 (100.0%) | 168 / 168 (100.0%) |
+| fd | with tables | release AArch64 | b | 1 | 4171 | 4176 | 4176 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 4008 / 4009 (100.0%) | 168 / 168 (100.0%) |
+| fd | with tables | release PE | a | 1 | 0 | 3304 | 3298 | 4 (4 / 0) | 2 | 0 | 99.9% | 99.8% | 3076 / 3095 (99.4%) | 222 / 222 (100.0%) |
+| fd | with tables | release PE | b | 1 | 0 | 3304 | 3298 | 4 (4 / 0) | 2 | 0 | 99.9% | 99.8% | 3076 / 3095 (99.4%) | 222 / 222 (100.0%) |
+| fd | no debug info | release | b | 1 | 4199 | 4205 | 4190 | 0 (0 / 0) | 15 | 0 | 100.0% | 99.6% | 1487 / 1487 (100.0%) | 2703 / 2704 (100.0%) |
+| fd | no-unwind flags | dev | b | 1 | 6439 | 27393 | 27136 | 257 (257 / 0) | 0 | 0 | 99.1% | 99.1% | 3577 / 3577 (100.0%) | 23559 / 24541 (96.0%) |
+| fd | no-unwind flags | release | b | 1 | 3677 | 3683 | 3668 | 0 (0 / 0) | 15 | 0 | 100.0% | 99.6% | 1473 / 1473 (100.0%) | 2195 / 2196 (100.0%) |
+| fd | no FDE at all | dev | b | 1 | 0 | 17179 | 17178 | 1 (1 / 0) | 0 | 0 | 100.0% | 100.0% | 17126 / 28075 (61.0%) | 52 / 115 (45.2%) |
+| fd | no FDE at all | release | b | 1 | 0 | 2677 | 2662 | 15 (15 / 0) | 0 | 0 | 99.4% | 99.4% | 2573 / 3530 (72.9%) | 89 / 139 (64.0%) |
+| workspace A | with tables | dev | a | 4 | 93351 | 93367 | 93367 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 92895 / 92895 (100.0%) | 472 / 480 (98.3%) |
+| workspace A | with tables | dev | b | 4 | 93351 | 93367 | 93367 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 92895 / 92895 (100.0%) | 472 / 480 (98.3%) |
+| workspace A | with tables | release | a | 4 | 42244 | 42260 | 42260 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 41856 / 41856 (100.0%) | 404 / 412 (98.1%) |
+| workspace A | with tables | release | b | 4 | 42244 | 42260 | 42260 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 41856 / 41856 (100.0%) | 404 / 412 (98.1%) |
+| workspace A | no FDE at all | dev | b | 5 | 0 | 23038 | 22994 | 44 (44 / 0) | 0 | 0 | 99.8% | 99.8% | 22744 / 107151 (21.2%) | 250 / 602 (41.5%) |
+| workspace A | no FDE at all | release | b | 5 | 0 | 25753 | 25728 | 25 (25 / 0) | 0 | 0 | 99.9% | 99.9% | 25471 / 55112 (46.2%) | 257 / 515 (49.9%) |
+| workspace B | with tables | dev | a | 2 | 7260 | 7270 | 7270 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 7043 / 7043 (100.0%) | 227 / 229 (99.1%) |
+| workspace B | with tables | dev | b | 2 | 7260 | 7270 | 7270 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 7043 / 7043 (100.0%) | 227 / 229 (99.1%) |
+| workspace B | with tables | release | a | 4 | 37760 | 37782 | 37774 | 8 (6 / 2) | 0 | 0 | 100.0% | 100.0% | 37367 / 37367 (100.0%) | 407 / 411 (99.0%) |
+| workspace B | with tables | release | b | 4 | 37760 | 37782 | 37774 | 8 (6 / 2) | 0 | 0 | 100.0% | 100.0% | 37367 / 37367 (100.0%) | 407 / 411 (99.0%) |
+| workspace B | no FDE at all | dev | b | 4 | 0 | 137997 | 137980 | 17 (17 / 0) | 0 | 0 | 100.0% | 100.0% | 137776 / 270444 (50.9%) | 204 / 488 (41.8%) |
+| workspace B | no FDE at all | release | b | 4 | 0 | 15176 | 15153 | 23 (23 / 0) | 0 | 0 | 99.8% | 99.8% | 14952 / 30699 (48.7%) | 201 / 411 (48.9%) |
+
+#### Start sources, per shape x configuration (all programs, each row its own)
+
+| shape, config, variant | source | produced | true | wrong | fragment | precision, strict | precision, broad | of DWARF fns | alone produced | alone wrong |
+|---|---|---|---|---|---|---|---|---|---|---|
+| no FDE at all, dev, b | call_target | 128634 | 128620 | 14 | 0 | 100.0% | 100.0% | 22.5% | 84550 | 14 |
+| no FDE at all, dev, b | prologue | 175078 | 175030 | 48 | 0 | 100.0% | 100.0% | 30.8% | 130994 | 48 |
+| no FDE at all, release, b | call_target | 47113 | 47099 | 14 | 0 | 100.0% | 100.0% | 41.7% | 43206 | 14 |
+| no FDE at all, release, b | prologue | 10273 | 10218 | 55 | 0 | 99.5% | 99.5% | 9.1% | 6366 | 55 |
+| no debug info, release, b | unwind:eh_frame | 29896 | 29881 | 0 | 15 | 100.0% | 99.9% | 100.0% | 0 | 0 |
+| no debug info, release, b | after_declared_end | 29892 | 29877 | 0 | 15 | 100.0% | 99.9% | 100.0% | 0 | 0 |
+| no debug info, release, b | gap_sweep | 17 | 17 | 0 | 0 | 100.0% | 100.0% | 0.0% | 4 | 0 |
+| no debug info, release, b | call_target | 14687 | 14687 | 0 | 0 | 100.0% | 100.0% | 44.1% | 0 | 0 |
+| no debug info, release, b | prologue | 2608 | 2606 | 2 | 0 | 99.9% | 99.9% | 58.8% | 4 | 2 |
+| no-unwind flags, dev, b | unwind:eh_frame | 30362 | 30362 | 0 | 0 | 100.0% | 100.0% | 100.0% | 1753 | 0 |
+| no-unwind flags, dev, b | after_declared_end | 30358 | 30358 | 0 | 0 | 100.0% | 100.0% | 99.9% | 0 | 0 |
+| no-unwind flags, dev, b | gap_sweep | 144102 | 142364 | 1738 | 0 | 98.8% | 98.8% | 0.0% | 73977 | 1738 |
+| no-unwind flags, dev, b | call_target | 46946 | 46946 | 0 | 0 | 100.0% | 100.0% | 55.2% | 4822 | 0 |
+| no-unwind flags, dev, b | prologue | 68909 | 68907 | 2 | 0 | 100.0% | 100.0% | 39.9% | 4212 | 2 |
+| no-unwind flags, release, b | unwind:eh_frame | 20872 | 20857 | 0 | 15 | 100.0% | 99.9% | 100.0% | 221 | 0 |
+| no-unwind flags, release, b | after_declared_end | 20868 | 20853 | 0 | 15 | 100.0% | 99.9% | 99.9% | 0 | 0 |
+| no-unwind flags, release, b | gap_sweep | 5033 | 4850 | 183 | 0 | 96.4% | 96.4% | 0.0% | 4283 | 183 |
+| no-unwind flags, release, b | call_target | 10844 | 10844 | 0 | 0 | 100.0% | 100.0% | 44.0% | 149 | 0 |
+| no-unwind flags, release, b | prologue | 2542 | 2542 | 0 | 0 | 100.0% | 100.0% | 58.6% | 11 | 0 |
+| with tables, dev AArch64, a | unwind:eh_frame | 24245 | 24245 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, dev AArch64, a | symbol | 24246 | 24246 | 0 | 0 | 100.0% | 100.0% | 100.0% | 1 | 0 |
+| with tables, dev AArch64, a | after_declared_end | 23443 | 23442 | 1 | 0 | 100.0% | 100.0% | 96.7% | 0 | 0 |
+| with tables, dev AArch64, a | gap_sweep | 1 | 0 | 1 | 0 | 0.0% | 0.0% | 0.0% | 0 | 0 |
+| with tables, dev AArch64, a | call_target | 21587 | 21587 | 0 | 0 | 100.0% | 100.0% | 89.0% | 0 | 0 |
+| with tables, dev AArch64, a | prologue | 6147 | 6147 | 0 | 0 | 100.0% | 100.0% | 25.4% | 1 | 0 |
+| with tables, dev AArch64, b | unwind:eh_frame | 24245 | 24245 | 0 | 0 | 100.0% | 100.0% | 100.0% | 235 | 0 |
+| with tables, dev AArch64, b | after_declared_end | 23438 | 23437 | 1 | 0 | 100.0% | 100.0% | 96.6% | 0 | 0 |
+| with tables, dev AArch64, b | gap_sweep | 4 | 2 | 2 | 0 | 50.0% | 50.0% | 0.0% | 1 | 1 |
+| with tables, dev AArch64, b | call_target | 21587 | 21587 | 0 | 0 | 100.0% | 100.0% | 89.0% | 1 | 0 |
+| with tables, dev AArch64, b | prologue | 6147 | 6147 | 0 | 0 | 100.0% | 100.0% | 25.4% | 1 | 0 |
+| with tables, dev PE, a | unwind:pdata | 125079 | 125073 | 0 | 6 | 100.0% | 100.0% | 85.6% | 886 | 0 |
+| with tables, dev PE, a | after_declared_end | 125076 | 125072 | 1 | 3 | 100.0% | 100.0% | 85.5% | 0 | 0 |
+| with tables, dev PE, a | gap_sweep | 21555 | 21545 | 10 | 0 | 100.0% | 100.0% | 14.2% | 2193 | 9 |
+| with tables, dev PE, a | call_target | 129845 | 129845 | 0 | 0 | 100.0% | 100.0% | 88.6% | 110 | 0 |
+| with tables, dev PE, a | prologue | 91011 | 91011 | 0 | 0 | 100.0% | 100.0% | 62.6% | 0 | 0 |
+| with tables, dev PE, b | unwind:pdata | 51469 | 51465 | 0 | 4 | 100.0% | 100.0% | 83.0% | 546 | 0 |
+| with tables, dev PE, b | after_declared_end | 51467 | 51465 | 0 | 2 | 100.0% | 100.0% | 83.0% | 0 | 0 |
+| with tables, dev PE, b | gap_sweep | 10785 | 10779 | 6 | 0 | 99.9% | 99.9% | 16.7% | 1562 | 6 |
+| with tables, dev PE, b | call_target | 53097 | 53097 | 0 | 0 | 100.0% | 100.0% | 85.4% | 60 | 0 |
+| with tables, dev PE, b | prologue | 37352 | 37352 | 0 | 0 | 100.0% | 100.0% | 60.8% | 0 | 0 |
+| with tables, dev, a | unwind:eh_frame | 295640 | 295640 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, dev, a | symbol | 295641 | 295641 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, dev, a | after_declared_end | 295631 | 295631 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, dev, a | gap_sweep | 40 | 40 | 0 | 0 | 100.0% | 100.0% | 0.0% | 10 | 0 |
+| with tables, dev, a | call_target | 80705 | 80705 | 0 | 0 | 100.0% | 100.0% | 27.3% | 0 | 0 |
+| with tables, dev, a | prologue | 81455 | 81455 | 0 | 0 | 100.0% | 100.0% | 27.6% | 4 | 0 |
+| with tables, dev, b | unwind:eh_frame | 295640 | 295640 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, dev, b | after_declared_end | 295630 | 295630 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, dev, b | gap_sweep | 41 | 41 | 0 | 0 | 100.0% | 100.0% | 0.0% | 10 | 0 |
+| with tables, dev, b | call_target | 80705 | 80705 | 0 | 0 | 100.0% | 100.0% | 27.3% | 0 | 0 |
+| with tables, dev, b | prologue | 81455 | 81455 | 0 | 0 | 100.0% | 100.0% | 27.6% | 4 | 0 |
+| with tables, release AArch64, a | unwind:eh_frame | 12827 | 12827 | 0 | 0 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, release AArch64, a | symbol | 12828 | 12828 | 0 | 0 | 100.0% | 100.0% | 100.0% | 1 | 0 |
+| with tables, release AArch64, a | after_declared_end | 12233 | 12232 | 1 | 0 | 100.0% | 100.0% | 95.2% | 0 | 0 |
+| with tables, release AArch64, a | gap_sweep | 1 | 0 | 1 | 0 | 0.0% | 0.0% | 0.0% | 0 | 0 |
+| with tables, release AArch64, a | call_target | 6404 | 6404 | 0 | 0 | 100.0% | 100.0% | 49.4% | 0 | 0 |
+| with tables, release AArch64, a | prologue | 2822 | 2822 | 0 | 0 | 100.0% | 100.0% | 22.2% | 2 | 0 |
+| with tables, release AArch64, b | unwind:eh_frame | 12827 | 12827 | 0 | 0 | 100.0% | 100.0% | 100.0% | 561 | 0 |
+| with tables, release AArch64, b | after_declared_end | 12224 | 12223 | 1 | 0 | 100.0% | 100.0% | 95.2% | 0 | 0 |
+| with tables, release AArch64, b | gap_sweep | 6 | 4 | 2 | 0 | 66.7% | 66.7% | 0.0% | 1 | 1 |
+| with tables, release AArch64, b | call_target | 6404 | 6404 | 0 | 0 | 100.0% | 100.0% | 49.4% | 2 | 0 |
+| with tables, release AArch64, b | prologue | 2822 | 2822 | 0 | 0 | 100.0% | 100.0% | 22.2% | 2 | 0 |
+| with tables, release PE, a | unwind:pdata | 17774 | 17768 | 0 | 6 | 100.0% | 100.0% | 70.9% | 963 | 0 |
+| with tables, release PE, a | after_declared_end | 17771 | 17768 | 0 | 3 | 100.0% | 100.0% | 70.9% | 0 | 0 |
+| with tables, release PE, a | gap_sweep | 5586 | 5500 | 86 | 0 | 98.5% | 98.5% | 19.8% | 2913 | 86 |
+| with tables, release PE, a | call_target | 12839 | 12839 | 0 | 0 | 100.0% | 100.0% | 49.2% | 48 | 0 |
+| with tables, release PE, a | prologue | 1441 | 1441 | 0 | 0 | 100.0% | 100.0% | 5.9% | 0 | 0 |
+| with tables, release PE, b | unwind:pdata | 17774 | 17768 | 0 | 6 | 100.0% | 100.0% | 70.9% | 963 | 0 |
+| with tables, release PE, b | after_declared_end | 17771 | 17768 | 0 | 3 | 100.0% | 100.0% | 70.9% | 0 | 0 |
+| with tables, release PE, b | gap_sweep | 5586 | 5500 | 86 | 0 | 98.5% | 98.5% | 19.8% | 2913 | 86 |
+| with tables, release PE, b | call_target | 12839 | 12839 | 0 | 0 | 100.0% | 100.0% | 49.2% | 48 | 0 |
+| with tables, release PE, b | prologue | 1441 | 1441 | 0 | 0 | 100.0% | 100.0% | 5.9% | 0 | 0 |
+| with tables, release, a | unwind:eh_frame | 109905 | 109884 | 6 | 15 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, release, a | symbol | 109900 | 109885 | 0 | 15 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, release, a | after_declared_end | 109895 | 109872 | 8 | 15 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, release, a | gap_sweep | 50 | 48 | 2 | 0 | 96.0% | 96.0% | 0.0% | 12 | 0 |
+| with tables, release, a | call_target | 56013 | 56007 | 6 | 0 | 100.0% | 100.0% | 51.0% | 0 | 0 |
+| with tables, release, a | prologue | 8969 | 8967 | 2 | 0 | 100.0% | 100.0% | 8.2% | 7 | 2 |
+| with tables, release, b | unwind:eh_frame | 109905 | 109884 | 6 | 15 | 100.0% | 100.0% | 100.0% | 6 | 0 |
+| with tables, release, b | after_declared_end | 109894 | 109871 | 8 | 15 | 100.0% | 100.0% | 100.0% | 0 | 0 |
+| with tables, release, b | gap_sweep | 51 | 49 | 2 | 0 | 96.1% | 96.1% | 0.0% | 12 | 0 |
+| with tables, release, b | call_target | 56013 | 56007 | 6 | 0 | 100.0% | 100.0% | 51.0% | 0 | 0 |
+| with tables, release, b | prologue | 8969 | 8967 | 2 | 0 | 100.0% | 100.0% | 8.2% | 7 | 2 |
+
+#### Ends, per shape x configuration
+
+| shape, config, variant | start class: end source | exact | short | long | between | no end | no truth end |
+|---|---|---|---|---|---|---|---|
+| no FDE at all, dev, b | true: not_stated | 225757 | 3156 | 28741 | 0 | 0 | 45 |
+| no FDE at all, dev, b | true: not_stated(cut) | 0 | 0 | 0 | 0 | 1867 | 0 |
+| no FDE at all, release, b | true: not_stated | 28292 | 1908 | 20622 | 0 | 0 | 45 |
+| no FDE at all, release, b | true: not_stated(cut) | 0 | 0 | 0 | 0 | 2543 | 0 |
+| no debug info, release, b | fragment: unwind:eh_frame | 15 | 0 | 0 | 0 | 0 | 0 |
+| no debug info, release, b | true: not_stated | 1 | 0 | 0 | 0 | 0 | 18 |
+| no debug info, release, b | true: unwind:eh_frame | 29881 | 0 | 0 | 0 | 0 | 0 |
+| no-unwind flags, dev, b | true: not_stated | 146562 | 455 | 5783 | 0 | 0 | 18 |
+| no-unwind flags, dev, b | true: not_stated(cut) | 0 | 0 | 0 | 0 | 497 | 0 |
+| no-unwind flags, dev, b | true: unwind:eh_frame | 30362 | 0 | 0 | 0 | 0 | 0 |
+| no-unwind flags, release, b | fragment: unwind:eh_frame | 15 | 0 | 0 | 0 | 0 | 0 |
+| no-unwind flags, release, b | true: not_stated | 4609 | 24 | 347 | 0 | 0 | 18 |
+| no-unwind flags, release, b | true: not_stated(cut) | 0 | 0 | 0 | 0 | 13 | 0 |
+| no-unwind flags, release, b | true: unwind:eh_frame | 20857 | 0 | 0 | 0 | 0 | 0 |
+| with tables, dev AArch64, a | true: not_stated | 0 | 0 | 0 | 0 | 0 | 2 |
+| with tables, dev AArch64, a | true: symbol_size:st_size | 24246 | 0 | 0 | 0 | 0 | 0 |
+| with tables, dev AArch64, a | true: unwind:eh_frame | 0 | 0 | 0 | 0 | 0 | 4 |
+| with tables, dev AArch64, b | true: not_stated | 3 | 0 | 0 | 0 | 0 | 2 |
+| with tables, dev AArch64, b | true: unwind:eh_frame | 24241 | 0 | 0 | 0 | 0 | 4 |
+| with tables, dev PE, a | fragment: unwind:pdata | 6 | 0 | 0 | 0 | 0 | 0 |
+| with tables, dev PE, a | true: not_stated | 20653 | 28 | 74 | 0 | 0 | 888 |
+| with tables, dev PE, a | true: not_stated(cut) | 0 | 0 | 0 | 0 | 12 | 0 |
+| with tables, dev PE, a | true: unwind:pdata | 124347 | 0 | 0 | 0 | 0 | 726 |
+| with tables, dev PE, b | fragment: unwind:pdata | 4 | 0 | 0 | 0 | 0 | 0 |
+| with tables, dev PE, b | true: not_stated | 10219 | 22 | 35 | 0 | 0 | 555 |
+| with tables, dev PE, b | true: not_stated(cut) | 0 | 0 | 0 | 0 | 8 | 0 |
+| with tables, dev PE, b | true: unwind:pdata | 50979 | 0 | 0 | 0 | 0 | 486 |
+| with tables, dev, a | true: not_stated | 0 | 0 | 0 | 0 | 0 | 44 |
+| with tables, dev, a | true: symbol_size:st_size | 295641 | 0 | 0 | 0 | 0 | 0 |
+| with tables, dev, b | true: not_stated | 1 | 0 | 0 | 0 | 0 | 44 |
+| with tables, dev, b | true: unwind:eh_frame | 295640 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release AArch64, a | true: not_stated | 0 | 0 | 0 | 0 | 0 | 4 |
+| with tables, release AArch64, a | true: symbol_size:st_size | 12828 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release AArch64, a | true: unwind:eh_frame | 0 | 0 | 0 | 0 | 0 | 8 |
+| with tables, release AArch64, b | true: not_stated | 6 | 0 | 0 | 0 | 0 | 4 |
+| with tables, release AArch64, b | true: unwind:eh_frame | 12819 | 0 | 0 | 0 | 0 | 8 |
+| with tables, release PE, a | fragment: unwind:pdata | 6 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release PE, a | true: not_stated | 4799 | 48 | 50 | 0 | 0 | 643 |
+| with tables, release PE, a | true: not_stated(cut) | 0 | 0 | 0 | 0 | 8 | 0 |
+| with tables, release PE, a | true: unwind:pdata | 17402 | 0 | 0 | 0 | 0 | 366 |
+| with tables, release PE, b | fragment: unwind:pdata | 6 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release PE, b | true: not_stated | 4799 | 48 | 50 | 0 | 0 | 643 |
+| with tables, release PE, b | true: not_stated(cut) | 0 | 0 | 0 | 0 | 8 | 0 |
+| with tables, release PE, b | true: unwind:pdata | 17402 | 0 | 0 | 0 | 0 | 366 |
+| with tables, release, a | fragment: symbol_size:st_size | 15 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release, a | true: not_stated | 0 | 0 | 0 | 0 | 0 | 54 |
+| with tables, release, a | true: symbol_size:st_size | 109885 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release, b | fragment: unwind:eh_frame | 15 | 0 | 0 | 0 | 0 | 0 |
+| with tables, release, b | true: not_stated | 1 | 0 | 0 | 0 | 0 | 54 |
+| with tables, release, b | true: unwind:eh_frame | 109882 | 2 | 0 | 0 | 0 | 0 |
+
+#### Names, per shape x configuration
+
+| shape, config, variant | layer | exact | spelled | wrong | named where unnamed | fallback where named | fallback unnamed |
+|---|---|---|---|---|---|---|---|
+| no FDE at all, dev, b | fallback | 0 | 0 | 0 | 0 | 259568 | 60 |
+| no FDE at all, release, b | fallback | 0 | 0 | 0 | 0 | 53412 | 67 |
+| no debug info, release, b | fallback | 0 | 0 | 0 | 0 | 29913 | 2 |
+| no debug info, release, b | stub | 0 | 0 | 2 | 0 | 0 | 0 |
+| no-unwind flags, dev, b | fallback | 0 | 0 | 0 | 0 | 183668 | 1740 |
+| no-unwind flags, dev, b | stub | 0 | 0 | 9 | 0 | 0 | 0 |
+| no-unwind flags, release, b | fallback | 0 | 0 | 0 | 0 | 25881 | 183 |
+| no-unwind flags, release, b | stub | 0 | 0 | 2 | 0 | 0 | 0 |
+| with tables, dev AArch64, a | fallback | 0 | 0 | 0 | 0 | 0 | 1 |
+| with tables, dev AArch64, a | image:static | 24251 | 1 | 0 | 0 | 0 | 0 |
+| with tables, dev AArch64, b | fallback | 0 | 0 | 0 | 0 | 24250 | 2 |
+| with tables, dev PE, a | fallback | 0 | 0 | 0 | 0 | 146084 | 10 |
+| with tables, dev PE, a | stub | 647 | 0 | 3 | 0 | 0 | 0 |
+| with tables, dev PE, b | fallback | 0 | 0 | 0 | 0 | 61910 | 6 |
+| with tables, dev PE, b | stub | 396 | 0 | 2 | 0 | 0 | 0 |
+| with tables, dev, a | image:static | 287260 | 8425 | 0 | 0 | 0 | 0 |
+| with tables, dev, b | fallback | 0 | 0 | 0 | 0 | 295666 | 0 |
+| with tables, dev, b | stub | 0 | 0 | 19 | 0 | 0 | 0 |
+| with tables, release AArch64, a | fallback | 0 | 0 | 0 | 0 | 0 | 1 |
+| with tables, release AArch64, a | image:static | 12232 | 608 | 0 | 0 | 0 | 0 |
+| with tables, release AArch64, b | fallback | 0 | 0 | 0 | 0 | 12837 | 2 |
+| with tables, release PE, a | fallback | 0 | 0 | 0 | 0 | 22780 | 86 |
+| with tables, release PE, a | stub | 539 | 0 | 3 | 0 | 0 | 0 |
+| with tables, release PE, b | fallback | 0 | 0 | 0 | 0 | 22780 | 86 |
+| with tables, release PE, b | stub | 539 | 0 | 3 | 0 | 0 | 0 |
+| with tables, release, a | fallback | 0 | 0 | 0 | 0 | 0 | 10 |
+| with tables, release, a | image:static | 103671 | 6281 | 2 | 0 | 0 | 0 |
+| with tables, release, b | fallback | 0 | 0 | 0 | 0 | 109947 | 10 |
+| with tables, release, b | stub | 0 | 0 | 7 | 0 | 0 | 0 |
+
+#### The direction
+
+| shape, config, variant | heuristic-only starts wrong | declared starts wrong | heuristic ends wrong | declared ends wrong | heuristic ends cut |
+|---|---|---|---|---|---|
+| no FDE at all, dev, b | 62 / 259628 (0.0%) | 0 / 0 (-) | 31897 / 257654 (12.4%) | 0 / 0 (-) | 1867 |
+| no FDE at all, release, b | 69 / 53479 (0.1%) | 0 / 0 (-) | 22530 / 50822 (44.3%) | 0 / 0 (-) | 2543 |
+| no debug info, release, b | 2 / 21 (9.5%) | 0 / 29896 (0.0%) | 0 / 1 (0.0%) | 0 / 29881 (0.0%) | 0 |
+| no-unwind flags, dev, b | 1740 / 155055 (1.1%) | 0 / 30362 (0.0%) | 6238 / 152800 (4.1%) | 0 / 30362 (0.0%) | 497 |
+| no-unwind flags, release, b | 183 / 5194 (3.5%) | 0 / 20872 (0.0%) | 371 / 4980 (7.4%) | 0 / 20857 (0.0%) | 13 |
+| with tables, dev AArch64, a | 1 / 3 (33.3%) | 0 / 24250 (0.0%) | 0 / 0 (-) | 0 / 24246 (0.0%) | 0 |
+| with tables, dev AArch64, b | 2 / 7 (28.6%) | 0 / 24245 (0.0%) | 0 / 3 (0.0%) | 0 / 24241 (0.0%) | 0 |
+| with tables, dev PE, a | 10 / 21665 (0.0%) | 0 / 125079 (0.0%) | 102 / 20755 (0.5%) | 0 / 124347 (0.0%) | 12 |
+| with tables, dev PE, b | 6 / 10845 (0.1%) | 0 / 51469 (0.0%) | 57 / 10276 (0.6%) | 0 / 50979 (0.0%) | 8 |
+| with tables, dev, a | 0 / 44 (0.0%) | 0 / 295641 (0.0%) | 0 / 0 (-) | 0 / 295641 (0.0%) | 0 |
+| with tables, dev, b | 0 / 45 (0.0%) | 0 / 295640 (0.0%) | 0 / 1 (0.0%) | 0 / 295640 (0.0%) | 0 |
+| with tables, release AArch64, a | 1 / 5 (20.0%) | 0 / 12836 (0.0%) | 0 / 0 (-) | 0 / 12828 (0.0%) | 0 |
+| with tables, release AArch64, b | 2 / 12 (16.7%) | 0 / 12827 (0.0%) | 0 / 6 (0.0%) | 0 / 12819 (0.0%) | 0 |
+| with tables, release PE, a | 86 / 5634 (1.5%) | 0 / 17774 (0.0%) | 98 / 4897 (2.0%) | 0 / 17402 (0.0%) | 8 |
+| with tables, release PE, b | 86 / 5634 (1.5%) | 0 / 17774 (0.0%) | 98 / 4897 (2.0%) | 0 / 17402 (0.0%) | 8 |
+| with tables, release, a | 4 / 58 (6.9%) | 6 / 109906 (0.0%) | 0 / 0 (-) | 0 / 109885 (0.0%) | 0 |
+| with tables, release, b | 4 / 59 (6.8%) | 6 / 109905 (0.0%) | 0 / 1 (0.0%) | 2 / 109884 (0.0%) | 0 |
+
+Images: 99. Images with a contract difference or an unanswered start: 0. Engines: {'da8b1dc53326ca3bc54fc996843232d6fb6891cd684f86a0ec29a2a539529fa7': 99}.
+
+#### Truth tiers and the DWARF / `.symtab` cross-check, per program x shape x configuration (summed over binaries)
+
+| program | shape | config | files | DWARF fns | `.symtab` fns | PLT | fragments | low_pc 0 dropped | other address dropped | several ranges | DWARF entry, no FUNC symbol | FUNC symbol inside a DWARF range | FUNC symbol in nothing | extent = st_size | extent != st_size | NOTYPE labels in code | starts with several FUNC names |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| N0xis | with tables | dev | 2 | 141801 | 251 | 6 | 0 | 38155 | 0 | 0 | 0 | 0 | 0 | 141801 | 0 | 0 | 59 |
+| N0xis | with tables | dev PE | 1 | 83927 | 605 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 117 |
+| N0xis | with tables | release | 2 | 16864 | 206 | 2 | 0 | 760 | 0 | 0 | 0 | 0 | 0 | 16864 | 0 | 0 | 190 |
+| N0xis | with tables | release PE | 1 | 8597 | 305 | 0 | 2 | 1 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 113 |
+| N0xis | no debug info | release | 2 | 1351 | 15719 | 2 | 0 | 247 | 0 | 0 | 0 | 0 | 0 | 1351 | 0 | 0 | 190 |
+| N0xis | no-unwind flags | dev | 2 | 1648 | 137045 | 6 | 0 | 2263 | 0 | 0 | 0 | 0 | 0 | 1648 | 0 | 0 | 59 |
+| N0xis | no-unwind flags | release | 2 | 1333 | 13515 | 2 | 0 | 239 | 0 | 0 | 0 | 0 | 0 | 1333 | 0 | 0 | 189 |
+| N0xis | no FDE at all | dev | 2 | 138419 | 240 | 6 | 0 | 40436 | 0 | 0 | 0 | 0 | 0 | 138419 | 0 | 0 | 59 |
+| N0xis | no FDE at all | release | 2 | 14640 | 206 | 2 | 0 | 776 | 0 | 0 | 0 | 0 | 0 | 14640 | 0 | 0 | 189 |
+| ripgrep | with tables | dev | 1 | 24323 | 121 | 3 | 0 | 5010 | 0 | 0 | 0 | 0 | 0 | 24323 | 0 | 0 | 29 |
+| ripgrep | with tables | dev AArch64 | 1 | 24102 | 150 | 125 | 0 | 4958 | 0 | 0 | 0 | 0 | 0 | 24102 | 0 | 320 | 29 |
+| ripgrep | with tables | dev PE | 1 | 29605 | 547 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 117 |
+| ripgrep | with tables | release | 1 | 8539 | 111 | 1 | 0 | 4165 | 0 | 0 | 0 | 0 | 0 | 8539 | 0 | 0 | 141 |
+| ripgrep | with tables | release AArch64 | 1 | 8528 | 135 | 125 | 0 | 4089 | 0 | 0 | 0 | 0 | 0 | 8528 | 0 | 292 | 133 |
+| ripgrep | with tables | release PE | 1 | 12846 | 518 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 427 |
+| ripgrep | no debug info | release | 1 | 789 | 7856 | 1 | 0 | 1163 | 0 | 0 | 0 | 0 | 0 | 789 | 0 | 0 | 141 |
+| ripgrep | no-unwind flags | dev | 1 | 803 | 23229 | 3 | 0 | 1146 | 0 | 0 | 0 | 0 | 0 | 803 | 0 | 0 | 29 |
+| ripgrep | no-unwind flags | release | 1 | 777 | 6925 | 1 | 0 | 1172 | 0 | 0 | 0 | 0 | 0 | 777 | 0 | 0 | 127 |
+| ripgrep | no FDE at all | dev | 1 | 24013 | 117 | 3 | 0 | 5253 | 0 | 0 | 0 | 0 | 0 | 24013 | 0 | 0 | 29 |
+| ripgrep | no FDE at all | release | 1 | 7595 | 111 | 1 | 0 | 3879 | 0 | 0 | 0 | 0 | 0 | 7595 | 0 | 0 | 127 |
+| fd | with tables | dev | 1 | 28439 | 119 | 58 | 0 | 9442 | 0 | 0 | 0 | 0 | 0 | 28439 | 0 | 0 | 27 |
+| fd | with tables | dev PE | 1 | 31801 | 563 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 117 |
+| fd | with tables | release | 1 | 4052 | 139 | 49 | 15 | 148 | 1 | 15 | 0 | 0 | 0 | 4052 | 0 | 0 | 2 |
+| fd | with tables | release AArch64 | 1 | 4009 | 168 | 156 | 0 | 150 | 0 | 0 | 0 | 0 | 0 | 4009 | 0 | 2 | 2 |
+| fd | with tables | release PE | 1 | 3095 | 222 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| fd | no debug info | release | 1 | 1487 | 2704 | 49 | 15 | 149 | 0 | 15 | 0 | 0 | 0 | 1487 | 0 | 0 | 2 |
+| fd | no-unwind flags | dev | 1 | 3577 | 24541 | 58 | 0 | 1401 | 0 | 0 | 0 | 0 | 0 | 3577 | 0 | 0 | 27 |
+| fd | no-unwind flags | release | 1 | 1473 | 2196 | 49 | 15 | 149 | 0 | 15 | 0 | 0 | 0 | 1473 | 0 | 0 | 2 |
+| fd | no FDE at all | dev | 1 | 28075 | 115 | 58 | 0 | 9675 | 0 | 0 | 0 | 0 | 0 | 28075 | 0 | 0 | 27 |
+| fd | no FDE at all | release | 1 | 3530 | 139 | 49 | 15 | 148 | 1 | 15 | 0 | 0 | 0 | 3530 | 0 | 0 | 2 |
+| workspace A | with tables | dev | 4 | 92895 | 480 | 4 | 0 | 343205 | 264 | 0 | 0 | 0 | 0 | 92895 | 0 | 0 | 121 |
+| workspace A | with tables | release | 4 | 41856 | 412 | 4 | 0 | 3739 | 0 | 0 | 0 | 0 | 0 | 41856 | 0 | 0 | 563 |
+| workspace A | no FDE at all | dev | 5 | 107151 | 602 | 91 | 65 | 410875 | 265 | 65 | 0 | 0 | 0 | 107151 | 0 | 0 | 161 |
+| workspace A | no FDE at all | release | 5 | 55112 | 515 | 90 | 6 | 5225 | 0 | 6 | 0 | 0 | 0 | 55112 | 0 | 0 | 826 |
+| workspace B | with tables | dev | 4 | 275829 | 533 | 14 | 0 | 258931 | 0 | 0 | 0 | 0 | 0 | 275829 | 0 | 8 | 127 |
+| workspace B | with tables | release | 4 | 37367 | 411 | 8 | 0 | 2447 | 0 | 0 | 0 | 0 | 0 | 37367 | 0 | 8 | 375 |
+| workspace B | no FDE at all | dev | 4 | 270444 | 488 | 14 | 0 | 256379 | 0 | 0 | 0 | 0 | 0 | 270444 | 0 | 8 | 127 |
+| workspace B | no FDE at all | release | 4 | 30699 | 411 | 8 | 0 | 2492 | 0 | 0 | 0 | 0 | 0 | 30699 | 0 | 8 | 363 |
+
+#### Wrong starts and ends by what the bytes show (each stripped image once)
+
+| kind | shape | class | source | total | per program |
+|---|---|---|---|---|---|
+| end | nofde | long: only the filler after the function counted in (delta <= 16) | not_stated | 43128 | workspace A: 20126, workspace B: 13446, N0xis: 6020, ripgrep: 1842, fd: 1694 |
+| end | nofde | long: the truth ends in a call the engine walked past | not_stated | 4009 | workspace A: 1914, workspace B: 1135, N0xis: 627, ripgrep: 173, fd: 160 |
+| end | nofde | short: the engine ended after a jump (indirect) | not_stated | 1887 | workspace B: 829, workspace A: 669, N0xis: 242, fd: 79, ripgrep: 68 |
+| end | nofde | long: the truth ends in a return, the engine went on (branch beyond it, or shared tail) | not_stated | 1461 | workspace A: 618, workspace B: 576, N0xis: 169, fd: 51, ripgrep: 47 |
+| end | nofde | short: the engine ended after a return | not_stated | 1365 | workspace A: 578, workspace B: 373, N0xis: 210, ripgrep: 106, fd: 98 |
+| end | nofde | short: the engine ended after a jump | not_stated | 1284 | workspace A: 470, workspace B: 340, N0xis: 260, fd: 122, ripgrep: 92 |
+| end | nofde | long: the truth ends in a jump the engine followed or walked past | not_stated | 574 | workspace A: 336, workspace B: 125, N0xis: 68, fd: 27, ripgrep: 18 |
+| end | nofde | short: the engine ended after a call (taken as noreturn) | not_stated | 511 | workspace A: 193, workspace B: 144, N0xis: 83, ripgrep: 46, fd: 45 |
+| end | nofde | long: the truth ends in a trap the engine walked past | not_stated | 191 | workspace A: 93, workspace B: 78, N0xis: 9, fd: 7, ripgrep: 4 |
+| end | nofde | short: exactly the 4 KiB window | not_stated | 17 | workspace A: 10, N0xis: 3, workspace B: 3, ripgrep: 1 |
+| end | nounw | long: only the filler after the function counted in (delta <= 16) | not_stated | 5293 | N0xis: 3240, ripgrep: 1217, fd: 836 |
+| end | nounw | long: the truth ends in a call the engine walked past | not_stated | 552 | N0xis: 380, ripgrep: 101, fd: 71 |
+| end | nounw | short: the engine ended after a jump (indirect) | not_stated | 351 | N0xis: 228, ripgrep: 66, fd: 57 |
+| end | nounw | long: the truth ends in a return, the engine went on (branch beyond it, or shared tail) | not_stated | 224 | N0xis: 130, ripgrep: 49, fd: 45 |
+| end | nounw | short: the engine ended after a jump | not_stated | 74 | N0xis: 64, fd: 5, ripgrep: 5 |
+| end | nounw | short: the engine ended after a return | not_stated | 48 | N0xis: 23, ripgrep: 14, fd: 11 |
+| end | nounw | long: the truth ends in a jump the engine followed or walked past | not_stated | 47 | N0xis: 26, ripgrep: 19, fd: 2 |
+| end | nounw | long: the truth ends in a trap the engine walked past | not_stated | 14 | N0xis: 8, fd: 3, ripgrep: 3 |
+| end | nounw | short: exactly the 4 KiB window | not_stated | 6 | N0xis: 4, fd: 1, ripgrep: 1 |
+| end | plain | long: the truth ends in a jump the engine followed or walked past | not_stated | 58 | ripgrep: 35, fd: 15, N0xis: 8 |
+| end | plain | short: the engine ended after a jump (indirect) | not_stated | 42 | ripgrep: 23, N0xis: 14, fd: 5 |
+| end | plain | short: the engine ended after int | not_stated | 28 | fd: 13, ripgrep: 13, N0xis: 2 |
+| end | plain | long: the truth ends in a trap the engine walked past | not_stated | 19 | fd: 10, ripgrep: 9 |
+| end | plain | long: the truth ends in a return, the engine went on (branch beyond it, or shared tail) | not_stated | 8 | ripgrep: 5, N0xis: 2, fd: 1 |
+| end | plain | short: the engine ended after a return | unwind:eh_frame | 2 | workspace B: 2 |
+| start | nofde | interior: after inner alignment padding | prologue | 38 | workspace A: 24, fd: 14 |
+| start | nofde | interior: after a call | prologue | 32 | workspace A: 24, N0xis: 4, workspace B: 4 |
+| start | nofde | interior: after an indirect jump | prologue | 18 | workspace A: 17, workspace B: 1 |
+| start | nofde | interior: after inner alignment padding | call_target | 12 | workspace B: 12 |
+| start | nofde | interior: after lea | call_target | 8 | workspace B: 8 |
+| start | nofde | interior: mid-instruction (objdump's sweep has no instruction there) | prologue | 6 | workspace B: 5, fd: 1 |
+| start | nofde | interior: after a return | prologue | 6 | N0xis: 2, workspace B: 2, fd: 1, workspace A: 1 |
+| start | nofde | interior: after aesenc | call_target | 4 | workspace B: 4 |
+| start | nofde | named by the unstripped .symtab (no truth tier takes it: a label) | call_target | 4 | workspace B: 4 |
+| start | nofde | interior: after a direct jump | prologue | 3 | workspace A: 3 |
+| start | nog | interior: mid-instruction (objdump's sweep has no instruction there) | prologue | 2 | N0xis: 2 |
+| start | nounw | interior: after an indirect jump | gap_sweep | 1355 | N0xis: 830, ripgrep: 350, fd: 175 |
+| start | nounw | interior: after a direct jump | gap_sweep | 566 | N0xis: 413, fd: 82, ripgrep: 71 |
+| start | nounw | interior: mid-instruction (objdump's sweep has no instruction there) | prologue | 2 | ripgrep: 2 |
+| start | plain | interior: after an indirect jump | gap_sweep | 84 | N0xis: 54, ripgrep: 25, fd: 5 |
+| start | plain | outside: real instructions no truth covers | gap_sweep | 6 | ripgrep: 4, fd: 2 |
+| start | plain | interior: the unwind table declares it, inside a symbol's extent (a table-declared routine the reference covers) | after_declared_end+call_target+unwind:eh_frame | 6 | workspace B: 6 |
+| start | plain | interior: after a direct jump | gap_sweep | 4 | ripgrep: 3, N0xis: 1 |
+| start | plain | outside: no instruction boundary | after_declared_end+gap_sweep | 2 | ripgrep: 2 |
+| start | plain | interior: mid-instruction (objdump's sweep has no instruction there) | prologue | 2 | N0xis: 2 |
+| start | plain | outside: real instructions no truth covers | after_declared_end+gap_sweep | 2 | workspace B: 2 |
+
+
+
+#### The same engine on the other corpora
+
+##### Starts, the same engine on three corpora
+
+| corpus | arch variant | images | listed | true | wrong, strict (interior / outside) | fragment | plt0 | precision, strict | precision, broad | recall: DWARF fns | recall: `.symtab` fns | FDEs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| tuned C/C++ | x86_64 a | 36 | 32081 | 31911 | 0 (0 / 0) | 170 | 0 | 100.0% | 99.5% | 31636 / 31636 (100.0%) | 275 / 299 (92.0%) | 31949 |
+| tuned C/C++ | x86_64 b | 36 | 32081 | 31911 | 0 (0 / 0) | 170 | 0 | 100.0% | 99.5% | 31636 / 31636 (100.0%) | 275 / 299 (92.0%) | 31949 |
+| tuned C/C++ | x86_64 c (C) | 24 | 21555 | 21474 | 78 (78 / 0) | 3 | 0 | 99.6% | 99.6% | 21316 / 23618 (90.3%) | 158 / 193 (81.9%) | 6 |
+| tuned C/C++ | x86_64 c (C++) | 12 | 8236 | 8113 | 0 (0 / 0) | 123 | 0 | 100.0% | 98.5% | 8018 / 8018 (100.0%) | 95 / 106 (89.6%) | 8179 |
+| tuned C/C++ | x86_64 d | 12 | 7458 | 7449 | 8 (8 / 0) | 1 | 0 | 99.9% | 99.9% | 7366 / 7736 (95.2%) | 83 / 103 (80.6%) | 24 |
+| held-out C/C++ | pe_x64 a | 9 | 22874 | 22176 | 0 (0 / 0) | 698 | 0 | 100.0% | 96.9% | 20774 / 20774 (100.0%) | 1402 / 1402 (100.0%) | 0 |
+| held-out C/C++ | pe_x64 b | 9 | 22874 | 22176 | 0 (0 / 0) | 698 | 0 | 100.0% | 96.9% | 20774 / 20774 (100.0%) | 1402 / 1402 (100.0%) | 0 |
+| held-out C/C++ | pe_x64 c (C) | 3 | 787 | 786 | 1 (1 / 0) | 0 | 0 | 99.9% | 99.9% | 660 / 688 (95.9%) | 126 / 126 (100.0%) | 0 |
+| held-out C/C++ | pe_x64 c (C++) | 6 | 21217 | 20715 | 10 (10 / 0) | 492 | 0 | 100.0% | 97.6% | 19440 / 20086 (96.8%) | 1275 / 1276 (99.9%) | 0 |
+| held-out C/C++ | pe_x64 d | 6 | 21217 | 20715 | 10 (10 / 0) | 492 | 0 | 100.0% | 97.6% | 19440 / 20086 (96.8%) | 1275 / 1276 (99.9%) | 0 |
+| held-out C/C++ | x86_64 a | 36 | 50340 | 49692 | 0 (0 / 0) | 648 | 0 | 100.0% | 98.7% | 49445 / 49445 (100.0%) | 247 / 271 (91.1%) | 50194 |
+| held-out C/C++ | x86_64 b | 36 | 50340 | 49692 | 0 (0 / 0) | 648 | 0 | 100.0% | 98.7% | 49445 / 49445 (100.0%) | 247 / 271 (91.1%) | 50194 |
+| held-out C/C++ | x86_64 c (C) | 18 | 15322 | 15231 | 89 (89 / 0) | 2 | 0 | 99.4% | 99.4% | 15125 / 21422 (70.6%) | 106 / 138 (76.8%) | 24 |
+| held-out C/C++ | x86_64 c (C++) | 18 | 28781 | 28143 | 0 (0 / 0) | 638 | 0 | 100.0% | 97.8% | 28021 / 28023 (100.0%) | 122 / 133 (91.7%) | 28688 |
+| held-out C/C++ | x86_64 d | 18 | 26065 | 26044 | 17 (17 / 0) | 4 | 0 | 99.9% | 99.9% | 25938 / 27578 (94.1%) | 106 / 124 (85.5%) | 12 |
+| held-out Rust | aarch64 plain dev a | 1 | 24253 | 24252 | 1 (0 / 1) | 0 | 0 | 100.0% | 100.0% | 24102 / 24102 (100.0%) | 150 / 150 (100.0%) | 24245 |
+| held-out Rust | aarch64 plain dev b | 1 | 24252 | 24250 | 2 (1 / 1) | 0 | 0 | 100.0% | 100.0% | 24101 / 24102 (100.0%) | 149 / 150 (99.3%) | 24245 |
+| held-out Rust | aarch64 plain release a | 2 | 12841 | 12840 | 1 (0 / 1) | 0 | 0 | 100.0% | 100.0% | 12537 / 12537 (100.0%) | 303 / 303 (100.0%) | 12827 |
+| held-out Rust | aarch64 plain release b | 2 | 12839 | 12837 | 2 (1 / 1) | 0 | 0 | 100.0% | 100.0% | 12535 / 12537 (100.0%) | 302 / 303 (99.7%) | 12827 |
+| held-out Rust | pe_x64 plain dev a | 3 | 146744 | 146728 | 10 (4 / 6) | 6 | 0 | 100.0% | 100.0% | 145114 / 145333 (99.8%) | 1614 / 1715 (94.1%) | 0 |
+| held-out Rust | pe_x64 plain dev b | 2 | 62314 | 62304 | 6 (2 / 4) | 4 | 0 | 100.0% | 100.0% | 61263 / 61406 (99.8%) | 1041 / 1110 (93.8%) | 0 |
+| held-out Rust | pe_x64 plain release a | 3 | 23408 | 23316 | 86 (84 / 2) | 6 | 0 | 99.6% | 99.6% | 22307 / 24538 (90.9%) | 1009 / 1045 (96.6%) | 0 |
+| held-out Rust | pe_x64 plain release b | 3 | 23408 | 23316 | 86 (84 / 2) | 6 | 0 | 99.6% | 99.6% | 22307 / 24538 (90.9%) | 1009 / 1045 (96.6%) | 0 |
+| held-out Rust | x86_64 nofde dev b | 13 | 259628 | 259566 | 62 (62 / 0) | 0 | 0 | 100.0% | 100.0% | 258911 / 568102 (45.6%) | 655 / 1562 (41.9%) | 0 |
+| held-out Rust | x86_64 nofde release b | 13 | 53479 | 53410 | 69 (69 / 0) | 0 | 0 | 99.9% | 99.9% | 52713 / 111576 (47.2%) | 697 / 1382 (50.4%) | 0 |
+| held-out Rust | x86_64 nog release b | 4 | 29917 | 29900 | 2 (2 / 0) | 15 | 0 | 100.0% | 99.9% | 3627 / 3627 (100.0%) | 26273 / 26279 (100.0%) | 29896 |
+| held-out Rust | x86_64 nounw dev b | 4 | 185417 | 183677 | 1740 (1740 / 0) | 0 | 0 | 99.1% | 99.1% | 6028 / 6028 (100.0%) | 177649 / 184815 (96.1%) | 30362 |
+| held-out Rust | x86_64 nounw release b | 4 | 26066 | 25868 | 183 (183 / 0) | 15 | 0 | 99.3% | 99.2% | 3583 / 3583 (100.0%) | 22285 / 22636 (98.4%) | 20872 |
+| held-out Rust | x86_64 plain dev a | 10 | 295685 | 295685 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 294501 / 294501 (100.0%) | 1184 / 1200 (98.7%) | 295640 |
+| held-out Rust | x86_64 plain dev b | 10 | 295685 | 295685 | 0 (0 / 0) | 0 | 0 | 100.0% | 100.0% | 294501 / 294501 (100.0%) | 1184 / 1200 (98.7%) | 295640 |
+| held-out Rust | x86_64 plain release a | 12 | 109964 | 109939 | 10 (8 / 2) | 15 | 0 | 100.0% | 100.0% | 108678 / 108678 (100.0%) | 1261 / 1279 (98.6%) | 109905 |
+| held-out Rust | x86_64 plain release b | 12 | 109964 | 109939 | 10 (8 / 2) | 15 | 0 | 100.0% | 100.0% | 108678 / 108678 (100.0%) | 1261 / 1279 (98.6%) | 109905 |
+
+
+##### The direction
+
+| corpus | arch variant | heuristic-only starts wrong | declared starts wrong | heuristic ends wrong | declared ends wrong | heuristic ends cut |
+|---|---|---|---|---|---|---|
+| tuned C/C++ | x86_64 a | 0 / 192 (0.0%) | 0 / 31889 (0.0%) | 0 / 0 (-) | 0 / 31719 (0.0%) | 0 |
+| tuned C/C++ | x86_64 b | 0 / 192 (0.0%) | 0 / 31889 (0.0%) | 0 / 0 (-) | 0 / 31719 (0.0%) | 0 |
+| tuned C/C++ | x86_64 c (C) | 78 / 15660 (0.5%) | 0 / 5895 (0.0%) | 444 / 15177 (2.9%) | 0 / 5895 (0.0%) | 276 |
+| tuned C/C++ | x86_64 c (C++) | 0 / 75 (0.0%) | 0 / 8161 (0.0%) | 0 / 14 (0.0%) | 0 / 8038 (0.0%) | 0 |
+| tuned C/C++ | x86_64 d | 8 / 7118 (0.1%) | 0 / 340 (0.0%) | 42 / 7024 (0.6%) | 0 / 340 (0.0%) | 24 |
+| held-out C/C++ | pe_x64 a | 0 / 1152 (0.0%) | 0 / 21722 (0.0%) | 0 / 0 (-) | 0 / 20774 (0.0%) | 0 |
+| held-out C/C++ | pe_x64 b | 0 / 1152 (0.0%) | 0 / 21722 (0.0%) | 0 / 0 (-) | 0 / 20774 (0.0%) | 0 |
+| held-out C/C++ | pe_x64 c (C) | 1 / 248 (0.4%) | 0 / 539 (0.0%) | 7 / 537 (1.3%) | 0 / 95 (0.0%) | 28 |
+| held-out C/C++ | pe_x64 c (C++) | 10 / 7883 (0.1%) | 0 / 13334 (0.0%) | 211 / 7270 (2.9%) | 0 / 12149 (0.0%) | 21 |
+| held-out C/C++ | pe_x64 d | 10 / 7883 (0.1%) | 0 / 13334 (0.0%) | 211 / 7270 (2.9%) | 0 / 12149 (0.0%) | 21 |
+| held-out C/C++ | x86_64 a | 0 / 192 (0.0%) | 0 / 50148 (0.0%) | 0 / 0 (-) | 0 / 49500 (0.0%) | 0 |
+| held-out C/C++ | x86_64 b | 0 / 192 (0.0%) | 0 / 50148 (0.0%) | 0 / 0 (-) | 0 / 49500 (0.0%) | 0 |
+| held-out C/C++ | x86_64 c (C) | 89 / 14452 (0.6%) | 0 / 870 (0.0%) | 330 / 14168 (2.3%) | 0 / 870 (0.0%) | 113 |
+| held-out C/C++ | x86_64 c (C++) | 0 / 115 (0.0%) | 0 / 28666 (0.0%) | 0 / 18 (0.0%) | 0 / 28028 (0.0%) | 0 |
+| held-out C/C++ | x86_64 d | 17 / 22802 (0.1%) | 0 / 3263 (0.0%) | 165 / 22664 (0.7%) | 0 / 3263 (0.0%) | 22 |
+| held-out Rust | aarch64 plain dev a | 1 / 3 (33.3%) | 0 / 24250 (0.0%) | 0 / 0 (-) | 0 / 24246 (0.0%) | 0 |
+| held-out Rust | aarch64 plain dev b | 2 / 7 (28.6%) | 0 / 24245 (0.0%) | 0 / 3 (0.0%) | 0 / 24241 (0.0%) | 0 |
+| held-out Rust | aarch64 plain release a | 1 / 5 (20.0%) | 0 / 12836 (0.0%) | 0 / 0 (-) | 0 / 12828 (0.0%) | 0 |
+| held-out Rust | aarch64 plain release b | 2 / 12 (16.7%) | 0 / 12827 (0.0%) | 0 / 6 (0.0%) | 0 / 12819 (0.0%) | 0 |
+| held-out Rust | pe_x64 plain dev a | 10 / 21665 (0.0%) | 0 / 125079 (0.0%) | 102 / 20755 (0.5%) | 0 / 124347 (0.0%) | 12 |
+| held-out Rust | pe_x64 plain dev b | 6 / 10845 (0.1%) | 0 / 51469 (0.0%) | 57 / 10276 (0.6%) | 0 / 50979 (0.0%) | 8 |
+| held-out Rust | pe_x64 plain release a | 86 / 5634 (1.5%) | 0 / 17774 (0.0%) | 98 / 4897 (2.0%) | 0 / 17402 (0.0%) | 8 |
+| held-out Rust | pe_x64 plain release b | 86 / 5634 (1.5%) | 0 / 17774 (0.0%) | 98 / 4897 (2.0%) | 0 / 17402 (0.0%) | 8 |
+| held-out Rust | x86_64 nofde dev b | 62 / 259628 (0.0%) | 0 / 0 (-) | 31897 / 257654 (12.4%) | 0 / 0 (-) | 1867 |
+| held-out Rust | x86_64 nofde release b | 69 / 53479 (0.1%) | 0 / 0 (-) | 22530 / 50822 (44.3%) | 0 / 0 (-) | 2543 |
+| held-out Rust | x86_64 nog release b | 2 / 21 (9.5%) | 0 / 29896 (0.0%) | 0 / 1 (0.0%) | 0 / 29881 (0.0%) | 0 |
+| held-out Rust | x86_64 nounw dev b | 1740 / 155055 (1.1%) | 0 / 30362 (0.0%) | 6238 / 152800 (4.1%) | 0 / 30362 (0.0%) | 497 |
+| held-out Rust | x86_64 nounw release b | 183 / 5194 (3.5%) | 0 / 20872 (0.0%) | 371 / 4980 (7.4%) | 0 / 20857 (0.0%) | 13 |
+| held-out Rust | x86_64 plain dev a | 0 / 44 (0.0%) | 0 / 295641 (0.0%) | 0 / 0 (-) | 0 / 295641 (0.0%) | 0 |
+| held-out Rust | x86_64 plain dev b | 0 / 45 (0.0%) | 0 / 295640 (0.0%) | 0 / 1 (0.0%) | 0 / 295640 (0.0%) | 0 |
+| held-out Rust | x86_64 plain release a | 4 / 58 (6.9%) | 6 / 109906 (0.0%) | 0 / 0 (-) | 0 / 109885 (0.0%) | 0 |
+| held-out Rust | x86_64 plain release b | 4 / 59 (6.8%) | 6 / 109905 (0.0%) | 0 / 1 (0.0%) | 2 / 109884 (0.0%) | 0 |
+
+
+
+#### Where this is worse than the C and C++ corpora, plainly
+
+- **Recall on PE release.** C/C++ held-out: every DWARF function found. Rust: 90.9% over three programs,
+  **83.4% on ripgrep**. Cause below; it is a defect, not a property of Rust.
+- **Wrong starts on PE.** C/C++ held-out (a): none. Rust release: 86 of 23 408 listed (99.6%), against
+  2 on ELF of the same programs (class 6 below).
+- **Heuristic starts.** No-unwind ripgrep release 97.6%, against 99.4% on held-out C (c). Over no-unwind
+  dev builds 1.1% of heuristic starts are wrong; 0.6% on held-out C.
+- **Ends the graph decides.** 44.3% of them wrong on release code with no FDE, 12.4% on dev, against
+  2.3% on held-out C (c) and 0.7% on C++ (d). Most by exactly one byte, class below.
+- **An image with no FDE at all** loses most of its functions, 21% to 73% of DWARF functions found.
+  No C corpus can show this: a C runtime's objects always leave a few FDEs.
+
+**Not worse.** On x86-64 with tables, stripped or not: every DWARF function found on every program and
+configuration measured; of 405 545 declared starts on stripped images 6 scored wrong and 2 declared ends,
+all where the reference is silent (below). `unwind:pdata`, its first rate on Rust: **142 841 of 142 853 starts true, the other 12 fragments, none wrong, on six PE images (each once); 141 761 ends exact, 1 092 with no truth to compare (COFF has no sizes)**;
+its end equals DWARF's for every function DWARF covers; two readers of `.pdata` (its bytes, `llvm-readobj`)
+agree on all. But `.pdata` holds only 57% to 89% of a release image's DWARF functions: frameless
+leaves have no entry, which is what puts the load on the sweep. **The
+`export` rule produced nothing here: none of the PE images exports a name**, so it stays unmeasured on
+real Rust. On a planted Rust DLL it listed its 4 exported functions right and did not list an export of
+data in `.rdata`; an export of data placed in `.text` was listed, and the PE truth reader, which calls
+any symbol in `.text` a function, could not object.
+
+#### New wrong-answer classes (fix nothing here; counts are stripped images, each once)
+
+Each was read in the bytes first; examples from N0xis and the public programs.
+
+1. **A forward tail jump silences the gap sweep for the rest of the gap.** The sweep will not start a
+   function before the furthest forward branch it has seen, and a tail jump to a far function counts.
+   Of ripgrep PE's 2 160 missed functions 2 088 lie after such a jump, of N0xis PE's 88, 77. Calibrated:
+   replacing the 27 such jumps in one gap with `ret; int3` took that gap from 0 listed to 137, exactly the
+   gap's symbols.
+2. **The sweep needs declared extents around it.** With no FDE at all, or with one FDE at the start of
+   `.text`, `gap_sweep` produces nothing (ripgrep release: 2 151 listed of 7 706). One FDE moved to the
+   last function: 3 404. The code after the last declared extent is never swept in any shape.
+3. **Functions reached only through a stored address are not looked for.** Of the no-FDE misses,
+   73% (fd release) to 99.7% (ripgrep dev) have their address stored in a data section, or in a
+   relocation's addend: vtables and function pointers. No rule reads them.
+4. **A `match` dispatched by an indirect jump reads as many functions.** `gap_sweep` after `jmp *%rax`
+   or a direct jump, inside one function (N0xis PE `<anstream::adapter::strip::Utf8Parser>::add` at
+   `0x140005828`). The largest class of wrong starts: see the table.
+5. **A noreturn call through the GOT is walked past.** Rust calls panics with `call *…(%rip)`; the graph
+   goes on to the first `int3`, so the end is one byte long: 44 602 of 55 578 long ends on stripped images, and the bulk of the worse figure above.
+6. **An `endbr64` in an immediate is listed inside a declared function.** N0xis's own ELF parser compares
+   with `0xfa1e0ff3`: `cmpl $0xfa1e0ff3,…` at `0x915e3c`, its immediate 16-aligned at `0x915e40`. The
+   marker pattern skips the test that a declared extent settles everything inside it, so a start is listed
+   mid-instruction inside a function its FDE covers (`prologue`, on with-tables images, where nothing else is wrong).
+7. **AArch64: a start at an odd address.** ripgrep `0x1740f1`, one byte into a linker's erratum island
+   (`after_declared_end`, `gap_sweep`); instructions there are 4-aligned. Why it steps one byte was not examined.
+8. **A one-jump wrapper named after its import.** On stripped images `std::thread::functions::yield_now`,
+   whose whole body is `jmp *sched_yield@GOT`, is `sched_yield`; `__rustc::__rdl_dealloc` is `free`,
+   `std::process::id` is `getpid`.
+9. **Data in `.text`.** In hand-written assembly a copyright string after a `ret` was listed by
+   `after_declared_end` and `gap_sweep` (a private workspace's dependency).
+
+**Where the reference is what was silent, not counted as wrong by the bytes:** routines of hand-written
+assembly with their own FDE or a `call` to them, lying inside the `st_size` of the symbol around them or
+at a NOTYPE label (6 starts on stripped plain images, 28 on no-FDE ones, 2 of the declared ends; one private workspace's dependency, read in the bytes on a sample): the
+call instructions are there. They stay in the tables as the scorer counted them, so those rows' precision
+is a little lower than the engine earned. A stub named `_set_app_type` where `nm` says `__set_app_type`
+is the import table's own name (`objdump -p`).
+
+#### Not measured
+
+- **Workspace B's two largest binaries in dev, with tables**, about 269 000 functions: never asked, an estimated hour or more each, stopped to close the run. Their no-FDE twins were measured, so that shape's row covers them and the with-tables dev row covers only the workspace's two small binaries.
+- **The no-unwind-flags shape for workspaces A and B**: the flags build without touching their sources (with debug info, which gave the no-FDE shape), but the debug-free builds this shape measures were not made.
+- **N0xis in dev PE, stripped twin**: only the as-built image was asked; on the five other PE images (a) and (b) have the same tables.
+- **fd dev for AArch64**: its build was cut by a session restart and not repeated. **armv7**: no cross compiler on this machine, nothing built. **N0xis for AArch64**: does not compile, its ptrace adapter reads x86-64 register names (60 errors). **Workspaces A and B for AArch64**: C dependencies need target libraries not installed here.
+- **The `export` rule on real Rust**: no PE image here exports a name.
+- **A function's decompiled body**: not measured by any of this.
+
 ### Obfuscated code: the first transformation measured (2026-11-05)
 
 The question (`docs/design/OBFUSCATED.md`): on code shaped to mislead a static reader, which answers
