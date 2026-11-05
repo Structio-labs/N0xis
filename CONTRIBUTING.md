@@ -19,7 +19,7 @@ work gets found, claimed, and reviewed.
 
 ## How to build and test it
 
-See [README.md#building](README.md#building). Before opening a PR:
+See [README.md#install](README.md#install). Before opening a PR:
 
 ```
 cargo build --workspace          # must be warning-free
