@@ -225,6 +225,38 @@ All notable changes to N0xis are recorded here. Versions follow
   build). Measured on a planted target against the kernel's own answers
   (`crates/n0xis-cli/tests/scan_states_what_it_did_not_read.rs`); the Windows adapter's new
   classification passes under Wine 10 and has not been run on Windows.
+- **Function discovery's measured wrong answers** (docs/VERIFICATION.md, "How often each rule is
+  right", where every number here is generated, per variant and per codebase, and where the
+  figures on code the fixes were not tuned against are held apart). `function discover`, `ir
+  manifest` and the rest of what reads the list change answers on purpose. On the corpus these were
+  found on, stripped C with no unwind tables, wrong starts 5 265 → 495, right ones 31 298 → 43 258,
+  precision 85.6% → 98.9%, recall 66.5% → 91.9%; with unwind tables, wrong 1 197 → 0. On six public
+  codebases held out from the tuning (lz4, nginx, ninja, LevelDB, RE2, tmux; ELF on three machines,
+  and PE through mingw), measured once on the final engine: the same stripped C, wrong 4 534 → 147,
+  precision 82.8% → 99.4%, but recall only 65.1% → 71.8%, because a program exports little; with
+  unwind tables, wrong 3 964 → 3. No declared source gave a wrong start or end on either. The lists of
+  152 of the 495 images of the seam corpus change, and nothing else does (decompile, disassembly,
+  xref, strings and RTTI answers: 0 differences); what left those lists is almost all `lea` padding,
+  by objdump.
+  - **An ELF `STT_FUNC` symbol with a size, in code, is a declared start,** source `symbol` with its
+    table. The 10 634 functions a stripped file's own `.dynsym` named and the list missed are
+    found. Where a size and an FDE disagree both stay, and `contradictions` names the two ends.
+  - **i386's alignment padding was listed as a function** (`lea 0x0(%esi),%esi` and its family, after
+    a declared end): 1 146 wrong starts with unwind tables → 0. What padding is is now the
+    instruction set's answer, a required method of `Arch`.
+  - **i386's `call next; pop` was taken for a call of a function:** 4 223 wrong starts → 0.
+  - **`why` gave a control-flow graph's 4 KiB window as a function's end,** 722 times exactly there.
+    It now says `{"cut": {"at", "read"}}`, not an end.
+  - **The linker's FDE over a PLT section was read as a function** swallowing the stubs: 60 PLT
+    headers listed and every wrong declared end (38) → 0. The cost, said: the 36 stubs that FDE
+    happened to find are no longer listed.
+  - **A function that signs its return address was listed 4 bytes in** (AArch64 `paciasp`): 48 → 0.
+    **An entry pattern the code before runs on into is no entry:** `sub rsp` inside a function on
+    x86-64 227 → 44, `stp` on AArch64 367 → 96, no true start lost. **A section's start brackets the
+    gap sweep,** and a branch into filler means the code goes on.
+  - A declared source is what the table says, not the truth: a planted lying FDE or symbol produces
+    a wrong function, silently unless a second source speaks. Pinned by a test, and said in the
+    ledger; not changed here.
 - **A big-endian image's `.eh_frame` was never read, and the answers said it had none.** The
   reader took every length, CIE pointer and pointer field little-endian, so on a big-endian
   image the first length came out past the end of the section and no FDE was read: `function

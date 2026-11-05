@@ -1235,6 +1235,232 @@ it scored an end `why` does not state as wrong in the direction, which no engine
 it is now an absence, and both engines were scored again with it. The `why`/`discover` contract
 checks found 0 disagreements on 276 images: the tool against itself, rung 5.
 
+### Held-out corpus (measured once, on the final engine)
+
+**The test of whether the fixes generalize.** Six public codebases the lead chose apart from the
+tuning, fetched and built only once the engine above was final, at the commits
+`oracle/rule-accuracy/README.md` records: lz4 v1.10.0, nginx release-1.27.3, ninja v1.12.1, LevelDB
+1.23, RE2 2024-07-02, tmux 3.5a. All six built. Not on every machine, each for a stated reason:
+nginx has no AArch64 (its configure runs what it compiles) and no PE (its Windows build is its own);
+tmux is x86-64 only (libevent and ncurses are installed for the host alone); RE2 has no PE (no Abseil
+for mingw, and a DLL cannot leave symbols unresolved). PE32+ and PE32 through mingw gcc for lz4,
+ninja and LevelDB: gcc writes DWARF there, `llvm-dwarfdump` reads it, and the addresses agree with
+`llvm-readobj --unwind`, so **this is the first measurement of `.pdata` and `export` starts.** 108
+configurations, 390 images, 282 of 282 stripped-against-truth code checks the same. Same tools as
+above, mingw gcc 16.2.0.
+
+Measured once with the final engine, sha256 `2447860c…`, and **the engine was not changed after**. The
+base engine was measured on the same images afterwards, for the before column; neither fix nor rule
+was tuned against this set. One instrument fault was found reading the result and fixed before this
+was recorded: the new PE reader took a global named with a dot (`T
+.weak.__register_frame_info.hmod_libgcc`) for a section's symbol, so 18 `.pdata` starts that `nm` and
+objdump call functions were scored wrong. The kept answers were scored again; nothing was measured
+twice. 0 `why`/`discover` contract differences.
+
+*Before and after: starts, per variant x codebase.*
+
+| variant | codebase | listed | true | wrong, strict | fragment + plt0 | precision, strict | precision, broad | recall: DWARF fns |
+|---|---|---|---|---|---|---|---|---|
+| a | leveldb | 32524 → 31569 | 30787 → 30802 | 958 → 0 | 779 → 767 | 97.0% → 100.0% | 94.7% → 97.6% | 29986 / 29986 (100.0%) → 29986 / 29986 (100.0%) |
+| a | lz4 | 5586 → 5245 | 5215 → 5245 | 359 → 0 | 12 → 0 | 93.6% → 100.0% | 93.4% → 100.0% | 4899 / 4899 (100.0%) → 4899 / 4899 (100.0%) |
+| a | nginx | 16387 → 15528 | 15505 → 15523 | 865 → 0 | 17 → 5 | 94.7% → 100.0% | 94.6% → 100.0% | 15400 / 15400 (100.0%) → 15400 / 15400 (100.0%) |
+| a | ninja | 62800 → 61379 | 59721 → 59746 | 1437 → 3 | 1642 → 1630 | 97.7% → 100.0% | 95.1% → 97.3% | 58162 / 58162 (100.0%) → 58162 / 58162 (100.0%) |
+| a | re2 | 37357 → 37019 | 36595 → 36614 | 345 → 0 | 417 → 405 | 99.1% → 100.0% | 98.0% → 98.9% | 36447 / 36447 (100.0%) → 36447 / 36447 (100.0%) |
+| a | tmux | 12600 → 12594 | 12586 → 12586 | 0 → 0 | 14 → 8 | 100.0% → 100.0% | 99.9% → 99.9% | 12545 / 12545 (100.0%) → 12545 / 12545 (100.0%) |
+| b | leveldb | 32524 → 31572 | 30787 → 30802 | 958 → 3 | 779 → 767 | 97.0% → 100.0% | 94.7% → 97.6% | 29986 / 29986 (100.0%) → 29986 / 29986 (100.0%) |
+| b | lz4 | 5586 → 5248 | 5215 → 5245 | 359 → 3 | 12 → 0 | 93.6% → 99.9% | 93.4% → 99.9% | 4899 / 4899 (100.0%) → 4899 / 4899 (100.0%) |
+| b | nginx | 16387 → 15528 | 15505 → 15523 | 865 → 0 | 17 → 5 | 94.7% → 100.0% | 94.6% → 100.0% | 15400 / 15400 (100.0%) → 15400 / 15400 (100.0%) |
+| b | ninja | 62800 → 61382 | 59721 → 59745 | 1437 → 7 | 1642 → 1630 | 97.7% → 100.0% | 95.1% → 97.3% | 58162 / 58162 (100.0%) → 58162 / 58162 (100.0%) |
+| b | re2 | 37357 → 37022 | 36595 → 36614 | 345 → 3 | 417 → 405 | 99.1% → 100.0% | 98.0% → 98.9% | 36447 / 36447 (100.0%) → 36447 / 36447 (100.0%) |
+| b | tmux | 12600 → 12594 | 12586 → 12586 | 0 → 0 | 14 → 8 | 100.0% → 100.0% | 99.9% → 99.9% | 12545 / 12545 (100.0%) → 12545 / 12545 (100.0%) |
+| c (C) | lz4 | 3652 → 5174 | 2883 → 5113 | 766 → 61 | 3 → 0 | 79.0% → 98.8% | 78.9% → 98.8% | 2597 / 4899 (53.0%) → 4769 / 4899 (97.3%) |
+| c (C) | nginx | 13133 → 9557 | 9461 → 9514 | 3658 → 41 | 14 → 2 | 72.1% → 99.6% | 72.0% → 99.6% | 9367 / 15400 (60.8%) → 9402 / 15400 (61.1%) |
+| c (C) | tmux | 9563 → 9492 | 9446 → 9446 | 110 → 45 | 7 → 1 | 98.8% → 99.5% | 98.8% → 99.5% | 9414 / 12545 (75.0%) → 9414 / 12545 (75.0%) |
+| c (C++) | leveldb | 30809 → 30204 | 29634 → 29656 | 620 → 5 | 555 → 543 | 98.0% → 100.0% | 96.2% → 98.2% | 28838 / 29986 (96.2%) → 28845 / 29986 (96.2%) |
+| c (C++) | ninja | 62003 → 60818 | 59315 → 59341 | 1235 → 36 | 1453 → 1441 | 98.0% → 99.9% | 95.7% → 97.6% | 57756 / 58162 (99.3%) → 57758 / 58162 (99.3%) |
+| c (C++) | re2 | 37354 → 37010 | 36583 → 36602 | 354 → 3 | 417 → 405 | 99.0% → 100.0% | 97.9% → 98.9% | 36435 / 36447 (100.0%) → 36435 / 36447 (100.0%) |
+| d | leveldb | 23981 → 27424 | 20567 → 27337 | 3409 → 84 | 5 → 3 | 85.8% → 99.7% | 85.8% → 99.7% | 19795 / 29733 (66.6%) → 26535 / 29733 (89.2%) |
+| d | ninja | 63355 → 59043 | 57602 → 57859 | 4627 → 70 | 1126 → 1114 | 92.6% → 99.9% | 90.9% → 98.0% | 56063 / 57744 (97.1%) → 56284 / 57744 (97.5%) |
+| d | re2 | 37724 → 34206 | 32624 → 34115 | 5096 → 89 | 4 → 2 | 86.5% → 99.7% | 86.5% → 99.7% | 32515 / 35785 (90.9%) → 33974 / 35785 (94.9%) |
+*Starts, per variant (each row its own; (b) is (a)'s code stripped, so no total counts both).*
+
+| variant | runs | listed | true | wrong, strict (interior / outside) | fragment | plt0 | wrong, broad | precision, strict | precision, broad | recall: DWARF fns | recall: CRT fns | recall: PLT entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| a | 108 | 163334 | 160516 | 3 (0 / 3) | 2815 | 0 | 2818 | 100.0% | 98.3% | 157439 / 157439 (100.0%) | 3077 / 3163 (97.3%) | 0 / 16684 (0.0%) |
+| b | 108 | 163346 | 160515 | 16 (13 / 3) | 2815 | 0 | 2831 | 100.0% | 98.3% | 157439 / 157439 (100.0%) | 3076 / 3163 (97.2%) | 0 / 16684 (0.0%) |
+| c (C) | 42 | 24223 | 24073 | 147 (147 / 0) | 3 | 0 | 150 | 99.4% | 99.4% | 23585 / 32844 (71.8%) | 488 / 549 (88.9%) | 0 / 4099 (0.0%) |
+| c (C++) | 66 | 128032 | 125599 | 44 (21 / 23) | 2389 | 0 | 2433 | 100.0% | 98.1% | 123038 / 124595 (98.8%) | 2561 / 2614 (98.0%) | 0 / 12585 (0.0%) |
+| d | 66 | 120673 | 119311 | 243 (220 / 23) | 1119 | 0 | 1362 | 99.8% | 98.9% | 116793 / 123262 (94.8%) | 2518 / 2587 (97.3%) | 0 / 12127 (0.0%) |
+*Starts, per variant x codebase.*
+
+| variant codebase | runs | listed | true | wrong, strict (interior / outside) | fragment | plt0 | wrong, broad | precision, strict | precision, broad | recall: DWARF fns | recall: CRT fns | recall: PLT entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| a leveldb | 24 | 31569 | 30802 | 0 (0 / 0) | 767 | 0 | 767 | 100.0% | 97.6% | 29986 / 29986 (100.0%) | 816 / 833 (98.0%) | 0 / 7808 (0.0%) |
+| a lz4 | 24 | 5245 | 5245 | 0 (0 / 0) | 0 | 0 | 0 | 100.0% | 100.0% | 4899 / 4899 (100.0%) | 346 / 364 (95.1%) | 0 / 1250 (0.0%) |
+| a nginx | 12 | 15528 | 15523 | 0 (0 / 0) | 5 | 0 | 5 | 100.0% | 100.0% | 15400 / 15400 (100.0%) | 123 / 139 (88.5%) | 0 / 1603 (0.0%) |
+| a ninja | 24 | 61379 | 59746 | 3 (0 / 3) | 1630 | 0 | 1633 | 100.0% | 97.3% | 58162 / 58162 (100.0%) | 1584 / 1600 (99.0%) | 0 / 2421 (0.0%) |
+| a re2 | 18 | 37019 | 36614 | 0 (0 / 0) | 405 | 0 | 405 | 100.0% | 98.9% | 36447 / 36447 (100.0%) | 167 / 181 (92.3%) | 0 / 2356 (0.0%) |
+| a tmux | 6 | 12594 | 12586 | 0 (0 / 0) | 8 | 0 | 8 | 100.0% | 99.9% | 12545 / 12545 (100.0%) | 41 / 46 (89.1%) | 0 / 1246 (0.0%) |
+| b leveldb | 24 | 31572 | 30802 | 3 (3 / 0) | 767 | 0 | 770 | 100.0% | 97.6% | 29986 / 29986 (100.0%) | 816 / 833 (98.0%) | 0 / 7808 (0.0%) |
+| b lz4 | 24 | 5248 | 5245 | 3 (3 / 0) | 0 | 0 | 3 | 99.9% | 99.9% | 4899 / 4899 (100.0%) | 346 / 364 (95.1%) | 0 / 1250 (0.0%) |
+| b nginx | 12 | 15528 | 15523 | 0 (0 / 0) | 5 | 0 | 5 | 100.0% | 100.0% | 15400 / 15400 (100.0%) | 123 / 139 (88.5%) | 0 / 1603 (0.0%) |
+| b ninja | 24 | 61382 | 59745 | 7 (4 / 3) | 1630 | 0 | 1637 | 100.0% | 97.3% | 58162 / 58162 (100.0%) | 1583 / 1600 (98.9%) | 0 / 2421 (0.0%) |
+| b re2 | 18 | 37022 | 36614 | 3 (3 / 0) | 405 | 0 | 408 | 100.0% | 98.9% | 36447 / 36447 (100.0%) | 167 / 181 (92.3%) | 0 / 2356 (0.0%) |
+| b tmux | 6 | 12594 | 12586 | 0 (0 / 0) | 8 | 0 | 8 | 100.0% | 99.9% | 12545 / 12545 (100.0%) | 41 / 46 (89.1%) | 0 / 1246 (0.0%) |
+| c (C) lz4 | 24 | 5174 | 5113 | 61 (61 / 0) | 0 | 0 | 61 | 98.8% | 98.8% | 4769 / 4899 (97.3%) | 344 / 364 (94.5%) | 0 / 1250 (0.0%) |
+| c (C) nginx | 12 | 9557 | 9514 | 41 (41 / 0) | 2 | 0 | 43 | 99.6% | 99.6% | 9402 / 15400 (61.1%) | 112 / 139 (80.6%) | 0 / 1603 (0.0%) |
+| c (C) tmux | 6 | 9492 | 9446 | 45 (45 / 0) | 1 | 0 | 46 | 99.5% | 99.5% | 9414 / 12545 (75.0%) | 32 / 46 (69.6%) | 0 / 1246 (0.0%) |
+| c (C++) leveldb | 24 | 30204 | 29656 | 5 (5 / 0) | 543 | 0 | 548 | 100.0% | 98.2% | 28845 / 29986 (96.2%) | 811 / 833 (97.4%) | 0 / 7808 (0.0%) |
+| c (C++) ninja | 24 | 60818 | 59341 | 36 (13 / 23) | 1441 | 0 | 1477 | 99.9% | 97.6% | 57758 / 58162 (99.3%) | 1583 / 1600 (98.9%) | 0 / 2421 (0.0%) |
+| c (C++) re2 | 18 | 37010 | 36602 | 3 (3 / 0) | 405 | 0 | 408 | 100.0% | 98.9% | 36435 / 36447 (100.0%) | 167 / 181 (92.3%) | 0 / 2356 (0.0%) |
+| d leveldb | 24 | 27424 | 27337 | 84 (84 / 0) | 3 | 0 | 87 | 99.7% | 99.7% | 26535 / 29733 (89.2%) | 802 / 824 (97.3%) | 0 / 7590 (0.0%) |
+| d ninja | 24 | 59043 | 57859 | 70 (47 / 23) | 1114 | 0 | 1184 | 99.9% | 98.0% | 56284 / 57744 (97.5%) | 1575 / 1591 (99.0%) | 0 / 2307 (0.0%) |
+| d re2 | 18 | 34206 | 34115 | 89 (89 / 0) | 2 | 0 | 91 | 99.7% | 99.7% | 33974 / 35785 (94.9%) | 141 / 172 (82.0%) | 0 / 2230 (0.0%) |
+*Starts, per variant x arch.*
+
+| variant arch | runs | listed | true | wrong, strict (interior / outside) | fragment | plt0 | wrong, broad | precision, strict | precision, broad | recall: DWARF fns | recall: CRT fns | recall: PLT entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| a aarch64 | 24 | 29516 | 29516 | 0 (0 / 0) | 0 | 0 | 0 | 100.0% | 100.0% | 29317 / 29317 (100.0%) | 199 / 199 (100.0%) | 0 / 4663 (0.0%) |
+| a i686 | 30 | 37879 | 37237 | 0 (0 / 0) | 642 | 0 | 642 | 100.0% | 98.3% | 36923 / 36923 (100.0%) | 314 / 373 (84.2%) | 0 / 5396 (0.0%) |
+| a pe_x64 | 9 | 22874 | 22176 | 0 (0 / 0) | 698 | 0 | 698 | 100.0% | 96.9% | 20774 / 20774 (100.0%) | 1402 / 1402 (100.0%) | 0 / 0 (-) |
+| a pe_x86 | 9 | 22725 | 21895 | 3 (0 / 3) | 827 | 0 | 830 | 100.0% | 96.3% | 20980 / 20980 (100.0%) | 915 / 918 (99.7%) | 0 / 0 (-) |
+| a x86_64 | 36 | 50340 | 49692 | 0 (0 / 0) | 648 | 0 | 648 | 100.0% | 98.7% | 49445 / 49445 (100.0%) | 247 / 271 (91.1%) | 0 / 6625 (0.0%) |
+| c (C) aarch64 | 6 | 1211 | 1188 | 23 (23 / 0) | 0 | 0 | 23 | 98.1% | 98.1% | 1140 / 1174 (97.1%) | 48 / 48 (100.0%) | 0 / 425 (0.0%) |
+| c (C) i686 | 12 | 6154 | 6126 | 27 (27 / 0) | 1 | 0 | 28 | 99.6% | 99.5% | 5996 / 8872 (67.6%) | 130 / 156 (83.3%) | 0 / 1214 (0.0%) |
+| c (C) pe_x64 | 3 | 787 | 786 | 1 (1 / 0) | 0 | 0 | 1 | 99.9% | 99.9% | 660 / 688 (95.9%) | 126 / 126 (100.0%) | 0 / 0 (-) |
+| c (C) pe_x86 | 3 | 749 | 742 | 7 (7 / 0) | 0 | 0 | 7 | 99.1% | 99.1% | 664 / 688 (96.5%) | 78 / 81 (96.3%) | 0 / 0 (-) |
+| c (C) x86_64 | 18 | 15322 | 15231 | 89 (89 / 0) | 2 | 0 | 91 | 99.4% | 99.4% | 15125 / 21422 (70.6%) | 106 / 138 (76.8%) | 0 / 2460 (0.0%) |
+| c (C++) aarch64 | 18 | 28297 | 28287 | 10 (10 / 0) | 0 | 0 | 10 | 100.0% | 100.0% | 28137 / 28143 (100.0%) | 150 / 151 (99.3%) | 0 / 4238 (0.0%) |
+| c (C++) i686 | 18 | 28867 | 28228 | 0 (0 / 0) | 639 | 0 | 639 | 100.0% | 97.8% | 28047 / 28051 (100.0%) | 181 / 217 (83.4%) | 0 / 4182 (0.0%) |
+| c (C++) pe_x64 | 6 | 21217 | 20715 | 10 (10 / 0) | 492 | 0 | 502 | 100.0% | 97.6% | 19440 / 20086 (96.8%) | 1275 / 1276 (99.9%) | 0 / 0 (-) |
+| c (C++) pe_x86 | 6 | 20870 | 20226 | 24 (1 / 23) | 620 | 0 | 644 | 99.9% | 96.9% | 19393 / 20292 (95.6%) | 833 / 837 (99.5%) | 0 / 0 (-) |
+| c (C++) x86_64 | 18 | 28781 | 28143 | 0 (0 / 0) | 638 | 0 | 638 | 100.0% | 97.8% | 28021 / 28023 (100.0%) | 122 / 133 (91.7%) | 0 / 4165 (0.0%) |
+| d aarch64 | 18 | 26199 | 26033 | 166 (166 / 0) | 0 | 0 | 166 | 99.4% | 99.4% | 25895 / 27698 (93.5%) | 138 / 142 (97.2%) | 0 / 4077 (0.0%) |
+| d i686 | 18 | 26322 | 26293 | 26 (26 / 0) | 3 | 0 | 29 | 99.9% | 99.9% | 26127 / 27608 (94.6%) | 166 / 208 (79.8%) | 0 / 4037 (0.0%) |
+| d pe_x64 | 6 | 21217 | 20715 | 10 (10 / 0) | 492 | 0 | 502 | 100.0% | 97.6% | 19440 / 20086 (96.8%) | 1275 / 1276 (99.9%) | 0 / 0 (-) |
+| d pe_x86 | 6 | 20870 | 20226 | 24 (1 / 23) | 620 | 0 | 644 | 99.9% | 96.9% | 19393 / 20292 (95.6%) | 833 / 837 (99.5%) | 0 / 0 (-) |
+| d x86_64 | 18 | 26065 | 26044 | 17 (17 / 0) | 4 | 0 | 21 | 99.9% | 99.9% | 25938 / 27578 (94.1%) | 106 / 124 (85.5%) | 0 / 4013 (0.0%) |
+*Start sources, per variant ((b) is (a)'s code stripped, left out).*
+
+Precision, strict = true / (true + wrong), where a fragment or a PLT header is neither; broad counts both as wrong. Recall = the DWARF functions this source found, of all the DWARF functions in the row. `alone`: the starts this source alone produced.
+
+| variant | source | produced | true | wrong | fragment | plt0 | precision, strict | precision, broad | recall: DWARF fns | alone produced | alone true | alone wrong |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| a | unwind:eh_frame | 139374 | 137257 | 0 | 2117 | 0 | 100.0% | 98.5% | 136665 / 157439 (86.8%) | 30 | 22 | 0 |
+| a | unwind:pdata | 21722 | 21024 | 0 | 698 | 0 | 100.0% | 96.8% | 20774 / 157439 (13.2%) | 21 | 10 | 0 |
+| a | export | 1794 | 1794 | 0 | 0 | 0 | 100.0% | 100.0% | 1780 / 157439 (1.1%) | 0 | 0 | 0 |
+| a | symbol | 117186 | 115896 | 0 | 1290 | 0 | 100.0% | 98.9% | 115685 / 157439 (73.5%) | 13 | 13 | 0 |
+| a | after_declared_end | 160661 | 157904 | 0 | 2757 | 0 | 100.0% | 98.3% | 156931 / 157439 (99.7%) | 13 | 13 | 0 |
+| a | gap_sweep | 2016 | 2016 | 0 | 0 | 0 | 100.0% | 100.0% | 0 / 157439 (0.0%) | 676 | 676 | 0 |
+| a | call_target | 103742 | 103739 | 3 | 0 | 0 | 100.0% | 100.0% | 102217 / 157439 (64.9%) | 62 | 59 | 3 |
+| a | prologue | 32005 | 32005 | 0 | 0 | 0 | 100.0% | 100.0% | 31756 / 157439 (20.2%) | 66 | 66 | 0 |
+| c (C) | unwind:eh_frame | 162 | 162 | 0 | 0 | 0 | 100.0% | 100.0% | 95 / 32844 (0.3%) | 12 | 12 | 0 |
+| c (C) | unwind:pdata | 110 | 110 | 0 | 0 | 0 | 100.0% | 100.0% | 95 / 32844 (0.3%) | 3 | 3 | 0 |
+| c (C) | export | 858 | 858 | 0 | 0 | 0 | 100.0% | 100.0% | 844 / 32844 (2.6%) | 396 | 396 | 0 |
+| c (C) | symbol | 2574 | 2574 | 0 | 0 | 0 | 100.0% | 100.0% | 2556 / 32844 (7.8%) | 321 | 321 | 0 |
+| c (C) | after_declared_end | 2776 | 2776 | 0 | 0 | 0 | 100.0% | 100.0% | 2675 / 32844 (8.1%) | 5 | 5 | 0 |
+| c (C) | gap_sweep | 3183 | 3110 | 70 | 3 | 0 | 97.8% | 97.7% | 2889 / 32844 (8.8%) | 1303 | 1231 | 69 |
+| c (C) | call_target | 17750 | 17750 | 0 | 0 | 0 | 100.0% | 100.0% | 17509 / 32844 (53.3%) | 12259 | 12259 | 0 |
+| c (C) | prologue | 5803 | 5725 | 78 | 0 | 0 | 98.7% | 98.7% | 5632 / 32844 (17.1%) | 1864 | 1787 | 77 |
+| c (C++) | unwind:eh_frame | 98835 | 96940 | 0 | 1895 | 0 | 100.0% | 98.1% | 96481 / 124595 (77.4%) | 261 | 214 | 0 |
+| c (C++) | unwind:pdata | 12866 | 12377 | 0 | 489 | 0 | 100.0% | 96.2% | 12149 / 124595 (9.8%) | 94 | 80 | 0 |
+| c (C++) | export | 936 | 936 | 0 | 0 | 0 | 100.0% | 100.0% | 936 / 124595 (0.8%) | 556 | 556 | 0 |
+| c (C++) | symbol | 9875 | 9875 | 0 | 0 | 0 | 100.0% | 100.0% | 9869 / 124595 (7.9%) | 0 | 0 | 0 |
+| c (C++) | after_declared_end | 111339 | 109014 | 0 | 2325 | 0 | 100.0% | 97.9% | 108272 / 124595 (86.9%) | 2 | 2 | 0 |
+| c (C++) | gap_sweep | 9163 | 9128 | 30 | 5 | 0 | 99.7% | 99.6% | 7628 / 124595 (6.1%) | 964 | 931 | 30 |
+| c (C++) | call_target | 85992 | 85989 | 3 | 0 | 0 | 100.0% | 100.0% | 84708 / 124595 (68.0%) | 5770 | 5767 | 3 |
+| c (C++) | prologue | 26848 | 26837 | 11 | 0 | 0 | 100.0% | 100.0% | 26683 / 124595 (21.4%) | 151 | 140 | 11 |
+| d | unwind:eh_frame | 13371 | 12753 | 0 | 618 | 0 | 100.0% | 95.4% | 12390 / 123262 (10.1%) | 139 | 128 | 0 |
+| d | unwind:pdata | 12866 | 12377 | 0 | 489 | 0 | 100.0% | 96.2% | 12149 / 123262 (9.9%) | 94 | 80 | 0 |
+| d | export | 936 | 936 | 0 | 0 | 0 | 100.0% | 100.0% | 936 / 123262 (0.8%) | 556 | 556 | 0 |
+| d | symbol | 9771 | 9771 | 0 | 0 | 0 | 100.0% | 100.0% | 9765 / 123262 (7.9%) | 1148 | 1148 | 0 |
+| d | after_declared_end | 35854 | 34765 | 5 | 1084 | 0 | 100.0% | 97.0% | 34148 / 123262 (27.7%) | 7 | 7 | 0 |
+| d | gap_sweep | 32238 | 32142 | 84 | 12 | 0 | 99.7% | 99.7% | 30658 / 123262 (24.9%) | 2910 | 2822 | 78 |
+| d | call_target | 84674 | 84671 | 3 | 0 | 0 | 100.0% | 100.0% | 83417 / 123262 (67.7%) | 39701 | 39698 | 3 |
+| d | prologue | 26692 | 26535 | 157 | 0 | 0 | 99.4% | 99.4% | 26391 / 123262 (21.4%) | 1602 | 1446 | 156 |
+*Ends, per variant.*
+
+| variant | start class / end source | exact | short | long | between | no end | no truth end |
+|---|---|---|---|---|---|---|---|
+| a | fragment: symbol_size:st_size | 1290 | 0 | 0 | 0 | 0 | 0 |
+| a | fragment: unwind:eh_frame | 827 | 0 | 0 | 0 | 0 | 0 |
+| a | fragment: unwind:pdata | 698 | 0 | 0 | 0 | 0 | 0 |
+| a | true: not_stated | 0 | 0 | 0 | 0 | 0 | 2181 |
+| a | true: symbol_size:st_size | 115896 | 0 | 0 | 0 | 0 | 0 |
+| a | true: unwind:eh_frame | 20980 | 0 | 0 | 0 | 0 | 435 |
+| a | true: unwind:pdata | 20774 | 0 | 0 | 0 | 0 | 250 |
+| b | fragment: unwind:eh_frame | 2117 | 0 | 0 | 0 | 0 | 0 |
+| b | fragment: unwind:pdata | 698 | 0 | 0 | 0 | 0 | 0 |
+| b | true: not_stated | 53 | 0 | 0 | 0 | 0 | 2181 |
+| b | true: symbol_size:st_size | 12449 | 0 | 0 | 0 | 0 | 0 |
+| b | true: unwind:eh_frame | 124373 | 0 | 0 | 0 | 0 | 435 |
+| b | true: unwind:pdata | 20774 | 0 | 0 | 0 | 0 | 250 |
+| c (C) | fragment: not_stated | 0 | 0 | 3 | 0 | 0 | 0 |
+| c (C) | true: not_stated | 19439 | 79 | 1067 | 0 | 0 | 358 |
+| c (C) | true: not_stated(cut) | 0 | 0 | 0 | 0 | 284 | 0 |
+| c (C) | true: symbol_size:st_size | 2574 | 0 | 0 | 0 | 0 | 0 |
+| c (C) | true: unwind:eh_frame | 132 | 0 | 0 | 0 | 0 | 30 |
+| c (C) | true: unwind:pdata | 95 | 0 | 0 | 0 | 0 | 15 |
+| c (C++) | fragment: not_stated | 1 | 0 | 4 | 0 | 0 | 0 |
+| c (C++) | fragment: unwind:eh_frame | 1895 | 0 | 0 | 0 | 0 | 0 |
+| c (C++) | fragment: unwind:pdata | 489 | 0 | 0 | 0 | 0 | 0 |
+| c (C++) | true: not_stated | 13987 | 5 | 395 | 0 | 0 | 1839 |
+| c (C++) | true: not_stated(cut) | 0 | 0 | 0 | 0 | 38 | 0 |
+| c (C++) | true: symbol_size:st_size | 9875 | 0 | 0 | 0 | 0 | 0 |
+| c (C++) | true: unwind:eh_frame | 86708 | 0 | 0 | 0 | 0 | 375 |
+| c (C++) | true: unwind:pdata | 12149 | 0 | 0 | 0 | 0 | 228 |
+| d | fragment: not_stated | 5 | 1 | 5 | 0 | 0 | 0 |
+| d | fragment: not_stated(cut) | 0 | 0 | 0 | 0 | 1 | 0 |
+| d | fragment: unwind:eh_frame | 618 | 0 | 0 | 0 | 0 | 0 |
+| d | fragment: unwind:pdata | 489 | 0 | 0 | 0 | 0 | 0 |
+| d | true: not_stated | 75703 | 35 | 6349 | 0 | 0 | 1873 |
+| d | true: not_stated(cut) | 0 | 0 | 0 | 0 | 450 | 0 |
+| d | true: symbol_size:st_size | 9771 | 0 | 0 | 0 | 0 | 0 |
+| d | true: unwind:eh_frame | 12417 | 0 | 0 | 0 | 0 | 336 |
+| d | true: unwind:pdata | 12149 | 0 | 0 | 0 | 0 | 228 |
+*The direction, per variant (strict: a wrong start is interior or outside).*
+
+| variant | wrong starts: heuristic only | wrong starts: any declared | heuristic-only starts wrong | declared starts wrong | wrong ends: heuristic (`not_stated`) | wrong ends: declared | heuristic ends wrong | declared ends wrong | heuristic ends cut (no end stated) |
+|---|---|---|---|---|---|---|---|---|---|
+| a | 3 | 0 | 3 / 2184 (0.1%) | 0 / 161150 (0.0%) | 0 | 0 | 0 / 0 (-) | 0 / 157650 (0.0%) | 0 |
+| b | 16 | 0 | 16 / 2250 (0.7%) | 0 / 161096 (0.0%) | 0 | 0 | 0 / 53 (0.0%) | 0 / 157596 (0.0%) | 0 |
+| c (C) | 147 | 0 | 147 / 20519 (0.7%) | 0 / 3704 (0.0%) | 1146 | 0 | 1146 / 20585 (5.6%) | 0 / 2801 (0.0%) | 284 |
+| c (C++) | 44 | 0 | 44 / 15377 (0.3%) | 0 / 112655 (0.0%) | 400 | 0 | 400 / 14387 (2.8%) | 0 / 108732 (0.0%) | 38 |
+| d | 243 | 0 | 243 / 83729 (0.3%) | 0 / 36944 (0.0%) | 6384 | 0 | 6384 / 82087 (7.8%) | 0 / 34337 (0.0%) | 450 |
+*The direction, broad reading (a `.cold` fragment and a PLT header counted as wrong starts too).*
+
+| variant | heuristic-only starts wrong | declared starts wrong |
+|---|---|---|
+| a | 3 / 2184 (0.1%) | 2815 / 161150 (1.7%) |
+| b | 16 / 2250 (0.7%) | 2815 / 161096 (1.7%) |
+| c (C) | 150 / 20519 (0.7%) | 0 / 3704 (0.0%) |
+| c (C++) | 49 / 15377 (0.3%) | 2384 / 112655 (2.1%) |
+| d | 255 / 83729 (0.3%) | 1107 / 36944 (3.0%) |
+
+**What it says.** The fixes held on code they were not tuned against. Stripped C with no unwind
+tables, base → final: wrong starts 4 534 → 147, right ones 21 790 → 24 073, precision 82.8% → 99.4%,
+recall 65.1% → 71.8%. Stripped C++ with no unwind tables or exceptions: 13 132 → 243, 89.4% → 99.8%,
+87.9% → 94.8%. As built: 3 964 → 3, recall 100%. By class, all of (c) and (d): a self-`lea` listed
+as a function 2 291 and 1 273 → 0 (and 3 903 in (a) and (b) → 0); the `pop` of `call next; pop` 3 929
+and 11 070 → 0; `sub rsp` inside a function on x86-64 200 → 73 and 109 → 12; `stp` inside one on
+AArch64 70 → 1 and 460 → 122; ends at exactly the 4 KiB window 328 → 8 and 443 → 12. **No declared
+source gave a wrong start or a wrong end, on any variant,** PE tables included.
+
+**Where it is worse than the tuned corpus, plainly.** (1) *Recall of stripped C with no unwind
+tables:* 71.8% here against 91.9%. A file with few exported functions gains little from symbols:
+nginx 61.1%, tmux 75.0%, both executables, against lz4 97.3%, a library that exports its API. On the
+tuned corpus of shared libraries that fix looked larger than it is for a program. (2) *Ends nothing
+states:* 7.8% wrong in (d) (6 384 of 82 087), 16.8% on i686, against 0.6% on the tuned corpus; the
+noreturn class, unfixed. (3) *The gap sweep inside a function:* 68 → 79 and 32 → 58 here too, more
+gaps to sweep. (4) (b) has 13 interior starts where it had 10, the section-start bracket in the C
+runtime on AArch64. (5) 4 988 wrong names in (a), of RE2 (4 148), ninja and LevelDB, in the C++
+demangling layer: counted, not examined one by one. 47 `stub` names on PE count as wrong where the
+image's import is `_fileno` and `nm` has mingw's alias `fileno`: the engine names the import.
+
+**Not independent of the first corpus in everything.** The same compilers, the same flags, the same
+machines. Nothing here says how these rules do on another compiler or an obfuscated file. Rust
+programs are measured apart.
+
 **Not measured.** PE `.pdata`, exports and PDB on the tuned corpus; big-endian images; ARM32/Thumb
 and WebAssembly; the `rtti`, `flirt`, `pdb`, `managed` and `user` name layers (no image carried
 them); `analyze` and the function lists of a live process. `why` does not cite any of these
