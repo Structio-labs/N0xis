@@ -126,9 +126,11 @@ end) versus a declared end.
 ## How the engine is asked
 
 `measure.py` runs the CLI exactly as a user would: `function discover --file <image>`, then
-`why --file <image> --addr <start>` for every listed start, in a directory with its own fresh
-`.n0x/` (checked with `project info`, `is_local: true`), so no kept list of another file
-answers and nothing is written to the user's global project. It records the engine's path,
+`why --addr <start>` for every listed start in one `serve --file <image>` session (its answers
+were checked byte-identical to one-shot `why --file <image> --addr <start>`: 1 680 answers on 9
+images, PE and WebAssembly among them), in a directory with its own fresh `.n0x/` (checked with
+`project info`, `is_local: true`), so no kept list of another file answers and nothing is written
+to the user's global project. It records the engine's path,
 sha256 and version in every result. `why` and `discover` are compared (start, end, name) as a
 contract check; a disagreement is counted, not taken as truth either way.
 
@@ -169,7 +171,11 @@ engine's answers, one row per listed start, the summary), `results/report.md` (e
 `results/doc-tables.md` (the tables the ledger carries, generated), `results/totals.json`,
 `results/evidence.txt` and `evidence.jsonl`, `results/calibration.txt`. The engine is
 `$N0XIS` (default `~/.local/opt/n0xis-wasm-preview/n0xis`). Two compiles at a time at most;
-every compile and every engine call is under `timeout`.
+every compile and every engine call is under `timeout`. `run.py --jobs N` (default 6) measures
+configurations in parallel, each image in its own directory, under the memory cap of the scope
+it is run in. An image that has a summary from this engine is not measured again and every
+result is written whole, so a cut-off run resumes; `--budget SECONDS` stops starting work and
+exits 3 if some is left, for a run bounded by `timeout`.
 
 `run.py --rescore` scores the kept engine answers again without asking the engine (after a
 change to the scorer or a reader; the kept truth is keyed on the readers' own code, so it is

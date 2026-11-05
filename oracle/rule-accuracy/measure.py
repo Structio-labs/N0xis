@@ -9,6 +9,12 @@ Exactly what a user gets: the CLI, on the file, in a project directory of its
 own (a fresh `.n0x/`, so no cache or annotation of another run answers, and
 nothing is written to the user's global project). No `Ctx` is built here.
 
+Every `why` of an image goes through one `serve` session, where a process per
+start reloaded the whole image each time. The session's answers were compared
+with one-shot `why` before this was adopted: 1 680 answers on 9 images (small and
+large ELF on all three machines, PE32+, PE32, a WebAssembly module), byte for
+byte the same, 3.6 to 7 times faster.
+
 Usage: measure.py <image> <run-dir> <out.json>
 """
 
@@ -38,6 +44,30 @@ def n0x(args: list, cwd: str) -> dict:
         return {"ok": False, "error": {"code": "no-envelope", "rc": r.returncode, "stdout": r.stdout[-500:], "stderr": r.stderr[-500:]}}
 
 
+def why_through_serve(image: str, addrs: list, cwd: str) -> dict:
+    """`why` at every address, one session, one answer per request, in lockstep
+    (so no pipe can fill). A session that dies leaves what it did not answer as
+    an answer with no envelope, which the scorer does not take for a function."""
+    argv = ["timeout", "500", corpus.ENGINE, "serve", "--file", image]
+    p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=corpus.TOOL_ENV)
+    out = {}
+    p.stdout.readline()  # the session's banner
+    for a in addrs:
+        try:
+            p.stdin.write(json.dumps(["why", "--addr", a]) + "\n")
+            p.stdin.flush()
+            line = p.stdout.readline()
+            out[a] = json.loads(line)
+        except (BrokenPipeError, json.JSONDecodeError) as e:
+            out[a] = {"ok": False, "error": {"code": "no-envelope", "why": str(e)}}
+    try:
+        p.stdin.close()
+    except BrokenPipeError:
+        pass
+    p.wait()
+    return out
+
+
 def measure(image: str, run_dir: str) -> dict:
     image = os.path.abspath(image)
     # A fresh project every time: a kept function list of an earlier file at the
@@ -53,9 +83,7 @@ def measure(image: str, run_dir: str) -> dict:
         return {"image": image, "engine": engine_identity(), "discover": disc, "why": {}}
     if disc["data"].get("truncated"):
         raise SystemExit("measure: discover truncated its list")
-    why = {}
-    for f in disc["data"]["functions"]:
-        why[f["va"]] = n0x(["why", "--file", image, "--addr", f["va"]], run_dir)
+    why = why_through_serve(image, [f["va"] for f in disc["data"]["functions"]], run_dir)
     return {"image": image, "engine": engine_identity(), "discover": disc, "why": why}
 
 

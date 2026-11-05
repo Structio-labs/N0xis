@@ -13,7 +13,13 @@ RESULTS/<arch>/<program>/<compiler-opt>/:
   <v>.rows.jsonl        one row per listed start (score.py)
   <v>.summary.json      the counts
 
-Usage: run.py [--only SUBSTR[,SUBSTR]] [--rescore]
+An image with a summary from this engine is not measured again, and every file
+is written whole or not at all, so a run cut off anywhere resumes where it was.
+Images run in parallel, one configuration per worker, each in its own directory.
+
+Usage: run.py [--only SUBSTR[,SUBSTR]] [--rescore] [--jobs N] [--budget SECONDS]
+`--budget`: start nothing new after that long, and exit 3 if work is left (for a
+run bounded by `timeout`: run it again to go on).
 """
 
 from __future__ import annotations
@@ -23,12 +29,22 @@ import hashlib
 import json
 import os
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor
 
 import corpus
 import measure
 import readers
 import score
 import truth
+
+
+def dump_whole(obj, path: str, **kw) -> None:
+    """Written beside it and renamed, so a killed run leaves no half a file."""
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w") as fh:
+        json.dump(obj, fh, **kw)
+    os.replace(tmp, path)
 
 
 def truth_of(path: str, kept: str) -> dict:
@@ -44,11 +60,15 @@ def truth_of(path: str, kept: str) -> dict:
             return t
     t = truth.truth(path)
     t["key"] = key
-    json.dump(t, open(kept, "w"))
+    dump_whole(t, kept)
     return t
 
 
-def run_config(cfg: corpus.Config, rescore: bool = False) -> list:
+def engine_sha() -> str:
+    return hashlib.sha256(open(corpus.ENGINE, "rb").read()).hexdigest()
+
+
+def run_config(cfg: corpus.Config, rescore: bool = False, deadline: float | None = None, sha: str | None = None) -> list:
     b = corpus.manifest_of(cfg)
     if not b:
         return [f"skip  {cfg.id}: not built"]
@@ -63,6 +83,12 @@ def run_config(cfg: corpus.Config, rescore: bool = False) -> list:
         if not b["truth_ok"][v]:
             log.append(f"REFUSED {cfg.id} {v}: the measured file's code differs from {spec['truth']}; its truth is not used")
             continue
+        kept_summary = os.path.join(out_dir, f"{v}.summary.json")
+        if not rescore and sha and os.path.exists(kept_summary) and json.load(open(kept_summary))["engine"]["sha256"] == sha:
+            continue  # this engine's answer for this image is kept
+        if deadline is not None and time.time() > deadline:
+            log.append(f"LEFT {cfg.id} {v}")
+            continue
         t = truth_of(cfg.file(spec["truth"]), os.path.join(out_dir, f"truth-{spec['truth']}.json"))
         image = cfg.file(spec["measured"])
         mpath = os.path.join(out_dir, f"{v}.measure.json")
@@ -73,7 +99,7 @@ def run_config(cfg: corpus.Config, rescore: bool = False) -> list:
             m = json.load(open(mpath))
         else:
             m = measure.measure(image, os.path.join(corpus.RUNS, cfg.arch, cfg.program, f"{cfg.compiler}-{cfg.opt}", v))
-            json.dump(m, open(mpath, "w"))
+            dump_whole(m, mpath)
         rows, summary = score.score(t, m, readers.symbols(image))
         fdes = readers.fde_ranges(image)
         if corpus.EXTRA is not None:
@@ -82,10 +108,13 @@ def run_config(cfg: corpus.Config, rescore: bool = False) -> list:
         summary["measured_file"] = image
         summary["truth_file"] = cfg.file(spec["truth"])
         summary["fdes_in_measured"] = sum(1 for f in fdes if f[0] == ".eh_frame")
-        with open(os.path.join(out_dir, f"{v}.rows.jsonl"), "w") as fh:
+        # The rows first: a summary says the image is done, so it is last.
+        rows_path = os.path.join(out_dir, f"{v}.rows.jsonl")
+        with open(rows_path + f".tmp{os.getpid()}", "w") as fh:
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
-        json.dump(summary, open(os.path.join(out_dir, f"{v}.summary.json"), "w"), indent=1)
+        os.replace(rows_path + f".tmp{os.getpid()}", rows_path)
+        dump_whole(summary, kept_summary, indent=1)
         cls = summary.get("classes", {})
         log.append(f"{cfg.id} {v}: listed {summary.get('listed')} {dict(cls)} fdes {summary['fdes_in_measured']} checks {summary.get('checks')}")
     return log
@@ -95,11 +124,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only")
     ap.add_argument("--rescore", action="store_true", help="score the kept engine answers again; do not run the engine")
+    ap.add_argument("--jobs", type=int, default=6, help="configurations at once, each image in its own directory")
+    ap.add_argument("--budget", type=float, help="seconds; start nothing new after that, and exit 3 if work is left")
     args = ap.parse_args()
-    for cfg in corpus.configs(args.only):
-        for line in run_config(cfg, args.rescore):
-            print(line, flush=True)
-    return 0
+    t0 = time.time()
+    deadline = t0 + args.budget if args.budget else None
+    sha = engine_sha()
+    left = done = 0
+    with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+        for lines in pool.map(run_config, corpus.configs(args.only), [args.rescore] * len(corpus.configs(args.only)), [deadline] * len(corpus.configs(args.only)), [sha] * len(corpus.configs(args.only))):
+            for line in lines:
+                if line.startswith("LEFT "):
+                    left += 1
+                    continue
+                done += 1
+                print(line, flush=True)
+    print(f"run: {done} measured, {left} left, {time.time() - t0:.0f}s, {args.jobs} jobs, engine {sha[:12]}", flush=True)
+    return 3 if left else 0
 
 
 if __name__ == "__main__":
