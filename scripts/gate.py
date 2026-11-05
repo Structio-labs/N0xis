@@ -38,9 +38,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WINDOWS = "x86_64-pc-windows-gnu"
-# Rustup's name for this repo's channel on this host: `--target` refuses a toolchain pinned to
-# another host.
-LINUX_TOOLCHAIN = "stable-x86_64-unknown-linux-gnu"
 # What a Windows main thread has unless the linker is told otherwise.
 TEST_STACK_KIB = 1024
 TEST_TIMEOUT_S = 900
@@ -222,7 +219,6 @@ def clippy(log, step, target=None):
     env = {"CARGO_TARGET_DIR": str(ROOT / "target" / "gate-clippy")}
     if target:
         cmd += ["--target", target]
-        env["RUSTUP_TOOLCHAIN"] = LINUX_TOOLCHAIN
         env["CARGO_TARGET_DIR"] = str(ROOT / "target" / "gate-clippy-windows")
     rc, seconds = run_step(log, step, [*cmd, "--", "-D", "warnings"], env=env)
     report(log, step, rc == 0, seconds)
@@ -232,9 +228,8 @@ def clippy(log, step, target=None):
 
 
 def wine(log):
-    env = {"RUSTUP_TOOLCHAIN": LINUX_TOOLCHAIN}
     target_dir = ROOT / "target" / "gate-wine"
-    rc, binaries, built = compile_tests(log, [], target=WINDOWS, target_dir=target_dir, env=env)
+    rc, binaries, built = compile_tests(log, [], target=WINDOWS, target_dir=target_dir)
     report(log, "build-win", rc == 0, built, f"{len(binaries)} test binaries")
     if rc != 0:
         tail_errors(log, f"build-{WINDOWS}")
