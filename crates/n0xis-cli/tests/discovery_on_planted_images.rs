@@ -198,6 +198,72 @@ fn an_aarch64_function_that_signs_its_return_address_starts_at_paciasp() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A declared source is a claim, what the table says, never the truth** (the
+/// code may be obfuscated, or the table simply wrong). `lying.so` plants FDEs
+/// and `STT_FUNC` symbols that state wrong starts and sizes
+/// (`fixtures/discovery/lying.s`; every function there is 16 bytes on a 16-byte
+/// boundary, `objdump -d` in `lying.so.disassembly.txt`).
+///
+/// This pins what the engine answers, **not what it should**. Where nothing
+/// else speaks about the lie, the answer repeats it and `contradictions` has
+/// nothing to report; where a second source speaks, it reports the two. A
+/// change here is a change of what a lying table can make the engine say.
+#[test]
+fn a_lying_table_is_repeated_and_contradicted_only_where_a_second_source_speaks() {
+    let dir = project("lying");
+    let image = fixture("lying.so");
+    let file = image.to_str().expect("a UTF-8 path");
+    let fde = json!({"source": "unwind", "table": "eh_frame"});
+    let st_size = json!({"source": "symbol_size", "of": "st_size"});
+
+    // The list: real starts 0x1000, 0x1010, ... 0x1080, at 16-byte intervals.
+    // Of those 0x1010, 0x1030, 0x1060 and 0x1080 are not listed; 0x1004, 0x1024
+    // and 0x1044 are starts no function has (and 0x1015, 0x1035 the rules' own,
+    // after a lying end).
+    assert_eq!(
+        listed(&dir, &image),
+        ["0x1000", "0x1004", "0x1015", "0x1020", "0x1024", "0x1035", "0x1040", "0x1044", "0x1050", "0x1070"],
+        "as measured"
+    );
+
+    // An FDE alone, with a start inside the function: the lie is stated as the
+    // table's, with no doubt, beside the real start the section's first bytes
+    // gave the gap sweep.
+    let alone = why(&dir, &image, "0x1004");
+    assert_eq!(alone["found"]["start_sources"], json!([fde]), "{alone}");
+    assert_eq!(alone["found"]["end"], json!({"va": "0x1014", "source": "unwind", "table": "eh_frame"}), "{alone}");
+
+    // A symbol alone, with a start in the middle of an instruction.
+    let wrong_start = why(&dir, &image, "0x1044");
+    assert_eq!(wrong_start["found"]["start_sources"], json!([symbol("static"), symbol("dynamic")]), "{wrong_start}");
+    assert_eq!(wrong_start["found"]["name"]["name"], "wrong_start", "{wrong_start}");
+    assert_eq!(wrong_start["found"]["end"], json!({"va": "0x1050", "source": "symbol_size", "of": "st_size"}), "{wrong_start}");
+
+    // A symbol alone, too long: the function it swallows is listed as part of
+    // it, and nothing says so. (Before a symbol declared starts, `0x1060` was
+    // listed: a lying size now hides a real function.)
+    let swallowed = why(&dir, &image, "0x1060");
+    assert_eq!(swallowed["found"]["start"], "0x1050", "{swallowed}");
+    assert_eq!(swallowed["found"]["addr_is_start"], false, "{swallowed}");
+
+    // Only where a second source speaks does `contradictions` say anything:
+    // the FDE and the size of `contested` as an end, `witnessed`'s true size
+    // and its lying FDE as an overlap. Nothing about `alone`, `wrong_start` or
+    // `wrong_size`.
+    let c = run(&dir, &["contradictions", "--file", file]);
+    assert_eq!(
+        c["contradictions"],
+        json!([
+            {"kind": "end", "start": "0x1070", "ends": [{"end": "0x1080", "by": [fde]}, {"end": "0x1090", "by": [st_size]}]},
+            {"kind": "overlap",
+             "first": {"start": "0x1020", "end": "0x1030", "by": [st_size]},
+             "second": {"start": "0x1024", "end": "0x1034", "by": [fde]}},
+        ]),
+        "{c}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The rules' edges: the section's start brackets the code before the first
 /// declared function; a branch into the filler means what follows the filler
 /// is the same function; an entry pattern the code before runs on into is the
