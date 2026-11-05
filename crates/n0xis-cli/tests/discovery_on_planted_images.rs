@@ -184,6 +184,20 @@ fn i386_get_pc_is_not_a_call_and_a_call_to_the_next_function_is() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A function that signs its return address begins with `paciasp`; its `stp`
+/// is one word in, and the start is the `paciasp`.
+#[test]
+fn an_aarch64_function_that_signs_its_return_address_starts_at_paciasp() {
+    let dir = project("paciasp");
+    let image = fixture("aarch64.so");
+    // At `paciasp`, not at the `stp` after it.
+    let starts = listed(&dir, &image);
+    assert!(starts.contains(&"0x1b0".to_string()) && !starts.contains(&"0x1b4".to_string()), "{starts:?}");
+    let got = why(&dir, &image, "0x1b0");
+    assert_eq!(got["found"]["start_sources"], json!([{"source": "prologue"}]), "{got}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The image's answer behind the first test, read without the CLI: the
 /// functions a symbol declares, with their tables, and the PLT's range.
 /// On 32-bit ARM a Thumb function's `st_value` is one past its code, and such

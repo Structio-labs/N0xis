@@ -159,7 +159,14 @@ static SVC_WRITES: &[Reg] = &[arm64reg::X0];
 /// seen most often. Exact-byte matching only (see `DiscoverPass`), so this
 /// necessarily misses other frame sizes — a documented limitation, not a
 /// silent one.
+///
+/// `paciasp` too: a function built with return-address signing begins with it,
+/// and its `stp` comes one word later. Matched at the `stp` alone, every such
+/// function was listed 4 bytes in (48 times in each variant of the
+/// rule-accuracy corpus: the C runtime's `_init` and `_fini`); matched at the
+/// `paciasp`, the scan's skip past one match steps over the `stp`.
 const ARM64_PROLOGUES: &[&[u8]] = &[
+    &0xd503233fu32.to_le_bytes(), // paciasp
     &0xa9bf7bfdu32.to_le_bytes(), // stp x29, x30, [sp, #-0x10]!
     &0xa9be7bfdu32.to_le_bytes(), // stp x29, x30, [sp, #-0x20]!
     &0xa9bd7bfdu32.to_le_bytes(), // stp x29, x30, [sp, #-0x30]!
