@@ -1107,9 +1107,12 @@ fn mem_forward_round(
     // Forward dataflow to a fixpoint: `cross_in[b]` is the memory available on
     // *every* path into block `b`. Entry (block 0, no preds) starts empty.
     // Monotone and bounded — the fact set can only shrink toward agreement.
+    // A block's facts are used as soon as they change, within the same pass:
+    // waiting for the next one moved a fact one block per pass, n passes over n
+    // blocks on a run of `if`s, in each of the optimizer's rounds.
     let mut cross_in: Vec<Vec<Avail>> = vec![Vec::new(); n];
+    let mut cross_out: Vec<Vec<Avail>> = (0..n).map(|b| transfer_cross(&cross_in[b], &blocks[b], &esc)).collect();
     for _ in 0..(n + 2) {
-        let cross_out: Vec<Vec<Avail>> = (0..n).map(|b| transfer_cross(&cross_in[b], &blocks[b], &esc)).collect();
         let mut changed = false;
         for b in 0..n {
             let new_in = if preds[b].is_empty() {
@@ -1120,6 +1123,7 @@ fn mem_forward_round(
             };
             if !facts_eq(&new_in, &cross_in[b]) {
                 cross_in[b] = new_in;
+                cross_out[b] = transfer_cross(&cross_in[b], &blocks[b], &esc);
                 changed = true;
             }
         }
