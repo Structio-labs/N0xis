@@ -175,7 +175,15 @@ pub enum NotStated {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CfgEnd {
+    /// Where the graph's end heuristic ended the function.
     End(Va),
+    /// The heuristic found no end in the bytes the graph was built from (its
+    /// window, `read` bytes from the start, or fewer where the readable image
+    /// ends sooner), and the graph stops at `at` because they do: where the
+    /// function was cut, not where it ends. Reported as an end, it was one
+    /// that lay exactly 4 KiB past the start, often inside an instruction —
+    /// 495 times on the rule-accuracy corpus (docs/VERIFICATION.md).
+    Cut { at: Va, read: usize },
     NotBuilt { why: String },
 }
 
@@ -300,22 +308,30 @@ fn containing<'a>(
             return Ok(Located::In(entry, end_why(ctx, names, entry, cfg_end)?));
         }
     }
-    Ok(Located::Outside(match end_va(&end) {
-        Some(end) => format!(
+    Ok(Located::Outside(match (&end, end_va(&end)) {
+        (EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::Cut { at, read } }), _) => format!(
+            "no listed function is known to contain {addr}: nothing states an end for the nearest start at or below it, {}, its control-flow graph found none in the {read} bytes it read and was cut at {at}, and no earlier function's stated end is past {addr}",
+            nearest.va
+        ),
+        (_, Some(end)) => format!(
             "no listed function contains {addr}: the nearest start at or below it, {}, ends at {end}, and no earlier function's stated end is past it",
             nearest.va
         ),
-        None => format!(
+        (_, None) => format!(
             "no listed function contains {addr}: nothing states an end for the nearest start at or below it, {}, and its control-flow graph was not built",
             nearest.va
         ),
     }))
 }
 
+/// How far the function is known to reach: its end, or, where its graph was
+/// cut, the cut — the function holds at least the bytes before it, so an
+/// address there is in it; past it, nothing is known.
 fn end_va(end: &EndWhy) -> Option<Va> {
     match end {
         EndWhy::Stated { va, .. } => Some(*va),
         EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::End(va) }) => Some(*va),
+        EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::Cut { at, .. } }) => Some(*at),
         EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::NotBuilt { .. } }) => None,
     }
 }

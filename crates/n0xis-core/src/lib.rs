@@ -104,7 +104,7 @@ pub use profile::{advisories, assemble_profile, profile_image, Advisory, EngineH
 pub use dissect::{DissectArtifact, DissectField, DissectInput, DissectPass, GuessedKind, NO_NATIVE_POINTERS};
 pub use dot::{DotArtifact, dot};
 pub use ir::{
-    CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, IrInsn, Successor, explain,
+    CfgArtifact, CfgBlock, CfgInput, CfgPass, CfgStats, Callsite, DefUse, GraphEnd, IrInsn, Successor, explain,
 };
 pub use emulate::{
     BodyMap, CALLER_FRAME, CallPolicy, CodeProvider, DEFAULT_FS_BASE, DEFAULT_GS_BASE,

@@ -142,12 +142,13 @@ enum Command {
     Imports(ImportsArgs),
     /// For one address: the function it is in, and where each fact about it
     /// came from, as a category from a closed list — every source of its
-    /// start (a declaration such as `.pdata`, an `.eh_frame` FDE, an export, a
-    /// PDB, a WebAssembly body; or a rule: after a declared end, a gap sweep, a
-    /// call target, a prologue), the one source of its end (or `not_stated`,
-    /// the control-flow graph's own end), and the layer that named it, with
-    /// every other layer that names it. No confidence numbers: a category says
-    /// what produced a fact, not how likely it is.
+    /// start (a declaration such as `.pdata`, an `.eh_frame` FDE, an ELF
+    /// symbol with a size, an export, a PDB, a WebAssembly body; or a rule:
+    /// after a declared end, a gap sweep, a call target, a prologue), the one
+    /// source of its end (or `not_stated`, the control-flow graph's own end,
+    /// or where that graph was cut by its window), and the layer that named
+    /// it, with every other layer that names it. No confidence numbers: a
+    /// category says what produced a fact, not how likely it is.
     Why(WhyArgs),
     /// Every place in an image where two sources the engine reads disagree —
     /// the map of where to doubt: a start with two stated ends (an unwind

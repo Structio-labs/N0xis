@@ -374,8 +374,13 @@ runs no discovery of its own. Through the registry (`why`), so `serve` and an MC
     "unwind", "table": "pdata" | "eh_frame"}`, `{"va": "0x…", "source": "body", "function":
     n}`; `also` lists other declarations of the same extent when there are any. Where nothing
     states one: `{"source": "not_stated", "cfg": {"end": "0x…"}}`, the end of the control-flow
-    graph `ir build` builds from the start by default (its end heuristic), or
-    `{"not_built": {"why": "..."}}` where none can be built (a WebAssembly module has no lift).
+    graph `ir build` builds from the start by default (its end heuristic);
+    `{"source": "not_stated", "cfg": {"cut": {"at": "0x…", "read": n}}}` where that heuristic
+    found no end in the `n` bytes the graph was built from (a 4 KiB window, or fewer where the
+    readable image ends sooner) — the graph was cut at `at`, which is not the function's end;
+    or `{"not_built": {"why": "..."}}` where none can be built (a WebAssembly module has no
+    lift). An address at or past a cut is in no function this answer can name, and the `none`
+    answer says so.
   - `name` — the name the function list gives, and the layer that gave it: `user` (a rename),
     `rtti`, `flirt` with `given_by` `project` (kept by `analyze --flirt`) or `argument`
     (`--flirt`), `pdb`, `managed`, `image` with its `table` (`static`: `.symtab`; `dynamic`:

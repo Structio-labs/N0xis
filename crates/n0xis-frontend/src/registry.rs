@@ -2785,8 +2785,14 @@ impl Plugin for AnalysisPasses {
                             return crate::why::CfgEnd::NotBuilt { why: message };
                         }
                         let cfg_ctx = ctx.with_eh(eh_regions_at(&eh_all, start));
-                        match n0xis_core::Pass::run(&n0xis_core::CfgPass, &cfg_ctx, n0xis_core::CfgInput::new(start, 4096)) {
-                            Ok(cfg) => crate::why::CfgEnd::End(cfg.end),
+                        // The graph's end is the function's only where its
+                        // heuristic decided it; where the bytes ran out first,
+                        // the answer says the graph was cut there.
+                        match n0xis_core::CfgPass.run_with_end(&cfg_ctx, n0xis_core::CfgInput::new(start, 4096)) {
+                            Ok((cfg, n0xis_core::GraphEnd::BytesRanOut { read })) => crate::why::CfgEnd::Cut { at: cfg.end, read },
+                            Ok((cfg, n0xis_core::GraphEnd::Stated | n0xis_core::GraphEnd::Heuristic | n0xis_core::GraphEnd::NotAsked)) => {
+                                crate::why::CfgEnd::End(cfg.end)
+                            }
                             Err(e) => crate::why::CfgEnd::NotBuilt { why: e.to_string() },
                         }
                     };

@@ -175,6 +175,36 @@ impl Pass for CfgPass {
     }
 
     fn run(&self, ctx: &Ctx, input: CfgInput) -> Result<CfgArtifact, CoreError> {
+        self.run_with_end(ctx, input).map(|(cfg, _)| cfg)
+    }
+}
+
+/// How the end of a graph [`CfgPass`] built was decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphEnd {
+    /// An extent the image declares ended it (a symbol's size, an unwind
+    /// entry).
+    Stated,
+    /// The end heuristic decided it: a terminator no forward edge passes, a
+    /// call that does not return, or the first byte that does not decode.
+    Heuristic,
+    /// Nothing states an end and the heuristic found none before the bytes the
+    /// graph was built from ran out: `read` bytes from the start (the window
+    /// asked for, or fewer where the readable bytes end sooner). The graph's
+    /// `end` is where those bytes end, which says nothing about where the
+    /// function does — on the rule-accuracy corpus 495 such ends were exactly
+    /// the start plus the 4 KiB window, inside an instruction.
+    BytesRanOut { read: usize },
+    /// The caller turned the end heuristic off: the whole window, by request.
+    NotAsked,
+}
+
+impl CfgPass {
+    /// [`Pass::run`], and how the graph's end was decided — what a caller that
+    /// reports the end as a fact about the function (`n0x why`) needs to know,
+    /// and `CfgArtifact` does not carry: its shape is kept on disk and in every
+    /// `ir cfg` answer, and the end it states is the graph's either way.
+    pub fn run_with_end(&self, ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, GraphEnd), CoreError> {
         // The declared extent is a **fact** about the function; `max_bytes` is a
         // budget for guessing when there is none. Reading only the budget and
         // then discarding a declared end that fell outside it is the worst of
@@ -212,8 +242,8 @@ impl Pass for CfgPass {
         // short of an exception landing pad that no control-flow edge reaches.
         // With neither source the heuristic is unchanged.
         let stated_end = declared_extent(ctx, input.start).filter(|e| *e <= end_cap);
-        let instrs = match (input.auto_end, stated_end) {
-            (true, Some(end)) => all.into_iter().take_while(|i| i.va.0 < end).collect(),
+        let (instrs, how) = match (input.auto_end, stated_end) {
+            (true, Some(end)) => (all.into_iter().take_while(|i| i.va.0 < end).collect(), GraphEnd::Stated),
             (true, None) => {
                 // The heuristic raises the function's end for every **direct**
                 // forward branch it sees. A jump-table case target is not a
@@ -233,7 +263,7 @@ impl Pass for CfgPass {
                 // every corpus here, and an unbounded loop over a heuristic is
                 // how a function grows to fill a 32 KB window.
                 let mut floor = input.start.0;
-                let mut instrs = truncate_to_function(&all, input.start.0, end_cap, floor, |ins| {
+                let (mut instrs, mut ended) = truncate_to_function(&all, input.start.0, end_cap, floor, |ins| {
                     is_noreturn_call(ctx, ins)
                 });
                 for _ in 0..3 {
@@ -242,13 +272,19 @@ impl Pass for CfgPass {
                         break;
                     }
                     floor = reach;
-                    instrs = truncate_to_function(&all, input.start.0, end_cap, floor, |ins| {
+                    (instrs, ended) = truncate_to_function(&all, input.start.0, end_cap, floor, |ins| {
                         is_noreturn_call(ctx, ins)
                     });
                 }
-                instrs
+                // No terminator ended it, and the decode reached the end of
+                // the bytes: the graph stops because they did. (A decode that
+                // stopped earlier, on bytes that do not decode, is the
+                // heuristic's end, as it always was.)
+                let ran_out = !ended && all.last().is_some_and(|l| l.va.0 + u64::from(l.len) >= end_cap);
+                let how = if ran_out { GraphEnd::BytesRanOut { read: bytes.len() } } else { GraphEnd::Heuristic };
+                (instrs, how)
             }
-            (false, _) => all,
+            (false, _) => (all, GraphEnd::NotAsked),
         };
 
         // Fold in any `.cold` partition the compiler split out of this function
@@ -259,7 +295,7 @@ impl Pass for CfgPass {
         // conditional branch with no in-function successor.
         let instrs = fold_cold_partitions(ctx, input.start, instrs);
 
-        build(ctx, &instrs, input.start)
+        build(ctx, &instrs, input.start).map(|cfg| (cfg, how))
     }
 }
 
@@ -502,15 +538,17 @@ fn switch_case_reach(ctx: &Ctx, instrs: &[DecodedInsn], start: u64, end_cap: u64
     furthest
 }
 
+/// Returns the instructions kept, and whether a terminator ended them (`false`:
+/// nothing did, and every instruction decoded is kept).
 fn truncate_to_function(
     all: &[DecodedInsn],
     start: u64,
     end_cap: u64,
     floor: u64,
     is_noreturn_call: impl Fn(&DecodedInsn) -> bool,
-) -> Vec<DecodedInsn> {
+) -> (Vec<DecodedInsn>, bool) {
     let mut max_forward_leader = start.max(floor);
-    let mut cut = all.len();
+    let mut cut = None;
     for (idx, ins) in all.iter().enumerate() {
         let next = ins.va.0 + ins.len as u64;
         let tgt = ins.target.map(|v| v.0).unwrap_or(0);
@@ -525,26 +563,26 @@ fn truncate_to_function(
                     max_forward_leader = tgt;
                 }
                 if tail && next > max_forward_leader {
-                    cut = idx + 1;
+                    cut = Some(idx + 1);
                     break;
                 }
                 if !tail && tgt < next && next > max_forward_leader {
-                    cut = idx + 1;
+                    cut = Some(idx + 1);
                     break;
                 }
             }
             InsnKind::Ret | InsnKind::Int if next > max_forward_leader => {
-                cut = idx + 1;
+                cut = Some(idx + 1);
                 break;
             }
             InsnKind::Call if next > max_forward_leader && is_noreturn_call(ins) => {
-                cut = idx + 1;
+                cut = Some(idx + 1);
                 break;
             }
             _ => {}
         }
     }
-    all[..cut].to_vec()
+    (all[..cut.unwrap_or(all.len())].to_vec(), cut.is_some())
 }
 
 /// Largest declared extent this will read for one function. A length that comes

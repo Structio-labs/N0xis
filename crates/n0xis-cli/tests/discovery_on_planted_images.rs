@@ -142,6 +142,17 @@ fn an_fde_over_the_plt_is_not_a_function() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A function with no stated end whose graph runs out of its 4 KiB window:
+/// the answer says the graph was cut there, never that the function ends
+/// there.
+#[test]
+fn a_graph_cut_by_its_window_says_it_was_cut() {
+    let dir = project("window");
+    let got = why(&dir, &fixture("x86_64.so"), "0x1045");
+    assert_eq!(got["found"]["end"], json!({"source": "not_stated", "cfg": {"cut": {"at": "0x2045", "read": 4096}}}), "{got}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// i386 `lea` padding after a declared end is padding: the next function is
 /// the first instruction after it, found by the rule that follows a declared
 /// end and by the gap sweep, and the `lea` is listed by neither.
