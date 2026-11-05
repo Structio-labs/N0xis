@@ -1544,8 +1544,8 @@ tables are `oracle/obfuscation/results/doc-tables.md`, regenerated with the engi
   `bl`/`b` as wrong — the metric accusing the engine; corrected, then both sides re-measured, and the
   baseline fell to 0.
 - *`strings` and `decomp` are controls here* and are unaffected: 0 wrong strings; pseudo-C returned
-  for every function; 0 engine crashes on this corpus (the known `decomp pseudo` stack overflow did
-  not trigger on this build; the harness isolates and records one if it does).
+  for every function; 0 engine crashes on this corpus (a stack overflow found later on this engine, since
+  fixed, did not trigger here; the harness isolates and records a crash if one occurs).
 
 **Verdict on the claims this corpus can test.**
 
@@ -1574,8 +1574,9 @@ The byte-identity check also caught a real instrument bug on the first *multi-fi
 labels reset per source file and collided across objects, so `build.json`'s planted-range addresses
 came out wrong (the disasm/discover numbers are invariant to this — a junk start is always a true
 boundary of the twin — but `decoded_dead_bytes` and that check were not). The labels are now unique
-per file; re-verifying the multi-file byte-identity on a rebuilt Lua was left pending because the
-shared build budget was saturated by a concurrent measurement — recorded as pending, not as passed.
+per file, and on a rebuilt x86-64 Lua at intensity 1.0 the twin differs from the obfuscated image in 0
+bytes outside the planted ranges, with the same counts. The other Lua configurations were not rebuilt after
+the fix.
 
 Two measurement bugs the instrument found in itself this round, both fixed before any number was
 recorded: the xref scorer first matched only x86 `call`/`jmp`, so every AArch64 `bl`/`b` read as a

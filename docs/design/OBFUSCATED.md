@@ -1,6 +1,6 @@
 # Obfuscated code: what can be believed
 
-Status: accepted 2026-11-05. Not measured yet: how the engine behaves on such code is unknown.
+Status: accepted 2026-11-05. One transformation of the list below is measured, junk bytes (`docs/VERIFICATION.md`); on the others how the engine behaves is unknown.
 
 ## 1. Why it changes the argument
 
