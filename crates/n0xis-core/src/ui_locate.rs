@@ -19,6 +19,7 @@
 //! first; this module asks the second afterward, over already-found AABBs.
 
 use n0xis_contracts::Va;
+use n0xis_sources::{RegionCoverage, Swept};
 use serde::{Deserialize, Serialize};
 
 use crate::scan::{ScanValue, ValueType};
@@ -262,13 +263,13 @@ pub struct UiLocatePass;
 
 impl Pass for UiLocatePass {
     type In = UiLocateInput;
-    type Out = UiLocateArtifact;
+    type Out = Swept<UiLocateArtifact>;
 
     fn name(&self) -> &'static str {
         "ui.locate"
     }
 
-    fn run(&self, ctx: &Ctx, input: UiLocateInput) -> Result<UiLocateArtifact, CoreError> {
+    fn run(&self, ctx: &Ctx, input: UiLocateInput) -> Result<Swept<UiLocateArtifact>, CoreError> {
         let bound = input.space.bound();
         let align = input.align.max(1);
         let layout = input.layout;
@@ -280,6 +281,7 @@ impl Pass for UiLocatePass {
         let mut observed_max = [f32::NEG_INFINITY, f32::NEG_INFINITY];
         let mut any_observed = false;
 
+        let mut read = RegionCoverage::default();
         for (start, size) in &input.regions {
             let scan_input = StructuralScanInput {
                 start: *start,
@@ -289,12 +291,18 @@ impl Pass for UiLocatePass {
                 predicate: Box::new(move |values| aabb_plausible(values, bound).map(|_| 0.0)),
             };
             // A region enumerated a moment ago can be freed/decommitted
-            // before this scan reaches it (RE_METHOD F6) — skip it and keep
-            // going, never abort the whole ~1.2 GB sweep over one stale
-            // region (brief §7).
+            // before this scan reaches it (RE_METHOD F6): noted, and the sweep
+            // goes on, never aborting the whole ~1.2 GB over one stale region
+            // (brief §7). A failure about no region ends it.
             let art = match StructuralScanPass.run(ctx, scan_input) {
-                Ok(a) => a,
-                Err(CoreError::Source(n0xis_sources::SourceError::Unmapped(_))) => continue,
+                Ok(a) => {
+                    read.record(*start, *size, Ok(a.bytes_scanned))?;
+                    a
+                }
+                Err(CoreError::Source(e)) => {
+                    read.record(*start, *size, Err(e))?;
+                    continue;
+                }
                 Err(e) => return Err(e),
             };
             candidates_tested += art.candidates_tested;
@@ -322,14 +330,17 @@ impl Pass for UiLocatePass {
         elements.sort_by(|a, b| b.area_overlap.partial_cmp(&a.area_overlap).unwrap_or(std::cmp::Ordering::Equal));
         let observed_range = any_observed.then_some([observed_min[0], observed_min[1], observed_max[0], observed_max[1]]);
 
-        Ok(UiLocateArtifact {
-            rect: [input.rect.x0, input.rect.y0, input.rect.x1, input.rect.y1],
-            space: input.space,
-            count: elements.len(),
-            elements,
-            candidates_tested,
-            bytes_scanned,
-            observed_range,
+        Ok(Swept {
+            answer: UiLocateArtifact {
+                rect: [input.rect.x0, input.rect.y0, input.rect.x1, input.rect.y1],
+                space: input.space,
+                count: elements.len(),
+                elements,
+                candidates_tested,
+                bytes_scanned,
+                observed_range,
+            },
+            read,
         })
     }
 }
@@ -379,7 +390,8 @@ mod tests {
                     align: 4,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
 
         assert_eq!(art.count, 1, "expected exactly one element: {art:?}");
         let hit = &art.elements[0];
@@ -411,7 +423,8 @@ mod tests {
                     align: 4,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(art.count, 0);
         // But it *was* observed (just irrelevant to this rect) — the
         // "make the space observable" data still reports it.
@@ -504,9 +517,33 @@ mod tests {
                     align: 4,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(art.count, 1);
         let range = art.observed_range.unwrap();
         assert!((range[0] - -0.5).abs() < 1e-6 && (range[2] - 0.5).abs() < 1e-6, "got {range:?}");
+    }
+
+    /// A region freed before the sweep reached it is stated, and the sweep goes on.
+    #[test]
+    fn a_region_that_did_not_read_is_stated() {
+        let snap = Snapshot::builder().region(Va(0x2000), vec![0u8; 0x40]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let swept = UiLocatePass
+            .run(
+                &ctx,
+                UiLocateInput {
+                    regions: vec![(Va(0x9000), 0x40), (Va(0x2000), 0x40)],
+                    rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    space: CoordSpace::Screen,
+                    layout: AabbLayout::BITSQUID,
+                    align: 4,
+                },
+            )
+            .unwrap();
+        assert_eq!(swept.read.not_read()[0].start, Va(0x9000));
+        assert_eq!(swept.read.regions_scanned(), 1);
+        assert_eq!(swept.answer.bytes_scanned, 0x40);
     }
 }

@@ -41,7 +41,7 @@ use crate::{MemorySource, ModuleProvider, SourceError, SymbolProvider};
 // They are the *shape* of a live target's answers, not Win32 facts, so they now
 // live in `crate::target` alongside `trait LiveTarget` and are shared with the
 // Linux adapter — one wire vocabulary, not one per OS.
-use crate::target::{LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
+use crate::target::{LiveTarget, MemRegion, ProcInfo};
 
 fn state_str(s: u32) -> &'static str {
     match s {
@@ -221,20 +221,6 @@ impl LiveProcess {
             addr = next;
         }
         out
-    }
-
-    /// All committed, writable regions — the default region set a scan/AOB
-    /// search covers when no explicit `--start`/`--size` (or equivalent) is
-    /// given, since a value or pattern could be anywhere in the process's
-    /// dynamically-allocated memory. Shared by the CLI's `scan value`/
-    /// `scan aob` and by any other frontend driving a live-process search —
-    /// one definition of "the default region set", not a copy per caller.
-    pub fn default_writable_regions(&self) -> Vec<(Va, usize)> {
-        self.regions(1_000_000)
-            .into_iter()
-            .filter(|r| r.state == "commit" && is_default_scan_region(&r.protect))
-            .map(|r| (r.base, r.size as usize))
-            .collect()
     }
 
     /// Allocate `size` bytes of `RWX` memory in the target — a "code cave"
@@ -516,9 +502,6 @@ impl LiveTarget for LiveProcess {
     }
     fn regions(&self, limit: usize) -> Vec<MemRegion> {
         LiveProcess::regions(self, limit)
-    }
-    fn default_writable_regions(&self) -> Vec<(Va, usize)> {
-        LiveProcess::default_writable_regions(self)
     }
     fn alloc_code_cave(&self, size: usize) -> Result<Va, SourceError> {
         LiveProcess::alloc_code_cave(self, size)

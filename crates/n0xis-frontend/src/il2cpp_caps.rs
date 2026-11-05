@@ -499,7 +499,7 @@ impl Plugin for Il2CppTools {
                     // the wrong memory.
                     let per_region = usize_arg(args, "window").unwrap_or(0x20000);
                     let region_cap = usize_arg(args, "regions").unwrap_or(8);
-                    let mut regions = live.default_writable_regions();
+                    let mut regions = n0xis_sources::LiveTarget::default_writable_regions(&live);
                     regions.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
                     let windows: Vec<(Va, usize)> = regions.into_iter().take(region_cap).map(|(base, size)| (base, size.min(per_region))).collect();
                     if windows.is_empty() {
@@ -523,8 +523,11 @@ impl Plugin for Il2CppTools {
                         // before any string read. Off for older targets.
                         require_self_pointer: args.get("any_layout").and_then(Value::as_bool) != Some(true),
                     };
-                    let art = match n0xis_core::Pass::run(&n0xis_core::ClassScanPass, &ctx, input) {
-                        Ok(a) => a,
+                    let n0xis_sources::LiveAnswer { answer: art, read } = match n0xis_core::Pass::run(&n0xis_core::ClassScanPass, &ctx, input) {
+                        Ok(swept) => match swept.live() {
+                            Ok(stated) => stated,
+                            Err(nothing) => return Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
+                        },
                         Err(e) => return Response::error("class-scan-failed", e.to_string()),
                     };
 
@@ -555,9 +558,8 @@ impl Plugin for Il2CppTools {
                         .collect();
                     let returned = page.len();
 
-                    ok(
-                        schema::v1::IL2CPP_CLASSES,
-                        json!({
+                    let data = n0xis_sources::LiveAnswer {
+                        answer: json!({
                             "sampled_regions": sampled_regions,
                             "bytes_read": art.bytes_read,
                             "candidates": art.candidates,
@@ -571,7 +573,9 @@ impl Plugin for Il2CppTools {
                             "more": returned < matched_count,
                             "classes": page,
                         }),
-                    )
+                        read,
+                    };
+                    ok(schema::v1::IL2CPP_CLASSES, serde_json::to_value(data).unwrap_or(Value::Null))
                     .with_page(matched_count, returned)
                     .with_source(format!("live:{pid}"))
                     // This is a *sample*, and the difference between "these are

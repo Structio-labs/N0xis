@@ -39,6 +39,7 @@
 //! ranges so this pass never touches an OS API.
 
 use n0xis_contracts::Va;
+use n0xis_sources::{RegionCoverage, Swept};
 use serde::{Deserialize, Serialize};
 
 use crate::{Ctx, CoreError, Pass};
@@ -459,19 +460,20 @@ pub struct ScanPass;
 
 impl Pass for ScanPass {
     type In = ScanInput;
-    type Out = ScanState;
+    type Out = Swept<ScanState>;
 
     fn name(&self) -> &'static str {
         "scan.value"
     }
 
-    fn run(&self, ctx: &Ctx, input: ScanInput) -> Result<ScanState, CoreError> {
+    fn run(&self, ctx: &Ctx, input: ScanInput) -> Result<Swept<ScanState>, CoreError> {
         let size = input.value_type.size();
         let align = input.align.max(1);
         let mut regions = Vec::new();
+        let mut read = RegionCoverage::default();
 
         for (start, len) in &input.regions {
-            let Ok(bytes) = ctx.source.read(*start, *len) else { continue };
+            let bytes = read.read_region(ctx.source, *start, *len)?;
             match input.criterion {
                 ScanCriterion::Unknown => {
                     if bytes.len() >= size {
@@ -495,7 +497,7 @@ impl Pass for ScanPass {
                 }
             }
         }
-        Ok(ScanState { value_type: input.value_type, align, regions })
+        Ok(Swept { answer: ScanState { value_type: input.value_type, align, regions }, read })
     }
 }
 
@@ -513,28 +515,29 @@ pub struct FilterPass;
 
 impl Pass for FilterPass {
     type In = FilterInput;
-    type Out = ScanState;
+    type Out = Swept<ScanState>;
 
     fn name(&self) -> &'static str {
         "scan.filter"
     }
 
-    fn run(&self, ctx: &Ctx, input: FilterInput) -> Result<ScanState, CoreError> {
+    fn run(&self, ctx: &Ctx, input: FilterInput) -> Result<Swept<ScanState>, CoreError> {
         let value_type = input.previous.value_type;
         let align = input.previous.align.max(1);
         let size = value_type.size();
         let mut regions = Vec::new();
+        let mut read = RegionCoverage::default();
 
         for r in &input.previous.regions {
             // One read per region covering the candidate span, then index into
             // it — a syscall per candidate would be pathological for a large set.
             let (span_off, span) = match &r.data {
-                RegionData::Dense { bytes } => (0usize, ctx.source.read(r.base, bytes.len()).unwrap_or_default()),
+                RegionData::Dense { bytes } => (0usize, read.read_region(ctx.source, r.base, bytes.len())?),
                 RegionData::Sparse { slots } => {
                     let Some(min) = slots.iter().map(|s| s.off as usize).min() else { continue };
                     let max = slots.iter().map(|s| s.off as usize).max().unwrap();
                     let span_len = max + size - min;
-                    (min, ctx.source.read(r.base.offset(min as u64), span_len).unwrap_or_default())
+                    (min, read.read_region(ctx.source, r.base.offset(min as u64), span_len)?)
                 }
             };
 
@@ -575,7 +578,7 @@ impl Pass for FilterPass {
                 regions.push(RegionState { base: r.base, data: RegionData::Sparse { slots } });
             }
         }
-        Ok(ScanState { value_type, align, regions })
+        Ok(Swept { answer: ScanState { value_type, align, regions }, read })
     }
 }
 
@@ -667,26 +670,27 @@ pub struct GroupScanPass;
 
 impl Pass for GroupScanPass {
     type In = GroupScanInput;
-    type Out = GroupArtifact;
+    type Out = Swept<GroupArtifact>;
 
     fn name(&self) -> &'static str {
         "scan.group"
     }
 
-    fn run(&self, ctx: &Ctx, input: GroupScanInput) -> Result<GroupArtifact, CoreError> {
+    fn run(&self, ctx: &Ctx, input: GroupScanInput) -> Result<Swept<GroupArtifact>, CoreError> {
         let align = input.align.max(1);
         let nfields = input.fields.len();
         let win = input.window as i64;
         let mut hits: Vec<GroupHit> = Vec::new();
         let mut total_hits = 0usize;
         let mut bytes_scanned = 0usize;
+        let mut read = RegionCoverage::default();
 
         if nfields == 0 {
-            return Ok(GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: 0 });
+            return Ok(Swept { answer: GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: 0 }, read });
         }
 
         for (start, len) in &input.regions {
-            let Ok(bytes) = ctx.source.read(*start, *len) else { continue };
+            let bytes = read.read_region(ctx.source, *start, *len)?;
             bytes_scanned += bytes.len();
 
             // One pass over the region: collect each field's match offsets (kept
@@ -771,7 +775,7 @@ impl Pass for GroupScanPass {
             }
         }
 
-        Ok(GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: nfields })
+        Ok(Swept { answer: GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: nfields }, read })
     }
 }
 
@@ -819,7 +823,8 @@ mod tests {
                     limit: 100,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(art.total_hits, 1, "exactly the real cluster: {:#x?}", art.hits);
         let h = &art.hits[0];
         assert_eq!(h.base, Va(0x4010));
@@ -846,7 +851,8 @@ mod tests {
                     align: 4,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(state.total(), 2);
         let m = state.materialize(PREVIEW_LIMIT);
         assert_eq!(m[0].addr, Va(0x1008));
@@ -874,7 +880,8 @@ mod tests {
                     align: 4,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(state.total(), 8);
         let addrs: Vec<Va> = state.materialize(PREVIEW_LIMIT).into_iter().map(|m| m.addr).collect();
         assert!(addrs.contains(&Va(0x9000)), "second region must be scanned");
@@ -897,7 +904,8 @@ mod tests {
                     align: 4,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(first.total(), 2);
 
         // Second world: only the first candidate increased.
@@ -906,7 +914,8 @@ mod tests {
         let ctx2 = Ctx::new(&snap2, &arch);
         let filtered = FilterPass
             .run(&ctx2, FilterInput { previous: first, criterion: FilterCriterion::Increased })
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(filtered.total(), 1);
         let m = filtered.materialize(PREVIEW_LIMIT);
         assert_eq!(m[0].addr, Va(0x2000));
@@ -927,7 +936,8 @@ mod tests {
                 &ctx1,
                 ScanInput { regions: vec![(base, 16)], value_type: ValueType::I32, criterion: ScanCriterion::Unknown, align: 4 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(first.total(), 4);
         assert!(matches!(first.regions[0].data, RegionData::Dense { .. }));
 
@@ -937,7 +947,8 @@ mod tests {
         let ctx2 = Ctx::new(&snap2, &arch);
         let changed = FilterPass
             .run(&ctx2, FilterInput { previous: first, criterion: FilterCriterion::Changed })
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(changed.total(), 1);
         let m = changed.materialize(PREVIEW_LIMIT);
         assert_eq!(m[0].addr, Va(0x3008));
@@ -986,5 +997,45 @@ mod tests {
         };
         let back = ScanState::decode(&state.encode()).unwrap();
         assert_eq!(back.materialize(PREVIEW_LIMIT)[0].value, ScanValue::Float(1.5));
+    }
+
+    /// Reads like `inner` until it is told the region has gone: what a target does
+    /// between a first scan and a rescan.
+    struct Vanishing {
+        inner: Snapshot,
+        gone: std::cell::Cell<bool>,
+    }
+
+    impl n0xis_sources::MemorySource for Vanishing {
+        fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, n0xis_sources::SourceError> {
+            if self.gone.get() {
+                return Err(n0xis_sources::SourceError::Unreadable { va, reason: "Bad address".into() });
+            }
+            self.inner.read(va, len)
+        }
+        fn contains(&self, va: Va) -> bool {
+            self.inner.contains(va)
+        }
+        fn label(&self) -> String {
+            "vanishing".into()
+        }
+    }
+
+    /// A candidate whose region stopped reading did not stop matching: the rescan
+    /// has no value for it, and says so rather than dropping it unexplained.
+    #[test]
+    fn a_rescan_states_a_region_that_stopped_reading() {
+        let src = Vanishing { inner: Snapshot::builder().region(Va(0x1000), vec![7; 16]).build(), gone: std::cell::Cell::new(false) };
+        let arch = X64::new();
+        let ctx = Ctx::new(&src, &arch);
+        let first = ScanPass
+            .run(&ctx, ScanInput { regions: vec![(Va(0x1000), 16)], value_type: ValueType::U32, criterion: ScanCriterion::Unknown, align: 4 })
+            .unwrap();
+        assert!(first.read.not_read().is_empty());
+        src.gone.set(true);
+        let filtered = FilterPass.run(&ctx, FilterInput { previous: first.answer, criterion: FilterCriterion::Unchanged }).unwrap();
+        assert_eq!(filtered.answer.total(), 0);
+        assert_eq!(filtered.read.not_read()[0].start, Va(0x1000), "{:?}", filtered.read);
+        assert!(filtered.read.nothing_read());
     }
 }

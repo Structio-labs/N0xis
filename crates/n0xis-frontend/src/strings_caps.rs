@@ -47,6 +47,9 @@ struct Scanned {
     ranges: Vec<ReadRange>,
     /// Each string with the index of the range it was found in.
     strings: Vec<(FoundString, usize)>,
+    /// What each range gave. Stated only about a running process: a file's
+    /// ranges are the file's own, and their answer is what it was.
+    read: n0xis_sources::RegionCoverage,
 }
 
 /// The last list, under the key that says which question it answers.
@@ -154,7 +157,18 @@ fn strings(args: &Value) -> Response<Value> {
             r
         })
         .collect();
-    Response::success(schema::v1::STRINGS, json!({ "count": returned, "min": min, "ranges": read, "strings": page }))
+    let answer = json!({ "count": returned, "min": min, "ranges": read, "strings": page });
+    let data = match resolved.src {
+        Src::Live(_) | Src::Remote(_) => {
+            let swept = n0xis_sources::Swept { answer, read: scanned.read.clone() };
+            match swept.live() {
+                Ok(stated) => serde_json::to_value(stated).unwrap_or(Value::Null),
+                Err(nothing) => return Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
+            }
+        }
+        Src::Static(_) | Src::Snap(_) => answer,
+    };
+    Response::success(schema::v1::STRINGS, data)
         .with_source(resolved.label)
         .with_page(total, returned)
 }
@@ -219,8 +233,13 @@ fn linear_memory(placement: &n0xis_sources::SegmentPlacement, delta: u64) -> Val
 /// across a gap.
 fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncoding]) -> Result<Scanned, String> {
     let mut strings = Vec::new();
+    let mut read = n0xis_sources::RegionCoverage::default();
     for (i, (_, start, size, placement)) in ranges.iter().enumerate() {
         let runs = n0xis_sources::read_runs(src.as_mem(), *start, *size as usize).map_err(|e| e.to_string())?;
+        // `read_runs` has stepped over what would not read, so nothing is left
+        // to fail here: what a range gave is the sum of its runs.
+        let gave = runs.iter().map(|(_, bytes)| bytes.len()).sum();
+        read.record(*start, *size as usize, Ok(gave)).map_err(|e| e.to_string())?;
         for (va, bytes) in runs {
             // Wide text is read at even addresses of the space the bytes are
             // laid out in (`find_strings`), and a data segment's bytes are laid
@@ -246,5 +265,5 @@ fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncodi
         }
     }
     strings.sort_by_key(|(s, _)| s.address.0);
-    Ok(Scanned { ranges, strings })
+    Ok(Scanned { ranges, strings, read })
 }

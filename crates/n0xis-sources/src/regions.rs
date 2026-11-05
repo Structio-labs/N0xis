@@ -52,8 +52,8 @@ pub struct RegionNotRead {
     pub why: String,
 }
 
-/// A region that gave fewer bytes than asked for: `read` bytes from `start`, and
-/// the rest of `size` not looked at. A read that stops part-way gives no reason.
+/// A region that gave fewer bytes than asked for: `read` of its `size`, the rest
+/// not looked at. A read that stops part-way gives no reason.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RegionReadShort {
     pub start: Va,

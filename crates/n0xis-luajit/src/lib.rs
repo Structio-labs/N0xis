@@ -19,7 +19,7 @@
 //! APIs linked, and runs unchanged over a live process or a static dump.
 
 use n0xis_contracts::Va;
-use n0xis_sources::MemorySource;
+use n0xis_sources::{MemorySource, RegionCoverage, SourceError, Swept};
 use serde::Serialize;
 
 mod lcg;
@@ -90,10 +90,14 @@ pub fn scan_strings(
     layout: GcstrLayout,
     min_len: u32,
     max_len: u32,
-) -> Vec<LiveGcStr> {
+) -> Result<Swept<Vec<LiveGcStr>>, SourceError> {
     let mut out = Vec::new();
+    let mut read = RegionCoverage::default();
     for &(base, size) in regions {
-        let Ok(bytes) = source.read(base, size) else { continue };
+        let bytes = read.read_region(source, base, size)?;
+        if bytes.is_empty() {
+            continue;
+        }
         if bytes.len() < 4 {
             continue;
         }
@@ -123,7 +127,7 @@ pub fn scan_strings(
             });
         }
     }
-    out
+    Ok(Swept { answer: out, read })
 }
 
 /// Printable, non-empty ASCII — good enough to reject the overwhelming
@@ -163,10 +167,14 @@ pub fn find_string_runs(
     regions: &[(Va, usize)],
     targets: &std::collections::HashMap<Va, String>,
     min_run: usize,
-) -> Vec<StringRun> {
+) -> Result<Swept<Vec<StringRun>>, SourceError> {
     let mut out = Vec::new();
+    let mut read = RegionCoverage::default();
     for &(base, size) in regions {
-        let Ok(bytes) = source.read(base, size) else { continue };
+        let bytes = read.read_region(source, base, size)?;
+        if bytes.is_empty() {
+            continue;
+        }
         let words = bytes.len() / 8;
         let mut run_start: Option<usize> = None;
         let mut run: Vec<String> = Vec::new();
@@ -201,7 +209,7 @@ pub fn find_string_runs(
             out.push(StringRun { addr: base.offset(run_start.unwrap() as u64 * 8), values: run });
         }
     }
-    out
+    Ok(Swept { answer: out, read })
 }
 
 /// Like [`find_string_runs`], but for a **packed 4-byte `GCRef` array** — the
@@ -216,10 +224,14 @@ pub fn find_gcref32_runs(
     regions: &[(Va, usize)],
     targets: &std::collections::HashMap<Va, String>,
     min_run: usize,
-) -> Vec<StringRun> {
+) -> Result<Swept<Vec<StringRun>>, SourceError> {
     let mut out = Vec::new();
+    let mut read = RegionCoverage::default();
     for &(base, size) in regions {
-        let Ok(bytes) = source.read(base, size) else { continue };
+        let bytes = read.read_region(source, base, size)?;
+        if bytes.is_empty() {
+            continue;
+        }
         let words = bytes.len() / 4;
         let mut run_start: Option<usize> = None;
         let mut run: Vec<String> = Vec::new();
@@ -248,7 +260,7 @@ pub fn find_gcref32_runs(
             out.push(StringRun { addr: base.offset(run_start.unwrap() as u64 * 4), values: run });
         }
     }
-    out
+    Ok(Swept { answer: out, read })
 }
 
 #[cfg(test)]
@@ -276,7 +288,7 @@ mod tests {
         let bytes = build_region(base, needle_off, "up");
         let snap = Snapshot::builder().region(base, bytes).build();
 
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 16);
+        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 16).unwrap().answer;
 
         let hit = hits.iter().find(|h| h.text == "up").expect("must find the planted GCstr");
         assert_eq!(hit.len, 2);
@@ -292,7 +304,7 @@ mod tests {
         let mut bytes = vec![3u8, 0, 0, 0, 0x00, 0x01, 0x02];
         bytes.extend_from_slice(&[0u8; 32]);
         let snap = Snapshot::builder().region(base, bytes).build();
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 16);
+        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 16).unwrap().answer;
         assert!(hits.is_empty());
     }
 
@@ -302,7 +314,7 @@ mod tests {
         let bytes = build_region(base, 16, "hello");
         let snap = Snapshot::builder().region(base, bytes).build();
         // "hello" is len 5; a max_len of 3 must exclude it.
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 3);
+        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 3).unwrap().answer;
         assert!(hits.iter().all(|h| h.text != "hello"));
     }
 
@@ -332,7 +344,7 @@ mod tests {
         targets.insert(up, "up".to_string());
         targets.insert(down, "down".to_string());
 
-        let runs = find_string_runs(&snap, &[(base, 0x1000)], &targets, 2);
+        let runs = find_string_runs(&snap, &[(base, 0x1000)], &targets, 2).unwrap().answer;
         let combo = runs.iter().find(|r| r.values.len() == 4).expect("combo run found");
         assert_eq!(combo.values, vec!["up", "down", "down", "up"]);
         // The run starts at the second word (slot 0 was noise).
@@ -359,7 +371,7 @@ mod tests {
         targets.insert(up, "up".to_string());
         targets.insert(down, "down".to_string());
 
-        let runs = find_gcref32_runs(&snap, &[(base, 0x1000)], &targets, 2);
+        let runs = find_gcref32_runs(&snap, &[(base, 0x1000)], &targets, 2).unwrap().answer;
         let combo = runs.iter().find(|r| r.values.len() == 4).expect("gcref32 combo found");
         assert_eq!(combo.values, vec!["up", "down", "down", "up"]);
         assert_eq!(combo.addr, base.offset(4));
@@ -371,7 +383,7 @@ mod tests {
             tvbuf.extend_from_slice(&tvstr(a).to_le_bytes());
         }
         let snap2 = Snapshot::builder().region(base, tvbuf).build();
-        assert!(find_gcref32_runs(&snap2, &[(base, 0x1000)], &targets, 2).is_empty());
+        assert!(find_gcref32_runs(&snap2, &[(base, 0x1000)], &targets, 2).unwrap().answer.is_empty());
     }
 
     /// A lone matching `TValue` (run length 1) must be rejected by `min_run` so
@@ -388,7 +400,7 @@ mod tests {
         let snap = Snapshot::builder().region(base, buf).build();
         let mut targets = HashMap::new();
         targets.insert(up, "up".to_string());
-        let runs = find_string_runs(&snap, &[(base, 0x1000)], &targets, 2);
+        let runs = find_string_runs(&snap, &[(base, 0x1000)], &targets, 2).unwrap().answer;
         assert!(runs.is_empty());
     }
 }

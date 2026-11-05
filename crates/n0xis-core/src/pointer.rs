@@ -16,6 +16,7 @@
 use std::collections::HashSet;
 
 use n0xis_contracts::Va;
+use n0xis_sources::{RegionCoverage, Swept};
 use serde::Serialize;
 
 use crate::{Ctx, CoreError, Pass};
@@ -85,18 +86,21 @@ pub struct PointerPathPass;
 
 impl Pass for PointerPathPass {
     type In = PointerPathInput;
-    type Out = PointerPathArtifact;
+    type Out = Swept<PointerPathArtifact>;
 
     fn name(&self) -> &'static str {
         "scan.pointer_path"
     }
 
-    fn run(&self, ctx: &Ctx, input: PointerPathInput) -> Result<PointerPathArtifact, CoreError> {
+    fn run(&self, ctx: &Ctx, input: PointerPathInput) -> Result<Swept<PointerPathArtifact>, CoreError> {
         let ptr_size = input.pointer_size.max(4);
         let regions = &input.search_regions;
 
         let mut paths = Vec::new();
         let mut nodes_visited = 0usize;
+        // Every level reads the regions again, and what any of them could not
+        // read is missing from the chains that level could have found.
+        let mut read = RegionCoverage::default();
         // Frontier: (address we're currently looking for a pointer *to*, the
         // offsets accumulated so far, target-side first).
         let mut frontier: Vec<(Va, Vec<i64>)> = vec![(input.target, Vec::new())];
@@ -113,7 +117,8 @@ impl Pass for PointerPathPass {
             // rescans and never finished in practice. A single sorted index,
             // binary-searched per node, turns that into one full-memory pass
             // per level regardless of how wide the frontier is.
-            let index = build_pointer_index(ctx, regions, ptr_size);
+            let (index, level_read) = build_pointer_index(ctx, regions, ptr_size)?;
+            read.merge(level_read);
 
             let mut next_frontier = Vec::new();
             for (pointee, path_so_far) in &frontier {
@@ -156,7 +161,7 @@ impl Pass for PointerPathPass {
             frontier = next_frontier;
         }
 
-        Ok(PointerPathArtifact { paths, nodes_visited })
+        Ok(Swept { answer: PointerPathArtifact { paths, nodes_visited }, read })
     }
 }
 
@@ -164,10 +169,11 @@ impl Pass for PointerPathPass {
 /// value, sorted by value — the shared index each BFS level's frontier nodes
 /// query via binary search (`partition_point`) instead of a separate full
 /// region re-read per node.
-fn build_pointer_index(ctx: &Ctx, regions: &[(Va, usize)], ptr_size: usize) -> Vec<(u64, Va)> {
+fn build_pointer_index(ctx: &Ctx, regions: &[(Va, usize)], ptr_size: usize) -> Result<(Vec<(u64, Va)>, RegionCoverage), CoreError> {
     let mut index = Vec::new();
+    let mut read = RegionCoverage::default();
     for &(start, len) in regions {
-        let Ok(bytes) = ctx.source.read(start, len) else { continue };
+        let bytes = read.read_region(ctx.source, start, len)?;
         let mut off = 0usize;
         while off + ptr_size <= bytes.len() {
             let v = if ptr_size >= 8 {
@@ -180,7 +186,7 @@ fn build_pointer_index(ctx: &Ctx, regions: &[(Va, usize)], ptr_size: usize) -> V
         }
     }
     index.sort_unstable_by_key(|&(v, _)| v);
-    index
+    Ok((index, read))
 }
 
 /// Walk a discovered chain forward from its root to confirm/re-resolve where
@@ -243,7 +249,8 @@ mod tests {
                     pointer_size: 8,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .answer;
         assert!(!art.paths.is_empty(), "expected at least one chain");
         let path = &art.paths[0];
         assert_eq!(path.root_label, "mod.data");

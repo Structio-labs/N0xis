@@ -4686,7 +4686,10 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
 
     let limit = if a.limit == 0 { usize::MAX } else { a.limit };
     let align = a.align.max(1) as u64;
-    let scan = |ctx: &Ctx| -> (Vec<(Va, String)>, usize, bool) {
+    // Each match with its range's name, the bytes scanned, whether `limit` cut it.
+    type Found = (Vec<(Va, String)>, usize, bool);
+    let scan = |ctx: &Ctx| -> Result<n0xis_sources::Swept<Found>, n0xis_sources::SourceError> {
+        let mut read = n0xis_sources::RegionCoverage::default();
         let mut matches: Vec<(Va, String)> = Vec::new();
         let mut scanned = 0usize;
         let mut truncated = false;
@@ -4697,27 +4700,37 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
                 }
                 continue;
             }
-            if let Ok(art) = AobScanPass.run(ctx, AobInput { start: *start, size: *size as usize, pattern: pattern.clone() }) {
-                scanned += art.bytes_scanned;
-                for m in art.matches {
-                    if align <= 1 || (m.0.wrapping_sub(start.0)) % align == 0 {
-                        matches.push((m, name.clone()));
-                        if matches.len() >= limit {
-                            truncated = true;
-                            break;
+            let size = *size as usize;
+            match AobScanPass.run(ctx, AobInput { start: *start, size, pattern: pattern.clone() }) {
+                Ok(art) => {
+                    read.record(*start, size, Ok(art.bytes_scanned))?;
+                    scanned += art.bytes_scanned;
+                    for m in art.matches {
+                        if align <= 1 || (m.0.wrapping_sub(start.0)) % align == 0 {
+                            matches.push((m, name.clone()));
+                            if matches.len() >= limit {
+                                truncated = true;
+                                break;
+                            }
                         }
                     }
                 }
+                Err(n0xis_core::CoreError::Source(e)) => read.record(*start, size, Err(e))?,
+                Err(_) => {}
             }
         }
-        (matches, scanned, truncated)
+        Ok(n0xis_sources::Swept { answer: (matches, scanned, truncated), read })
     };
 
-    let (matches, scanned, truncated) = match &src {
+    let scanned = match &src {
         Src::Static(pe) => scan(&Ctx::new(pe.as_ref(), arch.as_ref())),
         Src::Live(l) => scan(&Ctx::new(l.as_ref(), arch.as_ref())),
         Src::Snap(s) => scan(&Ctx::new(s, arch.as_ref())),
         Src::Remote(r) => scan(&Ctx::new(r.as_ref(), arch.as_ref())),
+    };
+    let n0xis_sources::Swept { answer: (matches, scanned, truncated), read } = match scanned {
+        Ok(s) => s,
+        Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
     };
 
     let data = json!({
@@ -4727,7 +4740,11 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
         "truncated": truncated,
         "matches": matches.iter().map(|(va, sec)| json!({ "va": va.to_string(), "section": sec })).collect::<Vec<_>>(),
     });
-    emit(&Response::success(schema::v1::FIND, data).with_source(label), pretty)
+    match src {
+        // A process: a named window may not read, or may stop part-way.
+        Src::Live(_) | Src::Remote(_) => emit_swept(schema::v1::FIND, n0xis_sources::Swept { answer: data, read }, label, pretty),
+        Src::Static(_) | Src::Snap(_) => emit(&Response::success(schema::v1::FIND, data).with_source(label), pretty),
+    }
 }
 
 /// Parse a signed offset token — `0x68`, `104`, or `-0x8`.
@@ -5224,6 +5241,15 @@ fn resolve_scan_regions_live(
     n0xis_frontend::source::live_scan_regions(live, start, size)
 }
 
+
+/// A sweep over a live target as the CLI states it: the result with what the
+/// sweep did not read beside it, or the error that nothing was readable.
+fn emit_swept<T: serde::Serialize>(schema: &str, swept: n0xis_sources::Swept<T>, label: String, pretty: bool) -> bool {
+    match swept.live() {
+        Ok(stated) => emit(&Response::success(schema, stated).with_source(label), pretty),
+        Err(nothing) => ir_err(n0xis_sources::NOTHING_READABLE, &nothing.to_string(), pretty),
+    }
+}
 
 /// `ValueTypeArg` as the capability registry's type name. The clap enum and
 /// the JSON name are deliberately the same spelling.
@@ -6431,12 +6457,17 @@ fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
         let label = live.label();
-        let mut hits = n0xis_luajit::scan_strings(live.as_ref(), &regions, gcstr_layout(a.gcstr_len_off), a.min_len, a.max_len);
-        if let Some(needle) = &a.contains {
-            hits.retain(|h| h.text.contains(needle.as_str()));
-        }
-        let data = json!({ "matches": hits, "count": hits.len() });
-        emit(&Response::success(schema::v1::LUA_STRINGS, data).with_source(label), pretty)
+        let swept = match n0xis_luajit::scan_strings(live.as_ref(), &regions, gcstr_layout(a.gcstr_len_off), a.min_len, a.max_len) {
+            Ok(s) => s,
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
+        let swept = swept.map(|mut hits| {
+            if let Some(needle) = &a.contains {
+                hits.retain(|h| h.text.contains(needle.as_str()));
+            }
+            json!({ "matches": hits, "count": hits.len() })
+        });
+        emit_swept(schema::v1::LUA_STRINGS, swept, label, pretty)
     }
 }
 
@@ -6522,7 +6553,11 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
         // Every candidate GCstr whose text is one of the wanted tokens becomes a
         // target address — the run cross-check discards any that aren't referenced.
-        let strs = n0xis_luajit::scan_strings(live.as_ref(), &regions, layout, 1, max_len.max(1));
+        let strs = match n0xis_luajit::scan_strings(live.as_ref(), &regions, layout, 1, max_len.max(1)) {
+            Ok(s) => s,
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
+        let n0xis_sources::Swept { answer: strs, mut read } = strs;
         let mut targets: std::collections::HashMap<Va, String> = std::collections::HashMap::new();
         for s in &strs {
             if wanted.iter().any(|w| w == &s.text) {
@@ -6531,16 +6566,28 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         }
         if targets.is_empty() {
             let data = json!({ "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
-            return emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(live.label()), pretty);
+            return emit_swept(schema::v1::LUA_COMBO, n0xis_sources::Swept { answer: data, read }, live.label(), pretty);
         }
         // A token array may be laid out as 8-byte Lua `TValue`s or as a packed
         // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
         let mut runs_json: Vec<serde_json::Value> = Vec::new();
-        let tv = n0xis_luajit::find_string_runs(live.as_ref(), &regions, &targets, a.min_run);
+        let tv = match n0xis_luajit::find_string_runs(live.as_ref(), &regions, &targets, a.min_run) {
+            Ok(s) => {
+                read.merge(s.read);
+                s.answer
+            }
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
         for r in &tv {
             runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "tvalue8", "len": r.values.len(), "values": r.values }));
         }
-        let gr = n0xis_luajit::find_gcref32_runs(live.as_ref(), &regions, &targets, a.min_run);
+        let gr = match n0xis_luajit::find_gcref32_runs(live.as_ref(), &regions, &targets, a.min_run) {
+            Ok(s) => {
+                read.merge(s.read);
+                s.answer
+            }
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
         for r in &gr {
             runs_json.push(json!({ "addr": r.addr.to_string(), "kind": "gcref4", "len": r.values.len(), "values": r.values }));
         }
@@ -6551,7 +6598,7 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
             "runs": runs_json,
             "count": count,
         });
-        emit(&Response::success(schema::v1::LUA_COMBO, data).with_source(label), pretty)
+        emit_swept(schema::v1::LUA_COMBO, n0xis_sources::Swept { answer: data, read }, label, pretty)
     }
 }
 
@@ -6589,17 +6636,22 @@ fn cmd_lua_seedscan(a: LuaSeedscanArgs, pretty: bool) -> bool {
         };
         let lcg = n0xis_luajit::Lcg { a: a.lcg_a, c: a.lcg_c };
         let bounds = if a.seed_bound { Some((1u32, 0x7FFF_FFFEu32)) } else { None };
-        let hits = n0xis_luajit::find_seeds(live.as_ref(), &regions, &lcg, a.range, &target, bounds);
+        let swept = match n0xis_luajit::find_seeds(live.as_ref(), &regions, &lcg, a.range, &target, bounds) {
+            Ok(s) => s,
+            Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
+        };
         let label = live.label();
-        let data = json!({
-            "combo": a.combo,
-            "codes": target,
-            "lcg": { "a": a.lcg_a, "c": a.lcg_c, "range": a.range },
-            "seed_bounded": a.seed_bound,
-            "count": hits.len(),
-            "hits": hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
+        let swept = swept.map(|hits| {
+            json!({
+                "combo": a.combo,
+                "codes": target,
+                "lcg": { "a": a.lcg_a, "c": a.lcg_c, "range": a.range },
+                "seed_bounded": a.seed_bound,
+                "count": hits.len(),
+                "hits": hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
+            })
         });
-        emit(&Response::success(schema::v1::LUA_SEEDSCAN, data).with_source(label), pretty)
+        emit_swept(schema::v1::LUA_SEEDSCAN, swept, label, pretty)
     }
 }
 
@@ -6830,10 +6882,14 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         let ctx = Ctx::new(live.as_ref(), &arch);
 
         // 1) Snapshot the region set (unknown = capture every value densely).
-        let before = match ScanPass.run(&ctx, ScanInput { regions, value_type, criterion: ScanCriterion::Unknown, align }) {
+        let n0xis_sources::Swept { answer: before, mut read } = match ScanPass.run(&ctx, ScanInput { regions, value_type, criterion: ScanCriterion::Unknown, align }) {
             Ok(s) => s,
             Err(e) => return ir_err("snapshot-failed", &e.to_string(), pretty),
         };
+        // Before the operator is asked to do anything: there is nothing to compare.
+        if read.nothing_read() {
+            return ir_err(n0xis_sources::NOTHING_READABLE, &n0xis_sources::NothingReadable(read).to_string(), pretty);
+        }
         let snapshot_count = before.total();
         eprintln!("[n0x] snapshot: {snapshot_count} candidate values captured across the region set");
 
@@ -6848,10 +6904,16 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         }
 
         // 3) Rescan and keep only what changed (the transition = the signal).
-        let mut state = match FilterPass.run(&ctx, FilterInput { previous: before, criterion: transition }) {
+        let swept = match FilterPass.run(&ctx, FilterInput { previous: before, criterion: transition }) {
             Ok(s) => s,
             Err(e) => return ir_err("rescan-failed", &e.to_string(), pretty),
         };
+        // A rescan that read nothing is not "nothing changed".
+        if swept.read.nothing_read() {
+            return ir_err(n0xis_sources::NOTHING_READABLE, &n0xis_sources::NothingReadable(swept.read).to_string(), pretty);
+        }
+        read.merge(swept.read);
+        let mut state = swept.answer;
         let after_transition = state.total();
 
         // 4) Optional structural predicate over the survivors (a second filter).
@@ -6867,10 +6929,15 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         };
         let predicate_label = predicate.as_ref().map(|_| if a.expect.is_some() { "expect" } else { "in-range" });
         if let Some(crit) = predicate {
-            state = match FilterPass.run(&ctx, FilterInput { previous: state, criterion: crit }) {
+            let swept = match FilterPass.run(&ctx, FilterInput { previous: state, criterion: crit }) {
                 Ok(s) => s,
                 Err(e) => return ir_err("predicate-failed", &e.to_string(), pretty),
             };
+            if swept.read.nothing_read() {
+                return ir_err(n0xis_sources::NOTHING_READABLE, &n0xis_sources::NothingReadable(swept.read).to_string(), pretty);
+            }
+            read.merge(swept.read);
+            state = swept.answer;
         }
         let final_count = state.total();
 
@@ -6898,7 +6965,7 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
             "report": report_v,
             "note": note,
         });
-        emit(&Response::success(schema::v1::LOCATE_TRANSITION, data).with_source(label), pretty)
+        emit_swept(schema::v1::LOCATE_TRANSITION, n0xis_sources::Swept { answer: data, read }, label, pretty)
     }
 }
 
@@ -7638,8 +7705,11 @@ fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
             layout: AabbLayout::BITSQUID,
             align: a.align.max(1),
         };
-        let mut art = match UiLocatePass.run(&ctx, input) {
-            Ok(a) => a,
+        let n0xis_sources::LiveAnswer { answer: mut art, read } = match UiLocatePass.run(&ctx, input) {
+            Ok(swept) => match swept.live() {
+                Ok(stated) => stated,
+                Err(nothing) => return ir_err(n0xis_sources::NOTHING_READABLE, &nothing.to_string(), pretty),
+            },
             Err(e) => return ir_err("ui-locate-failed", &e.to_string(), pretty),
         };
 
@@ -7668,7 +7738,7 @@ fn cmd_ui_locate(a: UiLocateArgs, pretty: bool) -> bool {
         // `count` stays the true total (sound-over-complete: a `--limit` cap must
         // never look like "that's everything") — only the reported list is capped.
         art.elements.truncate(a.limit);
-        emit(&Response::success(schema::v1::UI_LOCATE, art).with_source(label), pretty)
+        emit(&Response::success(schema::v1::UI_LOCATE, n0xis_sources::LiveAnswer { answer: art, read }).with_source(label), pretty)
     }
 }
 

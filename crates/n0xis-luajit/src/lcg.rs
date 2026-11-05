@@ -17,7 +17,7 @@
 //! flags (defaults documented at the call site, not hidden here).
 
 use n0xis_contracts::Va;
-use n0xis_sources::MemorySource;
+use n0xis_sources::{MemorySource, RegionCoverage, SourceError, Swept};
 use serde::Serialize;
 
 /// A 32-bit linear-congruential generator with a normalized ranged draw.
@@ -72,13 +72,14 @@ pub fn find_seeds(
     k: u32,
     target: &[u32],
     seed_bounds: Option<(u32, u32)>,
-) -> Vec<SeedHit> {
+) -> Result<Swept<Vec<SeedHit>>, SourceError> {
     let mut out = Vec::new();
+    let mut read = RegionCoverage::default();
     if target.is_empty() || k == 0 {
-        return out;
+        return Ok(Swept { answer: out, read });
     }
     for &(base, size) in regions {
-        let Ok(bytes) = source.read(base, size) else { continue };
+        let bytes = read.read_region(source, base, size)?;
         let words = bytes.len() / 4;
         for w in 0..words {
             let seed = u32::from_le_bytes(bytes[w * 4..w * 4 + 4].try_into().unwrap());
@@ -100,7 +101,7 @@ pub fn find_seeds(
             }
         }
     }
-    out
+    Ok(Swept { answer: out, read })
 }
 
 #[cfg(test)]
@@ -133,7 +134,7 @@ mod tests {
         buf[24..28].copy_from_slice(&seed.to_le_bytes());
         let snap = Snapshot::builder().region(base, buf).build();
 
-        let hits = find_seeds(&snap, &[(base, 64)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE)));
+        let hits = find_seeds(&snap, &[(base, 64)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE))).unwrap().answer;
         assert!(hits.iter().any(|h| h.addr == base.offset(24) && h.seed == seed), "planted seed must be found");
     }
 
@@ -147,7 +148,7 @@ mod tests {
         let mut buf = vec![0u8; 16];
         buf[0..4].copy_from_slice(&0u32.to_le_bytes());
         let snap = Snapshot::builder().region(base, buf).build();
-        let hits = find_seeds(&snap, &[(base, 16)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE)));
+        let hits = find_seeds(&snap, &[(base, 16)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE))).unwrap().answer;
         assert!(hits.iter().all(|h| h.seed != 0));
     }
 }

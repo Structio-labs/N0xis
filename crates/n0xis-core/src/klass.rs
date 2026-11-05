@@ -58,6 +58,7 @@
 //!   rather than mis-decoding, but "found nothing" is the wrong answer there.
 
 use n0xis_contracts::Va;
+use n0xis_sources::{RegionCoverage, Swept};
 use serde::Serialize;
 
 use crate::{CoreError, Ctx, Pass};
@@ -680,13 +681,13 @@ pub struct ClassScanPass;
 
 impl Pass for ClassScanPass {
     type In = ClassScanInput;
-    type Out = ClassScanArtifact;
+    type Out = Swept<ClassScanArtifact>;
 
     fn name(&self) -> &'static str {
         "il2cpp.classes"
     }
 
-    fn run(&self, ctx: &Ctx, input: ClassScanInput) -> Result<ClassScanArtifact, CoreError> {
+    fn run(&self, ctx: &Ctx, input: ClassScanInput) -> Result<Swept<ClassScanArtifact>, CoreError> {
         let probe = if input.probe == 0 { DEFAULT_PROBE } else { input.probe };
         let max_probe = if input.max_probe == 0 { DEFAULT_MAX_PROBE } else { input.max_probe };
         let min_hits = if input.min_hits == 0 { DEFAULT_MIN_HITS } else { input.min_hits };
@@ -694,10 +695,15 @@ impl Pass for ClassScanPass {
         let mut freq: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
         let mut windows_read = 0usize;
         let mut bytes_read = 0usize;
+        let mut read = RegionCoverage::default();
         for (base, size) in &input.windows {
-            // A refused or short read is ordinary here — regions come and go in
-            // a running process — so it skips rather than failing the scan.
-            let Ok(bytes) = ctx.source.read(*base, *size) else { continue };
+            // A refused or short read is ordinary here (regions come and go in a
+            // running process), so it is noted rather than failing the scan. A
+            // target that has exited is another matter, and ends it.
+            let bytes = read.read_region(ctx.source, *base, *size)?;
+            if bytes.is_empty() {
+                continue;
+            }
             windows_read += 1;
             bytes_read += bytes.len();
             for chunk in bytes.as_chunks::<8>().0 {
@@ -769,7 +775,7 @@ impl Pass for ClassScanPass {
             classes.push(ClassSummary { klass, namespace, name, field_count: fields.len(), hits });
         }
 
-        Ok(ClassScanArtifact { windows_read, bytes_read, candidates, probed, weak_rejected, no_self_pointer, count: classes.len(), classes })
+        Ok(Swept { answer: ClassScanArtifact { windows_read, bytes_read, candidates, probed, weak_rejected, no_self_pointer, count: classes.len(), classes }, read })
     }
 }
 
@@ -835,6 +841,7 @@ mod scan_tests {
         ClassScanPass
             .run(&ctx, ClassScanInput { windows: vec![(Va(0x101000), 0x80)], probe: 0, max_probe: 0, limit: 0, min_hits: 0, require_self_pointer: false })
             .unwrap()
+            .answer
     }
 
     #[test]
@@ -868,8 +875,22 @@ mod scan_tests {
         let ctx = Ctx::new(&snap, &arch);
         let art = ClassScanPass
             .run(&ctx, ClassScanInput { windows: vec![(Va(0x101000), 0x80)], probe: 0, max_probe: 0, limit: 0, min_hits: 4, require_self_pointer: false })
-            .unwrap();
+            .unwrap()
+            .answer;
         assert_eq!(art.count, 0, "min_hits raised above the real repeat count filters it out, as asked");
         assert_eq!(art.probed, 0);
+    }
+
+    /// A window that did not read is stated, and is not counted as read.
+    #[test]
+    fn a_window_that_did_not_read_is_stated_not_counted() {
+        let snap = heap();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let windows = vec![(Va(0x7000_0000), 0x80), (Va(0x101000), 0x80)];
+        let swept = ClassScanPass.run(&ctx, ClassScanInput { windows, probe: 0, max_probe: 0, limit: 0, min_hits: 0, require_self_pointer: false }).unwrap();
+        assert_eq!(swept.answer.windows_read, 1);
+        assert_eq!(swept.read.not_read()[0].start, Va(0x7000_0000));
+        assert_eq!(swept.answer.count, 1, "the scan went on to the window that did");
     }
 }

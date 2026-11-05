@@ -320,6 +320,68 @@ fn a_shared_mapping_that_reads_is_scanned() {
     assert_eq!(addrs(&d["matches"]), [t.at("short")], "what a short read did give is scanned");
 }
 
+/// The same rule on every other sweep over a live target, on the same fixture:
+/// each gets past the fault, states it, and still finds what lies beyond.
+#[test]
+fn every_other_scan_states_the_same() {
+    let t = Target::spawn();
+    t.assert_fixture_holds();
+    let pid = t.pid_arg();
+    let anon = hex(t.at("anon"));
+    // The planted page's first dword, as an unsigned number: `scan value` and
+    // `scan group` look for it, and it is not the kind of value that repeats.
+    let dword = u32::from_le_bytes([0x7C, 0x7C ^ 37, 0x7C ^ 74, 0x7C ^ 111]).to_string();
+
+    let d = t.ok(&["scan", "value", "--pid", &pid, "--type", "u32", "--value", &dword, "--save-as", "first", "--force"]);
+    assert_states_the_fixture(&t, &d);
+    assert!(d["matches"].as_array().expect("matches").iter().any(|m| m["addr"] == anon.as_str()), "scan value got past the fault: {d}");
+
+    let d = t.ok(&["scan", "filter", "--pid", &pid, "--from", "first", "--criterion", "unchanged", "--save-as", "second", "--force"]);
+    assert!(d["matches"].as_array().expect("matches").iter().any(|m| m["addr"] == anon.as_str()), "{d}");
+    assert_eq!(d["regions_not_read"], 0, "the first scan kept nothing of the region that did not read: {d}");
+
+    let field = format!("u32={dword}");
+    let d = t.ok(&["scan", "group", "--pid", &pid, "--field", &field]);
+    assert_states_the_fixture(&t, &d);
+    assert!(d["hits"].as_array().expect("hits").iter().any(|h| h["base"] == anon.as_str()), "scan group got past the fault: {d}");
+
+    // This one sweeps read-only mappings too, and the kernel's own (`[vvar]`) fault
+    // as well: every one it lists has to be one the kernel refuses.
+    let d = t.ok(&["scan", "pointer-path", "--pid", &pid, "--target", &anon, "--module", "target", "--max-depth", "2"]);
+    let not_read = starts(&d["not_read"]);
+    assert!(not_read.contains(&t.at("fault")), "{d}");
+    for start in not_read {
+        assert_eq!(t.kernel_read(start, 16), Err(14), "listed as not read: {start:#x}");
+    }
+    assert_eq!(starts(&d["read_short"]), [t.at("short")], "{d}");
+
+    let d = t.ok(&["locate", "by-transition", "--pid", &pid, "--type", "u32", "--transition", "changed", "--wait-ms", "1", "--save-as", "third", "--force"]);
+    assert_states_the_fixture(&t, &d);
+
+    // The heap readers go through the same rule. Their answers depend on a VM
+    // this target does not have; what is asked of them here is what they read.
+    let d = t.ok(&["lua", "strings", "--pid", &pid, "--max-len", "8"]);
+    assert_states_the_fixture(&t, &d);
+    let d = t.ok(&["lua", "combo", "--pid", &pid, "--strings", "up,down"]);
+    assert_states_the_fixture(&t, &d);
+    let d = t.ok(&["lua", "seedscan", "--pid", &pid, "--combo", "up,down", "--lcg-a", "5", "--lcg-c", "1", "--range", "4"]);
+    assert_states_the_fixture(&t, &d);
+
+    // A window the caller names: a fault, then a read that stops short.
+    let pattern_bytes = pattern(0x5A);
+    let (code, message) = t.error_code(&["find", "--pid", &pid, "--start", &hex(t.at("fault")), "--size", "16", "--bytes", &pattern_bytes]);
+    assert_eq!(code, "nothing-readable", "{message}");
+    let size = (2 * t.at("page")).to_string();
+    let d = t.ok(&["find", "--pid", &pid, "--start", &hex(t.at("short")), "--size", &size, "--bytes", &pattern_bytes]);
+    assert_eq!(d["count"], 1, "{d}");
+    assert_eq!(starts(&d["read_short"]), [t.at("short")], "{d}");
+
+    let (code, message) = t.error_code(&["strings", "--pid", &pid, "--start", &hex(t.at("fault")), "--size", &size]);
+    assert_eq!(code, "nothing-readable", "{message}");
+    let d = t.ok(&["strings", "--pid", &pid, "--start", &hex(t.at("short")), "--size", &size]);
+    assert_eq!(starts(&d["read_short"]), [t.at("short")], "{d}");
+}
+
 /// A scan that read everything must say so too, or "nothing was left out" could
 /// not be told from "this build does not say".
 #[test]
@@ -382,9 +444,53 @@ fn a_dead_target_is_an_error_not_an_empty_scan() {
 
     t.child.kill().expect("kill");
     t.child.wait().expect("reap");
-    let got = sweep(regions);
+    let got = sweep(regions.clone());
     let failure = got.expect_err("a dead target must not answer").to_string();
     assert!(failure.contains("exited"), "{failure}");
+
+    // And every other sweep, each a loop that used to step over any failure.
+    let exited = |what: &str, failure: String| assert!(failure.contains("exited"), "{what}: {failure}");
+    let scan_input = || n0xis_core::ScanInput {
+        regions: regions.clone(),
+        value_type: n0xis_core::ValueType::U32,
+        criterion: n0xis_core::ScanCriterion::Unknown,
+        align: 4,
+    };
+    exited("scan value", n0xis_core::Pass::run(&n0xis_core::ScanPass, &ctx, scan_input()).expect_err("scan value").to_string());
+    let group = n0xis_core::GroupScanInput {
+        regions: regions.clone(),
+        fields: vec![n0xis_core::GroupField { value_type: n0xis_core::ValueType::U32, value: n0xis_core::ScanValue::Int(1) }],
+        window: 16,
+        align: 4,
+        limit: 1,
+    };
+    exited("scan group", n0xis_core::Pass::run(&n0xis_core::GroupScanPass, &ctx, group).expect_err("scan group").to_string());
+    let previous = n0xis_core::ScanState {
+        value_type: n0xis_core::ValueType::U32,
+        align: 4,
+        regions: vec![n0xis_core::RegionState { base: regions[0].0, data: n0xis_core::RegionData::Dense { bytes: vec![0; 16] } }],
+    };
+    let filter = n0xis_core::FilterInput { previous, criterion: n0xis_core::FilterCriterion::Changed };
+    exited("scan filter", n0xis_core::Pass::run(&n0xis_core::FilterPass, &ctx, filter).expect_err("scan filter").to_string());
+    let chain = n0xis_core::PointerPathInput { target: regions[0].0, search_regions: regions.clone(), roots: Vec::new(), max_depth: 1, max_offset: 16, pointer_size: 8 };
+    exited("pointer path", n0xis_core::Pass::run(&n0xis_core::PointerPathPass, &ctx, chain).expect_err("pointer path").to_string());
+    let classes = n0xis_core::ClassScanInput { windows: regions.clone(), probe: 0, max_probe: 0, limit: 0, min_hits: 0, require_self_pointer: false };
+    exited("il2cpp classes", n0xis_core::Pass::run(&n0xis_core::ClassScanPass, &ctx, classes).expect_err("il2cpp classes").to_string());
+    let ui = n0xis_core::UiLocateInput {
+        regions: regions.clone(),
+        rect: n0xis_core::Rect::new(0.0, 0.0, 1.0, 1.0),
+        space: n0xis_core::CoordSpace::Screen,
+        layout: n0xis_core::AabbLayout::BITSQUID,
+        align: 4,
+    };
+    exited("ui locate", n0xis_core::Pass::run(&n0xis_core::UiLocatePass, &ctx, ui).expect_err("ui locate").to_string());
+    let targets = std::collections::HashMap::new();
+    let layout = n0xis_luajit::GcstrLayout::BITSQUID_GC64;
+    exited("lua strings", n0xis_luajit::scan_strings(live.as_ref(), &regions, layout, 1, 8).expect_err("lua strings").to_string());
+    exited("lua runs", n0xis_luajit::find_string_runs(live.as_ref(), &regions, &targets, 2).expect_err("lua runs").to_string());
+    exited("lua refs", n0xis_luajit::find_gcref32_runs(live.as_ref(), &regions, &targets, 2).expect_err("lua refs").to_string());
+    let lcg = n0xis_luajit::Lcg { a: 5, c: 1 };
+    exited("lua seeds", n0xis_luajit::find_seeds(live.as_ref(), &regions, &lcg, 4, &[1], None).expect_err("lua seeds").to_string());
 
     // Attached after it ended, the whole command says so.
     let v = t.n0x(&["scan", "aob", "--pid", &t.pid_arg(), "--pattern", &pattern(0x7C)]);

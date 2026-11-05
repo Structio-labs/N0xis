@@ -1175,6 +1175,23 @@ impl ScanTarget {
     }
 }
 
+/// Answer a first scan or a rescan, and save the working set `scan.filter`
+/// narrows. A scan that read nothing saves nothing: it would overwrite the set
+/// under that name with an empty one.
+fn answer_and_save(target: ScanTarget, swept: n0xis_sources::Swept<n0xis_core::ScanState>, save_as: &str, force: bool, label: &str) -> Response<Value> {
+    let n0xis_sources::Swept { answer: state, read } = swept;
+    let answer = target.answer(n0xis_contracts::schema::v1::SCAN, n0xis_sources::Swept { answer: state.report(), read }, label);
+    if matches!(answer, Response::Err(_)) {
+        return answer;
+    }
+    // Persist the full working set compactly; emit only the bounded report (a
+    // full hit list is routinely millions).
+    match n0xis_project::dump::save(save_as, "scan", &state.encode(), force) {
+        Ok(_) => answer,
+        Err(e) => Response::error("save-failed", e.to_string()),
+    }
+}
+
 /// The data-side twin of [`with_src_ctx`]: resolve a `pid` (live, regions
 /// clipped to what is actually committed) or a `file` (explicit start+size)
 /// and hand over the regions to scan.
@@ -1965,18 +1982,12 @@ impl Plugin for AnalysisPasses {
                 let align = args.get("align").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or_else(|| value_type.size());
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, _target| {
+                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, target| {
                     let input = n0xis_core::ScanInput { regions, value_type, criterion, align };
-                    let state = match n0xis_core::Pass::run(&n0xis_core::ScanPass, ctx, input) {
-                        Ok(s) => s,
-                        Err(e) => return Response::error("scan-failed", e.to_string()),
-                    };
-                    // Persist the full working set compactly; emit only the
-                    // bounded report (a full hit list is routinely millions).
-                    if let Err(e) = n0xis_project::dump::save(&save_as, "scan", &state.encode(), force) {
-                        return Response::error("save-failed", e.to_string());
+                    match n0xis_core::Pass::run(&n0xis_core::ScanPass, ctx, input) {
+                        Ok(swept) => answer_and_save(target, swept, &save_as, force, label),
+                        Err(e) => Response::error("scan-failed", e.to_string()),
                     }
-                    ok_json(n0xis_contracts::schema::v1::SCAN, state.report(), label)
                 })
             }),
         ));
@@ -2024,16 +2035,12 @@ impl Plugin for AnalysisPasses {
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(true);
                 // A filter rescans the addresses it already holds, so it needs
                 // no region resolution — only the source they live in.
-                with_scan_ctx(args, None, None, move |ctx, _regions, label, _target| {
+                with_scan_ctx(args, None, None, move |ctx, _regions, label, target| {
                     let input = n0xis_core::FilterInput { previous, criterion };
-                    let state = match n0xis_core::Pass::run(&n0xis_core::FilterPass, ctx, input) {
-                        Ok(s) => s,
-                        Err(e) => return Response::error("filter-failed", e.to_string()),
-                    };
-                    if let Err(e) = n0xis_project::dump::save(&save_as, "scan", &state.encode(), force) {
-                        return Response::error("save-failed", e.to_string());
+                    match n0xis_core::Pass::run(&n0xis_core::FilterPass, ctx, input) {
+                        Ok(swept) => answer_and_save(target, swept, &save_as, force, label),
+                        Err(e) => Response::error("filter-failed", e.to_string()),
                     }
-                    ok_json(n0xis_contracts::schema::v1::SCAN, state.report(), label)
                 })
             }),
         ));
@@ -2131,10 +2138,10 @@ impl Plugin for AnalysisPasses {
                 let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(100);
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, _target| {
+                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, target| {
                     let input = n0xis_core::GroupScanInput { regions, fields, window, align, limit };
                     match n0xis_core::Pass::run(&n0xis_core::GroupScanPass, ctx, input) {
-                        Ok(art) => ok_json(n0xis_contracts::schema::v1::SCAN_GROUP, art, label),
+                        Ok(swept) => target.answer(n0xis_contracts::schema::v1::SCAN_GROUP, swept, label),
                         Err(e) => Response::error("group-failed", e.to_string()),
                     }
                 })
@@ -2187,7 +2194,7 @@ impl Plugin for AnalysisPasses {
                     let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
                     let input = n0xis_core::PointerPathInput { target, search_regions, roots, max_depth, max_offset, pointer_size: 8 };
                     match n0xis_core::Pass::run(&n0xis_core::PointerPathPass, &ctx, input) {
-                        Ok(art) => ok_json(n0xis_contracts::schema::v1::POINTER_PATH, art, &label),
+                        Ok(swept) => ScanTarget::Live.answer(n0xis_contracts::schema::v1::POINTER_PATH, swept, &label),
                         Err(e) => Response::error("pointer-path-failed", e.to_string()),
                     }
                 }

@@ -125,7 +125,8 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
                 align: 4,
             },
         )
-        .expect("first scan succeeds");
+        .expect("first scan succeeds")
+        .answer;
     assert!(
         first.materialize(PREVIEW_LIMIT).iter().any(|m| m.addr == probe_addr),
         "expected to find our own written value"
@@ -136,7 +137,8 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
 
     let filtered = FilterPass
         .run(&ctx, FilterInput { previous: first, criterion: FilterCriterion::Increased })
-        .expect("filter succeeds");
+        .expect("filter succeeds")
+        .answer;
     assert!(
         filtered.materialize(PREVIEW_LIMIT).iter().any(|m| m.addr == probe_addr),
         "the increased value must survive the filter"
@@ -158,7 +160,8 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
                 align: 4,
             },
         )
-        .expect("unknown first scan succeeds");
+        .expect("unknown first scan succeeds")
+        .answer;
     // Dense capture: every aligned slot in the window is a live candidate.
     let unknown_total = unknown.total();
     assert!(unknown_total >= window / 4 - 1, "unknown scan should capture the whole window densely");
@@ -168,7 +171,8 @@ fn headless_scan_filter_freeze_loop_saves_to_n0xt() {
     live.write(probe_addr, &1234i32.to_le_bytes()).expect("perturb one slot");
     let changed = FilterPass
         .run(&ctx, FilterInput { previous: unknown, criterion: FilterCriterion::Changed })
-        .expect("changed rescan succeeds");
+        .expect("changed rescan succeeds")
+        .answer;
     assert!(
         changed.materialize(PREVIEW_LIMIT).iter().any(|m| m.addr == probe_addr && m.value == ScanValue::Int(1234)),
         "the one slot we changed must survive a `changed` rescan"

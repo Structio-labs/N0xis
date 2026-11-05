@@ -612,37 +612,6 @@ fn parse_rect(s: &str) -> Result<Rect, String> {
     Ok(Rect::new(p(a)?, p(b)?, p(c)?, p(d)?))
 }
 
-/// The live scan set, mirroring the CLI's `resolve_scan_regions_live`: an
-/// explicit `start`/`size` window clipped to committed regions (a single read
-/// spanning an unmapped gap fails wholesale), else every committed writable
-/// region.
-#[cfg(windows)]
-fn ui_scan_regions(live: &LiveProcess, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
-    if let Some(s) = start {
-        let va = Va::parse(s).map_err(|e| e.to_string())?;
-        let sz = size.ok_or("provide size with start")?;
-        let lo = va.0;
-        let hi = va.0.saturating_add(sz as u64);
-        let mut clipped = Vec::new();
-        for (rb, rs) in live.default_writable_regions() {
-            let a = rb.0.max(lo);
-            let b = (rb.0 + rs as u64).min(hi);
-            if a < b {
-                clipped.push((Va(a), (b - a) as usize));
-            }
-        }
-        if clipped.is_empty() {
-            return Ok(vec![(va, sz)]);
-        }
-        return Ok(clipped);
-    }
-    let regions = live.default_writable_regions();
-    if regions.is_empty() {
-        return Err("no committed writable regions found (and no start/size given)".to_string());
-    }
-    Ok(regions)
-}
-
 /// Load the address sets of previously-saved `ui locate` queries, up front —
 /// a missing/corrupt name must fail before the (tens-of-seconds) scan runs.
 fn ui_excluded_addresses(names: &[String]) -> Result<std::collections::HashSet<Va>, (String, String)> {
@@ -1152,7 +1121,7 @@ impl N0xisServer {
                 Ok(l) => l,
                 Err(e) => return err("attach-failed", e.to_string()),
             };
-            let regions = match ui_scan_regions(&live, a.start.as_deref(), a.size) {
+            let regions = match n0xis_frontend::source::live_scan_regions(&live, a.start.as_deref(), a.size) {
                 Ok(r) => r,
                 Err(e) => return err("bad-region", e),
             };
@@ -1166,8 +1135,11 @@ impl N0xisServer {
                 layout: AabbLayout::BITSQUID,
                 align: a.align.max(1),
             };
-            let mut art = match UiLocatePass.run(&ctx, input) {
-                Ok(v) => v,
+            let n0xis_sources::LiveAnswer { answer: mut art, read } = match UiLocatePass.run(&ctx, input) {
+                Ok(swept) => match swept.live() {
+                    Ok(stated) => stated,
+                    Err(nothing) => return err(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
+                },
                 Err(e) => return err("ui-locate-failed", e.to_string()),
             };
             if !excluded.is_empty() {
@@ -1185,7 +1157,7 @@ impl N0xisServer {
             }
             // `count` stays the true total; only the reported list is capped.
             art.elements.truncate(a.limit);
-            emit(Response::success(schema::v1::UI_LOCATE, art).with_source(label))
+            emit(Response::success(schema::v1::UI_LOCATE, n0xis_sources::LiveAnswer { answer: art, read }).with_source(label))
         }
     }
 
