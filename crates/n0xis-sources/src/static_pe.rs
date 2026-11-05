@@ -626,6 +626,11 @@ impl Image for StaticPe {
     fn findings(&self) -> &[Finding] {
         &self.findings
     }
+    /// A compiler for this format does not write one, and what mingw writes in its
+    /// place (`.rdata$zzz`) says only `GCC`.
+    fn comment(&self) -> Option<&[u8]> {
+        None
+    }
     fn address_words(&self, _relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
         crate::AddressWords::Stored
     }

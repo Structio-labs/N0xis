@@ -449,6 +449,10 @@ impl Image for WasmImage {
     fn findings(&self) -> &[Finding] {
         &self.findings
     }
+    /// A module has no such section; its `producers` section is not this question.
+    fn comment(&self) -> Option<&[u8]> {
+        None
+    }
     /// A module's words are addresses in a linear memory, not in the module.
     fn address_words(&self, _relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
         crate::AddressWords::NotStated

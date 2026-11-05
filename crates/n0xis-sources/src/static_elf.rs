@@ -298,6 +298,8 @@ pub(crate) struct StaticElf {
     segments: Segments,
     sections: Vec<Section>,
     placed: Vec<Placement>,
+    /// Where in the file `.comment` is, when it has one the file holds.
+    comment: Option<std::ops::Range<usize>>,
     symbols: Answer<Partial<Vec<ImageSymbol>>>,
     exports: Answer<Vec<Export>>,
     imports: Answer<Imports>,
@@ -697,8 +699,14 @@ impl StaticElf {
         starts_unread.extend(stubs_unread);
         starts_unread.extend(crate::static_pe::eh_frame_unread(sections.iter().map(|s| (s.name.as_str(), s.file_size))));
         // The parse borrows the bytes the image keeps.
+        let comment = elf
+            .section_headers
+            .iter()
+            .find(|sh| sh.sh_type != SHT_NOBITS && elf.shdr_strtab.get_at(sh.sh_name) == Some(".comment"))
+            .and_then(|sh| Some(usize::try_from(sh.sh_offset).ok()?..usize::try_from(sh.sh_offset.checked_add(sh.sh_size)?).ok()?));
         drop(elf);
         Ok(StaticElf {
+            comment,
             bytes,
             machine,
             linkage,
@@ -850,6 +858,11 @@ impl Image for StaticElf {
     fn findings(&self) -> &[Finding] {
         &self.findings
     }
+    /// `None` too when the headers state bytes past the end of the file.
+    fn comment(&self) -> Option<&[u8]> {
+        self.bytes.get(self.comment.clone()?)
+    }
+
     /// Parsed again for the question, not kept from the first parse: only
     /// `strings` asks, and a table's values are handed over and dropped, so
     /// their cost is not a second copy of them for every other command.

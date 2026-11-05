@@ -846,6 +846,10 @@ pub trait Image: std::fmt::Debug + Send + Sync {
     fn start_coverage(&self) -> StartCoverage;
     fn loaded_bytes(&self) -> LoadedBytes<'_>;
     fn findings(&self) -> &[Finding];
+    /// The bytes of the section where the tools that built the image name
+    /// themselves (an ELF's `.comment`), which no loader maps, or `None` for an
+    /// image without one.
+    fn comment(&self) -> Option<&[u8]>;
     /// How a word of this image's data states an address
     /// ([`crate::AddressWords`]). For [`crate::AddressWords::Relocated`],
     /// `relocated` has been handed each such word's address and the address it
