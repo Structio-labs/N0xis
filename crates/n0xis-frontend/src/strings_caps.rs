@@ -20,6 +20,12 @@
 //! nowhere statically, `not placed` and why. The module's sections, custom
 //! ones included, are read only when asked for by name, with `all_sections`
 //! or with a range, and their strings have module offsets only.
+//!
+//! **A run of text in an image is several strings where the image says so**:
+//! a reference with its length ([`n0xis_core::cut_run`]). A row cut on one says
+//! which (`cut_by`, first evidence). Only an image on disk can say it: a running
+//! process or loose bytes have no relocation table to tell a pointer from a
+//! number, and their runs stay whole.
 
 use std::sync::{Arc, Mutex};
 
@@ -65,7 +71,7 @@ impl Plugin for StringTools {
     fn register(&self, reg: &mut Registry) {
         reg.add(Capability::new(
             "strings",
-            "Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `section`, `all_sections`, or `start`+`size` for others. `contains` filters (any case); `limit`/`offset` page.",
+            "Text in the image: runs of printable UTF-8 or UTF-16LE characters, with their addresses. By default the file-backed sections that hold no code; `section`, `all_sections`, or `start`+`size` for others. In an image on disk a run is cut where a reference states a length (`cut_by`). `contains` filters (any case); `limit`/`offset` page.",
             Some(schema::v1::STRINGS),
             Origin::Builtin,
             Box::new(strings),
@@ -141,6 +147,9 @@ fn strings(args: &Value) -> Response<Value> {
             });
             if let Some(placement) = placement {
                 row["linear_memory"] = linear_memory(placement, s.address.0 - range_start.0);
+            }
+            if let Some(by) = s.cut_by {
+                row["cut_by"] = json!({ "kind": by.kind, "at": by.at });
             }
             row
         })
@@ -231,7 +240,8 @@ fn linear_memory(placement: &n0xis_sources::SegmentPlacement, delta: u64) -> Val
 /// Every string in `ranges`, read stretch by stretch: a string never runs
 /// across a gap.
 fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncoding]) -> Result<Scanned, String> {
-    let mut strings = Vec::new();
+    // Each with the range it was found in and whether a NUL ends it.
+    let mut text = Vec::new();
     let mut read = n0xis_sources::RegionCoverage::default();
     for (i, (_, start, size, placement)) in ranges.iter().enumerate() {
         let runs = n0xis_sources::read_runs(src.as_mem(), *start, *size as usize).map_err(|e| e.to_string())?;
@@ -257,12 +267,62 @@ fn scan(src: &Src, ranges: Vec<ReadRange>, min: usize, encodings: &[StringEncodi
                 None => va.0,
             };
             let found = n0xis_core::find_strings(&bytes, Va(laid_out), min, encodings);
-            strings.extend(found.into_iter().map(|mut s| {
+            text.extend(found.into_iter().map(|mut s| {
                 s.address = Va(s.address.0.wrapping_sub(laid_out).wrapping_add(va.0));
-                (s, i)
+                let ended_by_nul = bytes.get((s.address.0 - va.0) as usize + s.size) == Some(&0);
+                (s, i, ended_by_nul)
             }));
         }
     }
+    let refs = literal_refs(src, &text);
+    let mut strings: Vec<(FoundString, usize)> = text
+        .into_iter()
+        .flat_map(|(s, i, ended_by_nul)| n0xis_core::cut_run(s, ended_by_nul, &refs, min).into_iter().map(move |piece| (piece, i)))
+        .collect();
     strings.sort_by_key(|(s, _)| s.address.0);
     Ok(Scanned { ranges, strings, read })
+}
+
+/// The references with their lengths an image on disk states into `runs`: every
+/// data pair in its sections that hold no code, and, on x86-64, every code pair
+/// in its code. A run in a section that holds code is not one to cut: what looks
+/// like text there is instructions that print, and a function pointer with a
+/// small number beside it, which any table of them has, is not a literal.
+///
+/// A section or a code range that does not read gives no evidence and no error:
+/// the scan has its answer, and with no evidence that answer is the run whole.
+fn literal_refs(src: &Src, runs: &[(FoundString, usize, bool)]) -> n0xis_core::LiteralRefs {
+    let Src::Static(img) = src else { return n0xis_core::LiteralRefs::default() };
+    let code = src.as_mem().code_ranges();
+    let holds_code = |va: Va| code.iter().any(|(s, n)| va.0 >= s.0 && va.0 - s.0 < *n);
+    let mut evidence = n0xis_core::LiteralEvidence::new(runs.iter().map(|(s, ..)| s).filter(|s| !holds_code(s.address)));
+    let machine = img.image().machine();
+    let Some(width) = machine.address_model.pointer_width() else { return n0xis_core::LiteralRefs::default() };
+    if evidence.is_empty() {
+        return n0xis_core::LiteralRefs::default();
+    }
+    let order = machine.byte_order;
+    let data: Vec<(Va, u64)> = img.sections().into_iter().map(|(_, va, size)| (va, size)).filter(|(va, _)| !holds_code(*va)).collect();
+    let in_data = |va: u64| data.iter().any(|(s, n)| va >= s.0 && va - s.0 < *n);
+    let how = img.address_words(&mut |at, value| {
+        if in_data(at) {
+            evidence.relocated_word(src.as_mem(), img.relocated_words(), at, value, width, order);
+        }
+    });
+    if how == n0xis_sources::AddressWords::Stored {
+        for (va, size) in &data {
+            for (at, bytes) in n0xis_sources::read_runs(src.as_mem(), *va, *size as usize).unwrap_or_default() {
+                evidence.stored_words(&bytes, at, width, order);
+            }
+        }
+    }
+    if machine.isa == n0xis_sources::Isa::X64
+        && let Ok(arch) = src.pick_arch(None)
+    {
+        let ctx = n0xis_core::Ctx::new(src.as_mem(), arch.as_ref());
+        for (start, size) in &code {
+            let _ = evidence.x64_code_pairs(&ctx, *start, *size, how);
+        }
+    }
+    evidence.into_refs()
 }

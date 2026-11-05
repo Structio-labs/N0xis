@@ -1,0 +1,110 @@
+# Text with known bounds, and every kind of reference to it, for
+# `strings_cut_where_a_length_says.rs`. Each run is its own question. A byte 1
+# after a run is a run a NUL does not end; the 0 after that only keeps the next
+# run apart from it.
+
+    .section .rodata
+    .byte 0
+data_one_a: .ascii "DATA_ONE_A"
+data_one_b: .ascii "DATA_ONE_B"
+    .byte 1, 0
+data_two_a: .ascii "DATA_TWO_A"
+data_two_b: .ascii "DATA_TWO_B"
+    .byte 0
+code_one_a: .ascii "CODE_ONE_A"
+code_one_b: .ascii "CODE_ONE_B"
+    .byte 1, 0
+code_two_a: .ascii "CODE_TWO_A"
+code_two_b: .ascii "CODE_TWO_B"
+    .byte 0
+both_a: .ascii "BOTH_AAAAA"
+both_b: .ascii "BOTH_BBBBB"
+both_c: .ascii "BOTH_CCCCC"
+both_d: .ascii "BOTH_DDDDD"
+    .byte 0
+# strncmp(x, "partial_c_string", 3): a length, on a string a NUL ends.
+partial: .ascii "partial_c_string"
+    .byte 0
+# Lengths that run past the run.
+false_one: .ascii "false_length_one"
+    .byte 0
+false_two: .ascii "false_length_two"
+    .byte 1, 0
+false_three: .ascii "false_length_six"
+    .byte 0
+
+# At an address the words below can state with no relocation.
+    .section .fixed, "a"
+    .byte 0
+number_a: .ascii "NUMBER_AAA"
+number_b: .ascii "NUMBER_BBB"
+    .byte 0
+immed_a: .ascii "IMMED_AAAA"
+immed_b: .ascii "IMMED_BBBB"
+    .byte 0
+imslot_a: .ascii "IMSLOT_AAA"
+imslot_b: .ascii "IMSLOT_BBB"
+    .byte 0
+
+    .section .data.rel.ro, "aw"
+    .balign 8
+data_pairs:
+pair_data_one: .quad data_one_a, 10
+pair_data_two: .quad data_two_b, 10
+pair_both_b:   .quad both_b, 10
+pair_both_d:   .quad both_d, 10
+pair_partial:  .quad partial, 3
+pair_false_one:   .quad false_one, 1000
+pair_false_inner: .quad false_one + 6, 11
+pair_false_two:   .quad false_two, 17
+pair_false_three: .quad false_three + 4, 0
+# Into the middle of the printable instructions below: a table of function
+# pointers with a small number beside each is any table of them.
+pair_blob:     .quad blob + 4, 4
+# Two words a loader never touches: in an image that may load anywhere they are
+# numbers, in one that runs where it says they are this pair.
+pair_number:   .quad 0x900b, 10
+
+    .text
+    .globl _start
+_start:
+    ret
+code_pair_one:
+    lea code_one_a(%rip), %rdi
+    mov $10, %esi
+    ret
+code_pair_two:
+    lea code_two_b(%rip), %rax
+    mov %rax, 8(%rsp)
+    movq $10, 16(%rsp)
+    ret
+code_pair_both_c:
+    lea both_c(%rip), %rdi
+    mov $10, %esi
+    ret
+code_pair_both_d:
+    lea both_d(%rip), %rdi
+    mov $10, %esi
+    ret
+code_pair_partial:
+    lea partial(%rip), %rsi
+    mov $3, %edx
+    ret
+code_false_length:
+    lea false_three(%rip), %rdi
+    mov $17, %esi
+    ret
+# Immediates equal to where `.fixed` puts two literals: addresses in an image that
+# runs where it says, numbers in one that may load anywhere.
+code_immediate:
+    mov $0x9020, %edi
+    mov $10, %esi
+    ret
+code_immediate_slot:
+    movq $0x9035, 8(%rsp)
+    movq $10, 16(%rsp)
+    ret
+# Each byte a one-byte instruction, and printable.
+blob:
+    .ascii "PQRSVWXYZ[^_PQRS"
+    ret

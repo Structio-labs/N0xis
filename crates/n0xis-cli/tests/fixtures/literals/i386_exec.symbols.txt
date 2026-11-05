@@ -1,0 +1,19 @@
+
+Symbol table '.symtab' contains 16 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00000000     0 FILE    LOCAL  DEFAULT  ABS i386.o
+     2: 0804a001     0 NOTYPE  LOCAL  DEFAULT    2 data_one_a
+     3: 0804a00b     0 NOTYPE  LOCAL  DEFAULT    2 data_one_b
+     4: 0804a017     0 NOTYPE  LOCAL  DEFAULT    2 data_two_a
+     5: 0804a021     0 NOTYPE  LOCAL  DEFAULT    2 data_two_b
+     6: 0804a02c     0 NOTYPE  LOCAL  DEFAULT    2 partial
+     7: 0804a03d     0 NOTYPE  LOCAL  DEFAULT    2 false_one
+     8: 0804bfe0     0 NOTYPE  LOCAL  DEFAULT    4 pair_data_one
+     9: 0804bfe8     0 NOTYPE  LOCAL  DEFAULT    4 pair_data_two
+    10: 0804bff0     0 NOTYPE  LOCAL  DEFAULT    4 pair_partial
+    11: 0804bff8     0 NOTYPE  LOCAL  DEFAULT    4 pair_false_one
+    12: 08049000     0 NOTYPE  GLOBAL DEFAULT    1 _start
+    13: 0804c000     0 NOTYPE  GLOBAL DEFAULT    4 __bss_start
+    14: 0804c000     0 NOTYPE  GLOBAL DEFAULT    4 _edata
+    15: 0804c000     0 NOTYPE  GLOBAL DEFAULT    4 _end

@@ -1,0 +1,13 @@
+
+Relocation section '.relr.dyn' at offset 0x2b0 contains 2 entries which relocate 10 locations:
+Index: Entry            Address           Symbolic Address
+0000:  0000000000003e30 0000000000003e30  data_pairs
+0001:  0000000000055555 0000000000003e40  pair_data_two
+                        0000000000003e50  pair_both_b
+                        0000000000003e60  pair_both_d
+                        0000000000003e70  pair_partial
+                        0000000000003e80  pair_false_one
+                        0000000000003e90  pair_false_inner
+                        0000000000003ea0  pair_false_two
+                        0000000000003eb0  pair_false_three
+                        0000000000003ec0  pair_blob

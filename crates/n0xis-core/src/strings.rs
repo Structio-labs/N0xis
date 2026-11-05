@@ -42,6 +42,11 @@ pub struct FoundString {
     /// Bytes it takes in the image, without a terminator.
     pub size: usize,
     pub text: String,
+    /// The reference with its length that delimits this string, on a string
+    /// that was cut out of a longer run ([`crate::literals`]). A scan alone says
+    /// nothing here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut_by: Option<crate::CutBy>,
 }
 
 /// Whether `c` belongs in a string: tab, a line break or printable ASCII, or a
@@ -117,6 +122,7 @@ impl Run {
                 length: self.chars,
                 size: end - self.start,
                 text: std::mem::take(&mut self.text),
+                cut_by: None,
             });
         }
         self.text.clear();

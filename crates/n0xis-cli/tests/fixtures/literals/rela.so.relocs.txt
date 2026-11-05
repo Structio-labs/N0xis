@@ -1,0 +1,13 @@
+
+Relocation section '.rela.dyn' at offset 0x2b0 contains 10 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name + Addend
+0000000000003e60  0000000000000008 R_X86_64_RELATIVE                         2001
+0000000000003e70  0000000000000008 R_X86_64_RELATIVE                         2021
+0000000000003e80  0000000000000008 R_X86_64_RELATIVE                         2061
+0000000000003e90  0000000000000008 R_X86_64_RELATIVE                         2075
+0000000000003ea0  0000000000000008 R_X86_64_RELATIVE                         2080
+0000000000003eb0  0000000000000008 R_X86_64_RELATIVE                         2091
+0000000000003ec0  0000000000000008 R_X86_64_RELATIVE                         2097
+0000000000003ed0  0000000000000008 R_X86_64_RELATIVE                         20a2
+0000000000003ee0  0000000000000008 R_X86_64_RELATIVE                         20b8
+0000000000003ef0  0000000000000008 R_X86_64_RELATIVE                         107a

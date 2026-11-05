@@ -1,0 +1,7 @@
+
+Relocation section '.rel.dyn' at offset 0x190 contains 4 entries:
+ Offset     Info    Type                Sym. Value  Symbol's Name
+00003f68  00000008 R_386_RELATIVE        
+00003f70  00000008 R_386_RELATIVE        
+00003f78  00000008 R_386_RELATIVE        
+00003f80  00000008 R_386_RELATIVE        

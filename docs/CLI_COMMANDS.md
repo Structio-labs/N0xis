@@ -590,6 +590,14 @@ Text in the image: runs of printable characters, each with its address.
   is almost always instructions that happen to print); `--all-sections` adds those, `--section
   <name>` reads one, `--start`/`--size` one range (at most 256 MiB; the only choice for a
   process). `data.ranges` names what was read; a string never runs across a gap.
+- Literals with no terminator sit side by side, so in an image on disk a run of UTF-8 text is cut
+  where a reference states a length: a pointer-sized word in a section that holds no code with the
+  length in the next word, or on x86-64 an instruction loading the address with the length as an
+  immediate near it. A cut at `c` needs `c` to be the start of such a reference, or its end in a
+  run no NUL ends, so a partial length on a C string cuts nothing. A piece a reference states
+  carries `cut_by`, `{"kind": "data_pair"|"code_pair", "at": "0x…"}`, the first evidence's address;
+  text left between pieces is a row without it, and a piece under `--min` goes as any short string
+  does. A run in a section that holds code is not cut. Where nothing states a length a run is whole.
 - Each string: `address`, `section`, `encoding`, `length` (characters), `size` (bytes), `text`.
 - On a WebAssembly module, what is read by default is its data segments, the initial contents
   of its linear memories (`section`: `data[<index>]`). `address` is the module offset of the

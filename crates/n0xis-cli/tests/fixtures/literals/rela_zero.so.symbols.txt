@@ -1,0 +1,54 @@
+
+Symbol table '.dynsym' contains 2 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 000000000000a265     0 NOTYPE  GLOBAL DEFAULT    8 _start
+
+Symbol table '.symtab' contains 46 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00000000000091a1     0 NOTYPE  LOCAL  DEFAULT    7 data_one_a
+     2: 00000000000091ab     0 NOTYPE  LOCAL  DEFAULT    7 data_one_b
+     3: 00000000000091b7     0 NOTYPE  LOCAL  DEFAULT    7 data_two_a
+     4: 00000000000091c1     0 NOTYPE  LOCAL  DEFAULT    7 data_two_b
+     5: 00000000000091cc     0 NOTYPE  LOCAL  DEFAULT    7 code_one_a
+     6: 00000000000091d6     0 NOTYPE  LOCAL  DEFAULT    7 code_one_b
+     7: 00000000000091e2     0 NOTYPE  LOCAL  DEFAULT    7 code_two_a
+     8: 00000000000091ec     0 NOTYPE  LOCAL  DEFAULT    7 code_two_b
+     9: 00000000000091f7     0 NOTYPE  LOCAL  DEFAULT    7 both_a
+    10: 0000000000009201     0 NOTYPE  LOCAL  DEFAULT    7 both_b
+    11: 000000000000920b     0 NOTYPE  LOCAL  DEFAULT    7 both_c
+    12: 0000000000009215     0 NOTYPE  LOCAL  DEFAULT    7 both_d
+    13: 0000000000009220     0 NOTYPE  LOCAL  DEFAULT    7 partial
+    14: 0000000000009231     0 NOTYPE  LOCAL  DEFAULT    7 false_one
+    15: 0000000000009242     0 NOTYPE  LOCAL  DEFAULT    7 false_two
+    16: 0000000000009254     0 NOTYPE  LOCAL  DEFAULT    7 false_three
+    17: 0000000000009001     0 NOTYPE  LOCAL  DEFAULT    1 number_a
+    18: 000000000000900b     0 NOTYPE  LOCAL  DEFAULT    1 number_b
+    19: 0000000000009016     0 NOTYPE  LOCAL  DEFAULT    1 immed_a
+    20: 0000000000009020     0 NOTYPE  LOCAL  DEFAULT    1 immed_b
+    21: 000000000000902b     0 NOTYPE  LOCAL  DEFAULT    1 imslot_a
+    22: 0000000000009035     0 NOTYPE  LOCAL  DEFAULT    1 imslot_b
+    23: 000000000000b2f0     0 NOTYPE  LOCAL  DEFAULT    9 data_pairs
+    24: 000000000000b2f0     0 NOTYPE  LOCAL  DEFAULT    9 pair_data_one
+    25: 000000000000b300     0 NOTYPE  LOCAL  DEFAULT    9 pair_data_two
+    26: 000000000000b310     0 NOTYPE  LOCAL  DEFAULT    9 pair_both_b
+    27: 000000000000b320     0 NOTYPE  LOCAL  DEFAULT    9 pair_both_d
+    28: 000000000000b330     0 NOTYPE  LOCAL  DEFAULT    9 pair_partial
+    29: 000000000000b340     0 NOTYPE  LOCAL  DEFAULT    9 pair_false_one
+    30: 000000000000b350     0 NOTYPE  LOCAL  DEFAULT    9 pair_false_inner
+    31: 000000000000b360     0 NOTYPE  LOCAL  DEFAULT    9 pair_false_two
+    32: 000000000000b370     0 NOTYPE  LOCAL  DEFAULT    9 pair_false_three
+    33: 000000000000b380     0 NOTYPE  LOCAL  DEFAULT    9 pair_blob
+    34: 000000000000a2db     0 NOTYPE  LOCAL  DEFAULT    8 blob
+    35: 000000000000b390     0 NOTYPE  LOCAL  DEFAULT    9 pair_number
+    36: 000000000000a266     0 NOTYPE  LOCAL  DEFAULT    8 code_pair_one
+    37: 000000000000a273     0 NOTYPE  LOCAL  DEFAULT    8 code_pair_two
+    38: 000000000000a289     0 NOTYPE  LOCAL  DEFAULT    8 code_pair_both_c
+    39: 000000000000a296     0 NOTYPE  LOCAL  DEFAULT    8 code_pair_both_d
+    40: 000000000000a2a3     0 NOTYPE  LOCAL  DEFAULT    8 code_pair_partial
+    41: 000000000000a2b0     0 NOTYPE  LOCAL  DEFAULT    8 code_false_length
+    42: 000000000000a2bd     0 NOTYPE  LOCAL  DEFAULT    8 code_immediate
+    43: 000000000000a2c8     0 NOTYPE  LOCAL  DEFAULT    8 code_immediate_slot
+    44: 000000000000b3a0     0 NOTYPE  LOCAL  HIDDEN    10 _DYNAMIC
+    45: 000000000000a265     0 NOTYPE  GLOBAL DEFAULT    8 _start

@@ -198,6 +198,7 @@ enum Command {
     /// Text in the image: runs of printable UTF-8 or UTF-16LE characters, with
     /// their addresses. By default the file-backed sections that hold no code;
     /// `--section`, `--all-sections`, or `--start`/`--size` for others.
+    /// In an image on disk a run is cut where a reference states a length (`cut_by`).
     /// `--contains` filters (any case); `--limit`/`--offset` page.
     Strings(StringsArgs),
     /// Define named struct / enum types the decompiler uses to render struct

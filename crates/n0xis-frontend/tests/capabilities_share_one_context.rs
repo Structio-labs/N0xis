@@ -31,6 +31,12 @@ const BUILDS_ITS_OWN_CONTEXT: &[(&str, &str)] = &[
          attaches no name, so the symbol chain would cost a scan and change nothing",
     ),
     (
+        "strings",
+        "the sweep for a length beside a literal's address reads each instruction's decoded text \
+         and address operand; it resolves no call target and attaches no name, so the symbol \
+         chain would cost a scan and change nothing",
+    ),
+    (
         "pointer.path",
         "live-process only — it walks a chain of pointers in a running target, where there is \
          no static image and no symbol table to attach",
