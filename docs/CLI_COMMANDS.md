@@ -612,6 +612,8 @@ Read bytes (live process, static PE, or inline).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Reads up to `--size` bytes and stops where the stretch holding `--addr` ends; an address in a
   gap is refused (`read-failed`). For a whole window, gaps included, use `mem span`.
+- On a process, the message tells an address with no mapping (`not mapped`) from one with a
+  mapping that will not read (`mapped but could not be read`, with the system's reason).
 - Schema: `n0xis.mem.read.v1`
 
 ### `mem span --addr <hex>`
@@ -622,8 +624,8 @@ lies between two runs instead of ending the read.
 - `data`: `address`, `size`, `read` (bytes across all runs), `runs: [{address, read, hex}]` in
   address order. Runs that touch are one run. A window with nothing readable is `read: 0` and no
   runs, which is an answer, not a failure.
-- A failure other than an unmapped address (a process that exits mid-read) is returned as an
-  error, never shown as a gap.
+- A mapped address that will not read (no read permission, a fault) is a gap too. A failure not
+  about the address (a process that exits mid-read) is returned as an error, never shown as a gap.
 - Where a stretch can start: a static image answers from its section table; a process, a remote
   agent and a snapshot from their pages or regions. A source with no such map is probed one
   address at a time, which is why the window is bounded.
@@ -762,7 +764,42 @@ AOB (array-of-bytes) signature scan with `??` wildcards, e.g. `"48 8B ?? 68"`.
 - `--pattern` (required); `--start`/`--size` (on `--pid`, defaults to every committed writable
   region; `--start` required for `--file`).
 - Sources: `--pid` | `--file`.
+- `data`: `matches`, `bytes_scanned`. On `--pid`, also what the scan did not read, below. On
+  `--file`, those two fields and nothing more; a window outside the image is `bytes_scanned: 0`.
 - Schema: `n0xis.scan.aob.v1`
+
+#### What a scan of a process did not read
+
+A process's regions come and go, and some will not read. A sweep of them goes on past a region
+that gives nothing, and states it, in the same object as its result. This goes for `scan aob`,
+`scan value`, `scan filter`, `scan group`, `scan pointer-path`, `locate by-transition`, `lua
+strings`, `lua combo`, `lua seedscan`, `il2cpp classes` and `ui locate`, and for `find` and
+`strings` on `--pid` or `--remote-cmd`. An answer about a file or a snapshot states none of it.
+
+- `regions_scanned`: regions a read gave at least one byte of.
+- `regions_not_read`, and `not_read: [{start, size, why}]`: regions that gave nothing; `why` is
+  the read's own failure, with the system's reason.
+- `regions_read_short`, and `read_short: [{start, size, read}]`: regions that gave `read` bytes of
+  `size`. What the read did give is scanned; the rest was not looked at.
+- Each list holds at most 64 entries (`NOT_READ_SHOWN`); the counts are always the true ones.
+
+A region is judged by what the read returned, never by its path or kind: two device mappings side
+by side can differ, one reading and the next faulting on its first byte.
+
+```json
+{"bytes_scanned":372736,"matches":["0x7f34f3c0a000"],
+ "not_read":[{"size":8192,"start":"0x7f34f3c02000",
+              "why":"address 0x7f34f3c02000 is mapped but could not be read: Bad address (os error 14)"}],
+ "read_short":[{"read":4096,"size":8192,"start":"0x7f34f3c05000"}],
+ "regions_not_read":1,"regions_read_short":1,"regions_scanned":14}
+```
+
+- When no region gives a byte the answer is the error `nothing-readable`, naming the first reason:
+  nothing was looked at, which is not "no matches". Nothing is saved under `--save-as`.
+- A failure not about a region (the process exited, reading it is refused) is the command's own
+  error (`aob-failed`, `scan-failed`, ...), so a dead target never reads as an empty scan.
+- `exhaustive` in a `scan value` answer still means only that `matches` is all of `total_matches`:
+  read it beside `regions_not_read`.
 
 ### `scan pointer-path --pid <u32> --target <hex> --module <name>`
 Find stable multi-level pointer chains resolving to an address.

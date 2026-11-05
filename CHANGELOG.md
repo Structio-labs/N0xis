@@ -156,6 +156,25 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`scan aob --pid` stopped at the first region that would not read, and a scan that skipped
+  regions could not be told from a clean one.** A mapped region whose first byte faults (a device
+  mapping `process_vm_readv` cannot follow, a region freed since the map was read) ended the scan
+  with `aob-failed`, with the pattern still ahead of it. The scan now goes on and states, beside
+  `matches` and `bytes_scanned`: `regions_scanned`, `regions_not_read`, `not_read` (`start`, `size`,
+  `why`), `regions_read_short`, `read_short` (`start`, `size`, `read`), each list capped at 64 with
+  the counts kept. Regions are judged by what the read returned, never by path or kind: on a real
+  process one device mapping read and the next faulted. When no region gives a byte the answer is
+  the error `nothing-readable`. A process that exits or starts refusing the read is an error rather
+  than an empty scan. The same rule now covers `scan value`, `scan filter`, `scan group`, `scan
+  pointer-path`, `locate by-transition`, `lua strings`, `lua combo`, `lua seedscan`, `il2cpp
+  classes`, `ui locate`, and `find` and `strings` on a process; most of them used to skip on every
+  failed read, so a dead target read as nothing found. `mem span` and `strings` no longer end at a
+  faulting page. `mem read` keeps its `read-failed` code, and now says `mapped but could not be
+  read` where it said `not mapped` of a mapping with no read permission. Additive: an answer about
+  a file or a snapshot is byte for byte what it was (85 comparisons on 5 images against the previous
+  build). Measured on a planted target against the kernel's own answers
+  (`crates/n0xis-cli/tests/scan_states_what_it_did_not_read.rs`); the Windows adapter's new
+  classification passes under Wine 10 and has not been run on Windows.
 - **A big-endian image's `.eh_frame` was never read, and the answers said it had none.** The
   reader took every length, CIE pointer and pointer field little-endian, so on a big-endian
   image the first length came out past the end of the section and no FDE was read: `function

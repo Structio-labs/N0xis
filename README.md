@@ -73,8 +73,7 @@ results on measured inputs · **refused**: a typed error · **not yet**: no code
   of a stripped image; names that only the COFF symbol table holds. A PDB beside an x64 PE gave every
   start, name and end on the two lld-link images measured (35 of 35, 18 of 18).
 - **Live** (Linux): `provenance trace` prints a written address as a string literal when the bytes
-  there happen to be printable, and on some builds names the loop head as the function (above); the
-  byte-pattern scan (`scan aob`) needs `--start`/`--size` to get past an unreadable region;
+  there happen to be printable, and on some builds names the loop head as the function (above);
   `scan dissect` guesses field types; Windows-only commands refuse elsewhere.
 
 ## Install
@@ -137,7 +136,7 @@ processor, the image's own tables, or an independent tool such as `llvm-objdump`
 [docs/VERIFICATION.md](docs/VERIFICATION.md) is the one place the numbers live, open gaps included. Three of
 them, from October 2026:
 - the decoder read 10 498 instructions on 10 PE and ELF images (x86-64, x86, AArch64) as `llvm-objdump` or GNU `objdump` does, every difference a documented alias;
-- on Linux, 19 of 23 live operations matched `/proc/<pid>/mem`, `/proc/<pid>/maps`, `nm`, `objdump`, `eu-stack` or the target's own printed values; the other four are in the live entry above: the string literal in `provenance trace`, `scan aob` on its default regions, `scan dissect`'s types and the Windows-only refusal (the loop head was measured on `config-demo`, not among the 23);
+- on Linux, 19 of 23 live operations matched `/proc/<pid>/mem`, `/proc/<pid>/maps`, `nm`, `objdump`, `eu-stack` or the target's own printed values; the other four: the string literal in `provenance trace`, `scan aob` on its default regions (since fixed: it goes past a region that will not read and states it), `scan dissect`'s types and the Windows-only refusal (the loop head was measured on `config-demo`, not among the 23);
 - the decompiler's C, compiled beside its source and run on the same inputs, was right on 5 to 11 of 14 functions per image on 9 PE and ELF images, a first measurement: 33 of the 126 verdicts were not executed, because the output could not be run (24 read by hand, 9 judged incomplete from the placeholders the text holds), and a second pass did not reproduce the totals.
 
 ## Docs
