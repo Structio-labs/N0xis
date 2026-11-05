@@ -5,6 +5,22 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-11-05
+
+**WebAssembly modules open from the command line, `why` and `contradictions` say where each fact came from
+and where sources disagree, function discovery is measured on programs it was not tuned on, live scans go on
+past what will not read, and `decomp` no longer dies on long chains or takes cubic time on many blocks.**
+
+What an answer can change for a script: `--size` without `--start` is refused on a live target, a window
+outside the image is an error instead of an empty success, an unnamed function has one spelling everywhere,
+and `function discover` lists different functions on the same image.
+
+Known limits, measured on Rust programs nothing was tuned on (docs/VERIFICATION.md, "Held-out Rust"): on ELF
+with unwind tables recall against DWARF is 100% with 10 wrong starts in release builds; on PE release builds
+recall is 90.9%, on one program 83.4%, with 86 wrong starts of 23 408; an image with no FDE at all is about 46%;
+ends only the control-flow graph decides are wrong on 44.3% of such release functions. `strings` still joins
+literals side by side on a Rust binary. Nothing here measures a function's decompiled body.
+
 ### Added
 
 - **`contradictions`: every place in an image where two sources the engine reads disagree**
