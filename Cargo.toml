@@ -93,6 +93,17 @@ n0xis-pdb = { path = "crates/n0xis-pdb" }
 n0xis-wasm = { path = "crates/n0xis-wasm" }
 n0xis-wasm-arch = { path = "crates/n0xis-wasm-arch" }
 
+# Dependencies compile once and then run a great many times in the test suite. Optimizing only them
+# leaves the build after a change to this workspace as long as it was and the suite's run a third
+# shorter (measured 2026-11-05); the overflow checks and debug assertions a test build has stay on.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The corruption suites read a WebAssembly module tens of thousands of times, and this crate is small
+# and rarely rebuilt, so the same trade holds for it.
+[profile.dev.package.n0xis-wasm]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

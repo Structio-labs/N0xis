@@ -22,11 +22,13 @@ work gets found, claimed, and reviewed.
 See [README.md#install](README.md#install). Before opening a PR:
 
 ```
-cargo build --workspace          # must be warning-free
-cargo test --workspace --features n0xis-pipeline/live
-cargo clippy --workspace --all-targets -- -D warnings
-sh scripts/check_boundary.sh     # the layering law, mechanically
+python3 scripts/gate.py          # what CI checks, in parallel: one line per step, failures in full
+python3 scripts/gate.py -p n0xis-core --no-clippy   # one crate's tests, while working
+python3 scripts/gate.py --wine   # also the Windows test suite under Wine
 ```
+
+It runs the layering law (`scripts/check_boundary.sh`), the tests with the stack a Windows main
+thread has, and clippy for Linux and Windows, all with warnings as errors.
 
 Zero warnings is enforced, not a suggestion — every phase in this project's
 history shipped with a clean build, and that's not going to change now.
