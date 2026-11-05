@@ -85,6 +85,7 @@ def main() -> int:
                     "at": at[1] if at else None,
                     "prev": prev[1] if prev else None,
                     "aligned16": va % 16 == 0,
+                    "names": r["truth_names"],
                 })
                 owner = (r.get("inside") or {}).get("owner_names") or []
                 if r["truth_names"]:
