@@ -46,6 +46,31 @@ fn each_stretch_is_a_run_and_the_gaps_are_crossed() {
     assert_eq!(cut.iter().map(|(va, b)| (va.0, b.len())).collect::<Vec<_>>(), [(0x108, 8), (0x120, 4)]);
 }
 
+/// The stretch at `[0x100, 0x110)` as a mapping that faults: it has a mapping
+/// and gives no byte, and the read goes on past it as past any other gap.
+struct Faulting;
+
+impl MemorySource for Faulting {
+    fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
+        if (0x100..0x110).contains(&va.0) {
+            return Err(SourceError::Unreadable { va, reason: "Bad address".into() });
+        }
+        Planted { fails_at: None }.read(va, len)
+    }
+    fn contains(&self, va: Va) -> bool {
+        Planted { fails_at: None }.contains(va)
+    }
+    fn label(&self) -> String {
+        "faulting".into()
+    }
+}
+
+#[test]
+fn a_stretch_that_faults_is_a_gap() {
+    let runs = read_runs(&Faulting, Va(0xf0), 0x48).expect("a fault is about the address, not the source");
+    assert_eq!(runs.iter().map(|(va, b)| (va.0, b.len())).collect::<Vec<_>>(), [(0x120, 0x10)]);
+}
+
 #[test]
 fn a_failure_is_returned_not_shown_as_a_gap() {
     let failed = read_runs(&Planted { fails_at: Some(0x120) }, Va(0xf0), 0x48);

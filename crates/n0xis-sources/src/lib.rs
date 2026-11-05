@@ -260,12 +260,34 @@ pub enum Linkage {
 pub enum SourceError {
     #[error("address {0} is not mapped in this source")]
     Unmapped(Va),
+    /// The address is mapped and the read still failed: the mapping has no read
+    /// permission, or the kernel could not bring the page in (a device mapping
+    /// that faults, a mapping past the end of its file, a region freed a moment
+    /// ago). `reason` is the system's own. Distinct from [`Unmapped`](Self::Unmapped)
+    /// so that nobody is told an address with a mapping has none.
+    #[error("address {va} is mapped but could not be read: {reason}")]
+    Unreadable { va: Va, reason: String },
     #[error("this source is read-only (write not supported)")]
     ReadOnly,
     #[error("failed to load source: {0}")]
     Load(String),
     #[error("os error: {0}")]
     Os(String),
+}
+
+impl SourceError {
+    /// Whether this failure is about the address asked for, so that another
+    /// address may still read. Every other failure is about the source: the
+    /// process exited, reading it is denied. A sweep steps over the first kind
+    /// and ends on the second, or a dead target reads as an empty one.
+    ///
+    /// No wildcard on purpose: a new kind of failure has to answer this.
+    pub fn is_about_a_region(&self) -> bool {
+        match self {
+            SourceError::Unmapped(_) | SourceError::Unreadable { .. } => true,
+            SourceError::ReadOnly | SourceError::Load(_) | SourceError::Os(_) => false,
+        }
+    }
 }
 
 /// Byte-level access to an address space.
@@ -346,8 +368,9 @@ pub trait MemorySource {
     /// The first address in `[va, end)` where [`read`](MemorySource::read)
     /// gives at least one byte, or `None` when none there does — so a caller
     /// stepping through a range crosses a gap, or a section's zero-fill tail,
-    /// without guessing how long it is. A failure other than an unmapped
-    /// address is returned, never stepped over as if it were a gap.
+    /// without guessing how long it is. A failure that is not about the address
+    /// ([`SourceError::is_about_a_region`]) is returned, never stepped over as if
+    /// it were a gap.
     ///
     /// Default: asks `read` one address at a time. That is right for every
     /// source by construction and costs one read per byte of gap, so a source
@@ -358,13 +381,15 @@ pub trait MemorySource {
     }
 }
 
-/// The first of `at` where `read` gives a byte. An unmapped address and an
-/// empty read are "no byte"; any other failure ends the search and is returned.
+/// The first of `at` where `read` gives a byte. An address that cannot be read
+/// and an empty read are "no byte"; a failure that is not about the address ends
+/// the search and is returned.
 fn first_with_a_byte<S: MemorySource + ?Sized>(src: &S, at: impl IntoIterator<Item = u64>) -> Result<Option<Va>, SourceError> {
     for a in at {
         match src.read(Va(a), 1) {
             Ok(bytes) if !bytes.is_empty() => return Ok(Some(Va(a))),
-            Ok(_) | Err(SourceError::Unmapped(_)) => {}
+            Ok(_) => {}
+            Err(e) if e.is_about_a_region() => {}
             Err(e) => return Err(e),
         }
     }
@@ -426,10 +451,10 @@ pub fn page_bounds(va: Va, end: Va) -> impl Iterator<Item = u64> {
 }
 
 /// Every readable stretch of `[va, va + len)` in address order, as `(start,
-/// bytes)`; stretches that touch are one run. What lies between two runs —
-/// an unmapped address or a zero-fill tail — is not filled in. An error other
-/// than an unmapped address ends the read and is returned, so a failure is
-/// never shown as a gap.
+/// bytes)`; stretches that touch are one run. What lies between two runs — an
+/// address that cannot be read, or a zero-fill tail — is not filled in. An error
+/// that is not about the address ends the read and is returned, so a failure of
+/// the source is never shown as a gap.
 pub fn read_runs<S: MemorySource + ?Sized>(src: &S, va: Va, len: usize) -> Result<Vec<(Va, Vec<u8>)>, SourceError> {
     let end = va.0.saturating_add(len as u64);
     let mut runs: Vec<(Va, Vec<u8>)> = Vec::new();
@@ -437,7 +462,7 @@ pub fn read_runs<S: MemorySource + ?Sized>(src: &S, va: Va, len: usize) -> Resul
     while at < end {
         let bytes = match src.read(Va(at), (end - at) as usize) {
             Ok(bytes) => bytes,
-            Err(SourceError::Unmapped(_)) => Vec::new(),
+            Err(e) if e.is_about_a_region() => Vec::new(),
             Err(e) => return Err(e),
         };
         if bytes.is_empty() {

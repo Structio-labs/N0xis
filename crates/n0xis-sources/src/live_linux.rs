@@ -215,14 +215,22 @@ impl LinuxProcess {
     }
 
     /// Cached lookup of the mapping containing `va`, refreshing once on a miss.
-    fn entry_containing(&self, va: u64) -> Option<MapEntry> {
+    ///
+    /// A map that cannot be read, or that holds nothing, is not "no mapping at
+    /// this address". It says the process is gone (`/proc/<pid>/maps` of a zombie
+    /// reads empty, of a reaped process not at all), and answering `Unmapped` here
+    /// would let a sweep step over a dead target one region at a time.
+    fn entry_containing(&self, va: u64) -> Result<Option<MapEntry>, SourceError> {
         if let Some(e) = self.maps.borrow().iter().find(|e| va >= e.start && va < e.end) {
-            return Some(e.clone());
+            return Ok(Some(e.clone()));
         }
-        let fresh = parse_maps(self.pid).ok()?;
+        let fresh = parse_maps(self.pid)?;
+        if fresh.is_empty() {
+            return Err(SourceError::Os(format!("process {} exited while being read", self.pid)));
+        }
         let hit = fresh.iter().find(|e| va >= e.start && va < e.end).cloned();
         *self.maps.borrow_mut() = fresh;
-        hit
+        Ok(hit)
     }
 
     /// The on-disk path backing `module_base`, if any.
@@ -378,6 +386,11 @@ fn read_errno(pid: u32, va: u64) -> SourceError {
             SourceError::Os(format!("process_vm_readv(pid={pid}) denied: {hint}"))
         }
         Some(libc::ESRCH) => SourceError::Os(format!("process {pid} exited while being read")),
+        // The kernel could not bring in the first page of the range. The process
+        // is there and the read was allowed, so this is about this address alone:
+        // a mapping that faults (some device mappings, a shared mapping past the
+        // end of its file) or a region freed since the map was read.
+        Some(libc::EFAULT) => SourceError::Unreadable { va: Va(va), reason: err.to_string() },
         _ => SourceError::Os(format!("process_vm_readv(pid={pid}, va={:#x}) failed: {err}", va)),
     }
 }
@@ -386,11 +399,11 @@ impl MemorySource for LinuxProcess {
     /// Read *up to* `len` bytes, truncated at the end of the containing
     /// mapping — the same contract the Win32 adapter and `ImageSource` honour.
     fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
-        let Some(entry) = self.entry_containing(va.0) else {
+        let Some(entry) = self.entry_containing(va.0)? else {
             return Err(SourceError::Unmapped(va));
         };
         if !entry.readable() {
-            return Err(SourceError::Unmapped(va));
+            return Err(SourceError::Unreadable { va, reason: format!("the mapping's protection is {}", entry.perms) });
         }
         let avail = (entry.end - va.0) as usize;
         let want = len.min(avail);
@@ -401,7 +414,7 @@ impl MemorySource for LinuxProcess {
     }
 
     fn contains(&self, va: Va) -> bool {
-        self.entry_containing(va.0).is_some_and(|e| e.readable())
+        self.entry_containing(va.0).ok().flatten().is_some_and(|e| e.readable())
     }
 
     fn next_readable(&self, va: Va, end: Va) -> Result<Option<Va>, SourceError> {
@@ -627,6 +640,85 @@ mod tests {
         assert_eq!(&got[..8], &x.to_le_bytes());
 
         assert!(matches!(live.read(Va(0), 4), Err(SourceError::Unmapped(_))));
+    }
+
+    /// A mapping with no read permission has a mapping: it must not be reported
+    /// as having none. Planted, with the address the test's own `mmap` returned.
+    #[test]
+    fn a_mapping_with_no_read_permission_is_unreadable_not_unmapped() {
+        let page = unsafe { libc::mmap(std::ptr::null_mut(), 0x1000, libc::PROT_NONE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+        assert_ne!(page, libc::MAP_FAILED);
+        let live = LinuxProcess::attach(std::process::id()).expect("attach to self");
+        let got = live.read(Va(page as u64), 8);
+        assert!(matches!(got, Err(SourceError::Unreadable { ref reason, .. }) if reason.contains("---p")), "{got:?}");
+        assert!(!live.contains(Va(page as u64)));
+        unsafe { libc::munmap(page, 0x1000) };
+    }
+
+    /// A shared mapping past the end of its file: the kernel gives `EFAULT` for
+    /// its first byte, and the read says so, with the kernel's own reason. A
+    /// mapping that faults is what a device mapping can be, with no device.
+    #[test]
+    fn a_mapping_that_faults_is_unreadable_with_the_kernels_reason() {
+        use std::os::fd::AsRawFd;
+        let path = std::env::temp_dir().join(format!("n0xis-empty-mapping-{}", std::process::id()));
+        let file = fs::OpenOptions::new().create(true).truncate(true).read(true).write(true).open(&path).expect("an empty file");
+        let flags = libc::PROT_READ | libc::PROT_WRITE;
+        let page = unsafe { libc::mmap(std::ptr::null_mut(), 0x2000, flags, libc::MAP_SHARED, file.as_raw_fd(), 0) };
+        assert_ne!(page, libc::MAP_FAILED);
+        let live = LinuxProcess::attach(std::process::id()).expect("attach to self");
+        let got = live.read(Va(page as u64), 16);
+        unsafe { libc::munmap(page, 0x2000) };
+        let _ = fs::remove_file(&path);
+        assert!(matches!(got, Err(SourceError::Unreadable { ref reason, .. }) if reason.contains("os error 14")), "{got:?}");
+    }
+
+    /// Once the process is gone no read is about an address: not one of a mapping
+    /// the cached map still lists, and not one it does not, whether the process
+    /// is a zombie (its map reads empty) or reaped (its map cannot be read).
+    #[test]
+    fn a_read_of_a_dead_process_is_not_about_the_address() {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        // `spawn` returns while the child can still be inside `exec`, with a map
+        // that does not read yet: 9 of 400 runs on a loaded machine failed this way
+        // when the target was a bare `sleep`. So it says when it is running, and
+        // the attach waits for that, not for a time.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "echo ready; read _"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("piped stdout")).read_line(&mut ready).expect("read the child");
+        assert_eq!(ready.trim(), "ready");
+        let pid = child.id();
+        let live = LinuxProcess::attach(pid).expect("attach to the child");
+        let listed = LiveTarget::regions(&live, 1000).into_iter().find(|r| r.protect.starts_with('r')).expect("a readable region").base;
+        assert!(live.read(listed, 4).is_ok(), "the probe must first be shown to read");
+        child.kill().expect("kill");
+
+        // The kill is asynchronous, so wait for the state, not for a time.
+        let zombie = (0..1000).any(|_| {
+            let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let state = stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z');
+            if !state {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            state
+        });
+        assert!(zombie, "the killed child never became a zombie");
+        for (what, va) in [("a listed mapping", listed), ("no mapping", Va(1))] {
+            let got = live.read(va, 4);
+            assert!(matches!(got, Err(ref e) if !e.is_about_a_region()), "zombie, {what}: {got:?}");
+        }
+
+        child.wait().expect("reap");
+        for (what, va) in [("a listed mapping", listed), ("no mapping", Va(1))] {
+            let got = live.read(va, 4);
+            assert!(matches!(got, Err(ref e) if !e.is_about_a_region()), "reaped, {what}: {got:?}");
+        }
     }
 
     #[test]

@@ -16,7 +16,9 @@ use std::mem;
 
 use n0xis_contracts::{Module, Symbol, Va};
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_NOACCESS, ERROR_PARTIAL_COPY, GetLastError, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+};
 use windows_sys::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, PROCESSENTRY32W,
@@ -29,7 +31,7 @@ use windows_sys::Win32::System::Memory::{
     PAGE_WRITECOPY, VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, VirtualQueryEx,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
     PROCESS_VM_WRITE,
 };
 
@@ -345,6 +347,31 @@ impl LiveProcess {
             if n == 0 { None } else { Some(mbi) }
         }
     }
+
+    /// Whether the process has exited. An open handle outlives its process, and
+    /// a query or a read through it then fails as if the address were at fault:
+    /// `VirtualQueryEx` finds nothing, `ReadProcessMemory` copies nothing. Asked
+    /// wherever a read failed, so a dead target is never reported region by
+    /// region as memory that merely would not read.
+    fn exited(&self) -> bool {
+        let mut code = 0u32;
+        let asked = unsafe { GetExitCodeProcess(self.handle, &mut code) };
+        asked != 0 && code != STILL_ACTIVE as u32
+    }
+
+    fn exited_error(&self) -> SourceError {
+        SourceError::Os(format!("process {} exited while being read", self.pid))
+    }
+}
+
+/// What a failed `ReadProcessMemory` says, by its error code. `ERROR_PARTIAL_COPY`
+/// and `ERROR_NOACCESS` are about the pages asked for; anything else (a handle
+/// that lost its rights) is about the target as a whole.
+fn read_failure(va: Va, gle: u32) -> SourceError {
+    match gle {
+        ERROR_PARTIAL_COPY | ERROR_NOACCESS => SourceError::Unreadable { va, reason: format!("ReadProcessMemory failed (GLE {gle})") },
+        _ => SourceError::Os(format!("ReadProcessMemory at {va} failed (GLE {gle})")),
+    }
 }
 
 fn is_readable(protect: u32) -> bool {
@@ -515,9 +542,14 @@ impl Drop for LiveProcess {
 
 impl MemorySource for LiveProcess {
     fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
-        let mbi = self.query(va.0).ok_or(SourceError::Unmapped(va))?;
-        if mbi.State != MEM_COMMIT || !is_readable(mbi.Protect) {
+        let Some(mbi) = self.query(va.0) else {
+            return Err(if self.exited() { self.exited_error() } else { SourceError::Unmapped(va) });
+        };
+        if mbi.State != MEM_COMMIT {
             return Err(SourceError::Unmapped(va));
+        }
+        if !is_readable(mbi.Protect) {
+            return Err(SourceError::Unreadable { va, reason: format!("the region's protection is {:#x}", mbi.Protect) });
         }
         // Clamp to the end of this committed region — read-up-to semantics.
         let region_end = (mbi.BaseAddress as u64).saturating_add(mbi.RegionSize as u64);
@@ -538,10 +570,9 @@ impl MemorySource for LiveProcess {
             )
         };
         if ok == 0 && read == 0 {
-            return Err(SourceError::Os(format!(
-                "ReadProcessMemory at {va} failed (GLE {})",
-                unsafe { GetLastError() }
-            )));
+            // Before anything else that could overwrite it.
+            let gle = unsafe { GetLastError() };
+            return Err(if self.exited() { self.exited_error() } else { read_failure(va, gle) });
         }
         buf.truncate(read);
         Ok(buf)
@@ -634,5 +665,55 @@ impl SymbolProvider for LiveProcess {
     // is a later slice; a live process has no symbols on its own.
     fn symbol_at(&self, _va: Va) -> Option<Symbol> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::System::Memory::VirtualAlloc;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    fn this_process() -> LiveProcess {
+        LiveProcess::attach(unsafe { GetCurrentProcessId() }).expect("attach to self")
+    }
+
+    #[test]
+    fn a_failed_read_is_about_the_address_only_when_its_code_says_so() {
+        for gle in [ERROR_PARTIAL_COPY, ERROR_NOACCESS] {
+            assert!(read_failure(Va(0x1000), gle).is_about_a_region(), "GLE {gle}");
+        }
+        // ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE: the target, not the address.
+        for gle in [5, 6] {
+            assert!(!read_failure(Va(0x1000), gle).is_about_a_region(), "GLE {gle}");
+        }
+    }
+
+    /// A committed page that allows no access is mapped; only an address with no
+    /// committed page is unmapped.
+    #[test]
+    fn a_no_access_page_is_unreadable_and_a_free_one_unmapped() {
+        let live = this_process();
+        let page = unsafe { VirtualAlloc(std::ptr::null(), 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS) };
+        assert!(!page.is_null(), "VirtualAlloc: GLE {}", unsafe { GetLastError() });
+        let got = live.read(Va(page as u64), 16);
+        assert!(matches!(got, Err(SourceError::Unreadable { .. })), "{got:?}");
+        let reserved = unsafe { VirtualAlloc(std::ptr::null(), 0x1000, MEM_RESERVE, PAGE_READWRITE) };
+        assert!(!reserved.is_null(), "VirtualAlloc: GLE {}", unsafe { GetLastError() });
+        let got = live.read(Va(reserved as u64), 16);
+        assert!(matches!(got, Err(SourceError::Unmapped(_))), "{got:?}");
+    }
+
+    /// The handle stays open past the process's end; what it then answers must
+    /// say the process is gone, not that the address is.
+    #[test]
+    fn a_read_of_an_exited_process_is_not_about_the_address() {
+        let mut child = std::process::Command::new("cmd").args(["/c", "pause"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().expect("spawn a child");
+        let live = LiveProcess::attach(child.id()).expect("attach to the child");
+        let some_region = live.regions(1_000).into_iter().find(|r| r.state == "commit").expect("a committed region");
+        child.kill().expect("kill the child");
+        child.wait().expect("reap the child");
+        let got = live.read(some_region.base, 16);
+        assert!(matches!(got, Err(ref e) if !e.is_about_a_region()), "{got:?}");
     }
 }

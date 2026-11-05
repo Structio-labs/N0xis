@@ -181,12 +181,28 @@ impl Drop for RemoteAgent {
     }
 }
 
+/// A read failure as the agent sent it: the text of its [`SourceError`], the only
+/// thing the protocol carries, and all an agent of an older build can send. Read
+/// back to the kind it was, because a sweep over a remote process needs the same
+/// answer to "was that about this address?" (a test holds this against the
+/// variants' own text).
+fn read_failure_from_wire(va: Va, msg: String) -> SourceError {
+    const UNREADABLE: &str = "is mapped but could not be read: ";
+    if let Some((_, reason)) = msg.split_once(UNREADABLE) {
+        SourceError::Unreadable { va, reason: reason.to_string() }
+    } else if msg.contains("not mapped") {
+        SourceError::Unmapped(va)
+    } else {
+        SourceError::Os(msg)
+    }
+}
+
 impl MemorySource for RemoteAgent {
     fn read(&self, va: Va, len: usize) -> Result<Vec<u8>, SourceError> {
         let resp = self.roundtrip(&json!({ "op": "read", "va": va.to_string(), "len": len }))?;
         if resp["ok"].as_bool() != Some(true) {
             let msg = resp["error"].as_str().unwrap_or("remote read failed").to_string();
-            return if msg.contains("not mapped") { Err(SourceError::Unmapped(va)) } else { Err(SourceError::Os(msg)) };
+            return Err(read_failure_from_wire(va, msg));
         }
         from_hex(resp["hex"].as_str().unwrap_or("")).ok_or_else(|| SourceError::Os("malformed hex in remote response".to_string()))
     }
@@ -324,6 +340,22 @@ mod tests {
         serve_stdio(&snap, Cursor::new(requests.as_bytes()), &mut output).unwrap();
         let first: Value = serde_json::from_str(String::from_utf8(output).unwrap().lines().next().unwrap()).unwrap();
         assert_eq!(first["ok"], false);
+    }
+
+    /// The text is the protocol: each kind has to come back as the kind it left
+    /// as, or a sweep over a remote process ends on a fault it would step over
+    /// locally. Built from the variants, so a reworded message fails here.
+    #[test]
+    fn a_read_failure_comes_back_over_the_wire_as_the_kind_it_was() {
+        let va = Va(0x1000);
+        let over_the_wire = |e: SourceError| read_failure_from_wire(va, e.to_string());
+        assert!(matches!(over_the_wire(SourceError::Unmapped(va)), SourceError::Unmapped(v) if v == va));
+        let reason = "Bad address (os error 14)".to_string();
+        match over_the_wire(SourceError::Unreadable { va, reason: reason.clone() }) {
+            SourceError::Unreadable { va: v, reason: r } => assert_eq!((v, r), (va, reason)),
+            other => panic!("{other:?}"),
+        }
+        assert!(!over_the_wire(SourceError::Os("process 1 exited while being read".into())).is_about_a_region());
     }
 
     #[test]
