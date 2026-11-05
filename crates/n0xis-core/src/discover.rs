@@ -293,6 +293,7 @@ fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeMap<u64, Va> 
         for ins in &insns {
             if ins.kind == n0xis_arch::InsnKind::Call
                 && let Some(t) = ins.target
+                && !reads_its_own_address(ctx, bytes, start, ins, t)
             {
                 out.entry(t.0).or_insert(ins.va);
             }
@@ -303,6 +304,29 @@ fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeMap<u64, Va> 
         at += consumed;
     }
     out
+}
+
+/// Whether `call` (whose direct target is `target`) is the get-PC idiom of
+/// position-independent i386 code: a call to the instruction right after
+/// itself, which pops the address the call pushed (clang's `call .L0$pb;
+/// .L0$pb: pop %eax`). It reads the code's own address and enters no function;
+/// taken as a call, every i686 clang build listed the `pop` as one — 4 223
+/// wrong starts on the rule-accuracy corpus without unwind tables
+/// (docs/VERIFICATION.md).
+///
+/// Both halves are needed. A call to the next instruction that does not pop is
+/// kept: a function that ends in a call to a `noreturn` one the compiler laid
+/// out right after it is the same shape, and there the target is a function.
+/// A function does not begin by popping its own return address. A call to
+/// `__x86.get_pc_thunk.*` (gcc's form of the idiom) names a real function
+/// elsewhere and is not this.
+fn reads_its_own_address(ctx: &Ctx, bytes: &[u8], start: Va, call: &DecodedInsn, target: Va) -> bool {
+    let next = call.va.0.saturating_add(u64::from(call.len));
+    if target.0 != next {
+        return false;
+    }
+    let Some(rest) = next.checked_sub(start.0).and_then(|off| bytes.get(usize::try_from(off).ok()?..)) else { return false };
+    ctx.arch.decode(rest, target).is_ok_and(|ins| ins.mnemonic == "pop")
 }
 
 /// The discovery artifact (`n0xis.function.discover.v1`).

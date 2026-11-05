@@ -157,6 +157,22 @@ fn i386_lea_padding_after_a_declared_end_is_not_a_function() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `call 1f; 1: pop` reads the code's own address and calls no function; a
+/// call to the next instruction that does not pop is a call, and its target a
+/// function (f5, at the instruction after f4's last call).
+#[test]
+fn i386_get_pc_is_not_a_call_and_a_call_to_the_next_function_is() {
+    let dir = project("get_pc");
+    let image = fixture("i386.so");
+    let starts = listed(&dir, &image);
+    assert!(!starts.contains(&"0x1036".to_string()), "the `pop` of `call 1f; 1: pop %ebx` is no function: {starts:?}");
+    let f5 = why(&dir, &image, "0x105a");
+    assert_eq!(f5["found"]["start"], "0x105a", "{f5}");
+    assert_eq!(f5["found"]["start_sources"], json!([{"source": "call_target", "from": "0x1055"}]), "{f5}");
+    assert_eq!(starts, ["0x1000", "0x1020", "0x1030", "0x1040", "0x1050", "0x105a", "0x1060"], "every planted function and nothing else");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The image's answer behind the first test, read without the CLI: the
 /// functions a symbol declares, with their tables, and the PLT's range.
 /// On 32-bit ARM a Thumb function's `st_value` is one past its code, and such

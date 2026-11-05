@@ -362,9 +362,12 @@ runs no discovery of its own. Through the registry (`why`), so `serve` and an MC
     `{"source": "after_declared_end"}` (the first instruction after a declared function's end),
     `{"source": "gap_sweep"}` (a linear sweep between two declared functions),
     `{"source": "call_target", "from": "0x…"}` (a direct call names it; `from` is the first such
-    call in the scanned code, in address order), `{"source": "prologue"}`. Never empty.
-    `symbol` (an ELF `STT_FUNC` symbol) and `stub` (a PLT entry) are in the list but never
-    appear today: discovery does not take a start from either.
+    call in the scanned code, in address order; a call to the next instruction that pops the
+    address it pushed, i386's get-PC idiom, names no function), `{"source": "prologue"}`.
+    Never empty. `stub` (a PLT entry) is in the list but never appears today: discovery does
+    not take a start from it. The rules walk over padding as the instruction set states it
+    (`nop` in every encoding, `int3`, and on x86 a `lea` of a register to itself, i386's
+    filler).
   - `end` — the end the function list gives, with the one source it came from:
     `{"va": "0x…", "source": "symbol_size", "of": "st_size" | "pdb" | "managed" | "flirt" |
     "project"}` (the symbol layers' stated length, and whose), `{"va": "0x…", "source":
