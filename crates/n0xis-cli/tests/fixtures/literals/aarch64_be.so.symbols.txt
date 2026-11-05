@@ -24,8 +24,8 @@ Symbol table '.symtab' contains 29 entries:
     14: 000000000000021f     0 NOTYPE  LOCAL  DEFAULT    7 data_one_b
     15: 000000000000022b     0 NOTYPE  LOCAL  DEFAULT    7 data_two_a
     16: 0000000000000235     0 NOTYPE  LOCAL  DEFAULT    7 data_two_b
-    17: 0000000000000240     0 NOTYPE  LOCAL  DEFAULT    7 partial
-    18: 0000000000000251     0 NOTYPE  LOCAL  DEFAULT    7 false_one
+    17: 0000000000000241     0 NOTYPE  LOCAL  DEFAULT    7 partial
+    18: 0000000000000252     0 NOTYPE  LOCAL  DEFAULT    7 false_one
     19: 0000000000001eb0     0 NOTYPE  LOCAL  DEFAULT    8 $d
     20: 0000000000001eb0     0 NOTYPE  LOCAL  DEFAULT    8 pair_data_one
     21: 0000000000001ec0     0 NOTYPE  LOCAL  DEFAULT    8 pair_data_two

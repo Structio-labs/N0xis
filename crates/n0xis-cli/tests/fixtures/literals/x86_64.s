@@ -8,20 +8,44 @@
 data_one_a: .ascii "DATA_ONE_A"
 data_one_b: .ascii "DATA_ONE_B"
     .byte 1, 0
+# A start alone, in a run a NUL ends: the shape of a merged string tail.
 data_two_a: .ascii "DATA_TWO_A"
 data_two_b: .ascii "DATA_TWO_B"
+    .byte 0
+# A start alone, in a run no NUL ends.
+data_three_a: .ascii "DATA_THREE"
+data_three_b: .ascii "DATA_THR_B"
+    .byte 1, 0
+# A start and an end at one point, in a run a NUL ends.
+data_four_a: .ascii "DATA_FOURA"
+data_four_b: .ascii "DATA_FOURB"
     .byte 0
 code_one_a: .ascii "CODE_ONE_A"
 code_one_b: .ascii "CODE_ONE_B"
     .byte 1, 0
 code_two_a: .ascii "CODE_TWO_A"
 code_two_b: .ascii "CODE_TWO_B"
-    .byte 0
+    .byte 1, 0
 both_a: .ascii "BOTH_AAAAA"
 both_b: .ascii "BOTH_BBBBB"
 both_c: .ascii "BOTH_CCCCC"
 both_d: .ascii "BOTH_DDDDD"
-    .byte 0
+    .byte 1, 0
+# `lea` into the first argument register, an immediate in the second: the true
+# register pair. Every run here is one no NUL ends, where a length alone cuts.
+reg_true_a: .ascii "REG_TRUE"
+reg_true_b: .ascii "REG_REST"
+    .byte 1, 0
+# The false one of real code: the immediate is the third argument, and reads as a
+# length of the first's text.
+reg_false: .ascii "REG_FALSE_LENGTH"
+    .byte 1, 0
+# The same, with the immediate moved first.
+reg_before: .ascii "REG_FALSE_BEFORE"
+    .byte 1, 0
+# The pair of the other ABI, which on this one is two unrelated registers.
+reg_other_abi: .ascii "REG_OTHER_ABI"
+    .byte 1, 0
 # strncmp(x, "partial_c_string", 3): a length, on a string a NUL ends.
 partial: .ascii "partial_c_string"
     .byte 0
@@ -38,19 +62,22 @@ false_three: .ascii "false_length_six"
     .byte 0
 number_a: .ascii "NUMBER_AAA"
 number_b: .ascii "NUMBER_BBB"
-    .byte 0
+    .byte 1, 0
 immed_a: .ascii "IMMED_AAAA"
 immed_b: .ascii "IMMED_BBBB"
-    .byte 0
+    .byte 1, 0
 imslot_a: .ascii "IMSLOT_AAA"
 imslot_b: .ascii "IMSLOT_BBB"
-    .byte 0
+    .byte 1, 0
 
     .section .data.rel.ro, "aw"
     .balign 8
 data_pairs:
 pair_data_one: .quad data_one_a, 10
 pair_data_two: .quad data_two_b, 10
+pair_data_three: .quad data_three_b, 10
+pair_data_four_a: .quad data_four_a, 10
+pair_data_four_b: .quad data_four_b, 10
 pair_both_b:   .quad both_b, 10
 pair_both_d:   .quad both_d, 10
 pair_partial:  .quad partial, 3
@@ -90,6 +117,22 @@ code_pair_partial:
     lea partial(%rip), %rsi
     mov $3, %edx
     ret
+code_pair_reg_true:
+    lea reg_true_a(%rip), %rdi
+    mov $8, %esi
+    ret
+code_false_reg:
+    lea reg_false(%rip), %rdi
+    mov $4, %edx
+    ret
+code_false_reg_before:
+    mov $4, %edx
+    lea reg_before(%rip), %rdi
+    ret
+code_other_abi:
+    lea reg_other_abi(%rip), %rcx
+    mov $4, %edx
+    ret
 code_false_length:
     lea false_three(%rip), %rdi
     mov $17, %esi
@@ -97,11 +140,11 @@ code_false_length:
 # Immediates equal to where `.fixed` puts two literals: addresses in an image that
 # runs where it says, numbers in one that may load anywhere.
 code_immediate:
-    mov $0x9020, %edi
+    mov $0x9021, %edi
     mov $10, %esi
     ret
 code_immediate_slot:
-    movq $0x9035, 8(%rsp)
+    movq $0x9037, 8(%rsp)
     movq $10, 16(%rsp)
     ret
 # Each byte a one-byte instruction, and printable.

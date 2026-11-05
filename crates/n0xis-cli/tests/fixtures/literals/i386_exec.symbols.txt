@@ -7,8 +7,8 @@ Symbol table '.symtab' contains 16 entries:
      3: 0804a00b     0 NOTYPE  LOCAL  DEFAULT    2 data_one_b
      4: 0804a017     0 NOTYPE  LOCAL  DEFAULT    2 data_two_a
      5: 0804a021     0 NOTYPE  LOCAL  DEFAULT    2 data_two_b
-     6: 0804a02c     0 NOTYPE  LOCAL  DEFAULT    2 partial
-     7: 0804a03d     0 NOTYPE  LOCAL  DEFAULT    2 false_one
+     6: 0804a02d     0 NOTYPE  LOCAL  DEFAULT    2 partial
+     7: 0804a03e     0 NOTYPE  LOCAL  DEFAULT    2 false_one
      8: 0804bfe0     0 NOTYPE  LOCAL  DEFAULT    4 pair_data_one
      9: 0804bfe8     0 NOTYPE  LOCAL  DEFAULT    4 pair_data_two
     10: 0804bff0     0 NOTYPE  LOCAL  DEFAULT    4 pair_partial

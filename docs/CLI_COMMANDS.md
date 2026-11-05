@@ -592,12 +592,16 @@ Text in the image: runs of printable characters, each with its address.
   process). `data.ranges` names what was read; a string never runs across a gap.
 - Literals with no terminator sit side by side, so in an image on disk a run of UTF-8 text is cut
   where a reference states a length: a pointer-sized word in a section that holds no code with the
-  length in the next word, or on x86-64 an instruction loading the address with the length as an
-  immediate near it. A cut at `c` needs `c` to be the start of such a reference, or its end in a
-  run no NUL ends, so a partial length on a C string cuts nothing. A piece a reference states
-  carries `cut_by`, `{"kind": "data_pair"|"code_pair", "at": "0x…"}`, the first evidence's address;
-  text left between pieces is a row without it, and a piece under `--min` goes as any short string
-  does. A run in a section that holds code is not cut. Where nothing states a length a run is whole.
+  length in the next word, or on x86-64 an instruction loading the address near an immediate length,
+  in the next register of the image's calling convention (System V `rdi rsi rdx rcx r8 r9`, Win64
+  `rcx rdx r8 r9`) or in the stack slot beside the pointer's. In a run no NUL ends, a cut at `c` needs
+  `c` to be the start or the end of such a reference; in a run a NUL ends, the start of one and the
+  end of another, so neither a partial length on a C string nor a reference to a merged string tail
+  cuts anything. A piece a reference states carries `cut_by`, `{"kind": "data_pair"|"code_pair",
+  "at": "0x…"}`, the first evidence's address; text left between pieces is a row without it. **A
+  piece under `--min` is dropped**, as any string that short is: the row before the cut does not
+  keep it, so a short literal in a cut run is absent unless `--min` admits it. A run in a section
+  that holds code is not cut. Where nothing states a length a run is whole.
 - Each string: `address`, `section`, `encoding`, `length` (characters), `size` (bytes), `text`.
 - On a WebAssembly module, what is read by default is its data segments, the initial contents
   of its linear memories (`section`: `data[<index>]`). `address` is the module offset of the

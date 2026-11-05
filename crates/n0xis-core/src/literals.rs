@@ -12,18 +12,22 @@
 //! **The rule that keeps C answers as they are.** A cut at `c` inside a run needs
 //! one of:
 //!
-//! - (a) `c` is the start of a reference with its length;
-//! - (b) `c` is the end of one, and the run is not ended by a NUL.
+//! - in a run no NUL ends: `c` is the start or the end of a reference with its
+//!   length;
+//! - in a run a NUL ends: `c` is the start of one **and** the end of another.
 //!
 //! So `strncmp(x, "abcdef", 3)`, on a string a NUL ends, cuts nothing: stating
-//! how much of a string to read is not stating where it stops. Where nothing
-//! states a length, a run stays whole.
+//! how much of a string to read is not stating where it stops. Nor does a start
+//! alone cut a run a NUL ends: a linker merging string tails leaves a reference to
+//! `double` inside `long double`, and the first form of this rule cut it in all
+//! four C and C++ libraries it was measured on. Where nothing states a length, a
+//! run stays whole.
 //!
 //! A reference is never believed past its run, nor when it starts or ends inside
 //! a character: a `&str` is valid UTF-8 by its type, so such a word is not one.
 //! Wide text has no such references and is not cut.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
 use n0xis_arch::{DecodedInsn, InsnKind};
@@ -37,6 +41,9 @@ use crate::{CoreError, Ctx, FoundString, StringEncoding};
 /// Instructions a length may be from the instruction that loads the address,
 /// either side of it, with no control transfer between. Rust's `lea; mov; call`
 /// is adjacent; the others are register moves and the next argument's setup.
+///
+/// A window says only that the two are near. What makes them a pair is where the
+/// length is: [`X64Pairs::holder`], or the slot beside the pointer's.
 pub const CODE_PAIR_WINDOW: u32 = 6;
 
 /// The longest length an immediate is taken for, in bytes. A longer immediate is
@@ -143,7 +150,7 @@ impl<'a> LiteralEvidence<'a> {
     ///
     /// `Err` when a read fails.
     pub fn x64_code_pairs(&mut self, ctx: &Ctx, start: Va, size: u64, words: AddressWords) -> Result<(), CoreError> {
-        let mut reader = X64Pairs { immediate_addresses: words == AddressWords::Stored, ..X64Pairs::default() };
+        let mut reader = X64Pairs::new(&crate::typeinfer::abi_arg_regs(ctx), words == AddressWords::Stored);
         sweep_code(ctx, start, size, SWEEP_CHUNK, |ins| {
             reader.step(ins, self);
             ControlFlow::Continue(())
@@ -163,7 +170,7 @@ impl<'a> LiteralEvidence<'a> {
 #[derive(Debug, Default)]
 pub struct LiteralRefs(BTreeMap<(u64, u64), CutBy>);
 
-/// The pieces of the run `run`, cut where a reference says ([the rule](self));
+/// The pieces of the run `run`, cut where references say ([the rule](self));
 /// the run as it is when none does. A piece carries `cut_by` when a reference
 /// states it: it starts at a cut one makes, or both its ends are one's. Text left
 /// between pieces carries none. Pieces under `min` characters go the way any
@@ -175,13 +182,14 @@ pub fn cut_run(run: FoundString, ended_by_nul: bool, refs: &LiteralRefs, min: us
         return vec![run];
     }
     let inside: Vec<(u64, u64, CutBy)> = refs.0.range((start, 0)..(end, 0)).map(|(&(s, l), &by)| (s, s + l, by)).collect();
+    let ends: BTreeSet<u64> = inside.iter().map(|&(_, e, _)| e).collect();
     let mut cuts: Vec<u64> = Vec::new();
     for &(s, e, _) in &inside {
-        if s > start {
-            cuts.push(s); // (a)
+        if s > start && (!ended_by_nul || ends.contains(&s)) {
+            cuts.push(s);
         }
         if !ended_by_nul && e < end {
-            cuts.push(e); // (b)
+            cuts.push(e);
         }
     }
     if cuts.is_empty() {
@@ -270,19 +278,15 @@ struct Loaded {
     stored: Option<(u8, i64)>,
     /// The length stored in the slot after it: the pair as memory holds it.
     in_memory: Option<u64>,
-    /// The immediate moved into another register after it.
-    after: Option<u64>,
-    /// The one immediate moved into another register just before it.
-    before: Option<u64>,
-    /// Two addresses waited for this register's immediate: which one it belongs
-    /// to cannot be said, so neither takes it.
-    shared: bool,
+    /// The immediate in the register after `reg` in the ABI's argument order,
+    /// moved there before or after the load.
+    length: Option<u64>,
 }
 
 impl Loaded {
     /// What this load's length is, strongest evidence first.
     fn decided(&self) -> Option<u64> {
-        self.in_memory.or(if self.shared { None } else { self.after.or(self.before) })
+        self.in_memory.or(self.length)
     }
 }
 
@@ -294,8 +298,9 @@ struct Moved<T> {
 }
 
 /// The state of the search for code pairs, one instruction at a time.
-#[derive(Default)]
 struct X64Pairs {
+    /// The registers the image's ABI passes arguments in, in order.
+    args: Vec<u8>,
     /// Whether an immediate can be a run's address ([`AddressWords::Stored`]).
     /// Where the image may load anywhere it is a number, whatever it equals.
     immediate_addresses: bool,
@@ -305,6 +310,23 @@ struct X64Pairs {
 }
 
 impl X64Pairs {
+    /// Over `args`, the ABI's argument registers by name, in order.
+    fn new(args: &[&str], immediate_addresses: bool) -> Self {
+        let args = args.iter().filter_map(|name| gpr(name)).map(|(reg, _)| reg).collect();
+        Self { args, immediate_addresses, open: Vec::new(), regs: Vec::new(), slots: Vec::new() }
+    }
+
+    /// The register an address is in when `reg` holds its length: the one before
+    /// it in the ABI's argument order.
+    ///
+    /// An immediate in any other register is another argument: measured on two
+    /// real programs before this rule, most wrong cuts were a length prefix read
+    /// as a length because `mov edx,4` sat beside a pointer in `rdi`.
+    fn holder(&self, reg: u8) -> Option<u8> {
+        let at = self.args.iter().position(|&r| r == reg)?;
+        self.args.get(at.checked_sub(1)?).copied()
+    }
+
     fn step(&mut self, ins: &DecodedInsn, evidence: &mut LiteralEvidence) {
         if ins.kind != InsnKind::Seq {
             self.retire_all(evidence);
@@ -325,18 +347,18 @@ impl X64Pairs {
         if let Some((reg, _)) = dst_reg {
             self.retire(|o| o.reg == Some(reg), evidence);
             self.regs.retain(|m| m.to != reg);
+            let holder = self.holder(reg);
+            if let Some(load) = self.open.iter_mut().find(|o| o.reg.is_some() && o.reg == holder) {
+                load.length = None;
+            }
         }
         match ins.mnemonic.as_str() {
             "lea" => {
                 if let (Some((reg, 8)), Some(target)) = (dst_reg, ins.rip_target)
                     && evidence.run_at(target.0).is_some()
                 {
-                    let mut near = self.regs.iter().filter(|m| m.to != reg);
-                    let before = match (near.next(), near.next()) {
-                        (Some(one), None) => Some(one.value),
-                        _ => None,
-                    };
-                    self.open.push(Loaded { va: ins.va, reg: Some(reg), start: target.0, age: 0, stored: None, in_memory: None, after: None, before, shared: false });
+                    let length = self.regs.iter().find(|m| self.holder(m.to) == Some(reg)).map(|m| m.value);
+                    self.open.push(Loaded { va: ins.va, reg: Some(reg), start: target.0, age: 0, stored: None, in_memory: None, length });
                 }
             }
             "mov" => {
@@ -350,11 +372,12 @@ impl X64Pairs {
                 let imm = raw.filter(|&v| v <= CODE_PAIR_MAX_LEN);
                 match (dst_reg, slot(dst), imm) {
                     (Some((reg, _)), _, Some(value)) => {
-                        let mut waiting: Vec<&mut Loaded> = self.open.iter_mut().filter(|o| o.reg.is_some() && o.after.is_none() && !o.shared).collect();
-                        match waiting.as_mut_slice() {
-                            [] => self.regs.push(Moved { to: reg, value, age: 0 }),
-                            [one] => one.after = Some(value),
-                            many => many.iter_mut().for_each(|o| o.shared = true),
+                        // One at most: a register holds one load, and a write
+                        // to it ended the last.
+                        let holder = self.holder(reg);
+                        match self.open.iter_mut().find(|o| o.reg.is_some() && o.reg == holder) {
+                            Some(load) => load.length = Some(value),
+                            None => self.regs.push(Moved { to: reg, value, age: 0 }),
                         }
                     }
                     (None, Some(at), Some(value)) if dst.starts_with("qword ptr ") => {
@@ -390,7 +413,7 @@ impl X64Pairs {
         };
         let beside = stored.and_then(|at| self.slots.iter().position(|m| m.to == (at.0, at.1 + 8)));
         let in_memory = beside.map(|i| self.slots.swap_remove(i).value);
-        self.open.push(Loaded { va, reg, start, age: 0, stored, in_memory, after: None, before: None, shared: false });
+        self.open.push(Loaded { va, reg, start, age: 0, stored, in_memory, length: None });
     }
 
     /// Decide and forget the loads `done` says are over.
@@ -443,10 +466,17 @@ mod tests {
     }
 
     #[test]
-    fn a_start_inside_a_run_cuts_it_with_or_without_a_nul() {
-        for ended_by_nul in [true, false] {
-            assert_eq!(cut("AAAABBBB", ended_by_nul, &[(0x104, 4)], 1), [row(0x100, "AAAA", None), row(0x104, "BBBB", Some(0x9000))]);
-        }
+    fn a_start_alone_cuts_only_a_run_no_nul_ends() {
+        assert_eq!(cut("AAAABBBB", false, &[(0x104, 4)], 1), [row(0x100, "AAAA", None), row(0x104, "BBBB", Some(0x9000))]);
+        // The shape of a merged string tail: `long double`, and `double`.
+        assert_eq!(cut("AAAABBBB", true, &[(0x104, 4)], 1), [row(0x100, "AAAABBBB", None)]);
+    }
+
+    #[test]
+    fn in_a_run_a_nul_ends_a_start_needs_an_end_at_the_same_point() {
+        assert_eq!(cut("AAAABBBBCCCC", true, &[(0x104, 4), (0x108, 4)], 1), [row(0x100, "AAAABBBB", None), row(0x108, "CCCC", Some(0x9001))]);
+        // An end elsewhere is no end here.
+        assert_eq!(cut("AAAABBBBCCCC", true, &[(0x100, 2), (0x108, 4)], 1), [row(0x100, "AAAABBBBCCCC", None)]);
     }
 
     #[test]
@@ -481,7 +511,7 @@ mod tests {
 
     #[test]
     fn a_piece_under_the_minimum_goes_as_any_short_string_does() {
-        assert_eq!(cut("okPLANTED", true, &[(0x102, 7)], 4), [row(0x102, "PLANTED", Some(0x9000))]);
+        assert_eq!(cut("okPLANTED", false, &[(0x102, 7)], 4), [row(0x102, "PLANTED", Some(0x9000))]);
     }
 
     #[test]
@@ -513,11 +543,19 @@ mod tests {
         }
     }
 
-    /// What the search says of a listing, in the decoder's own text.
+    const SYSV: &[&str] = &["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+    const WIN64: &[&str] = &["rcx", "rdx", "r8", "r9"];
+
+    /// What the search says of a listing under System V.
     fn pairs(run_start: u64, listing: &[(&str, Option<u64>)]) -> Vec<(u64, u64, u64)> {
+        pairs_under(SYSV, run_start, listing)
+    }
+
+    /// What the search says of a listing, in the decoder's own text.
+    fn pairs_under(abi: &[&str], run_start: u64, listing: &[(&str, Option<u64>)]) -> Vec<(u64, u64, u64)> {
         let found = run(run_start, &"x".repeat(64));
         let mut evidence = LiteralEvidence::new(std::iter::once(&found));
-        let mut reader = X64Pairs::default();
+        let mut reader = X64Pairs::new(abi, false);
         for (i, (text, rip)) in listing.iter().enumerate() {
             let ins = DecodedInsn {
                 va: Va(0x5000 + i as u64),
@@ -568,9 +606,38 @@ mod tests {
     }
 
     #[test]
-    fn two_addresses_and_one_immediate_is_no_pair() {
-        let listing = [("lea rdi,[110h]", Some(0x110)), ("lea rdx,[118h]", Some(0x118)), ("mov esi,0Dh", None), ("call rax", None)];
-        assert_eq!(pairs(0x100, &listing), []);
+    fn a_length_in_any_register_but_the_next_is_no_pair() {
+        // The false pair of real code: `mov edx,4` is another argument.
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov edx,4", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("mov edx,4", None), ("lea rdi,[110h]", Some(0x110)), ("call rax", None)]), []);
+        // Nor is an address outside the argument registers one of a pair...
+        assert_eq!(pairs(0x100, &[("lea rax,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("call rax", None)]), []);
+        // ...or in the last of them, with no register after it.
+        assert_eq!(pairs(0x100, &[("lea r9,[110h]", Some(0x110)), ("mov edi,0Dh", None), ("call rax", None)]), []);
+    }
+
+    #[test]
+    fn the_next_register_is_the_abi_s() {
+        let win = [("lea rcx,[110h]", Some(0x110)), ("mov edx,0Dh", None), ("call rax", None)];
+        assert_eq!(pairs_under(WIN64, 0x100, &win), [(0x110, 13, 0x5000)]);
+        assert_eq!(pairs_under(SYSV, 0x100, &win), []);
+        let sysv = [("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("call rax", None)];
+        assert_eq!(pairs_under(WIN64, 0x100, &sysv), []);
+    }
+
+    #[test]
+    fn two_addresses_each_take_the_register_after_their_own() {
+        // `f(&str, &str)`: which immediate is whose was a guess before the ABI
+        // said, and is not one now.
+        let listing = [("lea rdi,[110h]", Some(0x110)), ("lea rdx,[118h]", Some(0x118)), ("mov esi,0Dh", None), ("mov ecx,5", None), ("call rax", None)];
+        assert_eq!(pairs(0x100, &listing), [(0x110, 13, 0x5000), (0x118, 5, 0x5001)]);
+    }
+
+    #[test]
+    fn a_length_written_over_before_the_call_is_no_length() {
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("mov rsi,rax", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("mov esi,0Dh", None), ("lea rdi,[110h]", Some(0x110)), ("mov rsi,rax", None), ("call rax", None)]), []);
+        assert_eq!(pairs(0x100, &[("lea rdi,[110h]", Some(0x110)), ("mov esi,0Dh", None), ("mov esi,5", None), ("call rax", None)]), [(0x110, 5, 0x5000)]);
     }
 
     #[test]

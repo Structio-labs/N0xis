@@ -6,7 +6,7 @@ data_one_b: .ascii "DATA_ONE_B"
     .byte 1, 0
 data_two_a: .ascii "DATA_TWO_A"
 data_two_b: .ascii "DATA_TWO_B"
-    .byte 0
+    .byte 1, 0
 partial: .ascii "partial_c_string"
     .byte 0
 false_one: .ascii "false_length_one"

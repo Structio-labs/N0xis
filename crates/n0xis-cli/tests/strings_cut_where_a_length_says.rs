@@ -14,6 +14,7 @@
 //!   as it is stored and nothing relocates it.
 //! - `i386.so`, `i386_exec`, `aarch64_be.so`, `aarch64_be_exec`: 32-bit words and
 //!   big-endian words.
+//! - `win64.exe`: a register pair under the ABI whose argument order differs.
 //!
 //! A real compiler, under `--features oracle`: `a_compiler_s_literals_come_back_apart`.
 
@@ -57,7 +58,7 @@ fn rows(tag: &str, image: &Path, extra: &[&str]) -> Vec<Row> {
         .iter()
         .filter(|r| {
             let t = r["text"].as_str().expect("text");
-            ["DATA_", "CODE_", "BOTH_", "NUMBER_", "IMMED_", "IMSLOT_", "partial_", "false_", "PQRS"].iter().any(|p| t.starts_with(p))
+            ["DATA_", "CODE_", "BOTH_", "NUMBER_", "IMMED_", "IMSLOT_", "REG_", "partial_", "false_", "PQRS"].iter().any(|p| t.starts_with(p))
         })
         .map(|r| {
             let by = r.get("cut_by").map(|c| (c["kind"].as_str().expect("kind").to_string(), c["at"].as_str().expect("at").to_string()));
@@ -100,9 +101,14 @@ fn x86_64_rows(w: &Want) -> Vec<Row> {
         // A data pair alone: its end cuts a run no NUL ends...
         w.row("data_one_a", "DATA_ONE_A", data("pair_data_one")),
         w.row("data_one_b", "DATA_ONE_B", None),
-        // ...and its start cuts one a NUL ends.
-        w.row("data_two_a", "DATA_TWO_A", None),
-        w.row("data_two_b", "DATA_TWO_B", data("pair_data_two")),
+        // A start alone, in a run a NUL ends, is a merged string tail: no cut...
+        w.row("data_two_a", "DATA_TWO_ADATA_TWO_B", None),
+        // ...in a run no NUL ends, it is a cut...
+        w.row("data_three_a", "DATA_THREE", None),
+        w.row("data_three_b", "DATA_THR_B", data("pair_data_three")),
+        // ...and a start with an end at the same point cuts either.
+        w.row("data_four_a", "DATA_FOURA", data("pair_data_four_a")),
+        w.row("data_four_b", "DATA_FOURB", data("pair_data_four_b")),
         // A code pair alone, length in a register, the same two ways.
         w.row("code_one_a", "CODE_ONE_A", code("code_pair_one")),
         w.row("code_one_b", "CODE_ONE_B", None),
@@ -114,6 +120,13 @@ fn x86_64_rows(w: &Want) -> Vec<Row> {
         w.row("both_b", "BOTH_BBBBB", data("pair_both_b")),
         w.row("both_c", "BOTH_CCCCC", code("code_pair_both_c")),
         w.row("both_d", "BOTH_DDDDD", code("code_pair_both_d")),
+        // The register form: the length in the ABI's next register, and not in
+        // another, on either side of the load, nor in the other ABI's next.
+        w.row("reg_true_a", "REG_TRUE", code("code_pair_reg_true")),
+        w.row("reg_true_b", "REG_REST", None),
+        w.row("reg_false", "REG_FALSE_LENGTH", None),
+        w.row("reg_before", "REG_FALSE_BEFORE", None),
+        w.row("reg_other_abi", "REG_OTHER_ABI", None),
         // A partial length on a string a NUL ends, from data and from code.
         w.row("partial", "partial_c_string", None),
         // Lengths past the run, and a zero one.
@@ -175,6 +188,22 @@ fn a_pointer_into_instructions_cuts_nothing() {
         let blob: Vec<&Row> = found.iter().filter(|r| r.1.starts_with("PQRS")).collect();
         assert_eq!(blob, [&w.row("blob", "PQRSVWXYZ[^_PQRS", None)], "{image}");
     }
+}
+
+/// `lea rcx; mov edx,8` is a pair here and `lea rdi; mov esi,4` is not, the reverse
+/// of the same instructions on System V in `x86_64.s`. Which order applies is the
+/// image's: nothing on this command line says it.
+#[test]
+fn the_next_register_is_the_image_s_abi_s() {
+    let table = symbols("win64.exe");
+    let w = Want(&table);
+    let want = vec![
+        w.row("reg_true_a", "REG_TRUE", Some(("code_pair", "code_pair_reg_true"))),
+        w.row("reg_true_b", "REG_REST", None),
+        w.row("reg_false", "REG_FALSE_LENGTH", None),
+        w.row("reg_other_abi", "REG_OTHER_ABI", None),
+    ];
+    assert_eq!(rows("win64", &fixture("win64.exe"), &[]), want);
 }
 
 #[test]

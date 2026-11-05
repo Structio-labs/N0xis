@@ -10,8 +10,8 @@ Symbol table '.symtab' contains 25 entries:
      6: 00000000004000f7     0 NOTYPE  LOCAL  DEFAULT    2 data_one_b
      7: 0000000000400103     0 NOTYPE  LOCAL  DEFAULT    2 data_two_a
      8: 000000000040010d     0 NOTYPE  LOCAL  DEFAULT    2 data_two_b
-     9: 0000000000400118     0 NOTYPE  LOCAL  DEFAULT    2 partial
-    10: 0000000000400129     0 NOTYPE  LOCAL  DEFAULT    2 false_one
+     9: 0000000000400119     0 NOTYPE  LOCAL  DEFAULT    2 partial
+    10: 000000000040012a     0 NOTYPE  LOCAL  DEFAULT    2 false_one
     11: 0000000000401fa8     0 NOTYPE  LOCAL  DEFAULT    3 $d
     12: 0000000000401fa8     0 NOTYPE  LOCAL  DEFAULT    3 pair_data_one
     13: 0000000000401fb8     0 NOTYPE  LOCAL  DEFAULT    3 pair_data_two
