@@ -265,6 +265,13 @@ impl Arch for Wasm {
         out
     }
 
+    /// `nop`, as before this was asked of the instruction set. Nothing reads
+    /// it on a module: discovery takes the bodies the module declares and
+    /// runs none of the rules that walk over padding.
+    fn is_padding(&self, insn: &DecodedInsn) -> bool {
+        insn.mnemonic == "nop"
+    }
+
     /// One byte: an instruction can begin at any byte of a body. Nothing reads
     /// this today, because [`decode_range`](Arch::decode_range) below decodes
     /// each body from its start and never resynchronizes; it is the answer the

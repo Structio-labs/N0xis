@@ -1752,6 +1752,14 @@ impl Arch for Arm32 {
     /// instructions (`vldr d0, [pc, #8]`, `ed9f 0b02`, is one), and two bytes
     /// on is the middle of that instruction: its second halfword `0b02` reads
     /// as `lsrs r2, r0, #12`, an instruction the code does not have.
+    /// `nop` as the decoder names it, the one filler discovery has asked
+    /// about on this instruction set so far. The pre-ARMv6K filler `mov r0,
+    /// r0` (A32) and `mov r8, r8` (Thumb) are not taken: nothing here has
+    /// measured them as padding rather than code.
+    fn is_padding(&self, insn: &DecodedInsn) -> bool {
+        insn.mnemonic == "nop"
+    }
+
     fn resync_step(&self, bytes: &[u8]) -> NonZeroUsize {
         const TWO: NonZeroUsize = NonZeroUsize::new(2).unwrap();
         const FOUR: NonZeroUsize = NonZeroUsize::new(4).unwrap();

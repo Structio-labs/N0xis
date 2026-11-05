@@ -524,6 +524,20 @@ pub trait Arch {
         1
     }
 
+    /// Whether `insn` is alignment padding: an instruction a toolchain emits
+    /// only to fill the space before an aligned address, which does nothing
+    /// and which no compiler emits as a function's first instruction.
+    /// Discovery walks over it to the next function after a declared end, and
+    /// the gap sweep and the boundary scan of `provenance` do too — one
+    /// answer for all three.
+    ///
+    /// Required, with no default: which encodings an assembler pads with is a
+    /// fact about the instruction set (i386 pads with `lea` of a register to
+    /// itself, which no list of `nop` spellings knows), and a wrong answer is
+    /// silent — padding read as code is listed as a function. Asked of the
+    /// decoded instruction, never matched as bytes.
+    fn is_padding(&self, insn: &DecodedInsn) -> bool;
+
     /// Recognize a switch / jump-table dispatch whose terminating **indirect
     /// branch is the last instruction of `block`**. Returns the idiom and the
     /// table base/index/bound needed to resolve the cases — but does **not**

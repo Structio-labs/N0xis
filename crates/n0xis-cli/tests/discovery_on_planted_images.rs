@@ -142,6 +142,21 @@ fn an_fde_over_the_plt_is_not_a_function() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// i386 `lea` padding after a declared end is padding: the next function is
+/// the first instruction after it, found by the rule that follows a declared
+/// end and by the gap sweep, and the `lea` is listed by neither.
+#[test]
+fn i386_lea_padding_after_a_declared_end_is_not_a_function() {
+    let dir = project("padding");
+    let image = fixture("i386.so");
+    let starts = listed(&dir, &image);
+    assert!(!starts.contains(&"0x100f".to_string()), "the `lea` after f1's FDE is padding: {starts:?}");
+    let f2 = why(&dir, &image, "0x1020");
+    assert_eq!(f2["found"]["start"], "0x1020", "{f2}");
+    assert_eq!(f2["found"]["start_sources"], json!([{"source": "after_declared_end"}, {"source": "gap_sweep"}]), "{f2}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The image's answer behind the first test, read without the CLI: the
 /// functions a symbol declares, with their tables, and the PLT's range.
 /// On 32-bit ARM a Thumb function's `st_value` is one past its code, and such

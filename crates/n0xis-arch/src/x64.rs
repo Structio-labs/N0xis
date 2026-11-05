@@ -527,6 +527,21 @@ fn decode_raw(insn: &DecodedInsn, bitness: u32) -> Option<Instruction> {
     Some(instr)
 }
 
+/// `lea r, [r]`: the destination is the address's base, no index, no
+/// displacement, and the register is as wide as an address in this mode
+/// (`bitness`), so the instruction writes the value the register holds.
+/// [`Arch::is_padding`]'s `lea` case.
+fn lea_to_itself(i: &Instruction, bitness: u32) -> bool {
+    i.mnemonic() == Mnemonic::Lea
+        && i.op_count() == 2
+        && i.op0_kind() == OpKind::Register
+        && i.op1_kind() == OpKind::Memory
+        && i.memory_base() == i.op0_register()
+        && i.memory_index() == Register::None
+        && i.memory_displacement64() == 0
+        && i.op0_register().size() as u64 * 8 == u64::from(bitness)
+}
+
 /// The immediate value of operand 1, if it's an immediate of any encoded
 /// width. Shared by switch-bound recovery and frame-size recovery — both are
 /// "this instruction's second operand is a constant" checks.
@@ -848,6 +863,33 @@ impl Arch for X64 {
         &[&[0xF3, 0x0F, 0x1E, 0xFA]]
     }
 
+    /// `nop` in every encoding the decoder names so (`90`, `66 90`, the
+    /// `0f 1f` family with any prefixes, which is all GNU as and LLVM pad
+    /// x86-64 with), `int3` (MSVC's and lld's filler between functions), and a
+    /// `lea` that moves a register to itself: the i386 filler of GNU as
+    /// (`8d 76 00` `lea 0x0(%esi),%esi`, `8d 74 26 00` and `8d b4 26 00 00 00
+    /// 00` with `%eiz`, `8d b6 …`, and each with a `cs` prefix). Measured on
+    /// the rule-accuracy corpus (docs/VERIFICATION.md): every i686 gcc `-O2`
+    /// build pads that way, and each such run after a declared end was listed
+    /// as a function, 1 146 wrong starts in a build with its unwind tables.
+    ///
+    /// The `lea` counts only when it changes nothing: the destination is the
+    /// base register itself, with no index and no displacement, and as wide as
+    /// an address in this mode. `lea esi, [rsi]` in 64-bit code clears the
+    /// upper half of `rsi`, so it is code.
+    ///
+    /// `mov r, r` is **not** padding, although `mov %esi,%esi` once was in
+    /// GNU as's longer i386 patterns: `mov edi, edi` is the first instruction
+    /// of every hot-patchable function MSVC compiles for 32-bit Windows, and
+    /// reading it as filler would move each such start two bytes in.
+    fn is_padding(&self, insn: &DecodedInsn) -> bool {
+        match insn.mnemonic.as_str() {
+            "nop" | "int3" => true,
+            "lea" => decode_raw(insn, self.bitness).is_some_and(|i| lea_to_itself(&i, self.bitness)),
+            _ => false,
+        }
+    }
+
     /// x86-64 toolchains align function entries to 16 bytes by default
     /// (`-falign-functions=16`, and MSVC's equivalent). Measured on one Qt
     /// build: starts confirmed by `.dynsym` or an `.eh_frame` FDE are aligned
@@ -1036,6 +1078,54 @@ impl Arch for X64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The encodings GNU as and LLVM pad with are padding, in the mode they
+    /// pad it in; a `lea` that changes a register, or one that clears the
+    /// upper half of a 64-bit one, is code; and MSVC's hot-patch `mov edi,
+    /// edi`, the first instruction of a 32-bit Windows function, is code.
+    /// Each byte string's reading is objdump's (`objdump -D -b binary -m i386`
+    /// / `-m i386:x86-64`).
+    #[test]
+    fn padding_is_what_toolchains_pad_with_and_nothing_that_does_work() {
+        let is_padding = |arch: &X64, bytes: &[u8]| {
+            let insn = arch.decode(bytes, Va(0x1000)).expect("decodes");
+            assert_eq!(insn.len as usize, bytes.len(), "one instruction: {bytes:02x?}");
+            arch.is_padding(&insn)
+        };
+        let (x86, x64) = (X64::x86(), X64::new());
+        for pad in [
+            &[0x8d, 0x76, 0x00][..],                                  // lea 0x0(%esi),%esi
+            &[0x8d, 0x74, 0x26, 0x00],                                // lea 0x0(%esi,%eiz,1),%esi
+            &[0x8d, 0xb6, 0, 0, 0, 0],                                // lea 0x0(%esi),%esi
+            &[0x8d, 0xb4, 0x26, 0, 0, 0, 0],                          // lea 0x0(%esi,%eiz,1),%esi
+            &[0x2e, 0x8d, 0xb4, 0x26, 0, 0, 0, 0],                    // lea %cs:0x0(%esi,%eiz,1),%esi
+            &[0x8d, 0xbc, 0x27, 0, 0, 0, 0],                          // lea 0x0(%edi,%eiz,1),%edi
+            &[0x90],                                                  // nop
+            &[0x66, 0x90],                                            // xchg %ax,%ax
+            &[0xcc],                                                  // int3
+        ] {
+            assert!(is_padding(&x86, pad), "i386 padding: {pad:02x?}");
+        }
+        for pad in [
+            &[0x0f, 0x1f, 0x44, 0x00, 0x00][..],                      // nopl 0x0(%rax,%rax,1)
+            &[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0],           // cs nopw 0x0(%rax,%rax,1)
+            &[0x48, 0x8d, 0x76, 0x00],                                // lea 0x0(%rsi),%rsi
+        ] {
+            assert!(is_padding(&x64, pad), "x86-64 padding: {pad:02x?}");
+        }
+        for code in [
+            &[0x8d, 0x76, 0x01][..], // lea 0x1(%esi),%esi: adds one
+            &[0x8d, 0x74, 0x24, 0x00], // lea 0x0(%esp),%esi: a copy of esp
+            &[0x8d, 0x34, 0x36],       // lea (%esi,%esi,1),%esi: doubles
+            &[0x8b, 0xff],             // mov %edi,%edi: MSVC's hot-patch entry
+            &[0x89, 0xf6],             // mov %esi,%esi
+        ] {
+            assert!(!is_padding(&x86, code), "i386 code: {code:02x?}");
+        }
+        // lea 0x0(%rsi),%esi: in 64-bit code the 32-bit write clears the
+        // upper half of rsi.
+        assert!(!is_padding(&x64, &[0x8d, 0x76, 0x00]));
+    }
 
     #[test]
     fn decodes_mov_and_ret() {

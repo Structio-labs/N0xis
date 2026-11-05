@@ -908,6 +908,12 @@ impl Arch for Arm64 {
         4
     }
 
+    /// `nop`, what GNU as and lld fill an AArch64 code gap with; a gap of
+    /// zero words is the section's fill, which discovery skips before it asks.
+    fn is_padding(&self, insn: &DecodedInsn) -> bool {
+        insn.mnemonic == "nop"
+    }
+
     fn prologues(&self, _abi: &str) -> &'static [&'static [u8]] {
         ARM64_PROLOGUES
     }

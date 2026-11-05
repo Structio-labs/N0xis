@@ -162,12 +162,15 @@ fn zero_fill(bytes: &[u8], off: usize) -> bool {
 
 /// Alignment filler rather than a function's first instruction.
 ///
-/// Asked of the decoder rather than matched as bytes: `90`, `cc`, and the whole
-/// family of multi-byte `nop`s (`66 66 0f 1f 84 00 …`) are one question to an
-/// instruction decoder and a list of magic strings to anything else. A byte
-/// pattern list also silently stops being right on the next architecture.
-fn is_filler(ins: &DecodedInsn) -> bool {
-    matches!(ins.mnemonic.as_str(), "nop" | "int3")
+/// Asked of the architecture ([`n0xis_arch::Arch::is_padding`]) rather than
+/// matched as bytes or as mnemonics here: `90`, `cc`, the whole family of
+/// multi-byte `nop`s (`66 66 0f 1f 84 00 …`) and i386's `lea 0x0(%esi),%esi`
+/// are one question to the instruction set and a list of magic strings to
+/// anything else. The list this used to be, `nop` and `int3`, did not know
+/// the i386 `lea` filler, and every run of it after a declared end was listed
+/// as a function (1 146 wrong starts on the rule-accuracy corpus).
+fn is_filler(ctx: &Ctx, ins: &DecodedInsn) -> bool {
+    ctx.arch.is_padding(ins)
 }
 
 /// The first real instruction after each declared function's end — the next
@@ -187,7 +190,7 @@ fn after_declared_ends(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
                 continue;
             }
             let Ok(ins) = ctx.arch.decode(&bytes[(va - lo) as usize..], Va(va)) else { break };
-            if !is_filler(&ins) {
+            if !is_filler(ctx, &ins) {
                 out.insert(va);
                 break;
             }
@@ -238,7 +241,7 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
                 va += 1;
                 continue;
             };
-            if is_filler(&ins) {
+            if is_filler(ctx, &ins) {
                 va = va.saturating_add(u64::from(ins.len));
                 continue;
             }
@@ -256,7 +259,7 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
             armed = match ins.kind {
                 // A function ends at a `ret` only when filler follows it —
                 // otherwise it is an early return and the function goes on.
-                InsnKind::Ret => at(next).is_some_and(|n| is_filler(&n)),
+                InsnKind::Ret => at(next).is_some_and(|n| is_filler(ctx, &n)),
                 InsnKind::Jump => true,
                 _ => false,
             };

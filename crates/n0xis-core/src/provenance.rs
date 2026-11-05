@@ -310,7 +310,8 @@ fn boundary_before(ctx: &Ctx, from: u64, target: Va) -> Option<Va> {
     let bytes = ctx.source.read(Va(from), len).ok()?;
     let insns = ctx.arch.decode_range(&bytes, Va(from), usize::MAX);
 
-    let is_padding = |i: &n0xis_arch::DecodedInsn| i.mnemonic == "int3" || i.mnemonic == "nop";
+    // The instruction set's own answer, the one discovery's rules walk over.
+    let is_padding = |i: &n0xis_arch::DecodedInsn| ctx.arch.is_padding(i);
     let mut boundary: Option<u64> = None;
     let mut in_padding = false;
     for i in &insns {
