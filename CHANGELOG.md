@@ -185,6 +185,9 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`lua strings` and `lua combo` listed strings no LuaJIT object could be.** Any small number followed
+  by printable bytes counted, at any address: a real scan listed a target at an address not even 4-aligned.
+  A string's base is now required to be 8-aligned, as LuaJIT's allocator gives it.
 - **`scan filter --file` could never succeed.** It always answered `missing-region`, asking for a
   start and a size that the command has no flags for. A filter needs neither: it reads the addresses
   the saved scan holds. It now works, against the same image or another build of it, and states what

@@ -62,6 +62,14 @@ impl GcstrLayout {
     pub const BITSQUID_GC64: GcstrLayout = GcstrLayout { len_offset: 0x10 };
 }
 
+/// What every GC object's base is a multiple of. LuaJIT's allocator hands out 8-byte
+/// aligned blocks (`MALLOC_ALIGNMENT` in its `lj_alloc.c`), and a `GCRef` in the header
+/// of a 64-bit build needs that anyway. Measured on a real 2.1 build: 20 000 of 20 000
+/// strings. So a `len` word whose base would land elsewhere is not a string's: it is a
+/// small number that happens to be followed by printable bytes. One such false hit,
+/// at an address not even 4-aligned, stood in the target list of a real scan.
+const GC_OBJECT_ALIGN: u64 = 8;
+
 /// One `GCstr` found live in a process's heap.
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveGcStr {
@@ -117,6 +125,9 @@ pub fn scan_strings(
             }
             let len_addr_abs = base.0 + off as u64;
             let Some(object_base_abs) = len_addr_abs.checked_sub(layout.len_offset) else { continue };
+            if !object_base_abs.is_multiple_of(GC_OBJECT_ALIGN) {
+                continue;
+            }
             out.push(LiveGcStr {
                 object_base: Va(object_base_abs),
                 len_addr: Va(len_addr_abs),
@@ -316,6 +327,20 @@ mod tests {
         // "hello" is len 5; a max_len of 3 must exclude it.
         let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 3).unwrap().answer;
         assert!(hits.iter().all(|h| h.text != "hello"));
+    }
+
+    /// A `len` word that would put the object's base anywhere but on 8 bytes is not
+    /// a string's, however good its text looks. Shown to be found once it does.
+    #[test]
+    fn a_base_that_is_not_8_aligned_is_not_a_string() {
+        let base = Va(0x4000);
+        let layout = GcstrLayout::BITSQUID_GC64;
+        for (needle_off, found) in [(0x40, true), (0x42, false), (0x44, false), (0x48, true)] {
+            let snap = Snapshot::builder().region(base, build_region(base, needle_off, "up")).build();
+            let hits = scan_strings(&snap, &[(base, 0x1000)], layout, 1, 16).unwrap().answer;
+            let at = base.offset(needle_off as u64 - layout.len_offset);
+            assert_eq!(hits.iter().any(|h| h.text == "up" && h.object_base == at), found, "len at {needle_off:#x}: {hits:?}");
+        }
     }
 
     /// GC64-tag a string pointer the way the VM stores it in an array `TValue`.
