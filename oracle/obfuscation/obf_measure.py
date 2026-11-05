@@ -112,6 +112,13 @@ def measure(build: dict, truth: dict, run_dir: str) -> dict:
     if out["discover"].get("ok"):
         discovered = [f["va"] for f in out["discover"]["data"]["functions"]]
     out["why"] = {a: s.cmd(["why", "--addr", a]) for a in discovered}
+    # A function the list hides shows only when it is asked for by its address, and
+    # so does what a lie claims at a place of its own.
+    asked = {f["start"] for f in truth["functions"] if f["tier"] in ("dwarf", "symtab")}
+    asked |= {r["site"] for r in build.get("planted_lies", [])}
+    for va in sorted(asked):
+        if hex(va) not in out["why"]:
+            out["why"][hex(va)] = s.cmd(["why", "--addr", hex(va)])
 
     # Truth function starts, as addresses the measured file shares. `disasm`
     # covers the declared extent of a DWARF function only (where an end is
@@ -136,7 +143,10 @@ def measure(build: dict, truth: dict, run_dir: str) -> dict:
         a = hex(va)
         if n is not None:
             out["disasm"][a] = s.cmd(["disasm", "--addr", a, "--count", str(n)])
-        out["ir_deob"][a] = s.cmd(["ir", "deobfuscate", "--addr", a])
+        # A table's lie is not in the code `ir deobfuscate` reads, and its question is
+        # not this measurement's: the question of a lie spares it the run.
+        if not build.get("planted_lies") and "base" not in build:
+            out["ir_deob"][a] = s.cmd(["ir", "deobfuscate", "--addr", a])
         out["decomp"][a] = s.cmd(["decomp", "pseudo", "--addr", a])
         out["xref_to"][a] = s.cmd(["xref", "to", "--addr", a])
     s.close()
