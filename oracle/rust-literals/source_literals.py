@@ -1,7 +1,11 @@
 #!/usr/bin/python3 -I
 """Item 3: literals from the .rs source against `strings` rows, on one engine.
 
-usage: heldout.py ENGINE IMAGE SRC_DIR [--list N]
+usage: source_literals.py ENGINE IMAGE SRC_DIR [--list N] [--min N]
+
+`--min` (default 1): pieces under it are dropped by the engine, and a dropped piece
+hides the cut beside it, so a wrong-cut count under `--min 4` is a lower bound. It is
+there for an image too big to list at 1 (run this under `ulimit -v`).
 
 The reader takes string literals of at least 4 characters out of the .rs files:
 plain "..." with Rust's escapes, r"..." / r#"..."#, skipping comments and char
@@ -97,6 +101,7 @@ def format_pieces(text):
 def main():
     engine, image, src_dir = sys.argv[1:4]
     show = int(sys.argv[sys.argv.index('--list') + 1]) if '--list' in sys.argv else 0
+    min_chars = sys.argv[sys.argv.index('--min') + 1] if '--min' in sys.argv else '1'
     lits = set()
     files = 0
     for d, _, fs in os.walk(src_dir):
@@ -109,7 +114,7 @@ def main():
                 lits.add(l)
                 lits.update(format_pieces(l))
     lits = {l.encode('utf-8', 'surrogatepass') for l in lits if len(l) >= 4 and '\0' not in l}
-    p = subprocess.run([engine, 'strings', '--file', image, '--limit', '0', '--encoding', 'utf8', '--min', '1'], cwd=os.environ.get('N0XIS_MEASURE_DIR', os.getcwd()), capture_output=True, text=True)
+    p = subprocess.run([engine, 'strings', '--file', image, '--limit', '0', '--encoding', 'utf8', '--min', min_chars], cwd=os.environ.get('N0XIS_MEASURE_DIR', os.getcwd()), capture_output=True, text=True)
     d = json.loads(p.stdout)
     assert d['ok'], d
     rows = d['data']['strings']
@@ -166,7 +171,7 @@ def main():
             wrong.append((c, hit[0][2]))
     cut_rows = sum(1 for r in rows if 'cut_by' in r)
     print(json.dumps({
-        'image': image.replace(os.path.expanduser('~'), '~'),
+        'image': image.replace(os.path.expanduser('~'), '~'), 'min': int(min_chars), 'literal_cuts': d['data'].get('literal_cuts'),
         'source_files': files, 'literals_ge4': len(lits), 'in_binary': len(in_binary), 'exact_row': len(exact),
         'rows': len(rows), 'rows_with_cut_by': cut_rows, 'cuts': len(cuts), 'wrong_cuts': len(wrong),
     }))
