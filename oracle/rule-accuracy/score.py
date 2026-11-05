@@ -129,12 +129,18 @@ class Truth:
           integer template argument is written (`(unsigned long)0` for `0ul`)
           and the space in `> >`. Anything else a demangler prints
           differently — a parameter more or fewer — stays wrong.
+        - a Rust name differing only in what no demangler agrees on: c++filt
+          prints each crate's hash (`core[a9090a07a7fa7517]::fmt`), llvm-cxxfilt
+          a linker-made suffix in brackets (`fmt (.1471)`, `(.llvm.8066)`), the
+          engine `fmt.1471` or none, and a legacy name ends in `::h<16 hex>`.
         """
         cands = self.names.get(va, [])
         for n in cands:
             if listed == re.sub(r"[^A-Za-z0-9_]", "_", n) or listed + "@plt" in (n, self.dem.get(n, n), self.dem_llvm.get(n, n)):
                 return True
             if canon_demangled(listed) in (canon_demangled(self.dem.get(n, n)), canon_demangled(self.dem_llvm.get(n, n))):
+                return True
+            if canon_rust(listed) in (canon_rust(self.dem.get(n, n)), canon_rust(self.dem_llvm.get(n, n))):
                 return True
         return False
 
@@ -148,6 +154,16 @@ def canon_demangled(s: str) -> str:
     s = _LITERAL_CAST.sub(r"\1", s)
     s = _LITERAL_SUFFIX.sub(r"\1", s)
     return s.replace(" >", ">")
+
+
+_RUST_CRATE_HASH = re.compile(r"\[[0-9a-f]{1,16}\]")
+_RUST_SUFFIX = re.compile(r"(?: \(\.[^()]*\)|\.llvm\.\d+|\.\d+)$")
+_RUST_LEGACY_HASH = re.compile(r"::h[0-9a-f]{16}$")
+
+
+def canon_rust(s: str) -> str:
+    """A demangled Rust name without crate hashes and linker-made suffixes."""
+    return _RUST_LEGACY_HASH.sub("", _RUST_SUFFIX.sub("", _RUST_CRATE_HASH.sub("", s)))
 
 
 def end_cmp(engine_end, truth_ends: list) -> str:
