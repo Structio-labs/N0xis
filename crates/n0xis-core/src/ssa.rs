@@ -356,12 +356,13 @@ fn rename_stmt(
     }
 }
 
-/// Dominator-tree preorder renaming walk (Cytron et al.). `b` is a block
+/// Dominator-tree preorder renaming walk (Cytron et al.). `root` is a block
 /// *index* (identical to its `CfgBlock::id` — both are assigned in the same
-/// address-sorted enumeration by `CfgPass`).
+/// address-sorted enumeration by `CfgPass`). The walk keeps its own stack: a run
+/// of `if`s one after another makes the tree as deep as the function is long.
 #[allow(clippy::too_many_arguments)]
-fn rename_block(
-    b: usize,
+fn rename_tree(
+    root: usize,
     arch: &dyn Arch,
     cfg: &CfgArtifact,
     lifted: &LiftedFunction,
@@ -378,6 +379,51 @@ fn rename_block(
     float_ret2: Option<&str>,
     ret_sites: &mut Vec<RetSite>,
 ) {
+    let pushed = rename_block(
+        root, arch, cfg, lifted, succ, phis, stacks, counters, defs, out_stmts, end_flags_name, visited, float_ret,
+        float_ret2, ret_sites,
+    );
+    let mut open = vec![(root, pushed, 0usize)];
+    while let Some((b, pushed, next)) = open.last_mut() {
+        if let Some(&c) = children[*b].get(*next) {
+            *next += 1;
+            let pushed = rename_block(
+                c, arch, cfg, lifted, succ, phis, stacks, counters, defs, out_stmts, end_flags_name, visited, float_ret,
+                float_ret2, ret_sites,
+            );
+            open.push((c, pushed, 0));
+        } else {
+            // Restore the stacks for siblings.
+            for var in pushed.iter().rev() {
+                if let Some(stack) = stacks.get_mut(var) {
+                    stack.pop();
+                }
+            }
+            open.pop();
+        }
+    }
+}
+
+/// Renames one block; returns the variables whose stacks it pushed, for the walk
+/// to pop when it leaves the block's subtree.
+#[allow(clippy::too_many_arguments)]
+fn rename_block(
+    b: usize,
+    arch: &dyn Arch,
+    cfg: &CfgArtifact,
+    lifted: &LiftedFunction,
+    succ: &[Vec<usize>],
+    phis: &mut [Vec<Phi>],
+    stacks: &mut HashMap<String, Vec<String>>,
+    counters: &mut HashMap<String, u32>,
+    defs: &mut HashMap<String, MicroExpr>,
+    out_stmts: &mut [Vec<SsaStmt>],
+    end_flags_name: &mut [Option<String>],
+    visited: &mut [bool],
+    float_ret: Option<&str>,
+    float_ret2: Option<&str>,
+    ret_sites: &mut Vec<RetSite>,
+) -> Vec<String> {
     visited[b] = true;
     let mut pushed: Vec<String> = Vec::new();
 
@@ -418,20 +464,7 @@ fn rename_block(
         }
     }
 
-    // 4. Recurse into the dominator-tree children.
-    for &c in &children[b] {
-        rename_block(
-            c, arch, cfg, lifted, succ, children, phis, stacks, counters, defs, out_stmts, end_flags_name, visited,
-            float_ret, float_ret2, ret_sites,
-        );
-    }
-
-    // 5. Restore the stacks for siblings.
-    for var in pushed.iter().rev() {
-        if let Some(stack) = stacks.get_mut(var) {
-            stack.pop();
-        }
-    }
+    pushed
 }
 
 /// One `ret` and the SSA value of the ABI's float return register that reaches
@@ -739,7 +772,7 @@ fn build_ssa(
     let mut visited = vec![false; n];
 
     let mut ret_sites: Vec<RetSite> = Vec::new();
-    rename_block(
+    rename_tree(
         0,
         arch,
         cfg,
