@@ -492,7 +492,7 @@ fn a_dead_target_is_an_error_not_an_empty_scan() {
     };
     exited("ui locate", n0xis_core::Pass::run(&n0xis_core::UiLocatePass, &ctx, ui).expect_err("ui locate").to_string());
     let targets = std::collections::HashMap::new();
-    let layout = n0xis_luajit::GcstrLayout::BITSQUID_GC64;
+    let layout = n0xis_luajit::GcstrLayout { len_offset: 0x10 };
     exited("lua strings", n0xis_luajit::scan_strings(live.as_ref(), &regions, layout, 1, 8).expect_err("lua strings").to_string());
     exited("lua runs", n0xis_luajit::find_string_runs(live.as_ref(), &regions, &targets, 2).expect_err("lua runs").to_string());
     exited("lua refs", n0xis_luajit::find_gcref32_runs(live.as_ref(), &regions, &targets, 2).expect_err("lua refs").to_string());

@@ -10,3 +10,6 @@ repository.workspace = true
 n0xis-contracts = { workspace = true }
 n0xis-sources = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

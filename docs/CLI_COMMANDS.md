@@ -993,7 +993,19 @@ Overwrite one instruction's raw 4-byte word in place.
 Find live LuaJIT GCstr objects in a running process's heap by decoding the real object header
 (no per-string byte pattern needed).
 - `--start`/`--size` (omit to scan every committed writable region); `--min-len` (default 1);
-  `--max-len` (default 64); `--contains <substr>`. Live only.
+  `--max-len` (default 64); `--contains <substr>`; `--gcstr-len-off` (below). Live only.
+- `data.matches: [{object_base, len_addr, data_addr, len, text, references, in_values}]`.
+  `object_base` is `null` when no layout was chosen. `references` counts what refers to that base,
+  and `in_values` those that are tagged string values, what an array holds.
+- `data.layout`: which header this build has, decided from the process's memory. Where a string's
+  `len` is does not say where the object begins, and a wrong base gives no error, only an address
+  nothing refers to. Each candidate (`len` at `0x0c`, `0x10`, `0x14`) proposes a base for every
+  string, and the one memory refers to most is used.
+  `{len_offset, chosen_by, why?, candidates: [{len_offset, strings, references, in_values}]}`.
+  `chosen_by` is `references`; `override`, when `--gcstr-len-off` gave it, with the candidates
+  still counted beside it; or `none`, with `why`, when memory refers to no candidate or to two alike.
+  Then `len_offset` is `null` and no base is claimed.
+- A string's base has to be 8-aligned, as LuaJIT's allocator gives it; other hits are not strings.
 - Schema: `n0xis.lua.strings.v1`
 
 ### `lua table --pid <u32> --addr <hex>`
@@ -1007,7 +1019,11 @@ a target string set — layout-independent (no `GCtab` calibration). Built for r
 direction sequence `{"up","down",…}` straight out of memory.
 - `--start`/`--size` (omit to scan every committed writable region); `--strings`
   (comma-separated token set; default `"up,down,left,right"`); `--min-run` (min consecutive
-  matching elements, default 2). Live only.
+  matching elements, default 2); `--gcstr-len-off`. Live only.
+- `data.layout` as for `lua strings`, decided on these tokens. `data.targets: [{addr, len_addr, text,
+  references, in_values}]`, `data.runs`, `data.count`. With `count: 0`, `data.note` says which of the
+  three it is: the strings were not found; they exist and nothing refers to them; or references
+  exist and form no run.
 - Schema: `n0xis.lua.combo.v1`
 
 ### `lua seedscan --pid <u32> --combo <str>`

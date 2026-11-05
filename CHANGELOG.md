@@ -185,6 +185,15 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`lua combo` and `lua strings` read every string's base with one hardcoded offset, and a build with
+  another header answered `count: 0`.** On a real process with `len` at 0x0c instead of the assumed 0x10,
+  every base was 4 bytes low: 0 references at each reported base, and 564 to 827 per string at exactly +4.
+  The layout is now decided from the process's memory. Each of 0x0c, 0x10 and 0x14 proposes a base for
+  every string, and the one memory refers to most is used; `data.layout` gives the choice and each
+  candidate's count. If memory refers to none, or to two alike, none is chosen and `object_base` is
+  `null`, rather than one being picked. `--gcstr-len-off` still overrides, and says it did. `lua combo`
+  reports `references` per target and tells apart a string nothing refers to and references that form
+  no run. Measured on planted memory for each layout and on a real LuaJIT 2.1 GC64 (`len` at 0x14).
 - **`lua strings` and `lua combo` listed strings no LuaJIT object could be.** Any small number followed
   by printable bytes counted, at any address: a real scan listed a target at an address not even 4-aligned.
   A string's base is now required to be 8-aligned, as LuaJIT's allocator gives it.

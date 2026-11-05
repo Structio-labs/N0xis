@@ -1086,13 +1086,10 @@ struct LuaStringsArgs {
     /// Only report strings whose text contains this substring.
     #[arg(long)]
     contains: Option<String>,
-    /// Byte offset of a `GCstr`'s `len` field from the object's base, for this
-    /// build. It decides where an object *begins*, so the wrong value does not
-    /// merely mislabel an address — it makes every comparison against a
-    /// `TValue`'s pointer fail. Measured: the Bitsquid-bundle build this was
-    /// calibrated against uses `0x10`; a stock LuaJIT 2.1 GC64 build uses
-    /// `0x14`, and with `0x10` there `lua combo` reports zero arrays for an
-    /// array that is plainly present.
+    /// Take this as the byte offset of a `GCstr`'s `len` field from the object's
+    /// base, instead of deciding it. Without it each of `0x0c`, `0x10` and `0x14` is
+    /// tried and the one the process's memory refers to is used; `data.layout` says
+    /// which, by how many references, and that this overrode it when given.
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     gcstr_len_off: Option<usize>,
 }
@@ -1134,13 +1131,10 @@ struct LuaComboArgs {
     /// coincidental single string pointers).
     #[arg(long, default_value_t = 2)]
     min_run: usize,
-    /// Byte offset of a `GCstr`'s `len` field from the object's base, for this
-    /// build. It decides where an object *begins*, so the wrong value does not
-    /// merely mislabel an address — it makes every comparison against a
-    /// `TValue`'s pointer fail. Measured: the Bitsquid-bundle build this was
-    /// calibrated against uses `0x10`; a stock LuaJIT 2.1 GC64 build uses
-    /// `0x14`, and with `0x10` there `lua combo` reports zero arrays for an
-    /// array that is plainly present.
+    /// Take this as the byte offset of a `GCstr`'s `len` field from the object's
+    /// base, instead of deciding it. Without it each of `0x0c`, `0x10` and `0x14` is
+    /// tried and the one the process's memory refers to is used; `data.layout` says
+    /// which, by how many references, and that this overrode it when given.
     #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     gcstr_len_off: Option<usize>,
 }
@@ -6468,15 +6462,15 @@ fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
         let label = live.label();
-        let swept = match n0xis_luajit::scan_strings(live.as_ref(), &regions, gcstr_layout(a.gcstr_len_off), a.min_len, a.max_len) {
+        let swept = match n0xis_luajit::locate_strings(live.as_ref(), &regions, a.gcstr_len_off.map(|o| o as u64), a.min_len, a.max_len, |_| true) {
             Ok(s) => s,
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
         };
-        let swept = swept.map(|mut hits| {
+        let swept = swept.map(|mut located| {
             if let Some(needle) = &a.contains {
-                hits.retain(|h| h.text.contains(needle.as_str()));
+                located.strings.retain(|h| h.text.contains(needle.as_str()));
             }
-            json!({ "matches": hits, "count": hits.len() })
+            json!({ "layout": located.layout, "matches": located.strings, "count": located.strings.len() })
         });
         emit_swept(schema::v1::LUA_STRINGS, swept, label, pretty)
     }
@@ -6485,15 +6479,6 @@ fn cmd_lua_strings(a: LuaStringsArgs, pretty: bool) -> bool {
 /// Render one decoded `TValue` as JSON, resolving a string's text from the
 /// live process so the dump is readable (`{"kind":"str","text":"up"}`) rather
 /// than just an address to chase by hand.
-/// The `GCstr` header layout to read a live LuaJIT heap with: the calibrated
-/// Bitsquid-bundle default, or the operator's own offset for another build.
-fn gcstr_layout(len_off: Option<usize>) -> n0xis_luajit::GcstrLayout {
-    match len_off {
-        Some(off) => n0xis_luajit::GcstrLayout { len_offset: off as u64 },
-        None => n0xis_luajit::GcstrLayout::BITSQUID_GC64,
-    }
-}
-
 fn tvalue_json(v: &n0xis_luajit::TValue, live: &dyn n0xis_sources::MemorySource, layout: n0xis_luajit::LuaLayout) -> serde_json::Value {
     use n0xis_luajit::TValue;
     match v {
@@ -6559,26 +6544,48 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         if wanted.is_empty() {
             return ir_err("no-strings", "--strings must list at least one token", pretty);
         }
-        let layout = gcstr_layout(a.gcstr_len_off);
         // Longest token bounds the GCstr scan; the wanted tokens are short ASCII.
         let max_len = wanted.iter().map(|s| s.len()).max().unwrap_or(0) as u32;
         // Every candidate GCstr whose text is one of the wanted tokens becomes a
         // target address — the run cross-check discards any that aren't referenced.
-        let strs = match n0xis_luajit::scan_strings(live.as_ref(), &regions, layout, 1, max_len.max(1)) {
+        let located = match n0xis_luajit::locate_strings(live.as_ref(), &regions, a.gcstr_len_off.map(|o| o as u64), 1, max_len.max(1), |text| wanted.iter().any(|w| w == text)) {
             Ok(s) => s,
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
         };
-        let n0xis_sources::Swept { answer: strs, mut read } = strs;
-        let mut targets: std::collections::HashMap<Va, String> = std::collections::HashMap::new();
-        for s in &strs {
-            if wanted.iter().any(|w| w == &s.text) {
-                targets.insert(s.object_base, s.text.clone());
-            }
-        }
-        if targets.is_empty() {
-            let data = json!({ "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
+        let n0xis_sources::Swept { answer: n0xis_luajit::LocatedStrings { layout, mut strings }, mut read } = located;
+        strings.sort_by_key(|s| s.len_addr.0);
+        // Three different answers, each with its own remedy, used to read as one
+        // `count: 0`: no such string, a string nothing refers to, and references
+        // that form no run.
+        let targets_json = |strings: &[n0xis_luajit::LocatedGcStr]| -> Vec<serde_json::Value> {
+            strings
+                .iter()
+                .map(|s| {
+                    json!({
+                        "addr": s.object_base.map(|b| b.to_string()),
+                        "len_addr": s.len_addr.to_string(),
+                        "text": s.text,
+                        "references": s.referred.references,
+                        "in_values": s.referred.in_values,
+                    })
+                })
+                .collect()
+        };
+        if strings.is_empty() {
+            let data = json!({ "layout": layout, "targets": [], "runs": [], "count": 0, "note": "none of the target strings were found as GCstr objects in the scanned regions" });
             return emit_swept(schema::v1::LUA_COMBO, n0xis_sources::Swept { answer: data, read }, live.label(), pretty);
         }
+        if layout.len_offset().is_none() {
+            let data = json!({
+                "layout": layout,
+                "targets": targets_json(&strings),
+                "runs": [],
+                "count": 0,
+                "note": "the target strings exist, and no layout could be chosen for them, so no base is known: see layout.why and layout.candidates; --gcstr-len-off gives one",
+            });
+            return emit_swept(schema::v1::LUA_COMBO, n0xis_sources::Swept { answer: data, read }, live.label(), pretty);
+        }
+        let targets: std::collections::HashMap<Va, String> = strings.iter().filter_map(|s| Some((s.object_base?, s.text.clone()))).collect();
         // A token array may be laid out as 8-byte Lua `TValue`s or as a packed
         // 4-byte `GCRef` array (Bitsquid's `array`); scan for both and tag which.
         let mut runs_json: Vec<serde_json::Value> = Vec::new();
@@ -6604,11 +6611,20 @@ fn cmd_lua_combo(a: LuaComboArgs, pretty: bool) -> bool {
         }
         let count = tv.len() + gr.len();
         let label = live.label();
-        let data = json!({
-            "targets": targets.iter().map(|(a, t)| json!({ "addr": a.to_string(), "text": t })).collect::<Vec<_>>(),
+        let referred: usize = strings.iter().map(|s| s.referred.references).sum();
+        let mut data = json!({
+            "layout": layout,
+            "targets": targets_json(&strings),
             "runs": runs_json,
             "count": count,
         });
+        if count == 0 {
+            data["note"] = json!(if referred == 0 {
+                "the target strings exist and nothing read refers to them under this layout".to_string()
+            } else {
+                format!("{referred} references to the target strings, and none of them in a run of at least {}", a.min_run)
+            });
+        }
         emit_swept(schema::v1::LUA_COMBO, n0xis_sources::Swept { answer: data, read }, label, pretty)
     }
 }

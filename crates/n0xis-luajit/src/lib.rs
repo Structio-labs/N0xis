@@ -22,8 +22,10 @@ use n0xis_contracts::Va;
 use n0xis_sources::{MemorySource, RegionCoverage, SourceError, Swept};
 use serde::Serialize;
 
+mod layout;
 mod lcg;
 mod obj;
+pub use layout::{locate_strings, LayoutCandidate, LayoutChoice, LayoutDecision, LocatedGcStr, LocatedStrings, References, GCSTR_LEN_OFFSETS};
 pub use lcg::{find_seeds, Lcg, SeedHit};
 pub use obj::{decode_tvalue, read_table, string_ref_candidates, LuaLayout, TValue, TableDump};
 
@@ -41,25 +43,13 @@ pub fn read_gcstr(src: &dyn MemorySource, addr: Va, layout: LuaLayout) -> Option
     String::from_utf8(data).ok()
 }
 
-/// `GCstr` header layout, offsets from the object's base address.
-///
-/// Empirically confirmed against a live 64-bit Bitsquid-bundle application
-/// process: the `len` field sits 0x10 bytes after the object base, with the
-/// string's raw bytes immediately following it. This matches a GC64-mode
-/// LuaJIT build (an 8-byte compressed `GCRef` in the header, vs. 4 bytes in
-/// the classic 32-bit layout) but was *not* independently cross-checked
-/// against LuaJIT's own `lj_obj.h` this session — treat it as a validated
-/// constant for this target/build, not a general LuaJIT-version law. A
-/// different build may need a different `GcstrLayout`.
+/// `GCstr` header layout, offsets from the object's base address. It differs by build,
+/// so a frontend asks [`locate_strings`], which decides it from the process's own
+/// memory; this is for a caller that already knows.
 #[derive(Debug, Clone, Copy)]
 pub struct GcstrLayout {
     /// Offset of the `len` field (u32 LE) from the object base.
     pub len_offset: u64,
-}
-
-impl GcstrLayout {
-    /// The layout confirmed against a Bitsquid-bundle application (GC64-mode LuaJIT).
-    pub const BITSQUID_GC64: GcstrLayout = GcstrLayout { len_offset: 0x10 };
 }
 
 /// What every GC object's base is a multiple of. LuaJIT's allocator hands out 8-byte
@@ -279,8 +269,9 @@ mod tests {
     use super::*;
     use n0xis_sources::Snapshot;
 
-    /// Lay out one `GCstr("up")` by hand at a chosen base, using the
-    /// Bitsquid-bundle GC64 layout, surrounded by unrelated filler bytes so the
+    const WIDE: GcstrLayout = GcstrLayout { len_offset: 0x10 };
+
+    /// Lay out one `GCstr("up")` by hand at a chosen base, surrounded by unrelated filler bytes so the
     /// scan has to actually find it rather than trivially matching offset 0.
     fn build_region(base: Va, needle_off: usize, text: &str) -> Vec<u8> {
         let mut buf = vec![0xABu8; needle_off];
@@ -299,12 +290,12 @@ mod tests {
         let bytes = build_region(base, needle_off, "up");
         let snap = Snapshot::builder().region(base, bytes).build();
 
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 16).unwrap().answer;
+        let hits = scan_strings(&snap, &[(base, 0x1000)], WIDE, 1, 16).unwrap().answer;
 
         let hit = hits.iter().find(|h| h.text == "up").expect("must find the planted GCstr");
         assert_eq!(hit.len, 2);
         assert_eq!(hit.len_addr, base.offset(needle_off as u64));
-        assert_eq!(hit.object_base, base.offset(needle_off as u64 - GcstrLayout::BITSQUID_GC64.len_offset));
+        assert_eq!(hit.object_base, base.offset(needle_off as u64 - WIDE.len_offset));
         assert_eq!(hit.data_addr, base.offset(needle_off as u64 + 4));
     }
 
@@ -315,7 +306,7 @@ mod tests {
         let mut bytes = vec![3u8, 0, 0, 0, 0x00, 0x01, 0x02];
         bytes.extend_from_slice(&[0u8; 32]);
         let snap = Snapshot::builder().region(base, bytes).build();
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 16).unwrap().answer;
+        let hits = scan_strings(&snap, &[(base, 0x1000)], WIDE, 1, 16).unwrap().answer;
         assert!(hits.is_empty());
     }
 
@@ -325,7 +316,7 @@ mod tests {
         let bytes = build_region(base, 16, "hello");
         let snap = Snapshot::builder().region(base, bytes).build();
         // "hello" is len 5; a max_len of 3 must exclude it.
-        let hits = scan_strings(&snap, &[(base, 0x1000)], GcstrLayout::BITSQUID_GC64, 1, 3).unwrap().answer;
+        let hits = scan_strings(&snap, &[(base, 0x1000)], WIDE, 1, 3).unwrap().answer;
         assert!(hits.iter().all(|h| h.text != "hello"));
     }
 
@@ -334,7 +325,7 @@ mod tests {
     #[test]
     fn a_base_that_is_not_8_aligned_is_not_a_string() {
         let base = Va(0x4000);
-        let layout = GcstrLayout::BITSQUID_GC64;
+        let layout = WIDE;
         for (needle_off, found) in [(0x40, true), (0x42, false), (0x44, false), (0x48, true)] {
             let snap = Snapshot::builder().region(base, build_region(base, needle_off, "up")).build();
             let hits = scan_strings(&snap, &[(base, 0x1000)], layout, 1, 16).unwrap().answer;
