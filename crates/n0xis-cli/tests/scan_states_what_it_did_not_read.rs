@@ -335,10 +335,16 @@ fn every_other_scan_states_the_same() {
     let d = t.ok(&["scan", "value", "--pid", &pid, "--type", "u32", "--value", &dword, "--save-as", "first", "--force"]);
     assert_states_the_fixture(&t, &d);
     assert!(d["matches"].as_array().expect("matches").iter().any(|m| m["addr"] == anon.as_str()), "scan value got past the fault: {d}");
+    assert_eq!(d["shown"], d["total_matches"], "{d}");
+    assert_eq!(d["exhaustive"], false, "all that was found is shown, and a region was not read: {d}");
+    // The same scan of what does read, for the other half of that.
+    let d = t.ok(&["scan", "value", "--pid", &pid, "--start", &anon, "--size", &t.at("page").to_string(), "--type", "u32", "--value", &dword, "--save-as", "clean", "--force"]);
+    assert_eq!(d["exhaustive"], true, "{d}");
 
     let d = t.ok(&["scan", "filter", "--pid", &pid, "--from", "first", "--criterion", "unchanged", "--save-as", "second", "--force"]);
     assert!(d["matches"].as_array().expect("matches").iter().any(|m| m["addr"] == anon.as_str()), "{d}");
     assert_eq!(d["regions_not_read"], 0, "the first scan kept nothing of the region that did not read: {d}");
+    assert_eq!(d["exhaustive"], true, "this rescan read all it held: {d}");
 
     let field = format!("u32={dword}");
     let d = t.ok(&["scan", "group", "--pid", &pid, "--field", &field]);
@@ -357,6 +363,7 @@ fn every_other_scan_states_the_same() {
 
     let d = t.ok(&["locate", "by-transition", "--pid", &pid, "--type", "u32", "--transition", "changed", "--wait-ms", "1", "--save-as", "third", "--force"]);
     assert_states_the_fixture(&t, &d);
+    assert_eq!(d["report"]["exhaustive"], false, "{d}");
 
     // The heap readers go through the same rule. Their answers depend on a VM
     // this target does not have; what is asked of them here is what they read.

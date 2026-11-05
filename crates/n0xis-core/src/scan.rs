@@ -340,8 +340,10 @@ impl ScanState {
         out
     }
 
-    /// Build the bounded response summary for a CLI/MCP reply.
-    pub fn report(&self) -> ScanReport {
+    /// Build the bounded response summary for a CLI/MCP reply. `read` is what
+    /// the sweep behind this state read: a state alone cannot say what it never
+    /// saw, so the caller has to hand that over.
+    pub fn report(&self, read: &RegionCoverage) -> ScanReport {
         let total = self.total();
         let matches = self.materialize(PREVIEW_LIMIT);
         ScanReport {
@@ -349,7 +351,7 @@ impl ScanState {
             regions: self.regions.len(),
             total_matches: total,
             shown: matches.len(),
-            exhaustive: matches.len() == total,
+            exhaustive: matches.len() == total && read.read_whole(),
             matches,
         }
     }
@@ -594,8 +596,11 @@ pub struct ScanReport {
     pub total_matches: usize,
     /// How many are included in `matches` below.
     pub shown: usize,
-    /// True when `matches` is the *complete* set (`shown == total_matches`), so
-    /// a caller knows whether it's looking at a preview or the whole thing.
+    /// True when `matches` is everything there is to know: all of `total_matches`
+    /// is shown, and every region was read whole. False for a preview, and false
+    /// when a region was not read or read short, whatever was found: `regions_not_read`
+    /// and `regions_read_short`, on a live target, say which. It used to mean the
+    /// first half only, and a scan that had skipped regions said `true`.
     pub exhaustive: bool,
     pub matches: Vec<ScanMatch>,
 }
@@ -1037,5 +1042,36 @@ mod tests {
         assert_eq!(filtered.answer.total(), 0);
         assert_eq!(filtered.read.not_read()[0].start, Va(0x1000), "{:?}", filtered.read);
         assert!(filtered.read.nothing_read());
+    }
+
+    /// `exhaustive` is false for each thing that can make `matches` less than all
+    /// of it, and for nothing else.
+    #[test]
+    fn exhaustive_means_everything_was_shown_and_read() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![7; 16]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let scan = |regions: Vec<(Va, usize)>| {
+            ScanPass.run(&ctx, ScanInput { regions, value_type: ValueType::U32, criterion: ScanCriterion::Unknown, align: 4 }).unwrap()
+        };
+        let report = |swept: &n0xis_sources::Swept<ScanState>| swept.answer.report(&swept.read);
+
+        assert!(report(&scan(vec![(Va(0x1000), 16)])).exhaustive, "all read, all shown");
+        // The second region has no mapping; the first region's matches are all shown.
+        let skipped = report(&scan(vec![(Va(0x1000), 16), (Va(0x9000), 16)]));
+        assert_eq!(skipped.shown, skipped.total_matches);
+        assert!(!skipped.exhaustive, "a region was not read");
+        // Asked for more than the region holds.
+        let short = report(&scan(vec![(Va(0x1000), 32)]));
+        assert_eq!(short.shown, short.total_matches);
+        assert!(!short.exhaustive, "a region was read short");
+        // More matches than a reply carries.
+        let big = Snapshot::builder().region(Va(0x1000), vec![7; 4 * (PREVIEW_LIMIT + 1)]).build();
+        let ctx = Ctx::new(&big, &arch);
+        let many = ScanPass
+            .run(&ctx, ScanInput { regions: vec![(Va(0x1000), 4 * (PREVIEW_LIMIT + 1))], value_type: ValueType::U32, criterion: ScanCriterion::Unknown, align: 4 })
+            .unwrap();
+        assert!(many.read.read_whole());
+        assert!(!many.answer.report(&many.read).exhaustive, "a preview");
     }
 }

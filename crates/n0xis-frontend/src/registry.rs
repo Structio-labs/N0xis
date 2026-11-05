@@ -1180,7 +1180,7 @@ impl ScanTarget {
 /// under that name with an empty one.
 fn answer_and_save(target: ScanTarget, swept: n0xis_sources::Swept<n0xis_core::ScanState>, save_as: &str, force: bool, label: &str) -> Response<Value> {
     let n0xis_sources::Swept { answer: state, read } = swept;
-    let answer = target.answer(n0xis_contracts::schema::v1::SCAN, n0xis_sources::Swept { answer: state.report(), read }, label);
+    let answer = target.answer(n0xis_contracts::schema::v1::SCAN, n0xis_sources::Swept { answer: state.report(&read), read }, label);
     if matches!(answer, Response::Err(_)) {
         return answer;
     }

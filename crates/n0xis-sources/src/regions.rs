@@ -138,6 +138,12 @@ impl RegionCoverage {
         &self.read_short
     }
 
+    /// Every region asked for gave every byte asked for. What `exhaustive` in a
+    /// scan's report rests on.
+    pub fn read_whole(&self) -> bool {
+        self.not_read.is_empty() && self.read_short.is_empty()
+    }
+
     /// Regions were asked for and none gave a byte. An empty list of regions is
     /// not this: nothing failed.
     pub fn nothing_read(&self) -> bool {

@@ -156,6 +156,11 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`scan value` said `exhaustive: true` having skipped regions.** The field meant only that
+  `matches` was all of `total_matches`, where a reader takes it to mean nothing was missed. It is now
+  true only when everything was shown and every region was read whole. `scan filter` and the report
+  of `locate by-transition` answer the same way. Changes an answer about a file too: a `scan value
+  --file` window running past the end of a section read short and said `true`, and now says `false`.
 - **`scan aob --pid` stopped at the first region that would not read, and a scan that skipped
   regions could not be told from a clean one.** A mapped region whose first byte faults (a device
   mapping `process_vm_readv` cannot follow, a region freed since the map was read) ended the scan

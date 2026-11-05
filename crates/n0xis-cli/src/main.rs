@@ -6946,7 +6946,7 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
             return ir_err("save-failed", &e.to_string(), pretty);
         }
 
-        let report = state.report();
+        let report = state.report(&read);
         let report_v = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
         let note = if final_count == 1 {
             "exactly one survivor — the transition diff localized the value (RE_METHOD W1)".to_string()

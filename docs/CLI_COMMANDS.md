@@ -747,6 +747,11 @@ First scan: find every address matching a criterion.
 - `--save-as` (required) — persist result under `.n0x/dumps/scan/<name>.json`; `--force` to
   overwrite.
 - Sources: `--pid` | `--file`.
+- `data`: `value_type`, `regions`, `total_matches`, `shown`, `matches`, and `exhaustive`, true when
+  `matches` is everything there is to know: all of `total_matches` is shown (a reply carries 1000 at
+  most) and every region was read whole. So false for a preview, and false when a region was not
+  read or read short, whatever was found. On `--pid` the fields below say which regions. `scan
+  filter` and the `report` of `locate by-transition` answer the same way.
 - Schema: `n0xis.scan.v1`
 
 ### `scan filter --from <name> --criterion <c> --save-as <name>`
@@ -798,8 +803,6 @@ by side can differ, one reading and the next faulting on its first byte.
   nothing was looked at, which is not "no matches". Nothing is saved under `--save-as`.
 - A failure not about a region (the process exited, reading it is refused) is the command's own
   error (`aob-failed`, `scan-failed`, ...), so a dead target never reads as an empty scan.
-- `exhaustive` in a `scan value` answer still means only that `matches` is all of `total_matches`:
-  read it beside `regions_not_read`.
 
 ### `scan pointer-path --pid <u32> --target <hex> --module <name>`
 Find stable multi-level pointer chains resolving to an address.
