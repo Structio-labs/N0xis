@@ -16,6 +16,9 @@
 //! PE and ELF ones under the `static-pe` feature), and the live adapters come
 //! with `live`; both are gated so this crate stays OS-free by default.
 
+mod regions;
+pub use regions::{LiveAnswer, NOT_READ_SHOWN, NOTHING_READABLE, NothingReadable, RegionCoverage, RegionNotRead, RegionReadShort, Swept};
+
 mod snapshot;
 
 pub use snapshot::{Snapshot, SnapshotBuilder};

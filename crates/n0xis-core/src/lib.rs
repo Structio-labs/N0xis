@@ -69,7 +69,7 @@ mod xref;
 mod xref_string;
 mod sweep;
 
-pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass};
+pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass, AobSweepInput, AobSweepPass};
 pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};
 pub use aslr::{rebase, rva_of, va_at};
 pub use bindings::{Binding, BindingsArtifact, BindingsInput, BindingsPass};

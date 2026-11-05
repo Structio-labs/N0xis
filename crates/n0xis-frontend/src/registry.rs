@@ -1151,6 +1151,30 @@ fn with_src_ctx_names(
     spelled(&*arch, attach.annotate(resp))
 }
 
+/// What a scan swept, which decides what its answer has to state.
+#[derive(Clone, Copy)]
+enum ScanTarget {
+    /// A running process: regions come and go, and some will not read, so the
+    /// answer says what it read, and reading nothing is an error.
+    Live,
+    /// One window the caller named in an image file. Its answer states no
+    /// coverage: what a file holds does not change, and this answer is byte for
+    /// byte the one it has always been.
+    File,
+}
+
+impl ScanTarget {
+    fn answer<T: serde::Serialize>(self, schema: &str, swept: n0xis_sources::Swept<T>, label: &str) -> Response<Value> {
+        match self {
+            ScanTarget::File => ok_json(schema, swept.answer, label),
+            ScanTarget::Live => match swept.live() {
+                Ok(stated) => ok_json(schema, stated, label),
+                Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
+            },
+        }
+    }
+}
+
 /// The data-side twin of [`with_src_ctx`]: resolve a `pid` (live, regions
 /// clipped to what is actually committed) or a `file` (explicit start+size)
 /// and hand over the regions to scan.
@@ -1164,7 +1188,7 @@ fn with_scan_ctx(
     args: &Value,
     start: Option<&str>,
     size: Option<usize>,
-    work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str) -> Response<Value>,
+    work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str, ScanTarget) -> Response<Value>,
 ) -> Response<Value> {
     let explicit = args.get("arch").and_then(|v| v.as_str());
     if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) {
@@ -1182,7 +1206,7 @@ fn with_scan_ctx(
         };
         let label = n0xis_sources::MemorySource::label(live.as_ref());
         let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
-        return work(&ctx, regions, &label);
+        return work(&ctx, regions, &label, ScanTarget::Live);
     }
     if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
         let (Some(start_s), Some(size)) = (start, size) else {
@@ -1213,7 +1237,7 @@ fn with_scan_ctx(
             Err(e) => return Response::error("bad-arch", e),
         };
         let ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref());
-        return work(&ctx, vec![(start_va, size)], &label);
+        return work(&ctx, vec![(start_va, size)], &label, ScanTarget::File);
     }
     Response::error("missing-source", "provide pid or file")
 }
@@ -1941,7 +1965,7 @@ impl Plugin for AnalysisPasses {
                 let align = args.get("align").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or_else(|| value_type.size());
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label| {
+                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, _target| {
                     let input = n0xis_core::ScanInput { regions, value_type, criterion, align };
                     let state = match n0xis_core::Pass::run(&n0xis_core::ScanPass, ctx, input) {
                         Ok(s) => s,
@@ -2000,7 +2024,7 @@ impl Plugin for AnalysisPasses {
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(true);
                 // A filter rescans the addresses it already holds, so it needs
                 // no region resolution — only the source they live in.
-                with_scan_ctx(args, None, None, move |ctx, _regions, label| {
+                with_scan_ctx(args, None, None, move |ctx, _regions, label, _target| {
                     let input = n0xis_core::FilterInput { previous, criterion };
                     let state = match n0xis_core::Pass::run(&n0xis_core::FilterPass, ctx, input) {
                         Ok(s) => s,
@@ -2016,7 +2040,7 @@ impl Plugin for AnalysisPasses {
 
         reg.add(Capability::new(
             "scan.aob",
-            "Array-of-bytes pattern scan (`pattern`, `??` wildcards). Live: every committed writable region unless start/size given.",
+            "Array-of-bytes pattern scan (`pattern`, `??` wildcards). Live: every committed writable region unless start/size given; goes on past a region that does not read and states what it did not read (`regions_scanned`, `regions_not_read`, `not_read`, `regions_read_short`, `read_short`), and when no region reads the answer is the error `nothing-readable`.",
             Some(n0xis_contracts::schema::v1::AOB_SCAN),
             Origin::Builtin,
             Box::new(|args| {
@@ -2029,23 +2053,11 @@ impl Plugin for AnalysisPasses {
                 };
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label| {
-                    let mut matches = Vec::new();
-                    let mut bytes_scanned = 0usize;
-                    for (start, size) in regions {
-                        match n0xis_core::Pass::run(&n0xis_core::AobScanPass, ctx, n0xis_core::AobInput { start, size, pattern: pattern.clone() }) {
-                            Ok(art) => {
-                                matches.extend(art.matches);
-                                bytes_scanned += art.bytes_scanned;
-                            }
-                            // A region enumerated a moment ago can be freed by
-                            // the target before the scan reaches it — skip it
-                            // rather than aborting a multi-gigabyte sweep.
-                            Err(n0xis_core::CoreError::Source(n0xis_sources::SourceError::Unmapped(_))) => continue,
-                            Err(e) => return Response::error("aob-failed", e.to_string()),
-                        }
+                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, target| {
+                    match n0xis_core::Pass::run(&n0xis_core::AobSweepPass, ctx, n0xis_core::AobSweepInput { regions, pattern }) {
+                        Ok(swept) => target.answer(n0xis_contracts::schema::v1::AOB_SCAN, swept, label),
+                        Err(e) => Response::error("aob-failed", e.to_string()),
                     }
-                    ok_json(n0xis_contracts::schema::v1::AOB_SCAN, n0xis_core::AobArtifact { matches, bytes_scanned }, label)
                 })
             }),
         ));
@@ -2064,7 +2076,7 @@ impl Plugin for AnalysisPasses {
                 // Pass the window through as the file-source region so a static
                 // dissect needs no separate start/size argument pair.
                 let start_s = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
-                with_scan_ctx(args, start_s.as_deref(), Some(size), move |ctx, _regions, label| {
+                with_scan_ctx(args, start_s.as_deref(), Some(size), move |ctx, _regions, label, _target| {
                     match n0xis_core::Pass::run(&n0xis_core::DissectPass, ctx, n0xis_core::DissectInput { start, size }) {
                         // An architecture with no native pointer width (a
                         // WebAssembly module's) has no value that is a pointer
@@ -2119,7 +2131,7 @@ impl Plugin for AnalysisPasses {
                 let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(100);
                 let start = args.get("start").and_then(|v| v.as_str()).map(str::to_string);
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
-                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label| {
+                with_scan_ctx(args, start.as_deref(), size, move |ctx, regions, label, _target| {
                     let input = n0xis_core::GroupScanInput { regions, fields, window, align, limit };
                     match n0xis_core::Pass::run(&n0xis_core::GroupScanPass, ctx, input) {
                         Ok(art) => ok_json(n0xis_contracts::schema::v1::SCAN_GROUP, art, label),

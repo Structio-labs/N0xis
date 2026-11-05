@@ -6,6 +6,7 @@
 //! AOB signature survives a patch/recompile that a raw address wouldn't).
 
 use n0xis_contracts::Va;
+use n0xis_sources::{RegionCoverage, Swept};
 use serde::Serialize;
 
 use crate::{Ctx, CoreError, Pass};
@@ -53,21 +54,59 @@ impl Pass for AobScanPass {
 
     fn run(&self, ctx: &Ctx, input: AobInput) -> Result<AobArtifact, CoreError> {
         let bytes = ctx.source.read(input.start, input.size)?;
-        let plen = input.pattern.len();
         let mut matches = Vec::new();
-        if plen == 0 || bytes.len() < plen {
-            return Ok(AobArtifact { matches, bytes_scanned: bytes.len() });
-        }
-        for i in 0..=(bytes.len() - plen) {
-            let hit = input.pattern.iter().enumerate().all(|(k, p)| match p {
-                AobByte::Wildcard => true,
-                AobByte::Exact(b) => bytes[i + k] == *b,
-            });
-            if hit {
-                matches.push(input.start.offset(i as u64));
-            }
-        }
+        matches_in(&bytes, input.start, &input.pattern, &mut matches);
         Ok(AobArtifact { matches, bytes_scanned: bytes.len() })
+    }
+}
+
+/// Every place `pattern` matches in `bytes`, which were read at `start`.
+fn matches_in(bytes: &[u8], start: Va, pattern: &[AobByte], matches: &mut Vec<Va>) {
+    let plen = pattern.len();
+    if plen == 0 || bytes.len() < plen {
+        return;
+    }
+    for i in 0..=(bytes.len() - plen) {
+        let hit = pattern.iter().enumerate().all(|(k, p)| match p {
+            AobByte::Wildcard => true,
+            AobByte::Exact(b) => bytes[i + k] == *b,
+        });
+        if hit {
+            matches.push(start.offset(i as u64));
+        }
+    }
+}
+
+pub struct AobSweepInput {
+    pub regions: Vec<(Va, usize)>,
+    pub pattern: Vec<AobByte>,
+}
+
+/// The pattern over many regions, as `scan aob` asks on a live process. What
+/// happens to a region that will not read is [`RegionCoverage`]'s rule: noted,
+/// with what the read said, and the sweep goes on; a failure about no region
+/// (the process exited, reading it is denied) is the sweep's error.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AobSweepPass;
+
+impl Pass for AobSweepPass {
+    type In = AobSweepInput;
+    type Out = Swept<AobArtifact>;
+
+    fn name(&self) -> &'static str {
+        "scan.aob.sweep"
+    }
+
+    fn run(&self, ctx: &Ctx, input: AobSweepInput) -> Result<Swept<AobArtifact>, CoreError> {
+        let mut read = RegionCoverage::default();
+        let mut matches = Vec::new();
+        let mut bytes_scanned = 0usize;
+        for (start, size) in input.regions {
+            let bytes = read.read_region(ctx.source, start, size)?;
+            bytes_scanned += bytes.len();
+            matches_in(&bytes, start, &input.pattern, &mut matches);
+        }
+        Ok(Swept { answer: AobArtifact { matches, bytes_scanned }, read })
     }
 }
 
@@ -97,5 +136,18 @@ mod tests {
         let pattern = parse_aob("48 8B ?? 68").unwrap();
         let art = AobScanPass.run(&ctx, AobInput { start: Va(0x1000), size: 10, pattern }).unwrap();
         assert_eq!(art.matches, vec![Va(0x1000), Va(0x1005)]);
+    }
+
+    #[test]
+    fn a_sweep_goes_on_past_a_region_with_no_mapping_and_says_so() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x48, 0x8B]).region(Va(0x9000), vec![0x90, 0x48, 0x8B]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let pattern = parse_aob("48 8B").unwrap();
+        let swept = AobSweepPass.run(&ctx, AobSweepInput { regions: vec![(Va(0x5000), 4), (Va(0x1000), 2), (Va(0x9000), 3)], pattern }).unwrap();
+        assert_eq!(swept.answer.matches, vec![Va(0x1000), Va(0x9001)]);
+        assert_eq!(swept.answer.bytes_scanned, 5);
+        assert_eq!(swept.read.regions_scanned(), 2);
+        assert_eq!(swept.read.not_read()[0].start, Va(0x5000));
     }
 }
