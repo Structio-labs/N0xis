@@ -630,8 +630,20 @@ fn eh_map(src: &Src) -> std::sync::Arc<Option<UnwindFunctions>> {
 pub fn stated_functions(src: &Src) -> Vec<n0xis_core::StatedFunction> {
     use n0xis_core::{StatedBy, StatedFunction};
     use n0xis_sources::StartReason;
+    // An FDE that starts in a PLT section is the linker's statement about the
+    // section, not a function's: GNU ld writes one over all of `.plt` and one
+    // over `.plt.got`, and read as functions they made the PLT's header a
+    // function swallowing every lazy stub and the first `.plt.got` stub one
+    // ending after the last (every declared end the rule-accuracy corpus found
+    // wrong, docs/VERIFICATION.md). The stubs keep the names the image gives
+    // them; what lists them is not this FDE.
+    let plt = match src {
+        Src::Static(img) => img.plt_ranges(),
+        Src::Live(_) | Src::Snap(_) | Src::Remote(_) => Vec::new(),
+    };
+    let in_plt = |va: Va| plt.iter().any(|&(lo, hi)| va >= lo && va < hi);
     let mut out: Vec<StatedFunction> = match eh_map(src).as_ref() {
-        Some(unwind) => unwind.functions.iter().map(|f| StatedFunction::new(f.start, f.end, unwind.by)).collect(),
+        Some(unwind) => unwind.functions.iter().filter(|f| !in_plt(f.start)).map(|f| StatedFunction::new(f.start, f.end, unwind.by)).collect(),
         None => Vec::new(),
     };
     if let Src::Static(img) = src {

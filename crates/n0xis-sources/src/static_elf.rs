@@ -85,7 +85,7 @@ fn decodes_plt_stubs(e_machine: u16) -> bool {
 /// The sections a PLT stub lives in: executable, named `.plt…` (`.plt`,
 /// `.plt.got`, `.plt.sec`), with bytes in the file.
 fn plt_sections(sections: &[SectionRange]) -> impl Iterator<Item = &SectionRange> {
-    sections.iter().filter(|s| s.executable && s.name.starts_with(".plt") && s.file_size > 0)
+    sections.iter().filter(|s| crate::image::is_elf_plt_section(&s.name, s.executable, s.file_size as u64))
 }
 
 /// What is said where an image has PLT stubs this reader does not decode:

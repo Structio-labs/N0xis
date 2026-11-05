@@ -353,6 +353,17 @@ pub struct Section {
     pub in_image: bool,
 }
 
+/// Whether an ELF section is one the linker fills with PLT stubs: executable,
+/// named `.plt…` (`.plt`, `.plt.got`, `.plt.sec`), with bytes in the file.
+/// **The one statement of it**, read by the ELF reader's stub decoder and by
+/// [`crate::ImageSource::plt_ranges`], so the stubs read and the ranges
+/// discovery keeps an unwind entry out of are the same sections. Here, in the
+/// format-neutral seam, because the adapter that answers the second is
+/// compiled without the ELF reader.
+pub(crate) fn is_elf_plt_section(name: &str, executable: bool, file_size: u64) -> bool {
+    executable && name.starts_with(".plt") && file_size > 0
+}
+
 /// What a symbol names, as its table says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

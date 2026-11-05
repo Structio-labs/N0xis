@@ -483,6 +483,30 @@ impl ImageSource {
     pub fn declared_entry_points(&self) -> Vec<Va> {
         self.entry_points.clone()
     }
+
+    /// The address ranges of the image's PLT sections (`.plt`, `.plt.got`,
+    /// `.plt.sec`), as `(start, exclusive end)`: linker stubs, each its own
+    /// short entry, and no function of the program. Empty for every format
+    /// but ELF.
+    ///
+    /// What it is for: GNU ld writes **one** `.eh_frame` FDE over the whole
+    /// of `.plt` and one over `.plt.got`, and an FDE read as a function made
+    /// the PLT's header a function whose extent swallowed every lazy stub, and
+    /// the first `.plt.got` stub a function ending after the last. The FDE
+    /// covers the section, so it is the section's statement, not a function's
+    /// — decided by the section the image states, not by the shape of the
+    /// code.
+    pub fn plt_ranges(&self) -> Vec<(Va, Va)> {
+        if self.format != ImageFormat::Elf {
+            return Vec::new();
+        }
+        self.image
+            .sections()
+            .iter()
+            .filter(|s| crate::image::is_elf_plt_section(&s.name, s.executable, s.file_size))
+            .map(|s| (s.va, Va(s.va.0.saturating_add(s.size))))
+            .collect()
+    }
 }
 
 /// `a`, `a or b`, `a, b or c`: the formats a refusal names.
