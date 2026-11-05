@@ -292,9 +292,17 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
 ///
 /// Decoded in windows rather than all at once: a 10 MB code section is millions
 /// of instructions, and only the handful of call targets is kept.
-fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeMap<u64, Va> {
+///
+/// The same sweep answers, for each address in `candidates`, whether the
+/// instruction that ends there runs on into it ([`runs_on`]), which only a
+/// linear decode of what comes before can say; the second map holds those
+/// candidates. Fixed-width code answers exactly; on x86 it is the sweep's
+/// reading, and where the sweep has no instruction ending at a candidate it
+/// says nothing.
+fn sweep_calls_and_fallthroughs(ctx: &Ctx, bytes: &[u8], start: Va, candidates: &BTreeSet<u64>) -> (BTreeMap<u64, Va>, BTreeSet<u64>) {
     const WINDOW_INSNS: usize = 8192;
     let mut out = BTreeMap::new();
+    let mut fallen_into = BTreeSet::new();
     let mut at = 0usize;
     while at < bytes.len() {
         let base = start.0.saturating_add(at as u64);
@@ -308,13 +316,27 @@ fn direct_call_targets(ctx: &Ctx, bytes: &[u8], start: Va) -> BTreeMap<u64, Va> 
             {
                 out.entry(t.0).or_insert(ins.va);
             }
+            let end = ins.va.0.saturating_add(u64::from(ins.len));
+            if candidates.contains(&end) && runs_on(ctx, ins) {
+                fallen_into.insert(end);
+            }
         }
         if consumed == 0 {
             break;
         }
         at += consumed;
     }
-    out
+    (out, fallen_into)
+}
+
+/// Whether control certainly goes on to the next address after `ins`: an
+/// ordinary instruction, or a conditional branch not taken. Then what follows
+/// is the same function going on, because a function does not end by falling
+/// into the next. Not padding, nor a section's zero fill, which precede
+/// functions and which control never reaches; not a `call`, which may not
+/// return; not what does not decode.
+fn runs_on(ctx: &Ctx, ins: &DecodedInsn) -> bool {
+    matches!(ins.kind, InsnKind::Seq | InsnKind::Other | InsnKind::CondJump) && !is_filler(ctx, ins) && !ins.bytes.iter().all(|b| *b == 0)
 }
 
 /// Whether `call` (whose direct target is `target`) is the get-PC idiom of
@@ -621,7 +643,28 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         //
         // A declared extent still wins: an address a function table places
         // *inside* a function is not a second function, whatever branches at it.
-        for (va, from) in direct_call_targets(ctx, &bytes, input.start) {
+        //
+        // The scan's candidates first, so the one sweep can say what runs into
+        // each of them: the matches at an entry-aligned address with no
+        // declared extent around them, and only the patterns that are no
+        // marker (an architecture-required landing pad is its own evidence).
+        let align = ctx.arch.entry_alignment().max(1);
+        let markers = ctx.arch.entry_markers();
+        let max_pat = prologues.iter().map(|p| p.len()).max().unwrap_or(0);
+        let mut matches: Vec<(u64, bool)> = Vec::new();
+        let mut i = 0usize;
+        while i + max_pat <= bytes.len() {
+            if prologues.iter().any(|p| bytes[i..].starts_with(p)) {
+                matches.push((input.start.0 + i as u64, markers.iter().any(|p| bytes[i..].starts_with(p))));
+                // Skip ahead so overlapping patterns in one prologue count once.
+                i += 8;
+                continue;
+            }
+            i += 1;
+        }
+        let weak: BTreeSet<u64> = matches.iter().filter(|(va, marker)| !marker && va.is_multiple_of(align) && declared_around(*va).is_none()).map(|(va, _)| *va).collect();
+        let (call_targets, fallen_into) = sweep_calls_and_fallthroughs(ctx, &bytes, input.start, &weak);
+        for (va, from) in call_targets {
             if range.contains(&va) && !inside_a_declared_function(va) {
                 record(&mut found, va, StartSource::CallTarget { from });
             }
@@ -634,31 +677,23 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // build that rule dropped 3 978 of 4 483 unconfirmed candidates — an
         // independent function table calls 4 461 of them the middle of another
         // function — while costing 13 of 13 934 real starts.
-        let align = ctx.arch.entry_alignment().max(1);
-        let markers = ctx.arch.entry_markers();
-        let max_pat = prologues.iter().map(|p| p.len()).max().unwrap_or(0);
-        let mut i = 0usize;
-        while i + max_pat <= bytes.len() {
-            if prologues.iter().any(|p| bytes[i..].starts_with(p)) {
-                let va = input.start.0 + i as u64;
-                let marker = markers.iter().any(|p| bytes[i..].starts_with(p));
-                // Inside a declared extent only the marker counts, and not where
-                // a call returns: code after a `setjmp` carries `endbr64` too,
-                // since `longjmp` comes back to it indirectly, and it goes on
-                // with the same function (found on a Qt build, the one false
-                // start of its 5 with no unwind entry).
-                let entry = match declared_around(va) {
-                    None => true,
-                    Some((from, _)) => marker && after_a_call(from, va) != Some(true),
-                };
-                if va.is_multiple_of(align) && entry {
-                    record(&mut found, va, StartSource::Prologue);
-                }
-                // Skip ahead so overlapping patterns in one prologue count once.
-                i += 8;
-                continue;
+        //
+        // And not where the code before runs on into it: `push %rbx; sub
+        // $8,%rsp` on a 16-byte boundary, an AArch64 `cbz` over a frame set up
+        // late, are the middle of a function whatever the bytes look like.
+        for (va, marker) in matches {
+            // Inside a declared extent only the marker counts, and not where
+            // a call returns: code after a `setjmp` carries `endbr64` too,
+            // since `longjmp` comes back to it indirectly, and it goes on
+            // with the same function (found on a Qt build, the one false
+            // start of its 5 with no unwind entry).
+            let entry = match declared_around(va) {
+                None => !fallen_into.contains(&va),
+                Some((from, _)) => marker && after_a_call(from, va) != Some(true),
+            };
+            if va.is_multiple_of(align) && entry {
+                record(&mut found, va, StartSource::Prologue);
             }
-            i += 1;
         }
 
         Ok(Discovered { start: input.start, scanned_bytes: bytes.len(), entries: entries(found) })

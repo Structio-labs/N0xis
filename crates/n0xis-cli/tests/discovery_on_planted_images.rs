@@ -190,9 +190,9 @@ fn i386_get_pc_is_not_a_call_and_a_call_to_the_next_function_is() {
 fn an_aarch64_function_that_signs_its_return_address_starts_at_paciasp() {
     let dir = project("paciasp");
     let image = fixture("aarch64.so");
-    // At `paciasp`, not at the `stp` after it.
-    let starts = listed(&dir, &image);
-    assert!(starts.contains(&"0x1b0".to_string()) && !starts.contains(&"0x1b4".to_string()), "{starts:?}");
+    // At `paciasp`, not at the `stp` after it; and the second function at its
+    // first `stp`, not at the one its `cbz` runs on into (`0x1dc`).
+    assert_eq!(listed(&dir, &image), ["0x1b0", "0x1d0"]);
     let got = why(&dir, &image, "0x1b0");
     assert_eq!(got["found"]["start_sources"], json!([{"source": "prologue"}]), "{got}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -208,11 +208,13 @@ fn the_gap_sweep_and_the_scan_stop_where_the_code_goes_on() {
     let image = fixture("rules.so");
     let starts = listed(&dir, &image);
     assert!(!starts.contains(&"0x1036".to_string()), "`leave` after a branch into the filler goes on: {starts:?}");
+    assert!(!starts.contains(&"0x1060".to_string()), "`push` runs on into `sub`: {starts:?}");
     for (head, sources) in [("0x1000", json!([{"source": "gap_sweep"}])), ("0x1010", json!([{"source": "gap_sweep"}])), ("0x1070", json!([{"source": "prologue"}]))] {
         let got = why(&dir, &image, head);
         assert_eq!(got["found"]["start"], head, "{got}");
         assert_eq!(got["found"]["start_sources"], sources, "{head}: {got}");
     }
+    assert_eq!(starts, ["0x1000", "0x1010", "0x1020", "0x1030", "0x1040", "0x1050", "0x1070"], "every planted function and nothing else");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
