@@ -9,19 +9,24 @@
 //! the image: a pointer with a length beside it, in data ([`CutKind::DataPair`])
 //! or built by instructions ([`CutKind::CodePair`]).
 //!
-//! **The rule that keeps C answers as they are.** A cut at `c` inside a run needs
-//! one of:
+//! **The gate that keeps C answers as they are.** Only an image that shows it holds
+//! such literals is cut, today one a Rust compiler built ([`n0xis_sources`]'s
+//! producer evidence). Elsewhere a pointer with a number beside it is too often
+//! something else: `{"US-ASCII", 3}` is an encoding's number, and C and C++
+//! answers stay byte for byte what they were. The answer states which it was.
 //!
-//! - in a run no NUL ends: `c` is the start or the end of a reference with its
-//!   length;
-//! - in a run a NUL ends: `c` is the start of one **and** the end of another.
+//! **The rule inside such an image.** A cut at `c` inside a run needs one of:
 //!
-//! So `strncmp(x, "abcdef", 3)`, on a string a NUL ends, cuts nothing: stating
-//! how much of a string to read is not stating where it stops. Nor does a start
-//! alone cut a run a NUL ends: a linker merging string tails leaves a reference to
-//! `double` inside `long double`, and the first form of this rule cut it in all
-//! four C and C++ libraries it was measured on. Where nothing states a length, a
-//! run stays whole.
+//! - (a) `c` is the start of a reference with its length and, in a run a NUL ends,
+//!   also the end of another: linkers merge a string into the tail of a longer one;
+//! - (b) `c` is the end of one, and the run is not ended by a NUL.
+//!
+//! **In code,** a length is believed in the register after the address's in the
+//! ABI's argument registers, in the two a pair is returned in at a `ret`, or in the
+//! stack slot beside a stored address. An odd immediate is not yet a length, because
+//! `eprintln!` of 20 bytes is `mov esi,0x29`: it is `(n-1)/2` when that ends at a boundary
+//! of another reference or the run, `n` when only that does, and no reference
+//! when neither does.
 //!
 //! A reference is never believed past its run, nor when it starts or ends inside
 //! a character: a `&str` is valid UTF-8 by its type, so such a word is not one.
@@ -181,7 +186,7 @@ impl<'a> LiteralEvidence<'a> {
     /// [`Self::into_refs`]. What is kept for one is as bounded as [`Self::add`]:
     /// a start inside a run, and an immediate at most twice what is left of it.
     fn code_pair(&mut self, start: u64, immediate: u64, at: Va) {
-        if immediate % 2 == 0 {
+        if immediate.is_multiple_of(2) {
             self.add(start, immediate, CutKind::CodePair, at);
             return;
         }

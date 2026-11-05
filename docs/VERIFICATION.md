@@ -2043,6 +2043,31 @@ is the import table's own name (`objdump -p`).
 - **The `export` rule on real Rust**: no PE image here exports a name.
 - **A function's decompiled body**: not measured by any of this.
 
+### Rust literals in `strings`: cut where a reference states a length (2026-11-05)
+
+**The question.** Of the string literals a Rust program's source holds that are in its binary (at least 4 characters, read from the `.rs` files by
+`oracle/rust-literals/source_literals.py`), how many does `strings` report as exactly one row, and how many cuts fall strictly inside a literal with no other literal starting or ending
+there? It says nothing of pseudo-C, which does not use this yet.
+
+| image | seen by the rule | literals in the binary | exact rows, before | after | wrong cuts |
+|---|---|---|---|---|---|
+| `just` 1.59.0 (`2638e9c0`), measured once on the final rule | no | 1 094 | 287 | 578 | 6 |
+| fd | yes | 237 | 18 | 68 | 2 |
+| ripgrep | yes | 1 919 | 115 | 1 271 | 11 |
+| N0xis | yes | 4 061 | 792 | 1 875 | 18 |
+| a private Rust workspace's binary | yes | 497 | 80 | 259 | 13 |
+| another private workspace's binary | yes | 2 102 | 447 | 1 011 | 22 |
+| N0xis, PE, at `--min 4` | yes | 4 312 | 1 167 | 1 964 | 11 (at least) |
+
+The wrong-cut column overstates the engine's errors: all 6 on `just` have a reference on both sides, so they look like the metric's, and most of those opened on the others are a short literal
+straddling a true cut. Likely real: `in` / `valid utf8` and `n` / `ot mapped` on N0xis, one on ripgrep. The workspaces and the PE were not opened. About half of the literals on `just` still have no row of
+their own; which of them this rule cannot read was not counted. AArch64 code pairs are not built.
+
+**C and C++: nothing moved.** libz, libsqlite3, libc, libstdc++ and `ls`: 0 rows gone, 0 new, against the engine before. That comparison can see a change: with the image-level gate forced open it
+reports 2 and 2 on libstdc++ and 1 and 11 on `ls` (`US-ASCII` read as `US-` and `ASCII`, a table of `{ptr, number}`). So the gate is what holds this, not the rule. `strings_agree_with_binutils` passes unchanged.
+
+**Cost.** The largest Rust image 0.44 s to 4.21 s, 145 to 240 MiB; `libstdc++` no change. The sweep is bounded and nothing is allocated from a length in the file.
+
 ### Obfuscated code: the first transformation measured (2026-11-05)
 
 The question (`docs/design/OBFUSCATED.md`): on code shaped to mislead a static reader, which answers

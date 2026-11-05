@@ -5,6 +5,13 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **`strings` cuts a Rust binary's literals apart.** A `&str` has no terminator, so literals sit side by side and `strings` read
+  `PLANTED_ALPHAPLANTED_BETA` as one string, `ok: true`. Where a reference states a length, in data or in code, a run is now cut there, and the row
+  says on what evidence (`cut_by`). Only in an image that shows a Rust compiler built it (`literal_cuts`): rows on C and C++ images are unchanged. Exact rows
+  on a program nothing was tuned on go from 287 to 578 of 1 094 literals, with 6 cuts the source's literals do not explain. Pseudo-C does not use this yet.
+
 ### Fixed
 
 - **One stray word could pick LuaJIT's string layout.** A word equal to a candidate base, in no Lua value, chose that layout, and `lua strings` and

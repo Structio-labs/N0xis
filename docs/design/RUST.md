@@ -1,6 +1,6 @@
 # Rust binaries: what the engine does today, and the steps
 
-Status: accepted 2026-11-05. Nothing below is built yet. The engine reads compiled images only: it
+Status: accepted 2026-11-05. Step 1 is built for `strings`, not yet in pseudo-C; the rest is not built. The engine reads compiled images only: it
 reads no source code, in any language.
 
 ## 1. Measured
