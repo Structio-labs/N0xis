@@ -185,6 +185,17 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **`decomp` died with no answer on a long chain of one register or frame slot, and on deep nesting.**
+  Propagation built one expression as deep as the chain, and everything that walks an expression
+  recurses: a callee of 1 365 `add eax,1` took 2 to 4 MiB of stack in a release build, so a 5-instruction
+  caller killed the process where the main thread has 1 MiB. Propagation now stops at 64 levels and the
+  value stays in a variable of its own, while a chain of constants still folds to one constant. Every door
+  runs its analysis on a stated stack of 256 MiB of address space instead of what the system gives, the SSA
+  renaming walk keeps its own stack, and past 4 096 levels the structuring descent emits a labelled `goto`.
+- **`decomp` took cubic time in a function's blocks.** 1 000 sequential `if`s went from 147 s to 0.7 s, 4 000 from
+  past 200 s to 4.9 s, and 4 000 steps of one register from 70 s to 0.5 s, on planted shapes. On 694 functions of
+  six system libraries, the biggest of each among them, every answer is the old one.
+
 - **`lua combo` and `lua strings` read every string's base with one hardcoded offset, and a build with
   another header answered `count: 0`.** On a real process with `len` at 0x0c instead of the assumed 0x10,
   every base was 4 bytes low: 0 references at each reported base, and 564 to 827 per string at exactly +4.
