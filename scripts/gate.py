@@ -130,13 +130,17 @@ def compile_tests(log, packages, target=None, target_dir=None, env=None):
     with open(log.path(step), "wb") as err:
         p = subprocess.run(cmd, cwd=ROOT, env=full_env, stdout=subprocess.PIPE, stderr=err)
     binaries = []
-    for line in p.stdout.splitlines():
-        try:
-            m = json.loads(line)
-        except ValueError:
-            continue
-        if m.get("reason") == "compiler-artifact" and m.get("executable") and m.get("profile", {}).get("test"):
-            binaries.append((m["target"]["name"], str(Path(m["manifest_path"]).parent), m["executable"]))
+    # With this message format the compiler's diagnostics arrive here and not on stderr.
+    with open(log.path(step), "a") as diagnostics:
+        for line in p.stdout.splitlines():
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("reason") == "compiler-artifact" and m.get("executable") and m.get("profile", {}).get("test"):
+                binaries.append((m["target"]["name"], str(Path(m["manifest_path"]).parent), m["executable"]))
+            elif m.get("reason") == "compiler-message":
+                diagnostics.write(m["message"].get("rendered") or "")
     return p.returncode, binaries, time.time() - start
 
 
@@ -209,7 +213,7 @@ def tests(log, packages):
 
 def tail_errors(log, step):
     text = log.path(step).read_text(errors="replace")
-    errors = [m.group(0)[:1500] for m in re.finditer(r"^error.*?(?=^\S|\Z)", text, re.M | re.S)]
+    errors = [m.group(0)[:1500] for m in re.finditer(r"^error.*?(?=^error|\Z)", text, re.M | re.S)]
     log.line("\n".join(errors[:6]) or "\n".join(text.splitlines()[-20:]))
 
 

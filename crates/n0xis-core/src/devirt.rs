@@ -588,9 +588,8 @@ pub(crate) enum Constructed<'a> {
 /// is none (the module doc, "Known wrong answers").
 pub(crate) struct Constructions<'a> {
     list: Vec<Construction<'a>>,
-    /// Forward dominators of each block ([`crate::dom::dominators_fwd`]), only
-    /// when there is a construction to ask about.
-    dom: Vec<std::collections::BTreeSet<usize>>,
+    /// Forward dominators, only when there is a construction to ask about.
+    dom: Option<crate::dom::DomTree>,
     /// For each block that holds a construction, the blocks reachable from it
     /// along at least one edge.
     reach: BTreeMap<usize, Vec<bool>>,
@@ -612,11 +611,11 @@ impl<'a> Constructions<'a> {
             }
         }
         if list.is_empty() {
-            return Constructions { list, dom: Vec::new(), reach: BTreeMap::new() };
+            return Constructions { list, dom: None, reach: BTreeMap::new() };
         }
         let edges: Vec<(Va, &[crate::ir::Successor])> = blocks.iter().map(|b| (b.start, b.successors.as_slice())).collect();
         let (succ, pred) = crate::dom::block_graph_of(&edges);
-        let dom = crate::dom::dominators_fwd(blocks.len(), &pred);
+        let dom = Some(crate::dom::DomTree::forward(blocks.len(), &pred));
         let mut reach = BTreeMap::new();
         for c in &list {
             reach.entry(c.at.block).or_insert_with(|| {
@@ -635,7 +634,7 @@ impl<'a> Constructions<'a> {
 
     /// Does `a` run before `b` on every path from the entry to `b`?
     fn dominates(&self, a: At, b: At) -> bool {
-        if a.block == b.block { a.stmt < b.stmt } else { self.dom.get(b.block).is_some_and(|d| d.contains(&a.block)) }
+        if a.block == b.block { a.stmt < b.stmt } else { self.dom.as_ref().is_some_and(|d| d.dominates(a.block, b.block)) }
     }
 
     /// Is there a path from just after `a` to `b`?

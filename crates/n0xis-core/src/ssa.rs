@@ -21,7 +21,7 @@ use n0xis_arch::{Arch, CallTarget, CmpKind, MicroExpr, MicroStmt, UnliftedReads,
 use n0xis_contracts::Va;
 use serde::Serialize;
 
-use crate::dom::{block_graph, dom_children, dominance_frontier, dominators_fwd, immediate_doms};
+use crate::dom::{DomTree, block_graph, dom_children, dominance_frontier};
 use crate::ir::{Callsite, CfgArtifact, Successor};
 use crate::lift::{LiftedFunction, LiftPass};
 use crate::{Ctx, CoreError, Pass};
@@ -681,10 +681,10 @@ fn build_ssa(
         };
     }
     let (succ, pred) = block_graph(cfg);
-    let dom = dominators_fwd(n, &pred);
-    let idom = immediate_doms(&dom);
-    let df = dominance_frontier(n, &pred, &idom);
-    let children = dom_children(&idom);
+    let dom = DomTree::forward(n, &pred);
+    let idom = dom.idom();
+    let df = dominance_frontier(n, &pred, idom);
+    let children = dom_children(idom);
 
     let mut vars: BTreeSet<String> = BTreeSet::new();
     for b in &lifted.blocks {

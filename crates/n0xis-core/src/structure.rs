@@ -20,7 +20,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use n0xis_arch::MicroExpr;
 
-use crate::dom::{block_graph, dominators_fwd, dominators_rev, immediate_doms};
+use crate::dom::{DomTree, block_graph};
 use crate::ir::CfgArtifact;
 use crate::render::{negate_condition, render_condition, render_stmt, RenderNames};
 use crate::ssa::SsaBlock;
@@ -794,8 +794,7 @@ fn structure_once(
     }
 
     let (succ, pred) = block_graph(cfg);
-    let dom = dominators_fwd(n, &pred);
-    let idom = immediate_doms(&dom);
+    let dom = DomTree::forward(n, &pred);
     // Only a *normal* return is a post-dominance exit. A `call-noreturn` / `int`
     // block aborts — it never reaches normal completion — so counting it as an
     // exit falsely breaks the post-dominance of a real shared tail (every
@@ -810,16 +809,15 @@ fn structure_once(
     if !is_exit.iter().any(|&e| e) {
         is_abort.iter_mut().for_each(|a| *a = false);
     }
-    let pdom = dominators_rev(n, &succ, &is_exit, &is_abort);
-    let ipdom = immediate_doms(&pdom);
-    let _ = &idom; // idom itself isn't needed beyond computing dom sets for back-edge detection
+    let pdom = DomTree::reverse(n, &succ, &is_exit, &is_abort);
+    let ipdom = pdom.idom();
 
     let mut loop_body: HashMap<usize, BTreeSet<usize>> = HashMap::new();
     let mut loop_back_edges: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut is_header = vec![false; n];
-    for u in 0..n {
-        for &h in &succ[u] {
-            if dom[u].contains(&h) {
+    for (u, successors) in succ.iter().enumerate() {
+        for &h in successors {
+            if dom.dominates(h, u) {
                 is_header[h] = true;
                 loop_back_edges.entry(h).or_default().push(u);
                 let body = collect_loop_body(h, u, &pred);
@@ -880,7 +878,7 @@ fn structure_once(
         names,
         succ: &succ,
         pred: &pred,
-        ipdom: &ipdom,
+        ipdom,
         is_header: &is_header,
         loop_body: &loop_body,
         loop_back_edges: &loop_back_edges,
