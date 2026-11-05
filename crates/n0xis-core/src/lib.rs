@@ -53,6 +53,7 @@ mod typeprop;
 mod slice;
 mod ssa;
 mod structural;
+mod stack;
 mod structure;
 mod strings;
 mod sigvalidate;
@@ -69,6 +70,7 @@ mod xref;
 mod xref_string;
 mod sweep;
 
+pub use stack::{on_analysis_stack, ANALYSIS_STACK_BYTES};
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass, AobSweepInput, AobSweepPass};
 pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};
 pub use aslr::{rebase, rva_of, va_at};

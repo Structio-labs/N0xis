@@ -3028,6 +3028,10 @@ struct DisasmArgs {
 }
 
 fn main() {
+    n0xis_core::on_analysis_stack(run);
+}
+
+fn run() {
     // Parsed by hand rather than `Cli::parse()` so that an argument error is
     // still an **envelope**. clap's own exit prints a plain-text usage message
     // to stderr and nothing at all to stdout, which is a second failure format
