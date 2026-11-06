@@ -24,6 +24,8 @@ n0xis-frontend = { workspace = true }
 n0xis-bitsquid = { workspace = true }
 n0xis-lua = { workspace = true }
 n0xis-luajit = { workspace = true }
+# The update adapter, the only network client in the tree: only the two doors link it.
+n0xis-update = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -60,3 +62,10 @@ n0xis-project = { workspace = true }
 # Ground truth for the FLIRT exit test: read the unstripped twin's symbol table
 # directly, so a matched name is checked against the linker's own answer.
 goblin = { workspace = true }
+# A planted release server over real TLS, for what the real binary does on the update path.
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+# A real terminal for the notice's tests: a pipe cannot stand in for one.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

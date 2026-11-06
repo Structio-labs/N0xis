@@ -4570,6 +4570,9 @@ phase from its first mistake on.
 | command | category | checked against |
 | --- | --- | --- |
 | `doctor` | Environment & project | the machine and the manifest |
+| `update` | Environment & project | a planted server over real TLS with planted manifests and a key made for the test (`crates/n0xis-update/tests/planted.rs`); the real binary replaced and rolled back, confirmed by `--version` of the file on disk, on Linux and under Wine (`scripts/update_e2e.py`) |
+| `config get` | Environment & project | the file itself, and what a run does with it (`crates/n0xis-update/tests/settings.rs`, `crates/n0xis-cli/tests/update_door.rs`) |
+| `config set` | Environment & project | the file itself, and what a run does with it (`crates/n0xis-update/tests/settings.rs`, `crates/n0xis-cli/tests/update_door.rs`) |
 | `profile` | Environment & project | objdump and the raw PE header |
 | `guide` | Environment & project | the binary's own command tree (a test fails the build on drift) |
 | `init` | Environment & project | the filesystem |

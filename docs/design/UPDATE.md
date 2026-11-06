@@ -1,6 +1,6 @@
 # Updates: the tool offers, the user decides
 
-Status: accepted 2026-11-05 in its form (the owner: offer the update, the user decides). Nothing is built yet.
+Status: accepted 2026-11-05 in its form (the owner: offer the update, the user decides). Built in `crates/n0xis-update`, with the release side in `scripts/release.py`.
 
 ## 1. What it does
 

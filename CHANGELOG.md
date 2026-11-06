@@ -5,6 +5,16 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **`n0x update`: the tool offers, the user decides.** `update` installs a newer release, `update --check` only asks, `update --rollback` goes
+  back. A download is checked against a signed manifest (ed25519) before anything moves, and each failure is its own refusal with the installed
+  file unchanged. In a terminal, at most once a day, one line on standard error; in a script or a pipe no line and no request. The MCP server
+  states its version and any newer one when a session starts, and makes no request. This is the first network client in the tree, in
+  `n0xis-update`, linked by the two doors only.
+- **`n0x config get` and `set`**, the user's own settings in one file in the user's configuration directory: `update.check` (on),
+  `update.auto` (off) and `update.manifest_url`.
+
 ## [0.3.7] — 2026-11-06
 
 **A run stops itself at a memory ceiling and answers `out-of-memory` instead of being killed, `strings` cuts a Rust binary's literals apart, calls that do not return end their function,

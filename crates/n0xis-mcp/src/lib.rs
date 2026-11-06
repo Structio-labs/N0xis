@@ -67,14 +67,16 @@ impl ServerHandler for N0xisServer {
         // whose `env!("CARGO_CRATE_NAME")` expands *inside rmcp* — so the default
         // announces the SDK ("rmcp" 2.2.0) rather than this server. Declare ours.
         let mut info =
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(format!(
             "N0xis: reverse-engineering and live-memory toolkit. Tools mirror the `n0xis` CLI's \
-             verbs and return the identical `{ok,data,meta}` envelope (meta.schema names the \
+             verbs and return the identical `{{ok,data,meta}}` envelope (meta.schema names the \
              payload shape). Typical flow: `attach` (pid or file) to set the session default, \
              `function_discover` to find candidates, `decomp_pseudo` to decompile one, \
              `explain_opt_delta` or `provenance_trace` to see *why* the decompiler produced \
-             what it did.",
-        );
+             what it did. {}",
+            // Said here and nowhere later: an update never interrupts a session.
+            n0xis_update::notice::statement_for_a_session(env!("CARGO_PKG_VERSION")),
+        ));
         info.server_info = Implementation::new("n0xis", env!("CARGO_PKG_VERSION"));
         info
     }

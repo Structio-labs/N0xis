@@ -71,6 +71,10 @@ pub mod v1 {
     /// Target profile: image facts + engine detection + per-command
     /// advisories (`profile`).
     pub const PROFILE: &str = "n0xis.profile.v1";
+    /// What a release offers, installed or gone back from (`update`).
+    pub const UPDATE: &str = "n0xis.update.v1";
+    /// The user's own settings (`config get`, `config set`).
+    pub const CONFIG: &str = "n0xis.config.v1";
     /// Built-in quick reference (`guide`).
     pub const GUIDE: &str = "n0xis.guide.v1";
     /// Project init report (`init`).

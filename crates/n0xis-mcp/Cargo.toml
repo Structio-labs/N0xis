@@ -21,6 +21,8 @@ n0xis-frontend = { workspace = true }
 # Feature-neutral here: this crate never touches `locator`, the only thing
 # n0xis-project's `live` feature gates.
 n0xis-project = { workspace = true }
+# The update adapter: this door only reads what the check left, to state it when a session starts.
+n0xis-update = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

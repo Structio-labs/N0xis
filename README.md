@@ -90,6 +90,18 @@ chmod +x n0xis-linux-x86_64 && mv n0xis-linux-x86_64 n0xis && ./n0xis --version
 Or build it with stable Rust, on Linux or Windows: `cargo build --workspace --release`. `rust-toolchain.toml`
 pins the channel only, and says how to build on Windows without the MSVC Build Tools.
 
+### Updates
+
+`n0x update` installs a newer release, `n0x update --check` only asks, and `n0x update --rollback` goes back. A
+download is checked against a signed manifest before anything moves.
+
+The tool never replaces itself unasked, and never prompts. In a terminal, at most once a day, it prints one line on
+standard error, such as `[n0x] 0.3.7 is available: n0x update`. **That daily check is the only request the tool makes
+on its own, and it carries nothing about what is being analysed.** It runs only when standard error is a terminal, so
+a script, a pipe, `2>&1`, CI and a scheduler make no request and get no line. `--quiet` silences the line anywhere.
+Turn the check off with `n0x config set update.check false` or `N0X_NO_UPDATE_CHECK=1`. To install without being
+asked, `n0x config set update.auto true`.
+
 ## Quickstart
 
 Every command prints **one** JSON object, argument errors included: `{"ok":true,"data":…,"meta":…}` or
@@ -110,7 +122,7 @@ n0xis provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty   # li
 
 A command names its target with `--file`, `--pid`, `--snapshot`, `--remote-cmd` or `--bytes`; its `--help`
 lists the ones it takes. Output is Unix plumbing: `n0xis function discover --file app.exe --pdata | jq -r '.data.functions[].va'`
-feeds the next command. `n0xis guide` lists all 120 commands, generated from the binary, and a test fails the
+feeds the next command. `n0xis guide` lists all 123 commands, generated from the binary, and a test fails the
 build if this README, `MAP.md`, `CONCEPT.md` or `docs/CLI_COMMANDS.md` states another count. On Linux, with Yama `ptrace_scope=1`, reading another process needs
 root or `CAP_SYS_PTRACE` unless it allows tracing, as `config-demo` does.
 
@@ -146,7 +158,7 @@ them, from October 2026:
 - **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — every check, its source and case count: proven, open, not claimed.
 - **[oracle/README.md](oracle/README.md)** — targets whose answer is known before the question, and how to add one.
 - **[CONCEPT.md](CONCEPT.md)** (architecture) · **[ROADMAP.md](ROADMAP.md)** (history, what is missing) ·
-  **[MAP.md](MAP.md)** (the 17-crate layout) · **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
+  **[MAP.md](MAP.md)** (the 18-crate layout) · **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
   **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## License

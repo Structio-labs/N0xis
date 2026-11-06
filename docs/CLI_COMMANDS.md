@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **120 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **123 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -225,6 +225,26 @@ structured JSON derived from the live clap tree.
   `scan`, `concept`).
 - `--brief` — drop per-argument detail.
 - Schema: `n0xis.guide.v1`
+
+### `update [--check | --rollback]`
+
+Installs a newer release over this binary, and over any other component of the release already beside it. `--check` only asks; `--rollback` goes
+back to the file the last update kept beside the binary, and needs no network. A download is checked against a signed manifest before anything moves,
+and each failure is its own `error.code` with the installed file unchanged: `no-release-key`, `no-signature`, `bad-signature`, `bad-manifest`,
+`manifest-unavailable`, `no-entry`, `no-digest`, `older-version`, `download-failed`, `size-mismatch`, `digest-mismatch`, `not-writable` (naming the
+file to fetch), `install-failed`, `no-previous`. See docs/design/UPDATE.md.
+
+- Sources: none (the running binary).
+- Schema: `n0xis.update.v1`
+
+### `config get [key]`, `config set <key> <value>`
+
+The user's own settings, one JSON file in the user's configuration directory (`N0X_CONFIG_DIR` moves it): `update.check` (default `true`),
+`update.auto` (default `false`), `update.manifest_url` (asked ahead of the built-in addresses, `https://` only, and what it serves must still be
+signed; empty clears it). A file that does not read is a refusal and is not overwritten, and a run treats it as the check being off.
+
+- Sources: none.
+- Schema: `n0xis.config.v1`
 
 ### `init [--dir <path>] [--name <str>] [--core <path>]`
 Create a `.n0x/` project (config, dirs, `n0x.cmd` shim).
@@ -1195,19 +1215,21 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**120 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**123 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
 
 <!-- BEGIN GENERATED COMMAND INVENTORY — regenerate with tests/docs_match_binary.rs -->
 
-### Environment & project (9)
+### Environment & project (12)
 
 | Command | What it does |
 |---|---|
 | `n0x capability list` | List every registered capability with its origin and emitted schema — the catalog a script or a person reads instead of guessing |
 | `n0x capability run` | Run a capability by name with JSON arguments |
+| `n0x config get` | Read one setting, or all of them, with their defaults |
+| `n0x config set` | Change a setting |
 | `n0x doctor` | Environment / readiness check |
 | `n0x guide` | Capability catalog: every command, its arguments, and composable workflow recipes — structured JSON a script or a person reads to learn what the tool can do and how to drive it, instead of guessing. `guide <topic>` filters to matching commands (e.g. `guide scan`) |
 | `n0x init` | Create a `.n0x/` project (config, dirs, `n0x.cmd` shim) |
@@ -1216,6 +1238,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x project info` | Show the resolved project root, config, and storage paths |
 | `n0x project cache` | How much disk the project's caches use, per kind; `--clear` removes them. Only what the engine can rebuild from the image is a cache: names, comments, types, patches and tables are never touched |
 | `n0x remote-serve` | Serve a live process over the remote-agent stdio protocol — the remote-side half of `--remote-cmd` (Phase 6). Typically invoked over SSH by the *other* machine, not run directly: e.g. locally, run `n0xis ir build --remote-cmd "ssh user@host n0xis remote-serve --pid 1234" --addr 0x...` |
+| `n0x update` | Install a newer release of this binary, ask whether there is one (`--check`), or go back to the one it replaced (`--rollback`) |
 
 ### Static analysis & decompilation (32)
 
@@ -1377,6 +1400,8 @@ sections above document a subset in depth; every command has `--help`, and
 |---|---|
 | `n0xis.doctor.v1` | doctor |
 | `n0xis.guide.v1` | guide |
+| `n0xis.update.v1` | update |
+| `n0xis.config.v1` | config get, config set |
 | `n0xis.project.init.v1` | init |
 | `n0xis.project.info.v1` | project info |
 | `n0xis.project.cache.v1` | project cache |

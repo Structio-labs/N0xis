@@ -100,6 +100,38 @@ struct GlobalArgs {
 }
 
 #[derive(Args)]
+struct UpdateArgs {
+    /// Only ask: is there a newer release? Installs nothing.
+    #[arg(long, conflicts_with = "rollback")]
+    check: bool,
+    /// Go back to the binary the last update replaced. Needs no network.
+    #[arg(long)]
+    rollback: bool,
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Read one setting, or all of them, with their defaults.
+    Get(ConfigGetArgs),
+    /// Change a setting.
+    Set(ConfigSetArgs),
+}
+
+#[derive(Args)]
+struct ConfigGetArgs {
+    /// The setting (`update.check`, `update.auto`, `update.manifest_url`). All of them when omitted.
+    key: Option<String>,
+}
+
+#[derive(Args)]
+struct ConfigSetArgs {
+    /// The setting (`update.check`, `update.auto`, `update.manifest_url`).
+    key: String,
+    /// `true` or `false`; for `update.manifest_url` an `https://` address, or empty to clear it.
+    value: String,
+}
+
+#[derive(Args)]
 struct GuideArgs {
     /// Filter the catalog to commands whose path contains this substring
     /// (e.g. `scan`, `provenance`, `concept`). Omit for the full catalog.
@@ -127,6 +159,14 @@ enum Command {
     Guide(GuideArgs),
     /// Create a `.n0x/` project (config, dirs, `n0x.cmd` shim).
     Init(InitArgs),
+    /// Install a newer release of this binary, ask whether there is one
+    /// (`--check`), or go back to the one it replaced (`--rollback`). Only ever
+    /// installs when asked, or when `update.auto` was turned on. A download is
+    /// checked against a signed manifest before anything moves.
+    Update(UpdateArgs),
+    /// The user's own settings, one file in the user's configuration directory.
+    #[command(subcommand)]
+    Config(ConfigCmd),
     /// Project introspection.
     #[command(subcommand)]
     Project(ProjectCmd),
@@ -3051,6 +3091,11 @@ fn refuse_past_the_ceiling(ceiling: u64) {
 }
 
 fn run() {
+    // The detached copy of the daily check, started by `notice::at_start` of an earlier run.
+    if std::env::args_os().nth(1).is_some_and(|a| a == n0xis_update::notice::BACKGROUND_ARG) {
+        n0xis_update::notice::background_check(UPDATE_COMPONENT, env!("CARGO_PKG_VERSION"));
+        return;
+    }
     // Parsed by hand rather than `Cli::parse()` so that an argument error is
     // still an **envelope**. clap's own exit prints a plain-text usage message
     // to stderr and nothing at all to stdout, which is a second failure format
@@ -3086,6 +3131,11 @@ fn run() {
     // clap itself accepted above.
     let argv: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
     let typed = typed_path(&<Cli as clap::CommandFactory>::command(), &argv);
+    // After the servers above, which are sessions and not commands. Nothing here touches standard
+    // output or the exit code, and in a script it returns at its first test.
+    if !matches!(cli.command, Command::Update(_) | Command::Config(_)) {
+        n0xis_update::notice::at_start(env!("CARGO_PKG_VERSION"), cli.global.quiet);
+    }
     let ok = dispatch(cli.command, &typed, pretty, cli.global.quiet);
     // Non-zero exit when the response is a failure, so scripts can branch on it.
     if !ok {
@@ -3216,6 +3266,8 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Profile(a) => cmd_profile(a, pretty),
         Command::Guide(a) => cmd_guide(a, pretty),
         Command::Init(a) => cmd_init(a, pretty),
+        Command::Update(a) => cmd_update(a, pretty),
+        Command::Config(a) => cmd_config(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
         Command::Project(ProjectCmd::Cache(a)) => cmd_project_cache(a, pretty),
         Command::Symbols(SymbolsCmd::Add(a)) => cmd_symbols_add(a, pretty),
@@ -3352,7 +3404,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 /// doesn't model categories, so this is the one hand-maintained mapping).
 fn guide_category(top: &str) -> &'static str {
     match top {
-        "doctor" | "guide" | "init" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
+        "doctor" | "guide" | "init" | "update" | "config" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
         "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" | "why" | "contradictions" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
@@ -3593,6 +3645,56 @@ fn cmd_guide(a: GuideArgs, pretty: bool) -> bool {
         "hint": "narrow with `n0x guide <topic>` (e.g. `n0x guide scan`, `n0x guide concept`); every command also has clap `--help` for the exact usage line. `n0x guide --brief` drops per-arg detail.",
     });
     emit(&Response::success(schema::v1::GUIDE, data), pretty)
+}
+
+/// Which component of a release's manifest this binary is.
+const UPDATE_COMPONENT: &str = "n0xis";
+
+/// A refusal of the update adapter, in the one envelope every command answers in.
+fn update_refusal(r: n0xis_update::Refusal) -> Response<serde_json::Value> {
+    let response = Response::<serde_json::Value>::error(r.why.code(), r.message);
+    match r.hint {
+        Some(hint) => response.with_hint(hint),
+        None => response,
+    }
+}
+
+fn emit_update_answer<T: serde::Serialize>(schema: &str, answer: Result<T, n0xis_update::Refusal>, pretty: bool) -> bool {
+    match answer.map(|data| serde_json::to_value(data).unwrap_or(serde_json::Value::Null)) {
+        Ok(data) => emit(&Response::success(schema, data), pretty),
+        Err(r) => emit(&update_refusal(r), pretty),
+    }
+}
+
+fn cmd_update(a: UpdateArgs, pretty: bool) -> bool {
+    if a.rollback {
+        // Asks nothing of the settings or the network: going back has to work when those are what broke.
+        let answer = std::env::current_exe()
+            .map_err(|e| n0xis_update::Refusal::new(n0xis_update::Why::InstallFailed, format!("cannot tell where this binary is: {e}")))
+            .and_then(|exe| n0xis_update::rollback(&exe, n0xis_update::config::user_dir().as_deref()));
+        return emit_update_answer(schema::v1::UPDATE, answer, pretty);
+    }
+    let updater = match n0xis_update::Updater::for_running(UPDATE_COMPONENT, env!("CARGO_PKG_VERSION")) {
+        Ok(updater) => updater,
+        Err(r) => return emit(&update_refusal(r), pretty),
+    };
+    if a.check {
+        emit_update_answer(schema::v1::UPDATE, updater.check(), pretty)
+    } else {
+        emit_update_answer(schema::v1::UPDATE, updater.update(), pretty)
+    }
+}
+
+fn cmd_config(a: ConfigCmd, pretty: bool) -> bool {
+    let Some(dir) = n0xis_update::config::user_dir() else {
+        let why = n0xis_update::Refusal::new(n0xis_update::Why::ConfigUnreadable, "this system names no user configuration directory");
+        return emit(&update_refusal(why), pretty);
+    };
+    let answer = match a {
+        ConfigCmd::Get(a) => n0xis_update::config::get(&dir, a.key.as_deref()),
+        ConfigCmd::Set(a) => n0xis_update::config::set(&dir, &a.key, &a.value),
+    };
+    emit_update_answer(schema::v1::CONFIG, answer, pretty)
 }
 
 fn cmd_init(a: InitArgs, pretty: bool) -> bool {
