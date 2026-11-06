@@ -226,15 +226,16 @@ structured JSON derived from the live clap tree.
 - `--brief` — drop per-argument detail.
 - Schema: `n0xis.guide.v1`
 
-### `update [--check | --rollback]`
+### `update [--check | --rollback [FILE]]`
 
-Installs a newer release over this binary, and over any other component of the release already beside it. `--check` only asks; `--rollback` goes
-back to the file the last update kept beside the binary, once, and needs no network. Every frozen address is asked and the highest version that verifies
-is the answer, unless `update.manifest_url` verifies, which decides alone. A download is checked against a signed manifest and read back from the disk,
+Installs a newer release over this binary, and over any other component of the release already beside it; anything wrong with one of those makes it `skipped`, with its
+reason in `data.skipped`, and this binary's update goes on. `--check` only asks; `--rollback` goes back to the file the last update kept beside this binary, once, and needs no network; `--rollback FILE` does that for the file
+of that bare name beside it, and nothing else moves in either case. Every frozen address is asked and the highest version that verifies
+is the answer, unless `update.manifest_url` is set, which is then the only address. A download is checked against a signed manifest and read back from the disk,
 and the new binary is run, before anything moves. Each failure before that is its own `error.code` with every installed file unchanged: `no-release-key`, `no-signature`,
 `bad-signature`, `bad-manifest`, `manifest-unavailable`, `no-entry`, `no-digest`, `older-version`, `download-failed`, `size-mismatch`, `digest-mismatch`,
-`does-not-run`, `not-a-regular-file`, `not-writable` (naming the file to fetch), `update-in-progress`, `install-failed`. A failure while moving files is `install-failed` with
-`error.components`, stating for each component whether it is in place. `--rollback` refuses with `no-previous`, `previous-does-not-match` or `update-in-progress`.
+`does-not-run`, `not-a-regular-file`, `not-ours`, `not-writable` (naming the file to fetch), `update-in-progress`, `install-failed`. A failure while moving files is `install-failed` with
+`error.components`, stating for each component whether it is in place. `--rollback` refuses with `no-previous`, `previous-does-not-match`, `not-what-was-installed` (a file was put there by other means), `not-ours`, `not-a-bare-name`, `not-writable` or `update-in-progress`, and answers `data.file`, the one file it was about.
 See docs/design/UPDATE.md.
 
 - Sources: none (the running binary).
@@ -243,7 +244,7 @@ See docs/design/UPDATE.md.
 ### `config get [key]`, `config set <key> <value>`
 
 The user's own settings, one JSON file in the user's configuration directory (`N0X_CONFIG_DIR` moves it): `update.check` (default `true`),
-`update.auto` (default `false`), `update.manifest_url` (asked ahead of the built-in addresses and deciding alone when it verifies, `https://` only, and what it serves must still be
+`update.auto` (default `false`), `update.manifest_url` (the only address asked, in place of the built-in ones, so that a dead or bad one is a refusal; `https://` only, and what it serves must still be
 signed; empty clears it). A file that does not read is a refusal and is not overwritten, and a run treats it as the check being off.
 A directory, or its nearest existing ancestor, that is not owned by this user is treated as absent: `config set` refuses as `config-not-yours`, and
 `config get` answers the defaults with `file: null` and a `note` saying why.

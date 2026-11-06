@@ -21,32 +21,34 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 UPDATE = "crates/n0xis-update/src/"
 
-CLASSIFY = """        let mut changing = Vec::new();
-        for item in plan {
-            if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {
-                report.unchanged.push(item.component);
-            } else {
-                changing.push(item);
+# What is installed is read under the lock, not before it: the same test, done ahead of the loop.
+LOCK_THEN = """            match lock_for_install(&item, asked, &manifest.version) {
+                Ok(lock) => locks.push(lock),
+                Err(r) if item.runs && r.why == Why::Held => {
+                    report.skipped.push(Skipped::of(&item.component, r));
+                    return Ok(report);
+                }
+                Err(r) if item.runs => return Err(r),
+                Err(r) => {
+                    report.skipped.push(Skipped::of(&item.component, r));
+                    continue;
+                }
             }
-        }
 """
-TAKE_LOCK = """        let first = &plan[0];
-        let _lock = take_lock(&first.target, |e| not_writable(&first.target, &first.entry, e))?;
+READ_UNDER_THE_LOCK = """        for item in plan {
+""" + LOCK_THEN + """            if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {
 """
-TAKE_LOCK_AFTER = """        let Some(first) = changing.first() else { return Ok(report) };
-        let _lock = take_lock(&first.target, |e| not_writable(&first.target, &first.entry, e))?;
+READ_BEFORE_THE_LOCK = """        let plan: Vec<_> = plan.into_iter().map(|item| { let same = measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256); (item, same) }).collect();
+        for (item, same) in plan {
+""" + LOCK_THEN + """            if same {
 """
-COMMENT = """        // What is installed is read only now, under the lock. Read before it, a run that waited out
-        // another would go on to keep the new file as `.previous` and lose the old one.
-"""
-READ_UNDER_THE_LOCK = TAKE_LOCK + COMMENT + CLASSIFY
-READ_BEFORE_THE_LOCK = CLASSIFY + TAKE_LOCK_AFTER
 
 # (file, anchor, replacement, package, test binary, test name)
 PLANTED = ("n0xis-update", "planted")
 SETTINGS = ("n0xis-update", "settings")
 DOOR = ("n0xis-cli", "update_door")
 MCP = ("n0xis-mcp", "states_its_version_and_a_newer_one")
+RELEASE = ("n0xis-update", "release_script")
 MUTATIONS = [
     (UPDATE + "net.rs", ".https_only(true)", ".https_only(false)", *PLANTED, "plain_http_is_refused_without_a_connection"),
     (UPDATE + "net.rs", ".https_only(true)", ".https_only(false)", *PLANTED, "a_redirect_to_plain_http_is_refused"),
@@ -56,12 +58,12 @@ MUTATIONS = [
     (UPDATE + "lib.rs", "self.trust.verify(&bytes, &signature)?;", "let _ = &signature;", *PLANTED, "the_placeholder_refuses_every_manifest_whatever_the_key_file_says"),
     (UPDATE + "trust.rs", "if signatures.is_empty() {", "if false {", *PLANTED, "no_signature_is_its_own_refusal"),
     (UPDATE + "lib.rs", "let signature = self.transport.get_signature(&format!(\"{address}{SIGNATURE_SUFFIX}\"))?;", "let signature = self.transport.get_signature(&format!(\"{address}{SIGNATURE_SUFFIX}\")).unwrap_or_else(|_| vec![b'0'; 128]);", *PLANTED, "no_signature_is_its_own_refusal"),
-    (UPDATE + "trust.rs", "let Some(root) = from_hex::<32>(constant) else { return Trust { keys: Vec::new() } };", "let root = from_hex::<32>(constant).unwrap_or([7u8; 32]);", *PLANTED, "the_placeholder_refuses_every_manifest_whatever_the_key_file_says"),
+    (UPDATE + "trust.rs", "let Some(root) = from_hex::<32>(constant) else { return Trust { keys: Vec::new(), roots: 0 } };", "let root = from_hex::<32>(constant).unwrap_or([7u8; 32]);", *PLANTED, "the_placeholder_refuses_every_manifest_whatever_the_key_file_says"),
     (UPDATE + "lib.rs", "self.trust.remember(self.config_dir.as_deref(), &bytes, &signature, key);", "let _ = key;", *PLANTED, "a_signed_manifest_can_name_the_next_key"),
     (UPDATE + "trust.rs", "if keys.iter().any(|key| signatures.iter().any(|sig| verifies(key, sig))) {", "if signatures.first().is_some_and(|sig| keys.iter().any(|key| verifies(key, sig))) {", *PLANTED, "either_of_two_signatures_is_enough"),
     (UPDATE + "install.rs", "if sum != item.entry.sha256 {", "if false {", *PLANTED, "a_tampered_file_is_refused"),
     (UPDATE + "install.rs", "if sum != item.entry.sha256 {", "if false {", *PLANTED, "a_wrong_digest_is_refused"),
-    (UPDATE + "install.rs", "if sum != item.entry.sha256 {", "if false {", *PLANTED, "a_bad_second_file_leaves_the_first_alone"),
+    (UPDATE + "install.rs", "if sum != item.entry.sha256 {", "if false {", *PLANTED, "a_bad_sibling_file_is_skipped_and_the_running_file_goes_on"),
     (UPDATE + "manifest.rs", 'None | Some(Value::Null) => return Err(Refusal::new(Why::NoDigest, format!("{component}: the manifest gives no digest, so the file cannot be checked"))),', "None | Some(Value::Null) => [0u8; 32],", *PLANTED, "no_digest_is_its_own_refusal_not_a_passed_check"),
     (UPDATE + "install.rs", "if size != item.entry.size {", "if false {", *PLANTED, "a_truncated_download_is_refused"),
     (UPDATE + "install.rs", "if size != item.entry.size {", "if false {", *PLANTED, "a_claimed_size_past_what_is_sent_is_refused"),
@@ -74,35 +76,33 @@ MUTATIONS = [
     (UPDATE + "lib.rs", "worst = Some(worst.map_or(r.why, |w| w.max(r.why)));", "worst = Some(r.why);", *PLANTED, "the_most_serious_failure_is_the_one_reported"),
     (UPDATE + "lib.rs", "available: newer && blocked.is_none(),", "available: newer,", *PLANTED, "no_entry_for_this_platform_is_a_refusal"),
     (UPDATE + "manifest.rs", 'value.get("next_key").and_then(Value::as_str).and_then(from_hex::<32>);', 'Some(value.get("next_key").map_or(Ok(None), |v| v.as_str().map(|s| from_hex::<32>(s)).ok_or_else(|| bad("next_key".to_string())))?).flatten();', *PLANTED, "unknown_fields_and_unknown_components_are_ignored"),
-    (UPDATE + "install.rs", "let Some(target) = regular_file(&dir.join(file))? else { continue };", "let target = dir.join(file);", *PLANTED, "a_component_not_installed_is_not_added"),
+    (UPDATE + "install.rs", "let Some(target) = regular_file(&dir.join(file))? else { return Ok(None) };", "let target = dir.join(file);", *PLANTED, "a_component_not_installed_is_not_added"),
     (UPDATE + "install.rs", "if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {", "if false {", *PLANTED, "a_component_that_did_not_change_is_not_fetched"),
     (UPDATE + "manifest.rs", '!name.is_empty() && name != "." && name != ".." && !name.contains([\'/\', \'\\\\\', \':\'])', "!name.is_empty()", *PLANTED, "a_file_name_cannot_leave_the_directory"),
     (UPDATE + "install.rs", "let _ = fs::remove_file(&self.0);", "let _ = &self.0;", *PLANTED, "a_tampered_file_is_refused"),
     (UPDATE + "install.rs", "        set_mode(&new_file.0, mode).map_err(disk)?;\n", "", *PLANTED, "a_newer_release_installs_keeps_the_old_file_and_rolls_back"),
-    (UPDATE + "install.rs", "|e| not_writable(&first.target, &first.entry, e))?;", "|e| Refusal::new(Why::InstallFailed, e.to_string()))?;", *PLANTED, "a_directory_that_cannot_be_written_is_a_refusal_naming_the_file"),
+    (UPDATE + "install.rs", "|e| not_writable(&item.target, &item.entry, e))?;", "|e| Refusal::new(Why::InstallFailed, e.to_string()))?;", *PLANTED, "a_directory_that_cannot_be_written_is_a_refusal_naming_the_file"),
     (UPDATE + "install.rs", '.with_hint(format!("fetch {} ({} bytes, sha256 {}) and put it at {} yourself", entry.url, entry.size,', '.with_hint(format!("fetch {} ({} bytes, sha256 {}) and put it at {} yourself", "it", entry.size,', *PLANTED, "a_directory_that_cannot_be_written_is_a_refusal_naming_the_file"),
-    (UPDATE + "install.rs", "for target in others_of_the_same_install(&exe, &record.to) {", "for target in Vec::<PathBuf>::new() {", *PLANTED, "a_component_beside_the_binary_goes_with_it_and_comes_back_with_it"),
+    (UPDATE + "install.rs", "Some(name) if is_bare_file_name(name) => exe.with_file_name(name),", "Some(_) => exe.to_path_buf(),", *PLANTED, "a_component_beside_the_binary_goes_with_it_and_goes_back_by_its_name"),
     (UPDATE + "net.rs", ".timeout_recv_response(Some(limits.response))", ".timeout_recv_response(None)", *PLANTED, "a_silent_server_ends_in_a_refusal_within_the_bound"),
     (UPDATE + "net.rs", ".timeout_recv_body(Some(body))", ".timeout_recv_body(None)", *PLANTED, "a_body_that_stalls_ends_in_a_refusal_within_the_bound"),
     (UPDATE + "net.rs", ".max_redirects(limits.redirects)", ".max_redirects(50)", *PLANTED, "a_redirect_over_https_is_followed_and_a_loop_is_bounded"),
     (UPDATE + "net.rs", ".max_redirects(limits.redirects)", ".max_redirects(1)", *PLANTED, "a_redirect_over_https_is_followed_and_a_loop_is_bounded"),
     (UPDATE + "net.rs", ".with_config().limit(max).read_to_vec()", ".with_config().limit(u64::MAX).read_to_vec()", *PLANTED, "an_endless_manifest_is_not_read_to_its_end"),
-    (UPDATE + "notice.rs", "if report.available && auto && state.held.as_deref() != Some(report.latest.as_str()) {", "if report.available && auto {", *PLANTED, "update_auto_installs_under_the_same_checks_and_rollback_holds_it"),
-    (UPDATE + "notice.rs", "if report.available && auto && state.held.as_deref() != Some(report.latest.as_str()) {", "if report.available {", *PLANTED, "the_daily_check_writes_what_it_learned_and_touches_nothing"),
+    (UPDATE + "install.rs", "if asked == Asked::Auto {", "if false {", *PLANTED, "update_auto_installs_under_the_same_checks_and_rollback_holds_it"),
+    (UPDATE + "notice.rs", "if report.available && auto {", "if report.available {", *PLANTED, "the_daily_check_writes_what_it_learned_and_touches_nothing"),
     (UPDATE + "notice.rs", "state.latest = report.available.then(|| report.latest.clone());", "state.latest = Some(report.latest.clone());", *PLANTED, "the_daily_check_writes_what_it_learned_and_touches_nothing"),
     (UPDATE + "config.rs", 'Err(e) => Err(Refusal::new(Why::ConfigUnreadable, format!("{}: {e}", path.display()))),\n    }\n}', 'Err(_) => Ok(Map::new()),\n    }\n}', *SETTINGS, "a_damaged_file_is_refused_and_not_overwritten"),
     (UPDATE + "config.rs", '} else if value.starts_with("https://") {', "} else if true {", *SETTINGS, "a_bad_key_or_value_is_refused"),
-    (UPDATE + "lib.rs", "for address in self.pin.iter().chain(&self.addresses) {", "for address in self.addresses.iter().chain(&self.pin) {", *DOOR, "the_real_binary_asks_its_override_then_the_frozen_addresses_in_order"),
     # A. Which manifest.
     (UPDATE + "lib.rs", "if best.as_ref().is_none_or(|(held, _)| manifest.version > held.version) {", "if best.is_none() {", *PLANTED, "a_stale_first_address_does_not_hide_a_newer_second"),
-    (UPDATE + "lib.rs", "if self.pin.as_ref() == Some(address) {", "if false {", *PLANTED, "the_override_decides_alone_when_it_verifies"),
     (UPDATE + "lib.rs", "let manifest = Manifest::parse(&bytes)?;\n        if let Some(key) = manifest.next_key {", "let manifest = Manifest::parse(&bytes)?;\n        if let Some(key) = manifest.next_key.filter(|_| manifest.version.major > 1) {", *PLANTED, "a_next_key_is_remembered_from_a_manifest_that_did_not_win"),
     # B. A chain and not a list.
     (UPDATE + "trust.rs", "verify_under(keys, &manifest, link.signature.as_bytes()).ok()?;\n", "", *PLANTED, "a_planted_key_file_trusts_nothing"),
     (UPDATE + "trust.rs", "verify_under(keys, &manifest, link.signature.as_bytes()).ok()?;\n", "", *PLANTED, "a_two_hop_chain_does"),
-    (UPDATE + "trust.rs", "                keys.push(key);\n", "                let _ = key;\n", *PLANTED, "a_two_hop_chain_does"),
-    (UPDATE + "trust.rs", ".chain.iter().take(CHAIN_MAX_LINKS) {", ".chain.iter() {", *PLANTED, "a_key_file_past_its_bounds_proves_nothing_past_them"),
-    (UPDATE + "trust.rs", "if read.is_err() || bytes.len() as u64 > CHAIN_MAX_BYTES {", "if read.is_err() {", *PLANTED, "a_key_file_past_its_bounds_proves_nothing_past_them"),
+    (UPDATE + "trust.rs", "            keys.push(key);\n", "            let _ = key;\n", *PLANTED, "a_two_hop_chain_does"),
+    (UPDATE + "trust.rs", "chain.into_iter().take(CHAIN_MAX_LINKS)).0;", "chain.into_iter()).0;", *PLANTED, "a_key_file_past_its_bounds_proves_nothing_past_them"),
+    (UPDATE + "trust.rs", "if bytes.len() as u64 > CHAIN_MAX_BYTES {", "if false {", *PLANTED, "a_key_file_past_its_bounds_proves_nothing_past_them"),
     (UPDATE + "lib.rs", ".create_new(true)\n        .open(&temp)", ".create(true)\n        .truncate(true)\n        .open(&temp)", *PLANTED, "a_link_planted_at_a_temporary_name_is_not_followed"),
     # C. A directory that is not yours.
     (UPDATE + "config.rs", "return found.is_dir() && found.uid() == me && found.mode() & 0o002 == 0,", "return found.is_dir() && found.mode() & 0o002 == 0,", *SETTINGS, "a_directory_of_another_owner_is_not_mine"),
@@ -113,20 +113,19 @@ MUTATIONS = [
     (UPDATE + "install.rs", "if !status.success() {", "if false {", *PLANTED, "a_file_that_answers_wrongly_does_not_run"),
     (UPDATE + "install.rs", "if text.split_whitespace().any(|word| word == version) {", "if text.contains(version) {", *PLANTED, "a_file_that_answers_wrongly_does_not_run"),
     (UPDATE + "install.rs", "Ok(None) if start.elapsed() < bound => std::thread::sleep(Duration::from_millis(20)),", "Ok(None) => std::thread::sleep(Duration::from_millis(20)),\n            #[allow(unreachable_patterns)]", *PLANTED, "a_file_that_never_answers_ends_within_the_bound"),
-    (UPDATE + "install.rs", "if from_hex::<32>(&record.sha256) != Some(sum) {", "if false {", *PLANTED, "a_previous_that_does_not_match_is_refused"),
-    (UPDATE + "install.rs", "if !metadata.is_file() {", "if false {", *PLANTED, "a_planted_previous_symlink_is_refused"),
-    (UPDATE + "install.rs", "if kept_equals_target(&exe, &record) {", "if false {", *PLANTED, "a_previous_equal_to_the_target_says_that_nothing_changed"),
-    (UPDATE + "install.rs", "let reads = Version::parse(&record.from).is_ok() && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.sha256).is_some();", "let reads = from_hex::<32>(&record.sha256).is_some();", *PLANTED, "a_record_that_does_not_read_as_versions_is_no_record"),
+    (UPDATE + "install.rs", "if from_hex::<32>(&record.previous_sha256) != Some(sum) {", "if false {", *PLANTED, "a_previous_that_does_not_match_is_refused"),
+    (UPDATE + "install.rs", "custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)", "custom_flags(libc::O_NONBLOCK)", *PLANTED, "a_planted_previous_symlink_is_refused"),
+    (UPDATE + "install.rs", "if installed_hex == record.previous_sha256 {", "if false {", *PLANTED, "a_previous_equal_to_the_target_says_that_nothing_changed"),
+    (UPDATE + "install.rs", "let reads = Version::parse(&record.from).is_ok() && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();", "let reads = from_hex::<32>(&record.previous_sha256).is_some();", *PLANTED, "a_record_that_does_not_read_as_versions_is_no_record"),
     (UPDATE + "install.rs", "Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!(\"another run holds {}\", path.display()))),", "Err(TryLockError::WouldBlock) => return Ok(file),", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
     (UPDATE + "notice.rs", "Err(r) if r.why == Why::UpdateInProgress => {}", "Err(r) if r.why == Why::NoEntry => {}", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
     (UPDATE + "install.rs", "Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!(\"another run holds {}\", path.display()))),", "Err(TryLockError::WouldBlock) => return Ok(file),", *PLANTED, "parallel_runs_keep_the_old_file_for_rollback"),
     (UPDATE + "install.rs", "std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);", "std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o666);", *PLANTED, "the_new_file_is_0600_under_umask_000"),
     (UPDATE + "install.rs", "let (size, sum) = measure(&new_file.0).map_err(disk)?;", "let (size, sum) = (item.entry.size, item.entry.sha256);", *PLANTED, "a_file_altered_after_the_download_is_refused"),
     (UPDATE + "install.rs", "Ok(fs::metadata(target)?.permissions().mode() & 0o777)", "Ok(fs::metadata(target)?.permissions().mode() & 0o7777)", *PLANTED, "setuid_is_not_carried_over"),
-    (UPDATE + "install.rs", "let real = if found.file_type().is_symlink() {", "let real = if false {", *PLANTED, "a_symlinked_sibling_stays_a_link_and_comes_back"),
-    (UPDATE + "install.rs", "if fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) { Ok(Some(real)) } else { Err(strange(\"is not a regular file\".to_string())) }", "if fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) { Ok(Some(real)) } else { Ok(None) }", *PLANTED, "a_sibling_that_is_not_a_regular_file_is_refused"),
+    (UPDATE + "install.rs", "let real = if found.file_type().is_symlink() {", "let real = if false {", *PLANTED, "a_symlinked_sibling_stays_a_link_and_comes_back_by_its_name"),
+    (UPDATE + "install.rs", "if fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) { Ok(Some(real)) } else { Err(strange(\"is not a regular file\".to_string())) }", "if fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) { Ok(Some(real)) } else { Ok(None) }", *PLANTED, "a_sibling_that_is_not_a_regular_file_is_skipped"),
     (UPDATE + "install.rs", "    refusal.components = outcomes;\n", "    let _ = outcomes;\n", *PLANTED, "a_commit_failure_reports_each_component"),
-    (UPDATE + "install.rs", "if is_other && read_record(&target).is_some_and(|r| r.to == to) {", "if is_other && read_record(&target).is_some() && !to.is_empty() {", *PLANTED, "a_sibling_from_an_earlier_install_stays_on_rollback"),
     (UPDATE + "install.rs", "for item in &changing {\n            sweep(&item.target);\n        }\n", "", *PLANTED, "what_a_dead_run_left_is_swept_under_the_lock"),
     # E. The small ones, and the push.
     (UPDATE + "install.rs", READ_UNDER_THE_LOCK, READ_BEFORE_THE_LOCK, *PLANTED, "a_run_that_waited_out_another_reads_what_it_left"),
@@ -134,6 +133,69 @@ MUTATIONS = [
     (UPDATE + "notice.rs", "if lock.try_lock().is_err() || !a_day_has_passed(read_stamp(&path), at) {", "let _ = &lock;\n    if !a_day_has_passed(read_stamp(&path), at) {", *DOOR, "on_a_terminal::a_stamp_being_claimed_starts_no_second_check"),
     (UPDATE + "notice.rs", "installed: state.installed.filter(|i| is_version(&i.from) && is_version(&i.to)),", "installed: state.installed,", *DOOR, "on_a_terminal::an_escape_in_the_state_file_never_reaches_the_terminal"),
     ("scripts/release.py", 'run("git", "push", PUSH_TO, f"refs/tags/{tag}", cwd=ROOT)', 'run("git", "push", "origin", tag, cwd=ROOT)', "n0xis-update", "release_script", "publishing_pushes_only_the_tag_to_the_named_address"),
+    # F. Rollback is one file.
+    (UPDATE + "install.rs", "let _ = fs::remove_file(with_suffix(&target, RECORD));", "let _ = fs::remove_file(with_suffix(&target, RECORD));\n    for e in fs::read_dir(target.parent().unwrap()).unwrap().flatten() {\n        let p = e.path();\n        if p != target && fs::symlink_metadata(with_suffix(&p, PREVIOUS)).is_ok() {\n            let _ = put_in_place(&with_suffix(&p, PREVIOUS), &p);\n        }\n    }", *PLANTED, "rollback_leaves_a_sibling_and_another_copy_alone"),
+    (UPDATE + "install.rs", "let _lock = take_lock(&target,", "let _lock = take_lock(exe,", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
+    (UPDATE + "install.rs", "Some(name) => return Err(Refusal::new(Why::NotABareName,", "Some(name) if name.is_empty() => return Err(Refusal::new(Why::NotABareName,", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
+    (UPDATE + "install.rs", "match lock_for_install(&item, asked, &manifest.version) {", "match (if item.runs { lock_for_install(&item, asked, &manifest.version) } else { File::open(&item.target).map_err(|e| Refusal::new(Why::InstallFailed, e.to_string())) }) {", *PLANTED, "an_install_skips_a_sibling_whose_own_lock_is_held"),
+    ("crates/n0xis-cli/src/main.rs", '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref()));', '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref().filter(|_| false)));', *DOOR, "rollback_takes_a_bare_name"),
+    # G. A record says what it installed.
+    (UPDATE + "install.rs", "if installed_hex != record.installed_sha256 {", "if false {", *PLANTED, "a_hand_installed_target_is_refused_and_kept"),
+    # H. The hold is a file beside the binary.
+    (UPDATE + "install.rs", "write_hold(&target, &record.to)?;", "let _ = write_hold as fn(&Path, &str) -> Result<(), Refusal>;", *PLANTED, "the_hold_survives_a_check_in_flight"),
+    (UPDATE + "install.rs", "write_hold(&target, &record.to)?;", "let _ = write_hold as fn(&Path, &str) -> Result<(), Refusal>;", *PLANTED, "the_hold_needs_no_configuration_directory"),
+    (UPDATE + "install.rs", "write_hold(&target, &record.to)?;", "let _ = write_hold(&target, &record.to);", *PLANTED, "a_hold_that_cannot_be_written_moves_nothing"),
+    (UPDATE + "install.rs", "    write_hold(&target, &record.to)?;\n    put_in_place(&previous, &target).map_err(|e| Refusal::new(Why::InstallFailed, format!(\"{file} could not be put back: {e}; it is as it was\")))?;\n", "    put_in_place(&previous, &target).map_err(|e| Refusal::new(Why::InstallFailed, format!(\"{file} could not be put back: {e}; it is as it was\")))?;\n    write_hold(&target, &record.to)?;\n", *PLANTED, "a_hold_that_cannot_be_written_moves_nothing"),
+    (UPDATE + "install.rs", "if asked == Asked::Auto {", "if false {", *PLANTED, "the_hold_survives_a_check_in_flight"),
+    (UPDATE + "install.rs", "if asked == Asked::Auto {", "if false {", *PLANTED, "a_kill_at_each_step_of_a_rollback_keeps_the_hold_and_a_re_run_finishes"),
+    (UPDATE + "install.rs", "if asked == Asked::Auto {", "if false {", *PLANTED, "a_hold_on_a_sibling_holds_only_that_sibling"),
+    (UPDATE + "install.rs", "    sweep(&target);\n    let record = kept_for", "    let record = kept_for", *PLANTED, "a_kill_at_each_step_of_a_rollback_keeps_the_hold_and_a_re_run_finishes"),
+    (UPDATE + "install.rs", "if *version <= held {", "if *version == held {", *PLANTED, "a_hold_leaves_what_it_names_and_anything_older_and_a_newer_one_passes"),
+    (UPDATE + "install.rs", "if *version <= held {", "if true {", *PLANTED, "a_hold_leaves_what_it_names_and_anything_older_and_a_newer_one_passes"),
+    (UPDATE + "install.rs", "let _ = fs::remove_file(with_suffix(&item.target, HOLD));", "", *PLANTED, "an_explicit_update_ends_the_hold_and_only_after_it_installs"),
+    # I. One fetch.
+    (UPDATE + "notice.rs", "let done = updater.install_alone(&found);", "let done = updater.update();", *PLANTED, "the_check_and_auto_agree_across_a_changing_server"),
+    (UPDATE + "notice.rs", "if moved {", "if report.available {", *PLANTED, "the_line_is_written_only_from_what_moved"),
+    (UPDATE + "notice.rs", "Err(r) => r.components.iter().any(|o| o.component == updater.component && o.error.is_none()),", "Err(_) => false,", *PLANTED, "the_line_is_written_only_from_what_moved"),
+    (UPDATE + "notice.rs", "if report.available && auto {", "if auto {", *PLANTED, "update_auto_with_nothing_newer_does_nothing"),
+    # J. A set override is the only address.
+    (UPDATE + "lib.rs", "let addresses = self.pin.as_ref().map_or(self.addresses.as_slice(), std::slice::from_ref);", "let chained: Vec<String> = self.pin.iter().chain(&self.addresses).cloned().collect();\n        let addresses = chained.as_slice();", *PLANTED, "a_pin_is_the_only_address"),
+    (UPDATE + "lib.rs", "let addresses = self.pin.as_ref().map_or(self.addresses.as_slice(), std::slice::from_ref);", "let chained: Vec<String> = self.pin.iter().chain(&self.addresses).cloned().collect();\n        let addresses = chained.as_slice();", *DOOR, "the_real_binary_asks_its_override_and_nothing_else"),
+    # K. A sibling never blocks the running file.
+    (UPDATE + "install.rs", "Err(r) => skipped.push(Skipped::of(name, r)),", "Err(r) => return Err(r),", *PLANTED, "a_later_shaped_sibling_beside_the_binary_does_not_block"),
+    (UPDATE + "install.rs", "Err(r) => report.skipped.push(Skipped::of(&item.component, r)),", "Err(r) => return Err(said_after_prepare(r, &item)),", *PLANTED, "a_bad_sibling_file_is_skipped_and_the_running_file_goes_on"),
+    (UPDATE + "install.rs", "if !is_bare_file_name(file) {", "if false {", *PLANTED, "a_file_name_cannot_leave_the_directory"),
+    # L. Files we read or lock must be ours.
+    (UPDATE + "install.rs", "custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)", "custom_flags(libc::O_NONBLOCK)", *PLANTED, "a_link_or_a_fifo_at_the_lock_is_refused"),
+    (UPDATE + "install.rs", "custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)", "custom_flags(libc::O_NONBLOCK)", *PLANTED, "a_link_or_a_fifo_at_the_record_or_the_kept_file_is_refused"),
+    (UPDATE + "install.rs", "custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)", "custom_flags(libc::O_NONBLOCK)", *PLANTED, "a_link_a_fifo_or_junk_at_the_hold_stops_auto_and_not_the_user"),
+    (UPDATE + "install.rs", "custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)", "custom_flags(libc::O_NOFOLLOW)", *PLANTED, "a_link_or_a_fifo_at_the_record_or_the_kept_file_is_refused"),
+    (UPDATE + "install.rs", "if !found.is_file() {", "if false {", *PLANTED, "a_link_or_a_fifo_at_the_lock_is_refused"),
+    (UPDATE + "install.rs", "if found.uid() != unsafe { libc::geteuid() } {", "if false {", *PLANTED, "files_another_user_planted_in_a_sticky_directory_decide_nothing"),
+    (UPDATE + "install.rs", 'Err(e) => return Err(Refusal::new(Why::NotOurs, format!("{} {e}", path.display()))),', "Err(_) => return Ok(lock),", *PLANTED, "a_link_a_fifo_or_junk_at_the_hold_stops_auto_and_not_the_user"),
+    (UPDATE + "install.rs", "Err(r) if item.runs => return Err(r),\n                Err(r) => {", "Err(r) if !item.runs && r.why == Why::NotOurs => return Err(r),\n                Err(r) if item.runs => return Err(r),\n                Err(r) => {", *PLANTED, "a_plant_beside_a_sibling_makes_it_skipped"),
+    # M. The sweep removes exact names only.
+    (UPDATE + "install.rs", "#[cfg(not(windows))]\nfn sweep_asides(_target: &Path) {}", "#[cfg(not(windows))]\nfn sweep_asides(target: &Path) {\n    let prefix = format!(\"{}.aside-\", target.file_name().unwrap().to_string_lossy());\n    for e in fs::read_dir(target.parent().unwrap()).unwrap().flatten() {\n        if e.file_name().to_string_lossy().starts_with(&prefix) {\n            let _ = fs::remove_file(e.path());\n        }\n    }\n}", *PLANTED, "the_sweep_removes_exact_names_only"),
+    (UPDATE + "install.rs", "    let file = std::path::absolute(file).map_err(|e| refused(format!(\"has no absolute path: {e}\")))?;\n", "", *PLANTED, "the_candidate_is_executed_by_absolute_path"),
+    # N. Keep the chain.
+    (UPDATE + "trust.rs", "let mut chain = walk(self.keys[..self.roots].to_vec(), written.chain.into_iter()).1;", "let mut chain = written.chain;", *PLANTED, "a_junk_chain_still_takes_a_real_key"),
+    (UPDATE + "trust.rs", "let mut chain = walk(self.keys[..self.roots].to_vec(), written.chain.into_iter()).1;", "let _ = written;\n        let mut chain = Vec::new();", *PLANTED, "a_real_record_is_kept_when_another_is_appended"),
+    (UPDATE + "trust.rs", "let Ok(written) = read_chain(dir) else { return };", "let written = read_chain(dir).unwrap_or_default();", *PLANTED, "a_chain_that_cannot_be_read_is_not_written_over"),
+    (UPDATE + "trust.rs", "if bytes.len() as u64 > CHAIN_MAX_BYTES {\n        return Ok(Chain::default());", "if bytes.len() as u64 > CHAIN_MAX_BYTES {\n        return Err(std::io::Error::other(\"past the bound\"));", *PLANTED, "a_file_past_the_bound_is_cleaned_rather_than_kept"),
+    # O. The release script, by real runs with the runner faked.
+    ("scripts/release.py", 'target_dir = Path(json.loads(metadata)["target_directory"])', 'target_dir = ROOT / "target"', *RELEASE, "the_target_directory_is_where_cargo_says"),
+    ("scripts/release.py", "        check_built(locate, version)\n", "", *RELEASE, "a_host_binary_that_does_not_state_this_version_is_refused"),
+    ("scripts/release.py", """print(f"ran wine {windows} --version: {states_version(windows, version, runner=('wine',))}")""", """print("ran wine, it is said")""", *RELEASE, "a_windows_binary_that_does_not_state_this_version_is_refused_when_wine_can_run_it"),
+    ("scripts/release.py", "if previous and previous not in public and not strand:", "if False:", *RELEASE, "a_change_of_key_that_strands_older_copies_is_refused"),
+    ("scripts/release.py", "if previous and previous not in public and not strand:", "if previous and previous not in public:", *RELEASE, "stranding_older_copies_can_be_said_to_be_meant"),
+    ("scripts/release.py", 'return tag, key if re.fullmatch(r"[0-9a-f]{64}", key) else None', "return tag, key", *RELEASE, "a_placeholder_or_no_file_at_the_previous_tag_is_no_constraint"),
+    ("scripts/release.py", "    if shown.returncode != 0:\n        return tag, None\n", "", *RELEASE, "a_placeholder_or_no_file_at_the_previous_tag_is_no_constraint"),
+    ("scripts/release.py", "except subprocess.CalledProcessError as failed:", "except ZeroDivisionError as failed:", *RELEASE, "a_failed_upload_prints_the_way_back_and_a_re_run_finishes"),
+    ("scripts/release.py", "state = check_existing_tag(tag) if exists else None", 'state = refuse(f"the tag {tag} already exists") if exists else None', *RELEASE, "a_failed_upload_prints_the_way_back_and_a_re_run_finishes"),
+    ("scripts/release.py", 'if state == "draft":', "if False:", *RELEASE, "a_failed_upload_prints_the_way_back_and_a_re_run_finishes"),
+    ("scripts/release.py", 'if at != commit("HEAD"):', "if False:", *RELEASE, "a_tag_elsewhere_or_already_published_is_refused"),
+    ("scripts/release.py", 'if state == "published":', "if False:", *RELEASE, "a_tag_elsewhere_or_already_published_is_refused"),
+    ("scripts/release.py", 'if "release not found" in p.stderr:', "if True:", *RELEASE, "a_tag_elsewhere_or_already_published_is_refused"),
     # The doors: what a script can see.
     (UPDATE + "notice.rs", "if quiet || !std::io::stderr().is_terminal() || check_is_off_by_environment() {", "if quiet || check_is_off_by_environment() {", *DOOR, "in_a_pipe_there_is_no_request_no_line_and_nothing_is_read"),
     (UPDATE + "notice.rs", "if quiet || !std::io::stderr().is_terminal() || check_is_off_by_environment() {", "if quiet || check_is_off_by_environment() {", *DOOR, "stderr_joined_to_stdout_is_a_pipe_like_any_other"),
@@ -149,7 +211,7 @@ MUTATIONS = [
     (UPDATE + "notice.rs", "    let_go_of_inherited_handles();\n", "", *DOOR, "on_a_terminal::the_copy_lets_go_of_what_it_inherited"),
     (UPDATE + "notice.rs", "Some(i) if i.to == version && stamp.spoken_of.as_deref() != Some(i.to.as_str()) => {", "Some(i) if stamp.spoken_of.as_deref() != Some(i.to.as_str()) => {", *DOOR, "on_a_terminal::what_update_auto_installed_is_said_once_by_the_binary_that_was_installed"),
     ("crates/n0xis-cli/src/main.rs", "if !matches!(cli.command, Command::Update(_) | Command::Config(_)) {", "if true {", *DOOR, "on_a_terminal::neither_help_nor_version_nor_the_update_commands_say_it"),
-    (UPDATE + "lib.rs", '["https://updates.structio.dev/n0xis/manifest.json", "https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json"];', '["https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json", "https://updates.structio.dev/n0xis/manifest.json"];', *DOOR, "the_real_binary_asks_its_override_then_the_frozen_addresses_in_order"),
+    (UPDATE + "lib.rs", '["https://updates.structio.dev/n0xis/manifest.json", "https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json"];', '["https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json", "https://updates.structio.dev/n0xis/manifest.json"];', *DOOR, "the_real_binary_asks_the_frozen_addresses_in_order"),
     (UPDATE + "notice.rs", "        if !settings.check {\n            return None;\n        }\n        let latest = read_state(&dir).latest?;", "        let _ = settings.check;\n        let latest = read_state(&dir).latest?;", *MCP, "turned_off_means_not_said"),
     (UPDATE + "notice.rs", "(Version::parse(&latest).ok()? > Version::parse(version).ok()?).then_some(latest)", "Some(latest)", *MCP, "nothing_newer_states_the_version_only"),
 ]

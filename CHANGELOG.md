@@ -8,7 +8,7 @@ All notable changes to N0xis are recorded here. Versions follow
 ### Added
 
 - **`n0x update`: the tool offers, the user decides.** `update` installs a newer release, `update --check` only asks, `update --rollback` goes
-  back, once. Every address is asked and the highest version that verifies is the answer. A download is checked against a signed manifest (ed25519) and
+  back, once, for one file. Every address is asked and the highest version that verifies is the answer, and `update.manifest_url`, when set, is the only address. A download is checked against a signed manifest (ed25519) and
   read back from the disk, and the new binary must answer `--version`, before anything moves, and each failure is its own refusal with the installed
   files unchanged. In a terminal, at most once a day, one line on standard error; in a script or a pipe no line and no request. The MCP server
   states its version and any newer one when a session starts, and makes no request. This is the first network client in the tree, in

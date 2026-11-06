@@ -15,7 +15,7 @@ Today there is no update mechanism and no network client in the tree: a user dow
 - `n0x update --check` answers in the usual envelope, for the GUI and for anything else that wants to ask.
 - **The GUI** asks through that same command and shows its own dialog, so there is no second copy of the logic. It needs nothing here beyond that, and the CLI does not wait for it.
 - **The MCP server** interrupts nothing during a session: its version, and that a newer one exists, are in what it states at the start.
-- `n0x update` installs, `n0x update --rollback` goes back.
+- `n0x update` installs, `n0x update --rollback` goes back, for the running file, and `n0x update --rollback <bare name>` for a file beside it.
 - Settings, with a command to read and change them (`n0x config get`, `n0x config set`; there is none today, only a
   project's own configuration), kept in the user's configuration directory, one file the GUI also reads through
   the same command, never a copy of its own:
@@ -23,14 +23,19 @@ Today there is no update mechanism and no network client in the tree: a user dow
     It is the only request the tool makes on its own, it carries nothing about what is being analysed, and the
     README says so.
   - `update.auto`, off by default: install without being asked, for whoever turns it on. The new binary is put in
-    place by the check's own process, between runs, under the same checks as `n0x update`; a run already started
-    keeps the file it started from, and the previous binary stays for `--rollback`. A notice says what was installed.
+    place by the check's own process, between runs, under the same checks as `n0x update` and from the manifest that check
+    fetched, so there is no second answer to disagree with the first; a run already started keeps the file it started from, and the
+    previous binary stays for `--rollback`. A notice says what was installed, written only from what moved.
 - **A configuration directory that is not yours does not exist.** On Unix the directory, or its nearest existing ancestor,
   must be owned by the effective user and not be writable by everyone, or it is treated as absent: the defaults with
   `update.auto` off, no remembered keys, no stamp and so no daily check, no detached process, no writes. An explicit
-  `update` and `--rollback` still work, from the built-in key and the two frozen addresses. `config set` refuses as
+  `update` and `--rollback` still work, from the built-in key and the two frozen addresses, and the hold beside the binary still holds. `config set` refuses as
   `config-not-yours` and `config get` says what it goes by. One function decides this, and everything reaches the
   directory through it, the override included, so `sudo -E` reads nothing of the user's.
+  It tests write by everyone only, since group-writable directories are common with private user groups and a signature still decides what is
+  installed. A group member can set the override and `update.auto`, not a key.
+- **A script run in a terminal** gets the daily check, since its standard error is one, and under `update.auto`, which the user turned on, a swap
+  can land between its commands.
 
 ## 2. The contract, which cannot be changed later
 
@@ -40,8 +45,9 @@ from is frozen when it ships. **The client asks; it never derives.**
 - Each release publishes `manifest.json`: its version, and for each component and platform the file's URL, size
   and sha256. A component is a whole file: `n0xis` and `n0xis-mcp` are two self-contained binaries of about 13 MB, each replaced only when it changed. Deltas are not worth their complexity at that size. A later GUI or a signature pack is one more entry. Unknown fields are ignored, so it can grow: binary deltas, if size ever calls for them, are an optional field beside the whole file, which is always published, so a delta only ever speeds things up and an old client is never stranded. File names and layouts are not in the client.
 - The only thing frozen in the client is the manifest's address, and the repository has moved before. So it is a
-  domain the project controls, serving that one static file, with GitHub as the second address and an override in the
-  configuration. The binaries stay in the releases, named by the manifest. No login is needed: the repository is public.
+  domain the project controls, serving that one static file, with GitHub as the second address. An override in the
+  configuration replaces both, which is the way out if both die. The binaries stay in the releases, named by the manifest. No login is
+  needed: the repository is public.
 - The manifest is signed (ed25519). A digest from the same place guards against damage, not against a stolen
   token, and this is a tool that runs on the user's machine. The public keys are in the binary, the private key
   never leaves the owner's machine, and a signed manifest can name the next key, so a key can be replaced.
@@ -69,16 +75,24 @@ What every shipped client reads, and so what every later release must keep publi
   component of another shape cannot make the document unreadable.
 - `file` is the name the file has when installed. A component other than the running one is replaced only if a file of that name
   is already beside the binary, and one with no `file` is left alone, so a later component is never added to an old client's directory.
+- **Only the running component's own entry can refuse.** An entry of another component that does not decode, with a file of its name beside
+  the binary, makes that component `skipped`, with its code and reason in the answer, and the running file's update goes on with exit 0. A later
+  component of a new shape would otherwise stop every old copy. `--check` and `update` agree.
 - **A next key is remembered as the signed statement that named it.** `update-keys.json` in the user's configuration directory
   holds `{"chain":[{"manifest":"<hex of the exact bytes>","signature":"<the .sig text>"}]}`, at most 1 MiB and 32 records. On
   load the client starts from the key in the binary and walks in order: a record that verifies under the keys so far and names a
   `next_key` adds it, and anything else is skipped. So writing that file grants nothing, and it does nothing under the placeholder.
+  When a key is remembered only the records that walk kept are written back, then the new one, so junk cannot crowd out a real key and a file past
+  its bound is cleaned rather than kept. A read that fails for any reason but the file not being there means nothing is written.
   A client that never saw that manifest verifies by the old key for as long as a release is signed by both; one that sees neither
   fetches by hand. Nothing revokes a key in a copy already shipped.
 - **Every frozen address is asked, and the highest version that verifies is the answer.** The next keys of each verified manifest
-  are remembered, whether or not it was the highest. An override, when set and verified, decides alone: that is the user's explicit
-  pin, and nothing else is asked. An address that answers with anything that does not verify is passed over like a dead one: beside a
-  success it is a line in `tried`, and the refusal when none answers is the most serious thing any of them did.
+  are remembered, whether or not it was the highest. An address that answers with anything that does not verify is passed over like a dead
+  one: beside a success it is a line in `tried`, and the refusal when none answers is the most serious thing any of them did.
+- **An override, when set, is the only address.** It replaces the two frozen ones rather than sitting ahead of them: that is the user's explicit
+  pin, so nothing else is asked, and a dead or bad pin is a refusal.
+- **The highest manifest with no entry for this platform stops there.** It fails closed, as `blocked` with `no-entry`, and the report is true:
+  an older manifest elsewhere that does have an entry is not installed instead.
 - **What this does not stop:** whoever holds both addresses can hold a copy at any version that was ever published, by serving an
   old signed manifest at both. Nothing expires, because an expiry would strand copies whenever releases pause.
 
@@ -87,10 +101,21 @@ What every shipped client reads, and so what every later release must keep publi
 Prepare, then commit, under one lock. There is no undo: undoing was disk work done while swapping, it failed
 on a full disk, and it poisoned the file `--rollback` goes back to.
 
-**The lock.** `<file>.update-lock` beside the running binary, taken by `update`, `--rollback` and the detached
-`update.auto` install. The kernel releases it on a kill, so it cannot go stale, and the file stays. Held means the refusal
-`update-in-progress`, or a silent skip in the detached copy. Under the lock anything of ours beside a file is a dead run's, so it is
-swept first, and the names are fixed. On Windows the aside keeps a pid, since a running exe cannot be removed.
+**The lock.** `<file>.update-lock` beside each file, taken by `update`, `--rollback` and the detached `update.auto` install. An install takes the running
+file's and then each sibling's, and a rollback only that of the file it goes back for. The kernel releases it on a kill, so it cannot go stale, and the
+file stays. Held means the refusal `update-in-progress`, a sibling `skipped`, or a silent skip in the detached copy. A stalled download can hold it for its
+bound, and a rollback in that time says `update-in-progress`, which is true.
+
+**Under the lock, exact names only.** `<file>.update-new`, `<file>.previous-new`, `<file>.previous.json.new`, `<file>.update-hold-new` and, on Windows only,
+`<file>.aside-<digits>` are a dead run's, and are swept. Nothing else is touched by a sweep. On Windows the candidate's name ends in `.exe`, as `<file>.update-new.exe`, since
+the process API looks for a name with `.exe` added first, and it is always executed by absolute path. **`<file>.previous` belongs to the updater:** an install replaces
+what is there.
+
+**Files read or locked must be ours.** The lock, the record, the hold and `.previous` are opened by one helper: on Unix `O_NOFOLLOW | O_NONBLOCK`, and then a regular file whose owner is the
+effective user, or nothing. On Windows, a plain open. So a link, a FIFO and, in a sticky directory, a file another user planted are refusals, rather than being followed, hanging the run with the lock
+held, or vouching for each other: `not-ours` at the lock and the hold, and `previous-does-not-match` at the record and `.previous`, which are unusable by someone who cannot replace the binary.
+The same makes a file written by `sudo n0x update` unusable by the user's own run, and the other way round, and that is a refusal saying so. A plant at a name an install only renames over, such as
+another user's `.previous`, fails that rename: `install-failed`, with the target unchanged.
 
 **Prepare: every byte on the disk, nothing installed touched.** For each component to change, in full before any commit:
 
@@ -102,30 +127,43 @@ swept first, and the names are fixed. On Windows the aside keeps a pid, since a 
   not answer. **Every later `n0xis` must keep answering `--version`.**
 - Copy the current file to `<file>.previous-new`, on the disk, hashing as it copies, and write its record to `<file>.previous.json.new`.
 - The final mode of both files is the current one masked to 0o777: setuid is not carried over.
-- A target or a sibling that is not a regular file after resolving links is refused as `not-a-regular-file`, and a symlinked sibling is
+- A target that is not a regular file after resolving links is refused as `not-a-regular-file`, and a symlinked sibling is
   resolved the way the running binary's path is, so the link stays a link.
 
-Any failure here, a full disk included, removes the temporaries and leaves every installed file byte for byte unchanged, and only
-then is that said. A directory the user cannot write to is a refusal naming the file to fetch: never `sudo`.
+Any failure here for the running file, a full disk included, removes the temporaries and leaves every installed file byte for byte unchanged, and only
+then is that said. A directory the user cannot write to is a refusal naming the file to fetch: never `sudo`. **Any problem with a sibling here makes that sibling `skipped`, with its
+reason,** its temporaries gone, and the running file goes on. The running file is prepared first, so it is never the one left behind by a sibling.
+
+**What `update.auto` reads under the lock.** Only local things: each file's hold, and the file. It acts on the manifest its check fetched, only when that version is newer than the running one,
+so there is no second fetch to disagree with the first. A hold at that version or a later one leaves the file alone, and for the running file nothing moves at all; a newer release passes. A hold that does not read is
+a refusal rather than nothing to go by.
 
 **Commit: renames only, so no space is needed.** Other components first and the running one last, so that a run killed part way is still
 the old binary and running it again finishes the job. For each:
 
 1. `<file>.previous-new` over `<file>.previous`.
-2. `<file>.previous.json.new` over `<file>.previous.json`: `{"from":"<version>","to":"<version>","sha256":"<of .previous>"}`. It lives beside
-   the file it describes, not in the configuration directory, so two copies do not share one and it needs no configuration.
+2. `<file>.previous.json.new` over `<file>.previous.json`: `{"from":"<version>","to":"<version>","previous_sha256":"<of .previous>","installed_sha256":"<of what step 3 puts in place>"}`.
+   It lives beside the file it describes, not in the configuration directory, so two copies do not share one and it needs no configuration.
 3. `<file>.update-new` over `<file>`. On Windows a running `.exe` can be renamed and not overwritten, so it is renamed to
-   `<file>.aside-<pid>` first; if the second rename fails it is renamed back and that is reported.
+   `<file>.aside-<digits>` first; if the second rename fails it is renamed back and that is reported.
 4. On Unix, fsync the directory.
+5. For an explicit `n0x update`, remove `<file>.update-hold`.
 
 **No undo across components.** Each is its own fact. A commit failure on one is `install-failed` with `error.components` stating for each
 whether it is in place, and a non-zero exit. Two self-contained binaries at different versions harm nothing.
 
-**Rollback**, under the lock. `.previous` must be a regular file with no link and its sha256 must equal the record's, or the refusal is
-`previous-does-not-match` with the target unchanged. If it equals the target, it says nothing changed. Otherwise it renames into place, the record
-goes, and the hold on `update.auto` stays where a configuration directory exists. One shot, no roll forward: a second run is `no-previous`.
-`from` and `to` come only from a record that matched. The other files of the same install, found as a `<file>.previous.json` beside the binary or behind a link
-beside it whose `to` is the same, go back first and each by its own record; a sibling last replaced by an earlier install stays.
+**Rollback is one file.** `n0x update --rollback` goes back for the running file, and `n0x update --rollback <bare name>` for the file of that name beside it, by the same function and with that file's own
+record, lock and hold. Nothing looks for other records, and nothing else moves: a sibling at another version harms nothing. Under the lock:
+
+1. `.previous` and the record must be ours, as above, and the sha256 of `.previous` must equal the record's `previous_sha256`, or the refusal is `previous-does-not-match` with the target unchanged.
+2. The target is hashed. If it equals `.previous`, an install died before its last step, and the answer is that nothing changed. If it is not the record's `installed_sha256`, the refusal is
+   `not-what-was-installed`, saying a file was put there by other means: it and `.previous` stay as they are, since going back would destroy a file nothing keeps.
+3. **The hold:** `<file>.update-hold`, holding the version rolled back from, is written by rename **before** the swap. If it cannot be written the refusal is `not-writable` and nothing moves. It is beside the binary and
+   not in the shared state, so a check in flight has nothing to overwrite and a run with no configuration directory has it too.
+4. `.previous` is renamed into place and the record goes. One shot, no roll forward: a second run is `no-previous`.
+
+`from` and `to` come only from a record that matched, and the answer names the one file. A kill after the hold and before the swap leaves the target unchanged, and a re-run finishes. A kill after the swap leaves it gone back and held, and a
+re-run says `no-previous`. An explicit `n0x update` ends a hold, after it installs.
 
 **A kill at any point leaves the target as old or new and runnable**, except the one window on Windows between the two renames of step 3,
 where for a moment there is no target. That cannot be closed there: a running exe cannot be replaced in one step.
@@ -141,13 +179,16 @@ boundary check holds that. Only the two doors link it, so no analysis path can r
 
 Rung 1, against a local server with planted manifests: a tampered file, a wrong digest, a bad signature, a
 truncated download, a claimed size past what is sent, an older version, unknown fields, a dead first address, a stale first
-address beside a newer second, a planted key file, a garbage signed file, a file altered on the disk during its download.
+address beside a newer second, a planted key file, a garbage signed file, a file altered on the disk during its download, a target put there by hand, a link, a FIFO and another user's file beside the binary,
+a later-shaped sibling, a dead override with no public request, a server that changes its answer between fetches.
 Each ends in the stated refusal, with the installed binary byte for byte unchanged. Rollback is run, not assumed,
 on Linux and under Wine. A kill at each step and a full disk are run against the real binaries too, outside the repository's tests, since
 they need `LD_PRELOAD` and a tmpfs. An old client against a newer manifest is tested by keeping a built old client as a fixture.
 
 ## 6. Steps
 
-1. The release side: a script that builds, writes the manifest, signs it, refuses a version mismatch, publishes.
+1. The release side: a script that builds, writes the manifest, signs it, refuses a version mismatch, publishes. It finds the target directory through `cargo metadata`, runs the built `n0xis --version`, and the Windows one
+   when `wine` is on the path, and refuses unless they state this version. **A key change must not strand older copies:** the key at the previous `v*` tag must be among the signers, unless `--strand-older-copies` says otherwise. A failed
+   upload after the tag was pushed prints the commands that recover, and a re-run accepts a tag at HEAD with no published release.
 2. `update --check` and `update`, with the planted server.
 3. The notice in a terminal.

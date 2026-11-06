@@ -92,7 +92,7 @@ pins the channel only, and says how to build on Windows without the MSVC Build T
 
 ### Updates
 
-`n0x update` installs a newer release, `n0x update --check` only asks, and `n0x update --rollback` goes back. A
+`n0x update` installs a newer release, `n0x update --check` only asks, and `n0x update --rollback` goes back for this binary. A
 download is checked against a signed manifest before anything moves.
 
 The tool never replaces itself unasked, and never prompts. In a terminal, at most once a day, it prints one line on

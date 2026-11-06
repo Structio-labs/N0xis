@@ -152,6 +152,21 @@ class Release:
             for f, bytes_ in kept.items():
                 (self.dist / f).write_bytes(bytes_)
 
+    @contextlib.contextmanager
+    def with_a_later_component(self, suffix):
+        """A component of a shape this client cannot read, truly signed."""
+        platform = "windows-x86_64" if suffix else "linux-x86_64"
+        kept = {f: (self.dist / f).read_bytes() for f in ("manifest.json", "manifest.json.sig")}
+        manifest = json.loads(kept["manifest.json"])
+        manifest["components"]["later"] = {platform: {"file": "later-tool", "parts": ["a", "b"]}}
+        (self.dist / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        self.sign()
+        try:
+            yield
+        finally:
+            for f, bytes_ in kept.items():
+                (self.dist / f).write_bytes(bytes_)
+
 
 def serve(release, certs):
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -283,6 +298,8 @@ def journey(p, release, olds, seen):
     old_version = p.version(exe)
     old_sha, old_mcp_sha = sha(exe), sha(mcp)
     previous = bin_dir / f"{exe.name}.previous"
+    hold = bin_dir / f"{exe.name}.update-hold"
+    beside = lambda: sorted(f.name for f in bin_dir.iterdir() if not f.name.endswith((".update-lock", ".update-hold")))  # noqa: E731
     say = lambda ok, what: step(ok, f"{p.name}: {what}")  # noqa: E731
 
     say(old_version != NEW, f"the old build says {old_version}")
@@ -298,7 +315,7 @@ def journey(p, release, olds, seen):
         code, a = p.answer(exe, "update")
         setattr(release, arrange[0], None if arrange[0] == "tamper" else False)
         # The lock stays, by design, and holds nothing.
-        untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and sorted(f.name for f in bin_dir.iterdir() if not f.name.endswith(".update-lock")) == sorted([exe.name, mcp.name])
+        untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and beside() == sorted([exe.name, mcp.name])
         say(code != 0 and a.get("error", {}).get("code") == code_expected and untouched, f"{name}: refused as {a.get('error', {}).get('code')}, the files byte for byte unchanged")
 
     code, a = p.answer(exe, "update")
@@ -311,8 +328,12 @@ def journey(p, release, olds, seen):
 
     code, a = p.answer(exe, "update", "--rollback")
     say(code == 0 and p.version(exe) == old_version and sha(exe) == old_sha, f"--rollback: the file on disk says {p.version(exe)}")
-    say(sha(mcp) == old_mcp_sha, "the MCP server went back with it")
+    say(a.get("data", {}).get("file", "").endswith(exe.name), f"the answer names the one file: {a.get('data', {}).get('file')}")
+    say(sha(mcp) == new_mcp_sha, "the MCP server beside it did not move")
     say(not previous.exists(), "the kept file is what came back, so nothing is left to go forward to")
+    say(hold.read_text() == NEW, f"the hold beside it names what was gone back from: {hold.read_text()}")
+    code, a = p.answer(exe, "update", "--rollback", mcp.name)
+    say(code == 0 and sha(mcp) == old_mcp_sha and sha(exe) == old_sha, f"--rollback {mcp.name}: that file goes back, by its name: {json.dumps(a)[:160] if code else 'yes'}")
     code, a = p.answer(exe, "update", "--rollback")
     say(code != 0 and a.get("error", {}).get("code") == "no-previous" and p.version(exe) == old_version, f"a second --rollback goes nowhere: {a.get('error', {}).get('code')}, {p.version(exe)}")
 
@@ -320,7 +341,7 @@ def journey(p, release, olds, seen):
     # own loader. The manifest is re-signed here and put back after, so the release stays the release.
     with release.substituting(p.suffix, b"signed, checked, and not a program\n"):
         code, a = p.answer(exe, "update")
-    untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and sorted(f.name for f in bin_dir.iterdir() if not f.name.endswith(".update-lock")) == sorted([exe.name, mcp.name])
+    untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and beside() == sorted([exe.name, mcp.name])
     say(code != 0 and a.get("error", {}).get("code") == "does-not-run" and untouched, f"a garbage signed file: refused as {a.get('error', {}).get('code')}, the files byte for byte unchanged")
 
     # A kept file that is not what its record says, by the real binary, on each platform.
@@ -331,22 +352,35 @@ def journey(p, release, olds, seen):
     code, a = p.answer(exe, "update", "--rollback")
     say(code != 0 and a.get("error", {}).get("code") == "previous-does-not-match" and p.version(exe) == NEW, f"an altered kept file: refused as {a.get('error', {}).get('code')}, still {p.version(exe)}")
     previous.write_bytes(kept)
+    # A file put there by hand: refused and kept, and a kept file unchanged.
+    installed = exe.read_bytes()
+    os.unlink(exe)
+    shutil.copyfile(olds / exe.name, exe)
+    os.chmod(exe, 0o755)
+    exe.write_bytes(exe.read_bytes() + b"by hand")
+    by_hand = sha(exe)
+    code, a = p.answer(exe, "update", "--rollback")
+    say(code != 0 and a.get("error", {}).get("code") == "not-what-was-installed" and sha(exe) == by_hand and previous.read_bytes() == kept, f"a target put there by hand: refused as {a.get('error', {}).get('code')}, and kept")
+    os.unlink(exe)
+    exe.write_bytes(installed)
+    os.chmod(exe, 0o755)
     code, a = p.answer(exe, "update", "--rollback")
     say(code == 0 and p.version(exe) == old_version and a.get("data", {}).get("from") == NEW, f"with it restored, --rollback goes back: {p.version(exe)}")
+    p.answer(exe, "update", "--rollback", mcp.name)
 
     # update.auto, by the detached copy's own entry: the running file replaces itself, between runs.
-    # From a clean state, because the rollbacks above have rightly put a hold on the new version.
-    (config / "update-state.json").unlink()
+    # From no hold, because the rollbacks above have rightly put one on the new version.
+    hold.unlink()
     p.answer(exe, "config", "set", "update.auto", "true")
     p.run(exe, "__update-check")
     say(p.version(exe) == NEW and sha(previous) == old_sha, f"update.auto: the check installed it: {p.version(exe)}")
     state = json.loads((config / "update-state.json").read_text())
     say((state.get("installed") or {}).get("to") == NEW, "the state says what was installed")
+    say(sha(mcp) == old_mcp_sha, "and the MCP server, gone back from by its name, keeps its own hold")
     p.answer(exe, "update", "--rollback")
     p.run(exe, "__update-check")
     say(p.version(exe) == old_version, f"a rollback holds: the next check leaves it at {p.version(exe)}")
-    state = json.loads((config / "update-state.json").read_text())
-    say(state.get("held") == NEW, "the state says which version is held")
+    say(hold.read_text() == NEW, "the hold says which version")
     p.answer(exe, "config", "set", "update.auto", "false")
 
     # A commit that fails on one component: each is its own fact, in the envelope, with no undo. On Linux
@@ -363,6 +397,17 @@ def journey(p, release, olds, seen):
         in_the_way.parent.rmdir()
         code, a = p.answer(exe, "update", "--rollback")
         say(code == 0 and p.version(exe) == old_version and sha(mcp) == old_mcp_sha, f"and the one that moved goes back: {p.version(exe)}")
+
+    # A later component of a new shape, with a file of its name beside the binary: skipped, and nothing stops.
+    with release.with_a_later_component(p.suffix):
+        (bin_dir / "later-tool").write_bytes(b"a stranger's file")
+        code, a = p.answer(exe, "update", "--check")
+        say(code == 0 and a["data"]["available"] is True, "a later-shaped sibling: --check offers it")
+        code, a = p.answer(exe, "update")
+        skipped = [s["component"] for s in a.get("data", {}).get("skipped", [])]
+        say(code == 0 and p.version(exe) == NEW and skipped == ["later"], f"and update agrees, with it skipped: {json.dumps(a)[:160] if code else skipped}")
+        (bin_dir / "later-tool").unlink()
+    p.answer(exe, "update", "--rollback")
 
 
 def on_a_terminal(p, release):
