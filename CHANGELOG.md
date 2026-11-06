@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A hit of `debug await-hit` on Windows is at the address the thread stopped at, as on Linux.** It said one byte past it, so `rip` and `relative_rip` named the middle of an instruction.
+
 **A `pid` past `u32` in a capability's arguments names no process.** It was cut down to one that fits, and so read another process.
 
 **Four refusals say what happened.**

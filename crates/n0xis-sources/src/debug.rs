@@ -200,9 +200,11 @@ pub fn await_breakpoint_hit(
             let exc_addr = Va(info.ExceptionRecord.ExceptionAddress as u64);
 
             if code == EXCEPTION_BREAKPOINT && exc_addr == addr && info.dwFirstChance != 0 {
-                let captured = capture_hit(h_process, ev.dwThreadId, module, stack_qwords)?;
-                bp.disarm();
+                // In this order, as on Linux: after `int3`, `Rip` is past the byte, and the
+                // answer is the address the thread stopped at.
                 rewind_rip(ev.dwThreadId, addr)?;
+                bp.disarm();
+                let captured = capture_hit(h_process, ev.dwThreadId, module, stack_qwords)?;
                 unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
                 hit = Some(captured);
                 break;

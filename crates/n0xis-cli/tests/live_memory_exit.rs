@@ -429,6 +429,7 @@ fn a_watchpoint_fires_on_the_targets_own_store_and_a_breakpoint_on_its_own_call(
     let tick = format!("{:#x}", t.at("tick"));
     let d = t.ok(&["debug", "await-hit", "--pid", &pid, "--addr", &tick, "--timeout-ms", "6000"]);
     assert_eq!(d["timed_out"], serde_json::json!(false), "a breakpoint on a hot function must be hit: {d}");
+    assert_eq!(d["hit"]["rip"].as_str(), Some(tick.as_str()), "a hit is at the address the thread stopped at: {d}");
 }
 
 // -------------------------------------------------- project-scoped state ----
