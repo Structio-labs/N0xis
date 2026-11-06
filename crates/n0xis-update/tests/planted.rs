@@ -614,6 +614,36 @@ fn a_component_beside_the_binary_goes_with_it_and_goes_back_by_its_name() {
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
 }
 
+/// A sibling is never executed, so its version is not known: what the running binary is says nothing of
+/// it. Its record has no `from`, and going back names the file and the digest. The running file's own
+/// record goes on stating both, and a sibling's still reads, with a hold of the manifest's version.
+#[test]
+fn a_siblings_version_is_not_known() {
+    let b = Bench::new("sibfrom");
+    let mcp = b.dir.join("n0xis-mcp");
+    fs::write(&mcp, b"mcp of no version anyone ran").unwrap();
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    b.updater().update().expect("update");
+
+    let record = |name: &str| serde_json::from_slice::<Value>(&fs::read(b.dir.join(name)).unwrap()).unwrap();
+    let sibling = record("n0xis-mcp.previous.json");
+    assert_eq!(sibling["from"], Value::Null, "{sibling}");
+    assert_eq!(sibling["to"], "2.0.0");
+    assert_eq!(sibling["previous_sha256"], sha(b"mcp of no version anyone ran"));
+    assert_eq!(record("n0xis.previous.json")["from"], "1.0.0");
+
+    let back = rollback(&b.exe, Some("n0xis-mcp")).expect("rollback");
+    assert_eq!(back.file, mcp.display().to_string());
+    assert_eq!((back.from.as_deref(), back.to.as_deref()), (None, None));
+    assert_eq!(back.sha256, sha(b"mcp of no version anyone ran"));
+    assert_eq!(fs::read(&mcp).unwrap(), b"mcp of no version anyone ran");
+    assert_eq!(fs::read(b.dir.join("n0xis-mcp.update-hold")).unwrap(), b"2.0.0");
+
+    let back = rollback(&b.exe, None).expect("rollback");
+    assert_eq!((back.from.as_deref(), back.to.as_deref()), (Some("2.0.0"), Some("1.0.0")));
+    assert_eq!(back.sha256, sha(OLD));
+}
+
 /// The running file goes back and nothing else moves: a sibling at another version harms nothing, and
 /// another copy in the directory, with a record of its own, is not this one's to touch.
 #[test]
@@ -1021,7 +1051,8 @@ fn update_auto_installs_under_the_same_checks_and_rollback_holds_it() {
     notice::run_check(&b.updater(), true);
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
     assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD, "the previous binary stays for --rollback");
-    assert_eq!(state_of(&b).installed.map(|i| i.to).as_deref(), Some("2.0.0"));
+    let said = state_of(&b).installed.expect("what was installed");
+    assert_eq!((said.to.as_str(), said.path.as_str()), ("2.0.0", b.exe.display().to_string().as_str()), "the file that moved");
 
     rollback(&b.exe, None).expect("rollback");
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);

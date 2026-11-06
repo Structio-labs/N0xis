@@ -76,7 +76,11 @@ impl Drop for Temp {
 /// the digests as digests, or there is no record, because these reach the envelope and the hold.
 #[derive(Serialize, Deserialize)]
 struct Record {
-    from: String,
+    /// The version the running file said it was as it replaced itself. Null for a sibling, which is
+    /// never executed: this once held the running binary's version, and a rollback then stated that a
+    /// file had gone back to a version it had never been.
+    from: Option<String>,
+    /// The manifest's version, which is what a hold is compared with.
     to: String,
     previous_sha256: String,
     /// Of the target this install left. Anything else there came by other means, and going back over
@@ -89,7 +93,7 @@ fn read_record(target: &Path) -> Result<Record, String> {
     let bytes = read_ours(&path).map_err(|e| format!("its record {} cannot be used: {e}", path.display()))?;
     let unreadable = || format!("its record {} does not read", path.display());
     let record: Record = serde_json::from_slice(&bytes).map_err(|_| unreadable())?;
-    let reads = Version::parse(&record.from).is_ok() && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();
+    let reads = record.from.as_deref().is_none_or(|from| Version::parse(from).is_ok()) && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();
     if reads { Ok(record) } else { Err(unreadable()) }
 }
 
@@ -195,12 +199,15 @@ impl Skipped {
 }
 
 /// What `n0x update --rollback` answers, about the one file it was asked about. `from` and `to` come
-/// only from a record that matched.
+/// only from a record that matched, and one of a sibling states neither, since no one ran that file:
+/// what it says of a sibling is the file and the digest.
 #[derive(Clone, Debug, Serialize)]
 pub struct RollbackReport {
     pub file: String,
     pub from: Option<String>,
     pub to: Option<String>,
+    /// Of the file there now.
+    pub sha256: String,
     /// Why nothing moved, when nothing did.
     pub nothing_changed: Option<String>,
 }
@@ -395,7 +402,7 @@ impl Updater {
         let kept = keep_a_copy(&item.target, &previous_new.0, mode).map_err(disk)?;
         let record_new = Temp(with_suffix(&item.target, RECORD_NEW));
         // Written now, so the commit is renames and needs no space.
-        let record = Record { from: report.from.clone(), to: report.to.clone(), previous_sha256: to_hex(&kept), installed_sha256: to_hex(&sum) };
+        let record = Record { from: item.runs.then(|| report.from.clone()), to: report.to.clone(), previous_sha256: to_hex(&kept), installed_sha256: to_hex(&sum) };
         let text = serde_json::to_vec_pretty(&record).map_err(|e| disk(io::Error::other(e)))?;
         write_private(&record_new.0, &text).map_err(disk)?;
         Ok(Prepared { new_file, previous_new, record_new })
@@ -489,7 +496,7 @@ pub fn rollback(exe: &Path, name: Option<&str>) -> Result<RollbackReport, Refusa
     // What a kill between the record and the rename leaves, and what a failed commit leaves.
     if installed_hex == record.previous_sha256 {
         let says = format!("{} is what is already installed, so nothing changed: an install that died before its last step leaves this", previous.display());
-        return Ok(RollbackReport { file, from: None, to: None, nothing_changed: Some(says) });
+        return Ok(RollbackReport { file, from: None, to: None, sha256: installed_hex, nothing_changed: Some(says) });
     }
     if installed_hex != record.installed_sha256 {
         return Err(Refusal::new(
@@ -503,7 +510,11 @@ pub fn rollback(exe: &Path, name: Option<&str>) -> Result<RollbackReport, Refusa
     put_in_place(&previous, &target).map_err(|e| Refusal::new(Why::InstallFailed, format!("{file} could not be put back: {e}; it is as it was")))?;
     let _ = fs::remove_file(with_suffix(&target, RECORD));
     sync_directory_of(&target);
-    Ok(RollbackReport { file, from: Some(record.to), to: Some(record.from), nothing_changed: None })
+    let (from, to) = match record.from {
+        Some(went_to) => (Some(record.to), Some(went_to)),
+        None => (None, None),
+    };
+    Ok(RollbackReport { file, from, to, sha256: record.previous_sha256, nothing_changed: None })
 }
 
 /// By rename, under the lock. It cannot be written means nothing moves: a rollback the next check would
@@ -553,6 +564,11 @@ fn regular_file(path: &Path) -> Result<Option<PathBuf>, Refusal> {
     };
     let real = if found.file_type().is_symlink() { fs::canonicalize(path).map_err(|e| strange(format!("is a link that does not resolve: {e}")))? } else { path.to_path_buf() };
     if fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) { Ok(Some(real)) } else { Err(strange("is not a regular file".to_string())) }
+}
+
+/// The name an install knows the file at `path` by, for telling whether it is this one.
+pub(crate) fn file_at(path: &Path) -> Option<String> {
+    regular_file(path).ok().flatten().map(|file| file.display().to_string())
 }
 
 /// Held until dropped, or by the kernel until the process dies: there is no state to go stale.

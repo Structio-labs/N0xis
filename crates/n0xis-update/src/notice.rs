@@ -52,13 +52,17 @@ pub struct State {
 pub struct Installed {
     pub from: String,
     pub to: String,
+    /// The file that moved, as the install resolved it. The state is shared by every copy of this user's,
+    /// and a version says nothing of which: a second copy that happened to be at `to` once said it had
+    /// been installed, offered a rollback it did not have, and used up the line of the one that had.
+    pub path: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct NoticeStamp {
     at: u64,
-    /// The installed version a notice has already spoken of.
-    spoken_of: Option<String>,
+    /// The install a notice has already spoken of: that version of that file.
+    spoken_of: Option<Installed>,
 }
 
 /// `update.check`, as the environment and the file together say: `N0X_NO_UPDATE_CHECK` set to
@@ -115,23 +119,24 @@ pub fn at_start(version: &str, quiet: bool) {
         return;
     }
     let at = now();
-    if let Some(line) = take_line(&dir, version, at) {
+    let this_file = std::env::current_exe().ok().and_then(|exe| crate::install::file_at(&exe));
+    if let Some(line) = take_line(&dir, version, this_file.as_deref(), at) {
         let _ = writeln!(std::io::stderr(), "{line}");
     }
     start_check_if_due(&dir, at);
 }
 
 /// The line this run should print, if any, and the note that it was.
-fn take_line(dir: &Path, version: &str, at: u64) -> Option<String> {
+fn take_line(dir: &Path, version: &str, this_file: Option<&str>, at: u64) -> Option<String> {
     let current = Version::parse(version).ok()?;
     let state = read_state(dir);
     let path = dir.join(NOTICE_STAMP);
     let stamp: NoticeStamp = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let (line, spoken_of) = match &state.installed {
-        // Only by the binary that was installed: a run of the old file that started just before
-        // the swap has nothing to say about what it is not.
-        Some(i) if i.to == version && stamp.spoken_of.as_deref() != Some(i.to.as_str()) => {
-            (format!("[n0x] {} was installed in place of {}: n0x update --rollback goes back", i.to, i.from), Some(i.to.clone()))
+        // Only by the file that was installed: a run of the old file that started just before the swap
+        // has nothing to say about what it is not, and neither has another copy at that version.
+        Some(i) if i.to == version && this_file == Some(i.path.as_str()) && stamp.spoken_of.as_ref() != Some(i) => {
+            (format!("[n0x] {} was installed in place of {}: n0x update --rollback goes back", i.to, i.from), Some(i.clone()))
         }
         _ => {
             let latest = state.latest.as_deref().and_then(|v| Version::parse(v).ok()).filter(|v| *v > current)?;
@@ -243,11 +248,11 @@ pub fn run_check(updater: &Updater, auto: bool) {
                 // Only from what moved, a commit that failed for a sibling included. A sentence once
                 // said an install had happened where a version older than the one claimed had been.
                 let moved = match &done {
-                    Ok(done) => done.replaced.iter().any(|r| r.component == updater.component),
-                    Err(r) => r.components.iter().any(|o| o.component == updater.component && o.error.is_none()),
+                    Ok(done) => done.replaced.iter().find(|r| r.component == updater.component).map(|r| r.path.clone()),
+                    Err(r) => r.components.iter().find(|o| o.component == updater.component && o.error.is_none()).map(|o| o.path.clone()),
                 };
-                if moved {
-                    state.installed = Some(Installed { from: report.current, to: report.latest });
+                if let Some(path) = moved {
+                    state.installed = Some(Installed { from: report.current, to: report.latest, path });
                 }
                 match done {
                     // Another run is on it, and whichever finishes will have said what happened.

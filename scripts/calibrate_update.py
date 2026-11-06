@@ -116,7 +116,7 @@ MUTATIONS = [
     (UPDATE + "install.rs", "if from_hex::<32>(&record.previous_sha256) != Some(sum) {", "if false {", *PLANTED, "a_previous_that_does_not_match_is_refused"),
     (UPDATE + "install.rs", "custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)", "custom_flags(libc::O_NONBLOCK)", *PLANTED, "a_planted_previous_symlink_is_refused"),
     (UPDATE + "install.rs", "if installed_hex == record.previous_sha256 {", "if false {", *PLANTED, "a_previous_equal_to_the_target_says_that_nothing_changed"),
-    (UPDATE + "install.rs", "let reads = Version::parse(&record.from).is_ok() && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();", "let reads = from_hex::<32>(&record.previous_sha256).is_some();", *PLANTED, "a_record_that_does_not_read_as_versions_is_no_record"),
+    (UPDATE + "install.rs", "let reads = record.from.as_deref().is_none_or(|from| Version::parse(from).is_ok()) && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();", "let reads = from_hex::<32>(&record.previous_sha256).is_some();", *PLANTED, "a_record_that_does_not_read_as_versions_is_no_record"),
     (UPDATE + "install.rs", "Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!(\"another run holds {}\", path.display()))),", "Err(TryLockError::WouldBlock) => return Ok(file),", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
     (UPDATE + "notice.rs", "Err(r) if r.why == Why::UpdateInProgress => {}", "Err(r) if r.why == Why::NoEntry => {}", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
     (UPDATE + "install.rs", "Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!(\"another run holds {}\", path.display()))),", "Err(TryLockError::WouldBlock) => return Ok(file),", *PLANTED, "parallel_runs_keep_the_old_file_for_rollback"),
@@ -139,6 +139,11 @@ MUTATIONS = [
     (UPDATE + "install.rs", "Some(name) if is_bare_file_name(name) => exe.with_file_name(name),", "Some(name) if !name.is_empty() => exe.with_file_name(name),", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
     (UPDATE + "install.rs", "match lock_for_install(&item, asked, &manifest.version) {", "match (if item.runs { lock_for_install(&item, asked, &manifest.version) } else { File::open(&item.target).map_err(|e| Refusal::new(Why::InstallFailed, e.to_string())) }) {", *PLANTED, "an_install_skips_a_sibling_whose_own_lock_is_held"),
     ("crates/n0xis-cli/src/main.rs", '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref()));', '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref().filter(|_| false)));', *DOOR, "rollback_takes_a_bare_name"),
+    # 4. A sibling's version is not known.
+    (UPDATE + "install.rs", "from: item.runs.then(|| report.from.clone()),", "from: Some(report.from.clone()),", *PLANTED, "a_siblings_version_is_not_known"),
+    (UPDATE + "install.rs", "        None => (None, None),\n", "        None => (Some(record.to), None),\n", *PLANTED, "a_siblings_version_is_not_known"),
+    (UPDATE + "install.rs", "record.from.as_deref().is_none_or(|from| Version::parse(from).is_ok())", "record.from.as_deref().is_some_and(|from| Version::parse(from).is_ok())", *PLANTED, "a_siblings_version_is_not_known"),
+    (UPDATE + "install.rs", "sha256: record.previous_sha256, nothing_changed: None", "sha256: to_hex(&installed), nothing_changed: None", *PLANTED, "a_siblings_version_is_not_known"),
     # G. A record says what it installed.
     (UPDATE + "install.rs", "if installed_hex != record.installed_sha256 {", "if false {", *PLANTED, "a_hand_installed_target_is_refused_and_kept"),
     # H. The hold is a file beside the binary.
@@ -155,8 +160,8 @@ MUTATIONS = [
     (UPDATE + "install.rs", "let _ = fs::remove_file(with_suffix(&item.target, HOLD));", "", *PLANTED, "an_explicit_update_ends_the_hold_and_only_after_it_installs"),
     # I. One fetch.
     (UPDATE + "notice.rs", "let done = updater.install_alone(&found);", "let done = updater.update();", *PLANTED, "the_check_and_auto_agree_across_a_changing_server"),
-    (UPDATE + "notice.rs", "if moved {", "if report.available {", *PLANTED, "the_line_is_written_only_from_what_moved"),
-    (UPDATE + "notice.rs", "Err(r) => r.components.iter().any(|o| o.component == updater.component && o.error.is_none()),", "Err(_) => false,", *PLANTED, "the_line_is_written_only_from_what_moved"),
+    (UPDATE + "notice.rs", "if let Some(path) = moved {", "if let Some(path) = moved.or(report.available.then(String::new)) {", *PLANTED, "the_line_is_written_only_from_what_moved"),
+    (UPDATE + "notice.rs", "Err(r) => r.components.iter().find(|o| o.component == updater.component && o.error.is_none()).map(|o| o.path.clone()),", "Err(_) => None,", *PLANTED, "the_line_is_written_only_from_what_moved"),
     (UPDATE + "notice.rs", "if report.available && auto {", "if auto {", *PLANTED, "update_auto_with_nothing_newer_does_nothing"),
     # J. A set override is the only address.
     (UPDATE + "config.rs", "Some(pin) => vec![pin.clone()],", "Some(pin) => std::iter::once(pin.clone()).chain(crate::MANIFEST_ADDRESSES.iter().map(|a| a.to_string())).collect(),", *PLANTED, "a_pin_is_the_only_address"),
@@ -226,7 +231,11 @@ MUTATIONS = [
     (UPDATE + "notice.rs", "child.arg(BACKGROUND_ARG).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());", "child.arg(BACKGROUND_ARG).current_dir(dir).stdin(Stdio::null()).stderr(Stdio::null());", *DOOR, "on_a_terminal::a_hung_address_delays_nothing_and_holds_no_pipe_open"),
     (UPDATE + "notice.rs", "let _ = child.spawn();", "let _ = child.status();", *DOOR, "on_a_terminal::a_hung_address_delays_nothing_and_holds_no_pipe_open"),
     (UPDATE + "notice.rs", "    let_go_of_inherited_handles();\n", "", *DOOR, "on_a_terminal::the_copy_lets_go_of_what_it_inherited"),
-    (UPDATE + "notice.rs", "Some(i) if i.to == version && stamp.spoken_of.as_deref() != Some(i.to.as_str()) => {", "Some(i) if stamp.spoken_of.as_deref() != Some(i.to.as_str()) => {", *DOOR, "on_a_terminal::what_update_auto_installed_is_said_once_by_the_binary_that_was_installed"),
+    (UPDATE + "notice.rs", "Some(i) if i.to == version && this_file == Some(i.path.as_str()) && stamp.spoken_of.as_ref() != Some(i) => {", "Some(i) if this_file == Some(i.path.as_str()) && stamp.spoken_of.as_ref() != Some(i) => {", *DOOR, "on_a_terminal::what_update_auto_installed_is_said_once_by_the_binary_that_was_installed"),
+    # 5. The notice is about this file.
+    (UPDATE + "notice.rs", "Some(i) if i.to == version && this_file == Some(i.path.as_str()) && stamp.spoken_of.as_ref() != Some(i) => {", "Some(i) if i.to == version && stamp.spoken_of.as_ref() != Some(i) => {", *DOOR, "on_a_terminal::the_notice_of_an_install_is_only_said_by_that_file"),
+    (UPDATE + "notice.rs", "Some(i) if i.to == version && this_file == Some(i.path.as_str()) && stamp.spoken_of.as_ref() != Some(i) => {", "Some(i) if i.to == version && this_file == Some(i.path.as_str()) && stamp.spoken_of.as_ref().map(|s| &s.to) != Some(&i.to) => {", *DOOR, "on_a_terminal::the_notice_of_an_install_is_only_said_by_that_file"),
+    (UPDATE + "notice.rs", ".find(|r| r.component == updater.component).map(|r| r.path.clone()),", '.find(|r| r.component == updater.component).map(|r| format!("{}-not", r.path)),', *PLANTED, "update_auto_installs_under_the_same_checks_and_rollback_holds_it"),
     ("crates/n0xis-cli/src/main.rs", "if !matches!(cli.command, Command::Update(_) | Command::Config(_)) {", "if true {", *DOOR, "on_a_terminal::neither_help_nor_version_nor_the_update_commands_say_it"),
     (UPDATE + "lib.rs", '["https://updates.structio.dev/n0xis/manifest.json", "https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json"];', '["https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json", "https://updates.structio.dev/n0xis/manifest.json"];', *DOOR, "the_real_binary_asks_the_frozen_addresses_in_order"),
     (UPDATE + "notice.rs", "        if !settings.check {\n            return None;\n        }\n        let latest = read_state(&dir).latest?;", "        let _ = settings.check;\n        let latest = read_state(&dir).latest?;", *MCP, "turned_off_means_not_said"),

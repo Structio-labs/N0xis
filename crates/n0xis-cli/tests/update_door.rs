@@ -561,11 +561,16 @@ mod on_a_terminal {
         assert!(s.ever_checked(), "the calibration: once released, the claim is made");
     }
 
+    /// The name this binary knows itself by: its path, with any link in it resolved, as `/proc` gives it.
+    fn this_binary() -> String {
+        std::fs::canonicalize(BIN).unwrap().display().to_string()
+    }
+
     #[test]
     fn an_escape_in_the_state_file_never_reaches_the_terminal() {
         let version = env!("CARGO_PKG_VERSION");
         let s = Scene::new("escape");
-        s.plant_state(json!({ "installed": { "from": "\u{1b}]0;PWNED\u{7}", "to": version }, "latest": "99.0.0\u{1b}[2J" }));
+        s.plant_state(json!({ "installed": { "from": "\u{1b}]0;PWNED\u{7}", "to": version, "path": this_binary() }, "latest": "99.0.0\u{1b}[2J" }));
         let said = run(s.command(Path::new(BIN), A_COMMAND)).stderr;
         assert!(!said.contains('\u{1b}'), "{said:?}");
         assert_eq!(said, "", "neither entry reads as a version, so neither is said");
@@ -575,13 +580,37 @@ mod on_a_terminal {
     fn what_update_auto_installed_is_said_once_by_the_binary_that_was_installed() {
         let s = Scene::new("installed");
         let version = env!("CARGO_PKG_VERSION");
-        s.plant_state(json!({ "installed": { "from": "0.0.1", "to": version } }));
+        s.plant_state(json!({ "installed": { "from": "0.0.1", "to": version, "path": this_binary() } }));
         let first = run(s.command(Path::new(BIN), A_COMMAND));
         assert_eq!(first.stderr.trim_end(), format!("[n0x] {version} was installed in place of 0.0.1: n0x update --rollback goes back"));
         assert_eq!(run(s.command(Path::new(BIN), A_COMMAND)).stderr, "");
 
         let other = Scene::new("installed-other");
-        other.plant_state(json!({ "installed": { "from": "0.0.1", "to": "99.0.0" } }));
+        other.plant_state(json!({ "installed": { "from": "0.0.1", "to": "99.0.0", "path": this_binary() } }));
         assert_eq!(run(other.command(Path::new(BIN), A_COMMAND)).stderr, "", "a run of the old file says nothing of what it is not");
+    }
+
+    /// The state is shared by every copy of this user's. An untouched copy at that version once said
+    /// the line, with a rollback it did not have, and so used it up for the copy it was true of.
+    #[test]
+    fn the_notice_of_an_install_is_only_said_by_that_file() {
+        let s = Scene::new("anotherfile");
+        let version = env!("CARGO_PKG_VERSION");
+        s.plant_state(json!({ "installed": { "from": "0.0.1", "to": version, "path": "/another/copy/n0xis" } }));
+        assert_eq!(run(s.command(Path::new(BIN), A_COMMAND)).stderr, "", "this file was not installed");
+        assert!(!s.config.join("update-notice.stamp").exists(), "and it spoke for the copy that was");
+
+        // That copy's line was not used up, and it says it once.
+        s.plant_state(json!({ "installed": { "from": "0.0.1", "to": version, "path": this_binary() } }));
+        let said = format!("[n0x] {version} was installed in place of 0.0.1: n0x update --rollback goes back");
+        assert_eq!(run(s.command(Path::new(BIN), A_COMMAND)).stderr.trim_end(), said);
+        assert_eq!(run(s.command(Path::new(BIN), A_COMMAND)).stderr, "");
+
+        // A line said for one file is not said for another at that version.
+        let s = Scene::new("spokenfor");
+        let installed = |path: &str| json!({ "from": "0.0.1", "to": version, "path": path });
+        std::fs::write(s.config.join("update-notice.stamp"), json!({ "at": 1, "spoken_of": installed("/another/copy/n0xis") }).to_string()).unwrap();
+        s.plant_state(json!({ "installed": installed(&this_binary()) }));
+        assert_eq!(run(s.command(Path::new(BIN), A_COMMAND)).stderr.trim_end(), said);
     }
 }
