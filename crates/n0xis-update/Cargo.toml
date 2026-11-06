@@ -1,0 +1,25 @@
+[package]
+name = "n0xis-update"
+description = "The update adapter: the only network client in the tree, reached only by the two doors (docs/design/UPDATE.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+ring = "0.17"
+semver = "1"
+rustls-native-certs = "0.8"
+webpki-root-certs = "1"
+
+# The detached copy lets go of handles it inherited (`notice::let_go_of_inherited_handles`).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

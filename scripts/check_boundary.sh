@@ -38,8 +38,11 @@ PURE_CRATES="${PURE_CRATES:-n0xis-contracts n0xis-arch n0xis-core}"
 #                                   landed (2026-10-07).
 #   n0xis-wasm                    — WebAssembly modules: a format parser,
 #                                   listed the day it landed (2026-10-19).
+#   n0xis-update, ureq, rustls    — the network. Only the two doors link the
+#                                   update adapter, so no analysis path can
+#                                   reach a connection (docs/design/UPDATE.md §4).
 # One regex, anchored, matched against bare package names.
-FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp|n0xis-pdb|pdb2|n0xis-wasm)$'
+FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp|n0xis-pdb|pdb2|n0xis-wasm|n0xis-update|ureq|rustls)$'
 
 status=0
 

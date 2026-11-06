@@ -70,7 +70,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Type-check the *Windows* half from the Linux runner. `cargo check` does
-      # not link, so no mingw is needed, and it covers everything cfg(windows)
+      # not link, but the update adapter's TLS has C in its build script, so a
+      # mingw compiler is needed. It covers everything cfg(windows)
       # hides from the steps above: the Win32 live adapter, the debugger, the
       # window/input modules. It costs ~40s and it is the only thing
       # standing between "Linux is green" and silently breaking Windows — it
@@ -79,6 +80,7 @@ jobs:
       - name: Windows path still type-checks (cross, no link)
         run: |
           rustup target add x86_64-pc-windows-gnu
+          sudo apt-get install -y gcc-mingw-w64-x86-64
           cargo check --workspace --target x86_64-pc-windows-gnu
 
   # The full workspace, including everything gated on cfg(windows): the live

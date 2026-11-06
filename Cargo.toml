@@ -93,6 +93,9 @@ n0xis-pdb = { path = "crates/n0xis-pdb" }
 # decided.
 n0xis-wasm = { path = "crates/n0xis-wasm" }
 n0xis-wasm-arch = { path = "crates/n0xis-wasm-arch" }
+# The update adapter and the only network client in the tree. Only the two doors
+# link it, so no analysis path can reach the network (docs/design/UPDATE.md §4).
+n0xis-update = { path = "crates/n0xis-update" }
 
 # Dependencies compile once and then run a great many times in the test suite. Optimizing only them
 # leaves the build after a change to this workspace as long as it was and the suite's run a third
