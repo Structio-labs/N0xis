@@ -377,6 +377,7 @@ impl Pass for DecompPass {
             // (the arms below produce `pseudo`; block-label stripping is applied
             // to it after the match, gated on `input.strip_block_labels`)
             DecompStyle::Goto => {
+                let names = names.without_local_declarations();
                 let lines = render_goto(&cfg, &ssa.blocks, &names);
                 (lines, false, 0, Vec::new(), names.printed_vars())
             }
@@ -1043,11 +1044,65 @@ mod tests {
         // e5813000 str r3, [r1]; e5c12000 strb r2, [r1]; e5910000 ldr r0, [r1]
         let f = decomp_a32_as(words(&[0xe5813000, 0xe5c12000, 0xe5910000, 0xe12fff1e]), DecompStyle::Ssa);
         let ret = return_line(&f);
-        assert!(!ret.contains("r3") && ret.contains("*r1"), "the load reads memory: {ret}");
+        assert!(!ret.contains("r3") && ret.contains("*(uint32_t*)r1"), "the load reads memory: {ret}");
         // 89 11 mov [rcx], edx; 44 0f c3 01 movnti [rcx], r8d; 8b 01 mov eax, [rcx]; c3 ret
         let f = decomp(vec![0x89, 0x11, 0x44, 0x0f, 0xc3, 0x01, 0x8b, 0x01, 0xc3], DecompStyle::Ssa);
         let ret = return_line(&f);
-        assert!(!ret.contains("rdx") && ret.contains("*rcx"), "the load reads memory: {ret}");
+        assert!(!ret.contains("rdx") && ret.contains("*(uint32_t*)rcx"), "the load reads memory: {ret}");
+    }
+
+    /// A read says how wide it is and how it extends, and a write how wide it is,
+    /// from the bytes: `movzbl (%rdi),%eax` printed as `(uint32_t)*rdi` reads as a
+    /// 32-bit load. 26 of 52 failing held-out bodies, and 469 of 678 functions of
+    /// a C library, printed an access with no width.
+    #[test]
+    fn a_memory_access_states_the_width_and_extension_of_the_instruction() {
+        // A register with no later version reads as its entry value, `.0`, which is not what this is about.
+        let body = |code: Vec<u8>| decomp(code, DecompStyle::Ssa).pseudo.join("\n").replace(".0", "");
+        for (code, want) in [
+            (vec![0x0f, 0xb6, 0x07, 0xc3], "*(uint8_t*)rdi"),        // movzbl (%rdi),%eax
+            (vec![0x0f, 0xbe, 0x07, 0xc3], "*(int8_t*)rdi"),         // movsbl (%rdi),%eax
+            (vec![0x0f, 0xb7, 0x07, 0xc3], "*(uint16_t*)rdi"),       // movzwl (%rdi),%eax
+            (vec![0x0f, 0xbf, 0x07, 0xc3], "*(int16_t*)rdi"),        // movswl (%rdi),%eax
+            (vec![0x48, 0x63, 0x07, 0xc3], "*(int32_t*)rdi"),        // movslq (%rdi),%rax
+            (vec![0x8b, 0x07, 0xc3], "*(uint32_t*)rdi"),             // mov (%rdi),%eax
+            (vec![0x48, 0x8b, 0x07, 0xc3], "*(uint64_t*)rdi"),       // mov (%rdi),%rax
+            (vec![0x0f, 0xb6, 0x47, 0x10, 0xc3], "*(uint8_t*)&rdi->field_0x10"), // movzbl 0x10(%rdi),%eax
+            (vec![0x0f, 0xbe, 0x47, 0xf8, 0xc3], "*(int8_t*)&rdi->field_neg_0x8"), // movsbl -8(%rdi),%eax
+            (vec![0x40, 0x88, 0x37, 0xc3], "*(uint8_t*)rdi = "),     // mov %sil,(%rdi)
+            (vec![0x66, 0x89, 0x37, 0xc3], "*(uint16_t*)rdi = "),    // mov %si,(%rdi)
+            (vec![0x89, 0x77, 0x10, 0xc3], "*(uint32_t*)&rdi->field_0x10 = "), // mov %esi,0x10(%rdi)
+            (vec![0x0f, 0xb7, 0x04, 0x77, 0xc3], "((uint16_t*)rdi)[rsi]"), // movzwl (%rdi,%rsi,2),%eax
+            (vec![0x48, 0x63, 0x04, 0xb7, 0xc3], "((int32_t*)rdi)[rsi]"), // movslq (%rdi,%rsi,4),%rax
+        ] {
+            let text = body(code);
+            assert!(text.contains(want), "want {want} in:\n{text}");
+        }
+        // The other lifters state the same through the same printer.
+        let a32 = |w: u32| decomp_a32_as(words(&[w, 0xe12fff1e]), DecompStyle::Ssa).pseudo.join("\n").replace(".0", "");
+        assert!(a32(0xe5d10000).contains("*(uint8_t*)r1"), "ldrb r0,[r1]: {}", a32(0xe5d10000));
+        assert!(a32(0xe1d100d0).contains("*(int8_t*)r1"), "ldrsb r0,[r1]: {}", a32(0xe1d100d0));
+        assert!(a32(0xe1c100b0).contains("*(uint16_t*)r1 = "), "strh r0,[r1]: {}", a32(0xe1c100b0));
+        let a64 = |w: u32| decomp_arm64(words(&[w, 0xd65f03c0])).pseudo.join("\n").replace(".0", "");
+        // AArch64's loads are not lifted at all: the text is the instruction,
+        // which states its own width. This holds that gap open.
+        assert!(a64(0x39400020).contains("/*ldrb"), "ldrb w0,[x1]: {}", a64(0x39400020));
+        assert!(a64(0xb9400020).contains("/*ldr"), "ldr w0,[x1]: {}", a64(0xb9400020));
+    }
+
+    /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is
+    /// declared at the wider one, and a bare name would write all eight bytes.
+    #[test]
+    fn a_narrow_access_to_a_wider_local_states_its_width() {
+        // 48 89 7c 24 08  mov %rdi,0x8(%rsp); c6 44 24 08 01  movb $1,0x8(%rsp);
+        // 48 8b 44 24 08  mov 0x8(%rsp),%rax; c3 ret
+        let code = vec![0x48, 0x89, 0x7c, 0x24, 0x08, 0xc6, 0x44, 0x24, 0x08, 0x01, 0x48, 0x8b, 0x44, 0x24, 0x08, 0xc3];
+        let f = decomp(code.clone(), DecompStyle::Ssa);
+        let text = f.pseudo.join("\n");
+        assert!(text.contains("uint64_t local_8;") && text.contains("*(uint8_t*)&local_8 = 0x1;"), "{text}");
+        // The `goto` style prints no declarations, so even the full-width access says it.
+        let text = decomp(code, DecompStyle::Goto).pseudo.join("\n");
+        assert!(text.contains("*(uint64_t*)&local_8 = ") && text.contains("*(uint8_t*)&local_8 = 0x1;"), "{text}");
     }
 
     /// …and an unlifted instruction that touches no memory does **not** stop
@@ -1149,7 +1204,7 @@ mod tests {
             vec![0xf2, 0x0f, 0x10, 0x06, 0x66, 0x0f, 0x38, 0xdc, 0xc1, 0xf2, 0x0f, 0x11, 0x07, 0xc3],
             DecompStyle::Ssa,
         );
-        let store = f.pseudo.iter().find(|l| l.contains("*rdi")).unwrap_or_else(|| panic!("no store in {:#?}", f.pseudo));
+        let store = f.pseudo.iter().find(|l| l.contains("*(uint64_t*)rdi")).unwrap_or_else(|| panic!("no store in {:#?}", f.pseudo));
         assert!(!store.contains("rsi") && !store.contains("xmm0.1"), "the store is of the aesenc result: {store}");
     }
 

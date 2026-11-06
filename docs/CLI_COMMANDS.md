@@ -584,6 +584,13 @@ Pseudo-C for one function.
   a type. The list is recorded where the renderer prints a variable, not read back from the
   text. 0.3.4 is the first release that sends the field.
 
+How a body reads:
+- A memory access states its width and extension from the instruction: `*(uint8_t*)rdi`,
+  `*(int32_t*)&rdi->field_0x10`, `((uint16_t*)rax)[rcx]`. A recovered field's name says nothing about its
+  width, since no struct definition is printed; a field named by a type you defined reads as its name.
+  A local reads as its name where its declaration says what the access does, and `*(uint8_t*)&local_18`
+  where it does not. A call through a field, `(*rax->field_0x8)(...)`, reads a pointer and says no width.
+
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).
 - `--addr` (required); `--start`/`--size` — code window to scan (defaults to `.text`).

@@ -39,6 +39,11 @@ pub struct RenderNames {
     /// variable holding its address.
     slot_names: HashMap<u64, String>,
     locals: HashMap<i64, String>,
+    /// What each local's printed declaration says about its width. A local not in
+    /// the map has none printed (the `goto` style prints none at all), and then
+    /// only the access itself can say. `None`: a renderer never told about types,
+    /// which has nothing to compare with.
+    local_decls: Option<HashMap<i64, LocalDecl>>,
     /// Base SSA var name → (field offset → field name). An empty inner map means a
     /// recovered but un-named struct (renders `field_0x{off}`); a populated one
     /// comes from a user/RTTI struct definition bound to this base (renders the
@@ -126,6 +131,39 @@ pub struct RenderNames {
     printed: RefCell<BTreeSet<PrintedVar>>,
 }
 
+/// A memory access as the bytes state it. A write has no extension: only its
+/// width reaches memory.
+#[derive(Clone, Copy, Debug)]
+enum Access {
+    Read { bits: n0xis_arch::Bits, signed: bool },
+    Write { bits: n0xis_arch::Bits },
+}
+
+impl Access {
+    fn c_type(self) -> &'static str {
+        match self {
+            Access::Read { bits, signed } => c_type(bits, signed),
+            Access::Write { bits } => c_type(bits, false),
+        }
+    }
+
+    fn bits(self) -> n0xis_arch::Bits {
+        match self {
+            Access::Read { bits, .. } | Access::Write { bits } => bits,
+        }
+    }
+}
+
+/// What a local's printed declaration says about the bytes behind its name.
+#[derive(Clone, Copy, Debug)]
+enum LocalDecl {
+    /// Declared with the type recovered from its accesses.
+    Inferred { bits: n0xis_arch::Bits, signed: bool },
+    /// Declared with a type the user gave (`annotate vartype`). The user's word
+    /// for what the slot is; this renderer cannot read a width out of its text.
+    ByUser,
+}
+
 /// One variable as the renderer printed it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PrintedVar {
@@ -165,6 +203,7 @@ impl RenderNames {
             unnamed,
             slot_names,
             locals: HashMap::new(),
+            local_decls: None,
             structs: HashMap::new(),
             param_names: HashMap::new(),
             params: HashSet::new(),
@@ -231,6 +270,19 @@ impl RenderNames {
     /// Enrich with Phase 4's recovered locals/struct-fields/signature.
     pub fn with_types(mut self, types: &TypeArtifact) -> Self {
         self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
+        self.local_decls = Some(
+            types
+                .locals
+                .iter()
+                .map(|l| {
+                    let decl = match l.type_override {
+                        Some(_) => LocalDecl::ByUser,
+                        None => LocalDecl::Inferred { bits: l.size_bits, signed: l.signed },
+                    };
+                    (l.offset, decl)
+                })
+                .collect(),
+        );
         self.structs = types.structs.iter().map(|s| (s.base_var.clone(), std::collections::BTreeMap::new())).collect();
         self.param_names = types.signature.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
         self.params = types.signature.params.iter().map(|p| format!("{}.0", p.reg)).collect();
@@ -238,6 +290,31 @@ impl RenderNames {
         // must not, or a value the function does return disappears.
         self.void_return = types.signature.ret.is_void();
         self
+    }
+
+    /// This style prints no declarations, so a local's name says nothing about its
+    /// width and every access has to.
+    pub fn without_local_declarations(mut self) -> Self {
+        self.local_decls = Some(HashMap::new());
+        self
+    }
+
+    /// Does the local at `offset`, as declared, say what this access does? A local's declaration takes the widest access to the slot
+    /// and calls it signed if any is, so a narrower access differs from it. Below
+    /// 32 bits so does one of the other sign, because C extends the declared type
+    /// when the value meets a wider one. At 32 and 64 the sign comes from how the
+    /// value is used (a `jl`), the lift casts a 32-bit read where it extends it,
+    /// and spelling the slot out again would say nothing more.
+    fn declares_access(&self, offset: i128, access: Access) -> bool {
+        let Some(decls) = &self.local_decls else { return true };
+        match decls.get(&(offset as i64)) {
+            Some(LocalDecl::ByUser) => true,
+            Some(LocalDecl::Inferred { bits, signed }) => match access {
+                Access::Read { bits: read, signed: extended } => *bits == read && (*signed == extended || read >= 32),
+                Access::Write { bits: written } => *bits == written,
+            },
+            None => false,
+        }
     }
 
     /// Bind field-name maps to specific base vars (from a user/RTTI struct
@@ -502,39 +579,83 @@ fn as_base_offset(addr: &MicroExpr) -> Option<(&str, i128)> {
     }
 }
 
-/// The display text for a `Load`/`Store` address when it resolves to a named
-/// local (`local_18`, `local_neg_8`) or a recovered struct field
-/// (`base->field_0x68`) — `None` if the address doesn't match that shape at
-/// all, in which case the caller falls back to the generic `*(type*)(addr)`
-/// rendering. Stack-local naming works even without
-/// [`RenderNames::with_types`]: the name is `typeinfer::stack_local_name`'s,
-/// the same function the declarations take theirs from, so the two cannot
-/// disagree. Struct-field naming only fires once [`TypeArtifact`] recovered
-/// that base pointer.
-fn field_or_local_text(addr: &MicroExpr, names: &RenderNames) -> Option<String> {
-    let (base, offset) = as_base_offset(addr)?;
-    let root = base.split('.').next().unwrap_or(base);
-    if is_stack_root(root) {
-        let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| stack_local_name(offset as i64));
-        return Some(names.shown(name, true));
-    }
-    if let Some(fieldmap) = names.structs.get(base) {
-        let based = names.display_var(base);
-        // A user/RTTI struct definition supplies a real field name at this offset.
-        if let Some(fname) = fieldmap.get(&(offset as i64)) {
-            return Some(format!("{based}->{fname}"));
+/// A `Load`/`Store` address that resolves to a named place: a local (`local_18`,
+/// `local_neg_8`) or a field of a recovered struct. `None` if the address does
+/// not have that shape, and the caller prints a plain `*(type*)(addr)`.
+/// Stack-local naming works even without [`RenderNames::with_types`]: the name is
+/// `typeinfer::stack_local_name`'s, the same function the declarations take
+/// theirs from, so the two cannot disagree. Struct-field naming only fires once
+/// [`TypeArtifact`] recovered that base pointer.
+enum Place {
+    Local { offset: i128, name: String },
+    /// A field a user or RTTI definition names: `this->count`.
+    NamedField(String),
+    /// An anonymous field at a non-zero offset: `base->field_0x68`, or
+    /// `base->field_neg_0x8` before the base (a header or cookie, or a mid-object
+    /// pointer), not the two's-complement giant hex `{:x}` gives a negative `i128`.
+    Field(String),
+    /// What the recovered base points at, with no name for it.
+    Pointee { base: String },
+}
+
+impl Place {
+    fn of(addr: &MicroExpr, names: &RenderNames) -> Option<Place> {
+        let (base, offset) = as_base_offset(addr)?;
+        let root = base.split('.').next().unwrap_or(base);
+        if is_stack_root(root) {
+            let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| stack_local_name(offset as i64));
+            return Some(Place::Local { offset, name: names.shown(name, true) });
         }
-        // A negative offset accesses memory *before* the base (a header/cookie,
-        // or a mid-object pointer) — render it signed as `field_neg_0x8`, not as
-        // the two's-complement giant hex `field_0xfffff…f8` that `{:x}` on a
-        // negative `i128` would produce.
-        return Some(match offset {
-            0 => format!("*{based}"),
-            o if o < 0 => format!("{based}->field_neg_0x{:x}", o.unsigned_abs()),
-            o => format!("{based}->field_0x{o:x}"),
-        });
+        let fieldmap = names.structs.get(base)?;
+        let based = names.display_var(base);
+        if let Some(fname) = fieldmap.get(&(offset as i64)) {
+            return Some(Place::NamedField(format!("{based}->{fname}")));
+        }
+        Some(match offset {
+            0 => Place::Pointee { base: based },
+            o if o < 0 => Place::Field(format!("{based}->field_neg_0x{:x}", o.unsigned_abs())),
+            o => Place::Field(format!("{based}->field_0x{o:x}")),
+        })
     }
-    None
+
+    /// The place by itself, as `&` takes it and as a call goes through it: neither
+    /// of those reads a width, so neither states one.
+    fn bare(self) -> String {
+        match self {
+            Place::Local { name, .. } => name,
+            Place::NamedField(text) | Place::Field(text) => text,
+            Place::Pointee { base } => format!("*{base}"),
+        }
+    }
+
+    /// The place as a memory access, width and extension stated. The IR has both
+    /// on every `Load` and `Store`; a printed `*rdi` or `rdi->field_0x10` dropped
+    /// them, so `movzbl (%rdi),%edx` read as `v2 = (uint32_t)*rdi;`, a 32-bit load.
+    /// No struct definition is printed, so a recovered field's name says nothing
+    /// about its width. A user's field is declared by the user. A local says it
+    /// by its declaration where that is what this access does.
+    fn accessed(self, access: Access, names: &RenderNames) -> String {
+        let ty = access.c_type();
+        match self {
+            Place::Local { offset, name } if names.declares_access(offset, access) => name,
+            Place::Local { name, .. } => format!("*({ty}*)&{name}"),
+            Place::NamedField(text) => text,
+            Place::Field(text) => format!("*({ty}*)&{text}"),
+            Place::Pointee { base } => format!("*({ty}*){base}"),
+        }
+    }
+}
+
+/// A memory access as text: one rule for a read and for a write.
+fn access_text(addr: &MicroExpr, access: Access, names: &RenderNames) -> String {
+    if let Some(place) = Place::of(addr, names) {
+        return place.accessed(access, names);
+    }
+    let ty = access.c_type();
+    if let Some((base, idx)) = as_array_index(addr, access.bits()) {
+        return format!("(({ty}*){})[{}]", render_array_base(base, names), render_expr(idx, names));
+    }
+    format!("*({ty}*)({})", render_expr(addr, names))
 }
 
 fn render_const(value: i128, bits: n0xis_arch::Bits) -> String {
@@ -696,15 +817,7 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
             .or_else(|| names.data_ref(*value))
             .unwrap_or_else(|| render_const(*value, *bits)),
         MicroExpr::Var(name) => names.display_var(name),
-        MicroExpr::Load { addr, bits, signed } => {
-            if let Some(text) = field_or_local_text(addr, names) {
-                return text;
-            }
-            if let Some((base, idx)) = as_array_index(addr, *bits) {
-                return format!("{}[{}]", render_array_base(base, names), render_expr(idx, names));
-            }
-            format!("*({}*)({})", c_type(*bits, *signed), render_expr(addr, names))
-        }
+        MicroExpr::Load { addr, bits, signed } => access_text(addr, Access::Read { bits: *bits, signed: *signed }, names),
         MicroExpr::Unary(UnOp::Neg, v) => format!("-{}", render_expr(v, names)),
         MicroExpr::Unary(UnOp::Not, v) => format!("~{}", render_expr(v, names)),
         MicroExpr::Binary(BinOp::Xor, l, r) if stack_guard_operand(l, r).is_some() => {
@@ -725,8 +838,8 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
                 .unwrap_or_else(|| format!("(void*)0x{:x}", *value as u64)),
             // `lea rax, [rsp+0x10]` and `lea rax, [rbx+0x8]` name a slot, and
             // the address of a slot is what `&` means.
-            other if field_or_local_text(other, names).is_some() => {
-                format!("&{}", field_or_local_text(other, names).expect("just matched"))
+            other if Place::of(other, names).is_some() => {
+                format!("&{}", Place::of(other, names).expect("just matched").bare())
             }
             // Everything else `lea` computes is **arithmetic**, not an address:
             // a compiler reaches for it to multiply and add without touching the
@@ -894,7 +1007,14 @@ fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> 
     let callee = match (slot, target) {
         (Some(name), _) => render_callee_name(name),
         (None, CallTarget::Direct { va }) => names.callee(*va),
-        (None, CallTarget::Indirect(t)) => format!("(*{})", render_expr(t, names)),
+        // A callee is as wide as a pointer whatever is called through it, so the
+        // slot a call reads from needs no width.
+        (None, CallTarget::Indirect(t)) => match t.as_ref() {
+            MicroExpr::Load { addr, .. } if Place::of(addr, names).is_some() => {
+                format!("(*{})", Place::of(addr, names).expect("just matched").bare())
+            }
+            _ => format!("(*{})", render_expr(t, names)),
+        },
         // Unreachable: intrinsics return above. Kept total and non-panicking.
         (None, CallTarget::Intrinsic(name)) => name.clone(),
     };
@@ -974,15 +1094,7 @@ pub fn render_stmt(stmt: &MicroStmt, names: &RenderNames) -> Option<String> {
     }
     Some(match stmt {
         MicroStmt::Assign { dst, value } => format!("{} = {};", names.display_var(dst), render_expr(value, names)),
-        MicroStmt::Store { addr, value, bits } => {
-            if let Some(text) = field_or_local_text(addr, names) {
-                format!("{text} = {};", render_expr(value, names))
-            } else if let Some((base, idx)) = as_array_index(addr, *bits) {
-                format!("{}[{}] = {};", render_array_base(base, names), render_expr(idx, names), render_expr(value, names))
-            } else {
-                format!("*({}*)({}) = {};", c_type(*bits, false), render_expr(addr, names), render_expr(value, names))
-            }
-        }
+        MicroStmt::Store { addr, value, bits } => format!("{} = {};", access_text(addr, Access::Write { bits: *bits }, names), render_expr(value, names)),
         MicroStmt::Call { target, args, ret } => {
             let call = render_call(target, args, names);
             match ret {
@@ -1125,6 +1237,85 @@ mod tests {
         let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
         let expr = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)), 64, false);
         assert_eq!(render_expr(&expr, &names), "local_20");
+    }
+
+    fn load_of_local(offset: i128, bits: n0xis_arch::Bits, signed: bool) -> MicroExpr {
+        MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(offset, 64)), bits, signed)
+    }
+
+    fn declared_local(offset: i64, size_bits: n0xis_arch::Bits, signed: bool, type_override: Option<&str>) -> crate::typeinfer::LocalVar {
+        crate::typeinfer::LocalVar {
+            offset,
+            name: stack_local_name(offset),
+            size_bits,
+            signed,
+            access_count: 1,
+            type_override: type_override.map(str::to_string),
+        }
+    }
+
+    fn with_locals(locals: Vec<crate::typeinfer::LocalVar>) -> RenderNames {
+        RenderNames::new(&[], &crate::UnnamedFunction::Address).with_types(&TypeArtifact {
+            locals,
+            structs: vec![],
+            signature: crate::RecoveredSignature { params: vec![], ret: crate::typeinfer::ReturnType::Void, ret_registers: vec![], params_known: true },
+        })
+    }
+
+    /// A local is declared at the widest access to its slot, so a narrower one
+    /// has to say what it reads: `movzbl 0x20(%rsp),%eax` beside a `uint64_t
+    /// local_20` printed as `local_20` read all eight bytes.
+    #[test]
+    fn a_local_read_or_written_at_another_width_states_it() {
+        let names = with_locals(vec![declared_local(0x20, 64, false, None), declared_local(0x28, 8, true, None), declared_local(0x30, 32, true, None)]);
+        assert_eq!(render_expr(&load_of_local(0x20, 64, false), &names), "local_20");
+        assert_eq!(render_expr(&load_of_local(0x20, 8, false), &names), "*(uint8_t*)&local_20");
+        assert_eq!(render_expr(&load_of_local(0x20, 16, true), &names), "*(int16_t*)&local_20");
+        let write = MicroStmt::Store {
+            addr: MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x20, 64)),
+            value: MicroExpr::constant(1, 8),
+            bits: 8,
+        };
+        assert_eq!(render_stmt(&write, &names).as_deref(), Some("*(uint8_t*)&local_20 = 0x1;"));
+        // Declared signed by another access, read zero-extended: C would extend
+        // the declared type, so the name alone says the wrong extension.
+        assert_eq!(render_expr(&load_of_local(0x28, 8, false), &names), "*(uint8_t*)&local_28");
+        assert_eq!(render_expr(&load_of_local(0x28, 8, true), &names), "local_28");
+        // A write has no extension to get wrong.
+        let write = MicroStmt::Store {
+            addr: MicroExpr::binary(BinOp::Add, MicroExpr::var("rsp"), MicroExpr::constant(0x28, 64)),
+            value: MicroExpr::constant(1, 8),
+            bits: 8,
+        };
+        assert_eq!(render_stmt(&write, &names).as_deref(), Some("local_28 = 0x1;"));
+        // At 32 bits the sign came from a use, and the lift casts where it extends.
+        assert_eq!(render_expr(&load_of_local(0x30, 32, false), &names), "local_30");
+    }
+
+    /// `movzbl (%rdi),%edx` printed as `(uint32_t)*rdi`: a recovered base hid the
+    /// width the IR has. The same for a field, whose name states nothing since no
+    /// struct definition is printed, and for a write.
+    #[test]
+    fn an_access_through_a_recovered_base_states_its_width_and_extension() {
+        let mut names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
+        names.structs.insert("rdi.0".to_string(), std::collections::BTreeMap::new());
+        let at = |off: i128| match off {
+            0 => MicroExpr::var("rdi.0"),
+            o => MicroExpr::binary(BinOp::Add, MicroExpr::var("rdi.0"), MicroExpr::constant(o, 64)),
+        };
+        assert_eq!(render_expr(&MicroExpr::load(at(0), 8, false), &names), "*(uint8_t*)rdi.0");
+        assert_eq!(render_expr(&MicroExpr::load(at(0), 8, true), &names), "*(int8_t*)rdi.0");
+        assert_eq!(render_expr(&MicroExpr::load(at(0x10), 32, true), &names), "*(int32_t*)&rdi.0->field_0x10");
+        assert_eq!(render_expr(&MicroExpr::load(at(-8), 64, false), &names), "*(uint64_t*)&rdi.0->field_neg_0x8");
+        let write = MicroStmt::Store { addr: at(0x10), value: MicroExpr::constant(1, 16), bits: 16 };
+        assert_eq!(render_stmt(&write, &names).as_deref(), Some("*(uint16_t*)&rdi.0->field_0x10 = 0x1;"));
+        // A call through a field reads a pointer, whatever the machine calls it.
+        let call = MicroExpr::Call { target: CallTarget::Indirect(Box::new(MicroExpr::load(at(0x18), 64, false))), args: vec![] };
+        assert_eq!(render_expr(&call, &names), "(*rdi.0->field_0x18)()");
+        // A user's field is declared by the user, and `&` reads no memory.
+        names.structs.get_mut("rdi.0").expect("inserted above").insert(0x20, "count".to_string());
+        assert_eq!(render_expr(&MicroExpr::load(at(0x20), 32, false), &names), "rdi.0->count");
+        assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(at(0x10))), &names), "&rdi.0->field_0x10");
     }
 
     /// A slot and its mirror across the base register are two locals, and the
@@ -1366,7 +1557,8 @@ mod tests {
     #[test]
     fn a_scaled_pointer_load_renders_as_an_array_subscript() {
         let names = RenderNames::new(&[], &crate::UnnamedFunction::Address);
-        // *(uint32_t*)(v9 + (idx * 4))  →  v9[idx]  (stride 4 == sizeof u32)
+        // *(uint32_t*)(v9 + (idx * 4))  →  ((uint32_t*)v9)[idx]  (stride 4 == sizeof u32).
+        // The element's width is in the cast: nothing else on the page declares it.
         let load = MicroExpr::Load {
             addr: Box::new(MicroExpr::binary(
                 BinOp::Add,
@@ -1376,7 +1568,7 @@ mod tests {
             bits: 32,
             signed: false,
         };
-        assert_eq!(render_expr(&load, &names), "v9[idx]");
+        assert_eq!(render_expr(&load, &names), "((uint32_t*)v9)[idx]");
 
         // Soundness: a stride that is NOT the element size is left as a pointer
         // deref — reshaping it to `base[i]` would silently change the semantics.
@@ -1399,16 +1591,16 @@ mod tests {
         let types = TypeArtifact {
             locals: vec![],
             structs: vec![crate::typeinfer::RecoveredType { base_var: "rcx.1".into(), type_name: "struct_rcx_1".into(), fields: vec![] }],
-            signature: RecoveredSignature { params: vec![], ret: crate::typeinfer::ReturnType::Void, ret_registers: vec![], params_known: true },
+            signature: crate::RecoveredSignature { params: vec![], ret: crate::typeinfer::ReturnType::Void, ret_registers: vec![], params_known: true },
         };
         let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_types(&types);
         let addr = MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(-8, 64));
         let load = MicroExpr::load(addr, 64, false);
         // Not `field_0xfffffffffffffffffffffffffffffff8`.
-        assert_eq!(render_expr(&load, &names), "rcx.1->field_neg_0x8");
+        assert_eq!(render_expr(&load, &names), "*(uint64_t*)&rcx.1->field_neg_0x8");
         // A positive offset is unchanged.
         let pos = MicroExpr::load(MicroExpr::binary(BinOp::Add, MicroExpr::var("rcx.1"), MicroExpr::constant(0x10, 64)), 64, false);
-        assert_eq!(render_expr(&pos, &names), "rcx.1->field_0x10");
+        assert_eq!(render_expr(&pos, &names), "*(uint64_t*)&rcx.1->field_0x10");
     }
 
     #[test]
@@ -1453,7 +1645,7 @@ mod tests {
         let load = MicroExpr::load(MicroExpr::binary(BinOp::Add, base, index), 32, false);
         // The loaded value: bare-name subscript, no leading `&` (no address-of).
         // `as_array_index` peels the `* 4` stride, leaving the bare index term.
-        assert_eq!(render_expr(&load, &names), "CSWTCH_1[rdi.1]");
+        assert_eq!(render_expr(&load, &names), "((uint32_t*)CSWTCH_1)[rdi.1]");
         // Regression: the same symbol used as a pointer VALUE (its address taken,
         // not subscripted) still renders `&CSWTCH_1` — the `&` is correct there.
         assert_eq!(render_expr(&MicroExpr::AddrOf(Box::new(MicroExpr::constant(0x2010, 64))), &names), "&CSWTCH_1");

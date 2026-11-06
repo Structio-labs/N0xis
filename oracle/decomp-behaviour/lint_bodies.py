@@ -13,7 +13,7 @@ def count(c, ARGS, SAVED):
     out = collections.Counter()
     ex = {}
     sig = c.split("\n", 1)[0]
-    body = bl.strip_strings(bl.strip_comments(c.split("\n", 1)[1] if "\n" in c else ""))
+    body = bl.strip_comments(bl.strip_strings(c.split("\n", 1)[1] if "\n" in c else ""))
     raw_body = c.split("\n", 1)[1] if "\n" in c else ""
     # A parameter the body reads but the signature leaves out.
     if any(re.search(rf"\b{r}\.0\b", body) and not re.search(rf"\b{r}\b", sig) for r in ARGS):
@@ -51,11 +51,20 @@ def count(c, ARGS, SAVED):
             out["while_reads_unset"] += 1
             out["fn_while_unset"] = 1
     # Memory accesses that state no width.
+    # `*(T*)&x->field_0x8` is the field with its width stated; `&x->field_0x8` reads nothing; `(*x->field_0x8)(...)` and `(**x)(...)` read a
+    # pointer through which a call goes, as wide as a pointer whatever is printed.
     typed = len(re.findall(r"\*\s*\(\s*[\w ]+\*\s*\)", body))
-    field = len(re.findall(r"\w->field_", body))
+    call_slots = re.findall(r"\(\*+[\w.]+(?:->field_\w+)?\)\(", body)
+    out["call_slot"] = len(call_slots)
+    addr_of = re.findall(r"&[\w.]+->field_", re.sub(r"\*\s*\(\s*[\w ]+\*\s*\)\s*&", "", body))
+    out["address_of_field"] = len(addr_of)
+    plain = re.sub(r"\*\s*\(\s*[\w ]+\*\s*\)\s*&[\w.]+->field_\w+", "stated", body)
+    plain = re.sub(r"&[\w.]+->field_\w+", "stated", plain)
+    plain = re.sub(r"\(\*+[\w.]+(?:->field_\w+)?\)\(", "(", plain)
+    field = len(re.findall(r"\w->field_", plain))
     star = 0
-    for m in re.finditer(r"\*\s*([A-Za-z_][\w.]*)", body):
-        before = body[:m.start()].rstrip()
+    for m in re.finditer(r"\*\s*([A-Za-z_][\w.]*)", plain):
+        before = plain[:m.start()].rstrip()
         if before and (before[-1].isalnum() or before[-1] in "_)]") and not re.search(r"\([\w ]*(?:_t|void|int|long|char)\s*\*?\s*\)$", before):
             continue
         star += 1
@@ -87,7 +96,7 @@ TABLE = [("answered", "answered"), ("a parameter read and absent from the signat
          ("a `while` reading a name set only inside it", "fn_while_unset"), ("`switch` on a register with a later version", "switch_stale"),
          ("a branch condition printed as a comment", "fn_cond_lost"), ("  such conditions", "cond_lost"), ("  all ifs", "if_total"),
          ("an instruction printed as a comment for a value", "fn_unlifted_insn"), ("memory access that states no width", "fn_untyped_access"),
-         ("  untyped accesses", "access_untyped"), ("  typed accesses", "access_typed"), ("register saves printed as assignments", "fn_with_saves"), ("several saves into one slot name", "fn_slot_merged")]
+         ("  untyped accesses", "access_untyped"), ("  typed accesses", "access_typed"), ("  calls through a slot (not counted)", "call_slot"), ("  & of a field (not counted)", "address_of_field"), ("register saves printed as assignments", "fn_with_saves"), ("several saves into one slot name", "fn_slot_merged")]
 
 
 def abi(image):

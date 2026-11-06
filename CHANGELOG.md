@@ -50,6 +50,11 @@ in a capability's arguments may be text as well, for a client whose own numbers 
 - A `u64` past `i64::MAX` is printed as itself and no longer as a negative number.
 - `scan value --type f32 --value 0.1` finds the `f32` nearest 0.1. It compared against the double, and found nothing.
 - `--value inf` and `nan` are refused at the flag. They were accepted, and no comparison could match them.
+**A decompiled body says more of what the bytes do.** These change the text of `decomp pseudo`, not what any other command answers.
+
+- A memory access states its width and extension: `*(uint8_t*)rdi` for `movzbl (%rdi),%edx`, which printed as `(uint32_t)*rdi` and read as a
+  32-bit load. A field reads `*(uint32_t*)&rdi->field_0x10`, a subscript `((int32_t*)rax)[rcx]`, and a local its plain name only where its
+  declaration says what the access does. A write states its width the same way. The IR always had these; the printer dropped them.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

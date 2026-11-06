@@ -271,7 +271,7 @@ pub(crate) fn is_stack_root(r: &str) -> bool {
 /// The name of the stack slot `offset` bytes from the stack or frame register
 /// its address is formed from — the **one** place it is computed. The
 /// declarations (`recover_locals`) and every use in the body
-/// (`render::field_or_local_text`) both call this, because when they computed
+/// (`render::Place::of`) both call this, because when they computed
 /// it separately the two could disagree, and the scheme both copies shared
 /// could not tell a slot from its mirror.
 ///
