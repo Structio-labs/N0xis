@@ -726,7 +726,10 @@ fn unrenamed_condition(arch: &dyn Arch, jcc: &str, stmts: &[SsaStmt]) -> Option<
 
 fn expr_reads_memory(e: &MicroExpr) -> bool {
     match e {
-        MicroExpr::Load { .. } | MicroExpr::Call { .. } => true,
+        MicroExpr::Load { .. } => true,
+        // An intrinsic reads what its arguments do; the flags of an operation are one.
+        MicroExpr::Call { target: CallTarget::Intrinsic(_), args } => args.iter().any(expr_reads_memory),
+        MicroExpr::Call { .. } => true,
         MicroExpr::Binary(_, l, r) => expr_reads_memory(l) || expr_reads_memory(r),
         MicroExpr::Cast { expr: x, .. } | MicroExpr::Unary(_, x) | MicroExpr::AddrOf(x) => expr_reads_memory(x),
         MicroExpr::Compare { lhs, rhs, .. } => expr_reads_memory(lhs) || expr_reads_memory(rhs),
@@ -1057,6 +1060,14 @@ mod tests {
         // tells the two apart, so the condition cannot be spelled.
         let later = at(MicroStmt::Assign { dst: "r15".to_string(), value: MicroExpr::constant(1, 64) });
         assert_eq!(unrenamed_condition(&arch, "je", &[at(flags), later]), None);
+        // `lock decq (%rax); jne` in such a block: its flags are of what it read
+        // before the store, and the store is after them.
+        let dec = at(MicroStmt::Assign {
+            dst: FLAGS_VAR.to_string(),
+            value: MicroExpr::intrinsic("__flags_dec", vec![MicroExpr::var("old")]),
+        });
+        let store = at(MicroStmt::Store { addr: MicroExpr::var("rax"), value: MicroExpr::var("old"), bits: 64 });
+        assert!(matches!(unrenamed_condition(&arch, "jne", &[dec, store]), Some(MicroExpr::Binary(n0xis_arch::BinOp::Ne, ..))));
         // A flag read from memory, past a store.
         let from_memory = MicroStmt::Assign {
             dst: FLAGS_VAR.to_string(),
