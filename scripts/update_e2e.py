@@ -349,6 +349,18 @@ def journey(p, release, olds, seen):
     say(state.get("held") == NEW, "the state says which version is held")
     p.answer(exe, "config", "set", "update.auto", "false")
 
+    # A commit that fails on one component: each is its own fact, in the envelope, with no undo.
+    in_the_way = bin_dir / f"{mcp.name}.previous" / "in-the-way"
+    in_the_way.mkdir(parents=True)
+    code, a = p.answer(exe, "update")
+    results = {c["component"]: c["error"] is None for c in a.get("error", {}).get("components", [])}
+    say(code != 0 and a.get("error", {}).get("code") == "install-failed" and results == {"n0xis": True, "n0xis-mcp": False}, f"a commit failing on the MCP server says which is in place: {results}")
+    say(p.version(exe) == NEW and sha(mcp) == old_mcp_sha, f"the binary is in place and the MCP server is not, nothing undone: {p.version(exe)}")
+    in_the_way.rmdir()
+    in_the_way.parent.rmdir()
+    code, a = p.answer(exe, "update", "--rollback")
+    say(code == 0 and p.version(exe) == old_version and sha(mcp) == old_mcp_sha, f"and the one that moved goes back: {p.version(exe)}")
+
 
 def on_a_terminal(p, release):
     """The whole notice for real, on Linux: a run starts the check, a later run prints the line."""

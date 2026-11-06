@@ -152,9 +152,7 @@ impl Transport {
             }
             out.write_all(&buffer[..n]).map_err(|e| Refusal::new(Why::InstallFailed, format!("writing the download: {e}")))?;
         }
-        if got != size {
-            return Err(short(url, got, size));
-        }
+        // A short body is found where the digest is, by reading the file back.
         Ok(())
     }
 }

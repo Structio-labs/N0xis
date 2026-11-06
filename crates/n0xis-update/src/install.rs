@@ -239,7 +239,7 @@ impl Updater {
         // passed a file altered on the disk during the download.
         let (size, sum) = measure(&new_file.0).map_err(disk)?;
         if size != item.entry.size {
-            return Err(Refusal::new(Why::SizeMismatch, format!("{} holds {size} bytes, and the manifest states {}", new_file.0.display(), item.entry.size)));
+            return Err(Refusal::new(Why::SizeMismatch, format!("{} gave {size} bytes, and the manifest states {}", item.entry.url, item.entry.size)));
         }
         if sum != item.entry.sha256 {
             return Err(Refusal::new(

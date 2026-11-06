@@ -914,7 +914,7 @@ fn a_garbage_signed_file_is_refused_with_the_target_unchanged() {
 #[test]
 fn a_file_that_answers_wrongly_does_not_run() {
     let b = Bench::new("wronganswer");
-    for (says, why) in [("fail", "a failing exit"), ("1.9.9", "another version"), ("12.0.0", "a version holding the version")] {
+    for (says, why) in [("fail 2.0.0", "a failing exit"), ("1.9.9", "another version"), ("12.0.0", "a version holding the version")] {
         publish_program(&b, "2.0.0", &program(says));
         let refusal = b.refused(b.updater().update(), Why::DoesNotRun);
         assert!(refusal.message.contains("--version"), "{why}: {}", refusal.message);
@@ -1015,12 +1015,19 @@ fn a_held_lock_stops_update_rollback_and_the_detached_copy() {
 /// The finding: two at once both said ok, `.previous` held the new file and the old one was gone.
 #[test]
 fn parallel_runs_keep_the_old_file_for_rollback() {
-    let b = Arc::new(Bench::new("parallel"));
+    let b = Bench::new("parallel");
     b.publish(&b.manifest("2.0.0"));
+    // Slower than the lock's patience, all set off together, so they do overlap at the lock.
+    let meanwhile = Arc::new(|| std::thread::sleep(Duration::from_millis(800)));
+    b.server.route("/file", Reply::During { body: NEW.to_vec(), at: NEW.len() / 2, meanwhile });
+    let together = Arc::new(std::sync::Barrier::new(6));
     let runs: Vec<_> = (0..6)
         .map(|_| {
-            let b = b.clone();
-            std::thread::spawn(move || b.updater().update().map(|_| ()).map_err(|r| r.why))
+            let (updater, together) = (b.updater(), together.clone());
+            std::thread::spawn(move || {
+                together.wait();
+                updater.update().map(|_| ()).map_err(|r| r.why)
+            })
         })
         .collect();
     let results: Vec<_> = runs.into_iter().map(|r| r.join().unwrap()).collect();
