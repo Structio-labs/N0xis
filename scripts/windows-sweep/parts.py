@@ -1110,7 +1110,8 @@ def real_image(s, cases, im):
     top, mid = [x[1] for x in sized[:3]], sized[len(sized) // 2][1]
     arm = "a64" in tag or "arm" in tag
     t0 = time.time()
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
         wanted = [(id, a) for id, a in real_cases(tag, top, mid, arm) if id not in cases.HEAVY or im.get("heavy")]
         twins = {id: pool.submit(s.lin, [x.replace("@F", lfile) for x in a], cwd, None, 600) for id, a in wanted}
         for id, a in wanted:
@@ -1124,6 +1125,9 @@ def real_image(s, cases, im):
             s.row(case, s.leaf_of(a), "failed" if why else "passed", why or "")
             del w, l
             twins[id] = None
+    finally:
+        # A machine gone must end the run now, not when the twin has answered everything still queued.
+        pool.shutdown(wait=False, cancel_futures=True)
     if im.get("truth"):
         scored_row(s, im, listed, wfile, lfile, cwd)
     s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "rmdir", "/s", "/q", s.W(wdir)], bound=120)
@@ -1150,10 +1154,13 @@ def scored_row(s, im, listed, wfile, lfile, cwd):
         d = s.parsed(disc["o"])
         return dict(image=str(im["path"]), engine=dict(path=side, sha256=side), discover=d, why=dict(zip([f["va"] for f in d["data"]["functions"]], lines[1:])))
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             twin = pool.submit(measure, "twin", lfile, s.lin)
             answers["win"] = measure("windows", wfile, s.win)
             answers["lin"] = twin.result()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         truth = truth_reader.truth(str(im["truth"]))
         symbols = readers.symbols(str(im["path"]))
         _, sw = score.score(truth, answers["win"], symbols)
