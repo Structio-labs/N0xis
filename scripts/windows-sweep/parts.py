@@ -457,6 +457,7 @@ def not_run_rows(s):
 # -- the defects found by the first sweep, each a case for good ----------------------------------------------------------
 
 REPEAT_TIMEOUT = 60  # seen 4 times in 40: at 10% a run, 60 runs miss it 0.2% of the time
+REPEAT_KILLED_WATCH = 6
 
 
 def defects_part(s):
@@ -480,9 +481,9 @@ def defects_part(s):
             interrupted(s, L, f"2.watch-ctrl-{how}", "debug watch", how, lambda: ["debug", "watch", *FP(), "--addr", a["toggled"], "--kind", "write", "--timeout-ms", "30000"])
         for n in range(3):
             killed(s, L, f"2.await-hit-killed-then-undo#{n}", "patch undo", lambda: ["debug", "await-hit", *FP(), "--addr", site(), "--timeout-ms", "30000"], undo=True)
-        # The same for a watch. A debug register is in the thread, not the journal.
-        for n in range(3):
-            killed(s, L, f"killed-watch-target-lives#{n}", "debug watch", lambda: ["debug", "watch", *FP(), "--addr", a["toggled"], "--kind", "write", "--timeout-ms", "30000"], undo=False)
+        # The same for a watch: the debug register stays in the thread, and only the record and `patch undo` can take it out.
+        for n in range(REPEAT_KILLED_WATCH):
+            killed(s, L, f"2.watch-killed-then-undo#{n}", "patch undo", lambda: ["debug", "watch", *FP(), "--addr", a["toggled"], "--kind", "write", "--timeout-ms", "30000"], undo=True, cleared=True)
         # 4. A filtered watch that times out with hits passing: intermittent, so many runs of one row.
         deaths, h = [], int(a["hooked"], 16)
         for i in range(REPEAT_TIMEOUT):
@@ -536,9 +537,10 @@ def interrupted(s, L, case, command, how, build):
     s.row(case, command, "failed" if why else "passed", why or "")
 
 
-def killed(s, L, case, command, build, undo):
-    """A kill cannot be handled, so it must leave something to recover from, or nothing to recover."""
-    case = "defect." + case if not case.startswith("killed-watch") else case
+def killed(s, L, case, command, build, undo, cleared=False):
+    """A kill cannot be handled, so it must leave something to recover from. `cleared`: the undo must say it took a debug register out
+    of a thread, or a target that lives would prove only that the watch was never armed when the kill came."""
+    case = "defect." + case
     if s.skipped(case):
         return
     L.wait_past_site()
@@ -547,6 +549,10 @@ def killed(s, L, case, command, build, undo):
     if undo:
         u = s.win(["patch", "undo"], cwd="{W}live")
         why = why or s.contract(u) or s.expectation(u, None)
+        if not why and cleared:
+            said = (s.parsed(u["o"]) or {}).get("data") or {}
+            if not (said.get("threads_cleared") and said.get("slots_cleared")):
+                why = f"patch undo cleared nothing: {u['o'][:160]!r}"
     lived = L.T.alive(need=60, wait=9)
     if not lived:
         why = f"the target died at the next pass, exit {L.T.exit_code()}"
@@ -1005,8 +1011,9 @@ def real_part(s):
                 s.row(f"real.{im['tag']}", "", "not-run", f"{im['file']} is not under --images")
     else:
         s.row("real-programs", "", "not-run", "no directory of real programs was given to this run")
-    # The tool looking at itself, always at hand.
-    images.append(dict(tag="n0xis-itself", path=s.args.dir / M.ASSETS["n0xis.exe"], heavy=True, truth=None))
+    # The tool looking at itself, beside the others: with no programs asked for, none is run, and the row above says so.
+    if s.args.images:
+        images.append(dict(tag="n0xis-itself", path=s.args.dir / M.ASSETS["n0xis.exe"], heavy=True, truth=None))
     if s.args.extra_images:
         for im in json.loads(s.args.extra_images.read_text()):
             images.append(dict(im, path=Path(im["file"]), truth=Path(im["truth"]) if im.get("truth") else None))
