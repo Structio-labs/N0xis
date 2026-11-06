@@ -13,11 +13,11 @@ use crate::{Manifest, Refusal, Why, from_hex, to_hex, write_by_rename};
 
 /// The release's ed25519 public key, 64 hex digits; the private key never leaves the owner's machine.
 ///
-/// **This placeholder is not hex, on purpose: a build that still holds it refuses every manifest.**
-/// All zeros would parse, and a key of small order is one a signature can be forged against, so a
-/// placeholder that looks like a key would be a hole rather than a refusal. `scripts/release.py`
-/// refuses to publish while this holds it, or a key that is not the signing key's.
-pub const RELEASE_PUBLIC_KEY: &str = "PLACEHOLDER: the release public key goes here, and until then every manifest is refused";
+/// **A constant that does not read as hex holds no key, and that build refuses every manifest.** So a
+/// typo fails closed. All zeros would parse, and a key of small order is one a signature can be forged
+/// against, so never put a key here that was not made as one. `scripts/release.py` refuses to publish
+/// while this is not the signing key's.
+pub const RELEASE_PUBLIC_KEY: &str = "2aeb5529f17b35dad0e4f6c2d88b3193a0d67a0848312bd1e23d53981a6d1c26";
 
 /// Where a change of key is remembered, in the user's configuration directory: the signed statements
 /// themselves, and not the keys they name, so that writing this file grants nothing.

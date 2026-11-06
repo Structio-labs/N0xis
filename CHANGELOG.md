@@ -5,6 +5,14 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-11-06
+
+**A copy now learns of a newer release and installs it when told, from a manifest signed by a key in the binary.** Everything is written and
+checked before anything moves, the new binary must run before it replaces the old one, and `update --rollback` goes back.
+
+What this changes for a script: nothing. In a pipe there is no line and no request. In a terminal, at most once a day, this is the first request
+the tool makes on its own, and it carries only the version; `update.check` or `N0X_NO_UPDATE_CHECK=1` turns it off.
+
 ### Added
 
 - **`n0x update`: the tool offers, the user decides.** `update` installs a newer release, `update --check` only asks, `update --rollback` goes
