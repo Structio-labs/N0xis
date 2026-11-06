@@ -8,12 +8,13 @@ All notable changes to N0xis are recorded here. Versions follow
 ### Added
 
 - **`n0x update`: the tool offers, the user decides.** `update` installs a newer release, `update --check` only asks, `update --rollback` goes
-  back. A download is checked against a signed manifest (ed25519) before anything moves, and each failure is its own refusal with the installed
-  file unchanged. In a terminal, at most once a day, one line on standard error; in a script or a pipe no line and no request. The MCP server
+  back, once. Every address is asked and the highest version that verifies is the answer. A download is checked against a signed manifest (ed25519) and
+  read back from the disk, and the new binary must answer `--version`, before anything moves, and each failure is its own refusal with the installed
+  files unchanged. In a terminal, at most once a day, one line on standard error; in a script or a pipe no line and no request. The MCP server
   states its version and any newer one when a session starts, and makes no request. This is the first network client in the tree, in
   `n0xis-update`, linked by the two doors only.
 - **`n0x config get` and `set`**, the user's own settings in one file in the user's configuration directory: `update.check` (on),
-  `update.auto` (off) and `update.manifest_url`.
+  `update.auto` (off) and `update.manifest_url`. A directory owned by another user is treated as absent, so `sudo -E` reads nothing of the user's.
 
 ## [0.3.7] — 2026-11-06
 

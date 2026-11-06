@@ -229,10 +229,13 @@ structured JSON derived from the live clap tree.
 ### `update [--check | --rollback]`
 
 Installs a newer release over this binary, and over any other component of the release already beside it. `--check` only asks; `--rollback` goes
-back to the file the last update kept beside the binary, and needs no network. A download is checked against a signed manifest before anything moves,
-and each failure is its own `error.code` with the installed file unchanged: `no-release-key`, `no-signature`, `bad-signature`, `bad-manifest`,
-`manifest-unavailable`, `no-entry`, `no-digest`, `older-version`, `download-failed`, `size-mismatch`, `digest-mismatch`, `not-writable` (naming the
-file to fetch), `install-failed`, `no-previous`. See docs/design/UPDATE.md.
+back to the file the last update kept beside the binary, once, and needs no network. Every frozen address is asked and the highest version that verifies
+is the answer, unless `update.manifest_url` verifies, which decides alone. A download is checked against a signed manifest and read back from the disk,
+and the new binary is run, before anything moves. Each failure before that is its own `error.code` with every installed file unchanged: `no-release-key`, `no-signature`,
+`bad-signature`, `bad-manifest`, `manifest-unavailable`, `no-entry`, `no-digest`, `older-version`, `download-failed`, `size-mismatch`, `digest-mismatch`,
+`does-not-run`, `not-a-regular-file`, `not-writable` (naming the file to fetch), `update-in-progress`, `install-failed`. A failure while moving files is `install-failed` with
+`error.components`, stating for each component whether it is in place. `--rollback` refuses with `no-previous`, `previous-does-not-match` or `update-in-progress`.
+See docs/design/UPDATE.md.
 
 - Sources: none (the running binary).
 - Schema: `n0xis.update.v1`
@@ -240,8 +243,10 @@ file to fetch), `install-failed`, `no-previous`. See docs/design/UPDATE.md.
 ### `config get [key]`, `config set <key> <value>`
 
 The user's own settings, one JSON file in the user's configuration directory (`N0X_CONFIG_DIR` moves it): `update.check` (default `true`),
-`update.auto` (default `false`), `update.manifest_url` (asked ahead of the built-in addresses, `https://` only, and what it serves must still be
+`update.auto` (default `false`), `update.manifest_url` (asked ahead of the built-in addresses and deciding alone when it verifies, `https://` only, and what it serves must still be
 signed; empty clears it). A file that does not read is a refusal and is not overwritten, and a run treats it as the check being off.
+A directory, or its nearest existing ancestor, that is not owned by this user is treated as absent: `config set` refuses as `config-not-yours`, and
+`config get` answers the defaults with `file: null` and a `note` saying why.
 
 - Sources: none.
 - Schema: `n0xis.config.v1`
