@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A `printf`-family call shows its format and what the format asks for.** It printed no values, a stack argument as one more write to a local, and a short format as `(void*)0x4027`. A format this image holds is read wherever it starts, its conversions are counted, and the call takes that many, registers by the convention and then the stack. The format prints as text at the call, also where it starts inside a longer string. A positional `%1$d` or a `%Lf` is not counted, and the call stays as it was. Any import or function the image's tables name so, on x86-64 and AArch64 conventions; on a 32-bit stack ABI not yet. `decomp pseudo` only.
+
 **A call to the image's own export through its PLT has that export's name.** `.rela.plt` binds the stub's slot to a function this image defines, and the call printed `sub_8BD0` for `luaL_checktype`. The name now reaches every answer that reads a call's resolved name.
 
 **A body stops at a call that does not come back.** `decomp pseudo` asks a direct call's local target, from its own graph and a few calls down, whether it ever returns, and the body no longer runs on past such a call into code that belongs to another path. The question has an answer only as proof: an exit that cannot be shown to end, a cycle, or running out of depth all mean it may return. Other commands keep the graph they had, since it says where a function ends for everything that lists one.

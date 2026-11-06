@@ -1155,12 +1155,11 @@ fn render_call(target: &CallTarget, args: &[MicroExpr], names: &RenderNames) -> 
     let args_text = match known {
         Some(sig) => {
             let n = sig.params.len().min(args.len());
-            args[..n]
-                .iter()
-                .zip(sig.params.iter())
-                .map(|(a, p)| format!("/*{}*/ {}", p.name, render_expr(a, names)))
-                .collect::<Vec<_>>()
-                .join(", ")
+            // What a variadic function was given past its named parameters is printed as
+            // it stands: what is here has been settled by then.
+            let named = args[..n].iter().zip(sig.params.iter()).map(|(a, p)| format!("/*{}*/ {}", p.name, render_expr(a, names)));
+            let rest = args[n..].iter().filter(|_| sig.variadic).map(|a| render_expr(a, names));
+            named.chain(rest).collect::<Vec<_>>().join(", ")
         }
         None => {
             // Drop trailing lift-padding arguments. The Win64 lift passes all

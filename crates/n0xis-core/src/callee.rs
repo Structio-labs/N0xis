@@ -53,6 +53,8 @@ impl Takes {
 #[derive(Clone, Copy, Debug)]
 enum Callee {
     Known(&'static KnownSignature),
+    /// A printf-family call whose format is known here: this many, read off the format.
+    Counted(usize),
     Body(Va),
     Unknown,
 }
@@ -110,7 +112,18 @@ fn with_memo<R>(id: &str, f: impl FnOnce(&mut Memo) -> R) -> R {
 /// A call's callee, by the names the graph resolved for it. A call through a PLT to a
 /// function this image defines is that function.
 fn callee_of(ctx: &Ctx, cfg: &CfgArtifact, target: &CallTarget) -> Callee {
-    let (name, va) = match target {
+    let (name, va) = name_and_body(cfg, target);
+    if let Some(sig) = name.and_then(|n| known_signature(n.rsplit('!').next().unwrap_or(n))) {
+        return Callee::Known(sig);
+    }
+    match va {
+        Some(va) => Callee::Body(ctx.symbols.and_then(|s| s.thunk_to(va)).unwrap_or(va)),
+        None => Callee::Unknown,
+    }
+}
+
+fn name_and_body<'c>(cfg: &'c CfgArtifact, target: &CallTarget) -> (Option<&'c str>, Option<Va>) {
+    match target {
         CallTarget::Direct { va } => (cfg.callsites.iter().find(|c| c.target == Some(*va)).and_then(|c| c.target_name.as_deref()), Some(*va)),
         CallTarget::Indirect(t) => match t.as_ref() {
             MicroExpr::Load { addr, .. } => match addr.as_ref() {
@@ -124,14 +137,205 @@ fn callee_of(ctx: &Ctx, cfg: &CfgArtifact, target: &CallTarget) -> Callee {
             _ => (None, None),
         },
         CallTarget::Intrinsic(_) => (None, None),
+    }
+}
+
+/// Which argument of a printf-family function is its format, by the name an import
+/// or the image's own tables give it. `v*` forms take a `va_list` and are not here.
+fn format_position(name: &str) -> Option<usize> {
+    let bare = name.rsplit('!').next().unwrap_or(name);
+    Some(match bare.rsplit("__").next().filter(|_| bare.contains("libc_so")).unwrap_or(bare) {
+        "printf" | "__mingw_printf" => 0,
+        "fprintf" | "sprintf" | "dprintf" | "asprintf" | "__mingw_fprintf" | "__mingw_sprintf" | "__printf_chk" => 1,
+        "snprintf" | "_snprintf" | "__mingw_snprintf" | "__fprintf_chk" | "__dprintf_chk" | "__asprintf_chk" => 2,
+        "__sprintf_chk" => 3,
+        "__snprintf_chk" => 4,
+        _ => return None,
+    })
+}
+
+/// Which register file a conversion's argument comes in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Conversion {
+    Int,
+    Float,
+}
+
+/// The arguments a format asks for, in order. `None` for what cannot be counted: a
+/// positional `%1$d` may read one twice, `%Lf` comes on the stack at a width of its own,
+/// and an unknown conversion could mean anything.
+fn conversions(format: &[u8]) -> Option<Vec<Conversion>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < format.len() {
+        if format[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if format.get(i) == Some(&b'%') {
+            i += 1;
+            continue;
+        }
+        while matches!(format.get(i), Some(b'#' | b'0' | b'-' | b' ' | b'+' | b'\'' | b'I')) {
+            i += 1;
+        }
+        for _ in 0..2 {
+            if format.get(i) == Some(&b'*') {
+                out.push(Conversion::Int);
+                i += 1;
+            }
+            while format.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+            if format.get(i) == Some(&b'$') {
+                return None;
+            }
+            if format.get(i) == Some(&b'.') {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        while matches!(format.get(i), Some(b'h' | b'l' | b'q' | b'j' | b'z' | b't')) {
+            i += 1;
+        }
+        match format.get(i)? {
+            b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'c' | b's' | b'p' | b'n' => out.push(Conversion::Int),
+            b'a' | b'A' | b'e' | b'E' | b'f' | b'F' | b'g' | b'G' => out.push(Conversion::Float),
+            b'm' => {}
+            _ => return None,
+        }
+        i += 1;
+    }
+    Some(out)
+}
+
+/// The most a format is read for: past this it is data that merely starts like text.
+const LONGEST_FORMAT: usize = 4096;
+
+/// The C string at `va`, with what a format holds and nothing else, whatever comes
+/// before it: a linker merges one string into the tail of another, so a format may start
+/// inside a longer one, and it need not be long enough to pass for text on its own.
+fn format_at(ctx: &Ctx, va: u64) -> Option<Vec<u8>> {
+    let bytes = (0..=6).rev().find_map(|shift| ctx.source.read(Va(va), LONGEST_FORMAT >> shift).ok().filter(|b| b.contains(&0)))?;
+    let text = &bytes[..bytes.iter().position(|b| *b == 0)?];
+    text.iter().all(|&b| (0x20..=0x7e).contains(&b) || matches!(b, b'\t' | b'\n' | b'\r') || b >= 0x80).then(|| text.to_vec())
+}
+
+/// The value a name was given a constant address, directly or by a copy.
+fn constant_address(e: &MicroExpr, assigns: &HashMap<&str, &MicroExpr>, depth: u8) -> Option<u64> {
+    match e {
+        MicroExpr::Const { value, .. } => u64::try_from(*value).ok(),
+        MicroExpr::AddrOf(inner) => constant_address(inner, assigns, depth),
+        MicroExpr::Var(v) if depth > 0 => constant_address(assigns.get(v.as_str())?, assigns, depth - 1),
+        _ => None,
+    }
+}
+
+fn assigns_of(blocks: &[SsaBlock]) -> HashMap<&str, &MicroExpr> {
+    blocks.iter().flat_map(|b| &b.stmts).filter_map(|s| if let MicroStmt::Assign { dst, value } = &s.stmt { Some((dst.as_str(), value)) } else { None }).collect()
+}
+
+/// A call to a printf-family function whose format is a string this image holds.
+struct FormatCall {
+    /// How many arguments stand before the conversions', the format last.
+    fixed: usize,
+    address: u64,
+    conversions: Vec<Conversion>,
+    text: Vec<u8>,
+}
+
+fn format_call(ctx: &Ctx, cfg: &CfgArtifact, target: &CallTarget, args: &[MicroExpr], assigns: &HashMap<&str, &MicroExpr>) -> Option<FormatCall> {
+    let at = format_position(name_and_body(cfg, target).0?)?;
+    let address = constant_address(args.get(at)?, assigns, 4)?;
+    let text = format_at(ctx, address)?;
+    Some(FormatCall { fixed: at + 1, address, conversions: conversions(&text)?, text })
+}
+
+/// Where the arguments of a call are, past what its registers hold: which integer
+/// registers and vector registers take them on this convention, and where the stack
+/// ones start.
+struct ArgLayout {
+    ints: usize,
+    floats: usize,
+    /// Win64 gives a position one register in whichever file; System V counts each file.
+    shared: bool,
+    /// Bytes from the stack pointer at a call to its first stack argument.
+    shadow: i128,
+    word: i128,
+}
+
+fn arg_layout(ctx: &Ctx, ints: usize) -> ArgLayout {
+    let shared = crate::ir::float_args_share_position(ctx);
+    ArgLayout {
+        ints,
+        floats: crate::ir::float_arg_registers(ctx).len(),
+        shared,
+        shadow: if shared { 0x20 } else { 0 },
+        word: i128::from(ctx.arch.pointer_size().unwrap_or(8)),
+    }
+}
+
+/// Where one of a format's arguments is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    Int(usize),
+    Float(usize),
+    Stack(usize),
+}
+
+fn places(layout: &ArgLayout, fixed: usize, conversions: &[Conversion]) -> Vec<Place> {
+    let (mut int, mut float, mut stack) = (fixed, 0, 0);
+    conversions
+        .iter()
+        .map(|c| {
+            let place = match c {
+                _ if layout.shared && int >= layout.ints => None,
+                Conversion::Int if int < layout.ints => Some(Place::Int(int)),
+                Conversion::Float if layout.shared => Some(Place::Float(int)),
+                Conversion::Float if float < layout.floats => Some(Place::Float(float)),
+                _ => None,
+            };
+            match place {
+                Some(Place::Int(_)) => int += 1,
+                Some(Place::Float(_)) if layout.shared => int += 1,
+                Some(Place::Float(_)) => float += 1,
+                _ => stack += 1,
+            }
+            place.unwrap_or_else(|| Place::Stack(stack - 1))
+        })
+        .collect()
+}
+
+/// The version of register `reg` standing just before statement `at` of block `b`, up a
+/// chain of single predecessors. Nothing is claimed past a join.
+fn version_before(blocks: &[SsaBlock], cfg: &CfgArtifact, mut b: usize, at: usize, reg: &str) -> Option<String> {
+    let writes = |s: &crate::ssa::SsaStmt| -> Option<String> {
+        match &s.stmt {
+            MicroStmt::Assign { dst, .. } | MicroStmt::Call { ret: Some(dst), .. } if dst.split('.').next() == Some(reg) => Some(dst.clone()),
+            _ => None,
+        }
     };
-    if let Some(sig) = name.and_then(|n| known_signature(n.rsplit('!').next().unwrap_or(n))) {
-        return Callee::Known(sig);
+    if let Some(v) = blocks.get(b)?.stmts[..at.min(blocks[b].stmts.len())].iter().rev().find_map(writes) {
+        return Some(v);
     }
-    match va {
-        Some(va) => Callee::Body(ctx.symbols.and_then(|s| s.thunk_to(va)).unwrap_or(va)),
-        None => Callee::Unknown,
+    for _ in 0..blocks.len() {
+        if let Some(p) = blocks[b].phis.iter().find(|p| p.var == reg) {
+            return Some(p.dst.clone());
+        }
+        let start = cfg.blocks.get(b)?.start;
+        let preds: Vec<usize> = cfg.blocks.iter().enumerate().filter(|(_, x)| x.successors.iter().any(|s| s.to == start)).map(|(i, _)| i).collect();
+        match preds.as_slice() {
+            [] if b == 0 => return Some(format!("{reg}.0")),
+            [p] => b = *p,
+            _ => return None,
+        }
+        if let Some(v) = blocks.get(b)?.stmts.iter().rev().find_map(writes) {
+            return Some(v);
+        }
     }
+    None
 }
 
 /// Every real call in these blocks, statement or folded into an expression.
@@ -175,8 +379,28 @@ fn read_here(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &RawFlow, 
     // Propagation drops a store nothing loads, and storing it did read the register.
     used.extend(flow.stored_at.keys().filter(|e| !flow.saved.contains(*e)).cloned());
     let mut forwards = Vec::new();
+    let assigns = assigns_of(blocks);
+    let layout = arg_layout(ctx, arg_regs.len());
+    for (bi, b) in blocks.iter().enumerate() {
+        for (si, s) in b.stmts.iter().enumerate() {
+            let Some((target, args)) = call_of_stmt(&s.stmt) else { continue };
+            let Some(fc) = format_call(ctx, cfg, target, args, &assigns) else { continue };
+            // A double a format asks for and nothing here set: that is a parameter too.
+            for p in places(&layout, fc.fixed, &fc.conversions) {
+                if let Place::Float(i) = p
+                    && let Some(reg) = crate::ir::float_arg_registers(ctx).get(i)
+                    && version_before(blocks, cfg, bi, si, reg).is_some_and(|v| v.ends_with(".0"))
+                {
+                    used.insert(format!("{reg}.0"));
+                }
+            }
+        }
+    }
     for_each_call(blocks, &mut |target, args| {
-        let callee = callee_of(ctx, cfg, target);
+        let callee = match format_call(ctx, cfg, target, args, &assigns) {
+            Some(fc) => Callee::Counted(places(&layout, fc.fixed, &fc.conversions).iter().filter_map(|p| if let Place::Int(i) = p { Some(i + 1) } else { None }).max().unwrap_or(fc.fixed)),
+            None => callee_of(ctx, cfg, target),
+        };
         for (pos, a) in args.iter().enumerate() {
             if own_slot(pos, a, arg_regs) {
                 forwards.push((pos, callee));
@@ -195,6 +419,7 @@ fn takes_of(ctx: &Ctx, id: Option<&str>, callee: Callee, depth: u8) -> Takes {
     match callee {
         Callee::Known(sig) if sig.variadic => Takes::AtLeast(sig.params.len()),
         Callee::Known(sig) => Takes::Exactly(sig.params.len()),
+        Callee::Counted(n) => Takes::Exactly(n),
         Callee::Unknown => Takes::AtLeast(0),
         Callee::Body(va) => takes_of_body(ctx, id, va, depth),
     }
@@ -335,6 +560,7 @@ fn gives_of(ctx: &Ctx, id: Option<&str>, callee: Callee, depth: u8) -> Gives {
     match callee {
         Callee::Known(sig) if sig.ret.is_some() => Gives::Value,
         Callee::Known(_) => Gives::Nothing,
+        Callee::Counted(_) => Gives::Value,
         Callee::Unknown => Gives::Unknown,
         Callee::Body(_) if depth == 0 => Gives::Unknown,
         Callee::Body(va) => {
@@ -573,18 +799,129 @@ fn args_kept(takes: Takes, args: &[MicroExpr], defs: &HashMap<&str, Def<'_>>, pa
     }
 }
 
+/// The call a statement makes, on its own or folded into what it assigns or returns.
+fn call_of_stmt(s: &MicroStmt) -> Option<(&CallTarget, &[MicroExpr])> {
+    match s {
+        MicroStmt::Call { target, args, .. }
+        | MicroStmt::Assign { value: MicroExpr::Call { target, args }, .. }
+        | MicroStmt::Return(Some(MicroExpr::Call { target, args })) => Some((target, args)),
+        _ => None,
+    }
+}
+
+fn args_of_stmt(s: &mut MicroStmt) -> Option<&mut Vec<MicroExpr>> {
+    match s {
+        MicroStmt::Call { args, .. } | MicroStmt::Assign { value: MicroExpr::Call { args, .. }, .. } | MicroStmt::Return(Some(MicroExpr::Call { args, .. })) => Some(args),
+        _ => None,
+    }
+}
+
+/// Give a printf-family call what its format asks for: registers by the convention, then
+/// the stack, where a push or a store into the outgoing area becomes the argument it is and
+/// stops printing as a write to a local. The format prints as its text at the call.
+fn settle_format_calls(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], raw: &[SsaBlock], formats: &mut HashMap<u64, String>) {
+    let snapshot = blocks.to_vec();
+    let assigns = assigns_of(&snapshot);
+    let raw_assigns = assigns_of(raw);
+    let arg_regs = abi_arg_regs(ctx);
+    let layout = arg_layout(ctx, arg_regs.len());
+    let sp = ctx.arch.stack_pointer();
+    // Stack arguments are read off the form before propagation: to the pass that clears
+    // stores nothing here loads, the outgoing area is such a store.
+    let frame = sp.map(|sp| crate::ssa::frame_offsets(raw, sp)).unwrap_or_default();
+    let mut used_stores: Vec<(usize, Va)> = Vec::new();
+    let mut format_names: BTreeSet<String> = BTreeSet::new();
+    for (bi, b) in snapshot.iter().enumerate() {
+        for (si, s) in b.stmts.iter().enumerate() {
+            let Some((target, args)) = call_of_stmt(&s.stmt) else { continue };
+            let Some(fc) = format_call(ctx, cfg, target, args, &assigns) else { continue };
+            formats.insert(fc.address, crate::decomp::c_literal(&fc.text));
+            let format_arg = &args[fc.fixed - 1];
+            if let MicroExpr::Var(v) = format_arg {
+                format_names.insert(v.clone());
+            }
+            let mut new_args: Vec<MicroExpr> = args[..fc.fixed - 1].to_vec();
+            new_args.push(if let MicroExpr::Var(v) = format_arg { assigns.get(v.as_str()).map_or_else(|| format_arg.clone(), |e| (*e).clone()) } else { format_arg.clone() });
+            let raw_at = raw.get(bi).map_or(0, |r| r.stmts.iter().position(|x| x.va >= s.va).unwrap_or(r.stmts.len()));
+            let call_sp = sp.and_then(|sp| version_before(raw, cfg, bi, raw_at, sp)).and_then(|v| frame.get(&v).copied());
+            for p in places(&layout, fc.fixed, &fc.conversions) {
+                new_args.push(match p {
+                    Place::Int(i) => args.get(i).cloned().unwrap_or_else(|| MicroExpr::Unknown("argument".into())),
+                    Place::Float(i) => crate::ir::float_arg_registers(ctx)
+                        .get(i)
+                        .and_then(|r| version_before(&snapshot, cfg, bi, si, r))
+                        .map_or_else(|| MicroExpr::Unknown("vector argument".into()), MicroExpr::Var),
+                    Place::Stack(i) => {
+                        let want = call_sp.map(|o| o + layout.shadow + layout.word * i as i128);
+                        let found = want.zip(raw.get(bi)).and_then(|(want, r)| {
+                            r.stmts[..raw_at].iter().rev().find_map(|st| match &st.stmt {
+                                MicroStmt::Store { addr, value, .. } if crate::ssa::frame_offset_of(addr, &frame) == Some(want) => Some((st.va, value.clone())),
+                                _ => None,
+                            })
+                        });
+                        match found {
+                            Some((va, value)) => {
+                                used_stores.push((bi, va));
+                                // A value only that store read may be gone from here with it.
+                                match &value {
+                                    MicroExpr::Var(v) if !assigns.contains_key(v.as_str()) => raw_assigns.get(v.as_str()).map_or(value.clone(), |e| (*e).clone()),
+                                    _ => value,
+                                }
+                            }
+                            None => MicroExpr::Unknown(format!("stack argument {i}")),
+                        }
+                    }
+                });
+            }
+            if let Some(a) = args_of_stmt(&mut blocks[bi].stmts[si].stmt) {
+                *a = new_args;
+            }
+        }
+    }
+    for (bi, va) in used_stores {
+        for s in blocks[bi].stmts.iter_mut().filter(|s| s.va == va && matches!(s.stmt, MicroStmt::Store { .. })) {
+            s.stmt = MicroStmt::Nop;
+        }
+    }
+    // The format's register, now that the text stands at the call.
+    let mut read = BTreeSet::new();
+    for b in blocks.iter() {
+        for p in &b.phis {
+            read.extend(p.inputs.iter().map(|i| i.value.clone()));
+        }
+        for s in &b.stmts {
+            for e in crate::optimize::stmt_read_exprs(&s.stmt) {
+                crate::ssa::collect_expr_vars(e, &mut read);
+            }
+        }
+        if let Some(c) = &b.condition {
+            crate::ssa::collect_expr_vars(c, &mut read);
+        }
+    }
+    for b in blocks.iter_mut() {
+        for s in &mut b.stmts {
+            if matches!(&s.stmt, MicroStmt::Assign { dst, .. } if format_names.contains(dst) && !read.contains(dst)) {
+                s.stmt = MicroStmt::Nop;
+            }
+        }
+    }
+}
+
 /// Cut every call's arguments in these blocks to what it is passed. The lift gave each
 /// the whole convention, because the instruction does not say, and on one C image 2 659
 /// of 3 121 calls printed more arguments than their callee has. In the IR the body is
 /// rendered from and not at print, so that every style and everything read off the
 /// rendered blocks agree; a pass that wants the convention reads the blocks before this.
-pub(crate) fn settle_call_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], params: &BTreeSet<String>) {
+pub(crate) fn settle_call_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], raw: &[SsaBlock], params: &BTreeSet<String>, formats: &mut HashMap<u64, String>) {
+    settle_format_calls(ctx, cfg, blocks, raw, formats);
     let id = ctx_identity(ctx);
     let depth = if id.is_some() { DEPTH } else { 1 };
     let snapshot = blocks.to_vec();
     let defs = defs_of(&snapshot);
     let settle = |target: &CallTarget, args: &mut Vec<MicroExpr>| {
-        if !matches!(target, CallTarget::Intrinsic(_)) {
+        // What its format asked for is what it was given, above.
+        let formatted = name_and_body(cfg, target).0.is_some_and(|n| format_position(n).is_some()) && args.iter().any(|a| matches!(a, MicroExpr::Const { .. } | MicroExpr::AddrOf(_)));
+        if !matches!(target, CallTarget::Intrinsic(_)) && !formatted {
             let takes = takes_of(ctx, id.as_deref(), callee_of(ctx, cfg, target), depth);
             args.truncate(args_kept(takes, args, &defs, params));
         }
@@ -893,6 +1230,90 @@ mod tests {
             .unwrap();
         let l = line_with(&b, "the_export(");
         assert!(l.contains("the_export(0x1)"), "{l}");
+    }
+
+    struct PrintfAt;
+    impl n0xis_sources::SymbolProvider for PrintfAt {
+        fn slot_target(&self, _va: Va) -> Option<Va> {
+            None
+        }
+        fn symbol_at(&self, va: Va) -> Option<n0xis_contracts::Symbol> {
+            (va.0 == G).then(|| n0xis_contracts::Symbol { va: Va(G), module: String::new(), name: "printf".into(), kind: n0xis_contracts::SymKind::Function })
+        }
+    }
+
+    /// `f` at `F` with a format at `0x2000`, the call to `printf` at `G`.
+    fn printf_body(mut f: Vec<u8>, format: &[u8]) -> crate::PseudoFunction {
+        call(&mut f, G);
+        f.push(0xc3);
+        let mut bytes = vec![0xcc; 0x300];
+        bytes[..f.len()].copy_from_slice(&f);
+        bytes[0x100] = 0xc3;
+        let snap = Snapshot::builder().region(Va(F), bytes).region(Va(0x2000), format.to_vec()).build();
+        let arch = X64::new();
+        let syms = PrintfAt;
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&syms);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(F), 0x100)).unwrap();
+        DecompPass
+            .run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
+            .unwrap()
+    }
+
+    /// `lea rcx,[rip+fmt]` for the format at 0x2000, from an instruction at `F`.
+    fn load_format() -> Vec<u8> {
+        let rel = 0x2000i64 - (F as i64 + 7);
+        let mut v = vec![0x48, 0x8d, 0x0d];
+        v.extend_from_slice(&(rel as i32).to_le_bytes());
+        v
+    }
+
+    /// A format of two characters is text here though it would not pass for text alone,
+    /// and it asks for one value, which the next register holds.
+    #[test]
+    fn a_format_shows_its_text_and_takes_what_it_asks_for() {
+        let mut f = load_format();
+        f.extend([0xba, 7, 0, 0, 0]); // mov edx,7
+        f.extend([0x41, 0xb8, 8, 0, 0, 0]); // mov r8d,8: left over, no conversion asks for it
+        let b = printf_body(f, b"%d\0");
+        let l = line_with(&b, "printf(");
+        assert!(l.contains(r#"printf(/*format*/ "%d", 0x7)"#), "{l}");
+    }
+
+    /// `%%` takes nothing and `%*d` takes two.
+    #[test]
+    fn a_format_counts_its_conversions() {
+        assert_eq!(conversions(b"100%% of %d %*d %.*f %s").unwrap(), vec![Conversion::Int, Conversion::Int, Conversion::Int, Conversion::Int, Conversion::Float, Conversion::Int]);
+        assert_eq!(conversions(b"%1$d"), None, "positional");
+        assert_eq!(conversions(b"%Lf"), None, "on the stack at a width of its own");
+        assert_eq!(conversions(b"%y"), None, "unknown");
+    }
+
+    /// Past the registers, what the call stores in the outgoing area is the argument,
+    /// and it stops printing as a write to a local.
+    #[test]
+    fn a_stack_argument_is_an_argument() {
+        let mut f = vec![0x48, 0x83, 0xec, 0x38]; // sub rsp,0x38
+        let rel = 0x2000i64 - (F as i64 + 4 + 7);
+        f.extend([0x48, 0x8d, 0x0d]);
+        f.extend_from_slice(&(rel as i32).to_le_bytes());
+        f.extend([0xba, 1, 0, 0, 0]); // mov edx,1
+        f.extend([0x41, 0xb8, 2, 0, 0, 0]); // mov r8d,2
+        f.extend([0x41, 0xb9, 3, 0, 0, 0]); // mov r9d,3
+        f.extend([0xc7, 0x44, 0x24, 0x20, 4, 0, 0, 0]); // mov dword [rsp+0x20],4
+        let b = printf_body(f, b"%d %d %d %d\0");
+        let l = line_with(&b, "printf(");
+        assert!(l.contains(", 0x1, 0x2, 0x3, 0x4)"), "{l}");
+        assert!(!b.pseudo.iter().any(|x| x.contains("local_") && x.contains("= 0x4")), "{:#?}", b.pseudo);
+    }
+
+    /// `mov [rsp+...]`-less: a double in the vector register of its position, on this ABI.
+    #[test]
+    fn a_double_the_format_asks_for_comes_from_its_register() {
+        let f = load_format();
+        let b = printf_body(f, b"%f\0");
+        let l = line_with(&b, "printf(");
+        assert!(l.contains("xmm1"), "{l}");
+        assert!(b.signature.contains("xmm1"), "{}", b.signature);
     }
 
     fn says_void(snap: &Snapshot) -> String {

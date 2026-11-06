@@ -960,7 +960,7 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
 
 /// The frame offset an address names, through the stack pointer's versions and any
 /// copy of them (a frame pointer).
-fn frame_offsets(blocks: &[SsaBlock], stack_pointer: &str) -> HashMap<String, i128> {
+pub(crate) fn frame_offsets(blocks: &[SsaBlock], stack_pointer: &str) -> HashMap<String, i128> {
     let mut at: HashMap<String, i128> = HashMap::from([(format!("{stack_pointer}.0"), 0)]);
     loop {
         let before = at.len();
@@ -980,7 +980,7 @@ fn frame_offsets(blocks: &[SsaBlock], stack_pointer: &str) -> HashMap<String, i1
     }
 }
 
-fn frame_offset_of(e: &MicroExpr, at: &HashMap<String, i128>) -> Option<i128> {
+pub(crate) fn frame_offset_of(e: &MicroExpr, at: &HashMap<String, i128>) -> Option<i128> {
     match e {
         MicroExpr::Var(v) => at.get(v).copied(),
         MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {

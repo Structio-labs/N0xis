@@ -273,8 +273,10 @@ impl Pass for DecompPass {
         }
 
         let params: std::collections::BTreeSet<String> = types.signature.params.iter().filter(|p| !p.reg.is_empty()).map(|p| format!("{}.0", p.reg)).collect();
-        crate::callee::settle_call_args(ctx, &cfg, &mut ssa.blocks, &params);
-        crate::callee::settle_call_args(ctx, &cfg, &mut opt.blocks, &params);
+        let mut format_strings = HashMap::new();
+        let raw = ssa.blocks.clone();
+        crate::callee::settle_call_args(ctx, &cfg, &mut ssa.blocks, &raw, &params, &mut format_strings);
+        crate::callee::settle_call_args(ctx, &cfg, &mut opt.blocks, &raw, &params, &mut format_strings);
         for blocks in [&mut ssa.blocks, &mut opt.blocks] {
             if types.signature.ret.is_void() {
                 crate::callee::settle_void_returns(blocks);
@@ -350,7 +352,8 @@ impl Pass for DecompPass {
         // bytes and validated to be a real string before it is trusted — sound
         // over pretty, the same rule the vtable naming follows. Scans both the raw
         // and optimized IR so a string used only in dead code still resolves.
-        let strings = recover_strings(&[&ssa.blocks, &opt.blocks], ctx.source);
+        let mut strings = recover_strings(&[&ssa.blocks, &opt.blocks], ctx.source);
+        strings.extend(format_strings);
         if !strings.is_empty() {
             names = names.with_strings(strings);
         }
@@ -937,7 +940,12 @@ fn read_c_string(source: &dyn n0xis_sources::MemorySource, va: u64) -> Option<St
     if !text.iter().all(|&b| (0x20..=0x7e).contains(&b) || matches!(b, b'\t' | b'\n' | b'\r')) {
         return None;
     }
-    let mut lit = String::with_capacity(nul + 2);
+    Some(c_literal(text))
+}
+
+/// These bytes as a quoted C literal.
+pub(crate) fn c_literal(text: &[u8]) -> String {
+    let mut lit = String::with_capacity(text.len() + 2);
     lit.push('"');
     for &b in text {
         match b {
@@ -946,11 +954,12 @@ fn read_c_string(source: &dyn n0xis_sources::MemorySource, va: u64) -> Option<St
             b'\t' => lit.push_str("\\t"),
             b'\n' => lit.push_str("\\n"),
             b'\r' => lit.push_str("\\r"),
-            _ => lit.push(b as char),
+            0x20..=0x7e => lit.push(b as char),
+            _ => lit.push_str(&format!("\\x{b:02x}")),
         }
     }
     lit.push('"');
-    Some(lit)
+    lit
 }
 
 /// Add every constant *used as an address* in `stmt` to `out` — the base of a
