@@ -108,7 +108,7 @@ fn watchpoint_hit_recovers_the_real_caller_chain() {
     // Let the target reach its hot loop.
     std::thread::sleep(Duration::from_millis(300));
 
-    let outcome = await_watchpoint_hit(pid, Va(counter_va), WatchKind::Write, 8, 8000, 16, None)
+    let outcome = await_watchpoint_hit(pid, Va(counter_va), WatchKind::Write, 8, 8000, 16, None, &mut |_| Ok(()))
         .expect("await_watchpoint_hit should not error");
 
     assert!(!outcome.timed_out, "the tight write loop should trip the watchpoint well within the timeout");

@@ -20,7 +20,7 @@
 use std::sync::Mutex;
 
 use n0xis_contracts::Va;
-use n0xis_sources::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where, RegCond, WatchKind};
+use n0xis_sources::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where, clear_watch_slots, read_watch_slots, RegCond, SlotCensus, TargetSlots, WatchSlot, WatchKind};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -98,7 +98,7 @@ fn watchpoint_catches_a_data_write() {
     let pid = spawn_writer(5);
     nanosleep_ms(60); // let it enter the loop
 
-    let outcome = await_watchpoint_hit(pid, Va(g), WatchKind::Write, 8, 3000, 16, None);
+    let outcome = await_watchpoint_hit(pid, Va(g), WatchKind::Write, 8, 3000, 16, None, &mut |_| Ok(()));
 
     if is_alive(pid) {
         assert_alive_and_untraced(pid);
@@ -143,7 +143,7 @@ fn watchpoint_times_out_on_an_untouched_address() {
     let pid = spawn_writer(5);
     nanosleep_ms(30);
 
-    let outcome = await_watchpoint_hit(pid, Va(u), WatchKind::Write, 8, 300, 16, None);
+    let outcome = await_watchpoint_hit(pid, Va(u), WatchKind::Write, 8, 300, 16, None, &mut |_| Ok(()));
 
     if is_alive(pid) {
         assert_alive_and_untraced(pid);
@@ -171,7 +171,7 @@ fn condition_filter_selects_the_matching_hit() {
 
     // rax can never be this sentinel at the watchpoint on a plain increment.
     let cond = RegCond::parse("rax=0xDEADBEEFCAFEBABE").unwrap();
-    let outcome = await_watchpoint_hit_where(pid, Va(g), WatchKind::Write, 8, 4000, 8, None, &[], Some(&cond));
+    let outcome = await_watchpoint_hit_where(pid, Va(g), WatchKind::Write, 8, 4000, 8, None, &[], Some(&cond), &mut |_| Ok(()));
 
     if is_alive(pid) {
         assert_alive_and_untraced(pid);
@@ -286,7 +286,7 @@ fn multithreaded_watchpoint_covers_all_threads() {
     let pid = spawn_writer_mt(3);
     nanosleep_ms(100);
 
-    let outcome = await_watchpoint_hit(pid, Va(g), WatchKind::Write, 8, 3000, 8, None);
+    let outcome = await_watchpoint_hit(pid, Va(g), WatchKind::Write, 8, 3000, 8, None, &mut |_| Ok(()));
 
     let alive = is_alive(pid);
     if alive {
@@ -309,4 +309,69 @@ fn attach_and_wait_holds_then_detaches_cleanly() {
 
     assert_alive_and_untraced(pid);
     kill_and_reap(pid);
+}
+
+/// With `tid` seized and stopped, for as long as `f` runs. By no code of the adapter's: what
+/// follows holds its reads and writes of the debug registers against this.
+fn with_stopped<R>(tid: u32, f: impl FnOnce(libc::pid_t) -> R) -> R {
+    let t = tid as libc::pid_t;
+    unsafe {
+        assert_eq!(libc::ptrace(libc::PTRACE_SEIZE, t, 0usize, 0usize), 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(libc::ptrace(libc::PTRACE_INTERRUPT, t, 0usize, 0usize), 0);
+        let mut status = 0;
+        assert_eq!(libc::waitpid(t, &mut status, libc::__WALL), t);
+        let out = f(t);
+        assert_eq!(libc::ptrace(libc::PTRACE_DETACH, t, 0usize, 0usize), 0);
+        out
+    }
+}
+
+fn dr_offset(n: usize) -> *mut libc::c_void {
+    (std::mem::offset_of!(libc::user, u_debugreg) + n * 8) as *mut libc::c_void
+}
+
+fn poke_dr(t: libc::pid_t, n: usize, v: u64) {
+    assert_eq!(unsafe { libc::ptrace(libc::PTRACE_POKEUSER, t, dr_offset(n), v as usize) }, 0, "{}", std::io::Error::last_os_error());
+}
+
+fn peek_dr(t: libc::pid_t, n: usize) -> u64 {
+    unsafe { libc::ptrace(libc::PTRACE_PEEKUSER, t, dr_offset(n), 0usize) as u64 }
+}
+
+/// What the commands settle on and what `patch undo` does, against the kernel, on a watch
+/// armed by hand: `L0`, `RW0` = write, `LEN0` = 8, by the Intel SDM and not the adapter's table.
+#[test]
+fn reading_and_clearing_a_slot_is_what_the_kernel_says_is_there() {
+    let _serial = SERIAL.lock().unwrap();
+    let cell = core::ptr::addr_of!(UNTOUCHED) as u64;
+    let pid = spawn_writer(1000);
+    nanosleep_ms(50);
+    let by_hand = 0b01 | (0b1001 << 16);
+    with_stopped(pid, |t| {
+        poke_dr(t, 0, cell);
+        poke_dr(t, 7, by_hand);
+    });
+    let slot = WatchSlot { addr: Va(cell), kind: WatchKind::Write, len: 8 };
+
+    let held = read_watch_slots(pid, &slot).expect("read");
+    let read = with_stopped(pid, |t| (peek_dr(t, 0), peek_dr(t, 7)));
+    let other_address = read_watch_slots(pid, &WatchSlot { addr: Va(core::ptr::addr_of!(GLOBAL) as u64), ..slot }).expect("read");
+    let other_type = read_watch_slots(pid, &WatchSlot { kind: WatchKind::ReadOrWrite, ..slot }).expect("read");
+    let cleared = clear_watch_slots(pid, &slot).expect("clear");
+    let after = with_stopped(pid, |t| (peek_dr(t, 0), peek_dr(t, 7)));
+    let again = clear_watch_slots(pid, &slot).expect("clear");
+    assert_alive_and_untraced(pid);
+    kill_and_reap(pid);
+    let gone = read_watch_slots(pid, &slot).expect("read");
+
+    assert_eq!(held, TargetSlots::Present(SlotCensus { threads: 1, unread: 0, holding: 1, cleared: 0 }));
+    assert!(!held.clear());
+    assert_eq!(read, (cell, by_hand), "reading changes nothing");
+    assert!(other_address.clear(), "{other_address:?}");
+    assert!(other_type.clear(), "another type is another watchpoint: {other_type:?}");
+    assert_eq!(cleared, TargetSlots::Present(SlotCensus { threads: 1, unread: 0, holding: 0, cleared: 1 }));
+    assert_eq!(after.0, 0, "by the kernel, the address is out");
+    assert_eq!(after.1 & (0b11 | (0b1111 << 16)), 0, "and so is the slot's part of DR7");
+    assert_eq!(again, TargetSlots::Present(SlotCensus { threads: 1, unread: 0, holding: 0, cleared: 0 }), "nothing was left to clear");
+    assert_eq!(gone, TargetSlots::Gone);
 }

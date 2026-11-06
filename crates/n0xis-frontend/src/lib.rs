@@ -44,6 +44,8 @@ pub mod source;
 pub mod static_names;
 pub mod strings_caps;
 pub mod symbols_caps;
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+pub mod watch;
 pub mod why;
 
 pub use arch::{lift_refusal, pick_arch, pick_arch_for, resolve_arch};

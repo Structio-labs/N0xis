@@ -24,7 +24,7 @@ use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
 use n0xis_core::{AabbLayout, UiLocateInput, UiLocatePass};
 use n0xis_sources::{PLUGIN_DEADLINE, plugin_call_once, split_command_line};
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
-use n0xis_sources::{await_watchpoint_hit, MemorySource, WatchKind};
+use n0xis_sources::{MemorySource, WatchKind};
 #[cfg(windows)]
 use n0xis_sources::{best_window, encode_png, focus, list_windows, screenshot, CaptureMethod, LiveProcess};
 use rmcp::handler::server::wrapper::Parameters;
@@ -966,11 +966,25 @@ impl N0xisServer {
             let label = live.label();
             drop(live);
 
-            let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
+            let watch = n0xis_frontend::watch::Watch {
+                pid: a.pid,
+                addr,
+                kind,
+                len: a.len,
+                timeout_ms: a.timeout_ms,
+                stack_qwords: 0,
+                module: main_module.as_ref(),
+                exclude_rip: &[],
+                cond: None,
+                planted_by: "provenance_trace",
+                announce: true,
+            };
+            let outcome = match n0xis_frontend::watch::await_watch_on_record(&watch) {
                 Ok(o) => o,
                 // The signal that ends this process is why the wait ended. The target
                 // is free again by now, so what the signal asked for can happen.
-                Err(n0xis_sources::SourceError::Interrupted) => std::process::exit(130),
+                Err(n0xis_frontend::watch::WatchFailed::Source(n0xis_sources::SourceError::Interrupted)) => std::process::exit(130),
+                Err(e @ n0xis_frontend::watch::WatchFailed::Left { .. }) => return err("watchpoint-left", e.to_string()),
                 Err(e) => return err("watch-failed", e.to_string()),
             };
             let Some(hit) = outcome.hit else {

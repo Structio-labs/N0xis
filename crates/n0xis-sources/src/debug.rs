@@ -29,11 +29,11 @@ use n0xis_contracts::{Module, Va};
 
 // The OS-free hit vocabulary now lives in `crate::hit`, shared with the Linux
 // adapter; this module keeps only the Win32 arming + event loop.
-use crate::hit::{dr7_slot0, AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, MAX_UNWIND_FRAMES};
+use crate::hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, SlotCensus, TargetSlots, WatchKind, WatchSlot, MAX_UNWIND_FRAMES};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT,
-    EXCEPTION_SINGLE_STEP, GetLastError, HANDLE, WAIT_TIMEOUT,
+    ERROR_INVALID_PARAMETER, EXCEPTION_SINGLE_STEP, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
     CONTEXT, CONTEXT_CONTROL_AMD64, CONTEXT_DEBUG_REGISTERS_AMD64, CONTEXT_FULL_AMD64, CREATE_PROCESS_DEBUG_EVENT,
@@ -43,11 +43,12 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     SetThreadContext, WaitForDebugEvent, WriteProcessMemory,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE,
+    CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE, TH32CS_SNAPTHREAD,
+    THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessId, IsWow64Process, OpenProcess, OpenThread, PROCESS_ALL_ACCESS, ResumeThread, SuspendThread,
-    THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
+    GetProcessId, IsWow64Process, OpenProcess, OpenThread, PROCESS_ALL_ACCESS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread, SuspendThread,
+    THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 
 use crate::SourceError;
@@ -581,9 +582,9 @@ struct WatchGuard {
 }
 
 impl WatchGuard {
-    fn new(addr: Va, kind: WatchKind, len: u8) -> Result<Self, SourceError> {
-        let dr7_bits = dr7_slot0(kind, addr, len)?;
-        Ok(WatchGuard { addr, dr7_bits, entries: Vec::new() })
+    fn new(slot: &WatchSlot) -> Result<Self, SourceError> {
+        let dr7_bits = slot.dr7_bits()?;
+        Ok(WatchGuard { addr: slot.addr, dr7_bits, entries: Vec::new() })
     }
 
     /// Arm DR0/DR7 slot 0 on a single thread by id. Intended to be called
@@ -734,14 +735,20 @@ pub fn await_watchpoint_hit(
     timeout_ms: u64,
     stack_qwords: usize,
     module: Option<&Module>,
+    before_arming: &mut dyn FnMut(&WatchSlot) -> Result<(), String>,
 ) -> Result<AwaitHitOutcome, SourceError> {
-    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, &[], None)
+    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, &[], None, before_arming)
 }
 
 /// [`await_watchpoint_hit`], but only reports a hit whose registers satisfy
 /// `cond` — hits that don't match are resumed with the watchpoint still armed.
 /// This is what makes a breakpoint on a hot function usable: it singles out the
 /// one call of interest instead of returning whichever call happened to run first.
+///
+/// `before_arming` is told what is about to go in the debug registers, before it does:
+/// only a record of it survives this process being killed, and a thread that keeps the
+/// register dies with 0x80000004 at its next hit once no debugger is attached. If it
+/// fails, nothing is armed.
 #[allow(clippy::too_many_arguments)]
 pub fn await_watchpoint_hit_where(
     pid: u32,
@@ -753,7 +760,9 @@ pub fn await_watchpoint_hit_where(
     module: Option<&Module>,
     exclude_rip: &[(u64, u64)],
     cond: Option<&RegCond>,
+    before_arming: &mut dyn FnMut(&WatchSlot) -> Result<(), String>,
 ) -> Result<AwaitHitOutcome, SourceError> {
+    let slot = WatchSlot { addr, kind, len };
     let h_process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
     if h_process.is_null() {
         return Err(SourceError::Os(format!(
@@ -772,7 +781,8 @@ pub fn await_watchpoint_hit_where(
     // synthesises a `CREATE_THREAD` for every pre-existing thread and a real
     // one for every thread spawned later, so the loop covers the full set.
     let mut debug = DebugGuard::attach(pid)?;
-    let mut watch = WatchGuard::new(addr, kind, len)?;
+    let mut watch = WatchGuard::new(&slot)?;
+    before_arming(&slot).map_err(SourceError::Os)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut hit: Option<BreakpointHit> = None;
@@ -871,4 +881,111 @@ pub fn await_watchpoint_hit_where(
     }
 
     Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+}
+
+/// The threads `pid` has now.
+fn threads_of(pid: u32) -> Result<Vec<u32>, SourceError> {
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snap.is_null() || snap == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(SourceError::Os(format!("CreateToolhelp32Snapshot(thread) failed (GLE {})", unsafe { GetLastError() })));
+    }
+    let _g = HandleGuard(snap);
+    let mut entry: THREADENTRY32 = unsafe { mem::zeroed() };
+    entry.dwSize = mem::size_of::<THREADENTRY32>() as u32;
+    let mut tids = Vec::new();
+    let mut more = unsafe { Thread32First(snap, &mut entry) } != 0;
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            tids.push(entry.th32ThreadID);
+        }
+        more = unsafe { Thread32Next(snap, &mut entry) } != 0;
+    }
+    Ok(tids)
+}
+
+/// See whether one suspended thread holds `slot`, clearing it if asked. `None` is a thread
+/// whose registers could not be read.
+fn walk_suspended_thread(h: HANDLE, slot: &WatchSlot, clear: bool) -> Option<SlotCensus> {
+    let read = || {
+        let mut ctx = AlignedContext::zeroed();
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
+        (unsafe { GetThreadContext(h, &mut ctx.0) } != 0).then_some(ctx)
+    };
+    let mut ctx = read()?;
+    if !slot.held_in(ctx.Dr0, ctx.Dr7) {
+        return Some(SlotCensus::default());
+    }
+    if !clear {
+        return Some(SlotCensus { holding: 1, ..SlotCensus::default() });
+    }
+    ctx.Dr7 = WatchSlot::cleared_from(ctx.Dr7);
+    ctx.Dr0 = 0;
+    ctx.Dr6 &= !1;
+    unsafe { SetThreadContext(h, &ctx.0) };
+    let after = read()?;
+    Some(if slot.held_in(after.Dr0, after.Dr7) {
+        SlotCensus { holding: 1, ..SlotCensus::default() }
+    } else {
+        SlotCensus { cleared: 1, ..SlotCensus::default() }
+    })
+}
+
+/// Suspend every thread in turn, see which hold `slot`, clear it from them if asked, and
+/// resume them. Suspended because a write to the debug registers sticks only on a thread
+/// that is not running: see [`WatchGuard::disarm`]. No debugger, so no event to be owed and
+/// nothing to detach from. A thread started during the walk holds nothing, because a new
+/// thread's context starts with these empty.
+fn walk_watch_slots(pid: u32, slot: &WatchSlot, clear: bool) -> Result<TargetSlots, SourceError> {
+    slot.dr7_bits()?;
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
+    if process.is_null() {
+        let code = unsafe { GetLastError() };
+        if code == ERROR_INVALID_PARAMETER {
+            return Ok(TargetSlots::Gone);
+        }
+        return Err(SourceError::Os(format!("OpenProcess({pid}) failed (GLE {code})")));
+    }
+    let _process = HandleGuard(process);
+    // Exited, and kept in being by someone's handle: it has no thread left to hold anything.
+    if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+        return Ok(TargetSlots::Gone);
+    }
+    let mut census = SlotCensus::default();
+    for tid in threads_of(pid)? {
+        let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, 0, tid) };
+        if h.is_null() {
+            // Ended since the list was taken, which is no thread at all; anything else is one it cannot read.
+            if unsafe { GetLastError() } != ERROR_INVALID_PARAMETER {
+                census.threads += 1;
+                census.unread += 1;
+            }
+            continue;
+        }
+        let _thread = HandleGuard(h);
+        census.threads += 1;
+        if unsafe { SuspendThread(h) } == u32::MAX {
+            census.unread += 1;
+            continue;
+        }
+        let stood = walk_suspended_thread(h, slot, clear);
+        unsafe { ResumeThread(h) };
+        match stood {
+            Some(one) => {
+                census.holding += one.holding;
+                census.cleared += one.cleared;
+            }
+            None => census.unread += 1,
+        }
+    }
+    Ok(TargetSlots::Present(census))
+}
+
+/// How `pid`'s threads stand against `slot`, read from them. Suspends each for a moment.
+pub fn read_watch_slots(pid: u32, slot: &WatchSlot) -> Result<TargetSlots, SourceError> {
+    walk_watch_slots(pid, slot, false)
+}
+
+/// Clear `slot` from every thread of `pid` that still holds it, and nothing else.
+pub fn clear_watch_slots(pid: u32, slot: &WatchSlot) -> Result<TargetSlots, SourceError> {
+    walk_watch_slots(pid, slot, true)
 }

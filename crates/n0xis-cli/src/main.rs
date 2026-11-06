@@ -67,7 +67,9 @@ use n0xis_sources::{LiveProcess, probe_actuation, DEFAULT_PROBE_VK};
 // adapter (Win32 or Linux ptrace), so the debug/provenance commands compile and
 // run on both — only the register capture underneath differs.
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
-use n0xis_sources::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where, RegCond, WatchKind};
+use n0xis_sources::{attach_and_wait, await_breakpoint_hit, RegCond, WatchKind};
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+use n0xis_frontend::watch::{await_watch_on_record, Watch, WatchFailed};
 #[cfg(windows)]
 use n0xis_sources::{best_window, encode_png, focus as window_focus, list_windows, screenshot as window_screenshot, CaptureMethod};
 use serde_json::json;
@@ -3336,7 +3338,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Capability(c) => cmd_capability(c, pretty),
         Command::Dump(c) => cmd_dump(c, pretty),
         Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty, quiet),
-        Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
+        Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty, quiet),
         Command::Debug(DebugCmd::Attach(a)) => cmd_debug_attach(a, pretty),
         Command::Stack(StackCmd::Backtrace(a)) => cmd_stack_backtrace(a, pretty),
         Command::Scan(ScanCmd::Value(a)) => cmd_scan_value(a, pretty),
@@ -3351,7 +3353,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Table(TableCmd::Show(a)) => cmd_table_show(a, pretty),
         Command::Table(TableCmd::Rm(a)) => cmd_table_rm(a, pretty),
         Command::Table(TableCmd::Pin(a)) => cmd_table_pin(a, TABLE_PIN.spelled(typed), pretty),
-        Command::Provenance(ProvenanceCmd::Trace(a)) => cmd_provenance_trace(a, pretty),
+        Command::Provenance(ProvenanceCmd::Trace(a)) => cmd_provenance_trace(a, pretty, quiet),
         Command::Annotate(AnnotateCmd::Name(a)) => cmd_annotate_set("name", a, pretty),
         Command::Annotate(AnnotateCmd::Type(a)) => cmd_annotate_set("type", a, pretty),
         Command::Annotate(AnnotateCmd::Comment(a)) => cmd_annotate_set("comment", a, pretty),
@@ -5068,7 +5070,7 @@ fn cmd_patch(cmd: PatchCmd, pretty: bool) -> bool {
             match pj::list(a.limit) {
                 Ok(mut items) => {
                     if let Some(s) = a.status {
-                        items.retain(|r| s.matches(&r.status));
+                        items.retain(|r| s.matches(r.status()));
                     }
                     let items_v = serde_json::to_value(&items).unwrap_or(serde_json::Value::Null);
                     emit(
@@ -5165,7 +5167,7 @@ fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
 
 fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
     use n0xis_project::patch as pj;
-    let mut rec = match a.id.as_deref() {
+    let rec = match a.id.as_deref() {
         Some(id) => match pj::load_by_id(id) {
             Ok(r) => r,
             Err(e) => return ir_err("patch-not-found", &e.to_string(), pretty),
@@ -5174,6 +5176,11 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
             Ok(r) => r,
             Err(e) => return ir_err("no-patches", &e.to_string(), pretty),
         },
+    };
+    // A debug register has no bytes, and `pj::undo` takes nothing else.
+    let mut rec = match rec {
+        pj::Record::Bytes(rec) => rec,
+        pj::Record::DebugRegister(rec) => return patch_undo_watch(&rec, a.pid, pretty),
     };
     let pid = a.pid.unwrap_or(rec.pid);
     {
@@ -5201,6 +5208,65 @@ fn patch_undo(a: PatchUndoArgs, pretty: bool) -> bool {
         });
         emit(&Response::success(schema::v1::PATCH, data).with_source(live.label()), pretty)
     }
+}
+
+/// `patch undo` of a debug register a killed run left: clear it from every thread that
+/// still holds what the record says, and leave every other slot alone. The record goes
+/// once the target is seen to hold it nowhere, with one exception: `--pid` naming another
+/// process, which clears nothing there, says nothing of the record's own target, and a
+/// record dropped on the strength of a mistyped pid would leave that target armed with
+/// no way back.
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+fn patch_undo_watch(rec: &n0xis_project::patch::WatchRecord, other_pid: Option<u32>, pretty: bool) -> bool {
+    use n0xis_project::patch as pj;
+    use n0xis_sources::TargetSlots;
+    let pid = other_pid.unwrap_or(rec.pid);
+    let found = match n0xis_sources::clear_watch_slots(pid, &rec.slot()) {
+        Ok(found) => found,
+        Err(e) => return ir_err("undo-failed", &format!("{e}; the record stays"), pretty),
+    };
+    let census = match found {
+        TargetSlots::Gone => None,
+        TargetSlots::Present(c) => Some(c),
+    };
+    if let Some(c) = census.filter(|_| !found.clear()) {
+        let msg = format!(
+            "of {} threads of pid {pid}, {} were cleared, {} still hold the debug register and {} could not be read: the record stays, for another `patch undo`",
+            c.threads, c.cleared, c.holding, c.unread
+        );
+        return ir_err("undo-incomplete", &msg, pretty);
+    }
+    let cleared = census.map_or(0, |c| c.cleared);
+    let elsewhere = pid != rec.pid && cleared == 0;
+    if !elsewhere && let Err(e) = pj::settle_armed(rec, &found) {
+        return ir_err("journal-failed", &e.to_string(), pretty);
+    }
+    let mut data = json!({
+        "op": "undo",
+        "id": rec.id,
+        "pid": pid,
+        "address": rec.address,
+        "debug_register": rec.debug_register,
+        "planted_by": rec.planted_by,
+        "target_present": census.is_some(),
+        "threads_seen": census.map_or(0, |c| c.threads),
+        "threads_cleared": cleared,
+        "slots_cleared": cleared,
+        "record_removed": !elsewhere,
+    });
+    if cleared == 0 {
+        data["note"] = json!(match found {
+            TargetSlots::Gone => format!("pid {pid} is gone, and nothing was cleared"),
+            TargetSlots::Present(_) if elsewhere => format!("no thread of pid {pid} holds this debug register, and nothing was cleared: the record stays, since it is of pid {}", rec.pid),
+            TargetSlots::Present(_) => format!("no thread of pid {pid} holds this debug register, and nothing was cleared: it has been cleared since, or the pid is another process's now"),
+        });
+    }
+    emit(&Response::success(schema::v1::PATCH, data), pretty)
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
+fn patch_undo_watch(_rec: &n0xis_project::patch::WatchRecord, _other_pid: Option<u32>, pretty: bool) -> bool {
+    ir_err("live-unsupported", "clearing a debug register has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
 }
 
 fn cmd_selection(cmd: SelectionCmd, pretty: bool) -> bool {
@@ -5574,14 +5640,14 @@ fn cmd_pointer_path(a: PointerPathArgs, pretty: bool) -> bool {
     )
 }
 
-fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
+fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool, quiet: bool) -> bool {
     let addr = match Va::parse(&a.addr) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
     #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     {
-        let _ = addr;
+        let _ = (addr, quiet);
         ir_err("live-unsupported", "debug watch has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
     }
     #[cfg(any(windows, target_os = "linux", target_os = "android"))]
@@ -5631,11 +5697,32 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
             }
             exclude_rip.push((lo, hi));
         }
-        match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), &exclude_rip, cond.as_ref())
-        {
+        let watch = Watch {
+            pid: a.pid,
+            addr: watch_va,
+            kind,
+            len: a.len,
+            timeout_ms: a.timeout_ms,
+            stack_qwords: a.stack_qwords,
+            module: module.as_ref(),
+            exclude_rip: &exclude_rip,
+            cond: cond.as_ref(),
+            planted_by: "debug watch",
+            announce: !quiet,
+        };
+        match await_watch_on_record(&watch) {
             Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
-            Err(e) => ir_err(debug_failure("watch-failed", &e), &e.to_string(), pretty),
+            Err(e) => ir_err(watch_failure(&e), &e.to_string(), pretty),
         }
+    }
+}
+
+/// The refusal code of a command that armed a watchpoint.
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+fn watch_failure(e: &WatchFailed) -> &'static str {
+    match e {
+        WatchFailed::Source(e) => debug_failure("watch-failed", e),
+        WatchFailed::Left { .. } => "watchpoint-left",
     }
 }
 
@@ -5755,14 +5842,14 @@ fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
 /// resolved module/function, decompiled statement (Phase 3's SSA
 /// decompiler) — then optionally record that explanation onto a `.n0xt`
 /// entry ("record with provenance", CONCEPT §10/§11).
-fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
+fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool, quiet: bool) -> bool {
     let addr = match Va::parse(&a.addr) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
     };
     #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     {
-        let _ = addr;
+        let _ = (addr, quiet);
         ir_err("live-unsupported", "provenance trace has no live adapter for this OS (Windows and Linux/Android are implemented)", pretty)
     }
     #[cfg(any(windows, target_os = "linux", target_os = "android"))]
@@ -5784,9 +5871,22 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
             addr
         };
         let kind: WatchKind = a.kind.into();
-        let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
+        let watch = Watch {
+            pid: a.pid,
+            addr,
+            kind,
+            len: a.len,
+            timeout_ms: a.timeout_ms,
+            stack_qwords: 0,
+            module: main_module.as_ref(),
+            exclude_rip: &[],
+            cond: None,
+            planted_by: "provenance trace",
+            announce: !quiet,
+        };
+        let outcome = match await_watch_on_record(&watch) {
             Ok(o) => o,
-            Err(e) => return ir_err(debug_failure("watch-failed", &e), &e.to_string(), pretty),
+            Err(e) => return ir_err(watch_failure(&e), &e.to_string(), pretty),
         };
         let Some(hit) = outcome.hit else {
             let data = json!({ "value_addr": addr, "entries": [], "timedOut": true });

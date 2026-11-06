@@ -59,6 +59,10 @@ pub use image_source::{DeclaredFunction, ImageName, ImageSource};
 
 mod producer;
 pub use producer::{RustcEvidence, rustc_evidence};
+
+// What a watchpoint is in the debug registers. Not behind `live`: the journal keeps it.
+mod watch_slot;
+pub use watch_slot::{SlotCensus, TargetSlots, WatchKind, WatchSlot};
 // The WebAssembly reader: OS-free, and over a reader of this workspace's own,
 // so it is compiled whatever the features (the registry lists it either way).
 #[cfg(feature = "static-wasm")]
@@ -109,7 +113,7 @@ pub use dbg_linux::{list_thread_ids, StoppedThread};
 // The Linux debug adapter's free functions — byte-identical signatures to the
 // Win32 ones, so the CLI/MCP call one name on either OS (see the `debug` export).
 #[cfg(all(feature = "live", any(target_os = "linux", target_os = "android")))]
-pub use dbg_linux::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where};
+pub use dbg_linux::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where, clear_watch_slots, read_watch_slots};
 
 // The remaining live modules are still Win32-only. They were gated on the
 // `live` feature alone, which was equivalent while `live` *meant* Windows;
@@ -124,12 +128,12 @@ mod hit;
 #[cfg(all(feature = "live", any(windows, target_os = "linux", target_os = "android")))]
 mod interrupt;
 #[cfg(feature = "live")]
-pub use hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind};
+pub use hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers};
 
 #[cfg(all(feature = "live", windows))]
 mod debug;
 #[cfg(all(feature = "live", windows))]
-pub use debug::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where};
+pub use debug::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit, await_watchpoint_hit_where, clear_watch_slots, read_watch_slots};
 
 // The stack unwinder is pure logic over the `MemReader` seam — it names no OS
 // API — so it compiles on every platform under `live`. It carries both format

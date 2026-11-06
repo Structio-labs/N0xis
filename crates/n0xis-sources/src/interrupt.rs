@@ -12,7 +12,8 @@
 //! any other way out.
 //!
 //! `SIGKILL` and `TerminateProcess` cannot be handled. What those leave is recorded
-//! before it is written: see `n0xis_project::patch::record_planted`.
+//! before it is written: see `n0xis_project::patch::record_before_writing` for the byte
+//! and `record_before_arming` for the debug register.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

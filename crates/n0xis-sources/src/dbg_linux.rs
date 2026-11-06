@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use n0xis_contracts::{Module, Va};
 
 use crate::interrupt::{self, Interruptible};
-use crate::hit::{dr7_slot0, AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, MAX_CONDITION_MISSES, MAX_UNWIND_FRAMES};
+use crate::hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, SlotCensus, TargetSlots, WatchKind, WatchSlot, MAX_CONDITION_MISSES, MAX_UNWIND_FRAMES};
 use crate::{LinuxProcess, LiveTarget, MemorySource, SourceError, UnwindRegs};
 
 /// The thread ids of a process, from `/proc/<pid>/task`. The main thread's tid
@@ -711,8 +711,9 @@ pub fn await_watchpoint_hit(
     timeout_ms: u64,
     stack_qwords: usize,
     module: Option<&Module>,
+    before_arming: &mut dyn FnMut(&WatchSlot) -> Result<(), String>,
 ) -> Result<AwaitHitOutcome, SourceError> {
-    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, &[], None)
+    await_watchpoint_hit_where(pid, addr, kind, len, timeout_ms, stack_qwords, module, &[], None, before_arming)
 }
 
 /// [`await_watchpoint_hit`], but with two filters on which hit "counts":
@@ -725,6 +726,12 @@ pub fn await_watchpoint_hit(
 /// - `cond`: only report a hit whose registers satisfy it; non-matching hits are
 ///   resumed, up to a miss budget past which it bails with a "trap site too hot"
 ///   diagnostic (every miss single-steps the target).
+///
+/// `before_arming` is told what is about to go in the debug registers, before it does:
+/// only a record of it survives this process being killed, and a thread that keeps the
+/// register dies of `SIGTRAP` at its next hit once nothing traces it. If it fails, nothing
+/// is armed. A signal asks this to stop, and the registers are cleared on the way out via
+/// [`Session`]'s drop.
 #[allow(clippy::too_many_arguments)]
 pub fn await_watchpoint_hit_where(
     pid: u32,
@@ -736,10 +743,14 @@ pub fn await_watchpoint_hit_where(
     module: Option<&Module>,
     exclude_rip: &[(u64, u64)],
     cond: Option<&RegCond>,
+    before_arming: &mut dyn FnMut(&WatchSlot) -> Result<(), String>,
 ) -> Result<AwaitHitOutcome, SourceError> {
-    let dr7_bits = dr7_slot0(kind, addr, len)?; // validates align/len/Execute-len before any ptrace
+    let slot = WatchSlot { addr, kind, len };
+    let dr7_bits = slot.dr7_bits()?; // validates align/len/Execute-len before any ptrace
 
+    let _interruptible = Interruptible::install();
     let mut s = seize_group(pid)?;
+    before_arming(&slot).map_err(os)?;
     s.interrupt_all_and_wait();
     let mut armed = 0;
     for tid in s.tids.clone() {
@@ -843,4 +854,82 @@ pub fn await_watchpoint_hit_where(
     }
 
     Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+}
+
+/// A process with no thread left that could run: none listed, or only ones that have ended
+/// and wait to be reaped. Nothing is in their registers any more, and they cannot be seized.
+fn has_no_living_thread(pid: u32) -> bool {
+    list_thread_ids(pid).iter().all(|&tid| thread_has_ended(pid, tid))
+}
+
+fn thread_has_ended(pid: u32, tid: u32) -> bool {
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")) else {
+        return true;
+    };
+    // The state follows the name, which is in parentheses and may hold anything.
+    let state = stat.rfind(')').and_then(|i| stat[i + 1..].split_whitespace().next());
+    matches!(state, Some("Z" | "X" | "x"))
+}
+
+/// Stop every thread, see which hold `slot`, clear it from them if asked, and let them go.
+/// Stopped one by one, because a debug register can only be read or written on a stopped
+/// thread. A thread cloned during the walk does not hold it: the kernel gives a new thread
+/// DR7's value but no address and no breakpoint, which `held_in` reads as not holding, and
+/// clearing leaves that DR7 be.
+fn walk_watch_slots(pid: u32, slot: &WatchSlot, clear: bool) -> Result<TargetSlots, SourceError> {
+    slot.dr7_bits()?;
+    if has_no_living_thread(pid) {
+        return Ok(TargetSlots::Gone);
+    }
+    let mut s = match seize_group(pid) {
+        Ok(s) => s,
+        Err(_) if has_no_living_thread(pid) => return Ok(TargetSlots::Gone),
+        Err(e) => return Err(e),
+    };
+    s.interrupt_all_and_wait();
+    let mut census = SlotCensus::default();
+    for tid in s.tids.clone() {
+        if !s.stopped.contains(&tid) {
+            if !thread_has_ended(pid, tid) {
+                census.threads += 1;
+                census.unread += 1;
+            }
+            continue;
+        }
+        census.threads += 1;
+        let read = |tid| Some((peekuser(tid, dr_off(0))?, peekuser(tid, dr_off(7))?));
+        let Some((dr0, dr7)) = read(tid) else {
+            census.unread += 1;
+            continue;
+        };
+        if !slot.held_in(dr0, dr7) {
+            continue;
+        }
+        if clear {
+            // DR7 first, the order the session's teardown uses: out of use, then emptied.
+            pokeuser(tid, dr_off(7), WatchSlot::cleared_from(dr7));
+            pokeuser(tid, dr_off(0), 0);
+            if let Some(dr6) = peekuser(tid, dr_off(6)) {
+                pokeuser(tid, dr_off(6), dr6 & !1);
+            }
+            match read(tid) {
+                Some((dr0, dr7)) if !slot.held_in(dr0, dr7) => census.cleared += 1,
+                Some(_) => census.holding += 1,
+                None => census.unread += 1,
+            }
+        } else {
+            census.holding += 1;
+        }
+    }
+    Ok(TargetSlots::Present(census)) // `s` drops -> detach-all, and it armed nothing to restore
+}
+
+/// How `pid`'s threads stand against `slot`, read from them. Stops each for a moment.
+pub fn read_watch_slots(pid: u32, slot: &WatchSlot) -> Result<TargetSlots, SourceError> {
+    walk_watch_slots(pid, slot, false)
+}
+
+/// Clear `slot` from every thread of `pid` that still holds it, and nothing else.
+pub fn clear_watch_slots(pid: u32, slot: &WatchSlot) -> Result<TargetSlots, SourceError> {
+    walk_watch_slots(pid, slot, true)
 }

@@ -127,7 +127,7 @@ fn agent_finds_and_freezes_hp_with_explained_provenance() {
     drop(live);
 
     // Step 2 — arm a hardware watchpoint and catch a real write.
-    let outcome = await_watchpoint_hit(pid, counter_addr, WatchKind::Write, 4, 5000, 0, main_module.as_ref())
+    let outcome = await_watchpoint_hit(pid, counter_addr, WatchKind::Write, 4, 5000, 0, main_module.as_ref(), &mut |_| Ok(()))
         .expect("watch succeeds");
     let hit = outcome.hit.expect("the target's own loop writes within the timeout");
 

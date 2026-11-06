@@ -22,9 +22,9 @@ use crate::resolve;
 // OS, a remote agent, or anything else implementing it. Only `locator` needs a
 // concrete Win32 target, and that is what `live` still gates.
 use n0xis_contracts::Va;
-use n0xis_sources::MemorySource;
+use n0xis_sources::{MemorySource, TargetSlots, WatchKind, WatchSlot};
 
-/// One journaled patch. `before_hex`/`after_hex` are space-separated hex.
+/// One journaled patch of bytes. `before_hex`/`after_hex` are space-separated hex.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchRecord {
     pub id: String,
@@ -43,6 +43,79 @@ pub struct PatchRecord {
     /// run was killed, and `patch undo` is what puts the bytes back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planted_by: Option<String>,
+}
+
+/// A debug register a command armed for the length of its own run, on every thread of a
+/// target. Not a [`PatchRecord`], and without a `before_hex`: there are no bytes to compare
+/// or put back, [`undo`] takes bytes and cannot be handed this, and an older build of this
+/// tool, reading this file, skips it in `patch list` and refuses it in `patch undo --id`
+/// for the missing fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchRecord {
+    pub id: String,
+    pub pid: u32,
+    pub address: Va,
+    pub debug_register: DebugRegister,
+    pub status: Armed,
+    pub created_at_unix: u64,
+    /// The command that armed it. Seen by a person, the run was killed, and `patch undo`
+    /// is what clears it.
+    pub planted_by: String,
+}
+
+/// What a [`WatchRecord`] has in slot 0 of each thread, besides the address.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DebugRegister {
+    pub kind: WatchKind,
+    pub len: u8,
+}
+
+/// A record of a debug register exists only while one may be armed, and goes when it is
+/// not: it has no `undone` to be, unlike bytes, which keep theirs for the audit trail.
+/// Written as `applied`, which is what `patch list --status applied` looks for.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum Armed {
+    #[serde(rename = "applied")]
+    Applied,
+}
+
+impl WatchRecord {
+    /// What this record says is in the target's debug registers.
+    pub fn slot(&self) -> WatchSlot {
+        WatchSlot { addr: self.address, kind: self.debug_register.kind, len: self.debug_register.len }
+    }
+}
+
+/// What a file in the journal is. Untagged, so a record of bytes stays the file it always
+/// was and a journal from before the debug register reads as it did.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Record {
+    Bytes(PatchRecord),
+    DebugRegister(WatchRecord),
+}
+
+impl Record {
+    pub fn id(&self) -> &str {
+        match self {
+            Record::Bytes(r) => &r.id,
+            Record::DebugRegister(r) => &r.id,
+        }
+    }
+
+    pub fn status(&self) -> &str {
+        match self {
+            Record::Bytes(r) => &r.status,
+            Record::DebugRegister(_) => "applied",
+        }
+    }
+
+    fn created_at_unix(&self) -> u64 {
+        match self {
+            Record::Bytes(r) => r.created_at_unix,
+            Record::DebugRegister(r) => r.created_at_unix,
+        }
+    }
 }
 
 pub fn now_unix_secs() -> u64 {
@@ -70,19 +143,23 @@ pub fn record_path(id: &str) -> Result<PathBuf> {
 }
 
 pub fn save(rec: &PatchRecord) -> Result<PathBuf> {
-    let path = record_path(&rec.id)?;
+    write_record(&rec.id, rec)
+}
+
+fn write_record(id: &str, rec: &impl Serialize) -> Result<PathBuf> {
+    let path = record_path(id)?;
     let json = serde_json::to_string_pretty(rec).context("serialize patch record")?;
     fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
     Ok(path)
 }
 
 /// Take a record back that no longer stands for anything in a target.
-fn remove(rec: &PatchRecord) -> Result<()> {
-    let path = record_path(&rec.id)?;
+fn remove(id: &str) -> Result<()> {
+    let path = record_path(id)?;
     fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))
 }
 
-pub fn load_by_id(id: &str) -> Result<PatchRecord> {
+pub fn load_by_id(id: &str) -> Result<Record> {
     let path = record_path(id)?;
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("patch record {id} not found at {}", path.display()))?;
@@ -90,7 +167,7 @@ pub fn load_by_id(id: &str) -> Result<PatchRecord> {
 }
 
 /// The most recently created patch record, or an error if none exist.
-pub fn load_latest() -> Result<PatchRecord> {
+pub fn load_latest() -> Result<Record> {
     let mut records = list(usize::MAX)?;
     records
         .drain(..)
@@ -99,9 +176,9 @@ pub fn load_latest() -> Result<PatchRecord> {
 }
 
 /// All records, newest first, capped at `limit`.
-pub fn list(limit: usize) -> Result<Vec<PatchRecord>> {
+pub fn list(limit: usize) -> Result<Vec<Record>> {
     let dir = patches_dir()?;
-    let mut records: Vec<PatchRecord> = Vec::new();
+    let mut records: Vec<Record> = Vec::new();
     for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
@@ -109,12 +186,12 @@ pub fn list(limit: usize) -> Result<Vec<PatchRecord>> {
             continue;
         }
         if let Ok(raw) = fs::read_to_string(&path)
-            && let Ok(rec) = serde_json::from_str::<PatchRecord>(&raw)
+            && let Ok(rec) = serde_json::from_str::<Record>(&raw)
         {
             records.push(rec);
         }
     }
-    records.sort_by(|a, b| b.created_at_unix.cmp(&a.created_at_unix).then(b.id.cmp(&a.id)));
+    records.sort_by(|a, b| b.created_at_unix().cmp(&a.created_at_unix()).then_with(|| b.id().cmp(a.id())));
     records.truncate(limit);
     Ok(records)
 }
@@ -156,7 +233,7 @@ pub fn record_before_writing(pid: u32, addr: Va, before: &[u8], after: &[u8], pl
 
 /// The write that a [`record_before_writing`] announced did not happen: nothing to undo.
 pub fn take_back(rec: &PatchRecord) -> Result<()> {
-    remove(rec)
+    remove(&rec.id)
 }
 
 /// A command that planted bytes for the length of its run has returned. If they are
@@ -171,9 +248,38 @@ pub fn settle_planted(rec: &PatchRecord, live: Option<&dyn MemorySource>) -> Res
         None => true,
     };
     if out {
-        remove(rec)?;
+        remove(&rec.id)?;
     }
     Ok(out)
+}
+
+/// The record of a debug register about to be armed on every thread of `pid`, written
+/// before it is: a process can be killed at any instruction, and what is written first is
+/// what outlives it. The registers stay in the threads when their tracer dies, and a thread
+/// that keeps one dies at its next hit.
+pub fn record_before_arming(pid: u32, slot: &WatchSlot, planted_by: &str) -> Result<WatchRecord> {
+    let rec = WatchRecord {
+        id: new_patch_id(),
+        pid,
+        address: slot.addr,
+        debug_register: DebugRegister { kind: slot.kind, len: slot.len },
+        status: Armed::Applied,
+        created_at_unix: now_unix_secs(),
+        planted_by: planted_by.to_string(),
+    };
+    write_record(&rec.id, &rec)?;
+    Ok(rec)
+}
+
+/// The record goes if `found`, read from the target, says the debug register is in no
+/// thread of it. Returns whether it is. Whether it went is not taken from the command that
+/// armed it: a thread can refuse to stop, and a clear can fail.
+pub fn settle_armed(rec: &WatchRecord, found: &TargetSlots) -> Result<bool> {
+    let clear = found.clear();
+    if clear {
+        remove(&rec.id)?;
+    }
+    Ok(clear)
 }
 
 /// Read-verify-write-journal an in-place byte patch against a live process.
@@ -214,4 +320,40 @@ pub fn undo(rec: &mut PatchRecord, live: &dyn MemorySource, force: bool) -> Resu
     rec.undone_at_unix = Some(now_unix_secs());
     save(rec)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OLD: &str = r#"{"id":"1-2","pid":7,"address":"0x1000","size":1,"before_hex":"90","after_hex":"cc","status":"undone","created_at_unix":3,"undone_at_unix":4}"#;
+    const WATCH: &str = r#"{"id":"1-2","pid":7,"address":"0x1000","debug_register":{"kind":"write","len":8},"status":"applied","created_at_unix":3,"planted_by":"debug watch"}"#;
+
+    /// A file of bytes reads as bytes and is written back as the same file, and what is
+    /// listed comes out field for field.
+    #[test]
+    fn a_record_of_bytes_is_the_file_it_always_was() {
+        let rec: Record = serde_json::from_str(OLD).unwrap();
+        assert!(matches!(rec, Record::Bytes(_)));
+        assert_eq!(serde_json::to_string(&rec).unwrap(), OLD);
+        assert_eq!(rec.status(), "undone");
+    }
+
+    #[test]
+    fn a_record_of_a_debug_register_is_never_read_as_bytes() {
+        let rec: Record = serde_json::from_str(WATCH).unwrap();
+        let Record::DebugRegister(watch) = &rec else { panic!("{rec:?}") };
+        assert_eq!(watch.slot(), WatchSlot { addr: Va(0x1000), kind: WatchKind::Write, len: 8 });
+        assert_eq!(rec.status(), "applied");
+        assert_eq!(serde_json::to_string(&rec).unwrap(), WATCH);
+        // What an older build of this tool does with it: the shape it reads, and it does not fit.
+        let as_bytes = serde_json::from_str::<PatchRecord>(WATCH).unwrap_err().to_string();
+        assert!(as_bytes.contains("missing field"), "{as_bytes}");
+    }
+
+    /// A record of a debug register exists only while one may be armed.
+    #[test]
+    fn a_debug_register_cannot_be_on_record_as_undone() {
+        assert!(serde_json::from_str::<Record>(&WATCH.replace("applied", "undone")).is_err());
+    }
 }

@@ -15,7 +15,9 @@ use n0xis_contracts::Va;
 use serde::Serialize;
 
 use crate::unwind;
-use crate::SourceError;
+
+// What the debug registers hold is in `crate::watch_slot`, which the journal reads too.
+pub(crate) use crate::watch_slot::{SlotCensus, TargetSlots, WatchKind, WatchSlot};
 
 /// Depth cap for stack unwinding — a bound against a corrupt frame chain looping
 /// forever, generous enough for any real call stack.
@@ -134,56 +136,4 @@ pub struct AwaitHitOutcome {
     pub timed_out: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hit: Option<BreakpointHit>,
-}
-
-/// What a hardware watchpoint traps on. There is no hardware "read-only" mode on
-/// x86 — only `Write` or `ReadOrWrite` — so this doesn't invent one (CONCEPT §3
-/// rule 6: the API reflects what the CPU can actually do). Same three modes on
-/// Windows and Linux; the DR7 encoding below is the CPU's, not the OS's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WatchKind {
-    Execute,
-    Write,
-    ReadOrWrite,
-}
-
-impl WatchKind {
-    pub(crate) fn rw_bits(self) -> u64 {
-        match self {
-            WatchKind::Execute => 0b00,
-            WatchKind::Write => 0b01,
-            WatchKind::ReadOrWrite => 0b11,
-        }
-    }
-}
-
-/// Intel SDM Vol 3B §17.2.5: LEN field encodes 1/2/8/4 bytes for `00/01/10/11`
-/// — note the non-monotonic order. The address must be naturally aligned to
-/// `len` or the CPU silently ignores the high bits; we reject that instead of
-/// installing a watchpoint that won't fire as described.
-pub(crate) fn len_bits(addr: Va, len: u8) -> Result<u64, SourceError> {
-    if len > 1 && !addr.0.is_multiple_of(len as u64) {
-        return Err(SourceError::Os(format!("watchpoint address {addr} is not {len}-byte aligned")));
-    }
-    match len {
-        1 => Ok(0b00),
-        2 => Ok(0b01),
-        8 => Ok(0b10),
-        4 => Ok(0b11),
-        _ => Err(SourceError::Os(format!("unsupported watchpoint length {len} (must be 1, 2, 4, or 8)"))),
-    }
-}
-
-/// DR7 bits for slot 0 only: `L0` (local enable, bit 0), bit 10 (reserved,
-/// conventionally set), `RW0` (bits 16-17), `LEN0` (bits 18-19). The exact same
-/// encoding the CPU consumes whether the write comes from `SetThreadContext`
-/// (Win32) or `PTRACE_POKEUSER` (Linux).
-pub(crate) fn dr7_slot0(kind: WatchKind, addr: Va, len: u8) -> Result<u64, SourceError> {
-    if kind == WatchKind::Execute && len != 1 {
-        return Err(SourceError::Os("an execute watchpoint must have length 1 (Intel SDM Vol 3B §17.2.5)".into()));
-    }
-    let rw = kind.rw_bits();
-    let lb = len_bits(addr, len)?;
-    Ok(1u64 | (1u64 << 10) | (rw << 16) | (lb << 18))
 }
