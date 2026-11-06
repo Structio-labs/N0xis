@@ -30,7 +30,8 @@ pub use manifest::{Entry, Manifest, platform};
 pub use net::{Limits, Transport};
 pub use trust::{RELEASE_PUBLIC_KEY, Trust};
 
-/// Where the manifest is asked for, every one of them, unless the configuration's override replaces them.
+/// Where the manifest is asked for, every one of them, unless the configuration's override replaces
+/// them (`config::Settings::manifest_addresses`).
 ///
 /// The one thing about releases a shipped client is frozen to, and the repository has moved before,
 /// so the first is a domain the project controls and the second is the fallback. A dead address is
@@ -182,10 +183,7 @@ pub struct Updater {
     pub current: Version,
     /// The file to replace.
     pub exe: PathBuf,
-    /// The user's explicit override. When set it is the only address: nothing else is asked, whatever
-    /// it answers, and a dead or bad one is a refusal.
-    pub pin: Option<String>,
-    /// Asked, every one of them, when there is no pin.
+    /// Asked, every one of them: the frozen ones, or the user's override, which replaces them.
     pub addresses: Vec<String>,
     pub trust: Trust,
     pub transport: Transport,
@@ -212,31 +210,25 @@ impl Updater {
             platform: platform(),
             current,
             exe,
-            pin: settings.manifest_url,
-            addresses: MANIFEST_ADDRESSES.iter().map(|a| a.to_string()).collect(),
+            addresses: settings.manifest_addresses(),
             trust: Trust::of_release(config_dir.as_deref()),
             transport: Transport::standard(version),
             config_dir,
         })
     }
 
-    /// The manifest to act on: the pin's, or else the highest version that verifies among all the
-    /// frozen addresses.
+    /// The manifest to act on: the highest version that verifies among all the addresses.
     ///
     /// All of them, because the first that verifies is not the newest. A replayed old signed manifest
     /// at the first address would otherwise freeze every copy, with the second never asked. Any failure
     /// moves on, a bad signature too: a domain that lapsed and was taken over answers with something
     /// unsigned, and going on costs nothing, since whatever the next says must verify just the same.
     /// A failure beside a success stays in `tried` and is no refusal.
-    ///
-    /// A pin replaces them: someone who pinned a mirror meant for nothing public to be asked, and a
-    /// pin that fell through once installed from where it was meant not to.
     pub fn fetch_manifest(&self) -> Result<Found, Refusal> {
-        let addresses = self.pin.as_ref().map_or(self.addresses.as_slice(), std::slice::from_ref);
         let mut tried = Vec::new();
         let mut worst: Option<Why> = None;
         let mut best: Option<(Manifest, &String)> = None;
-        for address in addresses {
+        for address in &self.addresses {
             match self.fetch_one(address) {
                 Ok(manifest) => {
                     if best.as_ref().is_none_or(|(held, _)| manifest.version > held.version) {
@@ -256,8 +248,7 @@ impl Updater {
         // bad signature at the second, and `Why`'s order is that seriousness.
         let why = worst.unwrap_or(Why::ManifestUnavailable);
         let detail: Vec<String> = tried.iter().map(|t| format!("{}: {}", t.address, t.message)).collect();
-        let refusal = Refusal::new(why, format!("no manifest that can be used ({})", detail.join("; ")));
-        Err(if self.pin.is_some() { refusal.with_hint("update.manifest_url is the only address while it is set; n0x config set update.manifest_url \"\" clears it") } else { refusal })
+        Err(Refusal::new(why, format!("no manifest that can be used ({})", detail.join("; "))))
     }
 
     fn fetch_one(&self, address: &str) -> Result<Manifest, Refusal> {

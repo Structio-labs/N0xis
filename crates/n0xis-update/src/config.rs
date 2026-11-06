@@ -111,6 +111,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Where the manifest is asked for. A set override is the only address, and not one ahead of the
+    /// frozen ones: someone who pinned a mirror meant for nothing public to be asked, and a pin that
+    /// fell through once installed from where it was meant not to.
+    pub fn manifest_addresses(&self) -> Vec<String> {
+        match &self.manifest_url {
+            Some(pin) => vec![pin.clone()],
+            None => crate::MANIFEST_ADDRESSES.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
     /// A file that does not read is a refusal, never the defaults: `update.check` is on by default,
     /// so reading a damaged file as "nothing set" would start making requests for a user who had
     /// turned them off.

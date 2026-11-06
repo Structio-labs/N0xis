@@ -232,7 +232,6 @@ fn the_real_binary_asks_its_override_and_nothing_else() {
     assert_eq!(answer["error"]["code"], json!("manifest-unavailable"));
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(s.proxy.asked(), [format!("127.0.0.1:{}", s.server.port)], "a pin that does not answer is a refusal");
-    assert!(answer["hint"].as_str().is_some_and(|h| h.contains("update.manifest_url")) || answer["error"]["hint"].as_str().is_some_and(|h| h.contains("update.manifest_url")), "{answer}");
 }
 
 /// This binary holds the placeholder or the real key. Either way a manifest signed by no key it holds

@@ -159,8 +159,8 @@ MUTATIONS = [
     (UPDATE + "notice.rs", "Err(r) => r.components.iter().any(|o| o.component == updater.component && o.error.is_none()),", "Err(_) => false,", *PLANTED, "the_line_is_written_only_from_what_moved"),
     (UPDATE + "notice.rs", "if report.available && auto {", "if auto {", *PLANTED, "update_auto_with_nothing_newer_does_nothing"),
     # J. A set override is the only address.
-    (UPDATE + "lib.rs", "let addresses = self.pin.as_ref().map_or(self.addresses.as_slice(), std::slice::from_ref);", "let chained: Vec<String> = self.pin.iter().chain(&self.addresses).cloned().collect();\n        let addresses = chained.as_slice();", *PLANTED, "a_pin_is_the_only_address"),
-    (UPDATE + "lib.rs", "let addresses = self.pin.as_ref().map_or(self.addresses.as_slice(), std::slice::from_ref);", "let chained: Vec<String> = self.pin.iter().chain(&self.addresses).cloned().collect();\n        let addresses = chained.as_slice();", *DOOR, "the_real_binary_asks_its_override_and_nothing_else"),
+    (UPDATE + "config.rs", "Some(pin) => vec![pin.clone()],", "Some(pin) => std::iter::once(pin.clone()).chain(crate::MANIFEST_ADDRESSES.iter().map(|a| a.to_string())).collect(),", *PLANTED, "a_pin_is_the_only_address"),
+    (UPDATE + "config.rs", "Some(pin) => vec![pin.clone()],", "Some(pin) => std::iter::once(pin.clone()).chain(crate::MANIFEST_ADDRESSES.iter().map(|a| a.to_string())).collect(),", *DOOR, "the_real_binary_asks_its_override_and_nothing_else"),
     # K. A sibling never blocks the running file.
     (UPDATE + "install.rs", "Err(r) => skipped.push(Skipped::of(name, r)),", "Err(r) => return Err(r),", *PLANTED, "a_later_shaped_sibling_beside_the_binary_does_not_block"),
     (UPDATE + "install.rs", "Err(r) => report.skipped.push(Skipped::of(&item.component, r)),", "Err(r) => return Err(said_after_prepare(r, &item)),", *PLANTED, "a_bad_sibling_file_is_skipped_and_the_running_file_goes_on"),

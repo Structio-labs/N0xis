@@ -96,7 +96,6 @@ impl Bench {
             platform: PLATFORM.to_string(),
             current: Version::new(1, 0, 0),
             exe: self.exe.clone(),
-            pin: None,
             addresses,
             trust,
             transport: Transport::trusting(std::slice::from_ref(&self.server.ca_der), limits, "1.0.0"),
@@ -1116,26 +1115,23 @@ fn a_next_key_is_remembered_from_a_manifest_that_did_not_win() {
 /// asked. A pin that fell through once installed from the public address with the mirror down.
 #[test]
 fn a_pin_is_the_only_address() {
+    use n0xis_update::config::Settings;
+    let frozen: Vec<String> = n0xis_update::MANIFEST_ADDRESSES.iter().map(|a| a.to_string()).collect();
+    assert_eq!(Settings::default().manifest_addresses(), frozen);
+
     let b = Bench::new("pin");
     plant_at(&b, "/pinned", "1.5.0", None, &b.key);
-    plant_at(&b, "/frozen", "2.0.0", None, &b.key);
-    let mut updater = b.updater_with(vec![b.server.url("/frozen")], Trust::of_keys(&[public(&b.key)]), Bench::limits());
-    updater.pin = Some(b.server.url("/pinned"));
-    assert_eq!(updater.check().expect("check").latest, "1.5.0", "the user's pin was overruled");
-    assert_eq!(b.server.asked("/frozen"), 0, "nothing else is asked when the pin verifies");
+    let pinned = |url: String| Settings { manifest_url: Some(url), ..Settings::default() }.manifest_addresses();
+    assert_eq!(pinned(b.server.url("/pinned")), [b.server.url("/pinned")]);
+    let updater = b.updater_with(pinned(b.server.url("/pinned")), Trust::of_keys(&[public(&b.key)]), Bench::limits());
+    assert_eq!(updater.check().expect("check").latest, "1.5.0");
 
-    // A pin that does not verify is a refusal, and still nothing else is asked.
+    // A pin that does not verify is a refusal, as is a dead one, and there is nothing else to ask.
     b.server.route("/pinned.sig", Reply::Body(sign(&key(9), b"something else")));
-    let refusal = updater.check().expect_err("a bad pin");
-    assert_eq!(refusal.why, Why::BadSignature);
-    assert!(refusal.hint.is_some_and(|h| h.contains("update.manifest_url")));
+    assert_eq!(updater.check().expect_err("a bad pin").why, Why::BadSignature);
     assert_eq!(updater.update().expect_err("a bad pin").why, Why::BadSignature);
-    assert_eq!(b.server.asked("/frozen"), 0);
-
-    // A dead one the same, with nothing asked of the public addresses.
-    updater.pin = Some(dead_address());
+    let updater = b.updater_with(pinned(dead_address()), Trust::of_keys(&[public(&b.key)]), Bench::limits());
     assert_eq!(updater.check().expect_err("a dead pin").why, Why::ManifestUnavailable);
-    assert_eq!(b.server.asked("/frozen"), 0, "a dead pin fell through to a public address");
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
 }
 
