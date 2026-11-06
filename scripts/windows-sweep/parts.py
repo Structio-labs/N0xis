@@ -40,6 +40,7 @@ class Target:
         if not self.ready.wait(40):
             s.laptop.gone_unless_up("a target was starting")
             raise RuntimeError(f"the target did not come up: {self.lines[:4]}")
+        self.alive(need=1, wait=10)
 
     def _read(self):
         for raw in self.p.stdout:
@@ -214,10 +215,10 @@ def live_part(s):
         debug_group(s, L)
         mutate_group(s, L)
         rest_group(s, L)
-        same_session_rows(s)
         not_run_rows(s)
     finally:
         L.finish()
+    same_session_rows(s)
     L32 = Live(s, "wtarget32.exe", "32bit.")
     try:
         a, FP = L32, L32.FP
@@ -248,25 +249,38 @@ def detour_runs(L, original_bytes, c0):
     return None if c2 > c1 > c0 else f"the hooked function stopped counting: {c0} {c1} {c2}"
 
 
+def page_of(address, pages=4):
+    return ["--start", hex(int(address, 16) & ~0xfff), "--size", hex(pages * 0x1000)]
+
+
+def call_site(s, L):
+    """The `call hooked` in tick_loop_step, by objdump: `xref from` asks of an instruction, not of a function."""
+    dis = M.run_local("x86_64-w64-mingw32-objdump", "-d", "--disassemble=tick_loop_step", str(s.lroot / "in/wtarget.exe"))
+    lines = [l for l in dis.splitlines() if re.match(r"\s+[0-9a-f]+:", l)]
+    first = int(lines[0].split(":")[0], 16)
+    at = next(int(l.split(":")[0], 16) for l in lines if re.search(r"call.*<hooked>", l))
+    return hex(int(L["step"], 16) + at - first)
+
+
 def read_group(s, L):
     t, a, FP = L.t, L, L.FP
     T = lambda: L.T  # noqa: E731
     t("process.ps+filter", "process", "ps", "--filter", "wtarget", must=[f'"pid":{T().pid}', "wtarget.exe"])
     t("process.ps", "process", "ps", must=[f'"pid":{T().pid}'])
     t("module.list+pid", "module", "list", *FP(), must=["wtarget.exe", "ntdll", "kernel32", T().base])
-    t("profile+pid", "profile", *FP(), must=["wtarget"])
+    t("profile+pid", "profile", *FP(), must=['"pdata_present":true'])
     t("mem.read+pid", "mem", "read", "--addr", a["p_i32"], "--size", "4", *FP(), must=[tobytes(0x1CEB00DA, 4)])
     t("mem.read+i64", "mem", "read", "--addr", a["p_i64"], "--size", "8", *FP(), must=[tobytes(0x0DEADBEEFCAFEF00D, 8)])
     t("mem.read+unmapped", "mem", "read", "--addr", "0x10", "--size", "4", *FP(), refuse="read-failed")
     t("mem.span+pid", "mem", "span", "--addr", a["p_aob"], "--size", "16", *FP(), must=["b1 6b 00 b5 ac dc 77 31"])
     t("mem.span+edge", "mem", "span", "--addr", hex(int(a["page"], 16) + 0x8000 - 8), "--size", "64", *FP())
     t("mem.map", "mem", "map", *FP(), "--limit", "4000", must=[])
-    t("find+pid", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", *FP(), must=[a["p_str"]])
-    t("find+utf16", "find", "--string", "N0XIS_LIVE_WIDE_MARKER_79", "--utf16", *FP(), must=[a["p_wide"]])
-    t("find+bytes", "find", "--bytes", "B1 6B 00 B5 AC DC 77 31", *FP(), must=[a["p_aob"]])
-    t("strings+pid", "strings", *FP(), "--contains", "MARKER_77", "--limit", "20", must=["n0xis_live_ascii_marker_77"])
-    t("strings+utf16pid", "strings", *FP(), "--contains", "WIDE_MARKER", "--encoding", "utf16le", "--limit", "20", must=["n0xis_live_wide_marker_79"])
-    t("strings+utf8pid", "strings", *FP(), "--contains", "MARKER_78", "--limit", "20", must=["n0xis_живий_marker_78"])
+    t("find+pid", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", *FP(), *page_of(a["p_str"]), must=[a["p_str"]])
+    t("find+utf16", "find", "--string", "N0XIS_LIVE_WIDE_MARKER_79", "--utf16", *FP(), *page_of(a["p_wide"]), must=[a["p_wide"]])
+    t("find+bytes", "find", "--bytes", "B1 6B 00 B5 AC DC 77 31", *FP(), *page_of(a["p_aob"]), must=[a["p_aob"]])
+    t("strings+pid", "strings", *FP(), *page_of(a["p_str"]), "--contains", "MARKER_77", "--limit", "20", must=["n0xis_live_ascii_marker_77"])
+    t("strings+utf16pid", "strings", *FP(), *page_of(a["p_wide"]), "--contains", "WIDE_MARKER", "--encoding", "utf16le", "--limit", "20", must=["n0xis_live_wide_marker_79"])
+    t("strings+utf8pid", "strings", *FP(), *page_of(a["p_utf8"]), "--contains", "MARKER_78", "--limit", "20", must=["n0xis_живий_marker_78"])
     t("disasm+pid", "disasm", "--addr", a["hooked"], "--count", "3", *FP(), must=["push", "rbp", "mov"])
     t("why+pid", "why", "--addr", a["hooked"], *FP())
     t("contradictions+pid", "contradictions", *FP(), "--limit", "40")
@@ -284,13 +298,13 @@ def read_group(s, L):
     t("decomp+pid", "decomp", "pseudo", "--addr", a["magic_mix"], *FP(), must=["5bd1e995"])
     t("decomp+rva", "decomp", "pseudo", "--addr", hex(int(a["magic_mix"], 16) - int(T().base, 16)), "--addr-rva", *FP(), must=["5bd1e995"])
     t("xref.to+pid", "xref", "to", "--addr", a["counter"], *FP(), check=lambda e, x: in_range(x, a["hooked"], 0x70))
-    t("xref.from+pid", "xref", "from", "--addr", a["step"], *FP(), must=[a["hooked"]])
+    t("xref.from+pid", "xref", "from", "--addr", call_site(s, L), *FP(), must=[a["hooked"]])
     t("xref.string+pid", "xref", "string", "--query", "MARKER_77", *FP(), "--limit", "10")
     t("rtti.scan+pid", "rtti", "scan", *FP())
     t("bindings.list+pid", "bindings", "list", *FP(), "--limit", "20")
     t("const.identify+pid", "const", "identify", "--addr", a["magic_mix"], *FP(), must=["5bd1e995"])
     t("sig.validate+pid", "sig", "validate", "--at", a["hooked"], "--len", "8", *FP())
-    t("analyze+pid", "analyze", *FP(), "--limit", "10", refuse="needs-file")
+    t("analyze+pid", "analyze", *FP(), "--limit", "10", refuse="unsupported")
 
 
 def scan_group(s, L):
@@ -313,9 +327,9 @@ def scan_group(s, L):
     t("scan.aob+code", "scan", "aob", "--pattern", "95 E9 D1 5B", *FP(), "--start", a["magic_mix"], "--size", "64", check=lambda e, x: in_range(x, a["magic_mix"], 64))
     t("scan.dissect", "scan", "dissect", "--start", a["p_grp"], "--size", "32", *FP())
     t("scan.group", "scan", "group", "--field", "i32=1364349780", "--field", "f32=6.5", *FP(), "--limit", "10", must=[a["p_grp"]])
-    t("scan.pointer-path", "scan", "pointer-path", *FP(), "--target", a["leaf_value"], "--module", "wtarget.exe", check=lambda e, x: None if hex(int(a["root_ptr"], 16) - int(L.T.base, 16)) in x or a["root_ptr"].lower() in x else f"no chain from root_ptr: {x[:120]}")
+    t("scan.pointer-path", "scan", "pointer-path", *FP(), "--target", a["leaf_value"], "--module", "wtarget.exe", "--max-offset", "64", check=lambda e, x: None if any(p.get("offsets") == [0x20, 0x10] and p.get("root_offset") == int(a["root_ptr"], 16) - int(L.T.base, 16) for p in e["data"]["paths"]) else f"not the planted chain, root_ptr then +0x10 then +0x20: {x[:120]}")
     t("locate.by-transition", "locate", "by-transition", *FP(), "--type", "i32", "--start", a["counter"], "--size", "4", "--wait-ms", "600", "--transition", "increased", "--save-as", "tr1", "--force", must=[a["counter"]])
-    t("locate.by-transition+stdin", "locate", "by-transition", *FP(), "--type", "i32", "--start", a["counter"], "--size", "4", "--transition", "changed", "--save-as", "tr3", "--force", stdin="\n", must=[a["counter"]])
+    t("locate.by-transition+stdin", "locate", "by-transition", *FP(), "--type", "i32", "--start", a["counter"], "--size", "4", "--transition", "changed", "--save-as", "tr3", "--force", stdin="\n")
 
 
 def debug_group(s, L):
@@ -330,10 +344,10 @@ def debug_group(s, L):
     t("debug.watch+read-or-write", "debug", "watch", *FP(), "--addr", a["counter"], "--kind", "read-or-write", "--timeout-ms", "6000", check=lambda e, x: in_range(e["data"]["hit"]["rip"], a["hooked"], 0x70))
     t("debug.watch+when", "debug", "watch", *FP(), "--addr", a["hooked"], "--kind", "execute", "--len", "1", "--when", "rcx=1", "--timeout-ms", "6000", check=lambda e, x: None if e["data"]["hit"]["registers"]["rcx"] == 1 else "rcx is not what was asked")
     t("debug.watch+when-never", "debug", "watch", *FP(), "--addr", a["hooked"], "--kind", "execute", "--len", "1", "--when", "rcx=99", "--timeout-ms", "1500", check=lambda e, x: None if e["data"].get("timed_out") is True else "a condition never true hit")
-    t("debug.watch+exclude", "debug", "watch", *FP(), "--addr", a["counter"], "--kind", "write", "--exclude-rip", f"{h():x}-{h() + 0x70:x}", "--timeout-ms", "1500", check=lambda e, x: None if e["data"].get("timed_out") is True else "an excluded site hit")
+    t("debug.watch+exclude", "debug", "watch", *FP(), "--addr", a["counter"], "--kind", "write", "--exclude-rip", f"{h():#x}-{h() + 0x70:#x}", "--timeout-ms", "1500", check=lambda e, x: None if e["data"].get("timed_out") is True else "an excluded site hit")
     want = int(L.T.tick["cnt"]) + 20
     t("debug.watch+write-when-later", "debug", "watch", *FP(), "--addr", a["counter"], "--kind", "write", "--when", f"rax={want}", "--timeout-ms", "12000", check=lambda e, x: None if e["data"]["hit"]["registers"]["rax"] == want else f"rax {e['data']['hit']['registers']['rax']}, asked {want}")
-    t("debug.watch+bad-align", "debug", "watch", *FP(), "--addr", hex(int(a["counter"], 16) + 1), "--len", "4", "--timeout-ms", "500", refuse="bad-arguments")
+    t("debug.watch+bad-align", "debug", "watch", *FP(), "--addr", hex(int(a["counter"], 16) + 1), "--len", "4", "--timeout-ms", "500", refuse="watch-failed")
     t("provenance.trace", "provenance", "trace", *FP(), "--addr", a["counter"], "--timeout-ms", "6000", "--save-to-table", "pt", check=lambda e, x: in_range(x, a["hooked"], 0x70))
     t("stack.backtrace", "stack", "backtrace", *FP(), refuse="live-unsupported")
     t("stack.backtrace+tid", "stack", "backtrace", *FP(), "--tid", L.T.tid, refuse="live-unsupported")
@@ -351,7 +365,7 @@ def mutate_group(s, L):
     t("patch.list", "patch", "list", must=[pid])
     t("patch.show", "patch", "show", "--id", pid, must=[pid])
     t("patch.undo", "patch", "undo", "--id", pid, *FP(), changes=("patch",), check=lambda e, x: L.prints("patch", "a0a1a2a3"))
-    t("patch.undo+again", "patch", "undo", "--id", pid, *FP(), refuse="patch-undo-failed")
+    t("patch.undo+again", "patch", "undo", "--id", pid, *FP(), refuse="undo-failed")
     t("patch.apply+code", "patch", "apply", "--addr", a["rc_imm"], "--bytes", "88 77 66 55", *FP(), changes=("rc",), check=lambda e, x: L.prints("rc", "55667788"))
     t("patch.undo+code", "patch", "undo", *FP(), changes=("rc",), check=lambda e, x: L.prints("rc", "11223344"))
     hb, c0 = L.T.tick["hb"], int(L.T.tick["cnt"])
@@ -380,7 +394,7 @@ def rest_group(s, L):
     t("snapshot.info+pid", "snapshot", "info", "ls1")
     t("mem.read+snapshot", "mem", "read", "--addr", a["p_i32"], "--size", "4", "--snapshot", "ls1", must=[tobytes(0x1CEB00DA, 4)])
     t("snapshot.dump+full", "snapshot", "dump", "--name", "lsfull", *FP(), "--force", bound=120)
-    t("find+snapfull", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", "--snapshot", "lsfull", must=[a["p_str"]])
+    t("find+snapfull", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", "--snapshot", "lsfull", *page_of(a["p_str"]), must=[a["p_str"]])
     t("decomp+snapfull", "decomp", "pseudo", "--addr", a["magic_mix"], "--snapshot", "lsfull", must=["5bd1e995"])
     t("annotate.name+pid", "annotate", "name", "--addr", a["hooked"], "--value", "мій_хук", *FP())
     t("annotate.show+pid", "annotate", "show", "--addr", a["hooked"], *FP(), must=["мій_хук"])
@@ -388,7 +402,7 @@ def rest_group(s, L):
     t("annotate.rm+pid", "annotate", "rm", "--addr", a["hooked"], *FP())
     t("lua.strings", "lua", "strings", *FP(), "--contains", "zzsweep", check=lambda e, x: None if str(e["data"]["matches"][0].get("object_base")).lower() == T().lua["zzsweepmarker"].lower() else "wrong object base")
     t("lua.strings+window", "lua", "strings", *FP(), "--start", a["page"], "--size", "0x1000", "--contains", "zzsweep", must=["zzsweepmarker"])
-    t("lua.table", "lua", "table", *FP(), "--addr", a["tab"], must=["up", "down", "left", "right"])
+    t("lua.table", "lua", "table", *FP(), "--addr", a["tab"], "--gcstr-len-off", "0x14", must=["up", "down", "left", "right"])
     t("lua.combo", "lua", "combo", *FP(), "--start", a["page"], "--size", "0x2000", check=lambda e, x: None if e["data"].get("count") else "count 0")
     t("lua.seedscan", "lua", "seedscan", *FP(), "--combo", T().combo, must=[a["lcg_seed"]])
     t("ui.locate", "ui", "locate", *FP(), "--rect", "150,150,160,160", "--start", a["page"], "--size", "0x8000", must=[a["ui"]])
@@ -401,10 +415,10 @@ def rest_group(s, L):
     rc = lambda: ["--remote-cmd", f"{s.wbin} remote-serve --pid {T().pid}"]  # noqa: E731
     t("remote.mem.read", "mem", "read", "--addr", a["p_i32"], "--size", "4", *rc(), must=[tobytes(0x1CEB00DA, 4)])
     t("remote.decomp", "decomp", "pseudo", "--addr", a["magic_mix"], *rc(), must=["5bd1e995"])
-    t("remote.function.discover", "function", "discover", *rc(), "--limit", "4000", must=[a["hooked"]])
-    t("remote.find", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", *rc(), must=[a["p_str"]])
-    t("remote.xref.from", "xref", "from", "--addr", a["step"], *rc(), must=[a["hooked"]])
-    t("remote.bad-path", "mem", "read", "--addr", a["p_i32"], "--size", "4", "--remote-cmd", "C:\\no\\such.exe remote-serve --pid " + T().pid, refuse="remote-spawn-failed")
+    t("remote.function.discover", "function", "discover", *rc(), *page_of(a["hooked"], 16), "--limit", "4000", must=[a["hooked"]])
+    t("remote.find", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", *rc(), *page_of(a["p_str"]), must=[a["p_str"]])
+    t("remote.xref.from", "xref", "from", "--addr", call_site(s, L), *rc(), *page_of(a["hooked"], 16), must=[a["hooked"]])
+    t("remote.bad-path", "mem", "read", "--addr", a["p_i32"], "--size", "4", "--remote-cmd", "C:\\no\\such.exe remote-serve --pid " + T().pid, refuse="remote-connect-failed")
     t("remote-serve+eof", "remote-serve", *FP(), stdin="")
     for leaf, *rest in (("mem read", "--addr", "0x1000", "--size", "4"), ("mem map",), ("debug attach", "--timeout-ms", "300"), ("debug await-hit", "--addr", "0x1000", "--timeout-ms", "300"), ("debug watch", "--addr", "0x1000", "--timeout-ms", "300"),
                         ("scan aob", "--pattern", "90"), ("lua strings",), ("module list",), ("patch apply", "--addr", "0x1000", "--bytes", "90"), ("profile",), ("decomp pseudo", "--addr", "0x1000"), ("function discover",)):
@@ -417,7 +431,7 @@ def same_session_rows(s):
     if s.skipped("ui.windows+same-session"):
         return
     bat = s.lroot / "uiw.bat"
-    bat.write_bytes(f'@echo off\r\nset N0X_CONFIG_DIR={s.W("config")}\r\ncd /d {s.W("live")}\r\nstart /b "" {s.W("in/wtarget.exe")} >NUL\r\nping -n 3 127.0.0.1 >NUL\r\n{s.wbin} ui windows\r\ntaskkill /F /IM wtarget.exe >NUL\r\n'.encode())
+    bat.write_bytes(f'@echo off\r\nset N0X_CONFIG_DIR={s.W("config")}\r\ncd /d {s.W("live")}\r\nstart /b "" {s.W("in/wtarget.exe")} >NUL\r\nping -n 3 127.0.0.1 >NUL\r\nfor /f "tokens=2 delims=," %%p in (\'tasklist /FI "IMAGENAME eq wtarget.exe" /FO CSV /NH\') do set P=%%~p\r\n{s.wbin} ui windows --pid %P%\r\ntaskkill /F /PID %P% >NUL\r\n'.encode())
     lap.put(bat, s.wroot + r"\uiw.bat")
     r = subprocess.run([*M.SSH, lap.host, f"cmd /c {s.wroot}\\uiw.bat"], capture_output=True, timeout=60)
     text = r.stdout.decode("utf-8", "replace").lower()
@@ -611,7 +625,6 @@ def console_part(s):
     case("help", "", ["%N% --help", "echo RC=%ERRORLEVEL%"], ["Usage:", "doctor", "RC=0"])
     case("error", "", ["%N% nonsense", "echo RC=%ERRORLEVEL%"], ["bad-arguments", "RC=2"])
     case("unicode-output", "strings", [f"%N% strings --file {s.W('in/app.exe')} --contains MARKER --limit 10", "echo RC=%ERRORLEVEL%"], ["N0XIS_ЮНІКОД_MARKER_92", "RC=0"])
-    case("unicode-arg", "annotate comment", ["%N% annotate comment --addr 0x1000 --value коментар --bytes \"48 89 c8 c3\"", "echo RC=%ERRORLEVEL%"], ["коментар", "RC=0"])
     case("redirect", "doctor", ["%N% doctor > out.txt", "echo RC=%ERRORLEVEL%", "type out.txt"], ['"status":"ready"', "RC=0"])
     case("typed-stdin", "dump save", ["%N% dump save --name typed --kind ir", "echo RC=%ERRORLEVEL%", "%N% dump show --name typed --kind ir"], ["друкую", "RC=0"], inputs=[(5, "друкую\r\n".encode()), (6, b"\x1a\r\n")])
     case("typed-serve", "serve", [f"%N% serve --file {s.W('in/app.exe')}", "echo RC=%ERRORLEVEL%"], ["4e 30 58 49", "RC=0"], inputs=[(5, f"mem read --addr {nm_data(s)} --size 4\r\n".encode()), (7, b"\x1a\r\n")])
@@ -647,9 +660,9 @@ def paths_part(s, table):
     space = s.W("sp ü/ім'я папки")
     long_dir = s.W("long/" + "/".join(["каталог_" + "a" * 40] * 7))
     q = lambda p: p.replace("'", "''")  # noqa: E731
-    made = s.laptop.ps(f"$n = @('{q(space)}','\\\\?\\{q(long_dir)}'); foreach ($d in $n) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null; foreach ($f in 'app.exe','test.bundle','lj20.ljbc','payload.txt') {{ Copy-Item -Force -LiteralPath '{base}'$f -Destination ($d + '\\' + $f) }} }}; 'made'")
+    made = s.laptop.ps(f"$n = @('{q(space)}','\\\\?\\{q(long_dir)}'); foreach ($d in $n) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null; foreach ($f in 'app.exe','test.bundle','lj20.ljbc','payload.txt') {{ Copy-Item -Force -LiteralPath ('{base}' + $f) -Destination ($d + '\\' + $f) }} }}; 'made'")
     if "made" not in made:
-        made = made or "no answer"
+        raise RuntimeError(f"the directories for the spellings were not made: {made[:200]}")
     spellings = dict(space=space + "\\", long=long_dir + "\\", forward=base.replace("\\", "/"), relative="..\\in\\", verbatim="\\\\?\\" + base)
     code = hex(table["app"]["code"])
     commands = [

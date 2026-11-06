@@ -513,7 +513,7 @@ def address_table(s):
 def lay_out(s, release):
     lap = s.laptop
     # What an earlier run could not take away because the laptop dropped off. Only this script makes sweep-<number>.
-    lap.ps(r"Get-ChildItem 'C:\n0xtest' -Directory -Filter 'sweep-*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^sweep-\d+$' } | ForEach-Object { $d = $_.FullName; Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ($d + '\*') } | Stop-Process -Force -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }")
+    lap.ps(r"Get-ChildItem 'C:\n0xtest' -Directory -Filter 'sweep-*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^sweep-\d+$' } | ForEach-Object { $d = $_.FullName; Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ($d + '\*') } | Stop-Process -Force -ErrorAction SilentlyContinue; cmd /c rd /s /q ('\\\\?\\' + $d) }")
     r = subprocess.run([*SSH, lap.host, f"cmd /c mkdir {s.wroot}\\bin {s.wroot}\\w\\in {s.wroot}\\w\\proj\\.n0x {s.wroot}\\w\\live\\.n0x {s.wroot}\\w\\mcp\\.n0x {s.wroot}\\w\\config"], capture_output=True)
     if r.returncode:
         die(f"could not reach {lap.host} to make {s.wroot}: {r.stderr.decode('utf-8', 'replace')[:200]}")
@@ -546,7 +546,7 @@ def take_away(s):
     """Everything this run left on the laptop, also when it failed. True when the directory is gone."""
     lap = s.laptop
     lap.stop_runner()
-    out = lap.ps(f"Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{s.wroot}\\*' }} | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Remove-Item -Recurse -Force -LiteralPath '{s.wroot}' -ErrorAction SilentlyContinue; Test-Path -LiteralPath '{s.wroot}'")
+    out = lap.ps(f"Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{s.wroot}\\*' }} | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; cmd /c rd /s /q '\\?\{s.wroot}'; Test-Path -LiteralPath '{s.wroot}'")
     return out.strip().endswith("False")
 
 
