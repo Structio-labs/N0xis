@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A `pid` past `u32` in a capability's arguments names no process.** It was cut down to one that fits, and so read another process.
+
 **Four refusals say what happened.**
 
 - `find --size 0x400` is taken, as every other `--size` is.

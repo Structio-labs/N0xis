@@ -111,7 +111,7 @@ fn target_identity(src: &crate::source::Src) -> Option<TargetIdentity> {
 /// cannot be validated yet.
 fn target_ranges(args: &Value) -> Result<Option<TargetRanges>, Box<Response<Value>>> {
     let spec = SourceSpec {
-        pid: args.get("pid").and_then(Value::as_u64).map(|v| v as u32),
+        pid: crate::registry::pid_arg(args, "pid"),
         file: str_arg(args, "file"),
         ..Default::default()
     };
@@ -479,7 +479,7 @@ impl Plugin for Il2CppTools {
             Some(schema::v1::IL2CPP_CLASSES),
             Origin::Builtin,
             Box::new(|args| {
-                let Some(pid) = args.get("pid").and_then(Value::as_u64).map(|v| v as u32) else {
+                let Some(pid) = crate::registry::pid_arg(args, "pid") else {
                     return Response::error("no-source", "pass pid=<n>: classes only exist in a running process");
                 };
                 #[cfg(not(windows))]
@@ -605,7 +605,7 @@ impl Plugin for Il2CppTools {
                     Err(e) => return Response::error("bad-addr", e.to_string()),
                 };
                 let spec = SourceSpec {
-                    pid: args.get("pid").and_then(Value::as_u64).map(|v| v as u32),
+                    pid: crate::registry::pid_arg(args, "pid"),
                     file: str_arg(args, "file"),
                     ..Default::default()
                 };
@@ -662,7 +662,7 @@ impl Plugin for Il2CppTools {
                 let resolve = args.get("resolve").and_then(Value::as_bool).unwrap_or(true);
 
                 let spec = SourceSpec {
-                    pid: args.get("pid").and_then(Value::as_u64).map(|v| v as u32),
+                    pid: crate::registry::pid_arg(args, "pid"),
                     file: str_arg(args, "file"),
                     ..Default::default()
                 };

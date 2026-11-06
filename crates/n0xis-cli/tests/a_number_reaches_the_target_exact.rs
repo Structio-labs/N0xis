@@ -182,3 +182,19 @@ fn a_group_field_is_as_exact_as_a_value() {
     let a = f.capability("scan.group", json!({ "fields": [format!("i32={}", 1u64 << 40)] }));
     assert_eq!(a["error"]["code"], "bad-value", "{a}");
 }
+
+/// A `pid` past `u32` was cut down to one that fits, so 2^32 + this process's id read
+/// this process. A pid that is no pid names nothing.
+#[test]
+fn a_pid_too_large_names_no_process() {
+    let f = fixture("pid");
+    let own = 4_294_967_296u64 + u64::from(std::process::id());
+    for capability in ["module.list", "mem.map", "strings"] {
+        let (a, _) = n0x(&f.dir, &["capability", "run", capability, "--args", &json!({ "pid": own }).to_string()]);
+        assert_eq!(a["ok"], false, "{capability}: {a}");
+        assert_ne!(a["error"]["code"], "attach-failed", "{capability}: no process was tried: {a}");
+    }
+    // Calibration: the pid that fits is tried, whether or not the system lets it be read.
+    let (a, _) = n0x(&f.dir, &["capability", "run", "module.list", "--args", &json!({ "pid": std::process::id() }).to_string()]);
+    assert!(a["ok"] == true || a["error"]["code"] == "attach-failed", "{a}");
+}

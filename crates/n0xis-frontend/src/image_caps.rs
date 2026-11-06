@@ -39,7 +39,7 @@ impl Plugin for ImageTools {
 
 fn imports(args: &Value) -> Response<Value> {
     let spec = SourceSpec {
-        pid: args.get("pid").and_then(Value::as_u64).map(|v| v as u32),
+        pid: crate::registry::pid_arg(args, "pid"),
         file: args.get("file").and_then(Value::as_str),
         snapshot: args.get("snapshot").and_then(Value::as_str),
         remote_cmd: args.get("remote_cmd").and_then(Value::as_str),

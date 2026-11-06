@@ -58,7 +58,7 @@ impl Plugin for MethodTools {
             Origin::Builtin,
             Box::new(|args| {
                 let spec = SourceSpec {
-                    pid: args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
+                    pid: crate::registry::pid_arg(args, "pid"),
                     file: args.get("file").and_then(|v| v.as_str()),
                     snapshot: args.get("snapshot").and_then(|v| v.as_str()),
                     remote_cmd: args.get("remote_cmd").and_then(|v| v.as_str()),
@@ -116,7 +116,7 @@ impl Plugin for MethodTools {
                             Err(e) => return Response::error("bad-addr", e.to_string()),
                         };
                         let spec = SourceSpec {
-                            pid: args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
+                            pid: crate::registry::pid_arg(args, "pid"),
                             file: args.get("file").and_then(|v| v.as_str()),
                             bytes_base: Some(addr),
                             ..Default::default()

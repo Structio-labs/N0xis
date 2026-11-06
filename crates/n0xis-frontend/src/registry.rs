@@ -269,12 +269,18 @@ impl Registry {
 // Shared argument handling for capabilities that analyze a target.
 // ---------------------------------------------------------------------------
 
+/// A pid from a request. One past `u32` is none: it used to be cut down to one that
+/// fits, which is some other process.
+pub(crate) fn pid_arg(args: &Value, key: &str) -> Option<u32> {
+    args.get(key).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok())
+}
+
 /// Pull the standard target arguments out of a capability's JSON. Every
 /// analysis capability takes the same five, by the same names the CLI flags
 /// and MCP tool arguments already use.
 pub(crate) fn spec_of(args: &Value) -> SourceSpec<'_> {
     SourceSpec {
-        pid: args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
+        pid: pid_arg(args, "pid"),
         file: args.get("file").and_then(|v| v.as_str()),
         snapshot: args.get("snapshot").and_then(|v| v.as_str()),
         remote_cmd: args.get("remote_cmd").and_then(|v| v.as_str()),
@@ -1300,7 +1306,7 @@ fn with_scan_ctx(
     work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str, ScanTarget) -> Response<Value>,
 ) -> Response<Value> {
     let explicit = args.get("arch").and_then(|v| v.as_str());
-    if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) {
+    if let Some(pid) = pid_arg(args, "pid") {
         let arch = match crate::resolve_arch(explicit) {
             Ok(a) => a,
             Err(e) => return Response::error("bad-arch", e),
@@ -2020,7 +2026,7 @@ impl Plugin for AnalysisPasses {
                     Ok(b) => b,
                     Err(e) => return Response::error("bad-bytes", e),
                 };
-                let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
+                let Some(pid) = pid_arg(args, "pid") else {
                     return Response::error("missing-source", "'pid' is required — writes only apply to a live process");
                 };
                 let live = match crate::source::attach_live(pid) {
@@ -2045,7 +2051,7 @@ impl Plugin for AnalysisPasses {
             Origin::Builtin,
             Box::new(|args| {
                 let limit = usize_arg(args, "limit", 200);
-                let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
+                let Some(pid) = pid_arg(args, "pid") else {
                     return Response::error("missing-source", "'pid' is required — only a live process has a region map");
                 };
                 let live = match crate::source::attach_live(pid) {
@@ -2304,7 +2310,7 @@ impl Plugin for AnalysisPasses {
                 };
                 let max_depth = usize_arg(args, "max_depth", 3);
                 let max_offset = args.get("max_offset").and_then(|v| v.as_u64()).unwrap_or(0x1000);
-                let Some(pid) = args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
+                let Some(pid) = pid_arg(args, "pid") else {
                     return Response::error("missing-source", "'pid' is required — pointer chains only exist in a live process");
                 };
                 {
@@ -2359,7 +2365,7 @@ impl Plugin for AnalysisPasses {
                 // discovers sections from the PE header itself, so one call
                 // serves both a `--file` image and a live `--pid` module.
                 let parsed: Result<(n0xis_core::AotArtifact, String), Response<Value>> = if let Some(pid) =
-                    args.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)
+                    pid_arg(args, "pid")
                 {
                     match crate::source::attach_live(pid) {
                         Ok(live) => {
@@ -2778,7 +2784,7 @@ impl Plugin for AnalysisPasses {
                 // Each side names its own target — the whole point is comparing
                 // two builds, so they are rarely the same source.
                 let side = |prefix: &str| SourceSpec {
-                    pid: args.get(format!("{prefix}_pid")).and_then(|v| v.as_u64()).map(|v| v as u32),
+                    pid: pid_arg(args, &format!("{prefix}_pid")),
                     file: args.get(format!("{prefix}_file")).and_then(|v| v.as_str()),
                     bytes: args.get(format!("{prefix}_bytes")).and_then(|v| v.as_str()),
                     ..Default::default()

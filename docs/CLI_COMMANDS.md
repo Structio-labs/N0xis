@@ -804,6 +804,9 @@ from `.pdata`/`.xdata`).
   x86 — only `write` or `read-or-write`).
 - `--len 1|2|4|8` (watch width in bytes, default 4; `--addr` must be aligned to it).
 - `--timeout-ms` (default 30000); `--stack-qwords` (default 16).
+- A 32-bit target on Windows is refused before anything touches it (`target-unsupported`). The same for `debug await-hit` and `provenance trace`.
+- Stopped by Ctrl-C, Ctrl-Break, closing the console, `SIGINT`, `SIGTERM` or `SIGHUP`, it clears the debug registers and detaches, and answers
+  `interrupted`. **Killed**, it can clear nothing, and the target dies at the next hit: nothing recovers that yet.
 - `--when <reg>=<value>` — only report a hit whose registers match, e.g. `--when r9=4` (value
   decimal or `0x`). Non-matching hits are resumed with the watchpoint still armed (essential on a
   hot function; guarded by `MAX_CONDITION_MISSES=300`). Landed 2026-07-20; **implemented, not yet
@@ -827,6 +830,9 @@ First scan: find every address matching a criterion.
 - `--criterion` — `exact` (default, needs `--value`), `in-range` (needs `--min`/`--max`), or
   `unknown` (record every value — the "unknown initial value" scan).
 - `--value` / `--min` / `--max`; `--align` (byte stride; defaults to the value's natural size).
+  A value is the number written, or it is refused (`bad-value`): one the type cannot hold exactly, past 2^53 included, is never
+  rounded. It may be negative, or hex, and hex is a number and not a bit pattern: `0xFFFFFFFF` is no `i32`, and `-1` is. A float
+  type takes the nearest of a float literal (`0.1`), and only the exact value of an integer.
 - Region: `--start`/`--size`, given together. On `--pid`, omitting both scans **every committed
   writable region** (the conventional default scan set); either one alone is refused (`bad-region`).
   An explicit window on `--pid` reads every mapping in it, read-only ones too, and states the gaps
