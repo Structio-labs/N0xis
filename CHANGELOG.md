@@ -5,6 +5,9 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**`debug watch --kind execute --when` waits for the call it was asked for on Windows.** A miss resumed into the same fault, so 300 misses were spent in 0.6 s on one instruction,
+and a site that runs 10 times a second was called "too hot". A thread now steps off with the Resume Flag, as on Linux. `--exclude-rip` on an execute watch had the same fault.
+
 **A filtered `debug watch` that times out no longer can kill its target.** With hits passing, a thread that trapped in the moments before the detach was still in
 the debugger's queue, and went back to the target as an unhandled single step: exit 0x80000004, 5 of 40 on a 10 Hz site. Every debugger command on Windows now takes
 what is in the queue before it detaches. `debug await-hit` also hands the target's own exceptions back to it while it waits, as `debug watch` always did, where it

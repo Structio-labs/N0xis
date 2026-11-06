@@ -36,7 +36,7 @@ use windows_sys::Win32::Foundation::{
     EXCEPTION_SINGLE_STEP, GetLastError, HANDLE, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
-    CONTEXT, CONTEXT_DEBUG_REGISTERS_AMD64, CONTEXT_FULL_AMD64, CREATE_PROCESS_DEBUG_EVENT,
+    CONTEXT, CONTEXT_CONTROL_AMD64, CONTEXT_DEBUG_REGISTERS_AMD64, CONTEXT_FULL_AMD64, CREATE_PROCESS_DEBUG_EVENT,
     CREATE_THREAD_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcess,
     DebugActiveProcessStop, DebugSetProcessKillOnExit, EXCEPTION_DEBUG_EVENT,
     EXIT_THREAD_DEBUG_EVENT, FlushInstructionCache, GetThreadContext, ReadProcessMemory,
@@ -675,6 +675,33 @@ fn dr6_slot0_set(tid: u32) -> bool {
     ctx.Dr6 & 0x1 != 0
 }
 
+/// The Resume Flag: the processor runs one instruction past an execute breakpoint.
+const EFLAGS_RF: u32 = 1 << 16;
+
+/// Get a thread stopped at a hit of ours ready to go on with the watch still armed.
+///
+/// An execute breakpoint is a fault: the trap comes before the instruction, and without
+/// the Resume Flag the thread runs straight back into it. Every miss of a `--when` then
+/// refired on the spot, and a site that runs 10 times a second spent the 300 misses
+/// allowed in 0.6 s, to be called "too hot". The Linux adapter sets the same flag. A data
+/// watchpoint is a trap, after the access, and has nothing to step off.
+fn prepare_to_resume_armed(tid: u32, kind: WatchKind) {
+    let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, 0, tid) };
+    if h.is_null() {
+        return;
+    }
+    let _g = HandleGuard(h);
+    let mut ctx = AlignedContext::zeroed();
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64 | CONTEXT_CONTROL_AMD64;
+    if unsafe { GetThreadContext(h, &mut ctx.0) } != 0 {
+        ctx.Dr6 = 0;
+        if matches!(kind, WatchKind::Execute) {
+            ctx.EFlags |= EFLAGS_RF;
+        }
+        unsafe { SetThreadContext(h, &ctx.0) };
+    }
+}
+
 fn clear_dr6(tid: u32) {
     let h = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, 0, tid) };
     if h.is_null() {
@@ -787,7 +814,7 @@ pub fn await_watchpoint_hit_where(
                 if let Ok(h) = captured.as_ref()
                     && exclude_rip.iter().any(|&(lo, hi)| h.rip.0 >= lo && h.rip.0 < hi)
                 {
-                    clear_dr6(ev.dwThreadId);
+                    prepare_to_resume_armed(ev.dwThreadId, kind);
                     unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
                     continue;
                 }
@@ -797,7 +824,7 @@ pub fn await_watchpoint_hit_where(
                 if let (Some(c), Ok(h)) = (cond, captured.as_ref())
                     && !c.matches(&h.registers)
                 {
-                        clear_dr6(ev.dwThreadId);
+                    prepare_to_resume_armed(ev.dwThreadId, kind);
                     unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
                     misses += 1;
                     // Every miss is a full stop/inspect/resume round-trip for
