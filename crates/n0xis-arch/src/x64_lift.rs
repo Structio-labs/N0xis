@@ -2940,7 +2940,16 @@ mod tests {
     }
 
     #[test]
-    fn je_after_cmp_resolves_to_an_exact_equality() {
+    fn js_after_a_narrow_cmp_reads_the_sign_at_that_width() {
+        let cast = |signed, e| MicroExpr::Cast { signed, bits: 32, expr: Box::new(e) };
+        let flags = MicroExpr::compare(CmpKind::Cmp, cast(false, MicroExpr::var("rdi")), cast(false, MicroExpr::var("rsi")));
+        let difference = cast(true, MicroExpr::binary(BinOp::Sub, cast(true, MicroExpr::var("rdi")), cast(true, MicroExpr::var("rsi"))));
+        assert_eq!(branch_condition("js", &flags), MicroExpr::binary(BinOp::Slt, difference.clone(), MicroExpr::constant(0, 64)));
+        assert_eq!(branch_condition("jns", &flags), MicroExpr::binary(BinOp::Sge, difference, MicroExpr::constant(0, 64)));
+    }
+
+    #[test]
+        fn je_after_cmp_resolves_to_an_exact_equality() {
         let flags = MicroExpr::compare(CmpKind::Cmp, MicroExpr::var("rcx"), MicroExpr::constant(4, 8));
         let cond = branch_condition("je", &flags);
         assert_eq!(cond, MicroExpr::binary(BinOp::Eq, MicroExpr::var("rcx"), MicroExpr::constant(4, 8)));

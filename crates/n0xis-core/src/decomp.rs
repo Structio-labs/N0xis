@@ -273,6 +273,7 @@ impl Pass for DecompPass {
             .with_stack_pointer(ctx.arch.stack_pointer())
             .with_return_register(crate::ir::abi_return_register(ctx).as_deref())
             .with_register_spelling(ctx.arch.display_reg_map())
+            .with_word_bits(ctx.arch.pointer_size().map(|bytes| u32::from(bytes) * 8))
             .with_types(&types);
         // A devirtualized callee is not in `cfg.callsites` (the CFG saw an
         // indirect branch), so its name has to be injected here or the call
@@ -1190,6 +1191,35 @@ mod tests {
         let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
         assert!(text.lines().any(|l| l.trim_start().starts_with("while (") && !l.contains("while (1)")) || text.contains("for ("), "{text}");
         assert!(!text.contains("do {"), "{text}");
+    }
+
+    /// The two right shifts were one text, and a 64-bit product of a 32-bit value
+    /// printed so that C multiplies in 32 bits. Each read by its C meaning; the
+    /// values come from `oracle/decomp-behaviour`, where each body runs against the
+    /// processor.
+    #[test]
+    fn an_operation_prints_so_that_c_does_it_at_the_width_of_the_machine() {
+        let ret = |code: Vec<u8>| return_line(&decomp(code, DecompStyle::Ssa)).replace(".0", "");
+        // mov %rdi,%rax; mov %esi,%ecx; sar %cl,%rax; ret
+        let sar = ret(vec![0x48, 0x89, 0xf8, 0x89, 0xf1, 0x48, 0xd3, 0xf8, 0xc3]);
+        assert!(sar.contains("(int64_t)rdi >> "), "{sar}");
+        // ... shr %cl,%rax; ret
+        let shr = ret(vec![0x48, 0x89, 0xf8, 0x89, 0xf1, 0x48, 0xd3, 0xe8, 0xc3]);
+        assert!(shr.contains("(rdi >> ") && !shr.contains("int64_t"), "{shr}");
+        // movslq %edi,%rax; imul $0x66666667,%rax,%rax; sar $0x22,%rax; ret
+        let div = ret(vec![0x48, 0x63, 0xc7, 0x48, 0x69, 0xc0, 0x67, 0x66, 0x66, 0x66, 0x48, 0xc1, 0xf8, 0x22, 0xc3]);
+        assert!(div.contains("(int64_t)(int32_t)") && div.contains("* 0x66666667"), "{div}");
+        // mov %edi,%eax; add $1,%rax; ret: `(uint32_t)rdi + 1` wraps at 32 bits in C.
+        let add = ret(vec![0x89, 0xf8, 0x48, 0x83, 0xc0, 0x01, 0xc3]);
+        assert!(add.contains("(uint64_t)(uint32_t)"), "{add}");
+        // A 32-bit shift's operand stays where the machine computes it.
+        // mov %edi,%eax; shl $4,%rax; ret
+        let shl = ret(vec![0x89, 0xf8, 0x48, 0xc1, 0xe0, 0x04, 0xc3]);
+        assert!(shl.contains("(uint64_t)(uint32_t)"), "{shl}");
+        // mov %edi,%eax; imul %esi,%eax; ret: 32-bit in the machine, and under its own
+        // cast C may compute it in 32 bits too.
+        let mul = ret(vec![0x89, 0xf8, 0x0f, 0xaf, 0xc6, 0xc3]);
+        assert!(mul.starts_with("return (uint32_t)(") && !mul.contains("uint64_t"), "{mul}");
     }
 
     /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is

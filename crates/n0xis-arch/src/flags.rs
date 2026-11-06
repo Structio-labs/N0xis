@@ -82,6 +82,15 @@ pub(crate) fn signed_view(e: MicroExpr) -> MicroExpr {
     }
 }
 
+fn difference_at_width(lhs: MicroExpr, rhs: MicroExpr) -> MicroExpr {
+    let bits = value_width(&lhs).or_else(|| value_width(&rhs));
+    let difference = MicroExpr::binary(BinOp::Sub, signed_view(lhs), signed_view(rhs));
+    match bits {
+        Some(bits) => MicroExpr::Cast { signed: true, bits, expr: Box::new(difference) },
+        None => difference,
+    }
+}
+
 /// The exact branch condition for a `jcc` whose flags came from a **logical**
 /// operation (`test`/`and`/`or`/`xor`), where the value the flags reflect is
 /// `val`. A logical op clears **OF and CF to 0**, so every condition collapses
@@ -245,16 +254,10 @@ pub(crate) fn branch_condition(mnemonic: &str, flags_value: &MicroExpr) -> Micro
         "jge" => MicroExpr::binary(BinOp::Sge, signed_view(lhs), signed_view(rhs)),
         "jl" => MicroExpr::binary(BinOp::Slt, signed_view(lhs), signed_view(rhs)),
         "jle" => MicroExpr::binary(BinOp::Sle, signed_view(lhs), signed_view(rhs)),
-        "js" => MicroExpr::binary(
-            BinOp::Slt,
-            MicroExpr::binary(BinOp::Sub, signed_view(lhs), signed_view(rhs)),
-            MicroExpr::constant(0, 64),
-        ),
-        "jns" => MicroExpr::binary(
-            BinOp::Sge,
-            MicroExpr::binary(BinOp::Sub, signed_view(lhs), signed_view(rhs)),
-            MicroExpr::constant(0, 64),
-        ),
+        // SF is the sign of the difference at the width compared, and wraps there:
+        // sign-extended first, a 32-bit `cmp` that overflows read as its true sign.
+        "js" => MicroExpr::binary(BinOp::Slt, difference_at_width(lhs, rhs), MicroExpr::constant(0, 64)),
+        "jns" => MicroExpr::binary(BinOp::Sge, difference_at_width(lhs, rhs), MicroExpr::constant(0, 64)),
         _ => MicroExpr::Unknown(format!("cond({mnemonic})")),
     }
 }

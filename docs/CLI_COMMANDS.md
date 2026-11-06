@@ -595,6 +595,10 @@ How a body reads:
 - `while (c)` and `for (; c; step)` test before anything in the loop runs, and only where the machine does.
   `do { } while (c)` tests at the bottom, and `while (1)` with an `if` and a `break` holds a test with
   statements before it, or one a copy on the back edge would change.
+- An operator computes at the width of a register unless a cast around it says less, as C reads it: an
+  operand C would give fewer bits is cast up, `(int64_t)(int32_t)rdi * 0x66666667`. `(int64_t)x >> n` is an
+  arithmetic shift and `x >> n` of an unsigned value a logical one. A relational is signed unless marked
+  `/*u*/`: `a > /*u*/ b` compares as unsigned.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).

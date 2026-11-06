@@ -60,6 +60,8 @@ in a capability's arguments may be text as well, for a client whose own numbers 
 - A loop tested at the bottom prints as one. A header with statements printed as `while (c) { H; ... }` tested before `H`, which the machine does not:
   it read names only set inside the loop, and a countdown ran one iteration short. It is `do { } while (c)` where the back edge's copies allow, `while (1)`
   with its test in place where they do not, and `while (c)` only where the test really comes first and what it reads has been written.
+- An operation prints so that C does it at the machine's width and kind. `movslq %edi,%rax; imul` printed `(int32_t)rdi * k`, which C multiplies in 32 bits, and
+  is `(int64_t)(int32_t)rdi * k`. An arithmetic shift says `(int64_t)x >> n`, where it printed the same line as a logical one. `js` after a narrow `cmp` reads the sign at that width.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

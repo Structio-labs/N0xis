@@ -87,6 +87,8 @@ pub struct RenderNames {
     /// against SSA names, not printed — so this applies at the single point
     /// where a var becomes text.
     display_regs: &'static [(&'static str, &'static str)],
+    /// See [`Self::with_word_bits`].
+    word_bits: Option<n0xis_arch::Bits>,
     /// SSA name of the **untouched entry value** of the ABI's integer return
     /// register (`rax.0` on x86-64, `x0.0` on AArch64). Threaded in rather than
     /// spelled here: a renderer that writes `"rax.0"` into a `matches!` is an
@@ -208,6 +210,7 @@ impl RenderNames {
             param_names: HashMap::new(),
             params: HashSet::new(),
             display_regs: &[],
+            word_bits: None,
             stack_var: None,
             entry_return_var: None,
             void_return: false,
@@ -289,6 +292,14 @@ impl RenderNames {
         // Only a *measured* void suppresses the return line; an unknown one
         // must not, or a value the function does return disappears.
         self.void_return = types.signature.ret.is_void();
+        self
+    }
+
+    /// How wide this target's registers are, which is the width the IR computes at
+    /// unless a cast says less. Without it (a renderer given no architecture) the
+    /// operators print as they are.
+    pub fn with_word_bits(mut self, bits: Option<n0xis_arch::Bits>) -> Self {
+        self.word_bits = bits;
         self
     }
 
@@ -809,7 +820,50 @@ fn is_comparison(op: BinOp) -> bool {
     )
 }
 
+/// Does C give this operand fewer bits than a register has, by the cast or the
+/// load it is printed with?
+fn c_narrower_than_word(e: &MicroExpr, word: n0xis_arch::Bits) -> Option<bool> {
+    match e {
+        MicroExpr::Cast { signed, bits, .. } | MicroExpr::Load { signed, bits, .. } if *bits < word => Some(*signed),
+        _ => None,
+    }
+}
+
+/// An operand of an operator the IR computes at register width, cast up if C would
+/// otherwise compute it in fewer bits. `movslq %edi,%rax; imul $0x66666667,%rax,%rax`
+/// printed as `(int32_t)rdi * 0x66666667`, which C multiplies in 32 bits and the
+/// machine in 64. It keeps its extension, since that is what the bytes did to it.
+fn at_word(e: &MicroExpr, word: n0xis_arch::Bits, names: &RenderNames) -> String {
+    match c_narrower_than_word(e, word) {
+        Some(signed) => format!("({}){}", c_type(word, signed), render_expr(e, names)),
+        None => render_expr(e, names),
+    }
+}
+
+/// Which operand of `l op r` needs casting up: C's conversions give the operation
+/// the width of its widest operand, so one operand at the register's width is enough
+/// (a variable holds one), and a constant has none to give.
+fn widen_left(l: &MicroExpr, r: &MicroExpr, word: n0xis_arch::Bits) -> (bool, bool) {
+    let narrow = |e: &MicroExpr| c_narrower_than_word(e, word).is_some();
+    let constant = |e: &MicroExpr| matches!(e, MicroExpr::Const { .. });
+    match (narrow(l), narrow(r)) {
+        (true, true) => (true, false),
+        (true, false) => (constant(r), false),
+        (false, true) => (false, constant(l)),
+        (false, false) => (false, false),
+    }
+}
+
 pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
+    render_computed(e, names, false)
+}
+
+/// A cast to less than a register keeps only the low bits, and the low bits of a sum,
+/// a product or a left shift do not depend on the high bits of what goes in. Under
+/// such a cast C may compute in the narrower width and be right, and the operands
+/// print as they are.
+fn render_computed(e: &MicroExpr, names: &RenderNames, under_narrow_cast: bool) -> String {
+    let word = if under_narrow_cast { None } else { names.word_bits };
     match e {
         MicroExpr::Const { value, bits } => names
             .vtable_ref(*value)
@@ -818,16 +872,49 @@ pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
             .unwrap_or_else(|| render_const(*value, *bits)),
         MicroExpr::Var(name) => names.display_var(name),
         MicroExpr::Load { addr, bits, signed } => access_text(addr, Access::Read { bits: *bits, signed: *signed }, names),
-        MicroExpr::Unary(UnOp::Neg, v) => format!("-{}", render_expr(v, names)),
-        MicroExpr::Unary(UnOp::Not, v) => format!("~{}", render_expr(v, names)),
+        MicroExpr::Unary(op, v) => {
+            let text = match word {
+                Some(w) => at_word(v, w, names),
+                None => render_computed(v, names, under_narrow_cast),
+            };
+            format!("{}{text}", if matches!(op, UnOp::Neg) { "-" } else { "~" })
+        }
         MicroExpr::Binary(BinOp::Xor, l, r) if stack_guard_operand(l, r).is_some() => {
             let guarded = stack_guard_operand(l, r).expect("just checked is_some");
             format!("__stack_guard({})", render_expr(guarded, names))
         }
+        // `>>` is arithmetic or logical by the type of what it shifts, and the two
+        // printed the same line: `emu_sar` and `emu_shr` were one text. A cast says
+        // which, unless what it shifts already reads as that kind.
+        MicroExpr::Binary(op @ (BinOp::Sar | BinOp::Shr), l, r) => {
+            let signed_already = matches!(l.as_ref(), MicroExpr::Cast { signed: true, .. } | MicroExpr::Load { signed: true, .. });
+            let shift_signed = *op == BinOp::Sar;
+            let cast = match names.word_bits {
+                Some(w) if signed_already != shift_signed => format!("({})", c_type(w, shift_signed)),
+                _ => String::new(),
+            };
+            format!("({cast}{} >> {})", render_expr(l, names), render_expr(r, names))
+        }
+        MicroExpr::Binary(BinOp::Shl, l, r) if word.is_some() => {
+            let w = word.expect("just checked");
+            format!("({} << {})", at_word(l, w, names), render_expr(r, names))
+        }
+        MicroExpr::Binary(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r) if word.is_some() => {
+            let w = word.expect("just checked");
+            let (cast_l, cast_r) = widen_left(l, r, w);
+            let side = |e, cast| if cast { at_word(e, w, names) } else { render_expr(e, names) };
+            format!("({} {} {})", side(l, cast_l), bin_op_text(*op), side(r, cast_r))
+        }
+        MicroExpr::Binary(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl | BinOp::And | BinOp::Or | BinOp::Xor), l, r) => {
+            format!("({} {} {})", render_computed(l, names, under_narrow_cast), bin_op_text(*op), render_computed(r, names, under_narrow_cast))
+        }
         MicroExpr::Binary(op, l, r) => {
             format!("({} {} {})", render_expr(l, names), bin_op_text(*op), render_expr(r, names))
         }
-        MicroExpr::Cast { signed, bits, expr } => format!("({}){}", c_type(*bits, *signed), render_expr(expr, names)),
+        MicroExpr::Cast { signed, bits, expr } => {
+            let narrow = names.word_bits.is_some_and(|w| *bits < w);
+            format!("({}){}", c_type(*bits, *signed), render_computed(expr, names, narrow))
+        }
         MicroExpr::AddrOf(inner) => match inner.as_ref() {
             // `lea rax, [rip+vtable]` — the address of a recovered vtable reads
             // as `&Class::vtable`, otherwise as the raw pointer constant.
