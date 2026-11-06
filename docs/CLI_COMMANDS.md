@@ -567,6 +567,10 @@ Walk the call graph from a root function.
 - `--depth` (max call-graph depth, default 3; `0` = only the root); `--max-nodes` (cap on visited
   functions, default 500, `0` = unlimited); `--max-bytes` (window per visited function, default
   4096).
+- A call's `kind` is `named`, `direct`, or `indirect`: no target can be stated, as of `call [rax+8]`.
+- `not_followed` counts what the walk reached and did not go through: `indirect_calls`, `indirect_jumps` (no
+  table answers for them), `past_depth`, `past_max_nodes`. `truncated` is any of them; `truncate_reason` the first
+  of `max_nodes`, `depth`, `indirect`.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.function.trace.v1`
 

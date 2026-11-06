@@ -141,7 +141,7 @@ pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, ReturnType,
     TypeArtifact, TypeInferInput, TypeInferPass, abi_arg_registers, earlier_stack_local_slots,
 };
-pub use trace::{TraceArtifact, TraceInput, TraceNode, TracePass};
+pub use trace::{NotFollowed, TraceArtifact, TraceInput, TraceNode, TracePass};
 pub use trampoline::{build_trampoline, near_jmp};
 pub use unnamed::{function_name, function_name_and_source, listed_name, unnamed_at, unnamed_function_name, UnnamedFunction};
 pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass};

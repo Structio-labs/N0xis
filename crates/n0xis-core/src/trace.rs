@@ -44,15 +44,32 @@ pub struct TraceNode {
     pub unreadable: bool,
 }
 
+/// What the walk reached and did not go through.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct NotFollowed {
+    /// Calls with no target this can state: `call [rax+8]`, `call rdx`.
+    pub indirect_calls: usize,
+    /// Indirect jumps no table answers for: a tail call through a pointer, or a
+    /// table that was not read.
+    pub indirect_jumps: usize,
+    /// Direct calls at the last level, to a function not visited.
+    pub past_depth: usize,
+    /// Functions reached and left in the queue at `max_nodes`.
+    pub past_max_nodes: usize,
+}
+
 /// The trace artifact (`n0xis.function.trace.v1`).
 #[derive(Clone, Debug, Serialize)]
 pub struct TraceArtifact {
     pub root: Va,
     pub depth: usize,
     pub node_count: usize,
+    /// Whether anything reached was left out: any count in `not_followed`.
     pub truncated: bool,
+    /// The first of `max_nodes`, `depth` and `indirect` that left something out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncate_reason: Option<&'static str>,
+    pub not_followed: NotFollowed,
     pub nodes: Vec<TraceNode>,
 }
 
@@ -74,21 +91,21 @@ impl Pass for TracePass {
         let mut queue: VecDeque<(Va, usize)> = VecDeque::new();
         queue.push_back((input.root, 0));
 
-        let mut truncated = false;
-        let mut truncate_reason: Option<&'static str> = None;
+        let mut not_followed = NotFollowed::default();
+        let mut past_depth: HashSet<u64> = HashSet::new();
 
         while let Some((addr, depth)) = queue.pop_front() {
             if !seen.insert(addr.0) {
                 continue;
             }
             if input.max_nodes > 0 && nodes.len() >= input.max_nodes {
-                truncated = true;
-                truncate_reason = Some("max_nodes");
+                let left: HashSet<u64> = std::iter::once(addr.0).chain(queue.iter().map(|(a, _)| a.0)).filter(|a| !seen.contains(a) || *a == addr.0).collect();
+                not_followed.past_max_nodes = left.len();
                 break;
             }
 
             let cfg_input = CfgInput::new(addr, input.max_bytes);
-            let art = match CfgPass.run(ctx, cfg_input) {
+            let mut art = match CfgPass.run(ctx, cfg_input) {
                 Ok(a) => a,
                 Err(_) => {
                     nodes.push(TraceNode { addr, depth, end: addr, calls: Vec::new(), unreadable: true });
@@ -96,23 +113,43 @@ impl Pass for TracePass {
                 }
             };
 
-            if depth < input.depth {
-                for c in &art.callsites {
-                    if let Some(t) = c.target {
-                        queue.push_back((t, depth + 1));
+            for c in &mut art.callsites {
+                match c.target {
+                    Some(t) if depth < input.depth => queue.push_back((t, depth + 1)),
+                    Some(t) => {
+                        past_depth.insert(t.0);
+                    }
+                    // The CFG states `direct` of a call it has no name for, which
+                    // `call [rax+8]` is not.
+                    None => {
+                        c.kind = "indirect".into();
+                        not_followed.indirect_calls += 1;
                     }
                 }
             }
+            let tables = art.switches.iter().filter(|s| s.resolved).count();
+            not_followed.indirect_jumps += art.stats.indirect_branches.saturating_sub(tables);
 
             nodes.push(TraceNode { addr, depth, end: art.end, calls: art.callsites, unreadable: false });
         }
 
+        not_followed.past_depth = past_depth.iter().filter(|a| !seen.contains(a)).count();
+        let truncate_reason = if not_followed.past_max_nodes > 0 {
+            Some("max_nodes")
+        } else if not_followed.past_depth > 0 {
+            Some("depth")
+        } else if not_followed.indirect_calls + not_followed.indirect_jumps > 0 {
+            Some("indirect")
+        } else {
+            None
+        };
         Ok(TraceArtifact {
             root: input.root,
             depth: input.depth,
             node_count: nodes.len(),
-            truncated,
+            truncated: truncate_reason.is_some(),
             truncate_reason,
+            not_followed,
             nodes,
         })
     }
