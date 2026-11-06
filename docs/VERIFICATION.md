@@ -214,7 +214,10 @@ on each input; the second compiled the printed text and ran it (x86, and on AArc
 The `quality` field is not a correctness signal: it reports 1.0 for the x86 switch with
 an unassigned selector, for a virtual tail call rendered `// indirect jump
 (unrecovered)`, for AArch64 `dispatch` with an opaque condition and for A32 and T32
-`call_chain` with its tail call missing. The ledger's earlier Not-claimed row said
+`call_chain` with its tail call missing. Since [Unreleased] it counts what a body leaves
+unsaid, instructions left as `// asm:`, conditions and values left as comments and names read
+with no line giving them a value, each one `instruction_count`th below 1.0. That is still not a
+correctness signal: a tail call left out or a wrong value is nothing it can count. The ledger's earlier Not-claimed row said
 AArch64 `decomp pseudo` reports `quality: 0.0` and falls back to `asm`; measured
 2026-10-20 it takes the SSA path everywhere, at the means above, and on `oracle/arm64.c`
 built with gcc 16.1 and with clang 23 at 0.17 to 1.00 (means 0.64 and 0.67 for the two

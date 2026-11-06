@@ -62,11 +62,10 @@ results on measured inputs · **refused**: a typed error · **not yet**: no code
   `.localalias` names it gives that object's functions, GCC's i386 padding and `.plt` block listed as
   functions, dots in symbol names printed as underscores (`__x86_get_pc_thunk_bx` for
   `__x86.get_pc_thunk.bx`), and big-endian AArch64 discovery missing functions its `.eh_frame` declares.
-  The decompiler drops pass-through arguments, prints arithmetic shifts unsigned and 64-bit multiplies
-  as 32-bit, can switch on or read a register it never assigns, on AArch64 can name the wrong string,
-  on A32 (and in the same shape on AArch64) runs a countdown loop one iteration short, and on 32-bit
-  x86 loses stack arguments and the high half of 64-bit results. Its `quality` field is not a
-  correctness score. The full list, with counts, is in the [ledger](docs/VERIFICATION.md).
+  The decompiler drops pass-through arguments, can read a register it never assigns, on AArch64 can
+  name the wrong string, and on 32-bit x86 loses stack arguments and the high half of 64-bit results.
+  Its `quality` field counts what a body leaves unsaid; 1.0 is not a statement that the body is right.
+  The full list, with counts, is in the [ledger](docs/VERIFICATION.md).
 - **Missed, answered `ok` with less**: without unwind tables, functions reached only through vtables,
   the MSVC-ABI entry point and most of an ELF shared object; references held in absolute immediates,
   AArch64 `adrp`+`add` or `adr`, or the i386 GOT; Itanium secondary vtables, and every Itanium class

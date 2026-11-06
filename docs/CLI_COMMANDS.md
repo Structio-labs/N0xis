@@ -578,6 +578,12 @@ Pseudo-C for one function.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: **`n0x.decomp.pseudo.v1`** (archived v0 id, kept for back-compat — the only current
   command that still emits a `n0x.*` schema).
+- `data.quality` is 1.0 less one `instruction_count`th for each thing the body leaves unsaid: an
+  instruction left as `// asm:`, a condition or a value left as a comment, a name read that no line gives
+  a value (an entry value `rdi.0` is given by the call), down to 0.0. 1.0 says the body has none of them,
+  not that it is right; for that, `oracle/decomp-behaviour` runs bodies against their source. Before this
+  release it was only the share of instructions lifted, which is what the `low-coverage` flag still
+  reads (below 0.8).
 - `data.variables` lists every variable the page shows: `name` as printed (after any rename),
   `key` (what `annotate var --var` and `annotate vartype --var` take: the name before the
   user renamed it) and `kind` (`param`, `local` or `value`). Only a `param` or a `local` takes

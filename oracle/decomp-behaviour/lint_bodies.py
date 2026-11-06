@@ -29,7 +29,8 @@ def count(c, ARGS, SAVED):
         out["fn_slot_merged"] = 1
     # Names read and never assigned, not parameters, not entry values: a value with no definition.
     params = set(re.findall(r"\b(rdi|rsi|rdx|rcx|r8|r9|xmm\d+)\b", sig))
-    names = set(re.findall(r"(?<![\w.])([a-z][a-z0-9]*\.\d+|v\d+|local_\w+)\b", body))
+    # `&local_18` takes a slot's address, which reads nothing; its name is not a read.
+    names = set(re.findall(r"(?<![\w.&])([a-z][a-z0-9]*\.\d+|v\d+|local_\w+)\b", body))
     assigned = set(re.findall(r"^\s*([a-z][\w.]*)\s*=[^=]", body, re.M)) | set(re.findall(r"(?:\*|&)?\b(local_\w+)\b\s*=[^=]", body))
     declared = set(re.findall(r"^\s*[A-Za-z_][\w ]*\*?\s+\*?([\w.]+)(?:\[\w*\])?\s*;", body, re.M))
     unset = {n for n in names if n not in assigned and n not in declared and not n.endswith(".0") and not n.startswith("rsp") and not n.startswith("xmm")}

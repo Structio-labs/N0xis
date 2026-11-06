@@ -67,6 +67,9 @@ in a capability's arguments may be text as well, for a client whose own numbers 
 - A branch after `add`, `sub`, `inc`, `dec` or `bt` prints a condition where it printed a comment. The carry after `add` is `sum < /*u*/ a`, `bt` is `((x >> n) & 0x1) != 0x0`, and
   `lock decq (%rax); jne` reads `old.1 != 0x1` beside `old.1 = *(uint64_t*)rax;`. A block only the unwinder enters tests the flags it set itself. Checked against the processor by value;
   what the operation does not say stays a mark: `inc` leaves the carry alone, and flags from a join have no one value.
+- `quality` says what is in the body. It was the share of instructions lifted, and said 1.0 of a body with a condition left as a comment. It is now 1.0 less one `instruction_count`th for each
+  instruction left as `// asm:`, each condition or value left as a comment and each name read that no line gives a value. **A client reading it sees a lower number on most bodies**, since most
+  still read a register a call clobbered. It remains no statement that a body is right, and the `low-coverage` flag still reads the share lifted.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

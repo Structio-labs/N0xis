@@ -305,6 +305,11 @@ impl RenderNames {
         self
     }
 
+    /// Is this a version of the stack pointer, whose moves the text does not show?
+    pub(crate) fn is_stack_variable(&self, name: &str) -> bool {
+        self.stack_var.as_deref().is_some_and(|sp| name.split('.').next() == Some(sp))
+    }
+
     /// Does `base + offset` name a slot of this function's frame?
     fn is_stack_address_base(&self, base: &str) -> bool {
         match &self.frames {
@@ -1174,7 +1179,7 @@ pub fn render_condition(e: &MicroExpr, names: &RenderNames) -> String {
 /// call-clobber invalidation) and not something a human wrote — dropped from
 /// the *text* rendering only; the underlying artifact still carries it for
 /// anyone inspecting the JSON.
-fn is_noise(stmt: &MicroStmt, names: &RenderNames) -> bool {
+pub(crate) fn is_noise(stmt: &MicroStmt, names: &RenderNames) -> bool {
     match stmt {
         MicroStmt::Assign { dst, value } => {
             is_flags_var(dst)
@@ -1690,7 +1695,7 @@ mod tests {
 
     #[test]
     fn a_negative_struct_field_offset_renders_signed_not_as_giant_hex() {
-        use crate::typeinfer::{RecoveredSignature, TypeArtifact};
+        use crate::typeinfer::TypeArtifact;
         // A recovered struct base accessed at a negative offset (`*(rcx.1 - 8)`).
         let types = TypeArtifact {
             locals: vec![],

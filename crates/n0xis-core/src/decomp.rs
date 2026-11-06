@@ -130,8 +130,11 @@ pub struct PseudoFunction {
     pub signature: String,
     pub style: &'static str,
     pub pseudo: Vec<String>,
-    /// Fraction of the original instructions this pipeline understood well
-    /// enough to lift (not left as a verbatim `// asm:` line).
+    /// What this body leaves unsaid, as a fraction of its instructions: `1.0` less
+    /// one `instruction_count`th for each instruction left as a verbatim `// asm:`
+    /// line, each condition or value left as a comment, and each name read that no
+    /// line gives a value, down to `0.0`. So `1.0` says the body has none of them.
+    /// It does not say the body is right: that is `oracle/decomp-behaviour`.
     pub quality: f32,
     pub flags: Vec<&'static str>,
     pub instruction_count: usize,
@@ -375,17 +378,19 @@ impl Pass for DecompPass {
         );
         let signature = format_signature(crate::unnamed_at(ctx, cfg.start), &types.signature, own_name.as_deref());
 
-        let (pseudo, has_loop, fallback_count, delta, printed) = match input.style {
+        let (pseudo, has_loop, fallback_count, delta, printed, unsaid) = match input.style {
             // (the arms below produce `pseudo`; block-label stripping is applied
             // to it after the match, gated on `input.strip_block_labels`)
             DecompStyle::Goto => {
                 let names = names.without_local_declarations();
                 let lines = render_goto(&cfg, &ssa.blocks, &names);
-                (lines, false, 0, Vec::new(), names.printed_vars())
+                let unsaid = unsaid_in_body(&ssa.blocks, &names, PhiGivesValue::Yes);
+                (lines, false, 0, Vec::new(), names.printed_vars(), unsaid)
             }
             DecompStyle::Structured => {
                 let out = structure(&cfg, &ssa.blocks, &names);
-                (out.lines, out.has_loop, out.fallback_count, Vec::new(), names.printed_vars())
+                let unsaid = unsaid_in_body(&ssa.blocks, &names, PhiGivesValue::Yes);
+                (out.lines, out.has_loop, out.fallback_count, Vec::new(), names.printed_vars(), unsaid)
             }
             DecompStyle::Ssa => {
                 // Coalesce SSA-version phi-webs into named variables (Rung 3b/3c),
@@ -398,13 +403,25 @@ impl Pass for DecompPass {
                 let names = names.with_coalescing(var_names);
                 let out = structure(&dcfg, &dblocks, &names);
                 let delta = if input.explain { opt.delta } else { Vec::new() };
-                (out.lines, out.has_loop, out.fallback_count, delta, names.printed_vars())
+                // A phi the coalescing merged prints as nothing, and of a web whose
+                // other members are clobbers no line says a thing.
+                let unsaid = unsaid_in_body(&dblocks, &names, PhiGivesValue::No);
+                (out.lines, out.has_loop, out.fallback_count, delta, names.printed_vars(), unsaid)
             }
         };
 
         let pseudo = if input.strip_block_labels { strip_unreferenced_block_labels(pseudo) } else { pseudo };
 
-        let quality = if cfg.insn_count == 0 { 0.0 } else { 1.0 - (unlifted as f32 / cfg.insn_count as f32) };
+        let lifted_fraction = if cfg.insn_count == 0 { 0.0 } else { 1.0 - (unlifted as f32 / cfg.insn_count as f32) };
+        // Any mark in the text is a body that does not say 1.0, however many
+        // instructions dilute it. The switch's mark is the one the structuring adds.
+        let marks = unsaid + pseudo.iter().filter(|l| l.contains("/*index in ")).count();
+        let quality = if cfg.insn_count == 0 {
+            0.0
+        } else {
+            let left = 1.0 - ((unlifted + marks) as f32 / cfg.insn_count as f32);
+            if marks + unlifted > 0 { left.clamp(0.0, 1.0 - f32::EPSILON) } else { left }
+        };
         let mut flags: Vec<&'static str> = vec![input.style.as_str()];
         if !cfg.switches.is_empty() {
             flags.push("has-switch");
@@ -421,7 +438,9 @@ impl Pass for DecompPass {
         if fallback_count > 0 {
             flags.push("structured-partial");
         }
-        if quality < 0.8 {
+        // How much was lifted, which is what the name says and what a filter on
+        // it asked: a body short of `quality` for its names is not short of coverage.
+        if lifted_fraction < 0.8 {
             flags.push("low-coverage");
         }
 
@@ -654,6 +673,81 @@ fn strip_unreferenced_block_labels(lines: Vec<String>) -> Vec<String> {
             Some(format!("{}block_{n}:    // {addr}", " ".repeat(indent)))
         })
         .collect()
+}
+
+/// Does a phi count as a line giving its name a value? The styles that keep SSA as it
+/// is print none and a reader knows versions meet there; the coalesced one has spelled
+/// out all it means to, as copies.
+#[derive(Clone, Copy)]
+enum PhiGivesValue {
+    Yes,
+    No,
+}
+
+/// How many things these statements print without saying: a condition or a value
+/// left as a comment, and a name read that no printed line gives a value.
+///
+/// A name's entry version is the value it came in with, and the stack pointer's
+/// versions are bookkeeping the text does not show. A statement the renderer drops
+/// (a flags write, a call's clobbering of a register) gives its name no line, which
+/// is how a body comes to read `rcx.1`: nothing on the page says what it holds.
+fn unsaid_in_body(blocks: &[SsaBlock], names: &RenderNames, phis: PhiGivesValue) -> usize {
+    let mut given: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for b in blocks {
+        if matches!(phis, PhiGivesValue::Yes) {
+            given.extend(b.phis.iter().map(|p| names.var_display(&p.dst)));
+        }
+        for s in b.stmts.iter().filter(|s| !crate::render::is_noise(&s.stmt, names)) {
+            match &s.stmt {
+                n0xis_arch::MicroStmt::Assign { dst, .. } | n0xis_arch::MicroStmt::Call { ret: Some(dst), .. } => {
+                    given.insert(names.var_display(dst));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut unsaid = 0;
+    let mut unset: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut look = |e: &n0xis_arch::MicroExpr| {
+        unsaid += comment_marks(e);
+        let mut read = std::collections::BTreeSet::new();
+        crate::ssa::collect_expr_vars(e, &mut read);
+        for v in read {
+            let entry = v.ends_with(".0");
+            let bookkeeping = names.is_stack_variable(&v);
+            let shown = names.var_display(&v);
+            if !entry && !bookkeeping && !given.contains(&shown) {
+                unset.insert(shown);
+            }
+        }
+    };
+    for b in blocks {
+        for s in b.stmts.iter().filter(|s| !crate::render::is_noise(&s.stmt, names)) {
+            crate::optimize::stmt_read_exprs(&s.stmt).into_iter().for_each(&mut look);
+        }
+        if b.terminator == "cjmp" {
+            match &b.condition {
+                Some(c) => look(c),
+                None => look(&n0xis_arch::MicroExpr::Unknown("?".to_string())),
+            }
+        }
+    }
+    unsaid + unset.len()
+}
+
+/// How many comments this expression prints for a value.
+fn comment_marks(e: &n0xis_arch::MicroExpr) -> usize {
+    match e {
+        n0xis_arch::MicroExpr::Unknown(_) | n0xis_arch::MicroExpr::OpaqueFlags { .. } => 1,
+        n0xis_arch::MicroExpr::Compare { lhs, rhs, .. } | n0xis_arch::MicroExpr::Binary(_, lhs, rhs) => comment_marks(lhs) + comment_marks(rhs),
+        n0xis_arch::MicroExpr::Load { addr: x, .. } | n0xis_arch::MicroExpr::Unary(_, x) | n0xis_arch::MicroExpr::Cast { expr: x, .. } | n0xis_arch::MicroExpr::AddrOf(x) => comment_marks(x),
+        n0xis_arch::MicroExpr::Select { cond, a, b } => comment_marks(cond) + comment_marks(a) + comment_marks(b),
+        n0xis_arch::MicroExpr::Call { target, args } => {
+            let through = if let n0xis_arch::CallTarget::Indirect(t) = target { comment_marks(t) } else { 0 };
+            through + args.iter().map(comment_marks).sum::<usize>()
+        }
+        n0xis_arch::MicroExpr::Var(_) | n0xis_arch::MicroExpr::Const { .. } => 0,
+    }
 }
 
 fn count_unlifted(blocks: &[SsaBlock]) -> usize {
@@ -1092,6 +1186,15 @@ mod tests {
         assert!(a64(0xb9400020).contains("/*ldr"), "ldr w0,[x1]: {}", a64(0xb9400020));
     }
 
+    fn decomp_long(code: Vec<u8>) -> PseudoFunction {
+        let len = code.len();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), len)).unwrap();
+        DecompPass.run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap()
+    }
+
     fn pos_of(text: &str, needle: &str) -> usize {
         text.find(needle).unwrap_or_else(|| panic!("no {needle} in {text}"))
     }
@@ -1181,6 +1284,19 @@ mod tests {
         let top_test = text.lines().position(|l| l.trim_start().starts_with("while (") && !l.contains("while (1)"));
         assert_eq!(top_test, None, "the test goes after the body: {text}");
         assert!(text.contains("do {") || text.contains("while (1)"), "{text}");
+    }
+
+    /// The same countdown on the other architectures, from their own flags: the
+    /// ledger had `subs`/`bne` on A32 printed `while (r1.1 != 1)`, one iteration short.
+    #[test]
+    fn a_countdown_tests_after_its_body_on_every_architecture() {
+        let top_test = |t: &str| t.lines().any(|l| l.trim_start().starts_with("while (") && !l.contains("while (1)"));
+        // add r0,r0,r0; subs r1,r1,#1; bne .-8; bx lr
+        let text = decomp_a32_as(words(&[0xe0800000, 0xe2511001, 0x1afffffc, 0xe12fff1e]), DecompStyle::Ssa).pseudo.join("\n");
+        assert!(!top_test(&text) && text.contains("r1") && (text.contains("do {") || text.contains("while (1)")), "{text}");
+        // add x0,x0,x0; subs x1,x1,#1; b.ne .-8; ret
+        let text = decomp_arm64(words(&[0x8b000000, 0xf1000421, 0x54ffffc1, 0xd65f03c0])).pseudo.join("\n");
+        assert!(!top_test(&text) && (text.contains("do {") || text.contains("while (1)")), "{text}");
     }
 
     /// The test really is first where the header has no statements, and the top
@@ -1276,6 +1392,40 @@ mod tests {
         // What the operation does not say stays a mark: inc leaves the carry alone.
         let cond = branch(&[0xff, 0x02], 0x72);
         assert!(cond.contains("/*cond(jb)*/"), "{cond}");
+    }
+
+    /// `quality` was the share of instructions lifted, and said 1.0 of a body with a
+    /// condition left as a comment.
+    #[test]
+    fn quality_says_what_the_body_leaves_unsaid() {
+        let of = |code: Vec<u8>| {
+            let f = decomp(code, DecompStyle::Ssa);
+            (f.quality, f.pseudo.join("\n"), f.flags.contains(&"low-coverage"))
+        };
+        // A complete body: mov %rdi,%rax; ret
+        let (q, text, _) = of(vec![0x48, 0x89, 0xf8, 0xc3]);
+        assert_eq!(q, 1.0, "{text}");
+        // A condition left as a comment: `inc` keeps the carry, and `jb` reads it.
+        // incq (%rdx); jb +1; ret; ret
+        let (q, text, _) = of(vec![0x48, 0xff, 0x02, 0x72, 0x01, 0xc3, 0xc3]);
+        assert!(text.contains("/*cond(jb)*/"), "{text}");
+        assert!(q < 1.0, "{q}: {text}");
+        // A value left as a comment, and the instruction unlifted: aesenc %xmm1,%xmm0; ret
+        let (q, text, _) = of(vec![0x66, 0x0f, 0x38, 0xdc, 0xc1, 0xc3]);
+        assert!(q < 1.0, "{q}: {text}");
+        // A name read that nothing on the page gives a value: a call clobbers rcx,
+        // and the next read of it is the clobbered version.
+        // call +0; mov %rcx,%rax; ret
+        let (q, text, flagged) = of(vec![0xe8, 0, 0, 0, 0, 0x48, 0x89, 0xc8, 0xc3]);
+        assert!(text.contains("rcx.1"), "{text}");
+        assert!(q < 1.0, "{q}: {text}");
+        // That is not a matter of coverage: every instruction was lifted.
+        assert!(!flagged, "{text}");
+        // However many instructions there are, a mark is not diluted away.
+        let mut long = vec![0x48, 0xff, 0xc0].repeat(4000); // inc %rax
+        long.extend([0x48, 0xff, 0x02, 0x72, 0x01, 0xc3, 0xc3]);
+        let f = decomp_long(long);
+        assert!(f.quality < 1.0, "{}", f.quality);
     }
 
     /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is
