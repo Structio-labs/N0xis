@@ -458,6 +458,11 @@ impl Image for WasmImage {
         crate::AddressWords::NotStated
     }
 
+    /// A module has no slots a call goes through; a table's are its own.
+    fn constant_after_load(&self, _va: Va) -> bool {
+        false
+    }
+
     fn binding_at(&self, _slot: Va) -> Binding {
         Binding::Unbound { why: "a WebAssembly module has no slots a loader binds: it reaches each import by its index" }
     }

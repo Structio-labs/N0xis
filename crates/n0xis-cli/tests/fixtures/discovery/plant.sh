@@ -28,6 +28,18 @@ ld -shared -o lying.so lying.o
 rm -f lying.o
 LC_ALL=C objdump -d lying.so > lying.so.disassembly.txt
 LC_ALL=C objdump --dwarf=frames lying.so | grep FDE > lying.so.frames.txt
+as --64 -o noreturn.o noreturn.s
+# `.data.rel.ro` is under PT_GNU_RELRO only with this.
+ld -shared -z relro -o noreturn.so noreturn.o
+rm -f noreturn.o
+LC_ALL=C objdump -d noreturn.so > noreturn.so.disassembly.txt
+LC_ALL=C readelf -rW noreturn.so > noreturn.so.relocations.txt
+LC_ALL=C readelf -lW noreturn.so > noreturn.so.segments.txt
+strip -o noreturn.stripped.so noreturn.so
+aarch64-linux-gnu-as -o noreturn_a64.o noreturn_a64.s
+aarch64-linux-gnu-ld -shared -o noreturn_a64.so noreturn_a64.o
+rm -f noreturn_a64.o
+LC_ALL=C aarch64-linux-gnu-objdump -d noreturn_a64.so > noreturn_a64.so.disassembly.txt
 aarch64-linux-gnu-as -march=armv8.3-a -o aarch64.o aarch64.s
 aarch64-linux-gnu-ld -shared -o aarch64.so aarch64.o
 rm -f aarch64.o

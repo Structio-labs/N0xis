@@ -856,6 +856,12 @@ pub trait Image: std::fmt::Debug + Send + Sync {
     /// comes to hold, in no order and possibly more than once; handed over
     /// rather than returned, so what it costs is what the caller keeps.
     fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords;
+    /// Whether the word at `va` keeps, for the life of the process, what the
+    /// loader left there: an ELF's `PT_GNU_RELRO` and its segments no one can
+    /// write. A relocated word anywhere else is the value a variable starts
+    /// with (`static void (*hook)(void) = fallback;`), and the program may
+    /// store another.
+    fn constant_after_load(&self, va: Va) -> bool;
     /// What the slot at `slot` is bound to.
     fn binding_at(&self, slot: Va) -> Binding;
     /// The image's CodeView record, which names its PDB. Not one of §2's

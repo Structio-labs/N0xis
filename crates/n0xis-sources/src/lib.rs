@@ -540,6 +540,18 @@ pub trait SymbolProvider {
         None
     }
 
+    /// The address in this image a call through the slot at `va` goes to, when
+    /// the image states it and nothing can change it after the loader has run:
+    /// the relocated word of a read-only slot, or a slot bound to this image's
+    /// own definition. `None` for a slot this does not know, which stays an
+    /// indirect call with no callee: a guess here is a call to the wrong
+    /// function.
+    ///
+    /// Required, with no default: [`Self::thunk_to`]'s default is how a wrapper
+    /// once answered "not a thunk" for every address on a green build, and the
+    /// compiler is what makes each wrapper here say what it does.
+    fn slot_target(&self, va: Va) -> Option<Va>;
+
     /// The **authoritative** byte length of the function starting at `va`, when
     /// the format states it rather than leaving it to be inferred.
     ///
@@ -620,6 +632,10 @@ impl SymbolProvider for ChainedSymbols<'_> {
         self.primary.thunk_to(va).or_else(|| self.fallback.thunk_to(va))
     }
 
+    fn slot_target(&self, va: Va) -> Option<Va> {
+        self.primary.slot_target(va).or_else(|| self.fallback.slot_target(va))
+    }
+
     fn symbol_fingerprint(&self) -> String {
         let (a, b) = (self.primary.symbol_fingerprint(), self.fallback.symbol_fingerprint());
         if a.is_empty() && b.is_empty() { String::new() } else { format!("{a}+{b}") }
@@ -647,6 +663,10 @@ mod chain_tests {
         name: &'static str,
     }
     impl SymbolProvider for Spanning {
+        fn slot_target(&self, _va: Va) -> Option<Va> {
+            None
+        }
+
         fn symbol_at(&self, va: Va) -> Option<Symbol> {
             (va.0 >= self.at).then(|| Symbol { va: Va(self.at), module: "m".into(), name: self.name.into(), kind: SymKind::Function })
         }
@@ -658,6 +678,10 @@ mod chain_tests {
         name: &'static str,
     }
     impl SymbolProvider for Exact {
+        fn slot_target(&self, _va: Va) -> Option<Va> {
+            None
+        }
+
         fn symbol_at(&self, va: Va) -> Option<Symbol> {
             (va.0 == self.at).then(|| Symbol { va: Va(self.at), module: "m".into(), name: self.name.into(), kind: SymKind::Export })
         }

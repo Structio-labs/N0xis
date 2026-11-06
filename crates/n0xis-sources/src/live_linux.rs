@@ -470,6 +470,12 @@ impl ModuleProvider for LinuxProcess {
 }
 
 impl SymbolProvider for LinuxProcess {
+    /// A process can change a word it mapped: nothing here states it cannot.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         let module = self.owner_of(va)?;
         let base = module.base;

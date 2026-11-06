@@ -93,7 +93,7 @@ impl Pass for NoReturnPropagatePass {
 pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoReturnArtifact {
     // De-duplicate entries while preserving determinism.
     let mut seen_fn = HashSet::new();
-    let funcs: Vec<Va> = functions.iter().copied().filter(|f| seen_fn.insert(f.0)).collect();
+    let mut funcs: Vec<Va> = functions.iter().copied().filter(|f| seen_fn.insert(f.0)).collect();
 
     let mut noreturn: HashSet<Va> = ctx.noreturn.cloned().unwrap_or_default();
     let mut rounds = 0usize;
@@ -120,20 +120,27 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
         };
 
         let mut newly: Vec<Va> = Vec::new();
+        // A function only a slot reaches: the caller's entry list is discovery's,
+        // and discovery lists a direct call's target. Rust's panics are reached
+        // this way and no other, so without them every wrapper stays "may return".
+        let mut reached: Vec<Va> = Vec::new();
         for &f in &funcs {
             if noreturn.contains(&f) {
                 continue;
             }
             // A function we cannot even build a CFG for is left as "may return"
             // — never flagged on missing evidence.
-            if let Ok(cfg) = CfgPass.run(&sub, CfgInput::new(f, max_bytes))
-                && !function_returns(&cfg, &frozen)
-            {
-                newly.push(f);
+            if let Ok(cfg) = CfgPass.run(&sub, CfgInput::new(f, max_bytes)) {
+                reached.extend(cfg.callsites.iter().filter(|c| c.via_slot.is_some()).filter_map(|c| c.target).filter(|t| seen_fn.insert(t.0)));
+                if !function_returns(&cfg, &frozen) {
+                    newly.push(f);
+                }
             }
         }
+        let grew = !reached.is_empty();
+        funcs.extend(reached);
 
-        if newly.is_empty() {
+        if newly.is_empty() && !grew {
             break;
         }
         noreturn.extend(newly);

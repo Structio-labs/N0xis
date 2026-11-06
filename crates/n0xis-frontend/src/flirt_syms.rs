@@ -41,6 +41,12 @@ impl<'a> FlirtSymbols<'a> {
 }
 
 impl SymbolProvider for FlirtSymbols<'_> {
+    /// A signature names bytes; it says nothing about what a slot holds.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         if self.db.is_empty() {
             return None;

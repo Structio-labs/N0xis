@@ -208,6 +208,12 @@ impl LocalNames {
 }
 
 impl SymbolProvider for LocalNames {
+    /// The project's names are names: only the image knows its relocations.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         let (_, (name, kind)) = self.names_at(va).next()?;
         Some(Symbol { va, module: String::new(), name: name.clone(), kind: *kind })

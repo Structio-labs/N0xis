@@ -1,0 +1,46 @@
+
+noreturn_a64.so:     file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000000170 <calls_them_all>:
+ 170:	9400000c 	bl	1a0 <before_a_trap>
+ 174:	9400000f 	bl	1b0 <before_filler>
+ 178:	94000012 	bl	1c0 <statement_nops>
+ 17c:	94000019 	bl	1e0 <last_listed>
+ 180:	d65f03c0 	ret
+ 184:	d503201f 	nop
+ 188:	d503201f 	nop
+ 18c:	d503201f 	nop
+
+0000000000000190 <helper>:
+ 190:	52800000 	mov	w0, #0x0                   	// #0
+ 194:	d65f03c0 	ret
+ 198:	d503201f 	nop
+ 19c:	d503201f 	nop
+
+00000000000001a0 <before_a_trap>:
+ 1a0:	97fffffc 	bl	190 <helper>
+ 1a4:	d4200020 	brk	#0x1
+ 1a8:	d503201f 	nop
+ 1ac:	d503201f 	nop
+
+00000000000001b0 <before_filler>:
+ 1b0:	97fffff8 	bl	190 <helper>
+ 1b4:	d503201f 	nop
+ 1b8:	d503201f 	nop
+ 1bc:	d503201f 	nop
+
+00000000000001c0 <statement_nops>:
+ 1c0:	52800001 	mov	w1, #0x0                   	// #0
+ 1c4:	97fffff3 	bl	190 <helper>
+ 1c8:	d503201f 	nop
+ 1cc:	d503201f 	nop
+ 1d0:	a8c17bfd 	ldp	x29, x30, [sp], #16
+ 1d4:	d65f03c0 	ret
+ 1d8:	d503201f 	nop
+ 1dc:	d503201f 	nop
+
+00000000000001e0 <last_listed>:
+ 1e0:	d65f03c0 	ret

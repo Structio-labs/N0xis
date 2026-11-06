@@ -1081,6 +1081,11 @@ mod tests {
 
         struct Syms;
         impl SymbolProvider for Syms {
+            fn slot_target(&self, _va: Va) -> Option<Va> {
+                None
+            }
+
+
             fn symbol_at(&self, va: Va) -> Option<Symbol> {
                 let name = match va.0 {
                     0x2000 => "_ZN7QPixmapC1Ev",     // a constructor

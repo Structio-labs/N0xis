@@ -459,6 +459,12 @@ impl Il2CppSymbols {
 }
 
 impl SymbolProvider for Il2CppSymbols {
+    /// An index of managed methods states nothing about an image's slots.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         let s = self.owner_of(va.0)?;
         Some(Symbol { va: Va(self.va_of(s)), module: self.module.clone(), name: s.name.clone(), kind: s.kind.to_sym_kind() })

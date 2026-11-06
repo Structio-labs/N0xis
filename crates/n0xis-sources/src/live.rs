@@ -644,6 +644,12 @@ impl ModuleProvider for LiveProcess {
 }
 
 impl SymbolProvider for LiveProcess {
+    /// A process can change a word it mapped: nothing here states it cannot.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     // Live export/IAT recovery (parsing each module's PE headers from memory)
     // is a later slice; a live process has no symbols on its own.
     fn symbol_at(&self, _va: Va) -> Option<Symbol> {

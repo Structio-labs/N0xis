@@ -1274,6 +1274,11 @@ mod tests {
 
         struct OneGlobal;
         impl SymbolProvider for OneGlobal {
+            fn slot_target(&self, _va: Va) -> Option<Va> {
+                None
+            }
+
+
             fn symbol_at(&self, va: Va) -> Option<Symbol> {
                 // A global spanning [0x4000, 0x4100): answers for any interior
                 // address, exactly like a real span-attributing provider.

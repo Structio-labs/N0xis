@@ -143,14 +143,22 @@ impl RenderNames {
     /// found in (`&|va| unnamed_at(ctx, va)`), or `&UnnamedFunction::Address`
     /// where every function is its address.
     pub fn new(callsites: &[Callsite], unnamed: &dyn Fn(Va) -> crate::UnnamedFunction) -> Self {
-        let unnamed = callsites.iter().filter_map(|c| c.target).map(|t| (t.get(), unnamed(t))).collect();
+        let unnamed_at = unnamed;
+        let unnamed = callsites.iter().filter_map(|c| c.target).map(|t| (t.get(), unnamed_at(t))).collect();
         let callee_names = callsites
             .iter()
             .filter_map(|c| Some((c.target?.get(), c.target_name.clone()?)))
             .collect();
+        // A slot whose callee is known and nameless is called by the name any
+        // function of that address has: `sub_4E0C0(...)` says more than the
+        // read of a slot in the data.
         let slot_names = callsites
             .iter()
-            .filter_map(|c| Some((c.via_slot?.get(), c.target_name.clone()?)))
+            .filter_map(|c| {
+                let slot = c.via_slot?.get();
+                let name = c.target_name.clone().or_else(|| c.target.map(|t| crate::unnamed_function_name(unnamed_at(t))))?;
+                Some((slot, name))
+            })
             .collect();
         RenderNames {
             callee_names,

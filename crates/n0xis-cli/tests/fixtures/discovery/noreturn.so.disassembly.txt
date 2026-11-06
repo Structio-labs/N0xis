@@ -1,0 +1,340 @@
+
+noreturn.so:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000001000 <calls_them_all>:
+    1000:	e8 eb 01 00 00       	call   11f0 <filler_with_the_function_going_on>
+    1005:	e8 26 01 00 00       	call   1130 <before_a_trap_and_a_landing_pad>
+    100a:	e8 a1 01 00 00       	call   11b0 <three_statement_nops>
+    100f:	e8 ac 01 00 00       	call   11c0 <before_a_hand_written_alignment>
+    1014:	e8 e7 00 00 00       	call   1100 <panics_mid_function>
+    1019:	e8 f2 00 00 00       	call   1110 <calls_std_that_returns>
+    101e:	e8 4d 00 00 00       	call   1070 <named_through_relro>
+    1023:	e8 68 00 00 00       	call   1090 <nameless_through_relro>
+    1028:	e8 73 00 00 00       	call   10a0 <through_a_variable>
+    102d:	e8 7e 00 00 00       	call   10b0 <through_an_unknown_slot>
+    1032:	e8 99 00 00 00       	call   10d0 <wraps_through_a_slot>
+    1037:	e8 e4 00 00 00       	call   1120 <before_a_trap>
+    103c:	e8 ff 00 00 00       	call   1140 <before_trapping_filler>
+    1041:	e8 0a 01 00 00       	call   1150 <before_filler>
+    1046:	e8 15 01 00 00       	call   1160 <before_a_loop>
+    104b:	e8 30 01 00 00       	call   1180 <jumped_past>
+    1050:	e8 4b 01 00 00       	call   11a0 <statement_nops>
+    1055:	e8 b6 01 00 00       	call   1210 <past_a_breakpoint>
+    105a:	e8 c1 01 00 00       	call   1220 <last_listed>
+    105f:	c3                   	ret
+
+0000000000001060 <helper>:
+    1060:	31 c0                	xor    %eax,%eax
+    1062:	c3                   	ret
+    1063:	cc                   	int3
+    1064:	cc                   	int3
+    1065:	cc                   	int3
+    1066:	cc                   	int3
+    1067:	cc                   	int3
+    1068:	cc                   	int3
+    1069:	cc                   	int3
+    106a:	cc                   	int3
+    106b:	cc                   	int3
+    106c:	cc                   	int3
+    106d:	cc                   	int3
+    106e:	cc                   	int3
+    106f:	cc                   	int3
+
+0000000000001070 <named_through_relro>:
+    1070:	ff 15 6a 2e 00 00    	call   *0x2e6a(%rip)        # 3ee0 <last_listed+0x2cc0>
+    1076:	c3                   	ret
+    1077:	cc                   	int3
+    1078:	cc                   	int3
+    1079:	cc                   	int3
+    107a:	cc                   	int3
+    107b:	cc                   	int3
+    107c:	cc                   	int3
+    107d:	cc                   	int3
+    107e:	cc                   	int3
+    107f:	cc                   	int3
+    1080:	b8 01 00 00 00       	mov    $0x1,%eax
+    1085:	c3                   	ret
+    1086:	cc                   	int3
+    1087:	cc                   	int3
+    1088:	cc                   	int3
+    1089:	cc                   	int3
+    108a:	cc                   	int3
+    108b:	cc                   	int3
+    108c:	cc                   	int3
+    108d:	cc                   	int3
+    108e:	cc                   	int3
+    108f:	cc                   	int3
+
+0000000000001090 <nameless_through_relro>:
+    1090:	ff 15 52 2e 00 00    	call   *0x2e52(%rip)        # 3ee8 <last_listed+0x2cc8>
+    1096:	c3                   	ret
+    1097:	cc                   	int3
+    1098:	cc                   	int3
+    1099:	cc                   	int3
+    109a:	cc                   	int3
+    109b:	cc                   	int3
+    109c:	cc                   	int3
+    109d:	cc                   	int3
+    109e:	cc                   	int3
+    109f:	cc                   	int3
+
+00000000000010a0 <through_a_variable>:
+    10a0:	ff 15 5a 2f 00 00    	call   *0x2f5a(%rip)        # 4000 <_DYNAMIC+0xf0>
+    10a6:	c3                   	ret
+    10a7:	cc                   	int3
+    10a8:	cc                   	int3
+    10a9:	cc                   	int3
+    10aa:	cc                   	int3
+    10ab:	cc                   	int3
+    10ac:	cc                   	int3
+    10ad:	cc                   	int3
+    10ae:	cc                   	int3
+    10af:	cc                   	int3
+
+00000000000010b0 <through_an_unknown_slot>:
+    10b0:	ff 15 42 2e 00 00    	call   *0x2e42(%rip)        # 3ef8 <last_listed+0x2cd8>
+    10b6:	c3                   	ret
+    10b7:	cc                   	int3
+    10b8:	cc                   	int3
+    10b9:	cc                   	int3
+    10ba:	cc                   	int3
+    10bb:	cc                   	int3
+    10bc:	cc                   	int3
+    10bd:	cc                   	int3
+    10be:	cc                   	int3
+    10bf:	cc                   	int3
+    10c0:	eb fe                	jmp    10c0 <through_an_unknown_slot+0x10>
+    10c2:	cc                   	int3
+    10c3:	cc                   	int3
+    10c4:	cc                   	int3
+    10c5:	cc                   	int3
+    10c6:	cc                   	int3
+    10c7:	cc                   	int3
+    10c8:	cc                   	int3
+    10c9:	cc                   	int3
+    10ca:	cc                   	int3
+    10cb:	cc                   	int3
+    10cc:	cc                   	int3
+    10cd:	cc                   	int3
+    10ce:	cc                   	int3
+    10cf:	cc                   	int3
+
+00000000000010d0 <wraps_through_a_slot>:
+    10d0:	ff 15 1a 2e 00 00    	call   *0x2e1a(%rip)        # 3ef0 <last_listed+0x2cd0>
+    10d6:	b8 02 00 00 00       	mov    $0x2,%eax
+    10db:	c3                   	ret
+    10dc:	cc                   	int3
+    10dd:	cc                   	int3
+    10de:	cc                   	int3
+    10df:	cc                   	int3
+
+00000000000010e0 <_ZN4core9panicking5panic17h0123456789abcdefE>:
+    10e0:	0f 0b                	ud2
+    10e2:	cc                   	int3
+    10e3:	cc                   	int3
+    10e4:	cc                   	int3
+    10e5:	cc                   	int3
+    10e6:	cc                   	int3
+    10e7:	cc                   	int3
+    10e8:	cc                   	int3
+    10e9:	cc                   	int3
+    10ea:	cc                   	int3
+    10eb:	cc                   	int3
+    10ec:	cc                   	int3
+    10ed:	cc                   	int3
+    10ee:	cc                   	int3
+    10ef:	cc                   	int3
+
+00000000000010f0 <_ZN3std9panicking11panic_count17is_zero_slow_path17h0123456789abcdefE>:
+    10f0:	c3                   	ret
+    10f1:	cc                   	int3
+    10f2:	cc                   	int3
+    10f3:	cc                   	int3
+    10f4:	cc                   	int3
+    10f5:	cc                   	int3
+    10f6:	cc                   	int3
+    10f7:	cc                   	int3
+    10f8:	cc                   	int3
+    10f9:	cc                   	int3
+    10fa:	cc                   	int3
+    10fb:	cc                   	int3
+    10fc:	cc                   	int3
+    10fd:	cc                   	int3
+    10fe:	cc                   	int3
+    10ff:	cc                   	int3
+
+0000000000001100 <panics_mid_function>:
+    1100:	ff 15 fa 2d 00 00    	call   *0x2dfa(%rip)        # 3f00 <last_listed+0x2ce0>
+    1106:	b8 05 00 00 00       	mov    $0x5,%eax
+    110b:	c3                   	ret
+    110c:	cc                   	int3
+    110d:	cc                   	int3
+    110e:	cc                   	int3
+    110f:	cc                   	int3
+
+0000000000001110 <calls_std_that_returns>:
+    1110:	ff 15 f2 2d 00 00    	call   *0x2df2(%rip)        # 3f08 <last_listed+0x2ce8>
+    1116:	b8 06 00 00 00       	mov    $0x6,%eax
+    111b:	c3                   	ret
+    111c:	cc                   	int3
+    111d:	cc                   	int3
+    111e:	cc                   	int3
+    111f:	cc                   	int3
+
+0000000000001120 <before_a_trap>:
+    1120:	e8 3b ff ff ff       	call   1060 <helper>
+    1125:	0f 0b                	ud2
+    1127:	cc                   	int3
+    1128:	cc                   	int3
+    1129:	cc                   	int3
+    112a:	cc                   	int3
+    112b:	cc                   	int3
+    112c:	cc                   	int3
+    112d:	cc                   	int3
+    112e:	cc                   	int3
+    112f:	cc                   	int3
+
+0000000000001130 <before_a_trap_and_a_landing_pad>:
+    1130:	e8 2b ff ff ff       	call   1060 <helper>
+    1135:	0f 0b                	ud2
+    1137:	48 89 c3             	mov    %rax,%rbx
+    113a:	e8 21 ff ff ff       	call   1060 <helper>
+    113f:	c3                   	ret
+
+0000000000001140 <before_trapping_filler>:
+    1140:	e8 1b ff ff ff       	call   1060 <helper>
+    1145:	cc                   	int3
+    1146:	cc                   	int3
+    1147:	cc                   	int3
+    1148:	cc                   	int3
+    1149:	cc                   	int3
+    114a:	cc                   	int3
+    114b:	cc                   	int3
+    114c:	cc                   	int3
+    114d:	cc                   	int3
+    114e:	cc                   	int3
+    114f:	cc                   	int3
+
+0000000000001150 <before_filler>:
+    1150:	e8 0b ff ff ff       	call   1060 <helper>
+    1155:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+    115c:	00 00 00 00 
+
+0000000000001160 <before_a_loop>:
+    1160:	e8 fb fe ff ff       	call   1060 <helper>
+    1165:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+    116c:	00 00 00 00 
+    1170:	ff c8                	dec    %eax
+    1172:	75 fc                	jne    1170 <before_a_loop+0x10>
+    1174:	c3                   	ret
+    1175:	cc                   	int3
+    1176:	cc                   	int3
+    1177:	cc                   	int3
+    1178:	cc                   	int3
+    1179:	cc                   	int3
+    117a:	cc                   	int3
+    117b:	cc                   	int3
+    117c:	cc                   	int3
+    117d:	cc                   	int3
+    117e:	cc                   	int3
+    117f:	cc                   	int3
+
+0000000000001180 <jumped_past>:
+    1180:	85 c0                	test   %eax,%eax
+    1182:	74 0c                	je     1190 <jumped_past+0x10>
+    1184:	e8 d7 fe ff ff       	call   1060 <helper>
+    1189:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+    1190:	b8 03 00 00 00       	mov    $0x3,%eax
+    1195:	c3                   	ret
+    1196:	cc                   	int3
+    1197:	cc                   	int3
+    1198:	cc                   	int3
+    1199:	cc                   	int3
+    119a:	cc                   	int3
+    119b:	cc                   	int3
+    119c:	cc                   	int3
+    119d:	cc                   	int3
+    119e:	cc                   	int3
+    119f:	cc                   	int3
+
+00000000000011a0 <statement_nops>:
+    11a0:	90                   	nop
+    11a1:	e8 ba fe ff ff       	call   1060 <helper>
+    11a6:	90                   	nop
+    11a7:	90                   	nop
+    11a8:	c9                   	leave
+    11a9:	c3                   	ret
+    11aa:	cc                   	int3
+    11ab:	cc                   	int3
+    11ac:	cc                   	int3
+    11ad:	cc                   	int3
+    11ae:	cc                   	int3
+    11af:	cc                   	int3
+
+00000000000011b0 <three_statement_nops>:
+    11b0:	e8 ab fe ff ff       	call   1060 <helper>
+    11b5:	90                   	nop
+    11b6:	90                   	nop
+    11b7:	90                   	nop
+    11b8:	c9                   	leave
+    11b9:	c3                   	ret
+    11ba:	cc                   	int3
+    11bb:	cc                   	int3
+    11bc:	cc                   	int3
+    11bd:	cc                   	int3
+    11be:	cc                   	int3
+    11bf:	cc                   	int3
+
+00000000000011c0 <before_a_hand_written_alignment>:
+    11c0:	e8 9b fe ff ff       	call   1060 <helper>
+    11c5:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+    11ca:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+    11d1:	00 00 00 00 
+    11d5:	66 66 2e 0f 1f 84 00 	data16 cs nopw 0x0(%rax,%rax,1)
+    11dc:	00 00 00 00 
+    11e0:	b8 07 00 00 00       	mov    $0x7,%eax
+    11e5:	c3                   	ret
+    11e6:	cc                   	int3
+    11e7:	cc                   	int3
+    11e8:	cc                   	int3
+    11e9:	cc                   	int3
+    11ea:	cc                   	int3
+    11eb:	cc                   	int3
+    11ec:	cc                   	int3
+    11ed:	cc                   	int3
+    11ee:	cc                   	int3
+    11ef:	cc                   	int3
+
+00000000000011f0 <filler_with_the_function_going_on>:
+    11f0:	85 c0                	test   %eax,%eax
+    11f2:	74 11                	je     1205 <filler_with_the_function_going_on+0x15>
+    11f4:	e8 67 fe ff ff       	call   1060 <helper>
+    11f9:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+    1200:	b8 08 00 00 00       	mov    $0x8,%eax
+    1205:	c3                   	ret
+    1206:	cc                   	int3
+    1207:	cc                   	int3
+    1208:	cc                   	int3
+    1209:	cc                   	int3
+    120a:	cc                   	int3
+    120b:	cc                   	int3
+    120c:	cc                   	int3
+    120d:	cc                   	int3
+    120e:	cc                   	int3
+    120f:	cc                   	int3
+
+0000000000001210 <past_a_breakpoint>:
+    1210:	e8 4b fe ff ff       	call   1060 <helper>
+    1215:	cc                   	int3
+    1216:	b8 04 00 00 00       	mov    $0x4,%eax
+    121b:	c3                   	ret
+    121c:	cc                   	int3
+    121d:	cc                   	int3
+    121e:	cc                   	int3
+    121f:	cc                   	int3
+
+0000000000001220 <last_listed>:
+    1220:	c3                   	ret

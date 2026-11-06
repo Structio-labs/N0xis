@@ -1,0 +1,9 @@
+
+Relocation section '.rela.dyn' at offset 0x250 contains 6 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name + Addend
+0000000000003ee0  0000000000000008 R_X86_64_RELATIVE                         1060
+0000000000003ee8  0000000000000008 R_X86_64_RELATIVE                         1080
+0000000000003ef0  0000000000000008 R_X86_64_RELATIVE                         10c0
+0000000000003f00  0000000000000008 R_X86_64_RELATIVE                         10e0
+0000000000003f08  0000000000000008 R_X86_64_RELATIVE                         10f0
+0000000000004000  0000000000000008 R_X86_64_RELATIVE                         1060

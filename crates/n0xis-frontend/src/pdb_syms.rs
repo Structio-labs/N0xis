@@ -54,6 +54,12 @@ impl PdbSymbols {
 }
 
 impl SymbolProvider for PdbSymbols {
+    /// A PDB does not state what a slot holds at run time.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     /// A name at a function's start, as the image's own exports are given.
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         self.by_start.get(&va.0).map(|(_, name)| Symbol { va, module: self.module.clone(), name: name.clone(), kind: SymKind::Function })

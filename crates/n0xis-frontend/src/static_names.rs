@@ -265,6 +265,10 @@ impl SymbolProvider for StaticNames<'_> {
         self.layers.iter().find_map(|layer| layer.provider().thunk_to(va))
     }
 
+    fn slot_target(&self, va: Va) -> Option<Va> {
+        self.layers.iter().find_map(|layer| layer.provider().slot_target(va))
+    }
+
     fn symbol_fingerprint(&self) -> String {
         let parts: Vec<String> = self.layers.iter().map(|layer| layer.provider().symbol_fingerprint()).filter(|f| !f.is_empty()).collect();
         parts.join("+")
@@ -280,6 +284,10 @@ mod tests {
     struct One(&'static str, u64, Option<u64>);
 
     impl SymbolProvider for One {
+        fn slot_target(&self, _va: Va) -> Option<Va> {
+            None
+        }
+
         fn symbol_at(&self, va: Va) -> Option<Symbol> {
             (va.0 >= self.1).then(|| Symbol { va: Va(self.1), module: String::new(), name: self.0.into(), kind: SymKind::Function })
         }

@@ -635,6 +635,13 @@ impl Image for StaticPe {
         crate::AddressWords::Stored
     }
 
+    /// Not asked of a PE today, and not answered by a section's flags: the
+    /// loader rewrites `__guard_dispatch_icall_fptr` in `.rdata`, so a word in a
+    /// read-only section is not a word the loader left as the file states it.
+    fn constant_after_load(&self, _va: Va) -> bool {
+        false
+    }
+
     fn binding_at(&self, slot: Va) -> Binding {
         match self.iat.get(&slot.0) {
             Some(import) => Binding::Import(import.clone()),

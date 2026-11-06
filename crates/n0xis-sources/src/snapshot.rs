@@ -161,6 +161,13 @@ impl MemorySource for Snapshot {
 }
 
 impl SymbolProvider for Snapshot {
+    /// A snapshot holds what a slot held when it was taken, and no relocation
+    /// says that is what it holds now.
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         self.symbols.get(&va.0).cloned()
     }

@@ -446,6 +446,10 @@ fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
         .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
         .or_else(|| ins.rip_target.and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
         .or_else(|| ins.target.and_then(|t| thunk_import(ctx, t)))
+        // A slot that holds a known address of this image: the function at that
+        // address, named as its entry is everywhere else, or nothing. Never the
+        // nearest symbol below: the word names a function, not a place in one.
+        .or_else(|| slot_callee(ctx, ins).and_then(|t| symbol_on_entry(ctx, t)))
         // A function *defined in this image* — however we learned its name (an
         // export table, an ELF `.symtab`, a signature match) — is called by its
         // bare name: `crc32_z`, not `libz.so!crc32_z`. The `module!` prefix exists
@@ -465,6 +469,14 @@ fn memory_slot(ins: &DecodedInsn) -> Option<Va> {
     ins.target.is_none().then_some(ins.rip_target).flatten()
 }
 
+/// The function a `call` or `jmp` through a memory slot goes to, where the slot
+/// is known ([`n0xis_sources::SymbolProvider::slot_target`]): Rust calls almost
+/// everything through one, panics included, and a call nothing resolves has no
+/// name and is invisible to the whole-program fixpoint.
+fn slot_callee(ctx: &Ctx, ins: &DecodedInsn) -> Option<Va> {
+    ctx.symbols?.slot_target(memory_slot(ins)?)
+}
+
 /// Is this instruction a call to a function that never comes back? Two sources,
 /// both ending the block (and, for [`truncate_to_function`], the function):
 /// a well-known noreturn **import** (`ExitProcess`, `abort`, …), resolved by
@@ -482,7 +494,7 @@ fn is_noreturn_call(ctx: &Ctx, ins: &DecodedInsn) -> bool {
         .and_then(|n| n.rsplit('!').next())
         .map(crate::noreturn::is_known_noreturn)
         .unwrap_or(false);
-    let by_addr = matches!((ctx.noreturn, ins.target), (Some(set), Some(t)) if set.contains(&t));
+    let by_addr = matches!((ctx.noreturn, ins.target.or_else(|| slot_callee(ctx, ins))), (Some(set), Some(t)) if set.contains(&t));
     by_name || by_addr
 }
 
@@ -947,7 +959,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                     callsites.push(Callsite {
                         from: ins.va,
                         kind: if target_name.is_some() { "named" } else { "direct" }.into(),
-                        target: ins.target,
+                        target: ins.target.or_else(|| slot_callee(ctx, ins)),
                         target_name,
                         via_slot: memory_slot(ins),
                     });

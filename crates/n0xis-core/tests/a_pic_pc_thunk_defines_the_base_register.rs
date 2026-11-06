@@ -46,6 +46,11 @@ const THUNK_NAME: &str = "__x86.get_pc_thunk.bx";
 struct ThunkSymbols;
 
 impl SymbolProvider for ThunkSymbols {
+    fn slot_target(&self, _va: Va) -> Option<Va> {
+        None
+    }
+
+
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         match va.0 {
             0x1000 => Some(Symbol {

@@ -40,6 +40,8 @@ const STT_FUNC: u8 = 2;
 const STT_OBJECT: u8 = 1;
 /// `PT_LOAD` — a loadable segment; the minimum `p_vaddr` is the preferred base.
 const PT_LOAD: u32 = 1;
+/// `PT_GNU_RELRO` — made read-only once the loader has relocated it.
+const PT_GNU_RELRO: u32 = 0x6474_e552;
 
 /// The two dynamic-relocation types that bind a **GOT slot** to an imported
 /// symbol, per architecture: `(GLOB_DAT, JUMP_SLOT)`.
@@ -310,6 +312,9 @@ pub(crate) struct StaticElf {
     unlisted: UnlistedSlot,
     /// The words the loader writes ([`read_relocated_words`]).
     relocated: crate::RelocatedWords,
+    /// Where nothing can write once the loader is done
+    /// ([`Image::constant_after_load`]), as `start..end`.
+    constant_after_load: Vec<(u64, u64)>,
     /// Statements of the image that disagree ([`bindings_of`]).
     findings: Vec<Finding>,
 }
@@ -634,6 +639,13 @@ impl StaticElf {
                 .collect(),
         };
 
+        let constant_after_load = elf
+            .program_headers
+            .iter()
+            .filter(|ph| ph.p_type == PT_GNU_RELRO || (ph.p_type == PT_LOAD && ph.p_flags & PF_W == 0))
+            .map(|ph| (ph.p_vaddr, ph.p_vaddr.saturating_add(ph.p_memsz)))
+            .collect();
+
         // goblin reads `e_ident[EI_CLASS]` and refuses any value but
         // `ELFCLASS32`/`ELFCLASS64`, so the width is the header's own answer.
         // The class is the width of the image's **data** pointers, which is not
@@ -720,6 +732,7 @@ impl StaticElf {
             bindings,
             unlisted,
             relocated,
+            constant_after_load,
             findings,
         })
     }
@@ -863,8 +876,12 @@ impl Image for StaticElf {
         self.bytes.get(self.comment.clone()?)
     }
 
+    fn constant_after_load(&self, va: Va) -> bool {
+        self.constant_after_load.iter().any(|(start, end)| (*start..*end).contains(&va.0))
+    }
+
     /// Parsed again for the question, not kept from the first parse: only
-    /// `strings` asks, and a table's values are handed over and dropped, so
+    /// `strings` and a call through a slot ask, and a table's values are handed over and dropped, so
     /// their cost is not a second copy of them for every other command.
     fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
         use crate::{AddressWords, RelocatedWords};

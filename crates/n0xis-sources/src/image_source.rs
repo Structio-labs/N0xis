@@ -99,6 +99,11 @@ pub struct ImageSource {
     data_sizes: BTreeMap<u64, u64>,
     /// Stub → the definition in this image its slot is bound to.
     thunks: BTreeMap<u64, u64>,
+    /// The slots a relocation points at this image's code and nothing writes
+    /// after the loader, by slot, sorted ([`Self::read_only_code_slots`]).
+    /// Worked out the first time a slot is asked about: a table's values cost
+    /// nothing to a command that never follows one.
+    code_slots: std::sync::OnceLock<Vec<(u64, u64)>>,
     /// Exports in executable sections, address-ordered.
     entry_points: Vec<Va>,
 }
@@ -141,6 +146,7 @@ impl ImageSource {
             other_sizes: BTreeMap::new(),
             data_sizes: BTreeMap::new(),
             thunks: BTreeMap::new(),
+            code_slots: std::sync::OnceLock::new(),
             entry_points: Vec::new(),
         };
         source.index();
@@ -634,6 +640,38 @@ impl MemorySource for ImageSource {
     }
 }
 
+/// Every word a relative relocation writes with an address in this image's
+/// code, where nothing can write again once the loader is done, as sorted
+/// `(slot, value)`. Empty for an image whose words are not relocated: a word
+/// in a fixed image or a PE names an address too, but what it is at run time
+/// is not stated by a relocation, and `__guard_dispatch_icall_fptr` shows it
+/// can be something else.
+///
+/// A slot two relocations write with different values is left out: the value
+/// depends on the order they are applied in, which is the loader's.
+fn read_only_code_slots(image: &dyn Image) -> Vec<(u64, u64)> {
+    let code: Vec<(u64, u64)> = image
+        .sections()
+        .iter()
+        .filter(|s| s.executable && s.in_image)
+        .map(|s| (s.va.0, s.va.0.saturating_add(s.size)))
+        .collect();
+    let mut words = Vec::new();
+    let how = image.address_words(&mut |slot, value| {
+        if code.iter().any(|(start, end)| (*start..*end).contains(&value)) && image.constant_after_load(Va(slot)) {
+            words.push((slot, value));
+        }
+    });
+    if how != crate::AddressWords::Relocated {
+        return Vec::new();
+    }
+    words.sort_unstable();
+    words.dedup();
+    let unique = |w: &(u64, u64), all: &[(u64, u64)]| all.partition_point(|x| x.0 < w.0) + 1 == all.partition_point(|x| x.0 <= w.0);
+    let kept = words.iter().copied().filter(|w| unique(w, &words)).collect();
+    kept
+}
+
 impl SymbolProvider for ImageSource {
     fn symbol_at(&self, va: Va) -> Option<Symbol> {
         self.named_at(va).map(|(symbol, _)| symbol)
@@ -664,6 +702,20 @@ impl SymbolProvider for ImageSource {
 
     fn thunk_to(&self, va: Va) -> Option<Va> {
         self.thunks.get(&va.0).copied().map(Va)
+    }
+
+    /// What the bindings say, and for a slot they do not bind, the relative
+    /// relocation that writes it. A slot whose bindings were not read is not
+    /// known either way, and answers nothing.
+    fn slot_target(&self, va: Va) -> Option<Va> {
+        match self.image.binding_at(va) {
+            Binding::SelfDefinition { target } => Some(target),
+            Binding::Unbound { .. } => {
+                let slots = self.code_slots.get_or_init(|| read_only_code_slots(self.image.as_ref()));
+                slots.binary_search_by_key(&va.0, |(slot, _)| *slot).ok().map(|i| Va(slots[i].1))
+            }
+            Binding::Import(_) | Binding::ImportAndSelfDefinition { .. } | Binding::NotRead { .. } => None,
+        }
     }
 }
 
