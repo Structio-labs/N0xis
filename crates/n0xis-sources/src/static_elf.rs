@@ -179,13 +179,28 @@ fn read_relocated_words(elf: &Elf, bytes: &[u8]) -> crate::RelocatedWords {
             add(r, &elf.dynsyms);
         }
     }
-    let Some(relr) = relr_tables(elf, dyns) else {
+    let Some(mut relr) = relr_tables(elf, dyns) else {
         return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
     };
-    for (offset, size) in relr {
-        if for_each_relr_word(elf, bytes, offset, size, &mut |word| words.push(word)).is_none() {
+    relr.sort_unstable();
+    relr.dedup();
+    // A word of a `RELR` table names up to 63 words, so its length says little about
+    // what it decodes to: a table of ones in a 1 GiB file is 63 GiB of words. So they
+    // are counted before one is kept. A word the loader writes is a word in the file, so
+    // a table naming more than the file has is not a list of them.
+    let mut decoded = 0usize;
+    for &(offset, size) in &relr {
+        if for_each_relr_word(elf, bytes, offset, size, &mut |_| decoded += 1).is_none() {
             return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
         }
+    }
+    if decoded > bytes.len() / usize::from(crate::PointerWidth::of_64_bit(elf.is_64).bytes()) {
+        return RelocatedWords::NotRead(RelocationsNotRead::Malformed);
+    }
+    words.reserve_exact(decoded);
+    for (offset, size) in relr {
+        // Read once already, so `None` cannot come here.
+        let _ = for_each_relr_word(elf, bytes, offset, size, &mut |word| words.push(word));
     }
     words.sort_unstable();
     words.dedup();
@@ -937,5 +952,86 @@ impl Image for StaticElf {
     }
     fn codeview(&self) -> Option<&CodeView> {
         None
+    }
+}
+
+#[cfg(test)]
+mod relr_tests {
+    use super::*;
+
+    /// A shared object of one x86-64 `RELR` section holding `table`, followed by `padding`
+    /// bytes, built by hand: an answer known before it is asked.
+    fn image_with_relr(table: &[u64], padding: usize) -> Vec<u8> {
+        const HEADER: usize = 64;
+        const SECTION_HEADER: usize = 64;
+        let names = b"\0.relr.dyn\0.shstrtab\0";
+        let table_bytes: Vec<u8> = table.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let names_at = HEADER + table_bytes.len();
+        let sections_at = names_at + names.len();
+        let mut image = vec![0u8; HEADER];
+        image[..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+        image[16..18].copy_from_slice(&ET_DYN.to_le_bytes());
+        image[18..20].copy_from_slice(&62u16.to_le_bytes());
+        image[20..24].copy_from_slice(&1u32.to_le_bytes());
+        image[40..48].copy_from_slice(&(sections_at as u64).to_le_bytes());
+        image[52..54].copy_from_slice(&(HEADER as u16).to_le_bytes());
+        image[54..56].copy_from_slice(&56u16.to_le_bytes());
+        image[58..60].copy_from_slice(&(SECTION_HEADER as u16).to_le_bytes());
+        image[60..62].copy_from_slice(&3u16.to_le_bytes());
+        image[62..64].copy_from_slice(&2u16.to_le_bytes());
+        image.extend_from_slice(&table_bytes);
+        image.extend_from_slice(names);
+        let mut section = |name: u32, kind: u32, offset: usize, size: usize| {
+            image.extend_from_slice(&name.to_le_bytes());
+            image.extend_from_slice(&kind.to_le_bytes());
+            image.extend_from_slice(&[0; 16]);
+            image.extend_from_slice(&(offset as u64).to_le_bytes());
+            image.extend_from_slice(&(size as u64).to_le_bytes());
+            image.extend_from_slice(&[0; 24]);
+        };
+        section(0, 0, 0, 0);
+        section(1, SHT_RELR, HEADER, table_bytes.len());
+        section(11, 3, names_at, names.len());
+        image.resize(image.len() + padding, 0);
+        image
+    }
+
+    /// One word of the table names 63. A table of them in a file is a claim of 63 times the
+    /// file in words, and is refused before any is kept: this came to gigabytes on a
+    /// hostile table, counted one at a time.
+    #[test]
+    fn a_table_naming_more_words_than_the_file_has_keeps_none() {
+        let image = image_with_relr(&vec![u64::MAX; 4096], 0);
+        let elf = Elf::parse(&image).expect("the image parses");
+        let found = read_relocated_words(&elf, &image);
+        assert!(matches!(found, crate::RelocatedWords::NotRead(crate::RelocationsNotRead::Malformed)), "{found:?}");
+    }
+
+    /// The other direction: a table that fits is read, and its words are the ones the
+    /// format says. The address entry names one word, and the bitmap's bits 1 and 3 name
+    /// the first and third words after it.
+    #[test]
+    fn a_table_that_fits_is_read() {
+        let image = image_with_relr(&[0x4000, 0b1011], 0);
+        let elf = Elf::parse(&image).expect("the image parses");
+        match read_relocated_words(&elf, &image) {
+            crate::RelocatedWords::Read { words, .. } => assert_eq!(words, [0x4000, 0x4008, 0x4018]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The bound is the file's words, and not less: all 63 of a bitmap's words are allowed
+    /// in a file that has room for them.
+    #[test]
+    fn a_dense_table_in_a_file_with_room_is_read() {
+        let image = image_with_relr(&[0x4000, u64::MAX], 63 * 8);
+        let elf = Elf::parse(&image).expect("the image parses");
+        match read_relocated_words(&elf, &image) {
+            crate::RelocatedWords::Read { words, .. } => {
+                assert_eq!(words.len(), 64);
+                assert_eq!(words.last(), Some(&(0x4000 + 63 * 8)));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
