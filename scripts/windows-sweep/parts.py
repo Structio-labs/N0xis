@@ -17,7 +17,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-M = None  # the main script, for what it owns: LaptopGone, the ssh options, first_diff
+M = None  # the main script, for what it owns: MachineGone, the ssh options, first_diff
 
 
 def bind(main_module):
@@ -35,10 +35,10 @@ class Target:
         self.ticks, self.dead, self.lines = 0, False, []
         self.pid = self.base = self.combo = self.tid = None
         self.ready = threading.Event()
-        self.p = subprocess.Popen([*M.SSH, s.laptop.host, f"cmd /c {s.wroot}\\runt.bat {s.W('in/' + exe)}"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.p = subprocess.Popen([*M.SSH, s.far.host, f"cmd /c {s.wroot}\\runt.bat {s.W('in/' + exe)}"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         threading.Thread(target=self._read, daemon=True).start()
         if not self.ready.wait(40):
-            s.laptop.gone_unless_up("a target was starting")
+            s.far.gone_unless_up("a target was starting")
             raise RuntimeError(f"the target did not come up: {self.lines[:4]}")
         self.alive(need=1, wait=10)
 
@@ -84,7 +84,7 @@ class Target:
 
     def stop(self):
         if self.pid and not self.dead:
-            self.s.laptop.run(r"C:\Windows\System32\taskkill.exe", ["/F", "/PID", self.pid], bound=15)
+            self.s.far.run(r"C:\Windows\System32\taskkill.exe", ["/F", "/PID", self.pid], bound=15)
         self.p.kill()
 
 
@@ -121,7 +121,7 @@ class Live:
         """None, or how it died, the replacement already started."""
         if not self.T.dead and self.T.alive(need, wait):
             return None
-        self.s.laptop.gone_unless_up("a target stopped")
+        self.s.far.gone_unless_up("a target stopped")
         code = self.T.exit_code()
         self.replace_target()
         return f"the target stopped ticking, exit {code}"
@@ -427,7 +427,7 @@ def rest_group(s, L):
 
 def same_session_rows(s):
     """A window is seen only from its own session, so `ui windows` is asked from the batch file that started the target."""
-    lap = s.laptop
+    lap = s.far
     if s.skipped("ui.windows+same-session"):
         return
     bat = s.lroot / "uiw.bat"
@@ -568,7 +568,7 @@ def eh_check(env, image, base):
 
 
 def on_disk(s, sub):
-    r = s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "dir", "/b", s.W(sub)])
+    r = s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "dir", "/b", s.W(sub)])
     names = r["o"].decode("utf-8", "replace").split()
     return None if "1111222233334444.luac" in names else f"on disk: {names[:4]}"
 
@@ -584,8 +584,8 @@ def console(s, lines, inputs=(), bound=40, config=None):
     bat = s.lroot / "con.bat"
     cfg = config or s.W("console-config")
     bat.write_bytes(("@echo off\r\nchcp 65001 >NUL\r\n" + f"set N0X_CONFIG_DIR={cfg}\r\nset N={s.wbin}\r\ncd /d {s.W('console')}\r\n" + "\r\n".join(lines) + "\r\necho ALL^DONE\r\n").encode())
-    s.laptop.put(bat, s.wroot + r"\con.bat")
-    p = subprocess.Popen([*M.SSH, "-tt", s.laptop.host, f"cmd /c {s.wroot}\\con.bat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    s.far.put(bat, s.wroot + r"\con.bat")
+    p = subprocess.Popen([*M.SSH, "-tt", s.far.host, f"cmd /c {s.wroot}\\con.bat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     buf, finished = bytearray(), threading.Event()
     def read():
         while True:
@@ -611,9 +611,9 @@ def console(s, lines, inputs=(), bound=40, config=None):
 
 
 def console_part(s):
-    s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W("console/.n0x"), s.W("console-config")])
+    s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W("console/.n0x"), s.W("console-config")])
     # The daily check must not ask the network from a console in this part: the update part is where that is asked.
-    s.laptop.run(s.wbin, ["config", "set", "update.check", "false"], env={"N0X_CONFIG_DIR": s.W("console-config")})
+    s.far.run(s.wbin, ["config", "set", "update.check", "false"], env={"N0X_CONFIG_DIR": s.W("console-config")})
     def case(id, command, lines, wants, inputs=(), bound=40):
         if s.skipped("console." + id):
             return
@@ -660,7 +660,7 @@ def paths_part(s, table):
     space = s.W("sp ü/ім'я папки")
     long_dir = s.W("long/" + "/".join(["каталог_" + "a" * 40] * 7))
     q = lambda p: p.replace("'", "''")  # noqa: E731
-    made = s.laptop.ps(f"$n = @('{q(space)}','\\\\?\\{q(long_dir)}'); foreach ($d in $n) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null; foreach ($f in 'app.exe','test.bundle','lj20.ljbc','payload.txt') {{ Copy-Item -Force -LiteralPath ('{base}' + $f) -Destination ($d + '\\' + $f) }} }}; 'made'")
+    made = s.far.ps(f"$n = @('{q(space)}','\\\\?\\{q(long_dir)}'); foreach ($d in $n) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null; foreach ($f in 'app.exe','test.bundle','lj20.ljbc','payload.txt') {{ Copy-Item -Force -LiteralPath ('{base}' + $f) -Destination ($d + '\\' + $f) }} }}; 'made'")
     if "made" not in made:
         raise RuntimeError(f"the directories for the spellings were not made: {made[:200]}")
     spellings = dict(space=space + "\\", long=long_dir + "\\", forward=base.replace("\\", "/"), relative="..\\in\\", verbatim="\\\\?\\" + base)
@@ -674,7 +674,7 @@ def paths_part(s, table):
         ("dump.save", ["dump", "save", "--name", "dp", "--kind", "ir", "--file", "{P}payload.txt", "--force"]),
     ]
     def fresh(name):
-        s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W(f"p_{name}/.n0x")])
+        s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W(f"p_{name}/.n0x")])
         return "{W}" + f"p_{name}"
     plain = {}
     cwd = fresh("plain")
@@ -716,8 +716,8 @@ class Mcp:
         else:
             bat = s.lroot / "mcp.bat"
             bat.write_bytes(f"@echo off\r\ncd /d {s.W('mcp')}\r\nset N0X_CONFIG_DIR={s.W('config')}\r\n{s.wmcp}\r\n".encode())
-            s.laptop.put(bat, s.wroot + r"\mcp.bat")
-            self.p = subprocess.Popen([*M.SSH, s.laptop.host, f"cmd /c {s.wroot}\\mcp.bat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            s.far.put(bat, s.wroot + r"\mcp.bat")
+            self.p = subprocess.Popen([*M.SSH, s.far.host, f"cmd /c {s.wroot}\\mcp.bat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -776,7 +776,7 @@ def envelope(r):
 
 
 def mcp_procs(s):
-    out = s.laptop.ps(f"Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -eq '{s.wmcp}' }} | ForEach-Object {{ '{{0}} {{1}}' -f $_.ProcessId,$_.ParentProcessId }}")
+    out = s.far.ps(f"Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -eq '{s.wmcp}' }} | ForEach-Object {{ '{{0}} {{1}}' -f $_.ProcessId,$_.ParentProcessId }}")
     return [l.split() for l in out.splitlines() if l.strip()]
 
 
@@ -840,12 +840,12 @@ def mcp_part(s, table):
     finally:
         m.close()
         L.finish()
-    parent_rows(s, F("win"))
+    parent_rows(s)
 
 
 def plugin_rows(s):
     """A plugin is run by the MCP door, the only one that runs them. Its stored command with a space in it is quoted, as the docs say."""
-    s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W("mcp/.n0x")])
+    s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W("mcp/.n0x")])
     plug = s.W("in/plug.exe")
     a = s.win(["plugin", "add", "--name", "pexe", "--command", plug, "--handles", "pseudo"], cwd="{W}mcp")
     s.row("plugin.add", "plugin add", "failed" if s.contract(a) or s.expectation(a, None) else "passed", s.contract(a) or s.expectation(a, None) or "")
@@ -863,10 +863,10 @@ def plugin_rows(s):
     s.row("plugin.rm", "plugin rm", "passed" if d["rc"] == 0 and b"pexe" not in l["o"] else "failed", "" if d["rc"] == 0 else str(d["o"][:120]))
 
 
-def parent_rows(s, app_file):
+def parent_rows(s):
     """The parent and the worker of the release's own file. The overflow is real, and in the very worker that goes out: the worker's
-    NtReadFile is written over, through the tool's own `patch apply`, with a loop that walks down the stack until the guard page
-    says 0xC00000FD. A debug build's planted worker would be a different program, and 0.3.8 would pass the row without having a parent."""
+    CreateToolhelp32Snapshot, which only `process_ps` calls, is written over through the tool's own `patch apply`, with a loop that
+    walks down the stack until the guard page says 0xC00000FD. A debug build's planted worker would be a different program, and 0.3.8 would pass the row without having a parent."""
     m = Mcp(s, "win")
     try:
         r = m.open()
@@ -880,14 +880,14 @@ def parent_rows(s, app_file):
                 s.row("mcp.parent." + case, "", "failed", f"there is no worker under a parent: {procs}")
             return
         listing = ",".join(pids)
-        windows = s.laptop.ps(f"$w = @({listing}); Get-CimInstance Win32_Process -Filter \"Name='conhost.exe'\" | Where-Object {{ $w -contains $_.ParentProcessId }} | ForEach-Object {{ '{{0}} {{1}}' -f $_.ParentProcessId,(Get-Process -Id $_.ProcessId).MainWindowHandle }}; Get-Process -Id $w | ForEach-Object {{ 'P {{0}}' -f $_.MainWindowHandle }}").split("\n")
+        windows = s.far.ps(f"$w = @({listing}); Get-CimInstance Win32_Process -Filter \"Name='conhost.exe'\" | Where-Object {{ $w -contains $_.ParentProcessId }} | ForEach-Object {{ '{{0}} {{1}}' -f $_.ParentProcessId,(Get-Process -Id $_.ProcessId).MainWindowHandle }}; Get-Process -Id $w | ForEach-Object {{ 'P {{0}}' -f $_.MainWindowHandle }}").split("\n")
         hosts = [l.split() for l in windows if l and not l.startswith("P")]
         own = [h for h in hosts if h[0] == worker[0][0]]
         visible = [l for l in windows if l.strip() and not l.strip().endswith(" 0")]
         s.row("mcp.parent.no-console-window", "", "passed" if own and not visible else "failed", f"the worker's console has no window, on a session with no desktop: {hosts}" if own and not visible else f"worker {worker}; conhost {hosts}; handles {visible}")
         s.row("mcp.parent.no-console-window-on-a-desktop", "", "not-run", "that a person's desktop stays clean needs a run from one, and a run over ssh has none")
         # A real restart: the worker killed from outside.
-        s.laptop.run(r"C:\Windows\System32\taskkill.exe", ["/F", "/PID", worker[0][0]], bound=15)
+        s.far.run(r"C:\Windows\System32\taskkill.exe", ["/F", "/PID", worker[0][0]], bound=15)
         m.call("process_ps", {}, 40)
         again = m.call("process_ps", {}, 40)
         fine = isinstance(again, dict) and "result" in again
@@ -897,15 +897,18 @@ def parent_rows(s, app_file):
         pids = [p[0] for p in procs]
         worker = [p for p in procs if p[1] in pids]
         T = Target(s)
-        where = T.addr["ntreadfile"]
+        where = T.addr["toolhelp"]
         T.stop()
-        walk_down = "48 81 EC 00 10 00 00 48 89 04 24 EB F3"  # sub rsp,0x1000; mov [rsp],rax; jmp back
+        walk_down = "48 81 EC 00 10 00 00 48 8B 04 24 EB F3"  # sub rsp,0x1000; mov rax,[rsp]; jmp back
         planted = s.win(["patch", "apply", "--pid", worker[0][0], "--addr", where, "--bytes", walk_down], cwd="{W}live")
-        answer = m.call("mem_read", dict(addr=hex(0x1000), size=4, file=app_file), 40)
+        # Windows' own fault reporting reads the whole of the 256 MiB analysis stack before the process may exit: 265 s measured, whatever is on it.
+        t0 = time.time()
+        answer = m.call("process_ps", {}, 420)
+        took = int(time.time() - t0)
         err = (answer or {}).get("error", {}) if isinstance(answer, dict) else {}
         said = json.dumps(err).lower()
         overflow = err.get("code") == -32002 and "c00000fd" in said
-        s.row("mcp.parent.overflow-is-a-crash", "", "passed" if overflow else "failed", f"{said[:180]}" if overflow else f"patch: {planted['o'][:80]!r}; answer {str(answer)[:220]}")
+        s.row("mcp.parent.overflow-is-a-crash", "", "passed" if overflow else "failed", f"after {took} s: {said[:160]}" if overflow else f"patch: {planted['o'][:80]!r}; answer {str(answer)[:220]}")
         after = m.call("process_ps", {}, 40)
         next_ok = isinstance(m.call("process_ps", {}, 40), dict)
         s.row("mcp.parent.session-goes-on-after-the-crash", "", "passed" if next_ok else "failed", str(after)[:120] if not next_ok else "")
@@ -914,7 +917,7 @@ def parent_rows(s, app_file):
         pids = [p[0] for p in procs]
         parents = [p for p in procs if p[1] not in pids]
         for p in parents:
-            s.laptop.run(r"C:\Windows\System32\taskkill.exe", ["/F", "/PID", p[0]], bound=15)
+            s.far.run(r"C:\Windows\System32\taskkill.exe", ["/F", "/PID", p[0]], bound=15)
         time.sleep(8)
         left = mcp_procs(s)
         s.row("mcp.parent.no-orphan", "", "passed" if parents and not left else "failed", f"killed {parents}; left {left}")
@@ -935,19 +938,19 @@ def version_key(v):
 def update_part(s):
     """A copy of its own, beside a configuration of its own, so that nothing here can touch the files the rest of the run answers for."""
     place, config = s.W("upd"), s.W("upd-config")
-    s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", place, config])
+    s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", place, config])
     exe = place + r"\n0xis.exe"
-    s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "copy", "/y", s.wbin, exe])
+    s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "copy", "/y", s.wbin, exe])
     def ask(*args, **kw):
-        return s.laptop.run(exe, list(args), cwd=s.W("proj"), env={"N0X_CONFIG_DIR": config}, **kw)
+        return s.far.run(exe, list(args), cwd=s.W("proj"), env={"N0X_CONFIG_DIR": config}, **kw)
     def digest():
-        r = s.laptop.run(r"C:\Windows\System32\certutil.exe", ["-hashfile", exe, "SHA256"])
+        r = s.far.run(r"C:\Windows\System32\certutil.exe", ["-hashfile", exe, "SHA256"])
         found = re.search(r"\b[0-9a-f]{64}\b", r["o"].decode("utf-8", "replace").replace(" ", ""))
         return found.group(0) if found else None
     original = digest()
     # In a pipe nothing starts, and standard error stays empty.
     r = ask("doctor")
-    stamp = s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "dir", "/b", config])["o"]
+    stamp = s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "dir", "/b", config])["o"]
     why = None if b"update-check.stamp" not in stamp and not r["e"] else f"config holds {stamp[:60]!r}, stderr {r['e'][:80]!r}"
     s.row("update.a-pipe-starts-no-check", "update", "failed" if why else "passed", why or "")
     # `--check`, by the real addresses, against what GitHub says when asked from here.
@@ -1087,8 +1090,8 @@ def real_image(s, cases, im):
     Path(s.L(ldir)).mkdir(parents=True, exist_ok=True)
     Path(s.L(f"{ldir}/p/.n0x")).mkdir(parents=True, exist_ok=True)
     shutil.copy(path, lfile)
-    s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W(f"{wdir}/p/.n0x")])
-    s.laptop.put(path, wfile)
+    s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "mkdir", s.W(f"{wdir}/p/.n0x")])
+    s.far.put(path, wfile)
     cwd = "{W}" + f"{ldir}/p"
     # Which functions to ask about; the tool's own list, and the only use of it: an answer about the wrong one is still compared.
     first = s.lin(["function", "discover", "--file", lfile, "--quiet"], cwd=cwd, bound=600)
@@ -1116,7 +1119,7 @@ def real_image(s, cases, im):
             twins[id] = None
     if im.get("truth"):
         scored_row(s, im, listed, wfile, lfile, cwd)
-    s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "rmdir", "/s", "/q", s.W(wdir)], bound=120)
+    s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "rmdir", "/s", "/q", s.W(wdir)], bound=120)
     shutil.rmtree(s.L(ldir), ignore_errors=True)
     print(f"  {tag} ({size} MB): {int(time.time() - t0)} s", flush=True)
 
@@ -1148,7 +1151,7 @@ def scored_row(s, im, listed, wfile, lfile, cwd):
         symbols = readers.symbols(str(im["path"]))
         _, sw = score.score(truth, answers["win"], symbols)
         _, sl = score.score(truth, answers["lin"], symbols)
-    except M.LaptopGone:
+    except M.MachineGone:
         raise
     except Exception as e:  # noqa: BLE001 - a scorer that did not run must read as a failure of this row, not as numbers
         s.row(f"real.{tag}.score", "function discover", "failed", f"the scorer did not run: {e!r}")
@@ -1158,21 +1161,21 @@ def scored_row(s, im, listed, wfile, lfile, cwd):
     s.row(f"real.{tag}.score", "function discover", "passed" if same else "failed", f"Windows {sw['classes']} missed {len(sw.get('missed') or [])}; twin {sl['classes']} missed {len(sl.get('missed') or [])}")
 
 
-# -- Defender, and the laptop ---------------------------------------------------------------------------------------------
+# -- Defender, and the Windows machine ---------------------------------------------------------------------------------------------
 
 def defender_mark(s):
-    """The laptop's own clock, so that this run's new entries are the ones after it. Nothing is cleared: what was there stays."""
-    return s.laptop.ps("(Get-Date).ToUniversalTime().ToString('o')").strip()
+    """The Windows machine's own clock, so that this run's new entries are the ones after it. Nothing is cleared: what was there stays."""
+    return s.far.ps("(Get-Date).ToUniversalTime().ToString('o')").strip()
 
 
 def defender_check(s, mark):
-    out = s.laptop.ps(f"try {{ $since = [datetime]::Parse('{mark}').ToUniversalTime(); @(Get-MpThreatDetection | Where-Object {{ $_.InitialDetectionTime.ToUniversalTime() -ge $since }}) | ForEach-Object {{ ($_.Resources -join ';') + ' ID' + $_.ThreatID }}; 'READ' }} catch {{ 'REFUSED ' + $_.Exception.Message }}")
+    out = s.far.ps(f"try {{ $since = [datetime]::Parse('{mark}').ToUniversalTime(); @(Get-MpThreatDetection | Where-Object {{ $_.InitialDetectionTime.ToUniversalTime() -ge $since }}) | ForEach-Object {{ ($_.Resources -join ';') + ' ID' + $_.ThreatID }}; 'READ' }} catch {{ 'REFUSED ' + $_.Exception.Message }}")
     if "READ" not in out:
         s.row("defender", "", "not-run", f"this user cannot read Defender's detections: {out.strip()[:120]}")
         return
     entries = [l for l in out.splitlines() if l.strip() and l.strip() != "READ"]
-    ours = [e for e in entries if re.search(r"n0xis|n0xtest|sweep-", e, re.I) and not re.search(r"powershell|amsi", e, re.I)]
-    harness = [e for e in entries if re.search(r"powershell|amsi|wrun|wtarget|ctrlsend", e, re.I)]
+    ours = [e for e in entries if re.search(r"n0xis(-mcp)?\.exe", e, re.I)]
+    harness = [e for e in entries if e not in ours and re.search(r"powershell|amsi|n0xtest|sweep-", e, re.I)]
     s.row("defender.our-binaries", "", "failed" if ours else "passed", "; ".join(ours)[:300] or f"{len(entries)} new detections in the run, none naming them")
     # Not a verdict on the release, and not a thing to pass over: the harness's own text set it off, and the harness is to be fixed.
     s.row("defender.the-harness", "", "failed" if harness else "passed", ("the harness itself was detected, fix it: " + "; ".join(harness))[:300] if harness else "")
@@ -1183,4 +1186,4 @@ def defender_check(s, mark):
 
 def outside_listing(s):
     """Anything of the tool's name in the user's application data: a fallback to a global place would show here."""
-    return sorted(s.laptop.ps("Get-ChildItem $env:LOCALAPPDATA,$env:APPDATA -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^n0x' } | ForEach-Object { $_.FullName }").split("\n"))
+    return sorted(s.far.ps("Get-ChildItem $env:LOCALAPPDATA,$env:APPDATA -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^n0x' } | ForEach-Object { $_.FullName }").split("\n"))

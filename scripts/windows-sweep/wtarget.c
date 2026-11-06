@@ -107,7 +107,7 @@ int main(void) {
     A("writeme", &writeme); A("pinme", &pinme); A("patchme", patchme); A("counter", &counter); A("toggled", &toggled); A("p_grp", &p_grp);
     A("root_ptr", &root_ptr); A("mid", m); A("leaf", lf); A("leaf_value", &lf->value); A("lcg_seed", &lcg_seed);
     A("hooked", hooked); A("ret_const", ret_const); A("rc_imm", rc_imm); A("magic_mix", magic_mix); A("step", tick_loop_step); A("main", main);
-    A("ntreadfile", GetProcAddress(GetModuleHandleW(L"ntdll"), "NtReadFile")); A("page", page); A("tab", tab); A("ui", ui); A("ui_minx", ui + 0xa4); A("hwnd", g_hwnd);
+    A("toolhelp", GetProcAddress(GetModuleHandleW(L"kernel32"), "CreateToolhelp32Snapshot")); A("page", page); A("tab", tab); A("ui", ui); A("ui_minx", ui + 0xa4); A("hwnd", g_hwnd);
     for (int i = 0; i < 5; i++) printf("LUA %s 0x%llx\n", lua_tokens[i], (unsigned long long)(page + 0x100 + 0x100 * i));
     printf("COMBO %s\n", combo);
     printf("READY\n");

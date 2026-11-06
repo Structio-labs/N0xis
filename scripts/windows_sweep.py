@@ -16,8 +16,8 @@ Writes target/windows-sweep/<version>.json, which scripts/release.py reads back.
   Update     what can be done before a release exists; the rest is `not-run`, and says what is not proved.
   Defender   new detections since the start of the run, read-only.
 
-Nothing outside a scratch directory on the laptop is touched and no Windows setting changes; the directory goes at the end,
-also after a failure. A laptop that drops off ends the run with no record, because a part of a sweep must not read as one.
+Nothing outside a scratch directory on the Windows machine is touched and no Windows setting changes; the directory goes at the end,
+also after a failure. A machine that drops off ends the run with no record, because a part of a sweep must not read as one.
 --only and --without exist for working on the sweep and for calibrating it: --only writes no record.
 """
 
@@ -53,7 +53,7 @@ AS_LIMIT = 4194304 * 1024
 PARTS = ("static", "console", "paths", "live", "fixes", "mcp", "update", "real")
 
 
-class LaptopGone(Exception):
+class MachineGone(Exception):
     """Not a result of any case. It ends the run, with no record."""
 
 
@@ -93,7 +93,7 @@ def b64(text):
     return base64.b64encode(data).decode() or "-"
 
 
-class Laptop:
+class FarSide:
     """The far side: ssh, scp, one-shot PowerShell for what only it can answer, and the long-lived case runner."""
 
     def __init__(self, host, root):
@@ -111,7 +111,7 @@ class Laptop:
 
     def gone_unless_up(self, doing):
         if not self.reachable():
-            raise LaptopGone(f"the laptop stopped answering while {doing}")
+            raise MachineGone(f"the Windows machine stopped answering while {doing}")
 
     def ps(self, script, timeout=120):
         """Base64 so that `$` survives the far shell. Harness queries only: a console case goes by a batch file, because a
@@ -157,8 +157,8 @@ class Laptop:
         lines.put(None)
 
     def run(self, exe, args, cwd="", env=None, stdin=None, bound=60, kill_after=None, close_after=None):
-        """One process on the laptop, bounded there. A case that outlives its bound comes back with timed_out; a runner that
-        does not come back is either a laptop gone or a harness to restart, and the difference is asked for, not assumed."""
+        """One process on the Windows machine, bounded there. A case that outlives its bound comes back with timed_out; a runner that
+        does not come back is either a machine gone or a harness to restart, and the difference is asked for, not assumed."""
         self.count += 1
         id = str(self.count)
         env_text = "".join(f"{k}={v}\n" for k, v in (env or {}).items())
@@ -203,7 +203,7 @@ class Sweep:
         self.pid = os.getpid()
         self.wroot = rf"C:\n0xtest\sweep-{self.pid}"
         self.lroot = RECORDS / f"work-{self.pid}"
-        self.laptop = Laptop(args.host, self.wroot)
+        self.far = FarSide(args.host, self.wroot)
         self.tree = {}
         self.without = re.compile(args.without) if args.without else None
         self.lmcp = str(self.lroot / "bin" / "n0xis-mcp")
@@ -249,7 +249,7 @@ class Sweep:
 
     def win(self, args, cwd=None, stdin=None, bound=60, exe=None, env=None, **kw):
         env = dict({"N0X_CONFIG_DIR": self.W("config")}, **(env or {}))
-        return self.laptop.run(exe or self.wbin, [self.expand(a, "win") for a in args], cwd=self.expand(cwd or "{W}proj", "win"), env=env, stdin=self.expand(stdin, "win") if stdin else None, bound=bound, **kw)
+        return self.far.run(exe or self.wbin, [self.expand(a, "win") for a in args], cwd=self.expand(cwd or "{W}proj", "win"), env=env, stdin=self.expand(stdin, "win") if stdin else None, bound=bound, **kw)
 
     def lin(self, args, cwd=None, stdin=None, bound=60, close_after=None, env=None):
         """The twin, under the same bound, at the lowest priority and the address-space limit every engine run here has."""
@@ -309,7 +309,7 @@ class Sweep:
         if r["timed_out"]:
             return f"stopped at its bound after {r['ms'] // 1000} s{': ' + r['start_error'] if isinstance(r['start_error'], str) else ''}"
         if r.get("low_memory"):
-            return "stopped because the laptop was running out of memory"
+            return "stopped because the Windows machine was running out of memory"
         if r["start_error"]:
             return f"could not start: error {r['start_error']}"
         if b"panicked" in r["e"] or b"stack backtrace" in r["e"]:
@@ -487,7 +487,7 @@ def entry_of(tool, path):
 
 
 def address_table(s):
-    """Each static input's known addresses, for the case list. The system files come from the laptop, whose exact bytes the twin reads too."""
+    """Each static input's known addresses, for the case list. The system files come from the Windows machine, whose exact bytes the twin reads too."""
     i = s.lroot / "in"
     table = {}
     def native(tag, name, nm, od):
@@ -508,11 +508,11 @@ def address_table(s):
     return table
 
 
-# -- the laptop's scratch -----------------------------------------------------------------------------------------------
+# -- the Windows machine's scratch -----------------------------------------------------------------------------------------------
 
 def lay_out(s, release):
-    lap = s.laptop
-    # What an earlier run could not take away because the laptop dropped off. Only this script makes sweep-<number>.
+    lap = s.far
+    # What an earlier run could not take away because the Windows machine dropped off. Only this script makes sweep-<number>.
     lap.ps(r"Get-ChildItem 'C:\n0xtest' -Directory -Filter 'sweep-*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^sweep-\d+$' } | ForEach-Object { $d = $_.FullName; Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ($d + '\*') } | Stop-Process -Force -ErrorAction SilentlyContinue; cmd /c rd /s /q ('\\\\?\\' + $d) }")
     r = subprocess.run([*SSH, lap.host, f"cmd /c mkdir {s.wroot}\\bin {s.wroot}\\w\\in {s.wroot}\\w\\proj\\.n0x {s.wroot}\\w\\live\\.n0x {s.wroot}\\w\\mcp\\.n0x {s.wroot}\\w\\config"], capture_output=True)
     if r.returncode:
@@ -543,8 +543,8 @@ def lay_out(s, release):
 
 
 def take_away(s):
-    """Everything this run left on the laptop, also when it failed. True when the directory is gone."""
-    lap = s.laptop
+    """Everything this run left on the Windows machine, also when it failed. True when the directory is gone."""
+    lap = s.far
     lap.stop_runner()
     out = lap.ps(f"Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{s.wroot}\\*' }} | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; cmd /c rd /s /q '\\\\?\\{s.wroot}'; Test-Path -LiteralPath '{s.wroot}'")
     return out.strip().endswith("False")
@@ -565,7 +565,7 @@ def help_nodes(text):
 
 
 def enumerate_commands(s):
-    """The tree the Windows binary states of itself, walked on the laptop, and the twin's beside it: the one a case list answers to."""
+    """The tree the Windows binary states of itself, walked on the Windows machine, and the twin's beside it: the one a case list answers to."""
     tree, texts = {}, {}
     def walk(path):
         w = s.win([*path, "--help"], bound=30)
@@ -633,12 +633,12 @@ def main():
         build_inputs(s)
         lay_out(s, args.dir)
         table = address_table(s)
-        build = re.search(r"\[Version ([\d.]+)\]", s.laptop.run(r"C:\Windows\System32\cmd.exe", ["/c", "ver"])["o"].decode("utf-8", "replace"))
+        build = re.search(r"\[Version ([\d.]+)\]", s.far.run(r"C:\Windows\System32\cmd.exe", ["/c", "ver"])["o"].decode("utf-8", "replace"))
         windows = build.group(1) if build else None
         stated = s.win(["--version"])["o"].decode("utf-8", "replace").split()
         version = stated[-1] if stated else None
         if not windows or not version:
-            raise LaptopGone(f"the laptop did not state its build ({windows}) or the binary its version ({version})")
+            raise MachineGone(f"the Windows machine did not state its build ({windows}) or the binary its version ({version})")
         twin = s.lin(["--version"])["o"].decode("utf-8", "replace").split()
         s.row("twin-states-the-same-version", "", "passed" if twin and twin[-1] == version else "failed", f"Windows {version}, twin {twin[-1] if twin else None}")
         print(f"sweep of {version} on Windows {windows}, {s.wroot}", flush=True)
@@ -653,31 +653,31 @@ def main():
             t1, n = time.time(), len(s.rows)
             try:
                 runs[part]()
-            except LaptopGone:
+            except MachineGone:
                 raise
             except Exception as e:  # noqa: BLE001 - a broken part is a failed row, never a part quietly missing
                 s.row(f"{part}.harness", "", "failed", f"the part stopped: {e!r}")
             new = s.rows[n:]
             print(f"{part}: {sum(r['result'] == 'passed' for r in new)} passed, {sum(r['result'] == 'failed' for r in new)} failed, {sum(r['result'] == 'not-run' for r in new)} not-run, {int(time.time() - t1)} s", flush=True)
         parts.defender_check(s, mark)
-        s.row("laptop.nothing-outside-the-scratch", "", "passed" if parts.outside_listing(s) == before else "failed", "no n0x* appeared in the user's application data" if parts.outside_listing(s) == before else "something named n0x* appeared in the user's application data")
+        s.row("Windows machine.nothing-outside-the-scratch", "", "passed" if parts.outside_listing(s) == before else "failed", "no n0x* appeared in the user's application data" if parts.outside_listing(s) == before else "something named n0x* appeared in the user's application data")
         # The digests of what actually ran: read back after the last case, not what was meant to be sent.
         back = s.lroot / "back"
         back.mkdir()
         binaries = {}
         for name in ("n0xis.exe", "n0xis-mcp.exe"):
-            s.laptop.get(s.wroot + "\\bin\\" + name, back / name)
+            s.far.get(s.wroot + "\\bin\\" + name, back / name)
             binaries[name] = sha256(back / name)
             if binaries[name] != sha256(args.dir / ASSETS[name]):
-                s.row(f"binaries.{name}", "", "failed", "the file on the laptop is not the file in --dir")
+                s.row(f"binaries.{name}", "", "failed", "the file on the Windows machine is not the file in --dir")
         done = True
-    except LaptopGone as e:
+    except MachineGone as e:
         print(f"windows_sweep: {e}. The run is over and no record was written: a part of a sweep must not read as one.", file=sys.stderr)
         sys.exit(3)
     finally:
         try:
             gone = take_away(s)
-        except LaptopGone:
+        except MachineGone:
             gone = False
         if not gone:
             print(f"windows_sweep: {s.wroot} could not be removed; the next run takes it away", file=sys.stderr)
