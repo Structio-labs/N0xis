@@ -5,6 +5,13 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**Four refusals say what happened.**
+
+- `find --size 0x400` is taken, as every other `--size` is.
+- `analyze --pid` says what it takes, and no longer that it needs a PE: `--file` works on an ELF.
+- A plugin whose path has a space, unquoted, is told to quote it, and no longer only that a file that exists cannot be found.
+- `function discover --pdata` on an image with no `.pdata` says so, and no longer "address not mapped".
+
 **A reader that has gone is not a failure.** `n0xis guide | head -1` used to panic with exit code 101, on both systems. A closed pipe now ends the run quietly with 0, also for `--pretty` and for a line of `serve`.
 
 **`bundle extract --out \\?\C:\...` writes its files.** It failed with os error 123: the file name was joined on with a `/`, which such a path takes literally. Joined by the OS's rule, `out_path` now has a `\` on Windows.

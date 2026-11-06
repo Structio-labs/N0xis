@@ -2282,7 +2282,7 @@ struct FindArgs {
     #[arg(long)]
     start: Option<String>,
     /// Byte count to scan from `--start`.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_hex_or_decimal_usize)]
     size: Option<usize>,
     /// Report only matches whose address is a multiple of this (default 1).
     #[arg(long, default_value_t = 1)]
@@ -4211,6 +4211,11 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         let Some(base) = module_base_of(&src) else {
             return ir_err("no-module", "--pdata needs a PE image with a module base (--pid or --file)", pretty);
         };
+        // An image with no such table used to be answered from wherever reading it first
+        // failed: "address 0x400000 is not mapped", true of the headers and of no use.
+        if matches!(src, Src::Static(_)) && src.section_range(".pdata").is_none() {
+            return ir_err("discover-failed", "this image has no `.pdata` table, which only a 64-bit PE has. Without --pdata, discovery reads its other tables and its code", pretty);
+        }
         let run_pdata = |ctx: &Ctx| -> bool {
             match n0xis_core::discover_pdata(ctx.source, base) {
                 Ok(all) => {
@@ -4405,7 +4410,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
         return ir_err(&code, &message, pretty);
     }
     let Src::Static(pe) = &src else {
-        return ir_err("unsupported", "analyze needs a static PE image (--file)", pretty);
+        return ir_err("unsupported", "analyze reads a whole image from a file: give it --file, for a PE or an ELF. It does not take --pid, --snapshot or --remote-cmd", pretty);
     };
     let Some(base) = module_base_of(&src) else {
         return ir_err("no-module", "analyze needs a PE image with a module base", pretty);

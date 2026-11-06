@@ -162,6 +162,16 @@ enum ReadOutcome {
     Failed(String),
 }
 
+/// A stored command is split at its spaces, so a path with one in it, unquoted, starts a
+/// program that is not there, and the system's "cannot find the file" reads as being
+/// about a file that is. If the words put back together are a file, that is what happened.
+fn with_quoting_hint(argv: &[String], reason: String) -> String {
+    if argv.len() > 1 && std::path::Path::new(&argv.join(" ")).is_file() {
+        return format!("{reason}. The command is split at spaces, and the whole of it is a file: quote it, as \"{}\"", argv.join(" "));
+    }
+    reason
+}
+
 /// Spawn `argv`, send `request` as one JSON line, read one JSON line back, and
 /// wait for the process to exit — all of it inside one `deadline` that starts
 /// at spawn. Production callers pass [`DEADLINE`]; tests pass a short one.
@@ -229,7 +239,7 @@ pub fn call_once(argv: &[String], request: &Value, deadline: Duration) -> Result
     line.push(b'\n');
 
     let mut child =
-        spawn_piped(argv).map_err(|reason| PluginError::Spawn { command: command.clone(), reason })?;
+        spawn_piped(argv).map_err(|reason| PluginError::Spawn { reason: with_quoting_hint(argv, reason), command: command.clone() })?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     forward_stderr(child.stderr.take().expect("piped stderr"));
@@ -411,6 +421,23 @@ mod tests {
         ["python3", "python"]
             .into_iter()
             .find(|candidate| std::process::Command::new(candidate).arg("--version").output().is_ok())
+    }
+
+    #[test]
+    fn a_path_split_at_its_space_says_to_quote_it() {
+        let dir = std::env::temp_dir().join(format!("n0xis plugin space {}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory with spaces");
+        let file = dir.join("tool");
+        std::fs::write(&file, b"x").expect("a file");
+        let argv = crate::split_command_line(file.to_str().expect("utf-8")).expect("splits");
+        assert!(argv.len() > 1, "calibration: this path is split");
+        let e = call_once(&argv, &serde_json::json!({}), Duration::from_secs(5)).expect_err("nothing to start");
+        assert!(e.to_string().contains("quote it"), "{e}");
+        // A command that is simply not there is not told to quote anything.
+        let absent = vec!["/no/such/tool".to_string(), "--flag".to_string()];
+        let e = call_once(&absent, &serde_json::json!({}), Duration::from_secs(5)).expect_err("nothing to start");
+        assert!(!e.to_string().contains("quote it"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
