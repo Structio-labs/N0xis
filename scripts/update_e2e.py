@@ -20,6 +20,7 @@ Each step's truth is the file on disk: `--version` of it, and its sha256.
 """
 
 import argparse
+import contextlib
 import hashlib
 import http.server
 import json
@@ -121,11 +122,35 @@ def make_key_and_certificates():
 class Release:
     """The planted release: what the local server serves, and how it misbehaves on request."""
 
-    def __init__(self, dist):
+    def __init__(self, dist, key=None):
         self.dist = dist
+        self.key = key
         self.tamper = None  # the name of a file to serve with a byte flipped
         self.bad_signature = False
         self.asked = []
+
+    def sign(self):
+        raw = CACHE / "manifest.raw"
+        sh("openssl", "pkeyutl", "-sign", "-rawin", "-inkey", self.key, "-in", self.dist / "manifest.json", "-out", raw)
+        (self.dist / "manifest.json.sig").write_text(raw.read_bytes().hex() + "\n")
+
+    @contextlib.contextmanager
+    def substituting(self, suffix, data):
+        """The running component's file replaced by `data`, with a manifest that truly signs it."""
+        name = "n0xis-windows-x86_64.exe" if suffix else "n0xis-linux-x86_64"
+        platform = "windows-x86_64" if suffix else "linux-x86_64"
+        kept = {f: (self.dist / f).read_bytes() for f in (name, "manifest.json", "manifest.json.sig")}
+        manifest = json.loads(kept["manifest.json"])
+        entry = manifest["components"]["n0xis"][platform]
+        entry["size"], entry["sha256"] = len(data), hashlib.sha256(data).hexdigest()
+        (self.dist / name).write_bytes(data)
+        (self.dist / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        self.sign()
+        try:
+            yield
+        finally:
+            for f, bytes_ in kept.items():
+                (self.dist / f).write_bytes(bytes_)
 
 
 def serve(release, certs):
@@ -272,7 +297,8 @@ def journey(p, release, olds, seen):
         setattr(release, *arrange)
         code, a = p.answer(exe, "update")
         setattr(release, arrange[0], None if arrange[0] == "tamper" else False)
-        untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and sorted(f.name for f in bin_dir.iterdir()) == sorted([exe.name, mcp.name])
+        # The lock stays, by design, and holds nothing.
+        untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and sorted(f.name for f in bin_dir.iterdir() if not f.name.endswith(".update-lock")) == sorted([exe.name, mcp.name])
         say(code != 0 and a.get("error", {}).get("code") == code_expected and untouched, f"{name}: refused as {a.get('error', {}).get('code')}, the files byte for byte unchanged")
 
     code, a = p.answer(exe, "update")
@@ -286,11 +312,27 @@ def journey(p, release, olds, seen):
     code, a = p.answer(exe, "update", "--rollback")
     say(code == 0 and p.version(exe) == old_version and sha(exe) == old_sha, f"--rollback: the file on disk says {p.version(exe)}")
     say(sha(mcp) == old_mcp_sha, "the MCP server went back with it")
-    say(sha(previous) == new_exe_sha, "the file gone back from is kept")
+    say(not previous.exists(), "the kept file is what came back, so nothing is left to go forward to")
     code, a = p.answer(exe, "update", "--rollback")
-    say(code == 0 and p.version(exe) == NEW, f"a second --rollback goes forward: {p.version(exe)}")
+    say(code != 0 and a.get("error", {}).get("code") == "no-previous" and p.version(exe) == old_version, f"a second --rollback goes nowhere: {a.get('error', {}).get('code')}, {p.version(exe)}")
+
+    # A file every check passes and that cannot start: refused by running it, under each platform's
+    # own loader. The manifest is re-signed here and put back after, so the release stays the release.
+    with release.substituting(p.suffix, b"signed, checked, and not a program\n"):
+        code, a = p.answer(exe, "update")
+    untouched = sha(exe) == old_sha and sha(mcp) == old_mcp_sha and sorted(f.name for f in bin_dir.iterdir() if not f.name.endswith(".update-lock")) == sorted([exe.name, mcp.name])
+    say(code != 0 and a.get("error", {}).get("code") == "does-not-run" and untouched, f"a garbage signed file: refused as {a.get('error', {}).get('code')}, the files byte for byte unchanged")
+
+    # A kept file that is not what its record says, by the real binary, on each platform.
+    p.answer(exe, "update")
+    say(p.version(exe) == NEW, f"installed again: {p.version(exe)}")
+    kept = previous.read_bytes()
+    previous.write_bytes(kept[:-1] + bytes([kept[-1] ^ 1]))
     code, a = p.answer(exe, "update", "--rollback")
-    say(code == 0 and p.version(exe) == old_version, f"and a third back: {p.version(exe)}")
+    say(code != 0 and a.get("error", {}).get("code") == "previous-does-not-match" and p.version(exe) == NEW, f"an altered kept file: refused as {a.get('error', {}).get('code')}, still {p.version(exe)}")
+    previous.write_bytes(kept)
+    code, a = p.answer(exe, "update", "--rollback")
+    say(code == 0 and p.version(exe) == old_version and a.get("data", {}).get("from") == NEW, f"with it restored, --rollback goes back: {p.version(exe)}")
 
     # update.auto, by the detached copy's own entry: the running file replaces itself, between runs.
     # From a clean state, because the rollbacks above have rightly put a hold on the new version.
@@ -303,6 +345,8 @@ def journey(p, release, olds, seen):
     p.answer(exe, "update", "--rollback")
     p.run(exe, "__update-check")
     say(p.version(exe) == old_version, f"a rollback holds: the next check leaves it at {p.version(exe)}")
+    state = json.loads((config / "update-state.json").read_text())
+    say(state.get("held") == NEW, "the state says which version is held")
     p.answer(exe, "config", "set", "update.auto", "false")
 
 
@@ -394,11 +438,8 @@ def main():
     for platforms in manifest["components"]["n0xis"].values():
         platforms["delta"] = {"from": OLD, "url": "https://github.com/none", "size": 1}
     (dist / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    raw = CACHE / "manifest.raw"
-    sh("openssl", "pkeyutl", "-sign", "-rawin", "-inkey", key, "-in", dist / "manifest.json", "-out", raw)
-    (dist / "manifest.json.sig").write_text(raw.read_bytes().hex() + "\n")
-
-    release = Release(dist)
+    release = Release(dist, key)
+    release.sign()
     tls_port = serve(release, certs)
     seen = []
     proxy_port = proxy(tls_port, seen)
