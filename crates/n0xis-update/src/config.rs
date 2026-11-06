@@ -16,8 +16,8 @@ use crate::{Refusal, Why, write_by_rename};
 pub const UPDATE_CHECK: &str = "update.check";
 /// Install without being asked. Off by default.
 pub const UPDATE_AUTO: &str = "update.auto";
-/// An address asked for the manifest ahead of the built-in two, which decides alone when it verifies.
-/// It must still be signed.
+/// The one address the manifest is asked for, in place of the built-in two: a dead or bad one is a
+/// refusal, and this is the way out if both of those die. It must still be signed.
 pub const UPDATE_MANIFEST_URL: &str = "update.manifest_url";
 
 /// Every setting there is, and its default.

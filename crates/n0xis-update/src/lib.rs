@@ -25,12 +25,12 @@ use std::path::PathBuf;
 use semver::Version;
 use serde::Serialize;
 
-pub use install::{Outcome, RollbackReport, UpdateReport, rollback};
+pub use install::{Outcome, RollbackReport, Skipped, UpdateReport, rollback};
 pub use manifest::{Entry, Manifest, platform};
 pub use net::{Limits, Transport};
 pub use trust::{RELEASE_PUBLIC_KEY, Trust};
 
-/// Where the manifest is asked for, every one of them, unless the configuration's override decides.
+/// Where the manifest is asked for, every one of them, unless the configuration's override replaces them.
 ///
 /// The one thing about releases a shipped client is frozen to, and the repository has moved before,
 /// so the first is a domain the project controls and the second is the fallback. A dead address is
@@ -77,6 +77,14 @@ pub enum Why {
     PreviousDoesNotMatch,
     /// The configuration directory belongs to someone else (`config::user_dir`).
     ConfigNotYours,
+    /// The target of `--rollback` is not the file the last update left there.
+    NotWhatWasInstalled,
+    /// A lock or a hold beside a file is a link, a FIFO or another user's, or a hold does not read.
+    NotOurs,
+    /// `--rollback` was given something other than a bare file name.
+    NotABareName,
+    /// `update.auto` left a version alone that `--rollback` went back from. Only ever in `skipped`.
+    Held,
 }
 
 impl Why {
@@ -105,6 +113,10 @@ impl Why {
             Why::NotARegularFile => "not-a-regular-file",
             Why::PreviousDoesNotMatch => "previous-does-not-match",
             Why::ConfigNotYours => "config-not-yours",
+            Why::NotWhatWasInstalled => "not-what-was-installed",
+            Why::NotOurs => "not-ours",
+            Why::NotABareName => "not-a-bare-name",
+            Why::Held => "held",
         }
     }
 }
@@ -170,13 +182,14 @@ pub struct Updater {
     pub current: Version,
     /// The file to replace.
     pub exe: PathBuf,
-    /// The user's explicit override. When it verifies it decides alone and nothing else is asked.
+    /// The user's explicit override. When set it is the only address: nothing else is asked, whatever
+    /// it answers, and a dead or bad one is a refusal.
     pub pin: Option<String>,
-    /// Asked, every one of them, when there is no pin or the pin gave nothing to use.
+    /// Asked, every one of them, when there is no pin.
     pub addresses: Vec<String>,
     pub trust: Trust,
     pub transport: Transport,
-    /// Where a next key named by a signed manifest is remembered, and rollback's hold is written.
+    /// Where a next key named by a signed manifest is remembered.
     pub config_dir: Option<PathBuf>,
 }
 
@@ -207,24 +220,25 @@ impl Updater {
         })
     }
 
-    /// The manifest to act on: the pin's if it verifies, or else the highest version that verifies
-    /// among all the frozen addresses.
+    /// The manifest to act on: the pin's, or else the highest version that verifies among all the
+    /// frozen addresses.
     ///
     /// All of them, because the first that verifies is not the newest. A replayed old signed manifest
     /// at the first address would otherwise freeze every copy, with the second never asked. Any failure
     /// moves on, a bad signature too: a domain that lapsed and was taken over answers with something
     /// unsigned, and going on costs nothing, since whatever the next says must verify just the same.
     /// A failure beside a success stays in `tried` and is no refusal.
+    ///
+    /// A pin replaces them: someone who pinned a mirror meant for nothing public to be asked, and a
+    /// pin that fell through once installed from where it was meant not to.
     pub fn fetch_manifest(&self) -> Result<Found, Refusal> {
+        let addresses = self.pin.as_ref().map_or(self.addresses.as_slice(), std::slice::from_ref);
         let mut tried = Vec::new();
         let mut worst: Option<Why> = None;
         let mut best: Option<(Manifest, &String)> = None;
-        for address in self.pin.iter().chain(&self.addresses) {
+        for address in addresses {
             match self.fetch_one(address) {
                 Ok(manifest) => {
-                    if self.pin.as_ref() == Some(address) {
-                        return Ok(Found { manifest, address: address.clone(), tried });
-                    }
                     if best.as_ref().is_none_or(|(held, _)| manifest.version > held.version) {
                         best = Some((manifest, address));
                     }
@@ -242,7 +256,8 @@ impl Updater {
         // bad signature at the second, and `Why`'s order is that seriousness.
         let why = worst.unwrap_or(Why::ManifestUnavailable);
         let detail: Vec<String> = tried.iter().map(|t| format!("{}: {}", t.address, t.message)).collect();
-        Err(Refusal::new(why, format!("no manifest that can be used ({})", detail.join("; "))))
+        let refusal = Refusal::new(why, format!("no manifest that can be used ({})", detail.join("; ")));
+        Err(if self.pin.is_some() { refusal.with_hint("update.manifest_url is the only address while it is set; n0x config set update.manifest_url \"\" clears it") } else { refusal })
     }
 
     fn fetch_one(&self, address: &str) -> Result<Manifest, Refusal> {
@@ -263,7 +278,7 @@ impl Updater {
         Ok(self.report(&found))
     }
 
-    fn report(&self, found: &Found) -> CheckReport {
+    pub(crate) fn report(&self, found: &Found) -> CheckReport {
         let newer = found.manifest.version > self.current;
         let blocked = if newer {
             match found.manifest.entry(&self.component, &self.platform) {

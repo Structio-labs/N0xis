@@ -44,8 +44,6 @@ pub struct State {
     pub latest: Option<String>,
     /// What `update.auto` put in place, until a notice has said so.
     pub installed: Option<Installed>,
-    /// A version `--rollback` went back from, which `update.auto` does not install again.
-    pub held: Option<String>,
     /// The code the last check ended in, for anyone who wants to know why nothing is offered.
     pub refusal: Option<String>,
 }
@@ -82,7 +80,6 @@ fn read_state(dir: &Path) -> State {
     State {
         latest: state.latest.filter(is_version),
         installed: state.installed.filter(|i| is_version(&i.from) && is_version(&i.to)),
-        held: state.held.filter(is_version),
         refusal: state.refusal,
     }
 }
@@ -234,20 +231,30 @@ pub fn background_check(component: &str, version: &str) {
 pub fn run_check(updater: &Updater, auto: bool) {
     let Some(dir) = updater.config_dir.clone() else { return };
     let mut state = read_state(&dir);
-    match updater.check() {
-        Ok(report) => {
+    // One fetch: what is installed is what this check found, and it cannot say otherwise. The install
+    // reads only what is on the disk, under its lock.
+    match updater.fetch_manifest() {
+        Ok(found) => {
+            let report = updater.report(&found);
             state.refusal = report.blocked.map(str::to_string);
             state.latest = report.available.then(|| report.latest.clone());
-            if report.available && auto && state.held.as_deref() != Some(report.latest.as_str()) {
-                match updater.update() {
-                    Ok(done) => {
-                        state.installed = Some(Installed { from: done.from, to: done.to });
-                        state.held = None;
-                    }
+            if report.available && auto {
+                let done = updater.install_alone(&found);
+                // Only from what moved, a commit that failed for a sibling included. A sentence once
+                // said an install had happened where a version older than the one claimed had been.
+                let moved = match &done {
+                    Ok(done) => done.replaced.iter().any(|r| r.component == updater.component),
+                    Err(r) => r.components.iter().any(|o| o.component == updater.component && o.error.is_none()),
+                };
+                if moved {
+                    state.installed = Some(Installed { from: report.current, to: report.latest });
+                }
+                match done {
                     // Another run is on it, and whichever finishes will have said what happened.
                     Err(r) if r.why == Why::UpdateInProgress => {}
                     // The line then offers what could not be done alone, and `n0x update` says why.
                     Err(r) => state.refusal = Some(r.why.code().to_string()),
+                    Ok(_) => {}
                 }
             }
         }
@@ -255,23 +262,6 @@ pub fn run_check(updater: &Updater, auto: bool) {
         Err(r) => state.refusal = Some(r.why.code().to_string()),
     }
     write_state(&dir, &state);
-}
-
-/// `--rollback` went back from `version`: `update.auto` leaves that one alone, and nothing remains
-/// to be said about having installed it.
-pub(crate) fn hold_after_rollback(dir: &Path, version: &str) {
-    let mut state = read_state(dir);
-    state.held = Some(version.to_string());
-    state.installed = None;
-    write_state(dir, &state);
-}
-
-/// A version installed by hand ends any hold.
-pub(crate) fn clear_hold(dir: &Path) {
-    let mut state = read_state(dir);
-    if state.held.take().is_some() {
-        write_state(dir, &state);
-    }
 }
 
 /// The file the check's result goes to, for a test that plants one.

@@ -35,6 +35,8 @@ pub enum Reply {
     /// Sends `at` bytes of `body`, calls `meanwhile`, then sends the rest: for a test to look at or
     /// alter what the client has on the disk during its download.
     During { body: Vec<u8>, at: usize, meanwhile: Arc<dyn Fn() + Send + Sync> },
+    /// Each request gets the next of these, and the last stays: a server that changes its answer.
+    Sequence(Arc<Mutex<std::collections::VecDeque<Vec<u8>>>>),
 }
 
 pub struct Server {
@@ -153,6 +155,15 @@ fn serve(stream: TcpStream, config: Arc<ServerConfig>, seen: &Mutex<Vec<String>>
         Reply::Silent => {
             std::thread::sleep(Duration::from_secs(20));
             Ok(())
+        }
+        Reply::Sequence(left) => {
+            let body = {
+                let mut left = left.lock().unwrap();
+                if left.len() > 1 { left.pop_front().unwrap_or_default() } else { left.front().cloned().unwrap_or_default() }
+            };
+            let written = write!(tls, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{close}", body.len()).and_then(|()| tls.write_all(&body));
+            tls.conn.send_close_notify();
+            written.and_then(|()| tls.flush())
         }
         Reply::During { body, at, meanwhile } => {
             let first = write!(tls, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{close}", body.len()).and_then(|()| tls.write_all(&body[..at])).and_then(|()| tls.flush());

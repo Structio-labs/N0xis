@@ -104,9 +104,10 @@ struct UpdateArgs {
     /// Only ask: is there a newer release? Installs nothing.
     #[arg(long, conflicts_with = "rollback")]
     check: bool,
-    /// Go back to the binary the last update replaced. Needs no network.
-    #[arg(long)]
-    rollback: bool,
+    /// Go back to the binary the last update replaced, or for the file of this
+    /// name beside it, and only that one. Needs no network.
+    #[arg(long, value_name = "FILE", num_args = 0..=1)]
+    rollback: Option<Option<String>>,
 }
 
 #[derive(Subcommand)]
@@ -3672,11 +3673,11 @@ fn emit_update_answer<T: serde::Serialize>(schema: &str, answer: Result<T, n0xis
 }
 
 fn cmd_update(a: UpdateArgs, pretty: bool) -> bool {
-    if a.rollback {
+    if let Some(name) = a.rollback {
         // Asks nothing of the settings or the network: going back has to work when those are what broke.
         let answer = std::env::current_exe()
             .map_err(|e| n0xis_update::Refusal::new(n0xis_update::Why::InstallFailed, format!("cannot tell where this binary is: {e}")))
-            .and_then(|exe| n0xis_update::rollback(&exe, n0xis_update::config::user_dir().as_deref()));
+            .and_then(|exe| n0xis_update::rollback(&exe, name.as_deref()));
         return emit_update_answer(schema::v1::UPDATE, answer, pretty);
     }
     let updater = match n0xis_update::Updater::for_running(UPDATE_COMPONENT, env!("CARGO_PKG_VERSION")) {

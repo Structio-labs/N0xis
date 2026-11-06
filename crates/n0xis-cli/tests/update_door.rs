@@ -214,19 +214,25 @@ fn the_background_copy_is_silent_and_writes_what_it_learned() {
 }
 
 #[test]
-fn the_real_binary_asks_its_override_then_the_frozen_addresses_in_order() {
+fn the_real_binary_asks_the_frozen_addresses_in_order() {
     let s = Scene::new("order");
+    let answer = envelope(&s.piped(&["update", "--check"]));
+    assert_eq!(answer["error"]["code"], json!("manifest-unavailable"));
+    assert_eq!(s.proxy.asked(), ["updates.structio.dev:443", "github.com:443"], "the addresses are the one thing a shipped client is frozen to");
+}
+
+/// The way out if both of those die, and when it is set nothing public is asked, dead or not.
+#[test]
+fn the_real_binary_asks_its_override_and_nothing_else() {
+    let s = Scene::new("pin");
     s.set("update.manifest_url", &s.server.url("/manifest.json"));
     let out = s.piped(&["update", "--check"]);
     let answer = envelope(&out);
     assert_eq!(answer["ok"], json!(false));
     assert_eq!(answer["error"]["code"], json!("manifest-unavailable"));
     assert_eq!(out.status.code(), Some(2));
-    assert_eq!(
-        s.proxy.asked(),
-        [format!("127.0.0.1:{}", s.server.port), "updates.structio.dev:443".to_string(), "github.com:443".to_string()],
-        "the addresses are the one thing a shipped client is frozen to"
-    );
+    assert_eq!(s.proxy.asked(), [format!("127.0.0.1:{}", s.server.port)], "a pin that does not answer is a refusal");
+    assert!(answer["hint"].as_str().is_some_and(|h| h.contains("update.manifest_url")) || answer["error"]["hint"].as_str().is_some_and(|h| h.contains("update.manifest_url")), "{answer}");
 }
 
 /// This binary holds the placeholder or the real key. Either way a manifest signed by no key it holds
@@ -266,6 +272,22 @@ fn rollback_with_nothing_kept_refuses_and_needs_no_network() {
     let out = output_of_a_fresh_copy(s.command(&exe, &["update", "--rollback"]));
     assert_eq!(envelope(&out)["error"]["code"], json!("no-previous"));
     assert_eq!(s.proxy.asked(), Vec::<String>::new());
+}
+
+/// By the real parser: `--rollback` with a name goes back for that file, and a path is no name.
+#[test]
+fn rollback_takes_a_bare_name() {
+    let s = Scene::new("rollbackname");
+    let dir = s.root.join("bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join(Path::new(BIN).file_name().unwrap());
+    std::fs::copy(BIN, &exe).unwrap();
+    let answer = envelope(&output_of_a_fresh_copy(s.command(&exe, &["update", "--rollback", "n0xis-mcp"])));
+    assert_eq!(answer["error"]["code"], json!("no-previous"), "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap().contains("n0xis-mcp.previous"), "{answer}");
+    let answer = envelope(&output_of_a_fresh_copy(s.command(&exe, &["update", "--rollback", "../n0xis-mcp"])));
+    assert_eq!(answer["error"]["code"], json!("not-a-bare-name"), "{answer}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "something was left beside the binary");
 }
 
 #[test]

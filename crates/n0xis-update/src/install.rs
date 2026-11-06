@@ -9,6 +9,10 @@
 //! undoing was the defect: it was disk work done while swapping, its failure was reported as success,
 //! and it poisoned the file `--rollback` goes back to. Each component is its own fact, and a failure
 //! on one is reported as that.
+//!
+//! **A rollback is one file.** It once looked for every record beside the binary and moved what it
+//! found, which moved other copies, reported a stranger's record as a refusal after the binary had
+//! gone back, and left a sibling behind on a re-run. What it does not look for it cannot get wrong.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
@@ -20,8 +24,8 @@ use ring::digest::{Context, SHA256};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::Entry;
-use crate::{Refusal, Updater, Why, from_hex, notice, to_hex};
+use crate::manifest::{Entry, is_bare_file_name};
+use crate::{Found, Refusal, Updater, Why, from_hex, to_hex};
 
 /// Beside each file: what `--rollback` goes back to. Startup never deletes it, or rollback would be
 /// unreachable by construction.
@@ -32,11 +36,25 @@ const RECORD: &str = ".previous.json";
 /// Beside the running binary, and it stays: the kernel releases the lock on a kill, whoever holds it.
 const LOCK: &str = ".update-lock";
 const LOCK_PATIENCE: Duration = Duration::from_millis(500);
-/// While preparing. Fixed names, because under the lock anything of ours is a dead run's.
+/// Beside each file: the version `--rollback` went back from, which `update.auto` leaves alone. Here and
+/// not in the state file, because a check in flight rewrites that file and once wrote a hold away, and
+/// so that it needs no configuration directory.
+const HOLD: &str = ".update-hold";
+/// While preparing. Fixed and exact names, because under the lock these are a dead run's and nothing
+/// else is: a sweep by prefix once removed a user's `n0xis.aside-notes.txt`.
+///
+/// On Windows the candidate's name ends in `.exe`. Asked to start a name without it, the process API
+/// looks for that name with `.exe` added first, so a file planted at `n0xis.exe.update-new.exe` ran in
+/// place of the file just checked.
+#[cfg(not(windows))]
 const NEW_FILE: &str = ".update-new";
+#[cfg(windows)]
+const NEW_FILE: &str = ".update-new.exe";
 const PREVIOUS_NEW: &str = ".previous-new";
 const RECORD_NEW: &str = ".previous.json.new";
-/// On Windows only, with a pid, since a running exe can be renamed and not removed.
+const HOLD_NEW: &str = ".update-hold-new";
+/// On Windows only, with digits, since a running exe can be renamed and not removed.
+#[cfg(windows)]
 const ASIDE: &str = ".aside-";
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -54,20 +72,88 @@ impl Drop for Temp {
     }
 }
 
-/// What `.previous` is. The versions are read as versions and the digest as a digest, or there is no
-/// record, because these reach the envelope and the hold.
+/// What `.previous` is, and what was installed in its place. The versions are read as versions and
+/// the digests as digests, or there is no record, because these reach the envelope and the hold.
 #[derive(Serialize, Deserialize)]
 struct Record {
     from: String,
     to: String,
-    /// Of `.previous`.
-    sha256: String,
+    previous_sha256: String,
+    /// Of the target this install left. Anything else there came by other means, and going back over
+    /// it would destroy a file nothing keeps.
+    installed_sha256: String,
 }
 
-fn read_record(target: &Path) -> Option<Record> {
-    let record: Record = serde_json::from_slice(&fs::read(with_suffix(target, RECORD)).ok()?).ok()?;
-    let reads = Version::parse(&record.from).is_ok() && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.sha256).is_some();
-    reads.then_some(record)
+fn read_record(target: &Path) -> Result<Record, String> {
+    let path = with_suffix(target, RECORD);
+    let bytes = read_ours(&path).map_err(|e| format!("its record {} cannot be used: {e}", path.display()))?;
+    let unreadable = || format!("its record {} does not read", path.display());
+    let record: Record = serde_json::from_slice(&bytes).map_err(|_| unreadable())?;
+    let reads = Version::parse(&record.from).is_ok() && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();
+    if reads { Ok(record) } else { Err(unreadable()) }
+}
+
+/// Why opening a file of ours failed.
+enum Unusable {
+    /// A link, a FIFO, anything but a regular file, or another user's. On Windows a plain open finds
+    /// no such thing.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    NotOurs(&'static str),
+    Failed(io::Error),
+}
+
+impl std::fmt::Display for Unusable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unusable::NotOurs(what) => f.write_str(what),
+            Unusable::Failed(e) => e.fmt(f),
+        }
+    }
+}
+
+/// What is wrong with a file found where one of ours belongs, if anything. The one test of it, on what
+/// was opened and on what could not be.
+#[cfg(unix)]
+fn not_ours(found: &fs::Metadata) -> Option<&'static str> {
+    use std::os::unix::fs::MetadataExt;
+    if !found.is_file() {
+        return Some("is not a regular file");
+    }
+    // SAFETY: geteuid takes nothing and cannot fail.
+    if found.uid() != unsafe { libc::geteuid() } {
+        return Some("belongs to another user");
+    }
+    None
+}
+
+/// Open a file beside the binary that this client reads or locks. In a sticky directory anyone can plant
+/// one, so that it decides nothing unless it is this user's: a link would be followed, a FIFO would
+/// hang the run with the lock held, and another user's record could vouch for another user's `.previous`.
+/// `O_NONBLOCK` is there for the FIFO: it is seen and refused, rather than waited on.
+#[cfg(unix)]
+fn open_ours(path: &Path, options: &mut OpenOptions) -> Result<File, Unusable> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let opened = options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path);
+    let file = opened.map_err(|e| match fs::symlink_metadata(path).ok().as_ref().and_then(not_ours) {
+        Some(what) => Unusable::NotOurs(what),
+        None => Unusable::Failed(e),
+    })?;
+    if let Some(what) = not_ours(&file.metadata().map_err(Unusable::Failed)?) {
+        return Err(Unusable::NotOurs(what));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_ours(path: &Path, options: &mut OpenOptions) -> Result<File, Unusable> {
+    options.open(path).map_err(Unusable::Failed)
+}
+
+fn read_ours(path: &Path) -> Result<Vec<u8>, Unusable> {
+    let mut file = open_ours(path, OpenOptions::new().read(true))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(Unusable::Failed)?;
+    Ok(bytes)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,16 +172,35 @@ pub struct UpdateReport {
     pub replaced: Vec<Replaced>,
     /// Components already holding exactly the file the manifest names.
     pub unchanged: Vec<String>,
+    /// Components left as they are, each with why. Nothing about a sibling stops the running file, or a
+    /// later component of a new shape would stop every old copy.
+    pub skipped: Vec<Skipped>,
     pub address: String,
     pub tried: Vec<crate::Tried>,
 }
 
-/// What `n0x update --rollback` answers. `from` and `to` come only from a record that matched.
+/// A component this install left alone.
+#[derive(Clone, Debug, Serialize)]
+pub struct Skipped {
+    pub component: String,
+    /// The refusal it would have been, by its code.
+    pub code: &'static str,
+    pub reason: String,
+}
+
+impl Skipped {
+    fn of(component: &str, refusal: Refusal) -> Skipped {
+        Skipped { component: component.to_string(), code: refusal.why.code(), reason: refusal.message }
+    }
+}
+
+/// What `n0x update --rollback` answers, about the one file it was asked about. `from` and `to` come
+/// only from a record that matched.
 #[derive(Clone, Debug, Serialize)]
 pub struct RollbackReport {
+    pub file: String,
     pub from: Option<String>,
     pub to: Option<String>,
-    pub restored: Vec<String>,
     /// Why nothing moved, when nothing did.
     pub nothing_changed: Option<String>,
 }
@@ -107,6 +212,13 @@ pub struct Outcome {
     pub path: String,
     /// Why it was not moved. None: it is in place.
     pub error: Option<String>,
+}
+
+/// Who asked. `update.auto` leaves what a hold names alone; `n0x update` installs it and ends the hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    User,
+    Auto,
 }
 
 struct Planned {
@@ -129,6 +241,16 @@ impl Updater {
     /// `n0x update`.
     pub fn update(&self) -> Result<UpdateReport, Refusal> {
         let found = self.fetch_manifest()?;
+        self.install(&found, Asked::User)
+    }
+
+    /// `update.auto`, with the manifest the check already fetched. A second fetch once saw something
+    /// else: the check said one version, the install did another, and the line claimed the first.
+    pub(crate) fn install_alone(&self, found: &Found) -> Result<UpdateReport, Refusal> {
+        self.install(found, Asked::Auto)
+    }
+
+    fn install(&self, found: &Found, asked: Asked) -> Result<UpdateReport, Refusal> {
         let manifest = &found.manifest;
         if manifest.version < self.current {
             return Err(Refusal::new(
@@ -142,6 +264,7 @@ impl Updater {
             to: manifest.version.to_string(),
             replaced: Vec::new(),
             unchanged: Vec::new(),
+            skipped: Vec::new(),
             address: found.address.clone(),
             tried: found.tried.clone(),
         };
@@ -149,47 +272,64 @@ impl Updater {
             return Ok(report);
         }
 
-        let plan = self.plan(manifest)?;
-        let first = &plan[0];
-        let _lock = take_lock(&first.target, |e| not_writable(&first.target, &first.entry, e))?;
+        let plan = self.plan(manifest, &mut report.skipped)?;
         // What is installed is read only now, under the lock. Read before it, a run that waited out
-        // another would go on to keep the new file as `.previous` and lose the old one.
+        // another would go on to keep the new file as `.previous` and lose the old one. The running
+        // file comes first, and only it can refuse. Each file has its own lock, since a rollback of a
+        // sibling takes that one and nothing else.
+        let mut locks = Vec::new();
         let mut changing = Vec::new();
         for item in plan {
+            match lock_for_install(&item, asked, &manifest.version) {
+                Ok(lock) => locks.push(lock),
+                Err(r) if item.runs && r.why == Why::Held => {
+                    report.skipped.push(Skipped::of(&item.component, r));
+                    return Ok(report);
+                }
+                Err(r) if item.runs => return Err(r),
+                Err(r) => {
+                    report.skipped.push(Skipped::of(&item.component, r));
+                    continue;
+                }
+            }
             if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {
                 report.unchanged.push(item.component);
             } else {
                 changing.push(item);
             }
         }
-        if changing.is_empty() {
-            return Ok(report);
-        }
         for item in &changing {
             sweep(&item.target);
         }
-        let prepared = self.prepare_all(&changing, &report).map_err(|r| said_after_prepare(r, &changing))?;
+        let mut prepared = Vec::new();
+        for item in changing {
+            match self.prepare(&item, &report) {
+                Ok(files) => prepared.push((item, files)),
+                Err(r) if item.runs => return Err(said_after_prepare(r, &item)),
+                Err(r) => report.skipped.push(Skipped::of(&item.component, r)),
+            }
+        }
 
         // The running component last. A run killed part way is then still the old binary, and running
         // it again finishes the job, since what is already in place is `unchanged`; the other order
         // leaves a new binary that sees nothing to do and a sibling stranded until the next release.
         let mut outcomes = Vec::new();
-        for (item, files) in changing.iter().zip(&prepared).rev() {
+        for (item, files) in prepared.iter().rev() {
             let result = commit(item, files);
+            if result.is_ok() && asked == Asked::User {
+                // A failure leaves a hold on what is now installed, which holds nothing back.
+                let _ = fs::remove_file(with_suffix(&item.target, HOLD));
+            }
             outcomes.push(Outcome { component: item.component.clone(), path: item.target.display().to_string(), error: result.err().map(|e| e.to_string()) });
         }
         outcomes.reverse();
-        drop(prepared);
         if outcomes.iter().any(|o| o.error.is_some()) {
             return Err(split_result(Why::InstallFailed, outcomes));
         }
-        report.replaced = changing
+        report.replaced = prepared
             .into_iter()
-            .map(|i| Replaced { component: i.component, path: i.target.display().to_string(), size: i.entry.size, sha256: to_hex(&i.entry.sha256) })
+            .map(|(i, _)| Replaced { component: i.component, path: i.target.display().to_string(), size: i.entry.size, sha256: to_hex(&i.entry.sha256) })
             .collect();
-        if let Some(dir) = &self.config_dir {
-            notice::clear_hold(dir);
-        }
         Ok(report)
     }
 
@@ -199,27 +339,22 @@ impl Updater {
     }
 
     /// The running component always, and each other one only if a file of its name is already
-    /// beside the binary: this replaces what is installed and adds nothing.
-    fn plan(&self, manifest: &crate::Manifest) -> Result<Vec<Planned>, Refusal> {
+    /// beside the binary: this replaces what is installed and adds nothing. Only the running
+    /// component's own entry can refuse; anything wrong with another makes that one `skipped`.
+    fn plan(&self, manifest: &crate::Manifest, skipped: &mut Vec<Skipped>) -> Result<Vec<Planned>, Refusal> {
         let entry = manifest.entry(&self.component, &self.platform)?;
         let exe = self.exe_target()?;
         let dir = self.exe.parent().ok_or_else(|| Refusal::new(Why::InstallFailed, format!("{} has no directory", self.exe.display())))?;
         let mut plan = vec![Planned { component: self.component.clone(), target: exe, entry, runs: true }];
         for (name, raw, file) in manifest.others(&self.component, &self.platform) {
-            // Only the file name is looked at here, and `decode` refuses one that is not a bare name.
-            let Some(target) = regular_file(&dir.join(file))? else { continue };
-            // Two names for one file are one file, and it has one previous.
-            if plan.iter().all(|p| p.target != target) {
-                plan.push(Planned { component: name.to_string(), target, entry: Entry::decode(name, raw)?, runs: false });
+            match sibling(dir, name, raw, file) {
+                // Two names for one file are one file, and it has one previous.
+                Ok(Some(item)) if plan.iter().all(|p| p.target != item.target) => plan.push(item),
+                Ok(_) => {}
+                Err(r) => skipped.push(Skipped::of(name, r)),
             }
         }
         Ok(plan)
-    }
-
-    /// In full, for each, before any commit. On a failure the temps of all of them go with the
-    /// `Prepared` dropped here.
-    fn prepare_all(&self, changing: &[Planned], report: &UpdateReport) -> Result<Vec<Prepared>, Refusal> {
-        changing.iter().map(|item| self.prepare(item, report)).collect()
     }
 
     fn prepare(&self, item: &Planned, report: &UpdateReport) -> Result<Prepared, Refusal> {
@@ -260,21 +395,46 @@ impl Updater {
         let kept = keep_a_copy(&item.target, &previous_new.0, mode).map_err(disk)?;
         let record_new = Temp(with_suffix(&item.target, RECORD_NEW));
         // Written now, so the commit is renames and needs no space.
-        let record = Record { from: report.from.clone(), to: report.to.clone(), sha256: to_hex(&kept) };
+        let record = Record { from: report.from.clone(), to: report.to.clone(), previous_sha256: to_hex(&kept), installed_sha256: to_hex(&sum) };
         let text = serde_json::to_vec_pretty(&record).map_err(|e| disk(io::Error::other(e)))?;
         write_private(&record_new.0, &text).map_err(disk)?;
         Ok(Prepared { new_file, previous_new, record_new })
     }
 }
 
-/// Only when the temps are gone is the sentence said, and it is checked rather than assumed.
-fn said_after_prepare(mut refusal: Refusal, changing: &[Planned]) -> Refusal {
-    let left: Vec<String> = changing
-        .iter()
-        .flat_map(|item| [NEW_FILE, PREVIOUS_NEW, RECORD_NEW].map(|suffix| with_suffix(&item.target, suffix)))
-        .filter(|path| fs::symlink_metadata(path).is_ok())
-        .map(|path| path.display().to_string())
-        .collect();
+/// A component other than the running one, if a file of its name is beside the binary. Its name is
+/// looked at first, so that nothing outside the directory is even asked about.
+fn sibling(dir: &Path, name: &str, raw: &serde_json::Value, file: &str) -> Result<Option<Planned>, Refusal> {
+    if !is_bare_file_name(file) {
+        return Err(Refusal::new(Why::BadManifest, format!("{name}: the file name is not a bare name")));
+    }
+    let Some(target) = regular_file(&dir.join(file))? else { return Ok(None) };
+    Ok(Some(Planned { component: name.to_string(), target, entry: Entry::decode(name, raw)?, runs: false }))
+}
+
+/// This file's own lock, and under it its hold. A hold that does not read decides nothing in favour of
+/// installing: `update.auto` turned on by a user must not undo what that user went back from.
+fn lock_for_install(item: &Planned, asked: Asked, version: &Version) -> Result<File, Refusal> {
+    let lock = take_lock(&item.target, |e| not_writable(&item.target, &item.entry, e))?;
+    if asked == Asked::Auto {
+        let path = with_suffix(&item.target, HOLD);
+        let held = match read_ours(&path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).trim().parse::<Version>().map_err(|e| Refusal::new(Why::NotOurs, format!("{} does not read as a version: {e}", path.display())))?,
+            Err(Unusable::Failed(e)) if e.kind() == io::ErrorKind::NotFound => return Ok(lock),
+            Err(e) => return Err(Refusal::new(Why::NotOurs, format!("{} {e}", path.display()))),
+        };
+        if *version <= held {
+            return Err(Refusal::new(Why::Held, format!("--rollback went back from {held}, so update.auto leaves {version} alone; n0x update installs it")));
+        }
+    }
+    Ok(lock)
+}
+
+/// Only when the temps are gone is the sentence said, and it is checked rather than assumed. A sibling
+/// only ever follows the running file, which is prepared first, so this one is the only one prepared.
+fn said_after_prepare(mut refusal: Refusal, item: &Planned) -> Refusal {
+    let left: Vec<String> =
+        [NEW_FILE, PREVIOUS_NEW, RECORD_NEW].map(|suffix| with_suffix(&item.target, suffix)).iter().filter(|path| fs::symlink_metadata(path).is_ok()).map(|path| path.display().to_string()).collect();
     let said = if left.is_empty() {
         "every installed file is unchanged".to_string()
     } else {
@@ -298,59 +458,64 @@ fn split_result(why: Why, outcomes: Vec<Outcome>) -> Refusal {
 /// leaves a `.previous` no record vouches for, which rollback refuses, and a kill after the second a
 /// `.previous` equal to the target, of which rollback says that nothing changed.
 fn commit(item: &Planned, files: &Prepared) -> io::Result<()> {
-    replace_previous(&files.previous_new.0, &with_suffix(&item.target, PREVIOUS))?;
+    replace_previous(&files.previous_new.0, &item.target)?;
     fs::rename(&files.record_new.0, with_suffix(&item.target, RECORD))?;
     put_in_place(&files.new_file.0, &item.target)?;
     sync_directory_of(&item.target);
     Ok(())
 }
 
-/// `n0x update --rollback`: back to the file kept beside `exe`, and to each kept beside it by the same
-/// install. It needs no network, and it is one shot: the file gone back from is not kept, so a second
-/// run says there is nothing to go back to and never goes forward.
-pub fn rollback(exe: &Path, config_dir: Option<&Path>) -> Result<RollbackReport, Refusal> {
-    let Some(exe) = regular_file(exe)? else {
-        return Err(Refusal::new(Why::InstallFailed, format!("{} is not there", exe.display())));
+/// `n0x update --rollback`: back to the file kept beside `exe`, or beside the file called `name` next
+/// to it, and that file alone, with its own record and lock. It needs no network and no configuration,
+/// and it is one shot: the file gone back from is not kept, so a second run says there is nothing to go
+/// back to and never goes forward.
+pub fn rollback(exe: &Path, name: Option<&str>) -> Result<RollbackReport, Refusal> {
+    let beside = match name {
+        None => exe.to_path_buf(),
+        Some(name) if is_bare_file_name(name) => exe.with_file_name(name),
+        Some(name) => return Err(Refusal::new(Why::NotABareName, format!("{name:?} is not a file beside this binary: --rollback takes a bare name"))),
     };
+    let Some(target) = regular_file(&beside)? else { return Err(no_previous(&beside)) };
     // Before the lock, so that asking with nothing kept leaves no file behind.
-    if fs::symlink_metadata(with_suffix(&exe, PREVIOUS)).is_err() {
-        return Err(no_previous(&exe));
+    if fs::symlink_metadata(with_suffix(&target, PREVIOUS)).is_err() {
+        return Err(no_previous(&target));
     }
-    let _lock = take_lock(&exe, |e| Refusal::new(Why::NotWritable, format!("{} cannot be replaced from here: {e}", exe.display())))?;
-    sweep(&exe);
-    let record = kept_for(&exe)?;
-    if kept_equals_target(&exe, &record) {
-        let says = format!("{} is what is already installed, so nothing changed: an install that died before its last step leaves this", with_suffix(&exe, PREVIOUS).display());
-        return Ok(RollbackReport { from: None, to: None, restored: Vec::new(), nothing_changed: Some(says) });
+    let _lock = take_lock(&target, |e| Refusal::new(Why::NotWritable, format!("{} cannot be replaced from here: {e}", target.display())))?;
+    sweep(&target);
+    let record = kept_for(&target)?;
+    let file = target.display().to_string();
+    let installed = measure(&target).map_err(|e| Refusal::new(Why::InstallFailed, format!("{file} does not read: {e}")))?.1;
+    let (installed_hex, previous) = (to_hex(&installed), with_suffix(&target, PREVIOUS));
+    // What a kill between the record and the rename leaves, and what a failed commit leaves.
+    if installed_hex == record.previous_sha256 {
+        let says = format!("{} is what is already installed, so nothing changed: an install that died before its last step leaves this", previous.display());
+        return Ok(RollbackReport { file, from: None, to: None, nothing_changed: Some(says) });
     }
+    if installed_hex != record.installed_sha256 {
+        return Err(Refusal::new(
+            Why::NotWhatWasInstalled,
+            format!("{file} has sha256 {installed_hex}, and the last update installed {}: a file was put there by other means, so it and {} stay as they are", record.installed_sha256, previous.display()),
+        ));
+    }
+    // Before the swap, or a kill between the two leaves a rollback the next check undoes. A kill here
+    // leaves the target as it was, and a re-run finishes.
+    write_hold(&target, &record.to)?;
+    put_in_place(&previous, &target).map_err(|e| Refusal::new(Why::InstallFailed, format!("{file} could not be put back: {e}; it is as it was")))?;
+    let _ = fs::remove_file(with_suffix(&target, RECORD));
+    sync_directory_of(&target);
+    Ok(RollbackReport { file, from: Some(record.to), to: Some(record.from), nothing_changed: None })
+}
 
-    // The running one last, whose record is what a second run would find: a kill part way can then
-    // still be finished by running this again.
-    let mut outcomes = Vec::new();
-    let mut why = Why::InstallFailed;
-    for target in others_of_the_same_install(&exe, &record.to) {
-        sweep(&target);
-        let result = match kept_for(&target) {
-            Ok(own) if kept_equals_target(&target, &own) => continue,
-            Ok(_) => go_back(&target).map_err(|e| e.to_string()),
-            Err(r) => {
-                why = r.why;
-                Err(r.message)
-            }
-        };
-        outcomes.push(Outcome { component: file_name(&target), path: target.display().to_string(), error: result.err() });
-    }
-    let result = go_back(&exe);
-    let went_back = result.is_ok();
-    outcomes.push(Outcome { component: file_name(&exe), path: exe.display().to_string(), error: result.err().map(|e| e.to_string()) });
-    if went_back && let Some(dir) = config_dir {
-        // With `update.auto` on, the next daily check would otherwise undo this.
-        notice::hold_after_rollback(dir, &record.to);
-    }
-    if outcomes.iter().any(|o| o.error.is_some()) {
-        return Err(split_result(why, outcomes));
-    }
-    Ok(RollbackReport { from: Some(record.to), to: Some(record.from), restored: outcomes.into_iter().map(|o| o.path).collect(), nothing_changed: None })
+/// By rename, under the lock. It cannot be written means nothing moves: a rollback the next check would
+/// undo is not one.
+fn write_hold(target: &Path, version: &str) -> Result<(), Refusal> {
+    let temp = Temp(with_suffix(target, HOLD_NEW));
+    let path = with_suffix(target, HOLD);
+    write_private(&temp.0, version.as_bytes())
+        .and_then(|()| fs::rename(&temp.0, &path))
+        .map_err(|e| Refusal::new(Why::NotWritable, format!("{} cannot be written, so {} stays as it is: {e}", path.display(), target.display())))?;
+    sync_directory_of(target);
+    Ok(())
 }
 
 fn no_previous(target: &Path) -> Refusal {
@@ -358,58 +523,22 @@ fn no_previous(target: &Path) -> Refusal {
 }
 
 /// The record of what is kept beside `target`, once what is kept has been shown to be that: a regular
-/// file, no link, with the digest the record states. Anything else is a refusal, because what comes
-/// back here is then run, and a rollback once installed a planted symlink as the binary.
+/// file of this user's, no link, with the digest the record states. Anything else is a refusal, because
+/// what comes back here is then run, and a rollback once installed a planted symlink as the binary.
 fn kept_for(target: &Path) -> Result<Record, Refusal> {
     let previous = with_suffix(target, PREVIOUS);
     let mismatch = |what: String| Refusal::new(Why::PreviousDoesNotMatch, format!("{what}, so {} stays as it is", target.display()));
-    let metadata = fs::symlink_metadata(&previous).map_err(|_| no_previous(target))?;
-    if !metadata.is_file() {
-        return Err(mismatch(format!("{} is not a regular file", previous.display())));
-    }
-    let Some(record) = read_record(target) else {
-        return Err(mismatch(format!("{} has no record that reads", previous.display())));
+    let kept = match open_ours(&previous, OpenOptions::new().read(true)) {
+        Ok(kept) => kept,
+        Err(Unusable::Failed(e)) if e.kind() == io::ErrorKind::NotFound => return Err(no_previous(target)),
+        Err(e) => return Err(mismatch(format!("{} {e}", previous.display()))),
     };
-    let sum = measure(&previous).map_err(|e| mismatch(format!("{} does not read: {e}", previous.display())))?.1;
-    if from_hex::<32>(&record.sha256) != Some(sum) {
-        return Err(mismatch(format!("{} has sha256 {}, and its record states {}", previous.display(), to_hex(&sum), record.sha256)));
+    let record = read_record(target).map_err(|e| mismatch(format!("{} cannot be vouched for: {e}", previous.display())))?;
+    let sum = digest_of(kept).map_err(|e| mismatch(format!("{} does not read: {e}", previous.display())))?.1;
+    if from_hex::<32>(&record.previous_sha256) != Some(sum) {
+        return Err(mismatch(format!("{} has sha256 {}, and its record states {}", previous.display(), to_hex(&sum), record.previous_sha256)));
     }
     Ok(record)
-}
-
-/// What a kill between the record and the rename leaves, and what a failed commit leaves.
-fn kept_equals_target(target: &Path, record: &Record) -> bool {
-    measure(target).is_ok_and(|(_, sum)| from_hex::<32>(&record.sha256) == Some(sum))
-}
-
-fn go_back(target: &Path) -> io::Result<()> {
-    put_in_place(&with_suffix(target, PREVIOUS), target)?;
-    let _ = fs::remove_file(with_suffix(target, RECORD));
-    sync_directory_of(target);
-    Ok(())
-}
-
-/// Every file beside `exe`, or behind a link beside it, with a record of going to the same version.
-///
-/// Each record states only itself, so the others are found by looking. A stranger's file in a shared
-/// `bin` does not hold such a record, and a sibling last replaced by an earlier install holds an
-/// earlier `to`, so it stays where it is.
-fn others_of_the_same_install(exe: &Path, to: &str) -> Vec<PathBuf> {
-    let Some(entries) = exe.parent().and_then(|dir| fs::read_dir(dir).ok()) else { return Vec::new() };
-    let mut found: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(Some(target)) = regular_file(&entry.path()) else { continue };
-        let is_other = target != exe && !found.contains(&target);
-        if is_other && read_record(&target).is_some_and(|r| r.to == to) {
-            found.push(target);
-        }
-    }
-    found.sort();
-    found
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 /// The file behind `path`, resolving a link the way the running binary's path is resolved, or nothing
@@ -427,9 +556,12 @@ fn regular_file(path: &Path) -> Result<Option<PathBuf>, Refusal> {
 }
 
 /// Held until dropped, or by the kernel until the process dies: there is no state to go stale.
-fn take_lock(exe: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -> Result<File, Refusal> {
-    let path = with_suffix(exe, LOCK);
-    let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| cannot_create(&e))?;
+fn take_lock(target: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -> Result<File, Refusal> {
+    let path = with_suffix(target, LOCK);
+    let file = open_ours(&path, OpenOptions::new().create(true).truncate(false).write(true)).map_err(|e| match e {
+        Unusable::NotOurs(what) => Refusal::new(Why::NotOurs, format!("{} {what}, so it is not a lock this client takes", path.display())),
+        Unusable::Failed(e) => cannot_create(&e),
+    })?;
     let start = Instant::now();
     loop {
         match file.try_lock() {
@@ -443,16 +575,28 @@ fn take_lock(exe: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -> R
     }
 }
 
-/// Under the lock, anything of ours beside the file is a dead run's. An aside that does not go is the
-/// image of a process still running on Windows, and goes on a later run.
+/// Under the lock, these exact names are a dead run's, and nothing else is.
 fn sweep(target: &Path) {
-    for suffix in [NEW_FILE, PREVIOUS_NEW, RECORD_NEW] {
+    for suffix in [NEW_FILE, PREVIOUS_NEW, RECORD_NEW, HOLD_NEW] {
         let _ = fs::remove_file(with_suffix(target, suffix));
     }
-    let prefix = format!("{}{ASIDE}", file_name(target));
+    sweep_asides(target);
+}
+
+#[cfg(not(windows))]
+fn sweep_asides(_target: &Path) {}
+
+/// `<file>.aside-<digits>`, of which one that does not go is the image of a process still running and
+/// goes on a later run.
+#[cfg(windows)]
+fn sweep_asides(target: &Path) {
+    let Some(name) = target.file_name().and_then(|n| n.to_str()) else { return };
+    let prefix = format!("{name}{ASIDE}");
     let Some(entries) = target.parent().and_then(|dir| fs::read_dir(dir).ok()) else { return };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+        let found = entry.file_name();
+        let digits = found.to_str().and_then(|n| n.strip_prefix(prefix.as_str()));
+        if digits.is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())) {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -496,7 +640,10 @@ fn keep_a_copy(target: &Path, to: &Path, mode: u32) -> io::Result<[u8; 32]> {
 
 /// Size and sha256 of a file as it is now.
 fn measure(path: &Path) -> io::Result<(u64, [u8; 32])> {
-    let mut file = File::open(path)?;
+    digest_of(File::open(path)?)
+}
+
+fn digest_of(mut file: File) -> io::Result<(u64, [u8; 32])> {
     let mut digest = Context::new(&SHA256);
     let mut buffer = vec![0u8; 64 * 1024];
     let mut size = 0;
@@ -521,11 +668,14 @@ fn finished(digest: Context) -> [u8; 32] {
 /// This is why a garbage file that verifies is not installed: `--rollback` lives inside the file being
 /// replaced, so one that cannot start cannot be gone back from. Every later `n0xis` must keep answering
 /// this. A word of the output is compared, not a substring, or 9.0.1 would pass in 19.0.10.
+///
+/// By absolute path always, so that nothing searches for it: a bare name would be looked for on `PATH`.
 fn answers_its_version(file: &Path, version: &str, bound: Duration) -> Result<(), Refusal> {
     let refused = |what: String| Refusal::new(Why::DoesNotRun, format!("{} {what}", file.display()));
+    let file = std::path::absolute(file).map_err(|e| refused(format!("has no absolute path: {e}")))?;
     let start = Instant::now();
     let mut child = loop {
-        let spawned = Command::new(file).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+        let spawned = Command::new(&file).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
         match spawned {
             Ok(child) => break child,
             // A fork elsewhere in this process can hold the written file for an instant.
@@ -569,22 +719,29 @@ fn answers_its_version(file: &Path, version: &str, bound: Duration) -> Result<()
 
 /// A rename over the kept file just works here.
 #[cfg(not(windows))]
-fn replace_previous(incoming: &Path, previous: &Path) -> io::Result<()> {
-    fs::rename(incoming, previous)
+fn replace_previous(incoming: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(incoming, with_suffix(target, PREVIOUS))
 }
 
 /// The kept file may be the image of a process still running from an earlier update (a long `serve`),
 /// and then nothing can overwrite or delete it, though it can still be renamed out of the way.
 #[cfg(windows)]
-fn replace_previous(incoming: &Path, previous: &Path) -> io::Result<()> {
-    if fs::rename(incoming, previous).is_ok() {
+fn replace_previous(incoming: &Path, target: &Path) -> io::Result<()> {
+    let previous = with_suffix(target, PREVIOUS);
+    if fs::rename(incoming, &previous).is_ok() {
         return Ok(());
     }
     if previous.exists() {
-        let target = previous.with_extension("");
-        fs::rename(previous, with_suffix(&target, &format!("{ASIDE}previous-{}", std::process::id())))?;
+        fs::rename(&previous, free_aside(target))?;
     }
-    fs::rename(incoming, previous)
+    fs::rename(incoming, &previous)
+}
+
+/// The first free `<file>.aside-<digits>` from this pid: an aside still running blocks its name, and
+/// one run can need two.
+#[cfg(windows)]
+fn free_aside(target: &Path) -> PathBuf {
+    (u64::from(std::process::id())..).map(|n| with_suffix(target, &format!("{ASIDE}{n}"))).find(|path| !path.exists()).expect("a free number")
 }
 
 /// One rename: the target is the old file or the new at every moment, and a command started during
@@ -599,7 +756,7 @@ fn put_in_place(incoming: &Path, target: &Path) -> io::Result<()> {
 /// and the specification says so.
 #[cfg(windows)]
 fn put_in_place(incoming: &Path, target: &Path) -> io::Result<()> {
-    let aside = with_suffix(target, &format!("{ASIDE}{}", std::process::id()));
+    let aside = free_aside(target);
     fs::rename(target, &aside)?;
     if let Err(e) = fs::rename(incoming, target) {
         return Err(match fs::rename(&aside, target) {

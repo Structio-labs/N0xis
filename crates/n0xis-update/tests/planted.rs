@@ -25,6 +25,8 @@ const OLD: &[u8] = b"the installed binary, version 1.0.0";
 static NEW: LazyLock<Vec<u8>> = LazyLock::new(|| program("2.0.0"));
 const COMPONENT: &str = "n0xis";
 const PLATFORM: &str = "test-platform";
+/// What the candidate is called while it is prepared: on Windows its name ends in `.exe`.
+const CANDIDATE: &str = if cfg!(windows) { "n0xis.update-new.exe" } else { "n0xis.update-new" };
 
 /// A program answering `--version` as `says` tells it to (`tests/support/program.rs`).
 fn program(says: &str) -> Vec<u8> {
@@ -157,12 +159,12 @@ fn a_newer_release_installs_keeps_the_old_file_and_rolls_back() {
     }
     assert_eq!(b.files(), ["n0xis", "n0xis.previous", "n0xis.previous.json"], "a temporary file was left");
 
-    let back = rollback(&b.exe, Some(&b.config)).expect("rollback");
+    let back = rollback(&b.exe, None).expect("rollback");
     assert_eq!((back.from.as_deref(), back.to.as_deref()), (Some("2.0.0"), Some("1.0.0")));
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
-    assert_eq!(b.files(), ["n0xis"], "one shot: nothing is kept to go forward to");
+    assert_eq!(b.files(), ["n0xis", "n0xis.update-hold"], "one shot: nothing is kept to go forward to");
 
-    let again = rollback(&b.exe, Some(&b.config)).expect_err("a second rollback");
+    let again = rollback(&b.exe, None).expect_err("a second rollback");
     assert_eq!(again.why, Why::NoPrevious);
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
 }
@@ -170,7 +172,7 @@ fn a_newer_release_installs_keeps_the_old_file_and_rolls_back() {
 #[test]
 fn rollback_with_nothing_kept_is_a_refusal() {
     let b = Bench::new("noprevious");
-    b.refused(rollback(&b.exe, Some(&b.config)), Why::NoPrevious);
+    b.refused(rollback(&b.exe, None), Why::NoPrevious);
 }
 
 #[test]
@@ -594,7 +596,7 @@ fn with_the_mcp(b: &Bench, version: &str, mcp: &[u8]) -> Value {
 }
 
 #[test]
-fn a_component_beside_the_binary_goes_with_it_and_comes_back_with_it() {
+fn a_component_beside_the_binary_goes_with_it_and_goes_back_by_its_name() {
     let b = Bench::new("sibling");
     let mcp = b.dir.join("n0xis-mcp");
     fs::write(&mcp, b"old mcp").unwrap();
@@ -603,9 +605,311 @@ fn a_component_beside_the_binary_goes_with_it_and_comes_back_with_it() {
     b.updater().update().expect("update");
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
     assert_eq!(fs::read(&mcp).unwrap(), b"new mcp");
-    rollback(&b.exe, Some(&b.config)).expect("rollback");
-    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    let back = rollback(&b.exe, Some("n0xis-mcp")).expect("rollback");
+    assert_eq!(back.file, mcp.display().to_string());
     assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW, "only the file named");
+    assert_eq!(fs::read(b.dir.join("n0xis-mcp.update-hold")).unwrap(), b"2.0.0", "the same function, and that file's own hold");
+    assert_eq!(rollback(&b.exe, Some("n0xis-mcp")).expect_err("one shot").why, Why::NoPrevious);
+    rollback(&b.exe, None).expect("rollback");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+}
+
+/// The running file goes back and nothing else moves: a sibling at another version harms nothing, and
+/// another copy in the directory, with a record of its own, is not this one's to touch.
+#[test]
+fn rollback_leaves_a_sibling_and_another_copy_alone() {
+    let b = Bench::new("onefile");
+    let mcp = b.dir.join("n0xis-mcp");
+    fs::write(&mcp, b"old mcp").unwrap();
+    let other = b.dir.join("n0xis-nightly");
+    fs::write(&other, OLD).unwrap();
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    b.updater().update().expect("update");
+    let mut nightly = b.updater();
+    nightly.exe = other.clone();
+    nightly.update().expect("update the other copy");
+    assert_eq!(fs::read(&other).unwrap(), *NEW);
+
+    let back = rollback(&b.exe, None).expect("rollback");
+    assert_eq!(back.file, b.exe.display().to_string(), "the envelope states the one file");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    assert_eq!(fs::read(&mcp).unwrap(), b"new mcp", "the sibling moved");
+    assert_eq!(fs::read(&other).unwrap(), *NEW, "the other copy moved");
+    assert!(b.dir.join("n0xis-mcp.previous.json").exists() && b.dir.join("n0xis-nightly.previous.json").exists());
+
+    // A stranger's record beside it is no one's business either, and turns no success into a refusal.
+    let b = installed("stranger");
+    fs::write(b.dir.join("stranger"), b"keep me").unwrap();
+    fs::write(b.dir.join("stranger.previous.json"), serde_json::to_vec(&json!({ "from": "1.0.0", "to": "2.0.0", "previous_sha256": sha(b"x"), "installed_sha256": sha(b"y") })).unwrap()).unwrap();
+    rollback(&b.exe, None).expect("rollback");
+    assert_eq!(fs::read(b.dir.join("stranger")).unwrap(), b"keep me");
+}
+
+#[test]
+fn rollback_takes_a_bare_name_and_that_files_own_lock() {
+    let b = Bench::new("byname");
+    let mcp = b.dir.join("n0xis-mcp");
+    fs::write(&mcp, b"old mcp").unwrap();
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    b.updater().update().expect("update");
+    for name in ["../n0xis", "/etc/passwd", "..", "", "a\\b"] {
+        assert_eq!(rollback(&b.exe, Some(name)).expect_err(name).why, Why::NotABareName, "{name}");
+    }
+    assert_eq!(rollback(&b.exe, Some("no-such-file")).expect_err("not there").why, Why::NoPrevious);
+
+    let lock = fs::File::create(b.dir.join("n0xis-mcp.update-lock")).unwrap();
+    lock.try_lock().unwrap();
+    assert_eq!(rollback(&b.exe, Some("n0xis-mcp")).expect_err("its own lock is held").why, Why::UpdateInProgress);
+    assert_eq!(fs::read(&mcp).unwrap(), b"new mcp");
+    drop(lock);
+
+    // And the running file's lock is not that one.
+    let lock = fs::File::create(b.dir.join("n0xis.update-lock")).unwrap();
+    lock.try_lock().unwrap();
+    rollback(&b.exe, Some("n0xis-mcp")).expect("another file's lock stops nothing here");
+    assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
+}
+
+/// An install takes each file's own lock too, or a rollback of a sibling could land inside its commit.
+#[test]
+fn an_install_skips_a_sibling_whose_own_lock_is_held() {
+    let b = Bench::new("siblock");
+    let mcp = b.dir.join("n0xis-mcp");
+    fs::write(&mcp, b"old mcp").unwrap();
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    let lock = fs::File::create(b.dir.join("n0xis-mcp.update-lock")).unwrap();
+    lock.try_lock().unwrap();
+    let report = b.updater().update().expect("the running file goes on");
+    assert_eq!(skipped(&report), [("n0xis-mcp", "update-in-progress")]);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
+}
+
+/// The finding: a file put there by hand was overwritten by a rollback, and nothing kept it.
+#[test]
+fn a_hand_installed_target_is_refused_and_kept() {
+    let b = installed("hand");
+    let hand = program("9.9.9");
+    fs::write(&b.exe, &hand).unwrap();
+    let refusal = rollback(&b.exe, None).expect_err("not what was installed");
+    assert_eq!(refusal.why, Why::NotWhatWasInstalled);
+    assert!(refusal.message.contains("by other means"), "{}", refusal.message);
+    assert_eq!(fs::read(&b.exe).unwrap(), hand);
+    assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD);
+    assert!(b.dir.join("n0xis.previous.json").exists(), "still there for a look");
+    assert!(!b.dir.join("n0xis.update-hold").exists(), "a refusal holds nothing back");
+}
+
+fn skipped(report: &n0xis_update::UpdateReport) -> Vec<(&str, &str)> {
+    report.skipped.iter().map(|s| (s.component.as_str(), s.code)).collect()
+}
+
+/// A rollback lands while a check is out asking. The check's write of the shared state once wrote the
+/// hold away, and the next check undid the rollback.
+#[test]
+fn the_hold_survives_a_check_in_flight() {
+    let b = installed("inflight");
+    let exe = b.exe.clone();
+    let meanwhile = Arc::new(move || {
+        rollback(&exe, None).expect("rollback");
+    });
+    b.server.route("/manifest.json", Reply::During { body: serde_json::to_vec(&b.manifest("2.0.0")).unwrap(), at: 10, meanwhile });
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "the check in flight undid the rollback");
+    assert_eq!(state_of(&b).installed, None, "and it says nothing moved");
+    b.publish(&b.manifest("2.0.0"));
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "nor does the next one");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_hold_needs_no_configuration_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("not verified here: running as root");
+        return;
+    }
+    // Read-only, where a hold in the state file was silently lost.
+    let b = installed("readonlyconfig");
+    fs::set_permissions(&b.config, fs::Permissions::from_mode(0o555)).unwrap();
+    rollback(&b.exe, None).expect("rollback");
+    notice::run_check(&b.updater(), true);
+    fs::set_permissions(&b.config, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "the hold was lost with the directory");
+
+    // None at all, and then a run that has one.
+    let b = installed("noconfig");
+    fs::remove_dir_all(&b.config).unwrap();
+    rollback(&b.exe, None).expect("rollback");
+    fs::create_dir_all(&b.config).unwrap();
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+}
+
+/// A hold that cannot be written means nothing moves, since a rollback the next check undoes is not one.
+#[cfg(unix)]
+#[test]
+fn a_hold_that_cannot_be_written_moves_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("not verified here: running as root");
+        return;
+    }
+    let b = installed("nohold");
+    fs::set_permissions(&b.dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let result = rollback(&b.exe, None);
+    fs::set_permissions(&b.dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(result.expect_err("no hold").why, Why::NotWritable);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD);
+}
+
+/// What a kill leaves at each step of a rollback, planted; the kills themselves are run against the real
+/// binaries outside these tests (`docs/design/UPDATE.md` §5).
+#[test]
+fn a_kill_at_each_step_of_a_rollback_keeps_the_hold_and_a_re_run_finishes() {
+    let hold = |b: &Bench| b.dir.join("n0xis.update-hold");
+    // After the hold's temporary: swept, and nothing else has happened.
+    let b = installed("killtemp");
+    fs::write(b.dir.join("n0xis.update-hold-new"), b"half").unwrap();
+    rollback(&b.exe, None).expect("it finishes");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    assert_eq!(b.files(), ["n0xis", "n0xis.update-hold"]);
+
+    // After the hold, before the swap: the target as it was, and a re-run finishes.
+    let b = installed("killhold");
+    fs::write(hold(&b), b"2.0.0").unwrap();
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW, "the target is as it was");
+    rollback(&b.exe, None).expect("it finishes");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "and it holds");
+
+    // After the swap, before the record goes: gone back, held, and nothing further to do.
+    let b = installed("killswap");
+    fs::write(hold(&b), b"2.0.0").unwrap();
+    fs::rename(b.dir.join("n0xis.previous"), &b.exe).unwrap();
+    assert_eq!(rollback(&b.exe, None).expect_err("it is done").why, Why::NoPrevious);
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+}
+
+#[test]
+fn a_hold_leaves_what_it_names_and_anything_older_and_a_newer_one_passes() {
+    let b = installed("holdwhat");
+    rollback(&b.exe, None).expect("rollback");
+    let hold = fs::read(b.dir.join("n0xis.update-hold")).unwrap();
+    assert_eq!(hold, b"2.0.0", "the version rolled back from");
+    // Newer than this build, and older than what was gone back from.
+    publish_program(&b, "1.5.0", &program("1.5.0"));
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "older than the hold");
+    assert_eq!(state_of(&b).latest.as_deref(), Some("1.5.0"), "and still offered");
+    let later = program("2.0.1");
+    publish_program(&b, "2.0.1", &later);
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), later, "a newer release passes");
+}
+
+/// A hold on a sibling leaves that sibling, and the running file goes on.
+#[test]
+fn a_hold_on_a_sibling_holds_only_that_sibling() {
+    let b = Bench::new("holdsib");
+    let mcp = b.dir.join("n0xis-mcp");
+    fs::write(&mcp, b"old mcp").unwrap();
+    fs::write(b.dir.join("n0xis-mcp.update-hold"), b"2.0.0").unwrap();
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
+}
+
+#[test]
+fn an_explicit_update_ends_the_hold_and_only_after_it_installs() {
+    let b = installed("endhold");
+    rollback(&b.exe, None).expect("rollback");
+    let hold = b.dir.join("n0xis.update-hold");
+    // A refused install ends nothing.
+    b.server.route("/file", Reply::Body(b"damaged".to_vec()));
+    b.updater().update().expect_err("damaged");
+    assert!(hold.exists(), "a refusal ended the hold");
+    b.server.route("/file", Reply::Body(NEW.to_vec()));
+    b.updater().update().expect("explicit");
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW, "the user asked, so a hold stops nothing");
+    assert!(!hold.exists());
+}
+
+/// A server that changes its answer between two fetches once had the check say one version, the install
+/// do another, and the line claim the first. There is one fetch now, so there is nothing to disagree.
+#[test]
+fn the_check_and_auto_agree_across_a_changing_server() {
+    let b = Bench::new("onefetch");
+    let older = b.manifest("1.5.0");
+    let (first, then) = (serde_json::to_vec(&b.manifest("2.0.0")).unwrap(), serde_json::to_vec(&older).unwrap());
+    let sequence = |a: Vec<u8>, z: Vec<u8>| Reply::Sequence(Arc::new(std::sync::Mutex::new([a, z].into())));
+    b.server.route("/manifest.json.sig", sequence(sign(&b.key, &first), sign(&b.key, &then)));
+    b.server.route("/manifest.json", sequence(first, then));
+    b.server.route("/file", Reply::Body(NEW.to_vec()));
+    notice::run_check(&b.updater(), true);
+    assert_eq!(b.server.asked("/manifest.json"), 1, "one fetch");
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    let state = state_of(&b);
+    assert_eq!(state.latest.as_deref(), Some("2.0.0"));
+    assert_eq!(state.installed.map(|i| i.to).as_deref(), Some("2.0.0"));
+}
+
+/// The line is about what moved. Nothing moved here: the file is already the new one.
+#[test]
+fn the_line_is_written_only_from_what_moved() {
+    let b = Bench::new("moved");
+    fs::write(&b.exe, &*NEW).unwrap();
+    b.publish(&b.manifest("2.0.0"));
+    notice::run_check(&b.updater(), true);
+    assert_eq!(state_of(&b).installed, None, "it said an install happened");
+
+    // A commit that failed for a sibling after the running file moved: that one did.
+    let b = Bench::new("movedsplit");
+    fs::write(b.dir.join("n0xis-mcp"), b"old mcp").unwrap();
+    #[cfg(unix)]
+    fs::create_dir_all(b.dir.join("n0xis-mcp.previous").join("in-the-way")).unwrap();
+    #[cfg(windows)]
+    let _in_the_way = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new().write(true).create(true).truncate(false).share_mode(0).open(b.dir.join("n0xis-mcp.previous")).unwrap()
+    };
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    notice::run_check(&b.updater(), true);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    let state = state_of(&b);
+    assert_eq!(state.installed.map(|i| i.to).as_deref(), Some("2.0.0"));
+    assert_eq!(state.refusal.as_deref(), Some("install-failed"));
+}
+
+/// A later component of a new shape, with a file of its name beside the binary. It refused once, which
+/// is what a shipped client must not do: it would stop every old copy.
+#[test]
+fn a_later_shaped_sibling_beside_the_binary_does_not_block() {
+    let b = Bench::new("later");
+    fs::write(b.dir.join("later-tool"), b"a stranger's file").unwrap();
+    let mut m = b.manifest("2.0.0");
+    m["components"]["later"] = json!({ PLATFORM: { "file": "later-tool", "parts": ["a", "b"] } });
+    b.publish(&m);
+    let check = b.updater().check().expect("check");
+    assert!(check.available && check.blocked.is_none());
+    let report = b.updater().update().expect("it agrees with --check");
+    assert_eq!(skipped(&report), [("later", "no-digest")]);
+    assert!(report.skipped[0].reason.contains("later"), "{}", report.skipped[0].reason);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert_eq!(fs::read(b.dir.join("later-tool")).unwrap(), b"a stranger's file");
+    // The same with nothing of its name beside the binary: not a thing that was skipped at all.
+    let b = Bench::new("laternone");
+    let mut m = b.manifest("2.0.0");
+    m["components"]["later"] = json!({ PLATFORM: { "file": "later-tool", "parts": ["a", "b"] } });
+    b.publish(&m);
+    assert!(b.updater().update().expect("update").skipped.is_empty());
 }
 
 #[test]
@@ -630,19 +934,17 @@ fn a_component_that_did_not_change_is_not_fetched() {
 }
 
 #[test]
-fn a_bad_second_file_leaves_the_first_alone() {
+fn a_bad_sibling_file_is_skipped_and_the_running_file_goes_on() {
     let b = Bench::new("badsecond");
     let mcp = b.dir.join("n0xis-mcp");
     fs::write(&mcp, b"old mcp").unwrap();
     b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
     b.server.route("/mcp", Reply::Body(b"NEW MCP".to_vec()));
-    let refusal = b.updater().update().expect_err("the second file is bad");
-    assert!(refusal.components.is_empty(), "nothing moved");
-    assert_eq!(refusal.why, Why::DigestMismatch);
-    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    let report = b.updater().update().expect("the running file goes on");
+    assert_eq!(skipped(&report), [("n0xis-mcp", "digest-mismatch")]);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
     assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
-    assert_eq!(b.files(), ["n0xis", "n0xis-mcp"]);
-    assert!(refusal.message.ends_with("every installed file is unchanged"), "{}", refusal.message);
+    assert_eq!(b.files(), ["n0xis", "n0xis-mcp", "n0xis.previous", "n0xis.previous.json"], "a temp of the sibling was left");
 }
 
 #[test]
@@ -654,8 +956,19 @@ fn a_file_name_cannot_leave_the_directory() {
     m["components"]["n0xis-mcp"] = json!({ PLATFORM: { "url": b.server.url("/mcp"), "size": 3, "sha256": sha(b"abc"), "file": "../outside" } });
     b.server.route("/mcp", Reply::Body(b"abc".to_vec()));
     b.publish(&m);
-    b.refused(b.updater().update(), Why::BadManifest);
+    let report = b.updater().update().expect("only the running component's own entry can refuse");
+    assert_eq!(skipped(&report), [("n0xis-mcp", "bad-manifest")]);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
     assert_eq!(fs::read(&outside).unwrap(), b"not ours");
+    assert_eq!(b.server.asked("/mcp"), 0);
+    assert!(!b.dir.parent().unwrap().join("outside.previous").exists(), "something was kept outside the directory");
+
+    // Whether or not anything is there: such a name is not looked up at all.
+    let b = Bench::new("traversalnone");
+    let mut m = b.manifest("2.0.0");
+    m["components"]["n0xis-mcp"] = json!({ PLATFORM: { "url": b.server.url("/mcp"), "size": 3, "sha256": sha(b"abc"), "file": "../no-such-file" } });
+    b.publish(&m);
+    assert_eq!(skipped(&b.updater().update().expect("update")), [("n0xis-mcp", "bad-manifest")]);
 }
 
 #[test]
@@ -711,7 +1024,7 @@ fn update_auto_installs_under_the_same_checks_and_rollback_holds_it() {
     assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD, "the previous binary stays for --rollback");
     assert_eq!(state_of(&b).installed.map(|i| i.to).as_deref(), Some("2.0.0"));
 
-    rollback(&b.exe, Some(&b.config)).expect("rollback");
+    rollback(&b.exe, None).expect("rollback");
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
     notice::run_check(&b.updater(), true);
     assert_eq!(fs::read(&b.exe).unwrap(), OLD, "the next check undid the rollback");
@@ -726,6 +1039,19 @@ fn update_auto_installs_under_the_same_checks_and_rollback_holds_it() {
     b.server.route("/file", Reply::Body(later.clone()));
     notice::run_check(&b.updater(), true);
     assert_eq!(fs::read(&b.exe).unwrap(), later);
+}
+
+/// Only a newer version is installed alone, and a manifest at or below this build is no refusal either.
+#[test]
+fn update_auto_with_nothing_newer_does_nothing() {
+    let b = Bench::new("autosame");
+    for version in ["1.0.0", "0.9.0"] {
+        b.publish(&b.manifest(version));
+        notice::run_check(&b.updater(), true);
+        let state = state_of(&b);
+        assert_eq!((state.refusal, state.installed), (None, None), "{version}");
+        assert_eq!(fs::read(&b.exe).unwrap(), OLD, "{version}");
+    }
 }
 
 #[test]
@@ -786,8 +1112,10 @@ fn a_next_key_is_remembered_from_a_manifest_that_did_not_win() {
     assert_eq!(report.latest, "3.0.0");
 }
 
+/// The pin replaces the frozen addresses: someone who pinned a mirror meant for nothing public to be
+/// asked. A pin that fell through once installed from the public address with the mirror down.
 #[test]
-fn the_override_decides_alone_when_it_verifies() {
+fn a_pin_is_the_only_address() {
     let b = Bench::new("pin");
     plant_at(&b, "/pinned", "1.5.0", None, &b.key);
     plant_at(&b, "/frozen", "2.0.0", None, &b.key);
@@ -796,11 +1124,19 @@ fn the_override_decides_alone_when_it_verifies() {
     assert_eq!(updater.check().expect("check").latest, "1.5.0", "the user's pin was overruled");
     assert_eq!(b.server.asked("/frozen"), 0, "nothing else is asked when the pin verifies");
 
-    // A pin that does not verify decides nothing.
+    // A pin that does not verify is a refusal, and still nothing else is asked.
     b.server.route("/pinned.sig", Reply::Body(sign(&key(9), b"something else")));
-    let report = updater.check().expect("check");
-    assert_eq!(report.latest, "2.0.0");
-    assert_eq!(report.tried[0].code, "bad-signature");
+    let refusal = updater.check().expect_err("a bad pin");
+    assert_eq!(refusal.why, Why::BadSignature);
+    assert!(refusal.hint.is_some_and(|h| h.contains("update.manifest_url")));
+    assert_eq!(updater.update().expect_err("a bad pin").why, Why::BadSignature);
+    assert_eq!(b.server.asked("/frozen"), 0);
+
+    // A dead one the same, with nothing asked of the public addresses.
+    updater.pin = Some(dead_address());
+    assert_eq!(updater.check().expect_err("a dead pin").why, Why::ManifestUnavailable);
+    assert_eq!(b.server.asked("/frozen"), 0, "a dead pin fell through to a public address");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
 }
 
 #[test]
@@ -882,6 +1218,74 @@ fn a_key_file_past_its_bounds_proves_nothing_past_them() {
     assert_eq!(check(&b).expect_err("past 1 MiB").why, Why::BadSignature);
 }
 
+/// A link that proves a next key, and the key it proves, for the tests of what is written back.
+fn a_real_next_key(b: &Bench) -> (String, Trust) {
+    let root = hex(&public(&b.key));
+    plant_at(b, "/manifest.json", "1.0.0", Some(public(&key(8))), &b.key);
+    let trust = Trust::rooted_at(&root, Some(&b.config));
+    (root, trust)
+}
+
+/// 32 junk records once filled the chain, so a real key was never remembered and a change of key
+/// stranded the copy.
+#[test]
+fn a_junk_chain_still_takes_a_real_key() {
+    let b = Bench::new("junkchain");
+    let keys = b.config.join("update-keys.json");
+    fs::write(&keys, json!({ "chain": vec![json!({ "manifest": "00", "signature": "" }); 32] }).to_string()).unwrap();
+    let (root, trust) = a_real_next_key(&b);
+    b.updater_with(vec![b.server.url("/manifest.json")], trust, Bench::limits()).check().expect("check");
+    let written: Value = serde_json::from_slice(&fs::read(&keys).unwrap()).unwrap();
+    assert_eq!(written["chain"].as_array().unwrap().len(), 1, "only what verifies is kept: {written}");
+
+    plant_at(&b, "/manifest.json", "2.0.0", None, &key(8));
+    let report = b.updater_with(vec![b.server.url("/manifest.json")], Trust::rooted_at(&root, Some(&b.config)), Bench::limits()).check().expect("the next key signs");
+    assert_eq!(report.latest, "2.0.0");
+}
+
+#[test]
+fn a_file_past_the_bound_is_cleaned_rather_than_kept() {
+    let b = Bench::new("oversize");
+    let keys = b.config.join("update-keys.json");
+    fs::write(&keys, " ".repeat(1024 * 1024 + 5)).unwrap();
+    let (_, trust) = a_real_next_key(&b);
+    b.updater_with(vec![b.server.url("/manifest.json")], trust, Bench::limits()).check().expect("check");
+    assert!(fs::metadata(&keys).unwrap().len() < 64 * 1024, "the oversize file was kept");
+}
+
+/// A record that verifies under the walk stays, in its order, when a later one is appended.
+#[test]
+fn a_real_record_is_kept_when_another_is_appended() {
+    let b = Bench::new("keepchain");
+    let root = hex(&public(&b.key));
+    plant_at(&b, "/manifest.json", "1.0.0", Some(public(&key(8))), &b.key);
+    b.updater_with(vec![b.server.url("/manifest.json")], Trust::rooted_at(&root, Some(&b.config)), Bench::limits()).check().expect("first");
+    plant_at(&b, "/manifest.json", "1.0.1", Some(public(&key(9))), &key(8));
+    b.updater_with(vec![b.server.url("/manifest.json")], Trust::rooted_at(&root, Some(&b.config)), Bench::limits()).check().expect("second");
+    plant_at(&b, "/manifest.json", "2.0.0", None, &key(9));
+    let report = b.updater_with(vec![b.server.url("/manifest.json")], Trust::rooted_at(&root, Some(&b.config)), Bench::limits()).check().expect("two hops");
+    assert_eq!(report.latest, "2.0.0");
+}
+
+/// A file that cannot be read may hold real records, so nothing is written over it.
+#[cfg(unix)]
+#[test]
+fn a_chain_that_cannot_be_read_is_not_written_over() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("not verified here: running as root");
+        return;
+    }
+    let b = Bench::new("noreadchain");
+    let keys = b.config.join("update-keys.json");
+    fs::write(&keys, b"what cannot be seen just now").unwrap();
+    fs::set_permissions(&keys, fs::Permissions::from_mode(0o000)).unwrap();
+    let (_, trust) = a_real_next_key(&b);
+    b.updater_with(vec![b.server.url("/manifest.json")], trust, Bench::limits()).check().expect("check");
+    fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(fs::read(&keys).unwrap(), b"what cannot be seen just now");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_link_planted_at_a_temporary_name_is_not_followed() {
@@ -945,13 +1349,13 @@ fn a_previous_that_does_not_match_is_refused() {
     let b = installed("nomatch");
     let previous = b.dir.join("n0xis.previous");
     fs::write(&previous, b"not what was kept").unwrap();
-    let refusal = rollback(&b.exe, Some(&b.config)).expect_err("altered");
+    let refusal = rollback(&b.exe, None).expect_err("altered");
     assert_eq!(refusal.why, Why::PreviousDoesNotMatch);
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
 
     fs::write(&previous, OLD).unwrap();
     fs::remove_file(b.dir.join("n0xis.previous.json")).unwrap();
-    assert_eq!(rollback(&b.exe, Some(&b.config)).expect_err("no record").why, Why::PreviousDoesNotMatch);
+    assert_eq!(rollback(&b.exe, None).expect_err("no record").why, Why::PreviousDoesNotMatch);
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
 }
 
@@ -964,7 +1368,7 @@ fn a_planted_previous_symlink_is_refused() {
     let elsewhere = b.dir.parent().unwrap().join("elsewhere");
     fs::rename(&previous, &elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &previous).unwrap();
-    assert_eq!(rollback(&b.exe, Some(&b.config)).expect_err("a link").why, Why::PreviousDoesNotMatch);
+    assert_eq!(rollback(&b.exe, None).expect_err("a link").why, Why::PreviousDoesNotMatch);
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
     assert!(!fs::symlink_metadata(&b.exe).unwrap().file_type().is_symlink());
 }
@@ -974,21 +1378,22 @@ fn a_planted_previous_symlink_is_refused() {
 fn a_previous_equal_to_the_target_says_that_nothing_changed() {
     let b = installed("equal");
     let previous = b.dir.join("n0xis.previous");
-    let record = serde_json::to_vec(&json!({ "from": "2.0.0", "to": "2.0.1", "sha256": sha(&NEW) })).unwrap();
+    let record = serde_json::to_vec(&json!({ "from": "2.0.0", "to": "2.0.1", "previous_sha256": sha(&NEW), "installed_sha256": sha(b"the next one") })).unwrap();
     fs::write(&previous, &*NEW).unwrap();
     fs::write(b.dir.join("n0xis.previous.json"), record).unwrap();
-    let report = rollback(&b.exe, Some(&b.config)).expect("an answer");
+    let report = rollback(&b.exe, None).expect("an answer");
     assert!(report.nothing_changed.is_some());
-    assert_eq!((report.from, report.to, report.restored.len()), (None, None, 0));
+    assert_eq!((report.from, report.to), (None, None));
+    assert_eq!(report.file, b.exe.display().to_string());
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
 }
 
 #[test]
 fn a_record_that_does_not_read_as_versions_is_no_record() {
     let b = installed("badrecord");
-    let record = serde_json::to_vec(&json!({ "from": "\u{1b}[2Jfake", "to": "2.0.0", "sha256": sha(OLD) })).unwrap();
+    let record = serde_json::to_vec(&json!({ "from": "\u{1b}[2Jfake", "to": "2.0.0", "previous_sha256": sha(OLD), "installed_sha256": sha(&NEW) })).unwrap();
     fs::write(b.dir.join("n0xis.previous.json"), record).unwrap();
-    assert_eq!(rollback(&b.exe, Some(&b.config)).expect_err("no such version").why, Why::PreviousDoesNotMatch);
+    assert_eq!(rollback(&b.exe, None).expect_err("no such version").why, Why::PreviousDoesNotMatch);
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
 }
 
@@ -1001,7 +1406,7 @@ fn a_held_lock_stops_update_rollback_and_the_detached_copy() {
     lock.try_lock().unwrap();
     b.refused(b.updater().update(), Why::UpdateInProgress);
     fs::write(b.dir.join("n0xis.previous"), OLD).unwrap();
-    assert_eq!(rollback(&b.exe, Some(&b.config)).expect_err("rollback").why, Why::UpdateInProgress);
+    assert_eq!(rollback(&b.exe, None).expect_err("rollback").why, Why::UpdateInProgress);
     fs::remove_file(b.dir.join("n0xis.previous")).unwrap();
     notice::run_check(&b.updater(), true);
     assert_eq!(state_of(&b).refusal, None, "the detached copy skips in silence");
@@ -1036,7 +1441,7 @@ fn parallel_runs_keep_the_old_file_for_rollback() {
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
     assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD, "the old file is what is kept");
     assert_eq!(b.files(), ["n0xis", "n0xis.previous", "n0xis.previous.json"]);
-    rollback(&b.exe, Some(&b.config)).expect("rollback");
+    rollback(&b.exe, None).expect("rollback");
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
 }
 
@@ -1067,7 +1472,7 @@ fn a_run_that_waited_out_another_reads_what_it_left() {
 fn during_the_download(b: &Bench, then: impl Fn(&Path) + Send + Sync + 'static) {
     b.publish(&b.manifest("2.0.0"));
     let at = NEW.len() / 2;
-    let path = b.dir.join("n0xis.update-new");
+    let path = b.dir.join(CANDIDATE);
     let meanwhile = Arc::new(move || {
         let start = Instant::now();
         while fs::metadata(&path).map_or(0, |m| m.len()) < at as u64 && start.elapsed() < Duration::from_secs(4) {
@@ -1123,7 +1528,7 @@ fn setuid_is_not_carried_over() {
 
 #[cfg(unix)]
 #[test]
-fn a_symlinked_sibling_stays_a_link_and_comes_back() {
+fn a_symlinked_sibling_stays_a_link_and_comes_back_by_its_name() {
     let b = Bench::new("siblink");
     let real = b.dir.parent().unwrap().join("real-mcp");
     fs::write(&real, b"old mcp").unwrap();
@@ -1133,20 +1538,21 @@ fn a_symlinked_sibling_stays_a_link_and_comes_back() {
     b.updater().update().expect("update");
     assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced by a file");
     assert_eq!(fs::read(&real).unwrap(), b"new mcp");
-    rollback(&b.exe, Some(&b.config)).expect("rollback");
+    rollback(&b.exe, Some("n0xis-mcp")).expect("rollback");
     assert_eq!(fs::read(&real).unwrap(), b"old mcp");
     assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
 }
 
 #[test]
-fn a_sibling_that_is_not_a_regular_file_is_refused() {
+fn a_sibling_that_is_not_a_regular_file_is_skipped() {
     let b = Bench::new("sibdir");
     fs::create_dir(b.dir.join("n0xis-mcp")).unwrap();
     b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
-    let refusal = b.updater().update().expect_err("a directory by that name");
-    assert_eq!(refusal.why, Why::NotARegularFile);
-    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
-    assert_eq!(b.server.asked("/file"), 0);
+    let report = b.updater().update().expect("a directory by that name stops nothing");
+    assert_eq!(skipped(&report), [("n0xis-mcp", "not-a-regular-file")]);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert_eq!(b.server.asked("/mcp"), 0);
+    assert!(b.dir.join("n0xis-mcp").is_dir());
 }
 
 /// A commit failing on one component is that component's: the other stays in place, and each is named.
@@ -1174,7 +1580,7 @@ fn a_commit_failure_reports_each_component() {
     assert_eq!(b.files(), ["n0xis", "n0xis-mcp", "n0xis-mcp.previous", "n0xis.previous", "n0xis.previous.json"], "a temp was left");
 
     // Its own fact too: the one that did move goes back, and the other was never part of it.
-    rollback(&b.exe, Some(&b.config)).expect("rollback");
+    rollback(&b.exe, None).expect("rollback");
     assert_eq!(fs::read(&b.exe).unwrap(), OLD);
     assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
 }
@@ -1185,22 +1591,252 @@ fn a_sibling_from_an_earlier_install_stays_on_rollback() {
     let mcp = b.dir.join("n0xis-mcp");
     fs::write(&mcp, b"current mcp").unwrap();
     fs::write(b.dir.join("n0xis-mcp.previous"), b"older mcp").unwrap();
-    fs::write(b.dir.join("n0xis-mcp.previous.json"), serde_json::to_vec(&json!({ "from": "0.8.0", "to": "0.9.0", "sha256": sha(b"older mcp") })).unwrap()).unwrap();
+    fs::write(b.dir.join("n0xis-mcp.previous.json"), serde_json::to_vec(&json!({ "from": "0.8.0", "to": "0.9.0", "previous_sha256": sha(b"older mcp"), "installed_sha256": sha(b"current mcp") })).unwrap()).unwrap();
     b.publish(&b.manifest("2.0.0"));
     b.updater().update().expect("update");
-    rollback(&b.exe, Some(&b.config)).expect("rollback");
+    rollback(&b.exe, None).expect("rollback");
     assert_eq!(fs::read(&mcp).unwrap(), b"current mcp");
 }
 
 #[test]
 fn what_a_dead_run_left_is_swept_under_the_lock() {
     let b = Bench::new("deadrun");
-    fs::write(b.dir.join("n0xis.update-new"), b"half a download").unwrap();
+    fs::write(b.dir.join(CANDIDATE), b"half a download").unwrap();
     fs::write(b.dir.join("n0xis.previous-new"), b"half a copy").unwrap();
     fs::write(b.dir.join("n0xis.previous.json.new"), b"half a record").unwrap();
-    fs::write(b.dir.join("n0xis.aside-4242"), b"an old image").unwrap();
+    fs::write(b.dir.join("n0xis.update-hold-new"), b"half a hold").unwrap();
     b.publish(&b.manifest("2.0.0"));
     b.updater().update().expect("update");
     assert_eq!(b.files(), ["n0xis", "n0xis.previous", "n0xis.previous.json"]);
     assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD);
+}
+
+/// The sweep once went by prefix, and took a user's file that happened to start the same.
+#[test]
+fn the_sweep_removes_exact_names_only() {
+    let b = Bench::new("exactsweep");
+    let strangers = ["n0xis.aside-notes.txt", "n0xis.aside-", "n0xis.aside-12a", "n0xis.update-new.bak", "n0xis.previous-new.txt", "n0xis.previous.txt"];
+    for name in strangers {
+        fs::write(b.dir.join(name), b"a user's").unwrap();
+    }
+    fs::write(b.dir.join("n0xis.aside-4242"), b"an old image").unwrap();
+    b.publish(&b.manifest("2.0.0"));
+    b.updater().update().expect("update");
+    for name in strangers {
+        assert_eq!(fs::read(b.dir.join(name)).unwrap(), b"a user's", "{name}");
+    }
+    // On Windows only: nothing else ever leaves such a file, and elsewhere it may be anyone's.
+    assert_eq!(b.dir.join("n0xis.aside-4242").exists(), !cfg!(windows));
+}
+
+/// `.previous` belongs to the updater, and what was there goes when an install keeps its own.
+#[test]
+fn a_file_at_the_kept_name_is_the_updaters() {
+    let b = Bench::new("kept");
+    fs::write(b.dir.join("n0xis.previous"), b"a user's backup of something else").unwrap();
+    b.publish(&b.manifest("2.0.0"));
+    b.updater().update().expect("update");
+    assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD);
+}
+
+/// A bare relative name would be looked for on `PATH`, and a file there would run in place of the one
+/// just checked. Nothing here depends on the working directory but this, and it is put back.
+#[test]
+fn the_candidate_is_executed_by_absolute_path() {
+    let b = Bench::new("absolute");
+    b.publish(&b.manifest("2.0.0"));
+    let mut updater = b.updater();
+    updater.exe = PathBuf::from("n0xis");
+    let back = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&b.dir).unwrap();
+    let result = updater.update();
+    std::env::set_current_dir(back).unwrap();
+    result.expect("run from where it is");
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+}
+
+/// On Windows a file planted with `.exe` added ran in place of the candidate that was checked, and its
+/// name now ends in `.exe`, so there is no second name to plant.
+#[cfg(windows)]
+#[test]
+fn a_planted_candidate_on_windows_does_not_run() {
+    let b = Bench::new("shadow");
+    fs::write(b.dir.join("n0xis.update-new.exe"), program("2.0.0")).unwrap();
+    publish_program(&b, "2.0.0", b"signed, checked and not a program");
+    b.refused(b.updater().update(), Why::DoesNotRun);
+}
+
+/// Puts something at a path, for a test of what is found there.
+#[cfg(unix)]
+type Plant = fn(&Bench, &Path);
+
+/// A plant that would hang or be followed: bounded, so a guard removed fails rather than wedges.
+#[cfg(unix)]
+fn within_a_bound<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(run());
+    });
+    answer.recv_timeout(Duration::from_secs(10)).expect("it hung on what was planted")
+}
+
+#[cfg(unix)]
+fn mkfifo(path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o666) }, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_or_a_fifo_at_the_lock_is_refused() {
+    let plants: [(&str, Plant); 2] = [
+        ("link", |b, at| std::os::unix::fs::symlink(b.dir.parent().unwrap().join("made-by-the-lock"), at).unwrap()),
+        ("fifo", |_, at| mkfifo(at)),
+    ];
+    for (name, plant) in plants {
+        let b = Bench::new(name);
+        b.publish(&b.manifest("2.0.0"));
+        let lock = b.dir.join("n0xis.update-lock");
+        plant(&b, &lock);
+        let updater = b.updater();
+        let result = within_a_bound(move || updater.update());
+        b.refused(result, Why::NotOurs);
+        assert!(!b.dir.parent().unwrap().join("made-by-the-lock").exists(), "the lock followed a link");
+
+        fs::write(b.dir.join("n0xis.previous"), OLD).unwrap();
+        let exe = b.exe.clone();
+        assert_eq!(within_a_bound(move || rollback(&exe, None)).expect_err("rollback").why, Why::NotOurs, "{name}");
+        fs::remove_file(b.dir.join("n0xis.previous")).unwrap();
+        // Refused and not skipped in silence, unlike a lock another run holds.
+        notice::run_check(&b.updater(), true);
+        assert_eq!(state_of(&b).refusal.as_deref(), Some("not-ours"), "{name}");
+        assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_or_a_fifo_at_the_record_or_the_kept_file_is_refused() {
+    for kept in ["n0xis.previous", "n0xis.previous.json"] {
+        // A link to a true copy, so nothing but its being a link is wrong with it.
+        let b = installed("keptlink");
+        let at = b.dir.join(kept);
+        let elsewhere = b.dir.parent().unwrap().join("elsewhere");
+        fs::rename(&at, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &at).unwrap();
+        let exe = b.exe.clone();
+        assert_eq!(within_a_bound(move || rollback(&exe, None)).expect_err("a link").why, Why::PreviousDoesNotMatch, "{kept}");
+        assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+
+        let b = installed("keptfifo");
+        let at = b.dir.join(kept);
+        fs::remove_file(&at).unwrap();
+        mkfifo(&at);
+        let exe = b.exe.clone();
+        assert_eq!(within_a_bound(move || rollback(&exe, None)).expect_err("a fifo").why, Why::PreviousDoesNotMatch, "{kept}");
+        assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_a_fifo_or_junk_at_the_hold_stops_auto_and_not_the_user() {
+    let plants: [(&str, Plant); 3] = [
+        ("link", |b, at| {
+            let real = b.dir.parent().unwrap().join("real-hold");
+            fs::write(&real, b"0.0.1").unwrap();
+            std::os::unix::fs::symlink(real, at).unwrap();
+        }),
+        ("fifo", |_, at| mkfifo(at)),
+        ("junk", |_, at| fs::write(at, b"not a version").unwrap()),
+    ];
+    for (name, plant) in plants {
+        let b = Bench::new(name);
+        b.publish(&b.manifest("2.0.0"));
+        plant(&b, &b.dir.join("n0xis.update-hold"));
+        let updater = b.updater();
+        within_a_bound(move || notice::run_check(&updater, true));
+        assert_eq!(state_of(&b).refusal.as_deref(), Some("not-ours"), "{name}");
+        assert_eq!(fs::read(&b.exe).unwrap(), OLD, "{name}");
+        b.updater().update().expect("the user asked");
+        assert!(fs::symlink_metadata(b.dir.join("n0xis.update-hold")).is_err(), "{name}");
+    }
+}
+
+/// The same run against a sibling's own lock and hold: skipped, and the running file goes on.
+#[cfg(unix)]
+#[test]
+fn a_plant_beside_a_sibling_makes_it_skipped() {
+    let b = Bench::new("sibplant");
+    let mcp = b.dir.join("n0xis-mcp");
+    fs::write(&mcp, b"old mcp").unwrap();
+    mkfifo(&b.dir.join("n0xis-mcp.update-lock"));
+    b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
+    let updater = b.updater();
+    let report = within_a_bound(move || updater.update()).expect("the running file goes on");
+    assert_eq!(skipped(&report), [("n0xis-mcp", "not-ours")]);
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert_eq!(fs::read(&mcp).unwrap(), b"old mcp");
+}
+
+/// The case nothing but another user can make: in a sticky directory anyone can plant a file, no one
+/// else can remove it, and a record and `.previous` of theirs would otherwise say what is installed.
+/// With no passwordless `sudo` this is not verified, and it says so.
+#[cfg(unix)]
+#[test]
+fn files_another_user_planted_in_a_sticky_directory_decide_nothing() {
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("not verified here: running as root");
+        return;
+    }
+    let sudo = |args: &[&str]| std::process::Command::new("sudo").arg("-n").args(args).output().is_ok_and(|o| o.status.success());
+    let mut b = Bench::new("sticky");
+    let sticky = b.dir.parent().unwrap().join("sticky");
+    let path = |p: &Path| p.to_str().unwrap().to_string();
+    if !sudo(&["install", "-d", "-o", "root", "-m", "1777", &path(&sticky)]) {
+        eprintln!("not verified here: no passwordless sudo");
+        return;
+    }
+    let exe = sticky.join("n0xis");
+    fs::rename(&b.exe, &exe).unwrap();
+    b.exe = exe;
+    b.dir = sticky.clone();
+    let source = b.config.parent().unwrap().join("to-plant");
+    // World-writable, so that opening it is no problem and only its owner is.
+    let plant = |name: &str, bytes: &[u8]| {
+        fs::write(&source, bytes).unwrap();
+        assert!(sudo(&["install", "-o", "nobody", "-m", "0666", &path(&source), &path(&sticky.join(name))]), "the plant");
+    };
+    let unplant = |name: &str| assert!(sudo(&["rm", "-f", &path(&sticky.join(name))]));
+    b.publish(&b.manifest("2.0.0"));
+
+    plant("n0xis.update-lock", b"");
+    b.refused(b.updater().update(), Why::NotOurs);
+    unplant("n0xis.update-lock");
+
+    // A kept file and a record that vouch for each other and for what is installed.
+    let attacker = program("6.6.6");
+    let record = |to: &str| serde_json::to_vec(&json!({ "from": "1.0.0", "to": to, "previous_sha256": sha(&attacker), "installed_sha256": sha(OLD) })).unwrap();
+    plant("n0xis.previous", &attacker);
+    plant("n0xis.previous.json", &record("2.0.0"));
+    assert_eq!(rollback(&b.exe, None).expect_err("not this user's").why, Why::PreviousDoesNotMatch);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "a planted file was installed");
+    unplant("n0xis.previous");
+    fs::write(sticky.join("n0xis.previous"), &attacker).unwrap();
+    assert_eq!(rollback(&b.exe, None).expect_err("the record is not this user's").why, Why::PreviousDoesNotMatch);
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    fs::remove_file(sticky.join("n0xis.previous")).unwrap();
+    unplant("n0xis.previous.json");
+
+    plant("n0xis.update-hold", b"9.9.9");
+    notice::run_check(&b.updater(), true);
+    assert_eq!(state_of(&b).refusal.as_deref(), Some("not-ours"));
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD);
+    unplant("n0xis.update-hold");
+
+    // The calibration: with nothing planted the same directory works.
+    b.updater().update().expect("update");
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    assert!(sudo(&["rm", "-rf", &path(&sticky)]));
 }
