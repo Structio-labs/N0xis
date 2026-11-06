@@ -46,7 +46,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessId, OpenProcess, OpenThread, PROCESS_ALL_ACCESS, ResumeThread, SuspendThread,
+    GetProcessId, IsWow64Process, OpenProcess, OpenThread, PROCESS_ALL_ACCESS, ResumeThread, SuspendThread,
     THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
 };
 
@@ -174,6 +174,7 @@ pub fn await_breakpoint_hit(
         )));
     }
     let _process_guard = HandleGuard(h_process);
+    refuse_32_bit_target(h_process, pid, "a software breakpoint")?;
 
     // Attach first, and so detach last: from the moment the byte is written until it is
     // gone again, a thread reaching it needs a debugger to report to, or it dies with
@@ -242,6 +243,27 @@ pub fn await_breakpoint_hit(
     // `bp`/`_debug_guard`/`_process_guard` restore/detach/close on drop below,
     // whether we broke out on a hit or fell through on timeout.
     Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+}
+
+/// Refuse a 32-bit target before anything touches it.
+///
+/// A 64-bit debugger sees a WOW64 process's traps under codes of their own
+/// (`STATUS_WX86_BREAKPOINT` 0x4000001F, `STATUS_WX86_SINGLE_STEP` 0x4000001E), and its
+/// registers only through `Wow64GetThreadContext`, with no `r8` to `r15` to fill the
+/// answer with. This adapter knows none of that: on the real thing it answered
+/// `timed_out:true` after the target had run through the site, and the target then died
+/// (0xC0000005, 0x4000001E), 8 of 8. A refusal is a right answer, and that was not.
+fn refuse_32_bit_target(h_process: HANDLE, pid: u32, what: &str) -> Result<(), SourceError> {
+    let mut is_32_bit = 0;
+    if unsafe { IsWow64Process(h_process, &mut is_32_bit) } == 0 {
+        return Err(SourceError::Os(format!("cannot tell whether process {pid} is 32-bit (GLE {}), so {what} leaves it alone", unsafe { GetLastError() })));
+    }
+    if is_32_bit != 0 {
+        return Err(SourceError::Unsupported(format!(
+            "process {pid} is 32-bit, and {what} does not debug a 32-bit target on Windows: it was refused before anything touched it"
+        )));
+    }
+    Ok(())
 }
 
 /// Closes a `HANDLE` on drop.
@@ -693,6 +715,7 @@ pub fn await_watchpoint_hit_where(
         )));
     }
     let _process_guard = HandleGuard(h_process);
+    refuse_32_bit_target(h_process, pid, "a hardware watchpoint")?;
     let _interruptible = Interruptible::install();
 
     // Attach BEFORE arming. We arm each thread from inside the event loop

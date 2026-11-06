@@ -5,6 +5,10 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A 32-bit target on Windows is refused by the debugger commands, before anything touches it.** `debug await-hit`, `debug watch` and `provenance trace`
+do not understand a WOW64 process's traps: they answered `timed_out:true` after the target had run through the site, and then it died, 8 of 8. They now
+answer `target-unsupported`, and the target keeps running.
+
 **A debugger command can be stopped, and a killed one leaves a way back.** `debug await-hit` interrupted used to leave its `0xCC` in the code, and
 on Windows the target died with 0x80000003 at its next pass. Now Ctrl-C, Ctrl-Break, closing the console, `SIGINT`, `SIGTERM` and `SIGHUP` stop every
 debugger command through its own cleanup: the byte is restored, the debugger detached, and the answer is `interrupted`. A kill cannot be handled, so the

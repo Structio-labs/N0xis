@@ -5634,11 +5634,15 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
     }
 }
 
-/// A debugger command's refusal code: its own, unless the person stopped it, which is
-/// not a failure of that command.
+/// A debugger command's refusal code: its own, unless the person stopped it or the target
+/// is one it does not take, neither of which is a failure of that command.
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
 fn debug_failure<'a>(own: &'a str, e: &n0xis_sources::SourceError) -> &'a str {
-    if matches!(e, n0xis_sources::SourceError::Interrupted) { "interrupted" } else { own }
+    match e {
+        n0xis_sources::SourceError::Interrupted => "interrupted",
+        n0xis_sources::SourceError::Unsupported(_) => "target-unsupported",
+        _ => own,
+    }
 }
 
 fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {

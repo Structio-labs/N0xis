@@ -303,6 +303,9 @@ pub enum SourceError {
     Load(String),
     #[error("os error: {0}")]
     Os(String),
+    /// The target is one this adapter does not handle, said before touching it.
+    #[error("{0}")]
+    Unsupported(String),
     /// The person who started a debugger command asked it to stop. By the time
     /// anyone reads this, what it had put in the target is out of it again.
     #[error("interrupted: the target was left as it was found, and keeps running")]
@@ -319,7 +322,7 @@ impl SourceError {
     pub fn is_about_a_region(&self) -> bool {
         match self {
             SourceError::Unmapped(_) | SourceError::Unreadable { .. } => true,
-            SourceError::ReadOnly | SourceError::Load(_) | SourceError::Os(_) | SourceError::Interrupted => false,
+            SourceError::ReadOnly | SourceError::Load(_) | SourceError::Os(_) | SourceError::Unsupported(_) | SourceError::Interrupted => false,
         }
     }
 }
