@@ -207,7 +207,35 @@ fn after_declared_ends(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
 /// answers the question, and past the last declared function there is no
 /// bracket to stop at. That also bounds the cost to the part of the image the
 /// image itself does not describe.
-fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64)]) -> BTreeSet<u64> {
+///
+/// The hard part is a jump, and the error goes both ways. A jump can leave the
+/// function, in which case what follows is the next one, or stay in it, in
+/// which case what follows is the same function: a forward tail jump silenced
+/// the sweep for the rest of its gap (2088 of one release PE's 2160 missed
+/// functions lay after one), and a `match` through a jump table read as many
+/// functions (the largest class of wrong starts). Not arming after a `jmp` at
+/// all was measured and refused: 225 wrong starts gone, 225 true ones with them.
+/// The rules below tell the two apart, and each states what it was measured to
+/// do, in true starts (T) and wrong ones (W) against DWARF on x86-64, i686 and
+/// PE, each number the step that rule made with the rules before it on. All
+/// together: 4725 true starts gained, 3 wrong gained, 84 true lost, 2385 wrong
+/// removed.
+///
+/// Measured and refused on top of those: a far jump not counting as leaving
+/// once any dispatch has been seen in the gap (362 true starts lost for 3
+/// wrong); filler required after a jump back into the current function (701
+/// true for 215 wrong); an entry pattern closing a dispatch (4 true for 3
+/// wrong, fitted to the table).
+///
+/// **All but one hold only where the architecture recognizes jump tables**
+/// ([`Arch::recognizes_jump_tables`](n0xis_arch::Arch::recognizes_jump_tables)).
+/// They read a stay-inside jump as "a table explained it, or something branches
+/// back over it": with no recognizer a table's cases are indistinguishable from
+/// functions and the jump leaving is not evidence of anything, so the sweep
+/// keeps its one older answer, that a forward jump covers what it jumps over.
+fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64)], calls: &BTreeMap<u64, Va>) -> BTreeSet<u64> {
+    let tables = ctx.arch.recognizes_jump_tables();
+    let entry_alignment = ctx.arch.entry_alignment().max(1);
     let lo = start.0;
     let hi = lo.saturating_add(bytes.len() as u64);
     let mut out = BTreeSet::new();
@@ -241,30 +269,104 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
         // 1f; nop; 1: nop; leave; ret` inside a function, and on the
         // rule-accuracy corpus that `leave` was listed.
         let mut filler_targeted = false;
+        let mut filler_seen = false;
+        let mut after_jump = false;
+        let mut after_far_jump = false;
+        // An indirect jump through a register that no table explained, and no
+        // filler or call target since. Open dispatch.
+        let mut open_dispatch = false;
+        // The instructions since the last start: what a dispatch's bound check
+        // and table base are looked for in.
+        let mut walked: Vec<DecodedInsn> = Vec::new();
+        // Each conditional branch back within this gap, `(from, to)`.
+        let mut backs: Vec<(u64, u64)> = Vec::new();
+        let mut gap_out: BTreeSet<u64> = BTreeSet::new();
         while va < gap_hi {
-            if zero_fill(bytes, (va - lo) as usize) {
-                va += 1;
+            // Rule B, on every architecture: step by what the instruction set
+            // says, for filler as for what does not decode. A byte-wise step
+            // left the word boundary on AArch64 and read made-up instructions
+            // from inside words, which is where its odd addresses came from;
+            // on x86 the step is one byte, as it always was.
+            let off = (va - lo) as usize;
+            let step = ctx.arch.resync_step(&bytes[off..]).get();
+            if bytes[off..].iter().take(step).all(|b| *b == 0) {
+                va += step as u64;
                 continue;
             }
             let Some(ins) = at(va) else {
-                va += 1;
+                va += step as u64;
                 continue;
             };
             if is_filler(ctx, &ins) {
+                filler_seen = true;
                 filler_targeted |= targets.contains(&va);
                 va = va.saturating_add(u64::from(ins.len));
                 continue;
             }
-            if armed && va >= reach && !targets.contains(&va) && !filler_targeted {
-                out.insert(va);
+            // Rule I, open dispatch. After an indirect jump through a register
+            // no table explained, the code that follows directly is the rest
+            // of that dispatch until filler or a call target shows otherwise.
+            // Direct jumps inside it stay in it too. T-64, T+ 11 fewer, W-1531,
+            // W+ 13 fewer: the rule that removes the most wrong starts.
+            if filler_seen || calls.contains_key(&va) {
+                open_dispatch = false;
+            }
+            // Rule C. Code after a far jump with no filler between is a cold
+            // part of the same function far more often than a new one, and a
+            // compiler aligns what it enters. T+ 49 fewer, W+ 82 fewer.
+            let cold_part = after_far_jump && !va.is_multiple_of(entry_alignment);
+            if armed && va >= reach && !targets.contains(&va) && !filler_targeted && !cold_part && !(open_dispatch && after_jump) {
+                gap_out.insert(va);
+                walked.clear();
             }
             filler_targeted = false;
             if matches!(ins.kind, InsnKind::Jump | InsnKind::CondJump)
                 && let Some(t) = ins.target
-                && t.0 > va
             {
-                reach = reach.max(t.0);
-                targets.insert(t.0);
+                // Rule A. A jump past the gap's end has left the function: the
+                // gap ends where the next declared function begins, so nothing
+                // of this function lies there. It says nothing about the rest
+                // of the gap. T+4785, W+131, alone.
+                if t.0 > va && !(tables && t.0 >= gap_hi) {
+                    reach = reach.max(t.0);
+                    targets.insert(t.0);
+                }
+                if tables && ins.kind == InsnKind::CondJump && t.0 <= va && t.0 >= gap_lo {
+                    backs.push((va, t.0));
+                }
+            }
+            let indirect = ins.kind == InsnKind::Jump && ins.target.is_none();
+            if tables {
+                walked.push(ins.clone());
+            }
+            if tables && indirect {
+                // Rule E. A jump table's cases are exactly where this function
+                // goes on: not starts, and only they (the older form, which
+                // covered everything up to the last case, cost T-1996 for
+                // W-1469 and this one T-19 for W-453). Only a whole table, with
+                // a bound and as many cases as it says, and none of them a
+                // call target, which is a table of functions.
+                let block_start = walked[..walked.len() - 1]
+                    .iter()
+                    .rposition(|i| matches!(i.kind, InsnKind::CondJump | InsnKind::Jump | InsnKind::Ret | InsnKind::Int | InsnKind::Call))
+                    .map_or(0, |p| p + 1);
+                if let Some(dispatch) = ctx.arch.detect_switch_with_context(&walked, block_start) {
+                    let switch = crate::switch::resolve_switch(ctx, &dispatch);
+                    let whole = switch.bound.is_some_and(|b| switch.cases.len() as u64 == b + 1);
+                    if switch.resolved && whole && !switch.cases.iter().any(|c| calls.contains_key(&c.0)) {
+                        for case in &switch.cases {
+                            targets.insert(case.0);
+                            gap_out.remove(&case.0);
+                        }
+                    }
+                }
+                // What the jump reads decides whether this opens a dispatch: a
+                // jump through a memory slot alone is a thunk.
+                let regs = ctx.arch.regs();
+                open_dispatch |= ctx.arch.reg_access(&ins).reads.iter().any(|r| {
+                    let r = ctx.arch.normalize_reg(r);
+                    regs.by_name(&r).is_some() && Some(r.as_str()) != ctx.arch.stack_pointer()
+                });
             }
             let next = va.saturating_add(u64::from(ins.len));
             armed = match ins.kind {
@@ -274,10 +376,82 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
                 InsnKind::Jump => true,
                 _ => false,
             };
+            filler_seen = false;
+            after_jump = ins.kind == InsnKind::Jump;
+            after_far_jump = tables && after_jump && ins.target.is_some_and(|t| t.0 >= gap_hi);
             va = next;
         }
+        if tables {
+            // Rule H. T-1, W-189, W+ 5 fewer.
+            gap_out.retain(|&c| !enters_mid_function(ctx, bytes, lo, hi, c));
+            // Rule F. A conditional branch back joins everything between it
+            // and its target into one function: a loop does not span two. Not
+            // back to a call target, which is a function of its own, and not
+            // an unconditional jump, which a tail call to an earlier function
+            // in the same gap also is. W-212 at no cost in true starts.
+            for &(from, to) in &backs {
+                // `to == from`, a branch to itself, spans nothing. As a range
+                // from `to + 1` it panicked, in the first measurement of this.
+                if to >= from || calls.contains_key(&to) {
+                    continue;
+                }
+                let joined: Vec<u64> = gap_out.range(to..=from).copied().collect();
+                for c in joined {
+                    gap_out.remove(&c);
+                }
+            }
+        }
+        out.extend(gap_out);
     }
     out
+}
+
+/// Rule H of the gap sweep: code that uses what no function entry has. Reads a
+/// callee-saved register it never wrote, other than to save it, or gives back
+/// stack it never took. Looks at the straight line from `va`, up to 16
+/// instructions.
+fn enters_mid_function(ctx: &Ctx, bytes: &[u8], lo: u64, hi: u64, va: u64) -> bool {
+    /// Far enough to pass any prologue; what is past it says nothing of the entry.
+    const LOOK_AHEAD: usize = 16;
+    let abi = n0xis_sources::MemorySource::abi_name(ctx.source);
+    let (Some(conv), Some(sp)) = (ctx.arch.calling_convention(abi), ctx.arch.stack_pointer()) else {
+        return false;
+    };
+    let regs = ctx.arch.regs();
+    let callee_saved = |r: &str| r != sp && regs.by_name(r).is_some_and(|id| !conv.volatile.contains(&id));
+    let mut written: BTreeSet<String> = BTreeSet::new();
+    let mut at = va;
+    let mut took_stack = false;
+    for _ in 0..LOOK_AHEAD {
+        if at < lo || at >= hi {
+            return false;
+        }
+        let Ok(ins) = ctx.arch.decode(&bytes[(at - lo) as usize..], Va(at)) else {
+            return false;
+        };
+        let mut access = ctx.arch.reg_access(&ins);
+        for r in access.reads.iter_mut().chain(access.writes.iter_mut()) {
+            *r = ctx.arch.normalize_reg(r);
+        }
+        if access.writes.iter().any(|r| r == sp) {
+            if !ctx.arch.gives_back_stack(&ins) {
+                took_stack = true;
+            } else if !took_stack {
+                return true;
+            }
+        }
+        // An instruction that uses the stack pointer is saving or restoring;
+        // padding reads a register only to encode its length.
+        if !access.reads.iter().any(|r| r == sp) && !is_filler(ctx, &ins) && access.reads.iter().any(|r| callee_saved(r) && !written.contains(r) && !access.writes.contains(r)) {
+            return true;
+        }
+        written.extend(access.writes);
+        if matches!(ins.kind, InsnKind::Ret | InsnKind::Jump | InsnKind::Int) {
+            return false;
+        }
+        at = at.saturating_add(u64::from(ins.len.max(1)));
+    }
+    false
 }
 
 /// Every address a direct `call` in `bytes` names, each with the first call
@@ -623,28 +797,9 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // have, 226 of them function entries per an independent function table
         // and 5 interior to one. That takes the functions that table has and
         // n0xis did not from 478 to 5.
-        for va in sweep_declared_gaps(ctx, &bytes, input.start, &declared) {
-            if range.contains(&va) && !inside_a_declared_function(va) {
-                record(&mut found, va, StartSource::GapSweep);
-            }
-        }
-
-        // A direct `call` names its callee. Unlike a prologue pattern this is
-        // not a guess about what the bytes look like — it is how control
-        // reaches the function at all, and a compiler cannot withhold it.
         //
-        // It matters because the two existing sources both miss the same kind
-        // of function: a small leaf helper sets up no frame (no prologue to
-        // match) and needs no unwind data (no entry in the exception table).
-        // Measured against an independent function table on a real C++ DLL: of
-        // 494 distinct direct-call targets in the image, every single one was a
-        // function entry there and none pointed into the middle of one — and 47
-        // of them were functions neither of the other two sources had.
-        //
-        // A declared extent still wins: an address a function table places
-        // *inside* a function is not a second function, whatever branches at it.
-        //
-        // The scan's candidates first, so the one sweep can say what runs into
+        // The call sweep runs first because the gap sweep reads its targets. The
+        // scan's candidates before both, so the one sweep can say what runs into
         // each of them: the matches at an entry-aligned address with no
         // declared extent around them, and only the patterns that are no
         // marker (an architecture-required landing pad is its own evidence).
@@ -664,6 +819,26 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         }
         let weak: BTreeSet<u64> = matches.iter().filter(|(va, marker)| !marker && va.is_multiple_of(align) && declared_around(*va).is_none()).map(|(va, _)| *va).collect();
         let (call_targets, fallen_into) = sweep_calls_and_fallthroughs(ctx, &bytes, input.start, &weak);
+        for va in sweep_declared_gaps(ctx, &bytes, input.start, &declared, &call_targets) {
+            if range.contains(&va) && !inside_a_declared_function(va) {
+                record(&mut found, va, StartSource::GapSweep);
+            }
+        }
+
+        // A direct `call` names its callee. Unlike a prologue pattern this is
+        // not a guess about what the bytes look like — it is how control
+        // reaches the function at all, and a compiler cannot withhold it.
+        //
+        // It matters because the two existing sources both miss the same kind
+        // of function: a small leaf helper sets up no frame (no prologue to
+        // match) and needs no unwind data (no entry in the exception table).
+        // Measured against an independent function table on a real C++ DLL: of
+        // 494 distinct direct-call targets in the image, every single one was a
+        // function entry there and none pointed into the middle of one — and 47
+        // of them were functions neither of the other two sources had.
+        //
+        // A declared extent still wins: an address a function table places
+        // *inside* a function is not a second function, whatever branches at it.
         for (va, from) in call_targets {
             if range.contains(&va) && !inside_a_declared_function(va) {
                 record(&mut found, va, StartSource::CallTarget { from });
@@ -1157,15 +1332,17 @@ mod tests {
     /// declared end, so it has both sources.
     #[test]
     fn a_start_only_the_gap_sweep_finds_says_gap_sweep() {
-        // 0x1000 declared: mov rax,[rdi] ; ret ; filler
-        // 0x1010: mov rax,[rdi+8] ; ret ; filler     first after the end
-        // 0x1020: mov rax,[rdi+16] ; ret ; filler    only the sweep reaches it
+        // A snapshot's convention is Win64, so these read `rcx`: its `rdi` is
+        // callee-saved, and code reading it unwritten is no entry.
+        // 0x1000 declared: mov rax,[rcx] ; ret ; filler
+        // 0x1010: mov rax,[rcx+8] ; ret ; filler     first after the end
+        // 0x1020: mov rax,[rcx+16] ; ret ; filler    only the sweep reaches it
         // 0x1040 declared: ret
-        let mut code = vec![0x48, 0x8B, 0x07, 0xC3];
+        let mut code = vec![0x48, 0x8B, 0x01, 0xC3];
         code.resize(0x10, 0xCC);
-        code.extend_from_slice(&[0x48, 0x8B, 0x47, 0x08, 0xC3]);
+        code.extend_from_slice(&[0x48, 0x8B, 0x41, 0x08, 0xC3]);
         code.resize(0x20, 0xCC);
-        code.extend_from_slice(&[0x48, 0x8B, 0x47, 0x10, 0xC3]);
+        code.extend_from_slice(&[0x48, 0x8B, 0x41, 0x10, 0xC3]);
         code.resize(0x40, 0xCC);
         code.push(0xC3);
         let snap = Snapshot::builder().region(Va(0x1000), code).build();

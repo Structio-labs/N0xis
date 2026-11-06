@@ -1765,6 +1765,11 @@ impl Arch for Arm32 {
         insn.mnemonic == "udf"
     }
 
+    /// No [`Arch::detect_switch`] of its own.
+    fn recognizes_jump_tables(&self) -> bool {
+        false
+    }
+
     fn resync_step(&self, bytes: &[u8]) -> NonZeroUsize {
         const TWO: NonZeroUsize = NonZeroUsize::new(2).unwrap();
         const FOUR: NonZeroUsize = NonZeroUsize::new(4).unwrap();

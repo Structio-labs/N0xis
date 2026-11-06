@@ -886,6 +886,11 @@ impl Arch for Arm64 {
 
     /// A word. Every A64 instruction is four bytes on a four-byte boundary,
     /// an undefined word included, so the next one begins four bytes on.
+    /// [`Arch::detect_switch`] is not implemented here (see the module's head).
+    fn recognizes_jump_tables(&self) -> bool {
+        false
+    }
+
     fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
         A64_INSN_BYTES
     }

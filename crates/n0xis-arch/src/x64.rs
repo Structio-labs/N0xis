@@ -764,6 +764,17 @@ impl Arch for X64 {
     /// defines: how many bytes a decoder read before giving up is that
     /// decoder's (iced gives `0f 0a 90` a length of three, llvm-objdump two), so the only
     /// step that is not a guess is the smallest.
+    fn recognizes_jump_tables(&self) -> bool {
+        true
+    }
+
+    /// `add` as well as `pop` and `leave`: `add $n,%rsp` is how a frame comes
+    /// off. `add $-128,%rsp` takes stack instead (the one imm8 `sub $128` is
+    /// not), and is read as giving it back.
+    fn gives_back_stack(&self, insn: &DecodedInsn) -> bool {
+        matches!(insn.mnemonic.as_str(), "pop" | "leave" | "add")
+    }
+
     fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
         std::num::NonZeroUsize::MIN
     }

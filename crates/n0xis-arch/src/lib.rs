@@ -568,6 +568,26 @@ pub trait Arch {
         None
     }
 
+    /// Whether [`Arch::detect_switch`] recognizes anything on this instruction
+    /// set: a `None` from it then means "no table here", where otherwise it
+    /// means nothing.
+    ///
+    /// Required, with no default: discovery's gap sweep reads a jump differently
+    /// on the strength of this. With a recognizer a table's cases are named, so
+    /// a jump that nothing explains can be taken to leave the function; without
+    /// one the same reading lists each case as a function.
+    fn recognizes_jump_tables(&self) -> bool;
+
+    /// Of an instruction that writes the stack pointer: whether it gives stack
+    /// back rather than taking it. Function discovery's only evidence that code
+    /// is the middle of a function by what it does to the stack.
+    ///
+    /// Asked only where [`Arch::recognizes_jump_tables`] holds. Default: no,
+    /// which withholds the evidence and never invents it.
+    fn gives_back_stack(&self, _insn: &DecodedInsn) -> bool {
+        false
+    }
+
     /// Recognize the function-entry prolog at the front of `instrs` (the
     /// function's linear decode, not a single block) and summarize the stack
     /// frame it sets up. Purely structural — no memory access. Default: empty

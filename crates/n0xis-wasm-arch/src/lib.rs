@@ -283,6 +283,11 @@ impl Arch for Wasm {
     /// this today, because [`decode_range`](Arch::decode_range) below decodes
     /// each body from its start and never resynchronizes; it is the answer the
     /// default sweep would need if it ran here.
+    /// A module's control flow is structured: it has no jump table to find.
+    fn recognizes_jump_tables(&self) -> bool {
+        false
+    }
+
     fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
         std::num::NonZeroUsize::MIN
     }
