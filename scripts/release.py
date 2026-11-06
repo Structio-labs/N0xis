@@ -100,7 +100,8 @@ def key_of_the_previous_release(version):
     The key is None where that tag has no such file or holds the placeholder: nothing in the field can
     be stranded by it. A file that is there and does not read is a refusal, since it cannot be told.
     """
-    tags = subprocess.run(["git", "tag", "--list", "v*"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.split()
+    # An export is no checkout, and a dry run from one has no tags. Publishing needs a checkout anyway.
+    tags = subprocess.run(["git", "tag", "--list", "v*"], cwd=ROOT, capture_output=True, text=True).stdout.split()
     below = [(numbers, tag) for tag in tags if (numbers := version_numbers(tag[1:])) and numbers < version_numbers(version)]
     if not below:
         return None, None
