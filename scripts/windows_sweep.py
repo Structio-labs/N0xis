@@ -674,6 +674,9 @@ def main():
     except MachineGone as e:
         print(f"windows_sweep: {e}. The run is over and no record was written: a part of a sweep must not read as one.", file=sys.stderr)
         sys.exit(3)
+    except RuntimeError as e:
+        print(f"windows_sweep: the run could not be laid out: {e}. No record was written.", file=sys.stderr)
+        sys.exit(3)
     finally:
         try:
             gone = take_away(s)
