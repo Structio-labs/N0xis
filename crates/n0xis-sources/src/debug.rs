@@ -727,6 +727,7 @@ fn clear_dr6(tid: u32) {
 /// created *after* arming aren't covered — a documented scope limit, not a
 /// silent gap (real debuggers additionally arm on `CREATE_THREAD_DEBUG_EVENT`,
 /// a reasonable follow-on).
+#[allow(clippy::too_many_arguments)]
 pub fn await_watchpoint_hit(
     pid: u32,
     addr: Va,

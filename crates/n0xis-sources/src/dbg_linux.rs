@@ -703,6 +703,7 @@ pub fn await_breakpoint_hit(
 /// Arm a hardware watchpoint (DR0 slot 0) on `addr` across every thread and block
 /// until it fires or times out — the value-change counterpart of
 /// [`await_breakpoint_hit`], watching *data* without touching code bytes.
+#[allow(clippy::too_many_arguments)]
 pub fn await_watchpoint_hit(
     pid: u32,
     addr: Va,
