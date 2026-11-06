@@ -513,7 +513,7 @@ def address_table(s):
 def lay_out(s, release):
     lap = s.far
     # What an earlier run could not take away because the Windows machine dropped off. Only this script makes sweep-<number>.
-    lap.ps(r"Get-ChildItem 'C:\n0xtest' -Directory -Filter 'sweep-*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^sweep-\d+$' } | ForEach-Object { $d = $_.FullName; Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ($d + '\*') } | Stop-Process -Force -ErrorAction SilentlyContinue; cmd /c rd /s /q ('\\\\?\\' + $d) }")
+    lap.ps(r"Get-ChildItem 'C:\n0xtest' -Directory -Filter 'sweep-*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^sweep-\d+$' } | ForEach-Object { $d = $_.FullName; Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ($d + '\*') } | Stop-Process -Force -ErrorAction SilentlyContinue; cmd /c rd /s /q ('\\?\' + $d) }")
     r = subprocess.run([*SSH, lap.host, f"cmd /c mkdir {s.wroot}\\bin {s.wroot}\\w\\in {s.wroot}\\w\\proj\\.n0x {s.wroot}\\w\\live\\.n0x {s.wroot}\\w\\mcp\\.n0x {s.wroot}\\w\\config"], capture_output=True)
     if r.returncode:
         die(f"could not reach {lap.host} to make {s.wroot}: {r.stderr.decode('utf-8', 'replace')[:200]}")
