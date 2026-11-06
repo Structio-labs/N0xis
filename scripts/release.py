@@ -20,6 +20,11 @@ Each refusal here is one a copy in the field could not recover from:
 - A built binary that does not state this version when run, which a stale target directory can give. All
   four are run, the Windows two under wine, and with --publish one that could not be run is a refusal.
 - Publishing what this run did not just build (--prebuilt, --base-url exist for the verification).
+- Windows files that were not swept on a real Windows: no result of scripts/windows_sweep.py for exactly
+  these bytes, or one with a case that failed or a command with no case. Development and CI are not that
+  (Wine and a runner run the tests, and nobody runs the commands as a person would). There is no list of
+  known failures: --skip-windows-sweep "<reason>" publishes anyway, and the reason goes in the release
+  notes, with any failure named beside it, so that whoever downloads it can read why.
 
 Signing goes through the openssl command, so what signs is not what verifies: the client is on ring.
 The signature file is lines of hex, one per --key, so that a change of key can be signed by both.
@@ -53,6 +58,10 @@ TRUST_RELATIVE = "crates/n0xis-update/src/trust.rs"
 TRUST_SOURCE = ROOT / TRUST_RELATIVE
 # How long a built file has to answer --version. Wine starting cold is what it allows for.
 RUN_BOUND = 120
+# What a Windows sweep is of, and where its results wait. Not in --out, which is cleared on each run and
+# uploaded whole; by digest, so that a result can only ever speak for the bytes it ran.
+SWEPT_FILES = ("n0xis.exe", "n0xis-mcp.exe")
+SWEPTS = ROOT / "target" / "windows-sweep"
 
 # component -> platform -> (published asset, name when installed, cargo target, built file).
 # The asset names are the four the README's download links rest on.
@@ -224,6 +233,60 @@ def check_built(locate, version, publishing):
                 print(f"NOT RUN: {path}, because there is no wine on the path")
 
 
+def file_digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def sweep_of(locate, version):
+    """What the last sweep of this version recorded, or None if it ran other bytes or there was none. A
+    record that is there and does not read is a refusal: it would otherwise pass for one or the other."""
+    path = SWEPTS / f"{version}.json"
+    if not path.is_file():
+        return None
+    try:
+        sweep = json.loads(path.read_text())
+        rows, binaries = sweep["rows"], sweep["binaries"]
+        known = all(row["result"] in ("passed", "failed", "not-run") for row in rows)
+        readable = known and rows and isinstance(sweep["uncovered"], list) and sweep["windows"] and sweep["commands"] > 0
+        other = [name for name in SWEPT_FILES if binaries.get(name) != file_digest(locate(WINDOWS, name))]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        refuse(f"the sweep record {path} cannot be read: {e!r}")
+    if not readable:
+        refuse(f"the sweep record {path} is not a record of a sweep")
+    return None if other else sweep
+
+
+def cases(rows, result):
+    return [f"{row['case']} ({row['why']})" if row.get("why") else row["case"] for row in rows if row["result"] == result]
+
+
+def said_of_windows(locate, version, reason):
+    """(what stands between these files and a release, or None; what the release notes say about Windows)."""
+    if reason is not None and not reason.strip():
+        return "--skip-windows-sweep needs its reason, because the reason is what readers of the release get", ""
+    sweep = sweep_of(locate, version)
+    failed = cases(sweep["rows"], "failed") if sweep else []
+    uncovered = sweep["uncovered"] if sweep else []
+    if reason is not None:
+        if sweep and not failed and not uncovered:
+            return "a clean sweep of these binaries exists, so there is nothing to skip", ""
+        note = f"**Not verified on a real Windows for this release:** {reason.strip()}\n"
+        if failed or uncovered:
+            note += f"Failed there: {'; '.join(failed) or 'none'}. No case for: {', '.join(uncovered) or 'none'}.\n"
+        return None, note
+    if sweep is None:
+        return "no Windows sweep of these exact binaries: run scripts/windows_sweep.py on them, or say why not with --skip-windows-sweep", ""
+    if failed:
+        return f"the Windows sweep of these binaries failed {len(failed)} cases: {'; '.join(failed[:10])}", ""
+    if uncovered:
+        return f"the Windows sweep has no case for {len(uncovered)} commands: {', '.join(uncovered[:10])}", ""
+    note = f"Run on a real Windows ({sweep['windows']}) on these exact files before publishing: {sweep['commands']} commands, {len(cases(sweep['rows'], 'passed'))} cases, none failed.\n"
+    not_run = cases(sweep["rows"], "not-run")
+    if not_run:
+        note += f"Not run there: {'; '.join(not_run)}.\n"
+    return None, note
+
+
 def assemble(out, locate, base_url):
     """Copy the binaries to their asset names and write sha256sums.txt. Returns the manifest."""
     components = {}
@@ -310,14 +373,14 @@ To give up on this tag instead:
     sys.exit(1)
 
 
-def publish(tag, version, out):
+def publish(tag, version, out, of_windows=""):
     status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
     if status.strip():
         refuse("the work tree has changes, so what was built is not what the tag would name")
     exists = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"], cwd=ROOT, capture_output=True).returncode == 0
     state = check_existing_tag(tag) if exists else None
     notes = out / "notes.md"
-    notes.write_text(release_notes(version))
+    notes.write_text(f"{release_notes(version).rstrip()}\n\n{of_windows}" if of_windows else release_notes(version))
     assets = [str(p) for p in sorted(out.iterdir()) if p != notes]
     try:
         if not exists:
@@ -341,6 +404,7 @@ def main():
     ap.add_argument("--out", help="where the release is assembled (default target/release-<tag>)")
     ap.add_argument("--publish", action="store_true", help="tag and create the release; the default is a dry run")
     ap.add_argument("--strand-older-copies", action="store_true", help="publish though no --key is a key an earlier release holds, so that its copies refuse this one for good")
+    ap.add_argument("--skip-windows-sweep", metavar="REASON", help="publish without a clean sweep of these binaries on a real Windows; the reason goes in the release notes")
     ap.add_argument("--prebuilt", help="take the binaries from this directory, by their asset names, instead of building")
     ap.add_argument("--base-url", help="where the manifest says the files are (default this tag's release)")
     args = ap.parse_args()
@@ -372,6 +436,9 @@ def main():
         locate = build()
         check_built(locate, version, args.publish)
     manifest = {"version": version, "components": assemble(out, locate, base_url)}
+    windows_problem, of_windows = said_of_windows(locate, version, args.skip_windows_sweep)
+    if windows_problem and args.publish:
+        refuse(windows_problem)
     if args.next_key:
         manifest["next_key"] = args.next_key
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -384,9 +451,11 @@ def main():
     problem = why_not_publishable(args.key, version, args.strand_older_copies)
     if problem:
         print(f"NOT PUBLISHABLE: {problem}")
+    if windows_problem:
+        print(f"NOT PUBLISHABLE: {windows_problem}")
 
     if args.publish:
-        publish(args.tag, version, out)
+        publish(args.tag, version, out, of_windows)
     else:
         print(f"dry run: {version} assembled in {out}; nothing was tagged or uploaded")
 

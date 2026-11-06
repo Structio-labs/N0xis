@@ -214,11 +214,14 @@ struct Repo {
     root: PathBuf,
     fakes: PathBuf,
     key: PathBuf,
+    /// A clean sweep of whatever is built is planted before each run, unless a test wrote its own or has said none.
+    plants_sweep: std::cell::Cell<bool>,
 }
 
 const REPO_VERSION: &str = "1.2.3";
 const OLD_TAG: &str = "v1.2.2";
 const TAG: &str = "v1.2.3";
+const CLEAN_ROWS: &str = r#"[{"case":"info","result":"passed"},{"case":"scan value","result":"passed"}]"#;
 
 fn trust_source(key: &str) -> String {
     format!("pub const RELEASE_PUBLIC_KEY: &str = \"{key}\";\n")
@@ -249,7 +252,7 @@ impl Repo {
         fs::write(root.join("CHANGELOG.md"), format!("## [{REPO_VERSION}]\n\nA release.\n")).unwrap();
         fs::write(root.join(".gitignore"), "target/\n").unwrap();
         fs::write(root.join("crates/n0xis-update/src/trust.rs"), trust_source(&hex(&built.public()))).unwrap();
-        let repo = Repo { root, fakes, key: built.key() };
+        let repo = Repo { root, fakes, key: built.key(), plants_sweep: std::cell::Cell::new(true) };
         // Everything the script reaches by name, and nothing else: so that "no wine on the path" is true
         // once `no_wine` has said so, whatever this machine has.
         for tool in ["git", "openssl", "sh", "rm", "mkdir"] {
@@ -312,7 +315,36 @@ impl Repo {
         fs::write(self.root.parent().unwrap().join(format!("gh-{step}")), script).unwrap();
     }
 
+    fn sha256_of_built(&self, name: &str) -> String {
+        hex(digest(&SHA256, &fs::read(self.root.join("target/x86_64-pc-windows-gnu/release").join(name)).unwrap()).as_ref())
+    }
+
+    /// The record `scripts/windows_sweep.py` leaves for what is built now.
+    fn swept(&self, rows: &str, uncovered: &str) {
+        let (exe, mcp) = (self.sha256_of_built("n0xis.exe"), self.sha256_of_built("n0xis-mcp.exe"));
+        self.write_sweep(&format!(r#"{{"windows":"10.0.1","commands":2,"binaries":{{"n0xis.exe":"{exe}","n0xis-mcp.exe":"{mcp}"}},"uncovered":{uncovered},"rows":{rows}}}"#));
+    }
+
+    fn write_sweep(&self, text: &str) {
+        let dir = self.root.join("target/windows-sweep");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{REPO_VERSION}.json")), text).unwrap();
+        self.plants_sweep.set(false);
+    }
+
+    fn no_sweep(&self) {
+        self.plants_sweep.set(false);
+    }
+
+    fn notes(&self) -> String {
+        fs::read_to_string(self.root.join(format!("target/release-{TAG}/notes.md"))).unwrap()
+    }
+
     fn run(&self, extra: &[&str]) -> Output {
+        if self.plants_sweep.get() {
+            self.swept(CLEAN_ROWS, "[]");
+            self.plants_sweep.set(true);
+        }
         let python = String::from_utf8_lossy(&Command::new("sh").args(["-c", "command -v python3"]).output().unwrap().stdout).trim().to_string();
         Command::new(python)
             .arg(self.root.join("scripts/release.py"))
@@ -369,6 +401,7 @@ fn the_target_directory_is_where_cargo_says() {
     let b = Bench::new("targetdir");
     let repo = Repo::new("targetdir", &b);
     // A stale tree where a guess would look, with cargo pointing elsewhere.
+    repo.no_sweep();
     let elsewhere = repo.root.parent().unwrap().join("moved");
     fs::rename(repo.root.join("target"), &elsewhere).unwrap();
     write_program(&repo.root.join("target/release/n0xis"), "#!/bin/sh\necho n0xis 0.0.1\n");
@@ -681,4 +714,96 @@ fn a_tag_elsewhere_or_already_published_is_refused() {
     repo.gh("view", "echo token invalid >&2; exit 1\n");
     refused(&repo.run(&["--publish"]), "cannot tell whether");
     assert_eq!(repo.remote_tags(), "");
+}
+
+#[test]
+fn a_publish_with_no_sweep_of_these_binaries_is_refused() {
+    let b = Bench::new("sweep-none");
+    let repo = Repo::new("sweep-none", &b);
+    repo.no_sweep();
+    let out = repo.run(&["--publish"]);
+    refused(&out, "no Windows sweep of these exact binaries");
+    assert_eq!(repo.remote_tags(), "", "nothing was tagged");
+    let dry = repo.run(&[]);
+    assert!(dry.status.success() && String::from_utf8_lossy(&dry.stdout).contains("NOT PUBLISHABLE: no Windows sweep"), "{}", String::from_utf8_lossy(&dry.stdout));
+}
+
+#[test]
+fn a_sweep_speaks_only_for_the_bytes_it_ran_each_file_of_them() {
+    for (name, file) in [("exe", "n0xis.exe"), ("mcp", "n0xis-mcp.exe")] {
+        let b = Bench::new(&format!("sweep-bytes-{name}"));
+        let repo = Repo::new(&format!("sweep-bytes-{name}"), &b);
+        repo.swept(CLEAN_ROWS, "[]");
+        // Rebuilt after the sweep: it says the same version, and it is other bytes.
+        write_program(&repo.root.join("target/x86_64-pc-windows-gnu/release").join(file), "#!/bin/sh\necho n0xis 1.2.3\n# rebuilt\n");
+        refused(&repo.run(&["--publish"]), "no Windows sweep of these exact binaries");
+    }
+}
+
+#[test]
+fn a_record_that_does_not_read_is_refused() {
+    let b = Bench::new("sweep-bad");
+    let repo = Repo::new("sweep-bad", &b);
+    repo.write_sweep("not json");
+    refused(&repo.run(&["--publish"]), "cannot be read");
+    repo.write_sweep(r#"{"rows":[]}"#);
+    refused(&repo.run(&["--publish"]), "cannot be read");
+    // A result nobody defined is no pass, and neither is a sweep that ran nothing.
+    repo.swept(r#"[{"case":"info","result":"fine"}]"#, "[]");
+    refused(&repo.run(&["--publish"]), "not a record of a sweep");
+    repo.swept("[]", "[]");
+    refused(&repo.run(&["--publish"]), "not a record of a sweep");
+}
+
+#[test]
+fn a_sweep_with_a_failure_or_a_command_with_no_case_is_refused() {
+    let b = Bench::new("sweep-fail");
+    let repo = Repo::new("sweep-fail", &b);
+    repo.swept(r#"[{"case":"info","result":"passed"},{"case":"debug watch","result":"failed","why":"the target died"}]"#, "[]");
+    refused(&repo.run(&["--publish"]), "debug watch (the target died)");
+    repo.swept(CLEAN_ROWS, r#"["brand new"]"#);
+    refused(&repo.run(&["--publish"]), "brand new");
+    assert_eq!(repo.remote_tags(), "", "nothing was tagged");
+}
+
+#[test]
+fn a_clean_sweep_publishes_and_the_notes_say_what_ran_and_what_did_not() {
+    let b = Bench::new("sweep-clean");
+    let repo = Repo::new("sweep-clean", &b);
+    repo.swept(r#"[{"case":"info","result":"passed"},{"case":"ui focus","result":"not-run","why":"no desktop"}]"#, "[]");
+    let out = repo.run(&["--publish"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let notes = repo.notes();
+    assert!(notes.contains("A release.") && notes.contains("real Windows (10.0.1)") && notes.contains("2 commands, 1 cases"), "{notes}");
+    assert!(notes.contains("Not run there: ui focus (no desktop)."), "{notes}");
+}
+
+#[test]
+fn skipping_publishes_and_says_why_with_any_failure_beside_it() {
+    let b = Bench::new("sweep-skip");
+    let repo = Repo::new("sweep-skip", &b);
+    repo.no_sweep();
+    let out = repo.run(&["--publish", "--skip-windows-sweep", "the laptop is away"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(repo.notes().contains("Not verified on a real Windows for this release:** the laptop is away"), "{}", repo.notes());
+    assert!(!repo.notes().contains("Failed there"), "{}", repo.notes());
+
+    let b = Bench::new("sweep-skip-failed");
+    let repo = Repo::new("sweep-skip-failed", &b);
+    repo.swept(r#"[{"case":"debug watch","result":"failed","why":"the target died"}]"#, r#"["brand new"]"#);
+    let out = repo.run(&["--publish", "--skip-windows-sweep", "shipping a fix"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let notes = repo.notes();
+    assert!(notes.contains("shipping a fix") && notes.contains("debug watch (the target died)") && notes.contains("No case for: brand new"), "{notes}");
+}
+
+#[test]
+fn skipping_needs_a_reason_and_something_to_skip() {
+    let b = Bench::new("sweep-skip-bad");
+    let repo = Repo::new("sweep-skip-bad", &b);
+    repo.no_sweep();
+    refused(&repo.run(&["--publish", "--skip-windows-sweep", "  "]), "needs its reason");
+    repo.swept(CLEAN_ROWS, "[]");
+    refused(&repo.run(&["--publish", "--skip-windows-sweep", "in a hurry"]), "nothing to skip");
+    assert_eq!(repo.remote_tags(), "", "nothing was tagged");
 }
