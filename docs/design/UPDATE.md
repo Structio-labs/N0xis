@@ -196,6 +196,13 @@ Each ends in the stated refusal, with the installed binary byte for byte unchang
 on Linux and under Wine. A kill at each step and a full disk are run against the real binaries too, outside the repository's tests, since
 they need `LD_PRELOAD` and a tmpfs. An old client against a newer manifest is tested by keeping a built old client as a fixture.
 
+Rung 2, the release as published. A client built as an older version with the real key, against real GitHub, from the first release that holds it (0.3.8), on Linux and on
+a real Windows 11 with its realtime antivirus on: the dead first address is passed over and the second answers, in a pipe nothing is said and no check starts, on a real
+console the first run says nothing and a later one says the line, both files install byte for byte as the manifest names them and then run, and rollback, by itself and by
+name, restores each. On Windows also: an install with the MCP server running, which goes on running; `update.auto` installing from the detached check and saying so on a
+later run, and leaving alone a version just rolled back from; and a directory the user may not write, refused with the file unchanged. Not run on real Windows: a kill between
+its two renames. The leftover `.aside-<pid>` of a running exe stays until the next install sweeps it.
+
 ## 6. Steps
 
 1. The release side: a script that builds, writes the manifest, signs it, refuses a version mismatch, publishes. It finds the target directory through `cargo metadata` and runs all four built files with `--version`, standard input null and in a bounded time, the two `.exe` under `wine`, and refuses unless each states this version. With `--publish`
