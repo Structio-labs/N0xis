@@ -251,7 +251,7 @@ impl Repo {
         fs::write(root.join("crates/n0xis-update/src/trust.rs"), trust_source(&hex(&built.public()))).unwrap();
         let repo = Repo { root, fakes, key: built.key() };
         // Everything the script reaches by name, and nothing else: so that "no wine on the path" is true
-        // here, whatever this machine has.
+        // once `no_wine` has said so, whatever this machine has.
         for tool in ["git", "openssl", "sh", "rm", "mkdir"] {
             let found = Command::new("sh").args(["-c", &format!("command -v {tool}")]).output().expect("sh");
             let found = String::from_utf8_lossy(&found.stdout).trim().to_string();
@@ -262,6 +262,7 @@ impl Repo {
         fs::write(bench.join("gh-view"), "echo release not found >&2; exit 1\n").unwrap();
         fs::write(bench.join("gh-create"), "exit 0\n").unwrap();
         repo.built(REPO_VERSION, REPO_VERSION);
+        repo.wine();
         repo.git(&["init", "-q", "-b", "main"]);
         repo.commit("first");
         let bare = bench.join("remote.git");
@@ -292,6 +293,15 @@ impl Repo {
 
     fn wine(&self) {
         write_program(&self.fakes.join("wine"), "#!/bin/sh\nexec \"$@\"\n");
+    }
+
+    fn no_wine(&self) {
+        fs::remove_file(self.fakes.join("wine")).unwrap();
+    }
+
+    /// One of the four, answering as `says`, after `built`: (target directory, file name).
+    fn built_file(&self, file: (&str, &str), says: &str) {
+        write_program(&self.root.join("target").join(file.0).join(file.1), &format!("#!/bin/sh\necho n0xis {says}\n"));
     }
 
     fn gh_log(&self) -> String {
@@ -340,7 +350,6 @@ impl Repo {
 fn a_real_run_publishes_and_says_which_binaries_ran() {
     let b = Bench::new("ok");
     let repo = Repo::new("ok", &b);
-    repo.wine();
     let out = repo.run(&["--publish"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{}{stdout}", String::from_utf8_lossy(&out.stderr));
@@ -379,12 +388,91 @@ fn a_windows_binary_that_does_not_state_this_version_is_refused_when_wine_can_ru
     let b = Bench::new("stalewin");
     let repo = Repo::new("stalewin", &b);
     repo.built(REPO_VERSION, "1.2.2");
+    repo.no_wine();
     // With no wine it cannot be run, and it says so rather than passing it.
     let out = repo.run(&[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("NOT RUN"), "{}", String::from_utf8_lossy(&out.stdout));
     repo.wine();
     refused(&repo.run(&[]), "this release is 1.2.3");
+}
+
+/// Only `n0xis` and `n0xis.exe` were run once, so a release with a dead server or a dead Windows server
+/// went out with its manifest signed. Each of the four, alone, stops a publish and a dry run.
+#[test]
+fn each_of_the_four_built_files_must_state_this_version() {
+    for file in [("release", "n0xis"), ("release", "n0xis-mcp"), ("x86_64-pc-windows-gnu/release", "n0xis.exe"), ("x86_64-pc-windows-gnu/release", "n0xis-mcp.exe")] {
+        let b = Bench::new(&format!("four-{}", file.1));
+        let repo = Repo::new("four", &b);
+        repo.built_file(file, "1.2.2");
+        let path = repo.root.join("target").join(file.0).join(file.1);
+        let out = repo.run(&["--publish"]);
+        refused(&out, &format!("{} --version said", path.display()));
+        assert_eq!(repo.remote_tags(), "", "{}: a refusal pushed", file.1);
+        assert_eq!(repo.gh_log(), "", "{}", file.1);
+        refused(&repo.run(&[]), &format!("{} --version said", path.display()));
+    }
+}
+
+/// A dry run may say a file was not run. A publish may not go on past that, whatever the host files said.
+#[test]
+fn a_file_that_could_not_be_run_stops_a_publish() {
+    let b = Bench::new("nowine");
+    let repo = Repo::new("nowine", &b);
+    repo.no_wine();
+    let out = repo.run(&["--publish"]);
+    refused(&out, "no wine on the path");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("NOT RUN"), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(repo.remote_tags(), "", "a refusal pushed");
+    assert_eq!(repo.git(&["tag", "--list"]), "", "a refusal tagged");
+    assert_eq!(repo.gh_log(), "");
+
+    // A file that is not there to start is the same refusal, and so is one that does not start.
+    let b = Bench::new("noperm");
+    let repo = Repo::new("noperm", &b);
+    fs::remove_file(repo.root.join("target/release/n0xis-mcp")).unwrap();
+    refused(&repo.run(&["--publish"]), "did not answer --version");
+    assert_eq!(repo.remote_tags(), "");
+}
+
+/// With standard input held open by whoever runs the script, and a bound brought down to a second: the
+/// file below answers only if its standard input is null, and the other never does.
+#[test]
+fn a_built_file_runs_with_null_stdin_and_a_bound() {
+    let b = Bench::new("bound");
+    let reads = b.dir.join("reads");
+    write_program(&reads, "#!/bin/sh\nread line\necho n0xis 1.2.3\n");
+    let hangs = b.dir.join("hangs");
+    write_program(&hangs, "#!/bin/sh\nsleep 20\n");
+    let script = r#"
+import sys
+sys.path.insert(0, sys.argv[1])
+import release
+release.RUN_BOUND = 1
+print(release.states_version(sys.argv[2], "1.2.3"))
+"#;
+    let run = |program: &Path| {
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(root().join("scripts"))
+            .arg(program)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("python3");
+        // Held to the end: a child that inherited this waits on it.
+        let held = child.stdin.take();
+        let out = child.wait_with_output().expect("output");
+        drop(held);
+        out
+    };
+    let out = run(&reads);
+    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("n0xis 1.2.3"), "{}", String::from_utf8_lossy(&out.stderr));
+    let start = std::time::Instant::now();
+    refused(&run(&hangs), "did not answer --version");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
 }
 
 #[test]

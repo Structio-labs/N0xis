@@ -48,6 +48,26 @@ fn stated(config: &Path, env: &[(&str, &str)]) -> String {
     answer["result"]["instructions"].as_str().expect("instructions").to_string()
 }
 
+/// With nothing on standard input and a bound, as `scripts/release.py` runs it: a server that took this
+/// for a session once exited 1 with `connection closed`.
+#[test]
+fn version_answers_with_null_stdin() {
+    let dir = config_dir("version", None);
+    let mut command = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis-mcp")));
+    let mut child = command.env("N0X_CONFIG_DIR", &dir).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn n0xis-mcp");
+    let start = std::time::Instant::now();
+    while child.try_wait().expect("wait").is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(30) {
+            let _ = child.kill();
+            panic!("no answer within the bound");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().expect("output");
+    assert!(out.status.success(), "{:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("n0xis-mcp {VERSION}\n"));
+}
+
 #[test]
 fn a_newer_version_is_stated_at_the_start() {
     let dir = config_dir("newer", Some(json!({ "latest": "99.0.0" })));

@@ -184,8 +184,14 @@ MUTATIONS = [
     (UPDATE + "trust.rs", "if bytes.len() as u64 > CHAIN_MAX_BYTES {\n        return Ok(Chain::default());", "if bytes.len() as u64 > CHAIN_MAX_BYTES {\n        return Err(std::io::Error::other(\"past the bound\"));", *PLANTED, "a_file_past_the_bound_is_cleaned_rather_than_kept"),
     # O. The release script, by real runs with the runner faked.
     ("scripts/release.py", 'target_dir = Path(json.loads(metadata)["target_directory"])', 'target_dir = ROOT / "target"', *RELEASE, "the_target_directory_is_where_cargo_says"),
-    ("scripts/release.py", "        check_built(locate, version)\n", "", *RELEASE, "a_host_binary_that_does_not_state_this_version_is_refused"),
-    ("scripts/release.py", """print(f"ran wine {windows} --version: {states_version(windows, version, runner=('wine',))}")""", """print("ran wine, it is said")""", *RELEASE, "a_windows_binary_that_does_not_state_this_version_is_refused_when_wine_can_run_it"),
+    ("scripts/release.py", "        check_built(locate, version, args.publish)\n", "", *RELEASE, "a_host_binary_that_does_not_state_this_version_is_refused"),
+    ("scripts/release.py", """print(f"ran wine {path} --version: {states_version(path, version, runner=('wine',))}")""", """print("ran wine, it is said")""", *RELEASE, "a_windows_binary_that_does_not_state_this_version_is_refused_when_wine_can_run_it"),
+    # 1. All four are run, and only a dry run may leave one unrun.
+    *[("scripts/release.py", "            path = locate(target, built)\n", f'            path = locate(target, built)\n            if built == "{name}": continue\n', *RELEASE, "each_of_the_four_built_files_must_state_this_version") for name in ("n0xis", "n0xis-mcp", "n0xis.exe", "n0xis-mcp.exe")],
+    ("scripts/release.py", "            elif publishing:\n", "            elif False:\n", *RELEASE, "a_file_that_could_not_be_run_stops_a_publish"),
+    ("scripts/release.py", "stdin=subprocess.DEVNULL, capture_output=True", "capture_output=True", *RELEASE, "a_built_file_runs_with_null_stdin_and_a_bound"),
+    ("scripts/release.py", "timeout=RUN_BOUND, env=env)", "env=env)", *RELEASE, "a_built_file_runs_with_null_stdin_and_a_bound"),
+    ("crates/n0xis-mcp/src/main.rs", 'if std::env::args_os().nth(1).is_some_and(|a| a == "--version") {', "if false {", *MCP, "version_answers_with_null_stdin"),
     ("scripts/release.py", "if previous and previous not in public and not strand:", "if False:", *RELEASE, "a_change_of_key_that_strands_older_copies_is_refused"),
     ("scripts/release.py", "if previous and previous not in public and not strand:", "if previous and previous not in public:", *RELEASE, "stranding_older_copies_can_be_said_to_be_meant"),
     ("scripts/release.py", 'return tag, key if re.fullmatch(r"[0-9a-f]{64}", key) else None', "return tag, key", *RELEASE, "a_placeholder_or_no_file_at_the_previous_tag_is_no_constraint"),

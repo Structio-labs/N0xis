@@ -15,7 +15,8 @@ Each refusal here is one a copy in the field could not recover from:
   of that release would refuse every manifest after it, and no later release could reach them.
 - A change of key that strands older copies: the key the previous release's binary holds is not among
   the signers, so nothing in the field can verify this release. --strand-older-copies says that is meant.
-- A built binary that does not state this version when run, which a stale target directory can give.
+- A built binary that does not state this version when run, which a stale target directory can give. All
+  four are run, the Windows two under wine, and with --publish one that could not be run is a refusal.
 - Publishing what this run did not just build (--prebuilt, --base-url exist for the verification).
 
 Signing goes through the openssl command, so what signs is not what verifies: the client is on ring.
@@ -48,6 +49,8 @@ PUSH_TO = "git@github.com:Structio-labs/N0xis.git"
 WINDOWS = "x86_64-pc-windows-gnu"
 TRUST_RELATIVE = "crates/n0xis-update/src/trust.rs"
 TRUST_SOURCE = ROOT / TRUST_RELATIVE
+# How long a built file has to answer --version. Wine starting cold is what it allows for.
+RUN_BOUND = 120
 
 # component -> platform -> (published asset, name when installed, cargo target, built file).
 # The asset names are the four the README's download links rest on.
@@ -177,7 +180,7 @@ def states_version(path, version, runner=()):
     """What running it said, or a refusal unless that has this version as a word of it."""
     env = {**os.environ, "WINEDEBUG": "-all"} if runner else None
     try:
-        p = subprocess.run([*runner, str(path), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=120, env=env)
+        p = subprocess.run([*runner, str(path), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=RUN_BOUND, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         refuse(f"{path} did not answer --version: {e}")
     said = p.stdout.strip()
@@ -186,15 +189,20 @@ def states_version(path, version, runner=()):
     return said
 
 
-def check_built(locate, version):
-    """Run what was built, because a file with the right name proves nothing about what is in it."""
-    host = locate(None, "n0xis")
-    print(f"ran {host} --version: {states_version(host, version)}")
-    windows = locate(WINDOWS, "n0xis.exe")
-    if shutil.which("wine"):
-        print(f"ran wine {windows} --version: {states_version(windows, version, runner=('wine',))}")
-    else:
-        print(f"NOT RUN: {windows}, because there is no wine on the path")
+def check_built(locate, version, publishing):
+    """Run all of what was built, because a file with the right name proves nothing about what is in it.
+    The field finds out what a file that was not run does, so only a dry run may leave one unrun."""
+    for platforms in COMPONENTS.values():
+        for _, _, target, built in platforms.values():
+            path = locate(target, built)
+            if target is None:
+                print(f"ran {path} --version: {states_version(path, version)}")
+            elif shutil.which("wine"):
+                print(f"ran wine {path} --version: {states_version(path, version, runner=('wine',))}")
+            elif publishing:
+                refuse(f"{path} could not be run, because there is no wine on the path, and what was not run is not published")
+            else:
+                print(f"NOT RUN: {path}, because there is no wine on the path")
 
 
 def assemble(out, locate, base_url):
@@ -343,7 +351,7 @@ def main():
         locate = lambda target, name: prebuilt / by_built[(target, name)]  # noqa: E731
     else:
         locate = build()
-        check_built(locate, version)
+        check_built(locate, version, args.publish)
     manifest = {"version": version, "components": assemble(out, locate, base_url)}
     if args.next_key:
         manifest["next_key"] = args.next_key
