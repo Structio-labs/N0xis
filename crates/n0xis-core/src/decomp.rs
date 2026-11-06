@@ -437,7 +437,7 @@ impl Pass for DecompPass {
         // Any mark in the text is a body that does not say 1.0, however many
         // instructions dilute it. The switch's mark is the one the structuring adds.
         let unknown_return = usize::from(matches!(types.signature.ret, crate::typeinfer::ReturnType::Unknown));
-        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| l.contains("/*index in ")).count();
+        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| ["/*index in ", "/*table not read*/", "/* dispatcher */"].iter().any(|m| l.contains(m))).count();
         let quality = if cfg.insn_count == 0 {
             0.0
         } else {
@@ -1280,6 +1280,30 @@ mod tests {
         let body = decomp_table_dispatch(&[0x83, 0xe7, 0x07, 0x83, 0xff, 0x03, 0x77, 0x1f, 0xff, 0x24, 0xfd, 0x00, 0x20, 0x00, 0x00]).join("\n");
         assert!(body.contains("rdi.1 = (uint32_t)((uint32_t)rdi.0 & 0x7);"), "{body}");
         assert!(body.contains("switch (rdi.1) {"), "{body}");
+        for label in ["case 0x0:", "case 0x1:", "case 0x2:", "case 0x3:"] {
+            assert!(body.contains(label), "{label}: {body}");
+        }
+    }
+
+    /// Two of four table entries go straight to a join whose phi needs a copy on the
+    /// edge, and the block of copies has an address no table holds. It is still that
+    /// table's case: every such case printed as `default:` and no value at all.
+    #[test]
+    fn a_case_reached_through_copies_says_its_value() {
+        let mut code = vec![0xb8, 9, 0, 0, 0, 0x83, 0xff, 0x03, 0x77, 0x13, 0xff, 0x24, 0xfd, 0x00, 0x20, 0x00, 0x00];
+        code.extend([0xb8, 1, 0, 0, 0, 0xeb, 0x05]); // 0x1011: mov $1,%eax; jmp join
+        code.extend([0xb8, 2, 0, 0, 0]); // 0x1018: mov $2,%eax
+        code.extend([0x01, 0xc0, 0xc3]); // 0x101d join: add %eax,%eax; ret
+        let table: Vec<u8> = [0x1011u64, 0x101d, 0x1018, 0x101d].iter().flat_map(|a| a.to_le_bytes()).collect();
+        let snap = Snapshot::builder().region(Va(0x1000), code).region(Va(0x2000), table).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        let body = DecompPass
+            .run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
+            .unwrap()
+            .pseudo
+            .join("\n");
         for label in ["case 0x0:", "case 0x1:", "case 0x2:", "case 0x3:"] {
             assert!(body.contains(label), "{label}: {body}");
         }

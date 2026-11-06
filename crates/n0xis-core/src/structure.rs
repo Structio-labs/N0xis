@@ -760,6 +760,9 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     let sw = ctx.cfg.switches.iter().find(|s| s.at.get() >= bstart && s.at.get() < bend);
     let index = sw.and_then(|s| switch_index(ctx, n, s));
     let (disp, rebased) = match (&index, sw.and_then(|s| s.index_reg.as_deref())) {
+        // A table not read has no values to say: every target here would print as out
+        // of range, and it is not that either.
+        _ if sw.is_some_and(|s| !s.resolved || s.cases.is_empty()) => ("/*table not read*/".to_string(), 0),
         (Some(i), _) => (render_expr(&i.value, ctx.names), i.subtracted),
         // A register's name with no version is its value at no point in particular.
         // Nothing here says which one the table reads, and the text says so.
@@ -775,11 +778,20 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         // Every table index whose target is this successor becomes a `case`
         // (fall-through cases share a block, so a block can carry several); a
         // successor with no matching index is the out-of-range `default`.
-        let target = ctx.cfg.blocks[s].start.get();
+        //
+        // A block of copies on the edge, for the phis of the case it leads to, starts at
+        // an address of its own that no table holds. Asked by that one, every case with
+        // a phi read as out of range: one interpreter's dispatch printed 83 `default:`
+        // labels and not one value. The table's entry is where the edge goes.
+        let through_copies = crate::coalesce::is_synthetic_va(ctx.blocks[s].start);
+        let target = match ctx.succ[s].as_slice() {
+            [next] if through_copies => ctx.cfg.blocks[*next].start.get(),
+            _ => ctx.cfg.blocks[s].start.get(),
+        };
         let cases: Vec<usize> = sw
             .map(|w| w.cases.iter().enumerate().filter(|(_, va)| va.get() == target).map(|(i, _)| i).collect())
             .unwrap_or_default();
-        if sw.is_none() {
+        if sw.is_none_or(|w| !w.resolved || w.cases.is_empty()) {
             ctx.out.push(format!("{}    case /* block {s} */:", pad(ctx.indent)));
         } else if cases.is_empty() {
             ctx.out.push(format!("{}    default:", pad(ctx.indent)));
