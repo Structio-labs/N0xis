@@ -1578,8 +1578,9 @@ fn each_of_inode_size_and_mtime_is_a_change() {
     fn with_the_time(path: &Path, then: std::time::SystemTime) {
         fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(then).unwrap();
     }
-    #[allow(clippy::type_complexity)]
-    let mut changes: Vec<(&str, fn(&Path, std::time::SystemTime))> = vec![
+    type Change = fn(&Path, std::time::SystemTime);
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut changes: Vec<(&str, Change)> = vec![
         ("size", |exe, then| {
             fs::write(exe, [OLD, b"!".as_slice()].concat()).unwrap();
             with_the_time(exe, then);
