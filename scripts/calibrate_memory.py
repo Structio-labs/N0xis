@@ -43,7 +43,8 @@ MUTATIONS = [
     (CEILING, "        CEILING.store(self.ceiling, Ordering::Relaxed);\n", "", *WRITE, "the_ceiling_is_back_once_the_answer_is_written"),
     (EMIT, "            if out.get_ref().any {", "            if false {", *WRITE, "a_failure_to_serialize_past_the_first_write_adds_no_second_envelope"),
     (EMIT, "            if out.get_ref().any {", "            if true {", *WRITE, "a_failure_to_serialize_with_nothing_written_is_the_whole_answer"),
-    (EMIT, 'Err(e) if e.is_io() => panic!("failed printing to stdout: {e}"),', "Err(e) if e.is_io() => false,", *WRITE, "a_closed_pipe_is_what_it_was"),
+    (EMIT, "if e.kind() == std::io::ErrorKind::BrokenPipe {\n        std::process::exit(0);", "if e.kind() == std::io::ErrorKind::BrokenPipe {\n        std::process::exit(1);", *WRITE, "a_closed_pipe_ends_the_run_quietly"),
+    (EMIT, "if e.kind() == std::io::ErrorKind::BrokenPipe {", "if false {", *WRITE, "a_closed_pipe_ends_the_run_quietly"),
     # The value form's bytes.
     (STRINGS, "struct CutByRow {\n    at: Va,\n    kind: n0xis_core::CutKind,\n}", "struct CutByRow {\n    kind: n0xis_core::CutKind,\n    at: Va,\n}", "n0xis-frontend", None, "strings_caps::tests::rows_write_what_the_value_form_wrote"),
     (STRINGS, "    section: &'a str,\n    size: usize,\n    text: &'a str,\n}", "    size: usize,\n    section: &'a str,\n    text: &'a str,\n}", "n0xis-frontend", None, "strings_caps::tests::rows_write_what_the_value_form_wrote"),
