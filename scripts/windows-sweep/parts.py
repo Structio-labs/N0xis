@@ -394,7 +394,8 @@ def rest_group(s, L):
     t("snapshot.info+pid", "snapshot", "info", "ls1")
     t("mem.read+snapshot", "mem", "read", "--addr", a["p_i32"], "--size", "4", "--snapshot", "ls1", must=[tobytes(0x1CEB00DA, 4)])
     t("snapshot.dump+full", "snapshot", "dump", "--name", "lsfull", *FP(), "--force", bound=120)
-    t("find+snapfull", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", "--snapshot", "lsfull", "--start", a["p_str"], "--size", "64", must=[a["p_str"]])
+    # A snapshot with no range holds the image's first section, code here, so what is looked for in it is in the code.
+    t("find+snapfull", "find", "--bytes", "95 E9 D1 5B", "--snapshot", "lsfull", "--start", a["magic_mix"], "--size", "64", check=lambda e, x: in_range(x, a["magic_mix"], 64))
     t("decomp+snapfull", "decomp", "pseudo", "--addr", a["magic_mix"], "--snapshot", "lsfull", must=["5bd1e995"])
     t("annotate.name+pid", "annotate", "name", "--addr", a["hooked"], "--value", "мій_хук", *FP())
     t("annotate.show+pid", "annotate", "show", "--addr", a["hooked"], *FP(), must=["мій_хук"])
