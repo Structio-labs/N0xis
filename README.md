@@ -64,6 +64,7 @@ results on measured inputs · **refused**: a typed error · **not yet**: no code
   `__x86.get_pc_thunk.bx`), and big-endian AArch64 discovery missing functions its `.eh_frame` declares.
   The decompiler drops pass-through arguments, can read a register it never assigns, on AArch64 can
   name the wrong string, and on 32-bit x86 loses stack arguments and the high half of 64-bit results.
+  The countdown loop on A32 and AArch64 is printed in full now, which was checked on bytes and not yet on a processor.
   Its `quality` field counts what a body leaves unsaid; 1.0 is not a statement that the body is right.
   The full list, with counts, is in the [ledger](docs/VERIFICATION.md).
 - **Missed, answered `ok` with less**: without unwind tables, functions reached only through vtables,
