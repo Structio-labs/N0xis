@@ -5,6 +5,21 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-11-06
+
+**Read this first: what to check again, and what is still known to be false.** Most of this release corrects answers that were wrong and looked right.
+
+Decompiled bodies were measured by compiling each printed body and running it against its source, on 129 small C functions written for the measurement by someone who had not seen the fixes, three builds each, 387 bodies. Behaves like the source: 199 before, 295 now. Behaves differently: 109 before, 26 now. The harness declares names and repairs spelling, so these are upper bounds; 49 of the 387 compile exactly as printed.
+
+**Check again what you concluded from an earlier release on:** the width of a memory access, a loop's first test or its count, a `switch`'s index, arithmetic on 64-bit values, or a `quality` of 1.0, which stood on false bodies. `scan value` for `i64` or `u64` past 2^53, where 0 matches was false. `rip` from `debug await-hit` on Windows, which was one byte past the address.
+
+**Still false in this release, found by an audit on hard cases, and being fixed:**
+- `xref to` and `xref string` can say 0 or unreferenced for what is referenced: an address held in data or a vtable, jump table entries, an absolute operand on 32-bit or non-PIE, a string inside a longer one. A count of 0 does not prove code is dead.
+- `decomp pseudo` can cut a large function at 0x1000 bytes with no word, at `quality` 1.0, and prints `(void)` on a function that passes its arguments straight on. Call arguments and `printf`-family arguments are unreliable.
+- `scan value` can say `exhaustive: true` with 0 matches: a value not at the default alignment, across two adjacent mappings, or mapped during the scan.
+- `rtti scan` and `function layout` can be empty on a C++ ELF that has type information.
+- `function summary`'s `writes_memory` is a text match and often wrong. `debug await-hit` and `debug watch` can say `timed_out: true` about a target that is gone. `ir manifest`, `mem map`, `function layout` and `function typeflow` can cut a list without saying so. `patch apply` and `mem write` can fail after part of the bytes changed.
+
 **A release is run on a real Windows before it goes out, by one command.** `scripts/windows_sweep.py` runs every command the binary lists against its Linux twin and against a live target that prints what it holds, and each case ends in `passed`, `failed`, or `not-run` with a reason, with no reader in between. `release.py` reads the record back: a failure, a command with no case, or other bytes stop `--publish`, and what could not be run goes in the release notes.
 
 **A killed `debug watch` or `provenance trace` leaves a way back.** Its debug register stays in the target's threads, and at the next hit the target dies. The watchpoint is now in the journal before it is armed, with its id on stderr, and `patch undo` clears it from every thread that still holds it, says how many, and leaves every other slot alone. It also did the same on Linux when stopped by Ctrl-C, `SIGTERM` or `SIGHUP`, which it did not handle there as it did on Windows: now it clears the register and detaches.

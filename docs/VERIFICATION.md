@@ -2659,3 +2659,7 @@ cargo test --workspace --features n0xis-core/oracle,n0xis-cli/oracle,n0xis-sourc
 A "green CI" therefore means the deterministic suite passed, **not** that every
 row above was re-checked on that runner. The oracle rows are re-checked wherever
 the toolchain is pinned.
+
+### Decompiled bodies on functions nobody had read (2026-11-06)
+
+129 small C functions, written for this by someone who had not seen the fixes, gcc -O1, gcc -O2, clang -O2, 387 bodies, by `oracle/decomp-behaviour` with 500 generated inputs each. 0.3.8 against this release: same 199 and 295, differs 109 and 26, crash or hang 12 and 11, would not compile 64 and 51, compiles as printed 47 and 49. No body that was right in 0.3.8 went wrong. The source through the same harness scores 387 of 387. 32 of the remaining failures are the harness's and not the body's. The first set of 41 functions read 113 of 123 after its author had read it, 92% against 76% here: that gap is why a set is spent once someone has fixed against it. The set is kept out of the repository until it has been replaced.

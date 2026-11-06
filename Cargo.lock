@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-arch"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "disarm64",
  "disarm64_defn",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-bitsquid"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "miniz_oxide",
  "serde",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-cli"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "clap",
  "goblin",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-contracts"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-core"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "cpp_demangle",
  "msvc-demangler",
@@ -787,11 +787,11 @@ dependencies = [
 
 [[package]]
 name = "n0xis-flirt"
-version = "0.3.8"
+version = "0.3.9"
 
 [[package]]
 name = "n0xis-frontend"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-il2cpp"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "n0xis-contracts",
  "n0xis-sources",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-lua"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-luajit"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "n0xis-contracts",
  "n0xis-sources",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-mcp"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "n0xis-arch",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-pdb"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "pdb2",
  "thiserror",
@@ -868,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-pipeline"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "n0xis-arch",
  "n0xis-contracts",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-project"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "dirs",
@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-sources"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "goblin",
  "libc",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "n0xis-update"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "dirs",
  "libc",
@@ -927,14 +927,14 @@ dependencies = [
 
 [[package]]
 name = "n0xis-wasm"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "n0xis-wasm-arch"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "n0xis-arch",
  "n0xis-contracts",

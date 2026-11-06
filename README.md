@@ -150,6 +150,7 @@ them, from October 2026:
 - the decoder read 10 498 instructions on 10 PE and ELF images (x86-64, x86, AArch64) as `llvm-objdump` or GNU `objdump` does, every difference a documented alias;
 - on Linux, 19 of 23 live operations matched `/proc/<pid>/mem`, `/proc/<pid>/maps`, `nm`, `objdump`, `eu-stack` or the target's own printed values; the other four: the string literal in `provenance trace`, `scan aob` on its default regions (since fixed: it goes past a region that will not read and states it), `scan dissect`'s types and the Windows-only refusal (the loop head was measured on `config-demo`, not among the 23);
 - the decompiler's C, compiled beside its source and run on the same inputs, was right on 5 to 11 of 14 functions per image on 9 PE and ELF images, a first measurement: 33 of the 126 verdicts were not executed, because the output could not be run (24 read by hand, 9 judged incomplete from the placeholders the text holds), and a second pass did not reproduce the totals.
+- the decompiler's bodies, compiled and run against their source on 129 functions written by someone who had not seen the fixes, 387 bodies: 295 behave like the source and 26 differ (199 and 109 in 0.3.8), an upper bound, by `oracle/decomp-behaviour`
 
 ## Docs
 
