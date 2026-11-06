@@ -98,7 +98,7 @@ What every shipped client reads, and so what every later release must keep publi
 
 ## 3. The install
 
-Prepare, then commit, under one lock. There is no undo: undoing was disk work done while swapping, it failed
+Prepare, then commit, under the lock. There is no undo: undoing was disk work done while swapping, it failed
 on a full disk, and it poisoned the file `--rollback` goes back to.
 
 **The lock.** `<file>.update-lock` beside each file, taken by `update`, `--rollback` and the detached `update.auto` install. An install takes the running
