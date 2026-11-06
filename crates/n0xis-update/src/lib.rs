@@ -268,7 +268,7 @@ pub(crate) fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     }
     let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
     let mut out = [0u8; N];
-    for (slot, pair) in out.iter_mut().zip(text.chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(text.as_chunks::<2>().0) {
         *slot = digit(pair[0])? << 4 | digit(pair[1])?;
     }
     Some(out)
