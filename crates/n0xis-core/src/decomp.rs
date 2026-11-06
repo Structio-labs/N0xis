@@ -1246,6 +1246,38 @@ mod tests {
         assert!(text.contains("local_neg_8"), "{text}");
     }
 
+    /// Conditions printed as comments, read by what the operation lets them say. The
+    /// values are in `flags_after_arithmetic_agree_with_the_processor`.
+    #[test]
+    fn a_condition_after_arithmetic_is_an_expression() {
+        let branch = |insn: &[u8], jcc: u8| {
+            let mut code = insn.to_vec();
+            code.extend([jcc, 0x01, 0xc3, 0xc3]); // jcc +1; ret; ret
+            let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n").replace(".0", "");
+            text.lines().find(|l| l.trim_start().starts_with("if (")).unwrap_or_else(|| panic!("no if in {text}")).trim().to_string()
+        };
+        // add %rsi,%rdi; jb: the carry is the sum below what was added to.
+        let cond = branch(&[0x48, 0x01, 0xf7], 0x72);
+        assert!(cond.contains("rdi.1 < /*u*/ rdi"), "{cond}");
+        // bt %rsi,%rdi; jb
+        let cond = branch(&[0x48, 0x0f, 0xa3, 0xf7], 0x72);
+        assert!(cond.contains("(rdi >> (rsi & 0x3f)) & 0x1") && cond.contains("!= 0x0"), "{cond}");
+        // bt $5,%rdi; jae
+        let cond = branch(&[0x48, 0x0f, 0xba, 0xe7, 0x05], 0x73);
+        assert!(cond.contains("(rdi >> 0x5) & 0x1") && cond.contains("== 0x0"), "{cond}");
+        // lock decq (%rdx); jne: what memory held, less one, not a re-read past the store.
+        let text = decomp(vec![0xf0, 0x48, 0xff, 0x0a, 0x75, 0x01, 0xc3, 0xc3], DecompStyle::Ssa).pseudo.join("\n");
+        assert!(text.contains("old.1 = *(uint64_t*)rdx"), "{text}");
+        assert!(text.contains("__atomic_dec(old.1);"), "{text}");
+        assert!(!text.contains("/*cond"), "{text}");
+        // Nothing reads the flags: the read folds back into the store.
+        let text = decomp(vec![0xf0, 0x48, 0xff, 0x0a, 0xc3], DecompStyle::Ssa).pseudo.join("\n");
+        assert!(!text.contains("old."), "{text}");
+        // What the operation does not say stays a mark: inc leaves the carry alone.
+        let cond = branch(&[0xff, 0x02], 0x72);
+        assert!(cond.contains("/*cond(jb)*/"), "{cond}");
+    }
+
     /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is
     /// declared at the wider one, and a bare name would write all eight bytes.
     #[test]

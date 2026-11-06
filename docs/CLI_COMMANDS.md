@@ -601,6 +601,9 @@ How a body reads:
   `/*u*/`: `a > /*u*/ b` compares as unsigned.
 - A `local_` is a slot of this function's frame: reached through `rsp`, or through `rbp` where the function
   set it from `rsp`. Through any other `rbp` it is memory like any other, a field of what `rbp` points at.
+- A branch whose flags cannot be stated prints a mark in place of its condition: `/*cond(jb)*/`, or `/*?*/`
+  in a block no path from the entry reaches, whose flags were set before it. `old.N` is what memory held
+  before an operation wrote it, named when something tests it after the write.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).

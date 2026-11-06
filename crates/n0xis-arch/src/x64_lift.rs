@@ -21,10 +21,10 @@ use iced_x86::{CodeSize, Decoder, DecoderOptions, EncodingKind, Instruction, Mem
 
 use crate::insn::DecodedInsn;
 use crate::microir::{
-    BinOp, Bits, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MicroExpr, MicroStmt, UnOp,
+    BinOp, Bits, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MicroExpr, MicroStmt, OLD_MEMORY_VAR, UnOp,
 };
 use crate::x64::ir_reg_name;
-use crate::flags::signed_view;
+use crate::flags::{self, signed_view};
 use crate::{Arch, CallConv, RegisterFile};
 
 /// Re-decode a `DecodedInsn` back to a full iced [`Instruction`] from its
@@ -584,6 +584,50 @@ fn result_flags(instr: &Instruction, mn: Mnemonic, out: &mut Vec<MicroStmt>) {
     out.push(opaque_flags(mn));
 }
 
+fn operation_flags(name: &str, args: Vec<MicroExpr>) -> MicroStmt {
+    MicroStmt::Assign { dst: FLAGS_VAR.to_string(), value: MicroExpr::intrinsic(name, args) }
+}
+
+#[derive(Clone, Copy)]
+enum MemoryFlags {
+    Add,
+    Sub,
+    Inc,
+    Dec,
+}
+
+/// `add`, `sub`, `inc` or `dec` with a memory destination, keeping the flags: the
+/// old value is read once, the flags are of it, and the store is of what it became.
+/// Where nothing reads the flags, the optimizer folds the read back into the store.
+fn memory_arithmetic(instr: &Instruction, op: BinOp, kind: MemoryFlags, out: &mut Vec<MicroStmt>) {
+    memory_read_modify_write(instr, kind, &|old, operand| MicroExpr::binary(op, old, operand), out);
+}
+
+fn memory_read_modify_write(instr: &Instruction, kind: MemoryFlags, written: &dyn Fn(MicroExpr, MicroExpr) -> MicroExpr, out: &mut Vec<MicroStmt>) {
+    let bits = op_bits(instr, 0);
+    out.push(MicroStmt::Assign { dst: OLD_MEMORY_VAR.to_string(), value: read_operand(instr, 0) });
+    // Bare, the name reads as a register-wide value, and every width below that
+    // would then be computed at the wrong one.
+    let old = || {
+        let var = MicroExpr::var(OLD_MEMORY_VAR);
+        if bits < 64 { MicroExpr::Cast { signed: false, bits, expr: Box::new(var) } } else { var }
+    };
+    let (operand, flags_value) = match kind {
+        MemoryFlags::Add => {
+            let b = read_operand(instr, 1);
+            (b.clone(), operation_flags(flags::ADD_FLAGS, vec![old(), b]))
+        }
+        MemoryFlags::Sub => {
+            let b = read_operand(instr, 1);
+            (b.clone(), compare_flags(CmpKind::Cmp, old(), b))
+        }
+        MemoryFlags::Inc => (MicroExpr::constant(1, bits), operation_flags(flags::INC_FLAGS, vec![old()])),
+        MemoryFlags::Dec => (MicroExpr::constant(1, bits), operation_flags(flags::DEC_FLAGS, vec![old()])),
+    };
+    out.push(flags_value);
+    write_operand(instr, 0, written(old(), operand), out);
+}
+
 /// A read-modify-write binary op: `dst @= src` where `dst` is operand 0
 /// (register or memory, read *and* written) and `src` is operand 1.
 /// `dst = dst <op> src <op> CF` — the carry-consuming add/subtract.
@@ -998,10 +1042,12 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             let addr = mem_addr_expr(&instr);
             write_operand(&instr, 0, MicroExpr::AddrOf(Box::new(addr)), &mut out);
         }
+        Mnemonic::Add if instr.op0_kind() != OpKind::Register => memory_arithmetic(&instr, BinOp::Add, MemoryFlags::Add, &mut out),
         Mnemonic::Add => {
             binary_rmw(&instr, BinOp::Add, &mut out);
             result_flags(&instr, mn, &mut out);
         }
+        Mnemonic::Sub if instr.op0_kind() != OpKind::Register => memory_arithmetic(&instr, BinOp::Sub, MemoryFlags::Sub, &mut out),
         Mnemonic::Sub => {
             // A `sub` sets flags from `dst - src` — **identically to `cmp dst,
             // src`**, which is the same operation without the store. Recording
@@ -1129,6 +1175,8 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             shift_rmw(&instr, BinOp::Sar, &mut out);
             result_flags(&instr, mn, &mut out);
         }
+        Mnemonic::Inc if instr.op0_kind() != OpKind::Register => memory_arithmetic(&instr, BinOp::Add, MemoryFlags::Inc, &mut out),
+        Mnemonic::Dec if instr.op0_kind() != OpKind::Register => memory_arithmetic(&instr, BinOp::Sub, MemoryFlags::Dec, &mut out),
         Mnemonic::Inc => {
             let bits = op_bits(&instr, 0);
             let cur = read_operand(&instr, 0);
@@ -1914,6 +1962,19 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         // `bt` reads a bit into CF and writes **nothing else** — so the honest
         // lift is the flag write alone. Going through the opaque path instead
         // would preserve the text and invalidate registers it never touches.
+        //
+        // On memory the flags would re-read it at the branch, past whatever wrote
+        // it since, and a register count can reach outside the operand named. That
+        // form stays opaque.
+        Mnemonic::Bt if instr.op0_kind() == OpKind::Register => {
+            let width = op_bits(&instr, 0);
+            let mask = i128::from(width) - 1;
+            let count = match instr.op1_kind() {
+                OpKind::Immediate8 => MicroExpr::constant(i128::from(instr.immediate8()) & mask, 8),
+                _ => MicroExpr::binary(BinOp::And, read_operand(&instr, 1), MicroExpr::constant(mask, 8)),
+            };
+            out.push(operation_flags(flags::BT_FLAGS, vec![read_operand(&instr, 0), count]));
+        }
         Mnemonic::Bt => out.push(opaque_flags(mn)),
         // Sign-extend the accumulator in place (`cbw`/`cwde`/`cdqe`): the low
         // `from` bits, sign-extended into the destination sub-register. Only
@@ -2087,8 +2148,9 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
 
 /// A `lock`-prefixed read-modify-write. The destination is written from the
 /// same operands as the unlocked form, but through `__atomic_<mnemonic>`, so the
-/// atomicity is stated rather than silently dropped. Flags stay opaque — the
-/// manual's flag effects are the same, and nothing here needs them precise.
+/// atomicity is stated rather than silently dropped. The flag effects are the
+/// unlocked form's: `lock decq (%rax); jne` is how a reference count is released,
+/// and the branch tests what the count held. Other forms' flags stay opaque.
 ///
 /// `xchg` is the one form that is atomic *without* a prefix and is handled by
 /// its own arm; `cmpxchg` and `xadd` read and write more state than this shape
@@ -2103,6 +2165,19 @@ fn lift_locked(arch: &crate::X64, insn: &DecodedInsn, instr: &Instruction, mn: M
     );
     if !modelled || instr.op_count() == 0 {
         lift_opaque(arch, insn, mn, out);
+        return;
+    }
+    let kind = match mn {
+        Mnemonic::Inc => Some(MemoryFlags::Inc),
+        Mnemonic::Dec => Some(MemoryFlags::Dec),
+        Mnemonic::Add => Some(MemoryFlags::Add),
+        Mnemonic::Sub => Some(MemoryFlags::Sub),
+        _ => None,
+    };
+    if let Some(kind) = kind.filter(|_| instr.op0_kind() != OpKind::Register) {
+        let has_operand = instr.op_count() > 1;
+        let written = |old: MicroExpr, operand: MicroExpr| MicroExpr::intrinsic(name.clone(), if has_operand { vec![old, operand] } else { vec![old] });
+        memory_read_modify_write(instr, kind, &written, out);
         return;
     }
     let mut args = vec![read_operand(instr, 0)];
@@ -2832,7 +2907,7 @@ mod tests {
         // so the honest lift is the flag write alone, with no asm node.
         let stmts = lift_one(&[0x0F, 0xA3, 0xC8]);
         assert_eq!(stmts.len(), 1, "{stmts:?}");
-        assert!(matches!(&stmts[0], MicroStmt::Assign { dst, value: MicroExpr::OpaqueFlags { .. } } if dst == "flags"));
+        assert!(matches!(&stmts[0], MicroStmt::Assign { dst, value: MicroExpr::Call { target: CallTarget::Intrinsic(name), .. } } if dst == "flags" && name == flags::BT_FLAGS));
     }
 
     #[test]
@@ -3062,16 +3137,19 @@ mod tests {
             branch_condition("js", &flags),
             MicroExpr::binary(BinOp::Slt, low_signed(8, "rcx"), MicroExpr::constant(0, 8))
         );
-        // A **memory** destination still refuses: re-reading it is a load, and
-        // nothing says it resolves to the value just stored.
+        // A **memory** destination keeps what it held under a name of its own, and
+        // the flags are of that: re-reading the address would be a load of the
+        // value just stored.
         let dec_mem = lift_one(&[0xFE, 0x09]); // dec byte ptr [rcx]
+        assert!(matches!(&dec_mem[0], MicroStmt::Assign { dst, value: MicroExpr::Load { bits: 8, .. } } if dst == OLD_MEMORY_VAR), "{dec_mem:?}");
         assert_eq!(
-            dec_mem.last(),
-            Some(&MicroStmt::Assign {
+            dec_mem[1],
+            MicroStmt::Assign {
                 dst: FLAGS_VAR.into(),
-                value: MicroExpr::OpaqueFlags { mnemonic: "dec".into() }
-            })
+                value: MicroExpr::intrinsic(flags::DEC_FLAGS, vec![low(8, OLD_MEMORY_VAR)]),
+            }
         );
+        assert!(matches!(dec_mem.last(), Some(MicroStmt::Store { bits: 8, .. })), "{dec_mem:?}");
     }
 
     #[test]

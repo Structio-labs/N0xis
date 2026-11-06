@@ -188,6 +188,135 @@ fn is_float_compare(name: &str) -> bool {
     )
 }
 
+/// The flags of an operation the lift cannot state as a comparison: `add`, whose
+/// carry is not a comparison of its operands, `inc` and `dec` on memory, which leave
+/// the carry alone, and `bt`, whose only product is the carry. They travel as an
+/// intrinsic over the operands the operation read, as a float compare's do, and are
+/// never printed: [`branch_condition`] turns them into what a branch tests.
+pub(crate) const ADD_FLAGS: &str = "__flags_add";
+pub(crate) const INC_FLAGS: &str = "__flags_inc";
+pub(crate) const DEC_FLAGS: &str = "__flags_dec";
+pub(crate) const BT_FLAGS: &str = "__flags_bt";
+
+/// What flags left as a stored result say once the operation is known: `add` keeps
+/// its result as a [`CmpKind::Result`] flags value, which alone answers the zero and
+/// sign conditions, and its operands are in the result's definition. `result` is
+/// what the flags name, and `def_of` reads definitions. An operand that reads memory
+/// is left out, since printing it at the branch would read it again, past whatever
+/// wrote it since. `None` where the definition is not the plain sum.
+pub(crate) fn flags_of_add(flags_value: &MicroExpr, def_of: &dyn Fn(&str) -> Option<MicroExpr>) -> Option<MicroExpr> {
+    let MicroExpr::Compare { kind: CmpKind::Result, lhs, .. } = flags_value else { return None };
+    let name = match lhs.as_ref() {
+        MicroExpr::Var(name) => name,
+        MicroExpr::Cast { expr, .. } => match expr.as_ref() {
+            MicroExpr::Var(name) => name,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let def = def_of(name)?;
+    let (a, b) = sum_operands(&def)?;
+    let clean = |e: &MicroExpr| !matches!(e, MicroExpr::Load { .. } | MicroExpr::Call { .. });
+    (clean(a) && clean(b)).then(|| MicroExpr::intrinsic(ADD_FLAGS, vec![a.clone(), b.clone(), lhs.as_ref().clone()]))
+}
+
+/// The operands of a sum as a write leaves it: under the cast a 32-bit write has, or
+/// in the low part of the register a narrower one keeps the rest of.
+fn sum_operands(e: &MicroExpr) -> Option<(&MicroExpr, &MicroExpr)> {
+    match e {
+        MicroExpr::Binary(BinOp::Add, a, b) => Some((a, b)),
+        MicroExpr::Cast { expr, .. } => sum_operands(expr),
+        MicroExpr::Binary(BinOp::Or, _, low) => sum_operands(low),
+        _ => None,
+    }
+}
+
+/// `a @ b` at the width of its operands. Below 64 bits the cast is what makes it wrap
+/// there, which every flag of it depends on.
+fn at_operand_width(op: BinOp, a: &MicroExpr, b: &MicroExpr) -> MicroExpr {
+    let value = MicroExpr::binary(op, a.clone(), b.clone());
+    match value_width(a).or_else(|| value_width(b)) {
+        Some(bits) => MicroExpr::Cast { signed: false, bits, expr: Box::new(value) },
+        None => value,
+    }
+}
+
+/// OF after `a + b` or `a - b`, as "the sign bit of this is set": an addition
+/// overflows when both operands differ in sign from the result, a subtraction when
+/// `a` differs from `b` and from the result.
+fn overflow_sign(op: BinOp, a: &MicroExpr, b: &MicroExpr, r: &MicroExpr) -> MicroExpr {
+    let xor = |x: &MicroExpr, y: &MicroExpr| MicroExpr::binary(BinOp::Xor, x.clone(), y.clone());
+    let (first, second) = match op {
+        BinOp::Sub => (xor(a, b), xor(a, r)),
+        _ => (xor(a, r), xor(b, r)),
+    };
+    let both = MicroExpr::binary(BinOp::And, first, second);
+    match value_width(a).or_else(|| value_width(b)) {
+        Some(bits) => MicroExpr::Cast { signed: true, bits, expr: Box::new(both) },
+        None => both,
+    }
+}
+
+/// The conditions a sum's flags answer. `carry` is what CF says, where it says
+/// anything: `inc` leaves it as it was, and then only the conditions that do not read
+/// it have an answer.
+fn sum_condition(jcc: &str, a: &MicroExpr, b: &MicroExpr, result: Option<&MicroExpr>, has_carry: bool) -> Option<MicroExpr> {
+    let r = result.cloned().unwrap_or_else(|| at_operand_width(BinOp::Add, a, b));
+    let zero = || MicroExpr::constant(0, 64);
+    let is_zero = |op| MicroExpr::binary(op, r.clone(), zero());
+    let carry = |op| MicroExpr::binary(op, r.clone(), a.clone());
+    let overflowed = |op| MicroExpr::binary(op, overflow_sign(BinOp::Add, a, b, &r), zero());
+    let negative = || MicroExpr::binary(BinOp::Slt, signed_view(r.clone()), zero());
+    let below_zero = |op| MicroExpr::binary(op, negative(), overflowed(BinOp::Slt));
+    Some(match jcc {
+        "je" | "jz" => is_zero(BinOp::Eq),
+        "jne" | "jnz" => is_zero(BinOp::Ne),
+        "js" => MicroExpr::binary(BinOp::Slt, signed_view(r.clone()), zero()),
+        "jns" => MicroExpr::binary(BinOp::Sge, signed_view(r.clone()), zero()),
+        "jo" => overflowed(BinOp::Slt),
+        "jno" => overflowed(BinOp::Sge),
+        // Signed order is the sign of the exact sum: the result's, flipped by overflow.
+        "jl" | "jnge" => below_zero(BinOp::Ne),
+        "jge" | "jnl" => below_zero(BinOp::Eq),
+        "jle" | "jng" => MicroExpr::binary(BinOp::Or, is_zero(BinOp::Eq), below_zero(BinOp::Ne)),
+        "jg" | "jnle" => MicroExpr::binary(BinOp::And, is_zero(BinOp::Ne), below_zero(BinOp::Eq)),
+        // A sum wrapped exactly when it came out below what was added to.
+        "jb" | "jc" | "jnae" if has_carry => carry(BinOp::Ult),
+        "jae" | "jnc" | "jnb" if has_carry => carry(BinOp::Uge),
+        "ja" | "jnbe" if has_carry => MicroExpr::binary(BinOp::And, carry(BinOp::Uge), is_zero(BinOp::Ne)),
+        "jbe" | "jna" if has_carry => MicroExpr::binary(BinOp::Or, carry(BinOp::Ult), is_zero(BinOp::Eq)),
+        _ => return None,
+    })
+}
+
+/// `bt x, n` puts bit `n` of `x` in CF and says nothing else a compiler reads.
+fn bit_test_condition(jcc: &str, x: &MicroExpr, n: &MicroExpr) -> Option<MicroExpr> {
+    let bit = MicroExpr::binary(BinOp::And, MicroExpr::binary(BinOp::Shr, x.clone(), n.clone()), MicroExpr::constant(1, 8));
+    match jcc {
+        "jb" | "jc" | "jnae" => Some(MicroExpr::binary(BinOp::Ne, bit, MicroExpr::constant(0, 64))),
+        "jae" | "jnc" | "jnb" => Some(MicroExpr::binary(BinOp::Eq, bit, MicroExpr::constant(0, 64))),
+        _ => None,
+    }
+}
+
+/// A condition of the flags in [`ADD_FLAGS`] and its kin, or `None` if `name` is not
+/// one of them; `Some(None)` if the flags do not answer this condition.
+fn arithmetic_condition(name: &str, jcc: &str, args: &[MicroExpr]) -> Option<Option<MicroExpr>> {
+    let one = || MicroExpr::constant(1, 64);
+    Some(match (name, args) {
+        (ADD_FLAGS, [a, b]) => sum_condition(jcc, a, b, None, true),
+        (ADD_FLAGS, [a, b, r]) => sum_condition(jcc, a, b, Some(r), true),
+        (INC_FLAGS, [a]) => sum_condition(jcc, a, &one(), None, false),
+        // `dec` is `cmp a, 1` in every flag but the carry, which it leaves.
+        (DEC_FLAGS, [a]) => match jcc {
+            "ja" | "jae" | "jb" | "jbe" | "jc" | "jnc" | "jnb" | "jnae" | "jna" | "jnbe" => None,
+            _ => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, a.clone(), one()))),
+        },
+        (BT_FLAGS, [x, n]) => bit_test_condition(jcc, x, n),
+        _ => return None,
+    })
+}
+
 /// The condition-code table: which combination of the flags each condition
 /// tests, given the precise `Compare` that defined them. Only sound when the
 /// dataflow value reaching the branch *is* a `Compare` (see the module docs on
@@ -197,11 +326,14 @@ fn is_float_compare(name: &str) -> bool {
 /// `mnemonic` is a condition in the x86 `jcc` spelling — see the module docs
 /// for why that vocabulary, and not a neutral invented one, is the interface.
 pub(crate) fn branch_condition(mnemonic: &str, flags_value: &MicroExpr) -> MicroExpr {
-    if let MicroExpr::Call { target: CallTarget::Intrinsic(name), args } = flags_value
-        && is_float_compare(name)
-    {
-        return float_branch_condition(name, mnemonic, args)
-            .unwrap_or_else(|| MicroExpr::Unknown(format!("cond({mnemonic}) after {name}")));
+    if let MicroExpr::Call { target: CallTarget::Intrinsic(name), args } = flags_value {
+        if is_float_compare(name) {
+            return float_branch_condition(name, mnemonic, args)
+                .unwrap_or_else(|| MicroExpr::Unknown(format!("cond({mnemonic}) after {name}")));
+        }
+        if let Some(answer) = arithmetic_condition(name, mnemonic, args) {
+            return answer.unwrap_or_else(|| MicroExpr::Unknown(format!("cond({mnemonic})")));
+        }
     }
     let MicroExpr::Compare { kind, lhs, rhs } = flags_value else {
         return MicroExpr::Unknown(format!("cond({mnemonic})"));
@@ -254,6 +386,11 @@ pub(crate) fn branch_condition(mnemonic: &str, flags_value: &MicroExpr) -> Micro
         "jge" => MicroExpr::binary(BinOp::Sge, signed_view(lhs), signed_view(rhs)),
         "jl" => MicroExpr::binary(BinOp::Slt, signed_view(lhs), signed_view(rhs)),
         "jle" => MicroExpr::binary(BinOp::Sle, signed_view(lhs), signed_view(rhs)),
+        "jo" | "jno" => {
+            let r = at_operand_width(BinOp::Sub, &lhs, &rhs);
+            let op = if mnemonic == "jo" { BinOp::Slt } else { BinOp::Sge };
+            MicroExpr::binary(op, overflow_sign(BinOp::Sub, &lhs, &rhs, &r), MicroExpr::constant(0, 64))
+        }
         // SF is the sign of the difference at the width compared, and wraps there:
         // sign-extended first, a 32-bit `cmp` that overflows read as its true sign.
         "js" => MicroExpr::binary(BinOp::Slt, difference_at_width(lhs, rhs), MicroExpr::constant(0, 64)),

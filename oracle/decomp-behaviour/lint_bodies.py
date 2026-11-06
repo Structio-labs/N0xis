@@ -96,7 +96,8 @@ TABLE = [("answered", "answered"), ("a parameter read and absent from the signat
          ("a `while` reading a name set only inside it", "fn_while_unset"), ("`switch` on a register with a later version", "switch_stale"),
          ("a branch condition printed as a comment", "fn_cond_lost"), ("  such conditions", "cond_lost"), ("  all ifs", "if_total"),
          ("an instruction printed as a comment for a value", "fn_unlifted_insn"), ("memory access that states no width", "fn_untyped_access"),
-         ("  untyped accesses", "access_untyped"), ("  typed accesses", "access_typed"), ("  calls through a slot (not counted)", "call_slot"), ("  & of a field (not counted)", "address_of_field"), ("register saves printed as assignments", "fn_with_saves"), ("several saves into one slot name", "fn_slot_merged")]
+         ("  untyped accesses", "access_untyped"), ("  typed accesses", "access_typed"), ("  calls through a slot (not counted)", "call_slot"), ("  & of a field (not counted)", "address_of_field"), ("register saves printed as assignments", "fn_with_saves"), ("several saves into one slot name", "fn_slot_merged"),
+         ("`quality` 1.0", "quality_1"), ("a condition or a value left as a comment", "fn_hole"), ("  and `quality` 1.0", "hole_at_quality_1"), ("  a name read with no definition, and `quality` 1.0", "unset_at_quality_1")]
 
 
 def abi(image):
@@ -115,6 +116,18 @@ def lint(path):
         res["answered"] += 1
         c = count(r["c"], args, saved)
         res.update(c)
+        # What the body itself shows against what `quality` says of it. A hole is a condition or a value left as a comment.
+        hole = c["cond_lost"] or c["unlifted_insn"] or "/*index in " in r["c"]
+        if hole:
+            res["fn_hole"] += 1
+        if c["fn_unset_value"]:
+            res["fn_unset"] += 1
+        if r.get("quality") == 1.0:
+            res["quality_1"] += 1
+            if hole:
+                res["hole_at_quality_1"] += 1
+            if c["fn_unset_value"]:
+                res["unset_at_quality_1"] += 1
         for k in c:
             if c[k] and k.startswith(("fn_", "sig_", "switch")):
                 examples.setdefault(k, r["entry"])
@@ -124,9 +137,9 @@ def lint(path):
 def table(columns):
     """columns: {label: Counter}. Prints one line per row of TABLE."""
     labels = list(columns)
-    print(f"{'':48}" + "".join(f"{l[:12]:>13}" for l in labels))
+    print(f"{'':52}" + "".join(f"{l[:12]:>13}" for l in labels))
     for name, key in TABLE:
-        print(f"{name:48}" + "".join(f"{columns[l][key]:>13}" for l in labels))
+        print(f"{name:52}" + "".join(f"{columns[l][key]:>13}" for l in labels))
 
 
 if __name__ == "__main__":

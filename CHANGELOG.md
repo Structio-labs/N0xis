@@ -64,6 +64,9 @@ in a capability's arguments may be text as well, for a client whose own numbers 
   is `(int64_t)(int32_t)rdi * k`. An arithmetic shift says `(int64_t)x >> n`, where it printed the same line as a logical one. `js` after a narrow `cmp` reads the sign at that width.
 - `rbp` is a frame only where the function set it from `rsp`. Elsewhere it is a register like any other: `cmpq $0,0x18(%rbp)` on a heap object printed `local_18`,
   and a write through it that nothing in the function read was removed as a dead local, so the body lost a store the machine makes.
+- A branch after `add`, `sub`, `inc`, `dec` or `bt` prints a condition where it printed a comment. The carry after `add` is `sum < /*u*/ a`, `bt` is `((x >> n) & 0x1) != 0x0`, and
+  `lock decq (%rax); jne` reads `old.1 != 0x1` beside `old.1 = *(uint64_t*)rax;`. A block only the unwinder enters tests the flags it set itself. Checked against the processor by value;
+  what the operation does not say stays a mark: `inc` leaves the carry alone, and flags from a join have no one value.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

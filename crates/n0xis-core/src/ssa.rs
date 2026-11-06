@@ -439,6 +439,15 @@ fn rename_block(
     // 2. Straight-line statements.
     for lstmt in &lifted.blocks[b].stmts {
         let renamed = rename_stmt(&lstmt.stmt, arch, stacks, counters, defs, &mut pushed);
+        // The statement stays as lifted. What a later branch reads of these flags
+        // can say more, once the instruction that set them is known.
+        if let MicroStmt::Assign { dst, value } = &renamed
+            && dst.split('.').next() == Some(FLAGS_VAR)
+            && let Some(insn) = cfg.blocks[b].insns.iter().find(|i| i.va == lstmt.va)
+            && let Some(known) = arch.flags_of_operation(&insn.mnemonic, value, &|name| defs.get(name).cloned())
+        {
+            defs.insert(dst.clone(), known);
+        }
         // The reaching value of the ABI's *float* return register at this `ret`.
         // Reading it here is the whole reason this is recorded during renaming
         // rather than after it: `stacks` **is** the reaching-definition map, and
@@ -695,6 +704,37 @@ fn retarget_float_returns(
     (retargeted, pair)
 }
 
+/// The condition of a block the renaming never reached: a landing pad entered by the
+/// unwinder, and what only it leads to. Its statements stay in machine order under
+/// their register's bare name, and the flags set in the block itself still say what
+/// its branch tests, while nothing between has changed what they read. Flags from
+/// before the block are not known to anything here.
+fn unrenamed_condition(arch: &dyn Arch, jcc: &str, stmts: &[SsaStmt]) -> Option<MicroExpr> {
+    let at = stmts.iter().rposition(|s| matches!(&s.stmt, MicroStmt::Assign { dst, .. } if dst == FLAGS_VAR))?;
+    let MicroStmt::Assign { value, .. } = &stmts[at].stmt else { return None };
+    let mut read = BTreeSet::new();
+    collect_expr_vars(value, &mut read);
+    let reads_memory = expr_reads_memory(value);
+    let undisturbed = stmts[at + 1..].iter().all(|s| match &s.stmt {
+        MicroStmt::Assign { dst, .. } => !read.contains(dst),
+        MicroStmt::Nop => true,
+        MicroStmt::Store { .. } => !reads_memory,
+        _ => false,
+    });
+    undisturbed.then(|| arch.branch_condition(jcc, value))
+}
+
+fn expr_reads_memory(e: &MicroExpr) -> bool {
+    match e {
+        MicroExpr::Load { .. } | MicroExpr::Call { .. } => true,
+        MicroExpr::Binary(_, l, r) => expr_reads_memory(l) || expr_reads_memory(r),
+        MicroExpr::Cast { expr: x, .. } | MicroExpr::Unary(_, x) | MicroExpr::AddrOf(x) => expr_reads_memory(x),
+        MicroExpr::Compare { lhs, rhs, .. } => expr_reads_memory(lhs) || expr_reads_memory(rhs),
+        MicroExpr::Select { cond, a, b } => [cond, a, b].iter().any(|x| expr_reads_memory(x)),
+        MicroExpr::Var(_) | MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) => false,
+    }
+}
+
 fn build_ssa(
     arch: &dyn Arch,
     cfg: &CfgArtifact,
@@ -815,6 +855,9 @@ fn build_ssa(
                     let flags_value = end_flags_name[i].as_ref().and_then(|n| defs.get(n)).unwrap_or(&unknown);
                     arch.branch_condition(&m, flags_value)
                 })
+            } else if b.terminator == "cjmp" {
+                let mnemonic = b.insns.last().map(|ins| ins.mnemonic.clone());
+                mnemonic.and_then(|m| unrenamed_condition(arch, &m, &stmts))
             } else {
                 None
             };
@@ -996,6 +1039,31 @@ mod tests {
             })
             .collect();
         assert_eq!(dsts, vec!["rax.1", "rax.2"]);
+    }
+
+    #[test]
+    fn a_block_no_path_reaches_tests_the_flags_it_set_itself() {
+        let arch = X64::new();
+        let at = |stmt| SsaStmt { va: Va(0x1000), stmt };
+        let flags = MicroStmt::Assign {
+            dst: FLAGS_VAR.to_string(),
+            value: MicroExpr::compare(CmpKind::Result, MicroExpr::var("r15"), MicroExpr::constant(0, 64)),
+        };
+        let cond = unrenamed_condition(&arch, "je", &[at(flags.clone())]);
+        assert_eq!(cond, Some(MicroExpr::binary(n0xis_arch::BinOp::Eq, MicroExpr::var("r15"), MicroExpr::constant(0, 64))));
+        // Nothing set in the block: what they say is not known here.
+        assert_eq!(unrenamed_condition(&arch, "je", &[]), None);
+        // What the flags read was written since, under one bare name: no version
+        // tells the two apart, so the condition cannot be spelled.
+        let later = at(MicroStmt::Assign { dst: "r15".to_string(), value: MicroExpr::constant(1, 64) });
+        assert_eq!(unrenamed_condition(&arch, "je", &[at(flags), later]), None);
+        // A flag read from memory, past a store.
+        let from_memory = MicroStmt::Assign {
+            dst: FLAGS_VAR.to_string(),
+            value: MicroExpr::compare(CmpKind::Cmp, MicroExpr::load(MicroExpr::var("rdi"), 64, false), MicroExpr::constant(0, 64)),
+        };
+        let store = at(MicroStmt::Store { addr: MicroExpr::var("rsi"), value: MicroExpr::constant(1, 64), bits: 64 });
+        assert_eq!(unrenamed_condition(&arch, "je", &[at(from_memory), store]), None);
     }
 
     #[test]

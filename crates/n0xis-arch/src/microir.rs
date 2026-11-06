@@ -55,6 +55,11 @@ pub const CALL_CLOBBER: &str = "call-clobbered";
 /// same arrangement `FLAGS_VAR` uses.
 pub const JUMP_TARGET_VAR: &str = "__jump";
 
+/// The value memory held before an operation wrote it, under a name of its own.
+/// After the write, a re-read of the address is the new value and not the operand
+/// the flags are of: `lock decq (%rax); jne` tests what was there, less one.
+pub const OLD_MEMORY_VAR: &str = "old";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnOp {

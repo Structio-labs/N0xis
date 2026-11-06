@@ -32,7 +32,7 @@ pub use arm64::{Arm64, arm64reg};
 pub use frame::FrameInfo;
 pub use insn::{DecodeError, DecodedInsn, IndexedTarget, InsnKind};
 pub use microir::{
-    BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MemEffect,
+    BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MemEffect, OLD_MEMORY_VAR,
     MicroExpr, MicroStmt, Shift, UnOp, UnliftedReads,
 };
 pub use switch::{SwitchDispatch, SwitchKind};
@@ -438,6 +438,14 @@ pub trait Arch {
     fn branch_condition(&self, mnemonic: &str, flags_value: &MicroExpr) -> MicroExpr {
         let _ = flags_value;
         MicroExpr::Unknown(format!("cond({mnemonic})"))
+    }
+
+    /// A flags value that `branch_condition` can answer more of, now that the
+    /// instruction which set them and the definitions before it are known. `None`
+    /// keeps the value as it is, and an ISA with no override always does.
+    fn flags_of_operation(&self, mnemonic: &str, flags_value: &MicroExpr, def_of: &dyn Fn(&str) -> Option<MicroExpr>) -> Option<MicroExpr> {
+        let _ = (mnemonic, flags_value, def_of);
+        None
     }
 
     /// Registers read/written by an instruction, normalized to full width.

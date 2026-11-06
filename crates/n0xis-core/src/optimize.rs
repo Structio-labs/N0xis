@@ -533,7 +533,11 @@ fn expr_prop_round(
             // change with pseudo-C goldens re-checked, not in a CI commit.
             #[allow(clippy::never_loop)]
             for j in (i + 1)..b.stmts.len() {
-                if stmt_is_barrier(&b.stmts[j].stmt) {
+                // What memory held, read for flags nothing turned out to want, and
+                // the write it goes into is the very next thing: the write's value
+                // is computed before it stores, so the read is still before it.
+                let folds_back = dst.split('.').next() == Some(n0xis_arch::OLD_MEMORY_VAR);
+                if stmt_is_barrier(&b.stmts[j].stmt) && !folds_back {
                     i += 1;
                     continue 'stmts;
                 }

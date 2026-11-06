@@ -802,6 +802,12 @@ impl Arch for X64 {
     /// x86-64's condition codes *are* the vocabulary [`crate::flags`] speaks,
     /// so this forwards unchanged. An architecture that spells them otherwise
     /// translates first — see `Arm64::branch_condition`.
+    fn flags_of_operation(&self, mnemonic: &str, flags_value: &crate::MicroExpr, def_of: &dyn Fn(&str) -> Option<crate::MicroExpr>) -> Option<crate::MicroExpr> {
+        // `inc` looks the same in the IR and leaves the carry alone, so it is the
+        // instruction that says this was a sum with one.
+        (mnemonic == "add").then(|| crate::flags::flags_of_add(flags_value, def_of)).flatten()
+    }
+
     fn branch_condition(&self, mnemonic: &str, flags_value: &crate::MicroExpr) -> crate::MicroExpr {
         crate::flags::branch_condition(mnemonic, flags_value)
     }
