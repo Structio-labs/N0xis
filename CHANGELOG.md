@@ -5,6 +5,11 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A filtered `debug watch` that times out no longer can kill its target.** With hits passing, a thread that trapped in the moments before the detach was still in
+the debugger's queue, and went back to the target as an unhandled single step: exit 0x80000004, 5 of 40 on a 10 Hz site. Every debugger command on Windows now takes
+what is in the queue before it detaches. `debug await-hit` also hands the target's own exceptions back to it while it waits, as `debug watch` always did, where it
+used to continue them as handled.
+
 **A 32-bit target on Windows is refused by the debugger commands, before anything touches it.** `debug await-hit`, `debug watch` and `provenance trace`
 do not understand a WOW64 process's traps: they answered `timed_out:true` after the target had run through the site, and then it died, 8 of 8. They now
 answer `target-unsupported`, and the target keeps running.

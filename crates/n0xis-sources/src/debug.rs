@@ -92,6 +92,10 @@ const POLL_MS: u32 = 250;
 /// Some kernels report `ERROR_SEM_TIMEOUT` instead of `WAIT_TIMEOUT` from a
 /// timed-out `WaitForDebugEvent`.
 const ERROR_SEM_TIMEOUT: u32 = 121;
+/// How long the queue has to stay empty before a detach believes it is, and how long
+/// a target raising exceptions of its own without a pause can hold the detach up.
+const DRAIN_QUIET_MS: u32 = 50;
+const DRAIN_AT_MOST: Duration = Duration::from_secs(1);
 
 /// Become `pid`'s debugger and hold the attach for `timeout_ms` without
 /// arming anything (no `int3` patch, no debug-register write) — a diagnostic
@@ -102,9 +106,8 @@ const ERROR_SEM_TIMEOUT: u32 = 121;
 /// detached (`DebugGuard`'s `Drop`), same as every other function here.
 pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
     let _interruptible = Interruptible::install();
-    let _debug_guard = DebugGuard::attach(pid)?;
+    let mut debug = DebugGuard::attach(pid)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
-    let mut first_bp_seen = false;
     loop {
         if interrupt::requested() {
             return Err(SourceError::Interrupted);
@@ -122,23 +125,8 @@ pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
             }
             return Err(SourceError::Os(format!("WaitForDebugEvent failed (GLE {err})")));
         }
-        // Windows delivers exactly one system-injected `EXCEPTION_BREAKPOINT`
-        // right after `DebugActiveProcess` (the "a debugger attached" notice).
-        // The debugger MUST swallow it with `DBG_CONTINUE`; passing it back as
-        // `DBG_EXCEPTION_NOT_HANDLED` delivers an unexpected breakpoint
-        // exception to a target that has no handler for it, which crashes the
-        // target. This one line was the real cause of the "attaching kills the
-        // target" behaviour we misattributed to anti-debug.
         let status = if ev.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-            let code = unsafe { ev.u.Exception.ExceptionRecord.ExceptionCode };
-            if code == EXCEPTION_BREAKPOINT && !first_bp_seen {
-                first_bp_seen = true;
-                DBG_CONTINUE
-            } else {
-                // Any other exception is the target's own — hand it back
-                // unchanged so its normal handlers (LuaJIT, the CRT, …) run.
-                DBG_EXCEPTION_NOT_HANDLED
-            }
+            debug.status_of(unsafe { ev.u.Exception.ExceptionRecord.ExceptionCode })
         } else {
             DBG_CONTINUE
         };
@@ -180,14 +168,12 @@ pub fn await_breakpoint_hit(
     // gone again, a thread reaching it needs a debugger to report to, or it dies with
     // 0x80000003. Both orders were wrong the other way round: the byte went in before
     // the attach, and came out after the detach.
-    let _debug_guard = DebugGuard::attach(pid)?;
+    let mut debug = DebugGuard::attach(pid)?;
+    debug.planted = Some(addr);
     let mut bp = BreakpointGuard::arm(h_process, addr, before_planting)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut hit: Option<BreakpointHit> = None;
-    // The first `EXCEPTION_BREAKPOINT` after attach is Windows' own attach
-    // notification and must be `DBG_CONTINUE`d, never handed back to the target.
-    let mut first_bp_seen = false;
 
     loop {
         if interrupt::requested() {
@@ -218,21 +204,11 @@ pub fn await_breakpoint_hit(
                 bp.disarm();
                 rewind_rip(ev.dwThreadId, addr)?;
                 unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
-                drain_pending_events();
                 hit = Some(captured);
                 break;
             }
 
-            // Swallow the system's initial attach breakpoint; only *other*
-            // breakpoints (the target's own int3s) go back unhandled.
-            let status = if code == EXCEPTION_BREAKPOINT && !first_bp_seen {
-                first_bp_seen = true;
-                DBG_CONTINUE
-            } else if code == EXCEPTION_BREAKPOINT {
-                DBG_EXCEPTION_NOT_HANDLED
-            } else {
-                DBG_CONTINUE
-            };
+            let status = debug.status_of(code);
             unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, status) };
             continue;
         }
@@ -313,8 +289,20 @@ impl Drop for BreakpointGuard {
     }
 }
 
-/// Owns the `DebugActiveProcess` attach; detaches on drop.
-struct DebugGuard(u32);
+/// Owns the `DebugActiveProcess` attach; on drop, takes every event still on its way
+/// and only then detaches.
+///
+/// An event the target raised and nobody took goes back to it on detach as unhandled.
+/// A watch that timed out with hits passing killed its target that way, with 0x80000004,
+/// 5 of 40 on a 10 Hz site: a thread that trapped in the moments between the last wait
+/// and the detach was waiting in the queue, whatever the debug registers said by then.
+struct DebugGuard {
+    pid: u32,
+    /// The system's own breakpoint for the attach. Until it is seen, a breakpoint is it.
+    attach_breakpoint_seen: bool,
+    /// The address of ours, for a thread found stopped on it: see [`Self::drain`].
+    planted: Option<Va>,
+}
 
 impl DebugGuard {
     fn attach(pid: u32) -> Result<Self, SourceError> {
@@ -329,13 +317,57 @@ impl DebugGuard {
             unsafe { DebugActiveProcessStop(pid) };
             return Err(SourceError::Os("DebugSetProcessKillOnExit(false) failed".into()));
         }
-        Ok(DebugGuard(pid))
+        Ok(DebugGuard { pid, attach_breakpoint_seen: false, planted: None })
+    }
+
+    /// What an exception that is not one of our hits goes back as. The attach's
+    /// breakpoint is swallowed: handing it back delivers a breakpoint to a target with no
+    /// handler for it, which is what "attaching kills the target" turned out to be. A
+    /// stray single step is continued too (another tool's trap flag, or a trap of ours
+    /// that lost a race with the disarm). Anything else is the target's own, and goes
+    /// back unchanged so that its handlers run: continuing a C++ throw or an access
+    /// violation as handled changes what the target does.
+    fn status_of(&mut self, code: i32) -> i32 {
+        match code {
+            EXCEPTION_BREAKPOINT if !self.attach_breakpoint_seen => {
+                self.attach_breakpoint_seen = true;
+                DBG_CONTINUE
+            }
+            EXCEPTION_SINGLE_STEP => DBG_CONTINUE,
+            _ => DBG_EXCEPTION_NOT_HANDLED,
+        }
+    }
+
+    /// Take what is in the queue, until it has been quiet for a moment. What was armed
+    /// is disarmed by now, so what arrives was raised before that and needs nothing but an
+    /// answer, apart from a thread on our byte: the byte is back, and it has to run the
+    /// whole instruction from its start.
+    fn drain(&mut self) {
+        let deadline = Instant::now() + DRAIN_AT_MOST;
+        while Instant::now() < deadline {
+            let mut ev: DEBUG_EVENT = unsafe { mem::zeroed() };
+            if unsafe { WaitForDebugEvent(&mut ev, DRAIN_QUIET_MS) } == 0 {
+                return;
+            }
+            let mut status = DBG_CONTINUE;
+            if ev.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
+                let record = unsafe { ev.u.Exception.ExceptionRecord };
+                let on_ours = record.ExceptionCode == EXCEPTION_BREAKPOINT && self.planted == Some(Va(record.ExceptionAddress as u64));
+                if on_ours {
+                    let _ = rewind_rip(ev.dwThreadId, Va(record.ExceptionAddress as u64));
+                } else {
+                    status = self.status_of(record.ExceptionCode);
+                }
+            }
+            unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, status) };
+        }
     }
 }
 
 impl Drop for DebugGuard {
     fn drop(&mut self) {
-        unsafe { DebugActiveProcessStop(self.0) };
+        self.drain();
+        unsafe { DebugActiveProcessStop(self.pid) };
     }
 }
 
@@ -517,20 +549,6 @@ fn rewind_rip(tid: u32, bp_va: Va) -> Result<(), SourceError> {
         return Err(SourceError::Os(format!("SetThreadContext(Rip={bp_va}, {tid}) failed")));
     }
     Ok(())
-}
-
-/// Best-effort: swallow any debug events still in flight right after resuming
-/// from the hit, so they don't linger and confuse the next `WaitForDebugEvent`
-/// caller. Short, bounded window — not a full event loop.
-fn drain_pending_events() {
-    let deadline = Instant::now() + Duration::from_millis(250);
-    while Instant::now() < deadline {
-        let mut ev: DEBUG_EVENT = unsafe { mem::zeroed() };
-        if unsafe { WaitForDebugEvent(&mut ev, 50) } == 0 {
-            break;
-        }
-        unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
-    }
 }
 
 // ============================================================================
@@ -724,15 +742,11 @@ pub fn await_watchpoint_hit_where(
     // freely-running thread it can silently fail). `DebugActiveProcess`
     // synthesises a `CREATE_THREAD` for every pre-existing thread and a real
     // one for every thread spawned later, so the loop covers the full set.
-    let _debug_guard = DebugGuard::attach(pid)?;
+    let mut debug = DebugGuard::attach(pid)?;
     let mut watch = WatchGuard::new(addr, kind, len)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut hit: Option<BreakpointHit> = None;
-    // The first `EXCEPTION_BREAKPOINT` after attach is Windows' attach
-    // notification — must be `DBG_CONTINUE`d, not handed back to the target
-    // (doing so crashes it: the cause of the "watchpoint kills the target" bug).
-    let mut first_bp_seen = false;
     // Budget for non-matching conditional hits — see the bail-out below. The
     // one shared number, not a per-OS copy (`crate::hit`).
     use crate::hit::MAX_CONDITION_MISSES;
@@ -793,8 +807,6 @@ pub fn await_watchpoint_hit_where(
                     // with an explanation instead of grinding it to death:
                     // a condition this rare needs a colder trap site.
                     if misses >= MAX_CONDITION_MISSES {
-                        watch.disarm();
-                        drain_pending_events();
                         return Err(SourceError::Os(format!(
                             "condition `{}={}` did not match in {MAX_CONDITION_MISSES} hits — this trap site is too hot to \
                              filter on (every non-matching hit stops the target). Pick a colder address, or watch a data \
@@ -807,23 +819,11 @@ pub fn await_watchpoint_hit_where(
                 watch.disarm();
                 clear_dr6(ev.dwThreadId);
                 unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
-                drain_pending_events();
                 hit = Some(captured?);
                 break;
             }
 
-            // Swallow the system's initial attach breakpoint. A stray
-            // single-step (e.g. another tool's trap flag) is also ours to
-            // continue; any other exception is the target's own and goes back
-            // unchanged so its normal handlers run.
-            let status = if code == EXCEPTION_BREAKPOINT && !first_bp_seen {
-                first_bp_seen = true;
-                DBG_CONTINUE
-            } else if code == EXCEPTION_SINGLE_STEP {
-                DBG_CONTINUE
-            } else {
-                DBG_EXCEPTION_NOT_HANDLED
-            };
+            let status = debug.status_of(code);
             unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, status) };
             continue;
         }
