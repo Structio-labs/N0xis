@@ -104,6 +104,13 @@ struct Scene {
     root: PathBuf,
 }
 
+/// A scene holds copies of the binaries, so one left behind per run filled a disk.
+impl Drop for Scene {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 impl Scene {
     fn new(name: &str) -> Scene {
         let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("door-{}-{name}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -134,6 +141,14 @@ impl Scene {
 
     fn piped(&self, args: &[&str]) -> Output {
         self.command(Path::new(BIN), args).output().expect("run")
+    }
+
+    /// Today's check has been made, so no detached copy starts: one in flight reads the state, asks,
+    /// and writes back what it read, over anything planted meanwhile.
+    #[cfg(unix)]
+    fn no_check_today(&self) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        std::fs::write(self.config.join("update-check.stamp"), now.to_string()).unwrap();
     }
 
     fn plant_state(&self, state: Value) {
@@ -595,6 +610,7 @@ mod on_a_terminal {
     #[test]
     fn the_notice_of_an_install_is_only_said_by_that_file() {
         let s = Scene::new("anotherfile");
+        s.no_check_today();
         let version = env!("CARGO_PKG_VERSION");
         s.plant_state(json!({ "installed": { "from": "0.0.1", "to": version, "path": "/another/copy/n0xis" } }));
         assert_eq!(run(s.command(Path::new(BIN), A_COMMAND)).stderr, "", "this file was not installed");

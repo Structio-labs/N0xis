@@ -63,10 +63,18 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 struct Bench {
     server: Server,
+    root: PathBuf,
     dir: PathBuf,
     config: PathBuf,
     exe: PathBuf,
     key: Ed25519KeyPair,
+}
+
+/// One left behind per run is one more copy of everything it planted.
+impl Drop for Bench {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }
 
 impl Bench {
@@ -79,7 +87,7 @@ impl Bench {
         fs::create_dir_all(&config).unwrap();
         let exe = dir.join("n0xis");
         fs::write(&exe, OLD).unwrap();
-        Bench { server: Server::start(), dir, config, exe, key: key(7) }
+        Bench { server: Server::start(), root, dir, config, exe, key: key(7) }
     }
 
     fn limits() -> Limits {
@@ -1948,6 +1956,14 @@ fn files_another_user_planted_in_a_sticky_directory_decide_nothing() {
         eprintln!("not verified here: no passwordless sudo");
         return;
     }
+    // Gone even when an assertion fails: what root made here, `cargo clean` could not remove.
+    struct RemovedAsRoot(PathBuf);
+    impl Drop for RemovedAsRoot {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("sudo").args(["-n", "rm", "-rf"]).arg(&self.0).output();
+        }
+    }
+    let _removed = RemovedAsRoot(sticky.clone());
     let exe = sticky.join("n0xis");
     fs::rename(&b.exe, &exe).unwrap();
     b.exe = exe;
@@ -1988,5 +2004,4 @@ fn files_another_user_planted_in_a_sticky_directory_decide_nothing() {
     // The calibration: with nothing planted the same directory works.
     b.updater().update().expect("update");
     assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
-    assert!(sudo(&["rm", "-rf", &path(&sticky)]));
 }
