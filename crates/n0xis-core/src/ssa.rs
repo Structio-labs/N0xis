@@ -619,6 +619,12 @@ fn computed_here(
 /// the result spans both vector return registers. Both are facts type recovery
 /// needs and cannot re-derive once the optimizer has folded the register names
 /// away.
+/// The flags an instruction sets from its own result, which read nothing it was not
+/// going to produce anyway (see [`retarget_float_returns`]).
+fn flags_by_product(stmt: &MicroStmt) -> bool {
+    matches!(stmt, MicroStmt::Assign { dst, value: MicroExpr::Compare { kind: CmpKind::Result | CmpKind::LogicalResult, .. } } if dst.split('.').next() == Some(FLAGS_VAR))
+}
+
 fn retarget_float_returns(
     blocks: &mut [SsaBlock],
     sites: &[RetSite],
@@ -645,10 +651,7 @@ fn retarget_float_returns(
             // The two are told apart by the comparison's kind, which the lift
             // already records: `Result`/`LogicalResult` are the by-product of an
             // instruction whose real output is its destination register.
-            if let MicroStmt::Assign { dst, value } = &s.stmt
-                && dst.split('.').next() == Some(FLAGS_VAR)
-                && matches!(value, MicroExpr::Compare { kind: CmpKind::Result | CmpKind::LogicalResult, .. })
-            {
+            if flags_by_product(&s.stmt) {
                 continue;
             }
             stmt_uses(&s.stmt, &mut uses);
@@ -892,7 +895,7 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
     let mut owned: BTreeSet<String> = BTreeSet::new();
     for b in blocks {
         for s in &b.stmts {
-            if !matches!(s.stmt, MicroStmt::Return(_)) {
+            if !matches!(s.stmt, MicroStmt::Return(_)) && !flags_by_product(&s.stmt) {
                 stmt_uses(&s.stmt, &mut owned);
             }
         }
