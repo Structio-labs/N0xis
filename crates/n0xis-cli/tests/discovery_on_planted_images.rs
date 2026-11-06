@@ -38,6 +38,10 @@
 //! - `arm32.so` (`arm32.so.symbols.txt`): `in_arm` at `0x10198` size 8 and
 //!   `in_thumb` at `0x101a1` size 4, both tables; `.text` is `0x10198..0x101a4`
 //!   (`arm32.so.sections.txt`), so `in_thumb`'s code starts at `0x101a0`.
+//! - `gaps.so`, `gaps_aarch64.so` (`.disassembly.txt`, `.frames.txt`,
+//!   `.sections.txt`): frames of `0x100` bytes, each a gap between declared
+//!   functions; the `.s` says what is at each offset. `.text` is at `0x1000` and
+//!   `0x1b0`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -308,4 +312,178 @@ fn the_symbols_that_declare_functions_are_the_sized_ones_in_code() {
     let got: Vec<(u64, u64)> = arm.symbol_functions().iter().map(|f| (f.start.0, f.end.0)).collect();
     assert_eq!(got, [(0x10198, 0x101a0), (0x10198, 0x101a0)], "`in_arm` from both tables, `in_thumb` from neither");
     assert!(arm.plt_ranges().is_empty());
+}
+
+/// The offsets from `.text` of the starts listed in one frame of `gaps.s`, after
+/// the declared function it begins with: what the gap holds and nothing else.
+fn frame(starts: &[String], text: u64, n: u64) -> Vec<u64> {
+    let (lo, hi) = (text + n * 0x100 + 0x10, text + (n + 1) * 0x100);
+    starts.iter().map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).expect("hex")).filter(|va| (lo..hi).contains(va)).map(|va| va - text).collect()
+}
+
+/// `.text` of `gaps.so` (`gaps.so.sections.txt`).
+const GAPS_TEXT: u64 = 0x1000;
+/// `.text` of `gaps_aarch64.so` (`gaps_aarch64.so.sections.txt`).
+const GAPS_AARCH64_TEXT: u64 = 0x1b0;
+
+fn gaps(tag: &str, image: &str) -> Vec<String> {
+    let dir = project(tag);
+    let starts = listed(&dir, &fixture(image));
+    let _ = std::fs::remove_dir_all(&dir);
+    starts
+}
+
+/// Rule A: a jump past the gap's end, direct or conditional, has left the
+/// function and silences nothing after it. The class this rule closes: 2088 of
+/// one release PE's 2160 missed functions lay after such a jump.
+#[test]
+fn a_jump_past_the_end_of_the_gap_silences_nothing() {
+    let starts = gaps("gap_a", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 1), [0x110, 0x120, 0x130, 0x140], "{starts:?}");
+    let dir = project("gap_a_why");
+    let got = why(&dir, &fixture("gaps.so"), "0x1120");
+    assert_eq!(got["found"]["start_sources"], json!([{"source": "gap_sweep"}]), "{got}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A jump inside the gap covers what it jumps over, as it did: A must not read
+/// every jump as leaving.
+#[test]
+fn a_forward_jump_inside_one_function_lists_nothing_it_jumps_over() {
+    let starts = gaps("gap_a_not", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 2), [0x210, 0x240], "{starts:?}");
+}
+
+/// Rule C: straight after a far jump, code off the entry alignment is the same
+/// function going on.
+#[test]
+fn unaligned_code_after_a_far_jump_is_not_a_start() {
+    let starts = gaps("gap_c", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 3), [0x310, 0x330], "{starts:?}");
+}
+
+/// Only a far jump asks for alignment: not a return and filler, not a jump back.
+#[test]
+fn nothing_but_a_far_jump_asks_for_alignment() {
+    let starts = gaps("gap_c_not", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 4), [0x410, 0x417, 0x420, 0x430, 0x437], "{starts:?}");
+}
+
+/// Rule E: a whole table's cases are not functions, each after filler where
+/// nothing else would stop it, and they cover nothing: the function between two
+/// of them and the one after the last are listed.
+#[test]
+fn the_cases_of_a_whole_jump_table_are_not_functions_and_cover_nothing() {
+    let starts = gaps("gap_e", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 5), [0x510, 0x540, 0x570], "{starts:?}");
+}
+
+/// E, for a case the walk had already passed when it reached the dispatch.
+#[test]
+fn a_jump_table_case_before_its_dispatch_is_taken_back() {
+    let starts = gaps("gap_e_back", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 6), [0x610, 0x630, 0x660], "{starts:?}");
+}
+
+/// A table one of whose cases is called is a table of functions: all listed.
+#[test]
+fn a_table_with_a_case_something_calls_is_no_function_s_table() {
+    let starts = gaps("gap_e_called", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 7), [0x710, 0x730, 0x740, 0x750], "{starts:?}");
+}
+
+/// With no bound, how far the table goes is a probe, and its cases are not
+/// taken as exact.
+#[test]
+fn a_table_with_no_bound_is_not_taken_as_a_whole() {
+    let starts = gaps("gap_e_probe", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 8), [0x810, 0x830, 0x840, 0x850], "{starts:?}");
+}
+
+/// Rule F: a conditional branch back joins what it spans, and its target too
+/// when that is a start.
+#[test]
+fn a_conditional_branch_back_joins_what_it_spans() {
+    let starts = gaps("gap_f", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 9), [0x910, 0x940], "{starts:?}");
+    assert_eq!(frame(&starts, GAPS_TEXT, 10), [0xa10, 0xa40], "{starts:?}");
+}
+
+/// An unconditional jump back may be a tail call: it joins nothing.
+#[test]
+fn an_unconditional_jump_back_joins_nothing() {
+    let starts = gaps("gap_f_jmp", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 11), [0xb10, 0xb20, 0xb30, 0xb40], "{starts:?}");
+}
+
+/// A branch back to a call target goes to a function of its own: it joins
+/// nothing, and 0xc30 and 0xc40 between them stay.
+#[test]
+fn a_branch_back_to_a_call_target_joins_nothing() {
+    let starts = gaps("gap_f_call", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 12), [0xc10, 0xc20, 0xc30, 0xc40, 0xc50], "{starts:?}");
+}
+
+/// A branch to itself spans nothing. The first measurement of F panicked on
+/// one: the range it took began past its end.
+#[test]
+fn a_branch_to_itself_spans_nothing() {
+    let starts = gaps("gap_f_self", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 13), [0xd10, 0xd20, 0xd30, 0xd40], "{starts:?}");
+}
+
+/// Rule H: code that reads a callee-saved register it never wrote, or gives
+/// back stack it never took, is no entry; a register saved and then set, one
+/// cleared, a volatile one, one read only to be changed in place, are.
+#[test]
+fn code_that_uses_what_no_entry_has_is_not_a_start() {
+    let starts = gaps("gap_h", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 14), [0xe10, 0xe60, 0xe70, 0xe80, 0xe90], "{starts:?}");
+}
+
+/// Rule I: what follows an unexplained jump through a register at once is that
+/// dispatch going on, through its own direct jumps; filler ends it.
+#[test]
+fn what_follows_an_open_dispatch_at_once_is_not_a_start() {
+    let starts = gaps("gap_i", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 15), [0xf10, 0xf30, 0xf40, 0xf50], "{starts:?}");
+}
+
+/// A call target ends an open dispatch, and a jump after it arms the sweep.
+#[test]
+fn a_call_target_ends_an_open_dispatch() {
+    let starts = gaps("gap_i_call", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 16), [0x1010, 0x1017, 0x101e, 0x1030], "{starts:?}");
+}
+
+/// A jump through a memory slot reads no register that opens a dispatch, and
+/// one through the stack pointer is no dispatch: a row of thunks is a row of
+/// functions.
+#[test]
+fn a_row_of_thunks_opens_no_dispatch() {
+    let starts = gaps("gap_i_thunk", "gaps.so");
+    assert_eq!(frame(&starts, GAPS_TEXT, 17), [0x1110, 0x1116, 0x111c, 0x1122, 0x1126, 0x1130], "{starts:?}");
+}
+
+/// Where the architecture recognizes no jump table, none of the jump rules
+/// holds, since a table's cases would read as functions: a far jump covers the
+/// gap, nothing joins, nothing is refused as an entry, and an indirect jump arms
+/// as it did.
+#[test]
+fn an_architecture_with_no_jump_tables_keeps_the_older_answer() {
+    let starts = gaps("gap_aarch64", "gaps_aarch64.so");
+    assert_eq!(frame(&starts, GAPS_AARCH64_TEXT, 1), [0x110], "{starts:?}");
+    assert_eq!(frame(&starts, GAPS_AARCH64_TEXT, 2), [0x210, 0x220, 0x230, 0x240], "{starts:?}");
+    assert_eq!(frame(&starts, GAPS_AARCH64_TEXT, 3), [0x310, 0x320, 0x330], "{starts:?}");
+    assert_eq!(frame(&starts, GAPS_AARCH64_TEXT, 4), [0x410, 0x418, 0x420, 0x430], "{starts:?}");
+}
+
+/// Rule B holds everywhere: past a zero word and past a word that does not
+/// decode, the sweep steps by the word and lands on the next instruction. A
+/// byte-wise step read words from inside words and listed what it read.
+#[test]
+fn the_sweep_stays_on_the_word_boundary() {
+    let starts = gaps("gap_aarch64_b", "gaps_aarch64.so");
+    assert_eq!(frame(&starts, GAPS_AARCH64_TEXT, 5), [0x510, 0x520, 0x530], "{starts:?}");
+    assert_eq!(frame(&starts, GAPS_AARCH64_TEXT, 6), [0x610, 0x620, 0x630], "{starts:?}");
 }

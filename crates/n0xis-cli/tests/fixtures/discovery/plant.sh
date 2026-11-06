@@ -44,7 +44,17 @@ aarch64-linux-gnu-as -march=armv8.3-a -o aarch64.o aarch64.s
 aarch64-linux-gnu-ld -shared -o aarch64.so aarch64.o
 rm -f aarch64.o
 LC_ALL=C aarch64-linux-gnu-objdump -d aarch64.so > aarch64.so.disassembly.txt
-for f in x86_64.so i386.so arm32.so aarch64.so lying.so rules.so; do
+as --64 -o gaps.o gaps.s
+ld -shared -o gaps.so gaps.o
+rm -f gaps.o
+LC_ALL=C objdump -d gaps.so > gaps.so.disassembly.txt
+LC_ALL=C objdump --dwarf=frames gaps.so | grep FDE > gaps.so.frames.txt
+aarch64-linux-gnu-as -o gaps_aarch64.o gaps_aarch64.s
+aarch64-linux-gnu-ld -shared -o gaps_aarch64.so gaps_aarch64.o
+rm -f gaps_aarch64.o
+LC_ALL=C aarch64-linux-gnu-objdump -d gaps_aarch64.so > gaps_aarch64.so.disassembly.txt
+LC_ALL=C aarch64-linux-gnu-objdump --dwarf=frames gaps_aarch64.so | grep FDE > gaps_aarch64.so.frames.txt
+for f in x86_64.so i386.so arm32.so aarch64.so lying.so rules.so gaps.so gaps_aarch64.so; do
     LC_ALL=C readelf -SW "$f" > "$f.sections.txt"
     LC_ALL=C readelf -sW "$f" > "$f.symbols.txt"
 done

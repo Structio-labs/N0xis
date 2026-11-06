@@ -1,0 +1,120 @@
+
+gaps_aarch64.so:     file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+00000000000001b0 <.text>:
+ 1b0:	52800000 	mov	w0, #0x0                   	// #0
+ 1b4:	d65f03c0 	ret
+ 1b8:	d503201f 	nop
+ 1bc:	d503201f 	nop
+	...
+ 2b0:	52800000 	mov	w0, #0x0                   	// #0
+ 2b4:	d65f03c0 	ret
+ 2b8:	d503201f 	nop
+ 2bc:	d503201f 	nop
+ 2c0:	52800020 	mov	w0, #0x1                   	// #1
+ 2c4:	1400017b 	b	8b0 <_DYNAMIC-0x1f670>
+ 2c8:	d503201f 	nop
+ 2cc:	d503201f 	nop
+ 2d0:	52800020 	mov	w0, #0x1                   	// #1
+ 2d4:	d65f03c0 	ret
+ 2d8:	d503201f 	nop
+ 2dc:	d503201f 	nop
+ 2e0:	52800020 	mov	w0, #0x1                   	// #1
+ 2e4:	d65f03c0 	ret
+ 2e8:	d503201f 	nop
+ 2ec:	d503201f 	nop
+	...
+ 3b0:	52800000 	mov	w0, #0x0                   	// #0
+ 3b4:	d65f03c0 	ret
+ 3b8:	d503201f 	nop
+ 3bc:	d503201f 	nop
+ 3c0:	52800020 	mov	w0, #0x1                   	// #1
+ 3c4:	d65f03c0 	ret
+ 3c8:	d503201f 	nop
+ 3cc:	d503201f 	nop
+ 3d0:	52800020 	mov	w0, #0x1                   	// #1
+ 3d4:	d65f03c0 	ret
+ 3d8:	d503201f 	nop
+ 3dc:	d503201f 	nop
+ 3e0:	71000400 	subs	w0, w0, #0x1
+ 3e4:	54ffff01 	b.ne	3c4 <_DYNAMIC-0x1fb5c>  // b.any
+ 3e8:	d65f03c0 	ret
+ 3ec:	d503201f 	nop
+ 3f0:	52800020 	mov	w0, #0x1                   	// #1
+ 3f4:	d65f03c0 	ret
+ 3f8:	d503201f 	nop
+ 3fc:	d503201f 	nop
+	...
+ 4b0:	52800000 	mov	w0, #0x0                   	// #0
+ 4b4:	d65f03c0 	ret
+ 4b8:	d503201f 	nop
+ 4bc:	d503201f 	nop
+ 4c0:	52800020 	mov	w0, #0x1                   	// #1
+ 4c4:	d65f03c0 	ret
+ 4c8:	d503201f 	nop
+ 4cc:	d503201f 	nop
+ 4d0:	aa1303e0 	mov	x0, x19
+ 4d4:	d65f03c0 	ret
+ 4d8:	d503201f 	nop
+ 4dc:	d503201f 	nop
+ 4e0:	52800020 	mov	w0, #0x1                   	// #1
+ 4e4:	d65f03c0 	ret
+ 4e8:	d503201f 	nop
+ 4ec:	d503201f 	nop
+	...
+ 5b0:	52800000 	mov	w0, #0x0                   	// #0
+ 5b4:	d65f03c0 	ret
+ 5b8:	d503201f 	nop
+ 5bc:	d503201f 	nop
+ 5c0:	52800020 	mov	w0, #0x1                   	// #1
+ 5c4:	d61f0000 	br	x0
+ 5c8:	52800040 	mov	w0, #0x2                   	// #2
+ 5cc:	17fffffd 	b	5c0 <_DYNAMIC-0x1f960>
+ 5d0:	52800060 	mov	w0, #0x3                   	// #3
+ 5d4:	d65f03c0 	ret
+ 5d8:	d503201f 	nop
+ 5dc:	d503201f 	nop
+ 5e0:	52800020 	mov	w0, #0x1                   	// #1
+ 5e4:	d65f03c0 	ret
+ 5e8:	d503201f 	nop
+ 5ec:	d503201f 	nop
+	...
+ 6b0:	52800000 	mov	w0, #0x0                   	// #0
+ 6b4:	d65f03c0 	ret
+ 6b8:	d503201f 	nop
+ 6bc:	d503201f 	nop
+ 6c0:	52800020 	mov	w0, #0x1                   	// #1
+ 6c4:	d65f03c0 	ret
+ 6c8:	d503201f 	nop
+ 6cc:	00000000 	.word	0x00000000
+ 6d0:	d2800000 	mov	x0, #0x0                   	// #0
+ 6d4:	d65f03c0 	ret
+ 6d8:	d503201f 	nop
+ 6dc:	d503201f 	nop
+ 6e0:	52800020 	mov	w0, #0x1                   	// #1
+ 6e4:	d65f03c0 	ret
+ 6e8:	d503201f 	nop
+ 6ec:	d503201f 	nop
+	...
+ 7b0:	52800000 	mov	w0, #0x0                   	// #0
+ 7b4:	d65f03c0 	ret
+ 7b8:	d503201f 	nop
+ 7bc:	d503201f 	nop
+ 7c0:	52800020 	mov	w0, #0x1                   	// #1
+ 7c4:	d65f03c0 	ret
+ 7c8:	d503201f 	nop
+ 7cc:	ffffffff 	.word	0xffffffff
+ 7d0:	52800040 	mov	w0, #0x2                   	// #2
+ 7d4:	d65f03c0 	ret
+ 7d8:	d503201f 	nop
+ 7dc:	d503201f 	nop
+ 7e0:	52800020 	mov	w0, #0x1                   	// #1
+ 7e4:	d65f03c0 	ret
+ 7e8:	d503201f 	nop
+ 7ec:	d503201f 	nop
+	...
+ 8b0:	52800120 	mov	w0, #0x9                   	// #9
+ 8b4:	d65f03c0 	ret
