@@ -10,7 +10,6 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-#[cfg(unix)]
 mod support;
 
 fn example() -> PathBuf {
