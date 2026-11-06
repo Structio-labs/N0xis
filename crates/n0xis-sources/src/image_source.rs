@@ -668,8 +668,7 @@ fn read_only_code_slots(image: &dyn Image) -> Vec<(u64, u64)> {
     words.sort_unstable();
     words.dedup();
     let unique = |w: &(u64, u64), all: &[(u64, u64)]| all.partition_point(|x| x.0 < w.0) + 1 == all.partition_point(|x| x.0 <= w.0);
-    let kept = words.iter().copied().filter(|w| unique(w, &words)).collect();
-    kept
+    words.iter().copied().filter(|w| unique(w, &words)).collect()
 }
 
 impl SymbolProvider for ImageSource {
