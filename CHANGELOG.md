@@ -62,6 +62,8 @@ in a capability's arguments may be text as well, for a client whose own numbers 
   with its test in place where they do not, and `while (c)` only where the test really comes first and what it reads has been written.
 - An operation prints so that C does it at the machine's width and kind. `movslq %edi,%rax; imul` printed `(int32_t)rdi * k`, which C multiplies in 32 bits, and
   is `(int64_t)(int32_t)rdi * k`. An arithmetic shift says `(int64_t)x >> n`, where it printed the same line as a logical one. `js` after a narrow `cmp` reads the sign at that width.
+- `rbp` is a frame only where the function set it from `rsp`. Elsewhere it is a register like any other: `cmpq $0,0x18(%rbp)` on a heap object printed `local_18`,
+  and a write through it that nothing in the function read was removed as a dead local, so the body lost a store the machine makes.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

@@ -274,6 +274,7 @@ impl Pass for DecompPass {
             .with_return_register(crate::ir::abi_return_register(ctx).as_deref())
             .with_register_spelling(ctx.arch.display_reg_map())
             .with_word_bits(ctx.arch.pointer_size().map(|bytes| u32::from(bytes) * 8))
+            .with_frame_versions(crate::typeinfer::frame_versions(&ssa.blocks))
             .with_types(&types);
         // A devirtualized callee is not in `cfg.callsites` (the CFG saw an
         // indirect branch), so its name has to be injected here or the call
@@ -1220,6 +1221,29 @@ mod tests {
         // cast C may compute it in 32 bits too.
         let mul = ret(vec![0x89, 0xf8, 0x0f, 0xaf, 0xc6, 0xc3]);
         assert!(mul.starts_with("return (uint32_t)(") && !mul.contains("uint64_t"), "{mul}");
+    }
+
+    /// `rbp` is a register like any other until the function sets it from `rsp`.
+    /// `cmpq $0,0x18(%rbp)` on a heap object printed `local_18`, and a store through
+    /// it that nothing here read was removed as a dead local.
+    #[test]
+    fn rbp_is_a_frame_only_where_the_function_set_it_from_rsp() {
+        // mov %rdi,%rbp; mov 0x18(%rbp),%rax; ret
+        let text = decomp(vec![0x48, 0x89, 0xfd, 0x48, 0x8b, 0x45, 0x18, 0xc3], DecompStyle::Ssa).pseudo.join("\n");
+        assert!(!text.contains("local_18"), "{text}");
+        assert!(text.contains("*(uint64_t*)"), "{text}");
+        // The entry value is the caller's, not this function's frame: mov 0x18(%rbp),%rax; ret
+        let text = decomp(vec![0x48, 0x8b, 0x45, 0x18, 0xc3], DecompStyle::Ssa).pseudo.join("\n");
+        assert!(!text.contains("local_18"), "{text}");
+        // A write through it survives: mov %rsi,0x18(%rbp); ret
+        let text = decomp(vec![0x48, 0x89, 0x75, 0x18, 0xc3], DecompStyle::Ssa).pseudo.join("\n");
+        assert!(text.contains("0x18") && text.contains(" = rsi"), "the store was removed: {text}");
+        // push %rbp; mov %rsp,%rbp; mov -8(%rbp),%rax; pop %rbp; ret: a frame.
+        let text = decomp(vec![0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0xf8, 0x5d, 0xc3], DecompStyle::Structured).pseudo.join("\n");
+        assert!(text.contains("local_neg_8"), "{text}");
+        // lea 0x10(%rsp),%rbp, the Windows habit: a frame too.
+        let text = decomp(vec![0x48, 0x8d, 0x6c, 0x24, 0x10, 0x48, 0x8b, 0x45, 0xf8, 0xc3], DecompStyle::Structured).pseudo.join("\n");
+        assert!(text.contains("local_neg_8"), "{text}");
     }
 
     /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is

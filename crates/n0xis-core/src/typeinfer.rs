@@ -262,10 +262,56 @@ fn root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
-/// Whether `base + off` with this root names a stack slot — the one answer the
-/// local declarations here and the renderer's `local_*` text both read.
-pub(crate) fn is_stack_root(r: &str) -> bool {
-    r == "rsp" || r == "rbp"
+/// The versions of the frame register that this function set from its stack
+/// pointer. `rbp` is a general register as often as a frame: on one C library 74 of
+/// 678 functions printed `cmpq $0,0x18(%rbp)`, a field of a heap object, as a local,
+/// and a store through it that nothing here read looked removable. So a version
+/// counts only if its value comes from the stack pointer, through copies and
+/// constant offsets; the entry value is the caller's and is not one.
+pub(crate) fn frame_versions(blocks: &[SsaBlock]) -> BTreeSet<String> {
+    let mut from_sp: BTreeSet<String> = BTreeSet::new();
+    let derived = |e: &MicroExpr, known: &BTreeSet<String>| -> bool {
+        fn walk(e: &MicroExpr, known: &BTreeSet<String>) -> bool {
+            match e {
+                MicroExpr::Var(v) => root(v) == "rsp" || known.contains(v),
+                MicroExpr::AddrOf(x) => walk(x, known),
+                MicroExpr::Binary(BinOp::Add | BinOp::Sub, l, r) => matches!(r.as_ref(), MicroExpr::Const { .. }) && walk(l, known),
+                _ => false,
+            }
+        }
+        walk(e, known)
+    };
+    // Each round adds at least one version or ends, and a version is added once.
+    loop {
+        let before = from_sp.len();
+        for b in blocks {
+            for s in &b.stmts {
+                if let MicroStmt::Assign { dst, value } = &s.stmt
+                    && derived(value, &from_sp)
+                {
+                    from_sp.insert(dst.clone());
+                }
+            }
+            for p in &b.phis {
+                let known = |v: &String| *v == p.dst || root(v) == "rsp" || from_sp.contains(v);
+                if !p.inputs.is_empty() && p.inputs.iter().all(|i| known(&i.value)) {
+                    from_sp.insert(p.dst.clone());
+                }
+            }
+        }
+        if from_sp.len() == before {
+            break;
+        }
+    }
+    from_sp.retain(|v| root(v) == "rbp");
+    from_sp
+}
+
+/// Does `base + off` name a stack slot of this function? The one answer the
+/// declarations here, the renderer's `local_*` text and the optimizer's dead-store
+/// removal all read. `frames` is [`frame_versions`] of the same function.
+pub(crate) fn is_stack_base(base: &str, frames: &BTreeSet<String>) -> bool {
+    root(base) == "rsp" || frames.contains(base)
 }
 
 /// The name of the stack slot `offset` bytes from the stack or frame register
@@ -433,15 +479,15 @@ fn is_signed_use(op: BinOp) -> bool {
 }
 
 /// Collect every stack-slot offset whose `Load` appears anywhere in `e`.
-fn harvest_stack_loads(e: &MicroExpr, out: &mut BTreeSet<i64>) {
+fn harvest_stack_loads(e: &MicroExpr, frames: &BTreeSet<String>, out: &mut BTreeSet<i64>) {
     if let MicroExpr::Load { addr, .. } = e
         && let Some((base, off)) = as_base_offset(addr)
-        && is_stack_root(root(&base))
+        && is_stack_base(&base, frames)
     {
         out.insert(off);
     }
     for child in expr_children(e) {
-        harvest_stack_loads(child, out);
+        harvest_stack_loads(child, frames, out);
     }
 }
 
@@ -459,15 +505,15 @@ pub(crate) fn expr_children(e: &MicroExpr) -> Vec<&MicroExpr> {
 
 /// Mark, in `signed`, the stack-slot offsets of any `Load` used as an operand of
 /// a signed operator anywhere in `e` (Rung 3/5 — signedness inferred from use).
-fn mark_signed_uses(e: &MicroExpr, signed: &mut BTreeSet<i64>) {
+fn mark_signed_uses(e: &MicroExpr, frames: &BTreeSet<String>, signed: &mut BTreeSet<i64>) {
     if let MicroExpr::Binary(op, l, r) = e
         && is_signed_use(*op)
     {
-        harvest_stack_loads(l, signed);
-        harvest_stack_loads(r, signed);
+        harvest_stack_loads(l, frames, signed);
+        harvest_stack_loads(r, frames, signed);
     }
     for child in expr_children(e) {
-        mark_signed_uses(child, signed);
+        mark_signed_uses(child, frames, signed);
     }
 }
 
@@ -476,31 +522,32 @@ fn mark_signed_uses(e: &MicroExpr, signed: &mut BTreeSet<i64>) {
 /// the *displayed* type of the local (the IR ops are already correctly
 /// signed/unsigned), so this is a readability inference, never a soundness one.
 fn collect_signed_use_offsets(blocks: &[SsaBlock]) -> BTreeSet<i64> {
+    let frames = frame_versions(blocks);
     let mut signed = BTreeSet::new();
     for b in blocks {
         for s in &b.stmts {
             match &s.stmt {
-                MicroStmt::Assign { value, .. } => mark_signed_uses(value, &mut signed),
+                MicroStmt::Assign { value, .. } => mark_signed_uses(value, &frames, &mut signed),
                 MicroStmt::Store { addr, value, .. } => {
-                    mark_signed_uses(addr, &mut signed);
-                    mark_signed_uses(value, &mut signed);
+                    mark_signed_uses(addr, &frames, &mut signed);
+                    mark_signed_uses(value, &frames, &mut signed);
                 }
-                MicroStmt::Call { args, .. } => args.iter().for_each(|a| mark_signed_uses(a, &mut signed)),
-                MicroStmt::Return(Some(e)) => mark_signed_uses(e, &mut signed),
+                MicroStmt::Call { args, .. } => args.iter().for_each(|a| mark_signed_uses(a, &frames, &mut signed)),
+                MicroStmt::Return(Some(e)) => mark_signed_uses(e, &frames, &mut signed),
                 MicroStmt::Return(None) | MicroStmt::Nop | MicroStmt::Unlifted { .. } => {}
             }
         }
         if let Some(c) = &b.condition {
-            mark_signed_uses(c, &mut signed);
+            mark_signed_uses(c, &frames, &mut signed);
         }
     }
     signed
 }
 
-fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>) -> Vec<LocalVar> {
+fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>, frames: &BTreeSet<String>) -> Vec<LocalVar> {
     let mut by_offset: BTreeMap<i64, (Bits, bool, usize)> = BTreeMap::new();
     for a in accesses {
-        if !is_stack_root(root(&a.base)) {
+        if !is_stack_base(&a.base, frames) {
             continue;
         }
         let entry = by_offset.entry(a.offset).or_insert((a.bits, a.signed, 0));
@@ -523,10 +570,10 @@ fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>) -> Vec<Loc
         .collect()
 }
 
-fn recover_structs(accesses: &[MemAccess]) -> Vec<RecoveredType> {
+fn recover_structs(accesses: &[MemAccess], frames: &BTreeSet<String>) -> Vec<RecoveredType> {
     let mut by_base: BTreeMap<String, BTreeMap<i64, (Bits, bool, usize)>> = BTreeMap::new();
     for a in accesses {
-        if is_stack_root(root(&a.base)) {
+        if is_stack_base(&a.base, frames) {
             continue;
         }
         let fields = by_base.entry(a.base.clone()).or_default();
@@ -1511,8 +1558,9 @@ fn infer_with(
 ) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
     let signed_use = collect_signed_use_offsets(blocks);
-    let locals = recover_locals(&accesses, &signed_use);
-    let structs = recover_structs(&accesses);
+    let frames = frame_versions(blocks);
+    let locals = recover_locals(&accesses, &signed_use, &frames);
+    let structs = recover_structs(&accesses, &frames);
 
     let arg_regs = abi_arg_regs(ctx);
     let used = collect_definite_param_regs(blocks);
@@ -2108,7 +2156,7 @@ mod tests {
         assert!(collect_signed_use_offsets(std::slice::from_ref(&ublk)).is_empty());
         // recover_locals honors the signed-use set even for an unsigned access.
         let acc = vec![MemAccess { base: "rsp".into(), offset: 8, bits: 32, signed: false }];
-        let locals = recover_locals(&acc, &signed);
+        let locals = recover_locals(&acc, &signed, &BTreeSet::new());
         assert_eq!(locals.len(), 1);
         assert!(locals[0].signed, "the compared-signed local should render signed");
     }
@@ -2118,7 +2166,7 @@ mod tests {
     #[test]
     fn a_slot_and_its_mirror_are_declared_under_two_names() {
         let acc = |offset| MemAccess { base: "rsp.1".into(), offset, bits: 64, signed: false };
-        let locals = recover_locals(&[acc(8), acc(-8)], &BTreeSet::new());
+        let locals = recover_locals(&[acc(8), acc(-8)], &BTreeSet::new(), &BTreeSet::new());
         let mut names: Vec<&str> = locals.iter().map(|l| l.name.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["local_8", "local_neg_8"]);

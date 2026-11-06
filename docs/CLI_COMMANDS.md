@@ -599,6 +599,8 @@ How a body reads:
   operand C would give fewer bits is cast up, `(int64_t)(int32_t)rdi * 0x66666667`. `(int64_t)x >> n` is an
   arithmetic shift and `x >> n` of an unsigned value a logical one. A relational is signed unless marked
   `/*u*/`: `a > /*u*/ b` compares as unsigned.
+- A `local_` is a slot of this function's frame: reached through `rsp`, or through `rbp` where the function
+  set it from `rsp`. Through any other `rbp` it is memory like any other, a field of what `rbp` points at.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).

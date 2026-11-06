@@ -1020,12 +1020,6 @@ fn clobber_for_stmt(avail: &mut Vec<Avail>, stmt: &MicroStmt, esc: &Escape) {
     }
 }
 
-/// Is `base` the stack or frame pointer — i.e. does `base+off` name a genuine
-/// stack slot rather than a store through an arbitrary pointer register?
-fn is_frame_base(base: &str) -> bool {
-    base.starts_with("rsp") || base.starts_with("rbp")
-}
-
 /// A stack slot a `call` clobbers by position, independent of escape — and the
 /// answer differs by ABI, which is why the ABI is read rather than assumed.
 ///
@@ -1257,6 +1251,7 @@ fn dead_store_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, win
         }
     }
 
+    let frames = crate::typeinfer::frame_versions(blocks);
     let mut changed = false;
     for b in blocks.iter_mut() {
         let before = b.stmts.len();
@@ -1272,7 +1267,7 @@ fn dead_store_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>, win
                 //  - the slot is provably unobservable (non-escaping);
                 //  - the stored value has no side effect (no call/load to drop);
                 //  - and nothing loads the slot anywhere.
-                let dead = is_frame_base(&base)
+                let dead = crate::typeinfer::is_stack_base(&base, &frames)
                     && esc.call_safe(&base, off)
                     && expr_is_pure(value)
                     && !loaded.iter().any(|(lb, lo, lb_bits)| *lb == base && ranges_overlap(*lo, bytes_of(*lb_bits), off, bytes));
@@ -1767,11 +1762,12 @@ mod tests {
 
     #[test]
     fn a_fully_forwarded_spill_store_is_eliminated() {
-        // mov [rbp-8], rcx ; mov rax, [rbp-8] ; ret
+        // mov rbp, rsp ; mov [rbp-8], rcx ; mov rax, [rbp-8] ; ret
         // Forwarding replaces the reload with rcx; the store to the non-escaping
         // slot is then read nowhere, so dead-store elimination removes it — the
         // whole spill/reload housekeeping disappears (Rung 1c).
         let code = vec![
+            0x48, 0x89, 0xe5, // mov rbp, rsp
             0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
             0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
             0xc3, // ret
@@ -1779,6 +1775,20 @@ mod tests {
         let art = optimize(code);
         assert!(dead_stored(&art), "the fully-forwarded spill store should be dead-eliminated: {:#?}", art.delta);
         assert!(!has_store(&art), "no store to the slot should remain: {:#?}", art.blocks);
+    }
+
+    /// The same bytes in a function that never set `rbp`: it is a pointer the caller
+    /// passed, and the write is the function's effect on the world.
+    #[test]
+    fn a_store_through_rbp_that_is_no_frame_is_kept() {
+        let code = vec![
+            0x48, 0x89, 0x4d, 0xf8, // mov [rbp-8], rcx
+            0x48, 0x8b, 0x45, 0xf8, // mov rax, [rbp-8]
+            0xc3, // ret
+        ];
+        let art = optimize(code);
+        assert!(!dead_stored(&art), "{:#?}", art.delta);
+        assert!(has_store(&art), "{:#?}", art.blocks);
     }
 
     #[test]

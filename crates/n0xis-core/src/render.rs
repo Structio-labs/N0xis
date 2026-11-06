@@ -16,7 +16,7 @@ use n0xis_contracts::Va;
 use crate::demangle::demangle;
 use crate::ir::Callsite;
 use crate::signatures::{known_signature, KnownSignature};
-use crate::typeinfer::{is_stack_root, stack_local_name, TypeArtifact};
+use crate::typeinfer::{is_stack_base, stack_local_name, TypeArtifact};
 
 /// Resolves a call target address to a human name, when known (from the
 /// function's own `CfgArtifact::callsites`, which already went through the
@@ -44,6 +44,9 @@ pub struct RenderNames {
     /// only the access itself can say. `None`: a renderer never told about types,
     /// which has nothing to compare with.
     local_decls: Option<HashMap<i64, LocalDecl>>,
+    /// [`crate::typeinfer::frame_versions`] of this function. `None`: a renderer
+    /// never shown the function, which takes the register's name for it.
+    frames: Option<BTreeSet<String>>,
     /// Base SSA var name → (field offset → field name). An empty inner map means a
     /// recovered but un-named struct (renders `field_0x{off}`); a populated one
     /// comes from a user/RTTI struct definition bound to this base (renders the
@@ -206,6 +209,7 @@ impl RenderNames {
             slot_names,
             locals: HashMap::new(),
             local_decls: None,
+            frames: None,
             structs: HashMap::new(),
             param_names: HashMap::new(),
             params: HashSet::new(),
@@ -293,6 +297,20 @@ impl RenderNames {
         // must not, or a value the function does return disappears.
         self.void_return = types.signature.ret.is_void();
         self
+    }
+
+    /// The versions of the frame register that point into this function's frame.
+    pub fn with_frame_versions(mut self, frames: BTreeSet<String>) -> Self {
+        self.frames = Some(frames);
+        self
+    }
+
+    /// Does `base + offset` name a slot of this function's frame?
+    fn is_stack_address_base(&self, base: &str) -> bool {
+        match &self.frames {
+            Some(frames) => is_stack_base(base, frames),
+            None => matches!(base.split('.').next(), Some("rsp" | "rbp")),
+        }
     }
 
     /// How wide this target's registers are, which is the width the IR computes at
@@ -612,8 +630,7 @@ enum Place {
 impl Place {
     fn of(addr: &MicroExpr, names: &RenderNames) -> Option<Place> {
         let (base, offset) = as_base_offset(addr)?;
-        let root = base.split('.').next().unwrap_or(base);
-        if is_stack_root(root) {
+        if names.is_stack_address_base(base) {
             let name = names.locals.get(&(offset as i64)).cloned().unwrap_or_else(|| stack_local_name(offset as i64));
             return Some(Place::Local { offset, name: names.shown(name, true) });
         }
@@ -719,8 +736,8 @@ fn bin_op_text(op: BinOp) -> &'static str {
 /// sound recognizer (it cannot misfire on real code). Returns the *other*
 /// operand — the value being guarded — so the caller can render the idiom by
 /// name instead of as opaque arithmetic on a mystery global.
-fn stack_guard_operand<'a>(l: &'a MicroExpr, r: &'a MicroExpr) -> Option<&'a MicroExpr> {
-    let is_stack_ptr = |e: &MicroExpr| matches!(e, MicroExpr::Var(name) if is_stack_root(name.split('.').next().unwrap_or(name)));
+fn stack_guard_operand<'a>(l: &'a MicroExpr, r: &'a MicroExpr, names: &RenderNames) -> Option<&'a MicroExpr> {
+    let is_stack_ptr = |e: &MicroExpr| matches!(e, MicroExpr::Var(name) if names.is_stack_address_base(name));
     if is_stack_ptr(r) {
         Some(l)
     } else if is_stack_ptr(l) {
@@ -879,8 +896,8 @@ fn render_computed(e: &MicroExpr, names: &RenderNames, under_narrow_cast: bool) 
             };
             format!("{}{text}", if matches!(op, UnOp::Neg) { "-" } else { "~" })
         }
-        MicroExpr::Binary(BinOp::Xor, l, r) if stack_guard_operand(l, r).is_some() => {
-            let guarded = stack_guard_operand(l, r).expect("just checked is_some");
+        MicroExpr::Binary(BinOp::Xor, l, r) if stack_guard_operand(l, r, names).is_some() => {
+            let guarded = stack_guard_operand(l, r, names).expect("just checked is_some");
             format!("__stack_guard({})", render_expr(guarded, names))
         }
         // `>>` is arithmetic or logical by the type of what it shifts, and the two
