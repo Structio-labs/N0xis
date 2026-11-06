@@ -234,8 +234,8 @@ of that bare name beside it, and nothing else moves in either case. Every frozen
 is the answer, unless `update.manifest_url` is set, which is then the only address. A download is checked against a signed manifest and read back from the disk,
 and the new binary is run, before anything moves. Each failure before that is its own `error.code` with every installed file unchanged: `no-release-key`, `no-signature`,
 `bad-signature`, `bad-manifest`, `manifest-unavailable`, `no-entry`, `no-digest`, `older-version`, `download-failed`, `size-mismatch`, `digest-mismatch`,
-`does-not-run`, `not-a-regular-file`, `not-ours`, `not-writable` (naming the file to fetch), `update-in-progress`, `install-failed`. A failure while moving files is `install-failed` with
-`error.components`, stating for each component whether it is in place. `--rollback` refuses with `no-previous`, `previous-does-not-match`, `not-what-was-installed` (a file was put there by other means), `not-ours`, `not-a-bare-name`, `not-writable` or `update-in-progress`, and answers `data.file`, the one file it was about.
+`does-not-run`, `not-a-regular-file`, `not-ours`, `not-writable` (naming the file to fetch), `update-in-progress`, `changed-during-update` (the file was replaced during the fetch), `install-failed`. A failure while moving files is `install-failed` with
+`error.components`, stating for each component whether it is in place. `--rollback` refuses with `no-previous`, `previous-does-not-match`, `not-what-was-installed` (a file was put there by other means), `not-ours`, `not-a-bare-name`, `not-writable` or `update-in-progress`, and answers `data.file`, the one file it was about, and `data.sha256`, what is there now; `data.from` and `data.to` are null for a file beside it, which is never run, so its version is not known.
 See docs/design/UPDATE.md.
 
 - Sources: none (the running binary).

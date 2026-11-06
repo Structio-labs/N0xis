@@ -25,7 +25,8 @@ Today there is no update mechanism and no network client in the tree: a user dow
   - `update.auto`, off by default: install without being asked, for whoever turns it on. The new binary is put in
     place by the check's own process, between runs, under the same checks as `n0x update` and from the manifest that check
     fetched, so there is no second answer to disagree with the first; a run already started keeps the file it started from, and the
-    previous binary stays for `--rollback`. A notice says what was installed, written only from what moved.
+    previous binary stays for `--rollback`. A notice says what was installed, written only from what moved, and only by the file that moved: the state is shared by a user's copies and holds that file's path, so
+    another copy at that version neither says the line nor uses it up. It holds one install, so with two copies under `update.auto` the later one's line is the one said.
 - **A configuration directory that is not yours does not exist.** On Unix the directory, or its nearest existing ancestor,
   must be owned by the effective user and not be writable by everyone, or it is treated as absent: the defaults with
   `update.auto` off, no remembered keys, no stamp and so no daily check, no detached process, no writes. An explicit
@@ -117,6 +118,11 @@ held, or vouching for each other: `not-ours` at the lock and the hold, and `prev
 The same makes a file written by `sudo n0x update` unusable by the user's own run, and the other way round, and that is a refusal saying so. A plant at a name an install only renames over, such as
 another user's `.previous`, fails that rename: `install-failed`, with the target unchanged.
 
+**The file changed under us.** Before the fetch, the running file's metadata is noted: inode, size and mtime on Unix, size and mtime on Windows. After its lock is taken a difference is the refusal `changed-during-update`, moving
+nothing, and a silent skip in the detached copy, so a rollback or another updater landing during a fetch cannot produce a false `from` or move the target to something older. A file already holding what the manifest names is `unchanged` before
+this is asked, since moving nothing is true however it got there: a run that waited out another at the lock answers that. Each fetch notes its own, so an install this process made is not its own trigger. Only the running file: a sibling's name
+comes from the manifest, so it has no before, and its record states no version that could be false.
+
 **Prepare: every byte on the disk, nothing installed touched.** For each component to change, in full before any commit:
 
 - Download to `<file>.update-new`, created new and mode 0600 whatever the umask.
@@ -142,7 +148,7 @@ a refusal rather than nothing to go by.
 the old binary and running it again finishes the job. For each:
 
 1. `<file>.previous-new` over `<file>.previous`.
-2. `<file>.previous.json.new` over `<file>.previous.json`: `{"from":"<version>","to":"<version>","previous_sha256":"<of .previous>","installed_sha256":"<of what step 3 puts in place>"}`.
+2. `<file>.previous.json.new` over `<file>.previous.json`: `{"from":"<version>","to":"<version>","previous_sha256":"<of .previous>","installed_sha256":"<of what step 3 puts in place>"}`. `from` is what the running file states, and `null` for a sibling, which is never executed, so its version is not known.
    It lives beside the file it describes, not in the configuration directory, so two copies do not share one and it needs no configuration.
 3. `<file>.update-new` over `<file>`. On Windows a running `.exe` can be renamed and not overwritten, so it is renamed to
    `<file>.aside-<digits>` first; if the second rename fails it is renamed back and that is reported.
@@ -162,13 +168,18 @@ record, lock and hold. Nothing looks for other records, and nothing else moves: 
    not in the shared state, so a check in flight has nothing to overwrite and a run with no configuration directory has it too.
 4. `.previous` is renamed into place and the record goes. One shot, no roll forward: a second run is `no-previous`.
 
-`from` and `to` come only from a record that matched, and the answer names the one file. A kill after the hold and before the swap leaves the target unchanged, and a re-run finishes. A kill after the swap leaves it gone back and held, and a
+`from` and `to` come only from a record that matched, and the answer names the one file and the `sha256` of what is there now. A record with no `from` is a sibling's, and its answer states no version: the file and the digest. A kill after the hold and before the swap leaves the target unchanged, and a re-run finishes. A kill after the swap leaves it gone back and held, and a
 re-run says `no-previous`. An explicit `n0x update` ends a hold, after it installs.
 
 **A kill at any point leaves the target as old or new and runnable**, except the one window on Windows between the two renames of step 3,
 where for a moment there is no target. That cannot be closed there: a running exe cannot be replaced in one step.
 
-**Accepted:** `cp` over the binary while a detached check runs from it can give `Text file busy`. That needs a terminal, since a script starts no check.
+**Accepted:**
+
+- `cp` over the binary while a detached check runs from it can give `Text file busy`. That needs a terminal, since a script starts no check.
+- A stalled sibling delays the running file up to the download's bound, and an interrupted update installs nothing.
+- A sibling that was skipped or failed stays old with the next `update` answering that there is nothing to do, until the next release: the answer is true of the running file.
+- A release built on a newer system can raise the glibc floor. Such a client answers `does-not-run` and keeps its file.
 
 ## 4. Where it lives
 
@@ -180,15 +191,16 @@ boundary check holds that. Only the two doors link it, so no analysis path can r
 Rung 1, against a local server with planted manifests: a tampered file, a wrong digest, a bad signature, a
 truncated download, a claimed size past what is sent, an older version, unknown fields, a dead first address, a stale first
 address beside a newer second, a planted key file, a garbage signed file, a file altered on the disk during its download, a target put there by hand, a link, a FIFO and another user's file beside the binary,
-a later-shaped sibling, a dead override with no public request, a server that changes its answer between fetches.
+a later-shaped sibling, a dead override with no public request, a server that changes its answer between fetches, a rollback and another updater landing during a fetch.
 Each ends in the stated refusal, with the installed binary byte for byte unchanged. Rollback is run, not assumed,
 on Linux and under Wine. A kill at each step and a full disk are run against the real binaries too, outside the repository's tests, since
 they need `LD_PRELOAD` and a tmpfs. An old client against a newer manifest is tested by keeping a built old client as a fixture.
 
 ## 6. Steps
 
-1. The release side: a script that builds, writes the manifest, signs it, refuses a version mismatch, publishes. It finds the target directory through `cargo metadata`, runs the built `n0xis --version`, and the Windows one
-   when `wine` is on the path, and refuses unless they state this version. **A key change must not strand older copies:** the key at the previous `v*` tag must be among the signers, unless `--strand-older-copies` says otherwise. A failed
+1. The release side: a script that builds, writes the manifest, signs it, refuses a version mismatch, publishes. It finds the target directory through `cargo metadata` and runs all four built files with `--version`, standard input null and in a bounded time, the two `.exe` under `wine`, and refuses unless each states this version. With `--publish`
+   a file that could not be run is a refusal, and only a dry run may print `NOT RUN`. **A key change must not strand older copies:** each distinct key at every plain `vX.Y.Z` tag below this version must be among the signers, unless `--strand-older-copies` says
+   otherwise. No such file, or a placeholder, gives no constraint, and a file that cannot be read refuses. **Never below the highest:** a version not above every plain `vX.Y.Z` tag is refused, its own tag apart, which is what a failed upload leaves. A failed
    upload after the tag was pushed prints the commands that recover, and a re-run accepts a tag at HEAD with no published release.
 2. `update --check` and `update`, with the planted server.
 3. The notice in a terminal.

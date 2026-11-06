@@ -255,8 +255,8 @@ pub fn run_check(updater: &Updater, auto: bool) {
                     state.installed = Some(Installed { from: report.current, to: report.latest, path });
                 }
                 match done {
-                    // Another run is on it, and whichever finishes will have said what happened.
-                    Err(r) if r.why == Why::UpdateInProgress => {}
+                    // Another run is on it, or has been, and whichever finishes will have said what happened.
+                    Err(r) if matches!(r.why, Why::UpdateInProgress | Why::ChangedDuringUpdate) => {}
                     // The line then offers what could not be done alone, and `n0x update` says why.
                     Err(r) => state.refusal = Some(r.why.code().to_string()),
                     Ok(_) => {}

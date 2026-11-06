@@ -228,6 +228,31 @@ enum Asked {
     Auto,
 }
 
+/// A file as it looks from outside. Before a fetch, since that is what can take a minute with nothing
+/// held: a rollback or another updater landing in it left `self.current` no longer what is there, so the
+/// record stated a `from` that was false, and a file gone back from moved forward regardless. The standard
+/// library has no number for a file on Windows, so there it is the other two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seen {
+    #[cfg(unix)]
+    inode: u64,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Seen {
+    /// Nothing, if nothing is there: which `plan` refuses, and which anything found later differs from.
+    pub(crate) fn of(path: &Path) -> Option<Seen> {
+        let found = fs::metadata(path).ok()?;
+        Some(Seen {
+            #[cfg(unix)]
+            inode: std::os::unix::fs::MetadataExt::ino(&found),
+            size: found.len(),
+            modified: found.modified().ok(),
+        })
+    }
+}
+
 struct Planned {
     component: String,
     target: PathBuf,
@@ -299,8 +324,12 @@ impl Updater {
                     continue;
                 }
             }
+            // Already the file named is said first, since moving nothing is true however it got there:
+            // a run that waited out another at the lock answers `unchanged`.
             if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {
                 report.unchanged.push(item.component);
+            } else if item.runs && Seen::of(&item.target) != found.before {
+                return Err(changed_during_update(&item.target));
             } else {
                 changing.push(item);
             }
@@ -435,6 +464,10 @@ fn lock_for_install(item: &Planned, asked: Asked, version: &Version) -> Result<F
         }
     }
     Ok(lock)
+}
+
+fn changed_during_update(target: &Path) -> Refusal {
+    Refusal::new(Why::ChangedDuringUpdate, format!("{} was replaced while the manifest was being fetched, so it stays as it is", target.display())).with_hint("n0x update looks again")
 }
 
 /// Only when the temps are gone is the sentence said, and it is checked rather than assumed. A sibling

@@ -1495,6 +1495,128 @@ fn a_run_that_waited_out_another_reads_what_it_left() {
     assert_eq!(b.files(), ["n0xis"], "nothing to keep: the file is already the new one");
 }
 
+/// `meanwhile` while the manifest is on its way: what lands between the look at the file and the lock.
+fn during_the_fetch(b: &Bench, manifest: &Value, meanwhile: impl Fn() + Send + Sync + 'static) {
+    b.publish(manifest);
+    let body = serde_json::to_vec(manifest).unwrap();
+    b.server.route("/manifest.json", Reply::During { body, at: 0, meanwhile: Arc::new(meanwhile) });
+}
+
+/// A later release with its own file at `/file`, for a bench where one was already installed.
+fn release_of(b: &Bench, version: &str) -> (Value, Vec<u8>) {
+    let file = program(version);
+    let mut m = b.manifest(version);
+    m["components"][COMPONENT][PLATFORM]["size"] = json!(file.len());
+    m["components"][COMPONENT][PLATFORM]["sha256"] = json!(sha(&file));
+    (m, file)
+}
+
+/// The finding: a rollback during the fetch, and the install went on from what the process believed. The
+/// record said `from` 2.0.0 of a kept file that was 1.0.0, and what had been gone back from moved forward.
+#[test]
+fn a_rollback_landing_during_the_fetch_moves_nothing() {
+    let b = installed("fetchback");
+    let (next, _) = release_of(&b, "2.0.1");
+    let exe = b.exe.clone();
+    during_the_fetch(&b, &next, move || {
+        rollback(&exe, None).expect("rollback");
+    });
+    let mut updater = b.updater();
+    updater.current = Version::new(2, 0, 0);
+    let fetched_before = b.server.asked("/file");
+    let refusal = updater.update().expect_err("the file is not what this process took it for");
+    assert_eq!(refusal.why, Why::ChangedDuringUpdate, "{}", refusal.message);
+    assert_eq!(refusal.why.code(), "changed-during-update");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "it moved");
+    assert_eq!(b.files(), ["n0xis", "n0xis.update-hold"], "it left something, or moved something");
+    assert_eq!(b.server.asked("/file"), fetched_before, "nothing to fetch for a file not being replaced");
+}
+
+/// The same for the detached copy, and in silence: another run did this, and there is nothing to report.
+#[test]
+fn the_detached_copy_skips_a_file_that_changed_in_silence() {
+    let b = installed("fetchquiet");
+    let (next, _) = release_of(&b, "2.0.1");
+    let exe = b.exe.clone();
+    during_the_fetch(&b, &next, move || {
+        rollback(&exe, None).expect("rollback");
+    });
+    let mut updater = b.updater();
+    updater.current = Version::new(2, 0, 0);
+    notice::run_check(&updater, true);
+    let state = state_of(&b);
+    assert_eq!((state.refusal, state.installed), (None, None));
+    assert_eq!(state.latest.as_deref(), Some("2.0.1"), "it is still offered");
+    assert_eq!(fs::read(&b.exe).unwrap(), OLD, "it moved");
+    assert_eq!(b.files(), ["n0xis", "n0xis.update-hold"]);
+}
+
+/// Another updater, landing a release this one's manifest is not: its file is not gone over or kept.
+#[test]
+fn another_updater_landing_during_the_fetch_moves_nothing() {
+    let b = Bench::new("fetchother");
+    // What this run fetched is the older of the two, and it would have moved the target back to that.
+    let (mut third, third_file) = release_of(&b, "3.0.0");
+    b.server.route("/third", Reply::Body(third_file.clone()));
+    third["components"][COMPONENT][PLATFORM]["url"] = json!(b.server.url("/third"));
+    let third_bytes = serde_json::to_vec(&third).unwrap();
+    b.server.route("/other.sig", Reply::Body(sign(&b.key, &third_bytes)));
+    b.server.route("/other", Reply::Body(third_bytes));
+    let other = b.updater_with(vec![b.server.url("/other")], Trust::of_keys(&[public(&b.key)]), Bench::limits());
+    during_the_fetch(&b, &b.manifest("2.0.0"), move || {
+        other.update().expect("the other updater");
+    });
+    let refusal = b.updater().update().expect_err("the target went past what this fetched");
+    assert_eq!(refusal.why, Why::ChangedDuringUpdate, "{}", refusal.message);
+    assert_eq!(fs::read(&b.exe).unwrap(), third_file, "it moved back");
+    assert_eq!(fs::read(b.dir.join("n0xis.previous")).unwrap(), OLD, "what the other one kept");
+}
+
+/// Each of what is compared, alone, with the others kept as they were.
+#[test]
+fn each_of_inode_size_and_mtime_is_a_change() {
+    fn with_the_time(path: &Path, then: std::time::SystemTime) {
+        fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(then).unwrap();
+    }
+    #[allow(clippy::type_complexity)]
+    let mut changes: Vec<(&str, fn(&Path, std::time::SystemTime))> = vec![
+        ("size", |exe, then| {
+            fs::write(exe, [OLD, b"!".as_slice()].concat()).unwrap();
+            with_the_time(exe, then);
+        }),
+        ("mtime", |exe, then| with_the_time(exe, then + Duration::from_secs(10))),
+    ];
+    #[cfg(unix)]
+    changes.push(("inode", |exe, then| {
+        let beside = exe.with_extension("planted");
+        fs::write(&beside, OLD).unwrap();
+        with_the_time(&beside, then);
+        fs::rename(&beside, exe).unwrap();
+    }));
+    for (what, change) in changes {
+        let b = Bench::new(&format!("each-{what}"));
+        let (exe, then) = (b.exe.clone(), fs::metadata(&b.exe).unwrap().modified().unwrap());
+        during_the_fetch(&b, &b.manifest("2.0.0"), move || change(&exe, then));
+        let refusal = b.updater().update().expect_err(what);
+        assert_eq!(refusal.why, Why::ChangedDuringUpdate, "{what}: {}", refusal.message);
+    }
+}
+
+/// A file this same process just installed is not a change someone else made.
+#[test]
+fn a_fresh_install_in_this_process_is_not_its_own_trigger() {
+    let b = Bench::new("fresh");
+    b.publish(&b.manifest("2.0.0"));
+    let updater = b.updater();
+    updater.update().expect("the first");
+    assert_eq!(fs::read(&b.exe).unwrap(), *NEW);
+    let (next, file) = release_of(&b, "3.0.0");
+    b.publish(&next);
+    b.server.route("/file", Reply::Body(file.clone()));
+    updater.update().expect("the second, by the same updater");
+    assert_eq!(fs::read(&b.exe).unwrap(), file);
+}
+
 /// Wait for the download to have reached the disk and call `then` with the temporary's path.
 fn during_the_download(b: &Bench, then: impl Fn(&Path) + Send + Sync + 'static) {
     b.publish(&b.manifest("2.0.0"));

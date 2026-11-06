@@ -36,7 +36,9 @@ LOCK_THEN = """            match lock_for_install(&item, asked, &manifest.versio
             }
 """
 READ_UNDER_THE_LOCK = """        for item in plan {
-""" + LOCK_THEN + """            if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {
+""" + LOCK_THEN + """            // Already the file named is said first, since moving nothing is true however it got there:
+            // a run that waited out another at the lock answers `unchanged`.
+            if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {
 """
 READ_BEFORE_THE_LOCK = """        let plan: Vec<_> = plan.into_iter().map(|item| { let same = measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256); (item, same) }).collect();
         for (item, same) in plan {
@@ -118,7 +120,7 @@ MUTATIONS = [
     (UPDATE + "install.rs", "if installed_hex == record.previous_sha256 {", "if false {", *PLANTED, "a_previous_equal_to_the_target_says_that_nothing_changed"),
     (UPDATE + "install.rs", "let reads = record.from.as_deref().is_none_or(|from| Version::parse(from).is_ok()) && Version::parse(&record.to).is_ok() && from_hex::<32>(&record.previous_sha256).is_some() && from_hex::<32>(&record.installed_sha256).is_some();", "let reads = from_hex::<32>(&record.previous_sha256).is_some();", *PLANTED, "a_record_that_does_not_read_as_versions_is_no_record"),
     (UPDATE + "install.rs", "Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!(\"another run holds {}\", path.display()))),", "Err(TryLockError::WouldBlock) => return Ok(file),", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
-    (UPDATE + "notice.rs", "Err(r) if r.why == Why::UpdateInProgress => {}", "Err(r) if r.why == Why::NoEntry => {}", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
+    (UPDATE + "notice.rs", "Err(r) if matches!(r.why, Why::UpdateInProgress | Why::ChangedDuringUpdate) => {}", "Err(r) if matches!(r.why, Why::NoEntry | Why::ChangedDuringUpdate) => {}", *PLANTED, "a_held_lock_stops_update_rollback_and_the_detached_copy"),
     (UPDATE + "install.rs", "Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!(\"another run holds {}\", path.display()))),", "Err(TryLockError::WouldBlock) => return Ok(file),", *PLANTED, "parallel_runs_keep_the_old_file_for_rollback"),
     (UPDATE + "install.rs", "std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);", "std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o666);", *PLANTED, "the_new_file_is_0600_under_umask_000"),
     (UPDATE + "install.rs", "let (size, sum) = measure(&new_file.0).map_err(disk)?;", "let (size, sum) = (item.entry.size, item.entry.sha256);", *PLANTED, "a_file_altered_after_the_download_is_refused"),
@@ -144,6 +146,16 @@ MUTATIONS = [
     (UPDATE + "install.rs", "        None => (None, None),\n", "        None => (Some(record.to), None),\n", *PLANTED, "a_siblings_version_is_not_known"),
     (UPDATE + "install.rs", "record.from.as_deref().is_none_or(|from| Version::parse(from).is_ok())", "record.from.as_deref().is_some_and(|from| Version::parse(from).is_ok())", *PLANTED, "a_siblings_version_is_not_known"),
     (UPDATE + "install.rs", "sha256: record.previous_sha256, nothing_changed: None", "sha256: to_hex(&installed), nothing_changed: None", *PLANTED, "a_siblings_version_is_not_known"),
+    # 6. The file changed under us.
+    *[(UPDATE + "install.rs", "} else if item.runs && Seen::of(&item.target) != found.before {", "} else if false {", *PLANTED, test) for test in ("a_rollback_landing_during_the_fetch_moves_nothing", "the_detached_copy_skips_a_file_that_changed_in_silence", "another_updater_landing_during_the_fetch_moves_nothing", "each_of_inode_size_and_mtime_is_a_change")],
+    (UPDATE + "notice.rs", "Err(r) if matches!(r.why, Why::UpdateInProgress | Why::ChangedDuringUpdate) => {}", "Err(r) if r.why == Why::UpdateInProgress => {}", *PLANTED, "the_detached_copy_skips_a_file_that_changed_in_silence"),
+    (UPDATE + "install.rs", "inode: std::os::unix::fs::MetadataExt::ino(&found),", "inode: 0,", *PLANTED, "each_of_inode_size_and_mtime_is_a_change"),
+    (UPDATE + "install.rs", "size: found.len(),\n", "size: 0,\n", *PLANTED, "each_of_inode_size_and_mtime_is_a_change"),
+    (UPDATE + "install.rs", "modified: found.modified().ok(),", "modified: None,", *PLANTED, "each_of_inode_size_and_mtime_is_a_change"),
+    # Taken once and kept, an install by this process is the difference it finds.
+    (UPDATE + "lib.rs", "let before = install::Seen::of(&self.exe);", "static FIRST: std::sync::OnceLock<Option<install::Seen>> = std::sync::OnceLock::new();\n        let before = *FIRST.get_or_init(|| install::Seen::of(&self.exe));", *PLANTED, "a_fresh_install_in_this_process_is_not_its_own_trigger"),
+    # Said before what is installed is read, a run that waited out another is refused for finding what it wanted.
+    (UPDATE + "install.rs", "if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {\n                report.unchanged.push(item.component);\n            } else if item.runs && Seen::of(&item.target) != found.before {\n                return Err(changed_during_update(&item.target));\n            } else {", "if item.runs && Seen::of(&item.target) != found.before {\n                return Err(changed_during_update(&item.target));\n            } else if measure(&item.target).is_ok_and(|(_, sum)| sum == item.entry.sha256) {\n                report.unchanged.push(item.component);\n            } else {", *PLANTED, "a_run_that_waited_out_another_reads_what_it_left"),
     # G. A record says what it installed.
     (UPDATE + "install.rs", "if installed_hex != record.installed_sha256 {", "if false {", *PLANTED, "a_hand_installed_target_is_refused_and_kept"),
     # H. The hold is a file beside the binary.

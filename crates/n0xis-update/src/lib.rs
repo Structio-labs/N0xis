@@ -70,6 +70,8 @@ pub enum Why {
     BadSettingValue,
     /// Another run holds the lock beside the binary.
     UpdateInProgress,
+    /// The running file was replaced while the manifest was being fetched.
+    ChangedDuringUpdate,
     /// The running component's new file, checked and signed, did not answer `--version` as it must.
     DoesNotRun,
     /// A file to replace, or a sibling of it, is something other than a regular file.
@@ -110,6 +112,7 @@ impl Why {
             Why::UnknownSetting => "unknown-setting",
             Why::BadSettingValue => "bad-setting-value",
             Why::UpdateInProgress => "update-in-progress",
+            Why::ChangedDuringUpdate => "changed-during-update",
             Why::DoesNotRun => "does-not-run",
             Why::NotARegularFile => "not-a-regular-file",
             Why::PreviousDoesNotMatch => "previous-does-not-match",
@@ -157,6 +160,9 @@ pub struct Found {
     pub manifest: Manifest,
     pub address: String,
     pub tried: Vec<Tried>,
+    /// The running file as it was before this fetch. Here and not on the [`Updater`], so each fetch has
+    /// its own and an install this same process made before it is not taken for someone else's.
+    pub(crate) before: Option<install::Seen>,
 }
 
 /// What `n0x update --check` answers.
@@ -225,6 +231,7 @@ impl Updater {
     /// unsigned, and going on costs nothing, since whatever the next says must verify just the same.
     /// A failure beside a success stays in `tried` and is no refusal.
     pub fn fetch_manifest(&self) -> Result<Found, Refusal> {
+        let before = install::Seen::of(&self.exe);
         let mut tried = Vec::new();
         let mut worst: Option<Why> = None;
         let mut best: Option<(Manifest, &String)> = None;
@@ -242,7 +249,7 @@ impl Updater {
             }
         }
         if let Some((manifest, address)) = best {
-            return Ok(Found { manifest, address: address.clone(), tried });
+            return Ok(Found { manifest, address: address.clone(), tried, before });
         }
         // Reported as the most serious thing any address did: a dead first address must not hide a
         // bad signature at the second, and `Why`'s order is that seriousness.
