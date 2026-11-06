@@ -94,6 +94,7 @@ struct Memo {
     takes: HashMap<(u64, u8), Takes>,
     gives: HashMap<(u64, u8), Gives>,
     comes_back: HashMap<(u64, u8), bool>,
+    flows: HashMap<u64, Option<Arc<Vec<FlowBlock>>>>,
 }
 
 static MEMO: Mutex<Option<(String, Memo)>> = Mutex::new(None);
@@ -678,12 +679,60 @@ pub(crate) fn drop_unread_results(blocks: &mut [SsaBlock]) {
     }
 }
 
-thread_local! {
-    /// How far down a graph being built may still ask. Held here and not in `Ctx`
-    /// because the question is asked from inside the graph builder, of which a
-    /// callee's graph is another run: one more argument through all of it for a value
-    /// only this function reads.
-    static NORETURN_DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(DEPTH) };
+/// One block of a function's graph as the question of whether it comes back reads it.
+#[derive(Clone, Debug)]
+struct FlowBlock {
+    /// Who it calls, in order, where the image says.
+    calls: Vec<Va>,
+    exit: FlowExit,
+}
+
+#[derive(Clone, Debug)]
+enum FlowExit {
+    /// A `ret`, or an exit that cannot be shown to end.
+    MayReturn,
+    /// Ends here for certain.
+    Ends,
+    /// A jump out, as good as a call there.
+    Tail(Option<Va>),
+    Goes(Vec<usize>),
+}
+
+fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Arc<Vec<FlowBlock>>> {
+    if let Some(f) = with_memo(id, |m| m.flows.get(&va.0).cloned()) {
+        return f;
+    }
+    // Built with nothing asked: this graph is what the asking walks.
+    let plain = Ctx { noreturn_on_demand: false, ..*ctx };
+    let flow = CfgPass.run(&plain, CfgInput::new(va, CALLEE_SCAN_SIZE)).ok().filter(|c| c.start == va && !c.blocks.is_empty()).map(|cfg| {
+        let by_start: HashMap<u64, usize> = cfg.blocks.iter().enumerate().map(|(i, b)| (b.start.0, i)).collect();
+        Arc::new(
+            cfg.blocks
+                .iter()
+                .map(|b| FlowBlock {
+                    calls: cfg.callsites.iter().filter(|c| c.from >= b.start && c.from < b.end).filter_map(|c| c.target).collect(),
+                    exit: match b.terminator.as_str() {
+                        "call-noreturn" => FlowExit::Ends,
+                        "tail-call" if crate::noreturn_ipa::tail_call_is_noreturn(b, &Default::default()) => FlowExit::Ends,
+                        "tail-call" => FlowExit::Tail(b.insns.last().and_then(|i| i.target)),
+                        "fall" | "jmp" | "cjmp" if !b.successors.is_empty() => {
+                            match b.successors.iter().map(|s| by_start.get(&s.to.0).copied()).collect::<Option<Vec<usize>>>() {
+                                Some(next) => FlowExit::Goes(next),
+                                None => FlowExit::MayReturn,
+                            }
+                        }
+                        _ => FlowExit::MayReturn,
+                    },
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    with_memo(id, |m| {
+        if m.flows.len() < MEMO_MAX {
+            m.flows.insert(va.0, flow.clone());
+        }
+    });
+    flow
 }
 
 /// Does the function at `va` provably never come back? From its own graph, whose calls
@@ -691,38 +740,72 @@ thread_local! {
 /// so has to be proof: any exit that cannot be shown to end means it may return, and so
 /// do running out of depth and a cycle, which runs out of depth.
 pub(crate) fn never_returns(ctx: &Ctx, va: Va) -> bool {
-    let depth = NORETURN_DEPTH.get();
     // A source with no identity keeps no memo, and this would rebuild every graph on
     // the way down for every call.
-    let Some(id) = ctx_identity(ctx).filter(|_| depth > 0) else { return false };
-    let va = ctx.symbols.and_then(|s| s.thunk_to(va)).unwrap_or(va);
-    if let Some(back) = with_memo(&id, |m| m.comes_back.get(&(va.0, depth)).copied()) {
-        return !back;
+    let Some(id) = ctx_identity(ctx) else { return false };
+    !comes_back(ctx, &id, va, DEPTH)
+}
+
+/// Walks the paths with no call on them first, and a call is asked only when no such
+/// path is left: most functions have a `ret` that asks nothing, and asking every callee
+/// of every function on the way down cost 15 times the rest of a body.
+fn comes_back(ctx: &Ctx, id: &str, va: Va, depth: u8) -> bool {
+    if depth == 0 {
+        return true;
     }
-    NORETURN_DEPTH.set(depth - 1);
-    let back = comes_back(ctx, va);
-    NORETURN_DEPTH.set(depth);
-    with_memo(&id, |m| {
+    let va = ctx.symbols.and_then(|s| s.thunk_to(va)).unwrap_or(va);
+    if let Some(back) = with_memo(id, |m| m.comes_back.get(&(va.0, depth)).copied()) {
+        return back;
+    }
+    let back = match flow_of(ctx, id, va) {
+        None => true,
+        Some(flow) => walk_flow(ctx, id, &flow, depth),
+    };
+    with_memo(id, |m| {
         if m.comes_back.len() < MEMO_MAX {
             m.comes_back.insert((va.0, depth), back);
         }
     });
-    !back
+    back
 }
 
-fn comes_back(ctx: &Ctx, va: Va) -> bool {
-    let Ok(cfg) = CfgPass.run(ctx, CfgInput::new(va, CALLEE_SCAN_SIZE)) else { return true };
-    if cfg.start != va {
-        return true;
+fn walk_flow(ctx: &Ctx, id: &str, flow: &[FlowBlock], depth: u8) -> bool {
+    let mut seen = vec![false; flow.len()];
+    let mut free = vec![0usize];
+    let mut with_calls = Vec::new();
+    loop {
+        let (i, ask) = match (free.pop(), with_calls.pop()) {
+            (Some(i), held) => {
+                with_calls.extend(held);
+                (i, false)
+            }
+            (None, Some(i)) => (i, true),
+            (None, None) => return false,
+        };
+        if !ask && seen[i] {
+            continue;
+        }
+        seen[i] = true;
+        let b = &flow[i];
+        if !ask && !b.calls.is_empty() {
+            with_calls.push(i);
+            continue;
+        }
+        if ask && b.calls.iter().any(|c| !comes_back(ctx, id, *c, depth - 1)) {
+            continue;
+        }
+        match &b.exit {
+            FlowExit::MayReturn => return true,
+            FlowExit::Ends => {}
+            FlowExit::Tail(None) => return true,
+            FlowExit::Tail(Some(t)) => {
+                if comes_back(ctx, id, *t, depth - 1) {
+                    return true;
+                }
+            }
+            FlowExit::Goes(next) => free.extend(next.iter().copied().filter(|n| !seen[*n])),
+        }
     }
-    let ending_tails: std::collections::HashSet<Va> = cfg
-        .blocks
-        .iter()
-        .filter(|b| b.terminator == "tail-call")
-        .filter_map(|b| b.insns.last()?.target)
-        .filter(|t| never_returns(ctx, *t))
-        .collect();
-    crate::noreturn_ipa::function_returns(&cfg, &ending_tails)
 }
 
 /// What stands behind a name in these blocks, for the question "did anything put a

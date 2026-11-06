@@ -234,7 +234,7 @@ pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> boo
 /// instruction carries the resolved import name (`target_name`) and/or the
 /// direct callee address (`target`) — a known-noreturn import by name, or an
 /// address the fixpoint has already proven, makes the tail-call non-returning.
-fn tail_call_is_noreturn(block: &crate::CfgBlock, noreturn: &HashSet<Va>) -> bool {
+pub(crate) fn tail_call_is_noreturn(block: &crate::CfgBlock, noreturn: &HashSet<Va>) -> bool {
     let Some(last) = block.insns.last() else {
         return false;
     };
