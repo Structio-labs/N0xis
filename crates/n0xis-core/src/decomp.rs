@@ -272,6 +272,10 @@ impl Pass for DecompPass {
             opt = OptimizePass.run(ctx, ssa.clone())?;
         }
 
+        let params: std::collections::BTreeSet<String> = types.signature.params.iter().filter(|p| !p.reg.is_empty()).map(|p| format!("{}.0", p.reg)).collect();
+        crate::callee::settle_call_args(ctx, &cfg, &mut ssa.blocks, &params);
+        crate::callee::settle_call_args(ctx, &cfg, &mut opt.blocks, &params);
+
         let mut names = RenderNames::new(&cfg.callsites, &|va| crate::unnamed_at(ctx, va))
             .with_stack_pointer(ctx.arch.stack_pointer())
             .with_return_register(crate::ir::abi_return_register(ctx).as_deref())

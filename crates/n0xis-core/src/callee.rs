@@ -310,6 +310,121 @@ pub(crate) fn params_read(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flo
     used
 }
 
+/// What stands behind a name in these blocks, for the question "did anything put a
+/// value here for this call".
+enum Def<'b> {
+    /// The marker a call writes over what it may have changed: no value.
+    Clobber,
+    Copy(&'b str),
+    Phi(Vec<&'b str>),
+    Real,
+}
+
+fn defs_of(blocks: &[SsaBlock]) -> HashMap<&str, Def<'_>> {
+    let mut defs = HashMap::new();
+    for b in blocks {
+        for p in &b.phis {
+            defs.insert(p.dst.as_str(), Def::Phi(p.inputs.iter().map(|i| i.value.as_str()).collect()));
+        }
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } if u == n0xis_arch::CALL_CLOBBER => {
+                    defs.insert(dst.as_str(), Def::Clobber);
+                }
+                MicroStmt::Assign { dst, value: MicroExpr::Var(from) } => {
+                    defs.insert(dst.as_str(), Def::Copy(from.as_str()));
+                }
+                MicroStmt::Assign { dst, .. } | MicroStmt::Call { ret: Some(dst), .. } => {
+                    defs.insert(dst.as_str(), Def::Real);
+                }
+                _ => {}
+            }
+        }
+    }
+    defs
+}
+
+/// Does a value stand behind this name? An entry value does only if it is a parameter:
+/// otherwise it is whatever the caller left in the register. A phi does if one of the
+/// paths into it brings one.
+fn holds_a_value(name: &str, defs: &HashMap<&str, Def<'_>>, params: &BTreeSet<String>) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut work = vec![name];
+    while let Some(n) = work.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        match defs.get(n) {
+            Some(Def::Real) => return true,
+            Some(Def::Clobber) => {}
+            Some(Def::Copy(from)) => work.push(from),
+            Some(Def::Phi(inputs)) => work.extend(inputs.iter().copied()),
+            None => {
+                if params.contains(n) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// How many of a call's arguments to keep. A callee that says how many it takes says
+/// it; otherwise all up to the last one a value stands behind, and at least what the
+/// callee is known to read. Below the last one kept a hole stays a hole, since a
+/// position means a register: `f(rdi, rsi.3, rdx.2)` with `rsi.3` unset says the
+/// second register was passed and nothing here set it.
+fn args_kept(takes: Takes, args: &[MicroExpr], defs: &HashMap<&str, Def<'_>>, params: &BTreeSet<String>) -> usize {
+    match takes {
+        Takes::Exactly(n) => n.min(args.len()),
+        Takes::AtLeast(n) => {
+            let real = args.iter().rposition(|a| !matches!(a, MicroExpr::Var(v) if !holds_a_value(v, defs, params))).map_or(0, |i| i + 1);
+            real.max(n).min(args.len())
+        }
+    }
+}
+
+/// Cut every call's arguments in these blocks to what it is passed. The lift gave each
+/// the whole convention, because the instruction does not say, and on one C image 2 659
+/// of 3 121 calls printed more arguments than their callee has. In the IR the body is
+/// rendered from and not at print, so that every style and everything read off the
+/// rendered blocks agree; a pass that wants the convention reads the blocks before this.
+pub(crate) fn settle_call_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], params: &BTreeSet<String>) {
+    let id = ctx_identity(ctx);
+    let depth = if id.is_some() { DEPTH } else { 1 };
+    let snapshot = blocks.to_vec();
+    let defs = defs_of(&snapshot);
+    let settle = |target: &CallTarget, args: &mut Vec<MicroExpr>| {
+        if !matches!(target, CallTarget::Intrinsic(_)) {
+            let takes = takes_of(ctx, id.as_deref(), callee_of(ctx, cfg, target), depth);
+            args.truncate(args_kept(takes, args, &defs, params));
+        }
+    };
+    for b in blocks.iter_mut() {
+        for s in &mut b.stmts {
+            if let MicroStmt::Call { target, args, .. } = &mut s.stmt {
+                settle(target, args);
+            }
+            s.stmt = crate::optimize::map_stmt_exprs(&s.stmt, &mut |e| match e {
+                MicroExpr::Call { target, mut args } => {
+                    settle(&target, &mut args);
+                    MicroExpr::Call { target, args }
+                }
+                other => other,
+            });
+        }
+        if let Some(c) = b.condition.take() {
+            b.condition = Some(crate::optimize::map_expr(&c, &mut |e| match e {
+                MicroExpr::Call { target, mut args } => {
+                    settle(&target, &mut args);
+                    MicroExpr::Call { target, args }
+                }
+                other => other,
+            }));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +558,59 @@ mod tests {
         let b = body(&snap);
         assert!(b.pseudo.iter().any(|l| l.contains("/*from caller*/rax.0")), "{:?}", b.pseudo);
         assert!(b.quality < 1.0, "{}", b.quality);
+    }
+
+    fn line_with<'b>(b: &'b crate::PseudoFunction, what: &str) -> &'b str {
+        b.pseudo.iter().find(|l| l.contains(what)).unwrap_or_else(|| panic!("no line with {what}: {:#?}", b.pseudo))
+    }
+
+    /// `call g; call rax; ret`: nothing here set a register for the second call, and
+    /// what the first left behind is no argument of it.
+    #[test]
+    fn what_a_call_left_behind_is_no_argument() {
+        let mut f = vec![];
+        call(&mut f, G);
+        f.extend([0xff, 0xd0, 0xc3]);
+        let snap = image(f, RET, RET);
+        let b = body(&snap);
+        assert!(line_with(&b, "(*").contains(")()"), "{:#?}", b.pseudo);
+    }
+
+    /// `mov ecx,1; mov edx,2; call g; ret`, and `g` reads only its first: it is given one.
+    #[test]
+    fn a_call_is_cut_to_what_the_callee_in_this_image_takes() {
+        let mut f = vec![0xb9, 1, 0, 0, 0, 0xba, 2, 0, 0, 0];
+        call(&mut f, G);
+        f.push(0xc3);
+        let snap = image(f, READS_FIRST, RET);
+        let b = body(&snap);
+        let l = line_with(&b, "sub_1100(");
+        assert!(l.contains("sub_1100(0x1)"), "{l}");
+    }
+
+    /// `mov edx,2; call rax; ret`. Nothing says how many the target takes, and the
+    /// last register with a value is the second: the first stays, as what it is.
+    #[test]
+    fn a_hole_below_a_value_stays_and_says_what_it_is() {
+        let snap = image(vec![0xba, 2, 0, 0, 0, 0xff, 0xd0, 0xc3], RET, RET);
+        let b = body(&snap);
+        let l = line_with(&b, "(*");
+        assert!(l.contains("(/*from caller*/rcx.0, 0x2)"), "{l}");
+    }
+
+    /// A callee that forwards a register to something unknown has told nothing of
+    /// that position, so what its caller put there stays.
+    #[test]
+    fn a_callee_that_stands_before_something_unknown_does_not_cut() {
+        // g: mov rax,[rax]; jmp rax
+        let g = [0x48, 0x8b, 0x00, 0xff, 0xe0];
+        let mut f = vec![0xb9, 1, 0, 0, 0];
+        call(&mut f, G);
+        f.push(0xc3);
+        let snap = image(f, &g, RET);
+        let b = body(&snap);
+        let l = line_with(&b, "sub_1100(");
+        assert!(l.contains("sub_1100(0x1)"), "{l}");
     }
 
     /// The save of a register into the frame is a read of the caller's value, kept to
