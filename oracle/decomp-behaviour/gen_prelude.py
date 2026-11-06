@@ -50,10 +50,28 @@ FC(__fcmp_ule,!(x>y)) FC(__fcmp_ult,!(x>=y)) FC(__fcmp_uno,x!=x||y!=y) FC(__fcmp
 static inline uint64_t __max(int64_t a,int64_t b){return a>b?a:b;} static inline uint64_t __min(int64_t a,int64_t b){return a<b?a:b;}
 static inline uint64_t __umax(uint64_t a,uint64_t b){return a>b?a:b;} static inline uint64_t __umin(uint64_t a,uint64_t b){return a<b?a:b;}
 static inline uint64_t __cqo(int64_t x){return x<0?~0ull:0;}
-static inline uint64_t __udiv(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)((((bh_u128)hi<<64)|lo)/d);}
-static inline uint64_t __urem(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)((((bh_u128)hi<<64)|lo)%d);}
-static inline uint64_t __idiv(uint64_t hi,uint64_t lo,int64_t d,int w){return (uint64_t)((bh_i128)((bh_u128)hi<<64|lo)/d);}
-static inline uint64_t __irem(uint64_t hi,uint64_t lo,int64_t d,int w){return (uint64_t)((bh_i128)((bh_u128)hi<<64|lo)%d);}
+static inline uint64_t __cdq(uint64_t x){return (uint32_t)((int32_t)x>>31);}
+#define BH_DIVIDEND(w,hi,lo) ((w)==32?(bh_u128)(((uint64_t)(uint32_t)(hi)<<32)|(uint32_t)(lo)):(((bh_u128)(hi)<<64)|(lo)))
+#define BH_SDIVIDEND(w,hi,lo) ((w)==32?(bh_i128)(int64_t)(((uint64_t)(uint32_t)(hi)<<32)|(uint32_t)(lo)):(bh_i128)(((bh_u128)(hi)<<64)|(lo)))
+#define BH_DIVISOR(w,d) ((w)==32?(bh_u128)(uint32_t)(d):(bh_u128)(uint64_t)(d))
+#define BH_SDIVISOR(w,d) ((w)==32?(bh_i128)(int32_t)(d):(bh_i128)(int64_t)(d))
+static inline uint64_t __udiv(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_DIVIDEND(w,hi,lo)/BH_DIVISOR(w,d));}
+static inline uint64_t __urem(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_DIVIDEND(w,hi,lo)%BH_DIVISOR(w,d));}
+static inline uint64_t __idiv(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_SDIVIDEND(w,hi,lo)/BH_SDIVISOR(w,d));}
+static inline uint64_t __irem(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_SDIVIDEND(w,hi,lo)%BH_SDIVISOR(w,d));}
+// The operand's C type is its width, since the lift reads a narrow register through a cast. `bsr` leaves its destination on zero; 0 here.
+static inline uint64_t bh_rot(uint64_t x,unsigned n,unsigned w,int left){uint64_t m=w==64?~0ull:(1ull<<w)-1;x&=m;n&=(w>32?63:31);n%=w;if(!n)return x;return ((left?(x<<n)|(x>>(w-n)):(x>>n)|(x<<(w-n))))&m;}
+#define __rol(x,n) bh_rot((uint64_t)(x),(unsigned)(n),8*sizeof(x),1)
+#define __ror(x,n) bh_rot((uint64_t)(x),(unsigned)(n),8*sizeof(x),0)
+#define __bswap(x) (sizeof(x)==4?(uint64_t)__builtin_bswap32((uint32_t)(x)):sizeof(x)==2?(uint64_t)__builtin_bswap16((uint16_t)(x)):(uint64_t)__builtin_bswap64((uint64_t)(x)))
+static inline uint64_t bh_bsr(uint64_t x){return x?63-__builtin_clzll(x):0;}
+static inline uint64_t bh_bsf(uint64_t x){return x?__builtin_ctzll(x):0;}
+#define BH_MASKED(x) (sizeof(x)==8?(uint64_t)(x):(uint64_t)(x)&((1ull<<(8*sizeof(x)))-1))
+#define __bsr(x) bh_bsr(BH_MASKED(x))
+#define __bsf(x) bh_bsf(BH_MASKED(x))
+#define __tzcnt(x) (BH_MASKED(x)?(uint64_t)__builtin_ctzll(BH_MASKED(x)):(uint64_t)(8*sizeof(x)))
+#define __lzcnt(x) (BH_MASKED(x)?(uint64_t)(__builtin_clzll(BH_MASKED(x))-(64-8*sizeof(x))):(uint64_t)(8*sizeof(x)))
+#define __popcnt(x) ((uint64_t)__builtin_popcountll(BH_MASKED(x)))
 static inline __m128i bh_x(R128 a){__m128i r;memcpy(&r,&a,16);return r;}
 static inline R128 bh_r(__m128i a){R128 r;memcpy(&r,&a,16);return r;}
 static inline __m128d bh_xd(R128 a){__m128d r;memcpy(&r,&a,16);return r;}

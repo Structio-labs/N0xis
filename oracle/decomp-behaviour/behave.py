@@ -9,16 +9,18 @@ results.json, functions.tsv (one line per function per build, what `report.py` r
 Level 0: the body exactly as printed, prelude only (does it compile).
 Level 1: the same text through one mechanical layer, each rule counted per body:
   ssa      x.N -> x_N (no C identifier holds a dot)
-  undecl   an identifier used and never declared gets a declaration: 128-bit for xmmN, the entry value for rdi..r9,
-           a scratch frame for rsp/rbp, else uint64_t = 0
+  undecl   an identifier used and never declared gets a declaration: 128-bit for xmmN, the entry value for rdi..r9
+           and their .0, a scratch frame for rsp/rbp, else uint64_t = 0
   star     unary * on an integer: reads as *(uint64_t*)
   bits     double/float in a signature mean the register bits the intrinsics return
   neg_hex  -0xN is a negative number (in C a hex literal may be unsigned first)
-  rel      a relational is signed unless marked /*u*/: spelled in C at the first operand's width
+  rel      a relational is signed unless marked /*u*/: spelled in C at the first operand's width, however deep it is
+           nested; == and != against an operand cast narrow compare at that width too
   callee   a callee is bound by address in the image; imports by name
   untyped_ptr `void *x`/`struct_x_0 *x` with no printed definition: x is an integer; x->field_0xN reads 64 bits at x+N
   subscript x[i] on an integer: elements of the width of the cast in front, else 64 bits
-  call_slot (*x)(...) on an integer: a call through the slot; x_N(...) a call to the value
+  call_slot (*x)(...) on an integer: a call to the value x holds, as the engine prints it; (**x)(...) and
+           (*x->field_0xN)(...): a call to what is read there; x_N(...) a call to the value
 Nothing else touches a body. A wrong answer here is the body's; a would-not-compile is reported with the compiler's reason.
 The layer is a generous reader, so "same" is an upper bound on what a reader of the printed body gets: see README.md.
 """
@@ -216,15 +218,21 @@ def subscript_fix(line):
 
 
 def call_fix(line):
-    """(*x)(...) with x an integer: a call through the 64-bit slot x points at."""
-    line = re.sub(r"\(\s*\*\s*\((?:uint64_t|bh_star_t)\*\)\s*([A-Za-z_]\w*)\s*\)\s*\(", r"((bh_fn)*(uint64_t*)\1)(", line)
-    line = re.sub(r"\(\s*\*\s*([A-Za-z_]\w*)\s*\)\s*\(", r"((bh_fn)*(uint64_t*)\1)(", line)
+    """A call on an integer. The engine prints `(*x)(...)` for a call to the value x holds, whether x is a register or a
+    local: it reads no memory. `(**x)(...)` reads a slot, and so does `(*(*(T*)(x + 8)))(...)`, what a field becomes here."""
+    line = re.sub(r"\(\s*\*\s*\*\s*([A-Za-z_]\w*)\s*\)\s*\(", r"((bh_fn)*(uint64_t*)\1)(", line)
+    line = re.sub(r"\(\s*\*\s*\(\s*\*\s*\(bh_star_t\*\)\s*(\([^()]*\))\s*\)\s*\)\s*\(", r"((bh_fn)*(uint64_t*)\1)(", line)
+    line = re.sub(r"\(\s*\*\s*\(?(?:uint64_t|bh_star_t)\*\)\s*([A-Za-z_]\w*)\s*\)\s*\(", r"((bh_fn)*(uint64_t*)\1)(", line)
+    line = re.sub(r"\(\s*\*\s*([A-Za-z_]\w*)\s*\)\s*\(", r"((bh_fn)\1)(", line)
     return re.sub(r"(?<![\w)])([a-z][a-z0-9]*_\d+)\s*\(", r"((bh_fn)\1)(", line)
 
 
 def declare(name):
     if name in SLOTS:
         return f"uint64_t {name} = G_{name.upper()};"
+    # What a register held on arrival is that, parameter or not: read as 0 it hid every forwarded argument.
+    if name.endswith("_0") and name[:-2] in SLOTS:
+        return f"uint64_t {name} = G_{name[:-2].upper()};"
     if re.match(r"xmm\d+", name):
         return f"bh_u128 {name} = 0;"
     if re.match(r"(rsp|rbp|esp)\b|(rsp|rbp)_\d+", name):
@@ -233,51 +241,70 @@ def declare(name):
 
 
 REL = re.compile(r"(<=|>=|(?<![<\-])<(?!<)|(?<![>\-])>(?!>))")
+EQ = re.compile(r"(==|!=)")
+NARROW = re.compile(r"\(\s*u?int(8|16|32)_t\s*\)")
+
+
+def depth0(pattern, text):
+    """The first match of `pattern` in `text` outside any parenthesis."""
+    d = 0
+    for m in pattern.finditer(text):
+        d = text.count("(", 0, m.start()) - text.count(")", 0, m.start())
+        if d == 0:
+            return m
+    return None
+
+
+def spell_group(inner, rules):
+    """One parenthesised group whose own groups are done: a relational at its top spelled in C."""
+    m = depth0(REL, inner)
+    if m:
+        a, b = inner[:m.start()].strip(), inner[m.end():].strip()
+        unsigned = "/*u*/" in b
+        b = b.replace("/*u*/", "").strip()
+        n = NARROW.match(a)
+        bits = n[1] if n else "64"
+        ty = f"{'u' if unsigned else ''}int{bits}_t"
+        rules.add("rel")
+        return f"({ty})({a}) {m[1]} ({ty})({b})"
+    m = depth0(EQ, inner)
+    if m:
+        a, b = inner[:m.start()].strip(), inner[m.end():].strip()
+        n = NARROW.match(a)
+        if n and not NARROW.match(b):
+            # `(uint32_t)x != -0x1`: the machine compared 32 bits, and C would widen the literal and never find them equal.
+            ty = f"uint{n[1]}_t"
+            rules.add("rel")
+            return f"({ty})({a}) {m[1]} ({ty})({b})"
+    return inner
 
 
 def signed_rel(text, rules):
     """The engine marks an unsigned relational with /*u*/ and leaves a signed one unmarked (its binary expressions are always parenthesised).
-    Spell that in C, at the width of the first operand's cast: 32 if it has one, else 64; a literal takes the same cast."""
-    out = ""
+    Spell that in C, at the width of the first operand's cast, else 64; a literal takes the same cast. Innermost first, so that a
+    relational inside another's operand is reached too."""
+    out = []
     for line in text.split("\n"):
-        pos, res = 0, ""
-        while True:
-            m = REL.search(line, pos)
-            if not m:
-                res += line[pos:]
-                break
-            d, l = 0, m.start() - 1
-            while l >= 0:
-                if line[l] == ")":
-                    d += 1
-                elif line[l] == "(":
-                    if d == 0:
-                        break
-                    d -= 1
-                l -= 1
-            d, r = 0, m.end()
-            while r < len(line):
-                if line[r] == "(":
-                    d += 1
-                elif line[r] == ")":
-                    if d == 0:
-                        break
-                    d -= 1
-                r += 1
-            if l < pos or r >= len(line):
-                res += line[pos:m.end()]
-                pos = m.end()
-                continue
-            a, b = line[l + 1:m.start()].strip(), line[m.end():r].strip()
-            unsigned = "/*u*/" in b
-            b = b.replace("/*u*/", "").strip()
-            w32 = re.match(r"\(\s*u?int(?:32|16|8)_t\s*\)", a) is not None
-            ty = ("uint32_t" if w32 else "uint64_t") if unsigned else ("int32_t" if w32 else "int64_t")
-            res += line[pos:l + 1] + f"({ty})({a}) {m[1]} ({ty})({b})"
-            pos = r
-            rules.add("rel")
-        out += res + "\n"
-    return out[:-1]
+        # A string's text is not an expression.
+        strings = []
+        def hide(m):
+            strings.append(m[0])
+            return f"@S{len(strings) - 1}@"
+        masked = re.sub(r'"(?:[^"\\\n]|\\.)*"', hide, line)
+        stack = [""]
+        for ch in masked:
+            if ch == "(":
+                stack.append("")
+            elif ch == ")" and len(stack) > 1:
+                done = spell_group(stack.pop(), rules)
+                stack[-1] += "(" + done + ")"
+            else:
+                stack[-1] += ch
+        # A parenthesis never closed: the line is not an expression this reads.
+        res = stack[0] if len(stack) == 1 else masked
+        res = re.sub(r"@S(\d+)@", lambda m: strings[int(m[1])], res)
+        out.append(res)
+    return "\n".join(out)
 
 
 def layer(text, sig, rules):
@@ -312,6 +339,16 @@ def layer(text, sig, rules):
     return t
 
 
+def spell_calls(t, rules):
+    """`(*x)(...)` is well-formed C on a function pointer and an error on an integer, and an error is what used to send it to a fix
+    that read through x. Spell them all before the compiler sees one."""
+    head, sep, rest = t.partition("{")
+    new = "\n".join(call_fix(l) if "(*" in l else l for l in rest.split("\n"))
+    if new != rest:
+        rules.add("call_slot")
+    return head + sep + new
+
+
 def gcc(args, timeout=60):
     return subprocess.run(["nice", "-n", "19", "gcc", *args], capture_output=True, text=True, env=ENV, timeout=timeout, errors="replace")
 
@@ -340,7 +377,7 @@ def compile_body(raw, own_table, kinds, src_bits, workdir, stem="b"):
         res["level0_why"] = first_error(r.stderr)
     # Level 1.
     rules = set()
-    t = layer(raw, sig0, rules)
+    t = spell_calls(layer(raw, sig0, rules), rules)
     sig = parse_sig(t)
     binds = bindings(t, sig[1], own_table, rules)
     decls = []

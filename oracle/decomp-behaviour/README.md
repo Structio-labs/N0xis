@@ -22,6 +22,10 @@ untyped `*x` as 64 bits, binds callees by address, spells signed relationals. Th
 it decides things a person reading the body would have to guess, and it was grown by reading failures. A body
 that is "same" behaves like the source *under that reading*. `compiles-as-printed` is the prelude alone.
 
+`check_layer.py` holds each rule and each operation of the prelude against an answer worked out by hand. The
+original is loaded so that it binds its own symbols first: the executable exports the body under test under the same name, and
+a self-recursive export called through its PLT ran that body, inside what was recorded as the source's answer.
+
 "Rescued" counts a failing body that passes under another reading of what it left unsaid, a different width
 for every untyped access or a non-zero value for a name read before it is set. A rescued body still counts as
 failing: it did not say what it needs.

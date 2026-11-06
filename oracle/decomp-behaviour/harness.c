@@ -59,13 +59,14 @@ static void gen_args(int idx, const char *k, uint64_t *v, int *bufslot) {
             for (int j = 0; j < BUFSZ; j++) proto[i][j] = (uint8_t)rnd();
             if (c == 's') {
                 int len = rnd() % 40;
-                // Lower-case text, digits and a few signs: strings a string function sees, common prefixes among the buffers.
-                for (int j = 0; j < len; j++) proto[i][j] = (j < 3 && (idx & 1)) ? "abc"[j] : "abcdefgh 0123-xyz"[rnd() % 17];
+                // Text in both cases, digits and a few signs: strings a string function sees, common prefixes among the buffers.
+                for (int j = 0; j < len; j++) proto[i][j] = (j < 3 && (idx & 1)) ? "abc"[j] : "abcdefgh 0123-xyzABCXYZ"[rnd() % 23];
                 proto[i][len] = 0;
             } else if (c == 'S') {
                 // ascending int32 array, what a search expects
                 int32_t *a = (int32_t *)proto[i];
-                int32_t x = -50;
+                // From a start on either side of zero: always negative at a[0] leaves paths unexercised.
+                int32_t x = (int32_t)(rnd() % 201) - 100;
                 for (int j = 0; j < 60; j++) { x += rnd() % 7; a[j] = x; }
             } else if (c == 'B') {
                 for (int j = 0; j < BUFSZ; j++) proto[i][j] = (uint8_t)(rnd() % 5);
@@ -75,7 +76,9 @@ static void gen_args(int idx, const char *k, uint64_t *v, int *bufslot) {
 }
 
 int main(int argc, char **argv) {
-    void *h = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+    // DEEPBIND: this executable exports the body under test under the source's name, and a self-recursive export called through
+    // its PLT would otherwise run that body, inside what is recorded as the source's answer.
+    void *h = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL | RTLD_DEEPBIND);
     if (!h) { printf("{\"harness_error\":\"open %s\"}\n", dlerror()); return 2; }
     void *f = dlsym(h, BH_NAME);
     if (!f) { printf("{\"harness_error\":\"no symbol\"}\n"); return 2; }
