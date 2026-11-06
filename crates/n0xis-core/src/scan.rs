@@ -38,7 +38,7 @@
 //! stays in `n0xis-sources`/`n0xis-cli`, handed in here as plain `(Va, usize)`
 //! ranges so this pass never touches an OS API.
 
-use n0xis_contracts::Va;
+use n0xis_contracts::{NumberLiteral, Va};
 use n0xis_sources::{RegionCoverage, Swept};
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +87,26 @@ impl ValueType {
         }
     }
 
+    /// A number as this type holds it, or why it cannot be. Every value that reaches
+    /// a scan from outside comes through here, so the carrier always matches what
+    /// [`ScanValue::read`] gives for the same type.
+    pub fn bind(self, n: NumberLiteral) -> Result<ScanValue, String> {
+        Ok(match self {
+            ValueType::I8 => ScanValue::Int(n.to_int(8, true)? as i64),
+            ValueType::U8 => ScanValue::Int(n.to_int(8, false)? as i64),
+            ValueType::I16 => ScanValue::Int(n.to_int(16, true)? as i64),
+            ValueType::U16 => ScanValue::Int(n.to_int(16, false)? as i64),
+            ValueType::I32 => ScanValue::Int(n.to_int(32, true)? as i64),
+            ValueType::U32 => ScanValue::Int(n.to_int(32, false)? as i64),
+            ValueType::I64 => ScanValue::Int(n.to_int(64, true)? as i64),
+            ValueType::U64 => ScanValue::of_u64(n.to_int(64, false)? as u64),
+            // Through the `f32`: a read `f32` widens exactly, and `0.1` as a double
+            // is not the `f32` nearest it, so the double never matched anything.
+            ValueType::F32 => ScanValue::Float(f64::from(n.to_f32()?)),
+            ValueType::F64 => ScanValue::Float(n.to_f64()?),
+        })
+    }
+
     fn from_tag(t: u8) -> Option<ValueType> {
         Some(match t {
             0 => ValueType::I8,
@@ -110,14 +130,37 @@ impl ValueType {
 #[serde(untagged)]
 pub enum ScanValue {
     Int(i64),
+    /// A `u64` past `i64::MAX`, and only that: [`ScanValue::of_u64`] is the one way
+    /// in, so one number has one form. Its own variant because the answer prints it,
+    /// and printing the bits of 2^64-3 as an `i64` says -3 about a value that is not.
+    Unsigned(u64),
     Float(f64),
 }
 
 impl ScanValue {
+    pub fn of_u64(v: u64) -> ScanValue {
+        match i64::try_from(v) {
+            Ok(fits) => ScanValue::Int(fits),
+            Err(_) => ScanValue::Unsigned(v),
+        }
+    }
+
     pub fn as_f64(self) -> f64 {
         match self {
             ScanValue::Int(v) => v as f64,
+            ScanValue::Unsigned(v) => v as f64,
             ScanValue::Float(v) => v,
+        }
+    }
+
+    /// The exact integer this is, for comparing two integers without a double in
+    /// between: past 2^53 a double calls neighbours equal, so `increased` lost a
+    /// step of one and an in-range bound took in values outside it.
+    fn as_exact_integer(self) -> Option<i128> {
+        match self {
+            ScanValue::Int(v) => Some(i128::from(v)),
+            ScanValue::Unsigned(v) => Some(i128::from(v)),
+            ScanValue::Float(_) => None,
         }
     }
 
@@ -127,6 +170,7 @@ impl ScanValue {
     pub fn as_int(self) -> i64 {
         match self {
             ScanValue::Int(v) => v,
+            ScanValue::Unsigned(v) => v as i64,
             ScanValue::Float(v) => v as i64,
         }
     }
@@ -140,7 +184,7 @@ impl ScanValue {
             ValueType::I32 => ScanValue::Int(i32::from_le_bytes(bytes.try_into().ok()?) as i64),
             ValueType::U32 => ScanValue::Int(u32::from_le_bytes(bytes.try_into().ok()?) as i64),
             ValueType::I64 => ScanValue::Int(i64::from_le_bytes(bytes.try_into().ok()?)),
-            ValueType::U64 => ScanValue::Int(u64::from_le_bytes(bytes.try_into().ok()?) as i64),
+            ValueType::U64 => ScanValue::of_u64(u64::from_le_bytes(bytes.try_into().ok()?)),
             ValueType::F32 => ScanValue::Float(f32::from_le_bytes(bytes.try_into().ok()?) as f64),
             ValueType::F64 => ScanValue::Float(f64::from_le_bytes(bytes.try_into().ok()?)),
         })
@@ -151,6 +195,7 @@ impl ScanValue {
     fn to_bits(self) -> u64 {
         match self {
             ScanValue::Int(v) => v as u64,
+            ScanValue::Unsigned(v) => v,
             ScanValue::Float(v) => v.to_bits(),
         }
     }
@@ -158,16 +203,31 @@ impl ScanValue {
     fn from_bits(bits: u64, ty: ValueType) -> ScanValue {
         match ty {
             ValueType::F32 | ValueType::F64 => ScanValue::Float(f64::from_bits(bits)),
+            ValueType::U64 => ScanValue::of_u64(bits),
             _ => ScanValue::Int(bits as i64),
         }
     }
 }
 
 fn values_eq(a: ScanValue, b: ScanValue) -> bool {
-    match (a, b) {
-        (ScanValue::Int(x), ScanValue::Int(y)) => x == y,
+    match (a.as_exact_integer(), b.as_exact_integer()) {
+        (Some(x), Some(y)) => x == y,
         _ => (a.as_f64() - b.as_f64()).abs() < f64::EPSILON,
     }
+}
+
+/// The one order of two scan values: integers exactly, anything with a float in it
+/// as doubles, which is what a float is.
+fn value_order(a: ScanValue, b: ScanValue) -> Option<std::cmp::Ordering> {
+    match (a.as_exact_integer(), b.as_exact_integer()) {
+        (Some(x), Some(y)) => Some(x.cmp(&y)),
+        _ => a.as_f64().partial_cmp(&b.as_f64()),
+    }
+}
+
+fn in_range(v: ScanValue, min: ScanValue, max: ScanValue) -> bool {
+    use std::cmp::Ordering::{Greater, Less};
+    !matches!(value_order(v, min), Some(Less) | None) && !matches!(value_order(v, max), Some(Greater) | None)
 }
 
 /// A first-scan criterion.
@@ -185,7 +245,7 @@ pub enum ScanCriterion {
 fn scan_criterion_matches(c: &ScanCriterion, v: ScanValue) -> bool {
     match c {
         ScanCriterion::Exact { value } => values_eq(*value, v),
-        ScanCriterion::InRange { min, max } => v.as_f64() >= min.as_f64() && v.as_f64() <= max.as_f64(),
+        ScanCriterion::InRange { min, max } => in_range(v, *min, *max),
         ScanCriterion::Unknown => true,
     }
 }
@@ -206,11 +266,11 @@ pub enum FilterCriterion {
 fn filter_keeps(c: &FilterCriterion, old: ScanValue, now: ScanValue) -> bool {
     match c {
         FilterCriterion::Exact { value } => values_eq(*value, now),
-        FilterCriterion::Increased => now.as_f64() > old.as_f64(),
-        FilterCriterion::Decreased => now.as_f64() < old.as_f64(),
+        FilterCriterion::Increased => value_order(now, old) == Some(std::cmp::Ordering::Greater),
+        FilterCriterion::Decreased => value_order(now, old) == Some(std::cmp::Ordering::Less),
         FilterCriterion::Changed => !values_eq(old, now),
         FilterCriterion::Unchanged => values_eq(old, now),
-        FilterCriterion::InRange { min, max } => now.as_f64() >= min.as_f64() && now.as_f64() <= max.as_f64(),
+        FilterCriterion::InRange { min, max } => in_range(now, *min, *max),
     }
 }
 
@@ -890,6 +950,76 @@ mod tests {
         assert_eq!(state.total(), 8);
         let addrs: Vec<Va> = state.materialize(PREVIEW_LIMIT).into_iter().map(|m| m.addr).collect();
         assert!(addrs.contains(&Va(0x9000)), "second region must be scanned");
+    }
+
+    /// `(address, value)` of each `u64` slot a value keeps, over a region of them.
+    fn scan_u64(slots: &[u64], ty: ValueType, criterion: ScanCriterion) -> Vec<(Va, ScanValue)> {
+        let bytes: Vec<u8> = slots.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let snap = Snapshot::builder().region(Va(0x2000), bytes).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let input = ScanInput { regions: vec![(Va(0x2000), slots.len() * 8)], value_type: ty, criterion, align: 8 };
+        ScanPass.run(&ctx, input).unwrap().answer.materialize(PREVIEW_LIMIT).into_iter().map(|m| (m.addr, m.value)).collect()
+    }
+
+    const TWO_53: u64 = 1 << 53;
+
+    #[test]
+    fn an_exact_scan_tells_neighbours_apart_past_what_a_double_can() {
+        let exact = |n: u64| ScanCriterion::Exact { value: ValueType::U64.bind(NumberLiteral::Integer(i128::from(n))).unwrap() };
+        let found = scan_u64(&[TWO_53, TWO_53 + 1, TWO_53 + 2], ValueType::U64, exact(TWO_53 + 1));
+        assert_eq!(found, vec![(Va(0x2008), ScanValue::Int((TWO_53 + 1) as i64))]);
+    }
+
+    #[test]
+    fn a_range_scan_keeps_its_bounds_past_what_a_double_can() {
+        let bind = |n: u64| ValueType::U64.bind(NumberLiteral::Integer(i128::from(n))).unwrap();
+        let c = ScanCriterion::InRange { min: bind(TWO_53 + 1), max: bind(TWO_53 + 1) };
+        let found = scan_u64(&[TWO_53, TWO_53 + 1, TWO_53 + 2], ValueType::U64, c);
+        assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), vec![Va(0x2008)]);
+    }
+
+    #[test]
+    fn a_u64_past_i64_max_is_itself_in_the_scan_and_in_the_answer() {
+        let top = u64::MAX - 2;
+        let value = ValueType::U64.bind(NumberLiteral::Integer(i128::from(top))).unwrap();
+        let found = scan_u64(&[1, top, 2], ValueType::U64, ScanCriterion::Exact { value });
+        assert_eq!(found, vec![(Va(0x2008), ScanValue::Unsigned(top))]);
+        assert_eq!(serde_json_number(found[0].1), top.to_string(), "what the answer prints");
+        // Above both signed neighbours and in a range an `i64` reading would call empty.
+        let bind = |n: u64| ValueType::U64.bind(NumberLiteral::Integer(i128::from(n))).unwrap();
+        let c = ScanCriterion::InRange { min: bind(3), max: bind(u64::MAX) };
+        assert_eq!(scan_u64(&[1, top, 2], ValueType::U64, c).iter().map(|f| f.0).collect::<Vec<_>>(), vec![Va(0x2008)]);
+    }
+
+    fn serde_json_number(v: ScanValue) -> String {
+        serde_json::to_string(&v).unwrap()
+    }
+
+    #[test]
+    fn a_scan_for_an_f32_finds_the_f32_nearest_what_was_written() {
+        let bytes: Vec<u8> = [0.5f32, 0.1, 0.25, 0.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let snap = Snapshot::builder().region(Va(0x2000), bytes).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let value = ValueType::F32.bind(NumberLiteral::parse_decimal("0.1").unwrap()).unwrap();
+        let input = ScanInput { regions: vec![(Va(0x2000), 16)], value_type: ValueType::F32, criterion: ScanCriterion::Exact { value }, align: 4 };
+        let found = ScanPass.run(&ctx, input).unwrap().answer.materialize(PREVIEW_LIMIT);
+        assert_eq!(found.iter().map(|m| m.addr).collect::<Vec<_>>(), vec![Va(0x2004)]);
+    }
+
+    #[test]
+    fn increased_sees_a_step_of_one_past_what_a_double_can() {
+        let arch = X64::new();
+        let world = |slots: [u64; 2]| Snapshot::builder().region(Va(0x2000), slots.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()).build();
+        let snap1 = world([TWO_53, TWO_53 + 2]);
+        let first = ScanPass
+            .run(&Ctx::new(&snap1, &arch), ScanInput { regions: vec![(Va(0x2000), 16)], value_type: ValueType::U64, criterion: ScanCriterion::Unknown, align: 8 })
+            .unwrap()
+            .answer;
+        let snap2 = world([TWO_53 + 1, TWO_53 + 2]);
+        let kept = FilterPass.run(&Ctx::new(&snap2, &arch), FilterInput { previous: first, criterion: FilterCriterion::Increased }).unwrap().answer;
+        assert_eq!(kept.materialize(PREVIEW_LIMIT).iter().map(|m| m.addr).collect::<Vec<_>>(), vec![Va(0x2000)]);
     }
 
     #[test]

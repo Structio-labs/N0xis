@@ -5,7 +5,7 @@
 //! strings. Acceptance is defined here once, so `--size 0x1000` on the CLI and
 //! `"size": "0x1000"` through MCP can never disagree about what they take.
 
-use n0xis_contracts::Va;
+use n0xis_contracts::{NumberLiteral, Va};
 
 /// Parse an optional hex/decimal address argument into a [`Va`].
 pub fn opt_hex(s: &Option<String>) -> Result<Option<Va>, String> {
@@ -46,18 +46,22 @@ pub fn parse_hex_or_decimal_u64(s: &str) -> Result<u64, String> {
     .map_err(|_| format!("invalid value {s:?} (want decimal or 0x-prefixed hex)"))
 }
 
-/// Value parser for scan value/bound fields (`--value`, `--min`, `--max`):
-/// accepts hex, decimal, or a float. Falls through to `f64::from_str` when
-/// there is no hex marker, since a scan criterion can compare against a
-/// genuine float (`3.14`), which plain hex cannot represent.
-pub fn parse_hex_or_decimal_f64(s: &str) -> Result<f64, String> {
+/// A value on its way into a target (`--value`, `--min`, `--max`, a group field):
+/// hex, decimal, or a float, kept as written until the target's type is known.
+/// See [`NumberLiteral`] for what went wrong when this was an `f64`.
+pub fn parse_number(s: &str) -> Result<NumberLiteral, String> {
     let t = s.trim();
-    if let Some(hex) = strip_hex_marker(t) {
-        return u64::from_str_radix(hex, 16)
-            .map(|v| v as f64)
-            .map_err(|_| format!("invalid value {s:?} (want decimal, float, or 0x-prefixed hex)"));
-    }
-    t.parse::<f64>().map_err(|_| format!("invalid value {s:?} (want decimal, float, or 0x-prefixed hex)"))
+    let parsed = match strip_hex_marker(t) {
+        Some(hex) => NumberLiteral::from_hex_digits(hex),
+        None => NumberLiteral::parse_decimal(t),
+    };
+    parsed.map_err(|why| format!("invalid value {s:?}: {why} (want decimal, float, or 0x-prefixed hex)"))
+}
+
+/// [`parse_number`] for a flag that hands its text on to a capability: refused at the
+/// flag, as any bad flag is, and carried as the text so that nothing rounds it on the way.
+pub fn number_text(s: &str) -> Result<String, String> {
+    parse_number(s).map(|_| s.trim().to_string())
 }
 
 /// Parse a hex byte string in either accepted form: token-per-byte
@@ -123,8 +127,13 @@ mod tests {
     #[allow(clippy::approx_constant)]
     #[test]
     fn scan_bounds_also_take_floats() {
-        assert_eq!(parse_hex_or_decimal_f64("0x10").unwrap(), 16.0);
-        assert_eq!(parse_hex_or_decimal_f64("3.14").unwrap(), 3.14);
+        assert_eq!(parse_number("0x10").unwrap().to_f64().unwrap(), 16.0);
+        assert_eq!(parse_number("3.14").unwrap().to_f64().unwrap(), 3.14);
+    }
+
+    #[test]
+    fn hex_past_two_to_the_63_is_the_integer_written() {
+        assert_eq!(parse_number("0xFFFFFFFFFFFFFFFD").unwrap().to_int(64, false), Ok((u64::MAX - 2) as i128));
     }
 
     #[test]

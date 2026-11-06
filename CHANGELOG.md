@@ -5,6 +5,16 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A number on its way to a target is the number written, or it is refused.** `scan value`, `scan filter`, `scan group`, `locate by-transition`
+and `table pin` used to pass their values through `f64`. Past 2^53 a scan answered "0 matches, exhaustive" about a value the target held, or
+named a neighbour it was not asked for, and a pin of 300 on a `u8` wrote 255. Each value now stays as written until its type is known: integers
+are compared exactly, also by `in-range`, `increased` and `decreased`, and what the type cannot hold is `bad-value`. `value`, `min` and `max`
+in a capability's arguments may be text as well, for a client whose own numbers are doubles.
+
+- A `u64` past `i64::MAX` is printed as itself and no longer as a negative number.
+- `scan value --type f32 --value 0.1` finds the `f32` nearest 0.1. It compared against the double, and found nothing.
+- `--value inf` and `nan` are refused at the flag. They were accepted, and no comparison could match them.
+
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`
 `out-of-memory`, `-32002` `engine-crashed`), a new worker takes over with the client's own `initialize`, and the next query is

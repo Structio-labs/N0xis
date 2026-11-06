@@ -33,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use n0xis_contracts::{Response, Va};
+use n0xis_contracts::{NumberLiteral, Response, Va};
 use serde_json::{Value, json};
 
 use crate::source::{SourceSpec, Src, resolve};
@@ -1398,12 +1398,28 @@ fn to_hex_spaced(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
 }
 
-fn f64_arg(args: &Value, key: &str) -> Option<f64> {
-    args.get(key).and_then(|v| v.as_f64())
+/// A number from a request, as exact as the request made it. A JSON integer serde
+/// holds exactly up to `u64::MAX`; one past that arrives as a double, and a client
+/// whose own numbers are doubles may have rounded before we saw it, so text is taken
+/// as well: `"value": "1002855686537490445"` cannot be rounded by anyone.
+fn number_arg(args: &Value, key: &str) -> Result<Option<NumberLiteral>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => crate::parse_number(s).map(Some).map_err(|e| format!("'{key}': {e}")),
+        Some(Value::Number(n)) => Ok(Some(if let Some(v) = n.as_i64() {
+            NumberLiteral::Integer(i128::from(v))
+        } else if let Some(v) = n.as_u64() {
+            NumberLiteral::Integer(i128::from(v))
+        } else {
+            NumberLiteral::from_double(n.as_f64().unwrap_or(f64::NAN))
+        })),
+        Some(other) => Err(format!("'{key}' must be a number or a string holding one, not {other}")),
+    }
 }
 
-fn to_scan_value(v: f64) -> n0xis_core::ScanValue {
-    if v.fract() == 0.0 && v.abs() < 9.2e18 { n0xis_core::ScanValue::Int(v as i64) } else { n0xis_core::ScanValue::Float(v) }
+/// The criterion's `min`/`max`, or `None` when either is absent.
+fn range_args(args: &Value) -> Result<Option<(NumberLiteral, NumberLiteral)>, String> {
+    Ok(number_arg(args, "min")?.zip(number_arg(args, "max")?))
 }
 
 fn parse_value_type(name: &str) -> Result<n0xis_core::ValueType, String> {
@@ -2047,15 +2063,18 @@ impl Plugin for AnalysisPasses {
                     Err(e) => return Response::error("bad-type", e),
                 };
                 let criterion = match args.get("criterion").and_then(|v| v.as_str()).unwrap_or("exact") {
-                    "exact" => match f64_arg(args, "value") {
-                        Some(v) => n0xis_core::ScanCriterion::Exact { value: to_scan_value(v) },
-                        None => return Response::error("bad-criterion", "exact criterion needs 'value'"),
+                    "exact" => match number_arg(args, "value").and_then(|v| v.map(|v| value_type.bind(v)).transpose()) {
+                        Ok(Some(value)) => n0xis_core::ScanCriterion::Exact { value },
+                        Ok(None) => return Response::error("bad-criterion", "exact criterion needs 'value'"),
+                        Err(e) => return Response::error("bad-value", e),
                     },
-                    "in-range" | "inrange" => match (f64_arg(args, "min"), f64_arg(args, "max")) {
-                        (Some(min), Some(max)) => {
-                            n0xis_core::ScanCriterion::InRange { min: to_scan_value(min), max: to_scan_value(max) }
-                        }
-                        _ => return Response::error("bad-criterion", "in-range needs 'min' and 'max'"),
+                    "in-range" | "inrange" => match range_args(args) {
+                        Ok(Some((min, max))) => match value_type.bind(min).and_then(|min| Ok((min, value_type.bind(max)?))) {
+                            Ok((min, max)) => n0xis_core::ScanCriterion::InRange { min, max },
+                            Err(e) => return Response::error("bad-value", e),
+                        },
+                        Ok(None) => return Response::error("bad-criterion", "in-range needs 'min' and 'max'"),
+                        Err(e) => return Response::error("bad-value", e),
                     },
                     "unknown" => n0xis_core::ScanCriterion::Unknown,
                     other => return Response::error("bad-criterion", format!("unknown scan criterion '{other}' (exact|in-range|unknown)")),
@@ -2086,20 +2105,27 @@ impl Plugin for AnalysisPasses {
                 let Some(from) = args.get("from").and_then(|v| v.as_str()) else {
                     return Response::error("missing-arg", "'from' is required (a previous scan's save_as name)");
                 };
-                let criterion = match args.get("criterion").and_then(|v| v.as_str()).unwrap_or("") {
-                    "exact" => match f64_arg(args, "value") {
-                        Some(v) => n0xis_core::FilterCriterion::Exact { value: to_scan_value(v) },
-                        None => return Response::error("bad-criterion", "exact needs 'value'"),
+                // What the criterion names, with its numbers unbound: they mean
+                // nothing until the saved scan below says which type it holds.
+                enum Wanted {
+                    Exact(NumberLiteral),
+                    InRange(NumberLiteral, NumberLiteral),
+                    Plain(n0xis_core::FilterCriterion),
+                }
+                let wanted = match args.get("criterion").and_then(|v| v.as_str()).unwrap_or("") {
+                    "exact" => match number_arg(args, "value") {
+                        Ok(Some(v)) => Wanted::Exact(v),
+                        Ok(None) => return Response::error("bad-criterion", "exact needs 'value'"),
+                        Err(e) => return Response::error("bad-value", e),
                     },
-                    "increased" => n0xis_core::FilterCriterion::Increased,
-                    "decreased" => n0xis_core::FilterCriterion::Decreased,
-                    "changed" => n0xis_core::FilterCriterion::Changed,
-                    "unchanged" => n0xis_core::FilterCriterion::Unchanged,
-                    "in-range" | "inrange" => match (f64_arg(args, "min"), f64_arg(args, "max")) {
-                        (Some(min), Some(max)) => {
-                            n0xis_core::FilterCriterion::InRange { min: to_scan_value(min), max: to_scan_value(max) }
-                        }
-                        _ => return Response::error("bad-criterion", "in-range needs 'min' and 'max'"),
+                    "increased" => Wanted::Plain(n0xis_core::FilterCriterion::Increased),
+                    "decreased" => Wanted::Plain(n0xis_core::FilterCriterion::Decreased),
+                    "changed" => Wanted::Plain(n0xis_core::FilterCriterion::Changed),
+                    "unchanged" => Wanted::Plain(n0xis_core::FilterCriterion::Unchanged),
+                    "in-range" | "inrange" => match range_args(args) {
+                        Ok(Some((min, max))) => Wanted::InRange(min, max),
+                        Ok(None) => return Response::error("bad-criterion", "in-range needs 'min' and 'max'"),
+                        Err(e) => return Response::error("bad-value", e),
                     },
                     other => {
                         return Response::error(
@@ -2115,6 +2141,18 @@ impl Plugin for AnalysisPasses {
                 let previous = match n0xis_core::ScanState::decode(&prev_bytes) {
                     Ok(v) => v,
                     Err(e) => return Response::error("bad-scan-dump", e.to_string()),
+                };
+                let ty = previous.value_type;
+                let criterion = match wanted {
+                    Wanted::Plain(c) => c,
+                    Wanted::Exact(v) => match ty.bind(v) {
+                        Ok(value) => n0xis_core::FilterCriterion::Exact { value },
+                        Err(e) => return Response::error("bad-value", e),
+                    },
+                    Wanted::InRange(min, max) => match ty.bind(min).and_then(|min| Ok((min, ty.bind(max)?))) {
+                        Ok((min, max)) => n0xis_core::FilterCriterion::InRange { min, max },
+                        Err(e) => return Response::error("bad-value", e),
+                    },
                 };
                 let save_as = args.get("save_as").and_then(|v| v.as_str()).unwrap_or(from).to_string();
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -2211,9 +2249,9 @@ impl Plugin for AnalysisPasses {
                         Ok(t) => t,
                         Err(e) => return Response::error("bad-type", e),
                     };
-                    let value = match val_s.trim().parse::<f64>() {
-                        Ok(v) => to_scan_value(v),
-                        Err(_) => return Response::error("bad-value", format!("field '{s}': '{}' is not a number", val_s.trim())),
+                    let value = match crate::parse_number(val_s).and_then(|v| value_type.bind(v)) {
+                        Ok(v) => v,
+                        Err(e) => return Response::error("bad-value", format!("field '{s}': {e}")),
                     };
                     fields.push(n0xis_core::GroupField { value_type, value });
                 }

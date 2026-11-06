@@ -24,7 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Va;
+use crate::{NumberLiteral, Va};
 
 /// How to (re-)locate an entry's address — in increasing order of
 /// restart/ASLR resilience.
@@ -66,18 +66,21 @@ impl TableValueType {
     /// Encode a pin/write value as little-endian bytes for this entry's
     /// type — shared by any frontend that writes a `TableEntry`'s value into
     /// a live process (the CLI's `table pin` among them).
-    pub fn encode_value(self, v: f64) -> Result<Vec<u8>, String> {
+    ///
+    /// A value the type cannot hold is refused: this used to take an `f64` and cast,
+    /// so `--value 300` on a `u8` wrote 255 and an `i64` past 2^53 wrote its neighbour.
+    pub fn encode_value(self, v: NumberLiteral) -> Result<Vec<u8>, String> {
         Ok(match self {
-            TableValueType::I8 => (v as i8).to_le_bytes().to_vec(),
-            TableValueType::U8 => (v as u8).to_le_bytes().to_vec(),
-            TableValueType::I16 => (v as i16).to_le_bytes().to_vec(),
-            TableValueType::U16 => (v as u16).to_le_bytes().to_vec(),
-            TableValueType::I32 => (v as i32).to_le_bytes().to_vec(),
-            TableValueType::U32 => (v as u32).to_le_bytes().to_vec(),
-            TableValueType::I64 => (v as i64).to_le_bytes().to_vec(),
-            TableValueType::U64 => (v as u64).to_le_bytes().to_vec(),
-            TableValueType::F32 => (v as f32).to_le_bytes().to_vec(),
-            TableValueType::F64 => v.to_le_bytes().to_vec(),
+            TableValueType::I8 => (v.to_int(8, true)? as i8).to_le_bytes().to_vec(),
+            TableValueType::U8 => (v.to_int(8, false)? as u8).to_le_bytes().to_vec(),
+            TableValueType::I16 => (v.to_int(16, true)? as i16).to_le_bytes().to_vec(),
+            TableValueType::U16 => (v.to_int(16, false)? as u16).to_le_bytes().to_vec(),
+            TableValueType::I32 => (v.to_int(32, true)? as i32).to_le_bytes().to_vec(),
+            TableValueType::U32 => (v.to_int(32, false)? as u32).to_le_bytes().to_vec(),
+            TableValueType::I64 => (v.to_int(64, true)? as i64).to_le_bytes().to_vec(),
+            TableValueType::U64 => (v.to_int(64, false)? as u64).to_le_bytes().to_vec(),
+            TableValueType::F32 => v.to_f32()?.to_le_bytes().to_vec(),
+            TableValueType::F64 => v.to_f64()?.to_le_bytes().to_vec(),
             TableValueType::Aob => return Err("cannot write an Aob-typed entry as a scalar value".to_string()),
         })
     }
@@ -148,6 +151,20 @@ pub struct Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pin_writes_the_value_or_refuses_it() {
+        let int = |v: i128| NumberLiteral::Integer(v);
+        assert_eq!(TableValueType::U64.encode_value(int((1 << 53) + 1)), Ok(((1u64 << 53) + 1).to_le_bytes().to_vec()));
+        assert_eq!(TableValueType::I8.encode_value(int(-1)), Ok(vec![0xFF]));
+        // These were casts: 255, then 0, then the neighbour below.
+        assert!(TableValueType::U8.encode_value(int(300)).is_err());
+        assert!(TableValueType::U8.encode_value(int(-1)).is_err());
+        assert!(TableValueType::I64.encode_value(NumberLiteral::from_double(9_007_199_254_740_992.0)).is_err());
+        assert_eq!(TableValueType::I32.encode_value(NumberLiteral::from_double(999.0)), Ok(999i32.to_le_bytes().to_vec()));
+        assert!(TableValueType::F32.encode_value(int(16_777_217)).is_err());
+        assert_eq!(TableValueType::F32.encode_value(NumberLiteral::parse_decimal("0.1").unwrap()), Ok(0.1f32.to_le_bytes().to_vec()));
+    }
 
     #[test]
     fn table_entry_roundtrips_through_json() {

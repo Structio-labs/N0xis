@@ -141,7 +141,7 @@ fn decode_aabb(values: &[ScanValue]) -> Option<Aabb> {
     }
     let f = |v: ScanValue| match v {
         ScanValue::Float(x) => Some(x as f32),
-        ScanValue::Int(_) => None,
+        ScanValue::Int(_) | ScanValue::Unsigned(_) => None,
     };
     Some(Aabb {
         min: [f(values[0])?, f(values[1])?, f(values[2])?],

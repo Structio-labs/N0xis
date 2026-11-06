@@ -48,7 +48,7 @@ pub mod why;
 
 pub use arch::{lift_refusal, pick_arch, pick_arch_for, resolve_arch};
 pub use registry::{Capability, Diagnostic, Origin, Plugin, Registry, build_registry, stated_coverage, stated_functions};
-pub use parse::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, strip_hex_marker};
+pub use parse::{opt_hex, parse_hex_bytes, number_text, parse_number, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, strip_hex_marker};
 pub use source::{FrontendError, ResolvedSource, SourceSpec, Src, base_for_module, load_snapshot, module_base_of, scan_range};
 
 /// Every function of the target, `.pdata`-exact when the format offers it and a

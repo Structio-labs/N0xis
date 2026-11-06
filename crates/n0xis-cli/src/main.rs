@@ -20,8 +20,8 @@ use n0xis_arch::{Arch, InsnKind, X64};
 // parsing) — `n0xis-mcp` goes through the exact same functions, so `--pid`
 // and `"pid"` cannot mean different things (CONCEPT §3 rules 3 and 5).
 use n0xis_frontend::source::{Src, SourceSpec, base_for_module, load_snapshot, module_base_of, scan_range_or as scan_range};
-use n0xis_frontend::{opt_hex, parse_hex_bytes, parse_hex_or_decimal_f64, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, resolve_arch};
-use n0xis_contracts::{Response, Va, schema};
+use n0xis_frontend::{opt_hex, parse_hex_bytes, number_text, parse_number, parse_hex_or_decimal_u64, parse_hex_or_decimal_usize, resolve_arch};
+use n0xis_contracts::{NumberLiteral, Response, Va, schema};
 use n0xis_contracts::TableValueType;
 use n0xis_core::{
     concept_grep_rank, identify_f64, identify_u64, parse_aob, AobByte, AobInput, AobScanPass, BindingsInput, BindingsPass,
@@ -47,7 +47,7 @@ use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
 // was the *CLI's* import of them, which is why `locate by-transition` refused to
 // run on Linux with a message blaming "LiveProcess/Win32 APIs" for a body that
 // touches neither.
-use n0xis_core::{FilterInput, FilterPass, ScanCriterion, ScanInput, ScanPass, ScanValue};
+use n0xis_core::{FilterInput, FilterPass, ScanCriterion, ScanInput, ScanPass};
 // Still Win32-only — the UI-locate and trampoline commands have not been routed
 // through the seam yet; the list doubles as an inventory of what remains.
 #[cfg(windows)]
@@ -733,14 +733,14 @@ struct LocateByTransitionArgs {
     wait_ms: Option<u64>,
     /// After the transition filter, keep only survivors whose new value equals
     /// this (a structural predicate over the survivors).
-    #[arg(long)]
-    expect: Option<f64>,
+    #[arg(long, allow_negative_numbers = true, value_parser = parse_number)]
+    expect: Option<NumberLiteral>,
     /// After the transition filter, keep only survivors whose new value is in
     /// `[--min, --max]`.
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    min: Option<f64>,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    max: Option<f64>,
+    #[arg(long, allow_negative_numbers = true, value_parser = parse_number)]
+    min: Option<NumberLiteral>,
+    #[arg(long, allow_negative_numbers = true, value_parser = parse_number)]
+    max: Option<NumberLiteral>,
     /// Persist the final working set under `.n0x/dumps/scan/<name>.json` so a
     /// later `scan filter` can narrow it further.
     #[arg(long)]
@@ -2696,12 +2696,12 @@ struct ScanValueArgs {
     /// `unknown` (record every value — the "unknown initial value" scan).
     #[arg(long, default_value = "exact")]
     criterion: String,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    value: Option<f64>,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    min: Option<f64>,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    max: Option<f64>,
+    #[arg(long, allow_negative_numbers = true, value_parser = number_text)]
+    value: Option<String>,
+    #[arg(long, allow_negative_numbers = true, value_parser = number_text)]
+    min: Option<String>,
+    #[arg(long, allow_negative_numbers = true, value_parser = number_text)]
+    max: Option<String>,
     /// Byte stride between candidates; defaults to the value's natural size.
     #[arg(long)]
     align: Option<usize>,
@@ -2726,12 +2726,12 @@ struct ScanFilterArgs {
     /// `unchanged`, or `in-range` (needs `--min`/`--max`).
     #[arg(long)]
     criterion: String,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    value: Option<f64>,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    min: Option<f64>,
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    max: Option<f64>,
+    #[arg(long, allow_negative_numbers = true, value_parser = number_text)]
+    value: Option<String>,
+    #[arg(long, allow_negative_numbers = true, value_parser = number_text)]
+    min: Option<String>,
+    #[arg(long, allow_negative_numbers = true, value_parser = number_text)]
+    max: Option<String>,
     #[arg(long)]
     save_as: String,
     #[arg(long)]
@@ -2842,8 +2842,8 @@ struct TablePinArgs {
     pid: u32,
     /// Value to (re-)write every interval — defaults to the entry's stored
     /// `freeze_value`.
-    #[arg(long, value_parser = parse_hex_or_decimal_f64)]
-    value: Option<f64>,
+    #[arg(long, allow_negative_numbers = true, value_parser = parse_number)]
+    value: Option<NumberLiteral>,
     #[arg(long, default_value_t = 100)]
     interval_ms: u64,
     #[arg(long, default_value_t = 5000)]
@@ -5378,11 +5378,6 @@ fn cmd_disasm(a: DisasmArgs, pretty: bool) -> bool {
 // scan / pointer-path / aob / dissect (ROADMAP Phase 4b)
 // ============================================================================
 
-/// Turn a CLI number into a typed scan value. `table pin` still needs Win32,
-/// but `locate by-transition` does not — the conversion itself is arithmetic.
-fn to_scan_value(v: f64) -> ScanValue {
-    if v.fract() == 0.0 && v.abs() < 9.2e18 { ScanValue::Int(v as i64) } else { ScanValue::Float(v) }
-}
 
 
 /// The region set a live scan covers, for whichever adapter the OS supplied.
@@ -6427,7 +6422,8 @@ fn cmd_table_pin(a: TablePinArgs, spelled: Spelled, pretty: bool) -> bool {
     let Some(entry) = table.entries.iter().find(|e| e.name.eq_ignore_ascii_case(&a.name)).cloned() else {
         return ir_err("entry-not-found", &format!("no entry named '{}' in table '{}'", a.name, a.table), pretty);
     };
-    let value = match a.value.or(entry.freeze_value) {
+    // A stored `freeze_value` is a double in the table's file, and binds as one.
+    let value = match a.value.or(entry.freeze_value.map(NumberLiteral::from_double)) {
         Some(v) => v,
         None => return ir_err("no-value", "provide --value or set the entry's freeze_value first", pretty),
     };
@@ -7098,11 +7094,18 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
         let after_transition = state.total();
 
         // 4) Optional structural predicate over the survivors (a second filter).
+        let value_type = ValueType::from(a.r#type);
         let predicate = if let Some(v) = a.expect {
-            Some(FilterCriterion::Exact { value: to_scan_value(v) })
+            match value_type.bind(v) {
+                Ok(value) => Some(FilterCriterion::Exact { value }),
+                Err(e) => return ir_err("bad-value", &format!("--expect: {e}"), pretty),
+            }
         } else if a.min.is_some() || a.max.is_some() {
             match (a.min, a.max) {
-                (Some(min), Some(max)) => Some(FilterCriterion::InRange { min: to_scan_value(min), max: to_scan_value(max) }),
+                (Some(min), Some(max)) => match value_type.bind(min).and_then(|min| Ok((min, value_type.bind(max)?))) {
+                    Ok((min, max)) => Some(FilterCriterion::InRange { min, max }),
+                    Err(e) => return ir_err("bad-value", &format!("--min/--max: {e}"), pretty),
+                },
                 _ => return ir_err("bad-predicate", "--min and --max must be given together", pretty),
             }
         } else {
@@ -8293,7 +8296,7 @@ mod table_pin_alias_tests {
         // compared here too, or this stops compiling.
         let TablePinArgs { table, name, pid, value, interval_ms, duration_ms } = parse_pin("pin");
         let old = parse_pin("freeze");
-        assert_eq!((table.as_str(), name.as_str(), pid, value, interval_ms, duration_ms), ("t", "n", 4242, Some(7.0), 11, 13));
+        assert_eq!((table.as_str(), name.as_str(), pid, value, interval_ms, duration_ms), ("t", "n", 4242, Some(NumberLiteral::Integer(7)), 11, 13));
         assert_eq!(
             (table, name, pid, value, interval_ms, duration_ms),
             (old.table, old.name, old.pid, old.value, old.interval_ms, old.duration_ms),
