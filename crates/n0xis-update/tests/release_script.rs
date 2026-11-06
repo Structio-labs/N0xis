@@ -329,12 +329,17 @@ impl Repo {
 
     /// The release before this one, whose binary holds `key`, and HEAD one commit on at this source.
     fn previous_release_holds(&self, key: &str) {
+        self.released(OLD_TAG, &trust_source(key));
+    }
+
+    /// A release tagged `tag`, with `source` as the file its key is declared in, and HEAD back at this source.
+    fn released(&self, tag: &str, source: &str) {
         let now = self.root.join("crates/n0xis-update/src/trust.rs");
-        let source = fs::read_to_string(&now).unwrap();
-        fs::write(&now, trust_source(key)).unwrap();
-        self.commit("the previous release");
-        self.git(&["tag", OLD_TAG]);
+        let current = fs::read_to_string(&now).unwrap();
         fs::write(&now, source).unwrap();
+        self.commit(tag);
+        self.git(&["tag", tag]);
+        fs::write(&now, current).unwrap();
         self.commit("this one");
     }
 
@@ -525,6 +530,104 @@ fn a_placeholder_or_no_file_at_the_previous_tag_is_no_constraint() {
     repo.commit("this one");
     let out = repo.run(&["--publish"]);
     assert!(out.status.success(), "no such file: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A release co-signed by both keys and the next by the new one alone: the tag right below held the new
+/// key, so one tag back found nothing wrong, and every copy of the release before that was stranded.
+#[test]
+fn every_earlier_key_counts_and_not_only_the_newest() {
+    let b = Bench::new("everykey");
+    let (oldest, older) = (Bench::new("everykey-oldest"), Bench::new("everykey-older"));
+    let repo = Repo::new("everykey", &b);
+    let this_key = hex(&b.public());
+    repo.released("v1.0.0", &trust_source(&hex(&oldest.public())));
+    repo.released("v1.1.0", &trust_source(&hex(&older.public())));
+    repo.released("v1.2.2", &trust_source(&this_key));
+
+    // Each one that is missing is named, and the one that is signed by is not.
+    let out = repo.run(&["--publish"]);
+    refused(&out, &hex(&oldest.public()));
+    refused(&out, &hex(&older.public()));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(&this_key), "{}", String::from_utf8_lossy(&out.stderr));
+    let (oldest_key, older_key) = (oldest.key(), older.key());
+    let (oldest_key, older_key) = (oldest_key.to_str().unwrap(), older_key.to_str().unwrap());
+    refused(&repo.run(&["--key", older_key, "--publish"]), &hex(&oldest.public()));
+    refused(&repo.run(&["--key", oldest_key, "--publish"]), &hex(&older.public()));
+    assert_eq!(repo.remote_tags(), "", "a refusal pushed");
+
+    // A dry run says the same and writes the release.
+    let dry = repo.run(&[]);
+    assert!(dry.status.success() && String::from_utf8_lossy(&dry.stdout).contains("NOT PUBLISHABLE"), "{}", String::from_utf8_lossy(&dry.stdout));
+
+    let all = repo.run(&["--key", oldest_key, "--key", older_key, "--publish"]);
+    assert!(all.status.success(), "{}", String::from_utf8_lossy(&all.stderr));
+    assert_eq!(repo.remote_tags(), TAG);
+
+    let b = Bench::new("everykey-meant");
+    let repo = Repo::new("everykey-meant", &b);
+    repo.released("v1.0.0", &trust_source(&hex(&oldest.public())));
+    repo.released("v1.2.2", &trust_source(&hex(&b.public())));
+    let meant = repo.run(&["--strand-older-copies", "--publish"]);
+    assert!(meant.status.success(), "{}", String::from_utf8_lossy(&meant.stderr));
+}
+
+/// The client reads hex of either case, so a key in capitals is a key, and a release tag is `vX.Y.Z`.
+#[test]
+fn a_key_in_capitals_counts_and_a_tag_that_is_not_plain_does_not() {
+    let b = Bench::new("capitals");
+    let older = Bench::new("capitals-older");
+    let repo = Repo::new("capitals", &b);
+    repo.released("v1.0.0", &trust_source(&hex(&older.public()).to_uppercase()));
+    refused(&repo.run(&["--publish"]), &hex(&older.public()));
+
+    let b = Bench::new("rc");
+    let repo = Repo::new("rc", &b);
+    repo.released("v1.0.0-rc1", &trust_source(&hex(&older.public())));
+    let out = repo.run(&["--publish"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// That a tag holds no key is told apart from not being able to tell.
+#[test]
+fn a_file_at_an_earlier_tag_that_cannot_be_read_is_refused() {
+    let b = Bench::new("unreadable");
+    let repo = Repo::new("unreadable", &b);
+    // Below a tag that holds this key, so that only reading every tag finds it.
+    repo.released("v1.0.0", "this file has no such declaration\n");
+    repo.released("v1.2.2", &trust_source(&hex(&b.public())));
+    refused(&repo.run(&["--publish"]), "found 0 declarations of RELEASE_PUBLIC_KEY");
+    refused(&repo.run(&["--strand-older-copies", "--publish"]), "found 0 declarations of RELEASE_PUBLIC_KEY");
+    assert_eq!(repo.remote_tags(), "");
+
+    // Git failing on the tag is not git saying there is no file: a tag naming a blob has no tree.
+    let b = Bench::new("notree");
+    let repo = Repo::new("notree", &b);
+    let blob = repo.git(&["rev-parse", "HEAD:Cargo.toml"]);
+    repo.git(&["tag", "v1.0.0", &blob]);
+    refused(&repo.run(&["--publish"]), "cannot be read");
+    assert_eq!(repo.remote_tags(), "");
+}
+
+/// A hotfix below what is published, marked latest, is what every client is told is the newest.
+#[test]
+fn a_version_below_any_tag_is_refused() {
+    // By numbers: as text, v1.2.10 sorts below v1.2.3.
+    for above in ["v1.2.4", "v1.2.10", "v2.0.0"] {
+        let b = Bench::new(&format!("above-{above}"));
+        let repo = Repo::new("above", &b);
+        repo.released(above, &trust_source(&hex(&b.public())));
+        refused(&repo.run(&["--publish"]), &format!("{above} already exists"));
+        refused(&repo.run(&["--strand-older-copies", "--publish"]), &format!("{above} already exists"));
+        assert_eq!(repo.remote_tags(), "", "{above}: a refusal pushed");
+        let dry = repo.run(&[]);
+        assert!(dry.status.success() && String::from_utf8_lossy(&dry.stdout).contains("NOT PUBLISHABLE"), "{}", String::from_utf8_lossy(&dry.stdout));
+    }
+    // A tag that is not a release's stops nothing.
+    let b = Bench::new("above-rc");
+    let repo = Repo::new("above-rc", &b);
+    repo.released("v1.3.0-rc1", &trust_source(&hex(&b.public())));
+    let out = repo.run(&["--publish"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 /// A failed upload after the push: the commands that recover are printed, and they are what works.

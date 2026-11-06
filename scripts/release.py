@@ -13,8 +13,10 @@ Each refusal here is one a copy in the field could not recover from:
   is one `git add` from leaving.
 - Publishing while the binary's built-in key is the placeholder, or not this signing key's. Every copy
   of that release would refuse every manifest after it, and no later release could reach them.
-- A change of key that strands older copies: the key the previous release's binary holds is not among
-  the signers, so nothing in the field can verify this release. --strand-older-copies says that is meant.
+- A change of key that strands older copies: a key the binary of any earlier release holds is not among
+  the signers, so copies of that release cannot verify this one. --strand-older-copies says that is meant.
+- A version below one already tagged. Marked latest, it would be what every client is told, and the copies
+  above it would be frozen where they are for as long as it stands.
 - A built binary that does not state this version when run, which a stale target directory can give. All
   four are run, the Windows two under wine, and with --publish one that could not be run is a refusal.
 - Publishing what this run did not just build (--prebuilt, --base-url exist for the verification).
@@ -97,23 +99,38 @@ def version_numbers(text):
     return tuple(int(n) for n in found.groups()[:3]) if found else None
 
 
-def key_of_the_previous_release(version):
-    """The newest `v*` tag below this version, and the key its binary holds: (tag, key).
-
-    The key is None where that tag has no such file or holds the placeholder: nothing in the field can
-    be stranded by it. A file that is there and does not read is a refusal, since it cannot be told.
-    """
+def plain_tags():
+    """Every `vX.Y.Z` tag as (numbers, tag). Numbers, since v1.2.10 is above v1.2.9 and sorts below it."""
     # An export is no checkout, and a dry run from one has no tags. Publishing needs a checkout anyway.
     tags = subprocess.run(["git", "tag", "--list", "v*"], cwd=ROOT, capture_output=True, text=True).stdout.split()
-    below = [(numbers, tag) for tag in tags if (numbers := version_numbers(tag[1:])) and numbers < version_numbers(version)]
-    if not below:
-        return None, None
-    tag = max(below)[1]
-    shown = subprocess.run(["git", "show", f"{tag}:{TRUST_RELATIVE}"], cwd=ROOT, capture_output=True, text=True, errors="replace")
+    return [(tuple(int(n) for n in found.groups()), tag) for tag in tags if (found := re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag))]
+
+
+def key_at(tag):
+    """The key the binary of `tag` holds, in lower case, or None.
+
+    None where the tag has no such file or holds what the client cannot read as a key, the placeholder
+    among them: nothing in the field can be stranded by a copy that verifies nothing. The client reads
+    hex of either case. A file that is there and does not read is a refusal, since it cannot be told.
+    """
+    unreadable = f"{TRUST_RELATIVE} at {tag} cannot be read, so what its copies can verify cannot be told"
+    listed = subprocess.run(["git", "ls-tree", f"refs/tags/{tag}", "--", TRUST_RELATIVE], cwd=ROOT, capture_output=True, text=True)
+    if listed.returncode != 0:
+        refuse(unreadable)
+    if not listed.stdout.strip():
+        return None
+    shown = subprocess.run(["git", "show", f"refs/tags/{tag}:{TRUST_RELATIVE}"], cwd=ROOT, capture_output=True, text=True, errors="replace")
     if shown.returncode != 0:
-        return tag, None
+        refuse(unreadable)
     key = key_in(shown.stdout, f"{TRUST_RELATIVE} at {tag}")
-    return tag, key if re.fullmatch(r"[0-9a-f]{64}", key) else None
+    return key.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", key) else None
+
+
+def keys_of_earlier_releases(version):
+    """Each distinct key a binary below this version holds, with the newest tag holding it. Every tag and
+    not the last: a copy of any of them may still be out there, whatever was published after it."""
+    below = sorted(entry for entry in plain_tags() if entry[0] < version_numbers(version))
+    return {key: tag for _, tag in below if (key := key_at(tag))}
 
 
 def public_key_of(key_path):
@@ -131,12 +148,14 @@ def why_not_publishable(keys, version, strand):
     built_in = built_in_key()
     if built_in not in public:
         return f"the binary's built-in key is {built_in!r}, and no --key is that key: every copy of this release would refuse its own manifest"
-    tag, previous = key_of_the_previous_release(version)
-    if previous and previous not in public and not strand:
-        return (
-            f"the binary of {tag} holds the key {previous}, and no --key is that key: every copy of it would refuse this release for good. "
-            "Sign with both, or say that is meant with --strand-older-copies"
-        )
+    # Its own tag is not above it: that is what a failed upload leaves, and check_existing_tag judges it.
+    above = [tag for numbers, tag in plain_tags() if numbers >= version_numbers(version) and tag != f"v{version}"]
+    if above:
+        return f"{', '.join(sorted(above))} already exists, and this release is {version}: as the latest it would hold back every copy above it"
+    stranded = {key: tag for key, tag in keys_of_earlier_releases(version).items() if key not in public}
+    if stranded and not strand:
+        held = "; ".join(f"the binary of {tag} holds the key {key}" for key, tag in stranded.items())
+        return f"{held}, and no --key is that key: every copy of it would refuse this release for good. Sign with it as well, or say that is meant with --strand-older-copies"
     return None
 
 
@@ -321,7 +340,7 @@ def main():
     ap.add_argument("--next-key", help="the public key (64 hex digits) the next releases will be signed by")
     ap.add_argument("--out", help="where the release is assembled (default target/release-<tag>)")
     ap.add_argument("--publish", action="store_true", help="tag and create the release; the default is a dry run")
-    ap.add_argument("--strand-older-copies", action="store_true", help="publish with no --key being the previous release's key, so that its copies refuse this one for good")
+    ap.add_argument("--strand-older-copies", action="store_true", help="publish though no --key is a key an earlier release holds, so that its copies refuse this one for good")
     ap.add_argument("--prebuilt", help="take the binaries from this directory, by their asset names, instead of building")
     ap.add_argument("--base-url", help="where the manifest says the files are (default this tag's release)")
     args = ap.parse_args()
