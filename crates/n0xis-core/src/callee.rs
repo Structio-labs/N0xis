@@ -69,6 +69,8 @@ struct Shape {
     open: bool,
     /// Whether a path computes what it returns.
     returns_value: bool,
+    /// And computes it for nothing else.
+    only_returned: bool,
     /// Whose result a path returns untouched.
     returns_of: Vec<Callee>,
     /// It has a `ret`.
@@ -279,7 +281,7 @@ fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
     let open = unnamed_from.is_some() || reads_what_cannot_be_listed(&cfg, &opt.blocks);
     let returns = &opt.raw_flow.returns;
     let returns_of = returns.calls.iter().map(|t| callee_of(ctx, &cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == va)).collect();
-    Some(Shape { read, forwards, open, returns_value: returns.value, returns_of, returns_at_all: returns.any })
+    Some(Shape { read, forwards, open, returns_value: returns.value, only_returned: returns.only_returned, returns_of, returns_at_all: returns.any })
 }
 
 /// The position a variadic function's unnamed arguments start at, from its register
@@ -345,8 +347,7 @@ fn gives_of(ctx: &Ctx, id: Option<&str>, callee: Callee, depth: u8) -> Gives {
                 // It never comes back, so a caller's `return f();` says nothing of a
                 // value: `int g() { return error(); }` has one in its source.
                 Some(s) if !s.returns_at_all => Gives::Unknown,
-                Some(s) if s.returns_value => Gives::Value,
-                Some(s) => join_gives(ctx, id, &s.returns_of, depth - 1),
+                Some(s) => weigh(s.returns_value, s.only_returned, || join_gives(ctx, id, &s.returns_of, depth - 1)),
             };
             if let Some(id) = id {
                 with_memo(id, |m| {
@@ -379,13 +380,25 @@ fn join_gives(ctx: &Ctx, id: Option<&str>, callees: &[Callee], depth: u8) -> Giv
 /// is a return; an entry value or a call's marker is none; a call's result is what
 /// that callee gives.
 pub(crate) fn function_gives(ctx: &Ctx, cfg: &CfgArtifact, flow: &RawFlow) -> Gives {
-    if flow.returns.value {
-        return Gives::Value;
-    }
     let id = ctx_identity(ctx);
     let depth = if id.is_some() { DEPTH } else { 1 };
     let callees: Vec<Callee> = flow.returns.calls.iter().map(|t| callee_of(ctx, cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == cfg.start)).collect();
-    join_gives(ctx, id.as_deref(), &callees, depth)
+    weigh(flow.returns.value, flow.returns.only_returned, || join_gives(ctx, id.as_deref(), &callees, depth))
+}
+
+/// A value computed for the return and nothing else is one. One that something else
+/// reads as well, and a callee's value is as good as its own answer, may be what was
+/// left in the register: the rule "computed means returned" read 210 of 212 void
+/// functions of one C image as returning a value, and "read elsewhere means void" would
+/// say void of functions that return what they just stored. So it says it cannot tell.
+fn weigh(value: bool, only_returned: bool, callees: impl FnOnce() -> Gives) -> Gives {
+    if only_returned {
+        return Gives::Value;
+    }
+    match callees() {
+        Gives::Nothing if value => Gives::Unknown,
+        other => other,
+    }
 }
 
 /// A function that gives nothing: its `ret` returns nothing, whatever the lift said it
@@ -755,6 +768,15 @@ mod tests {
     #[test]
     fn a_computed_value_is_a_return() {
         assert!(!says_void(&image(vec![0xb8, 1, 0, 0, 0, 0xc3], RET, RET)).starts_with("void "));
+    }
+
+    /// `mov rax,[rcx]; add rax,1; mov [rcx],rax; ret`: stored, and left in the register.
+    /// `*p += 1` and `return *p += 1` are these same bytes.
+    #[test]
+    fn a_value_also_read_on_its_way_cannot_be_told_from_a_leftover() {
+        let snap = image(vec![0x48, 0x8b, 0x01, 0x48, 0x83, 0xc0, 0x01, 0x48, 0x89, 0x01, 0xc3], RET, RET);
+        let sig = says_void(&snap);
+        assert!(sig.starts_with("/*unknown*/"), "{sig}");
     }
 
     /// `test ecx,ecx; je over; mov eax,1; over: ret`: one path is enough.

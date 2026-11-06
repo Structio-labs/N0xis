@@ -132,6 +132,10 @@ pub struct ReturnEvidence {
     pub value: bool,
     /// Calls whose result some path returns untouched: only the callee can say.
     pub calls: Vec<CallTarget>,
+    /// Of what is computed for a return, some is computed for nothing else. A value also
+    /// read on its way, `mov (%rdi),%rax; add $1,%rax; mov %rax,(%rdi); ret`, may be the
+    /// result or only what was left there, and the bytes do not say.
+    pub only_returned: bool,
     /// There is a `ret` at all. A function with none gives nothing to a question about
     /// what it gives, since nothing it left in a register is ever seen.
     pub any: bool,
@@ -882,6 +886,34 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
     let mut out = ReturnEvidence::default();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut work: Vec<&str> = Vec::new();
+    // Every read but the `ret`'s own, through the merges: a value that joins another
+    // that something reads is read too.
+    let mut read: BTreeSet<&str> = BTreeSet::new();
+    let mut owned: BTreeSet<String> = BTreeSet::new();
+    for b in blocks {
+        for s in &b.stmts {
+            if !matches!(s.stmt, MicroStmt::Return(_)) {
+                stmt_uses(&s.stmt, &mut owned);
+            }
+        }
+        if let Some(c) = &b.condition {
+            collect_expr_vars(c, &mut owned);
+        }
+    }
+    read.extend(owned.iter().map(String::as_str));
+    loop {
+        let before = read.len();
+        for b in blocks {
+            for p in &b.phis {
+                if read.contains(p.dst.as_str()) {
+                    read.extend(p.inputs.iter().map(|i| i.value.as_str()));
+                }
+            }
+        }
+        if read.len() == before {
+            break;
+        }
+    }
     for b in blocks {
         for s in &b.stmts {
             match &s.stmt {
@@ -905,13 +937,19 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
         match defs.get(v) {
             None => out.value |= v.ends_with(".0") && Some(ssa_root(v)) != ret_reg,
             Some(Def::Clobber) => {}
-            Some(Def::Other) => out.value = true,
+            Some(Def::Other) => {
+                out.value = true;
+                out.only_returned |= !read.contains(v);
+            }
             Some(Def::Call(t)) => out.calls.push((*t).clone()),
             Some(Def::Phi(inputs)) => work.extend(inputs.iter().map(|i| i.value.as_str())),
             // One register's version of another of itself passes the question on;
             // from any other register, somebody moved it here to return it.
             Some(Def::Copy(from)) if ssa_root(from) == ssa_root(v) => work.push(from),
-            Some(Def::Copy(_)) => out.value = true,
+            Some(Def::Copy(_)) => {
+                out.value = true;
+                out.only_returned |= !read.contains(v);
+            }
         }
     }
     out
