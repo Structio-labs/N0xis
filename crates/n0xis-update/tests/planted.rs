@@ -466,11 +466,16 @@ fn plain_http_is_refused_without_a_connection() {
 
 #[test]
 fn a_file_at_a_plain_http_address_is_refused() {
+    // A listener, because a closed port would refuse the connection with or without the rule.
+    let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    plain.set_nonblocking(true).unwrap();
+    let port = plain.local_addr().unwrap().port();
     let b = Bench::new("httpfile");
     let mut m = b.manifest("2.0.0");
-    m["components"][COMPONENT][PLATFORM]["url"] = json!("http://127.0.0.1:9/file");
+    m["components"][COMPONENT][PLATFORM]["url"] = json!(format!("http://127.0.0.1:{port}/file"));
     b.publish(&m);
     b.refused(b.updater().update(), Why::DownloadFailed);
+    assert!(plain.accept().is_err(), "a connection was opened to a plain http address");
 }
 
 #[test]
