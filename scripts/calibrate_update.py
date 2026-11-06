@@ -136,7 +136,7 @@ MUTATIONS = [
     # F. Rollback is one file.
     (UPDATE + "install.rs", "let _ = fs::remove_file(with_suffix(&target, RECORD));", "let _ = fs::remove_file(with_suffix(&target, RECORD));\n    for e in fs::read_dir(target.parent().unwrap()).unwrap().flatten() {\n        let p = e.path();\n        if p != target && fs::symlink_metadata(with_suffix(&p, PREVIOUS)).is_ok() {\n            let _ = put_in_place(&with_suffix(&p, PREVIOUS), &p);\n        }\n    }", *PLANTED, "rollback_leaves_a_sibling_and_another_copy_alone"),
     (UPDATE + "install.rs", "let _lock = take_lock(&target,", "let _lock = take_lock(exe,", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
-    (UPDATE + "install.rs", "Some(name) => return Err(Refusal::new(Why::NotABareName,", "Some(name) if name.is_empty() => return Err(Refusal::new(Why::NotABareName,", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
+    (UPDATE + "install.rs", "Some(name) if is_bare_file_name(name) => exe.with_file_name(name),", "Some(name) if !name.is_empty() => exe.with_file_name(name),", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
     (UPDATE + "install.rs", "match lock_for_install(&item, asked, &manifest.version) {", "match (if item.runs { lock_for_install(&item, asked, &manifest.version) } else { File::open(&item.target).map_err(|e| Refusal::new(Why::InstallFailed, e.to_string())) }) {", *PLANTED, "an_install_skips_a_sibling_whose_own_lock_is_held"),
     ("crates/n0xis-cli/src/main.rs", '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref()));', '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref().filter(|_| false)));', *DOOR, "rollback_takes_a_bare_name"),
     # G. A record says what it installed.
@@ -179,7 +179,7 @@ MUTATIONS = [
     (UPDATE + "install.rs", "    let file = std::path::absolute(file).map_err(|e| refused(format!(\"has no absolute path: {e}\")))?;\n", "", *PLANTED, "the_candidate_is_executed_by_absolute_path"),
     # N. Keep the chain.
     (UPDATE + "trust.rs", "let mut chain = walk(self.keys[..self.roots].to_vec(), written.chain.into_iter()).1;", "let mut chain = written.chain;", *PLANTED, "a_junk_chain_still_takes_a_real_key"),
-    (UPDATE + "trust.rs", "let mut chain = walk(self.keys[..self.roots].to_vec(), written.chain.into_iter()).1;", "let _ = written;\n        let mut chain = Vec::new();", *PLANTED, "a_real_record_is_kept_when_another_is_appended"),
+    (UPDATE + "trust.rs", "let mut chain = walk(self.keys[..self.roots].to_vec(), written.chain.into_iter()).1;", "let _ = written;\n        let mut chain: Vec<Link> = Vec::new();", *PLANTED, "a_real_record_is_kept_when_another_is_appended"),
     (UPDATE + "trust.rs", "let Ok(written) = read_chain(dir) else { return };", "let written = read_chain(dir).unwrap_or_default();", *PLANTED, "a_chain_that_cannot_be_read_is_not_written_over"),
     (UPDATE + "trust.rs", "if bytes.len() as u64 > CHAIN_MAX_BYTES {\n        return Ok(Chain::default());", "if bytes.len() as u64 > CHAIN_MAX_BYTES {\n        return Err(std::io::Error::other(\"past the bound\"));", *PLANTED, "a_file_past_the_bound_is_cleaned_rather_than_kept"),
     # O. The release script, by real runs with the runner faked.
