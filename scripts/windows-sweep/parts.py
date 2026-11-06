@@ -987,7 +987,9 @@ def update_part(s):
     # Nothing newer: nothing moves. An older file than what is published would install it, and this copy must not change under the run.
     if latest and not available:
         r = ask("update", bound=90)
-        why = s.contract(r) or s.expectation(r, None) or (None if digest() == original else "the file changed")
+        # Before its own publication a release stands above what the manifest states, and an update never goes back.
+        expected = "older-version" if version_key(version) > version_key(latest) else None
+        why = s.contract(r) or s.expectation(r, expected) or (None if digest() == original else "the file changed")
         s.row("update.nothing-newer", "update", "failed" if why else "passed", why or "")
     else:
         s.row("update.nothing-newer", "update", "not-run", f"a newer release is published ({latest}) or GitHub did not answer")
