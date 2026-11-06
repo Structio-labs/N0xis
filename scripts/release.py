@@ -37,6 +37,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REPOSITORY = "Structio-labs/N0xis"
+# Where a tag is pushed: this repository has no remote called `origin`, and a release must not depend on
+# what a checkout's remotes are called, or it tags locally and dies halfway through a publish.
+PUSH_TO = "git@github.com:Structio-labs/N0xis.git"
 WINDOWS = "x86_64-pc-windows-gnu"
 TRUST_SOURCE = ROOT / "crates/n0xis-update/src/trust.rs"
 
@@ -173,7 +176,7 @@ def publish(tag, version, out):
     notes = out / "notes.md"
     notes.write_text(release_notes(version))
     run("git", "tag", tag, cwd=ROOT)
-    run("git", "push", "origin", tag, cwd=ROOT)
+    run("git", "push", PUSH_TO, f"refs/tags/{tag}", cwd=ROOT)
     assets = [str(p) for p in sorted(out.iterdir()) if p != notes]
     run("gh", "release", "create", tag, "--repo", REPOSITORY, "--draft", "--title", tag, "--notes-file", str(notes), *assets)
     run("gh", "release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest")

@@ -175,3 +175,34 @@ fn two_keys_sign_on_two_lines_and_either_verifies() {
     Trust::of_keys(&[b.public()]).verify(&manifest, &signature).expect("the old key");
     Trust::of_keys(&[second.public()]).verify(&manifest, &signature).expect("the new key");
 }
+
+/// `--publish` itself cannot be run here, so its runner is faked and the commands it builds are read.
+/// The defect: it pushed to `origin`, which this repository does not have, so it tagged locally and died
+/// halfway through a publish.
+#[test]
+fn publishing_pushes_only_the_tag_to_the_named_address() {
+    let bench = Bench::new("pushes");
+    let out = bench.out();
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("n0xis-linux-x86_64"), b"a file").unwrap();
+    let script = r#"
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import release
+calls = []
+release.run = lambda *cmd, **kw: calls.append(list(cmd))
+release.release_notes = lambda version: "notes"
+class Answer:
+    stdout, returncode = "", 1
+release.subprocess.run = lambda *a, **kw: Answer()
+release.publish("v9.9.9", "9.9.9", pathlib.Path(sys.argv[2]))
+print(json.dumps(calls))
+"#;
+    let output = Command::new("python3").arg("-c").arg(script).arg(root().join("scripts")).arg(&out).output().expect("python");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let calls: Vec<Vec<String>> = serde_json::from_str(printed.lines().last().unwrap_or("")).expect("the commands");
+    let pushes: Vec<&Vec<String>> = calls.iter().filter(|c| c[..2] == ["git", "push"]).collect();
+    assert_eq!(pushes.len(), 1, "{calls:?}");
+    assert_eq!(pushes[0][2..], ["git@github.com:Structio-labs/N0xis.git", "refs/tags/v9.9.9"]);
+}
