@@ -14,6 +14,20 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **A call that does not return was walked past on a stripped image.** Rust calls its panics through a
+  slot, and nothing said what they were: the function's end was one byte long, on the first `int3`, and a
+  false path ran on through the pseudo-C. What follows a call now says so, with no name needed, in any
+  language: a trap ends the block, and filler that nothing runs past ends the function. `why` reports the
+  rule as `ended_by`. On x86-64 Rust images with no unwind table, on ripgrep, fd and parts of N0xis, ends
+  long past the function go from 10 410 to 1 809 and short ones stay 1 319; on hyperfine, not used to tune
+  this, release from 373 to 65 and dev from 595 to 106, short unchanged. The tuned C and C++ corpus gains
+  one short end, and i686 goes from 821 long to 342.
+- **A call through a relocated slot had no callee.** A slot in read-only memory that a relative
+  relocation points at this image's code is now a call to that address: its name, its target, and
+  `function noreturn` sees through it. A slot the program can write stays unknown, because the word is only
+  what the variable starts with. Checked against `readelf` on ripgrep: 20 471 of 20 471.
+- **Rust's panics are known by name,** read demangled: `core::panicking` and
+  `alloc::alloc::handle_alloc_error`.
 - **One stray word could pick LuaJIT's string layout.** A word equal to a candidate base, in no Lua value, chose that layout, and `lua strings` and
   `lua combo` named a base for a string nothing referred to. It now takes two references, or one in a Lua value; less is answered as undecided.
 - **A run that wanted too much memory was killed by the kernel, with no answer and a desktop alarm.** The engine now counts what it

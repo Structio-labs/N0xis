@@ -582,8 +582,9 @@ const LONGEST_RUN_THROUGH_FILLER: u64 = 15;
 ///   row are what a compiler writes as code, and no assembler fills with them on
 ///   a machine that has longer ones.
 /// - The same, landing on an aligned address by chance: the alignment asked of
-///   filler is what rules most of it out. MSVC's `call f; nop` after a call in a
-///   `try` is this shape too, as is a single unit of `nop` anywhere, and two.
+///   filler is what rules most of it out. A single unit of `nop` anywhere, and
+///   two, are this shape too. (MSVC's `call f; nop` after a call in a `try` should
+///   be, from what is documented of it: no image of MSVC's was measured here.)
 /// - An alignment asked for by hand before a hot loop ([`LONGEST_RUN_THROUGH_FILLER`]).
 fn what_follows_the_call(ctx: &Ctx, end: u64, after: &[DecodedInsn], goes_on_at: &dyn Fn(u64) -> bool) -> Option<CallEnds> {
     let mut decoded = after.iter();

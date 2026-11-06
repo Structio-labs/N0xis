@@ -27,7 +27,12 @@ Each with a planted truth first, then programs held out from tuning (rules in `W
 1. **Length-delimited literals.** A reference with its length beside it gives the literal's bounds, in
    `strings` and in pseudo-C. Where nothing states a length, the answer stays what it is today.
 2. **Calls through relocated slots** named as the slot's target, not only through PLT relocations; the
-   panic family as functions that do not return, so no false path continues past them.
+   panic family as functions that do not return, so no false path continues past them. Built: a call
+   through a read-only slot a relative relocation writes; what follows a call (a trap, or filler) ends
+   the block, with no name needed; `core::panicking` and `alloc::alloc::handle_alloc_error` by demangled
+   name. `why` says which rule ended a function (`ended_by`). Not built: the fixpoint does not feed `why`
+   or `decomp` (2 minutes on 8 648 functions), so a panic in the middle of a function on a stripped image
+   keeps its false path.
 3. **The compiler and library version,** from what the image itself records, so that signatures of
    exactly that standard library can name a stripped image's library functions.
 4. **Panic locations** as `file:line:column` at each site: source positions that survive stripping.
