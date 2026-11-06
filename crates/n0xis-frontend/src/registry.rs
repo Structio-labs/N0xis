@@ -1870,6 +1870,10 @@ impl Plugin for AnalysisPasses {
                 };
                 let explain = bool_arg(args, "explain");
                 with_cfg_ctx(args, RttiUse::Answers, |ctx, input, label, scope| {
+                    // A body must not run past a call that does not come back into
+                    // code of another path, and only the callee's own body can say.
+                    let asking = ctx.with_noreturn_on_demand();
+                    let ctx = &asking;
                     let fn_start = input.start;
                     // The project's struct catalog (field names) — the decompiler
                     // also synthesizes `vftable@0` for RTTI classes on its own.

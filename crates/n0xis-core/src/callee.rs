@@ -91,6 +91,7 @@ struct Memo {
     shapes: HashMap<u64, Option<Arc<Shape>>>,
     takes: HashMap<(u64, u8), Takes>,
     gives: HashMap<(u64, u8), Gives>,
+    comes_back: HashMap<(u64, u8), bool>,
 }
 
 static MEMO: Mutex<Option<(String, Memo)>> = Mutex::new(None);
@@ -451,6 +452,53 @@ pub(crate) fn drop_unread_results(blocks: &mut [SsaBlock]) {
     }
 }
 
+thread_local! {
+    /// How far down a graph being built may still ask. Held here and not in `Ctx`
+    /// because the question is asked from inside the graph builder, of which a
+    /// callee's graph is another run: one more argument through all of it for a value
+    /// only this function reads.
+    static NORETURN_DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(DEPTH) };
+}
+
+/// Does the function at `va` provably never come back? From its own graph, whose calls
+/// are asked the same one level further down. The answer is global to the function and
+/// so has to be proof: any exit that cannot be shown to end means it may return, and so
+/// do running out of depth and a cycle, which runs out of depth.
+pub(crate) fn never_returns(ctx: &Ctx, va: Va) -> bool {
+    let depth = NORETURN_DEPTH.get();
+    // A source with no identity keeps no memo, and this would rebuild every graph on
+    // the way down for every call.
+    let Some(id) = ctx_identity(ctx).filter(|_| depth > 0) else { return false };
+    let va = ctx.symbols.and_then(|s| s.thunk_to(va)).unwrap_or(va);
+    if let Some(back) = with_memo(&id, |m| m.comes_back.get(&(va.0, depth)).copied()) {
+        return !back;
+    }
+    NORETURN_DEPTH.set(depth - 1);
+    let back = comes_back(ctx, va);
+    NORETURN_DEPTH.set(depth);
+    with_memo(&id, |m| {
+        if m.comes_back.len() < MEMO_MAX {
+            m.comes_back.insert((va.0, depth), back);
+        }
+    });
+    !back
+}
+
+fn comes_back(ctx: &Ctx, va: Va) -> bool {
+    let Ok(cfg) = CfgPass.run(ctx, CfgInput::new(va, CALLEE_SCAN_SIZE)) else { return true };
+    if cfg.start != va {
+        return true;
+    }
+    let ending_tails: std::collections::HashSet<Va> = cfg
+        .blocks
+        .iter()
+        .filter(|b| b.terminator == "tail-call")
+        .filter_map(|b| b.insns.last()?.target)
+        .filter(|t| never_returns(ctx, *t))
+        .collect();
+    crate::noreturn_ipa::function_returns(&cfg, &ending_tails)
+}
+
 /// What stands behind a name in these blocks, for the question "did anything put a
 /// value here for this call".
 enum Def<'b> {
@@ -752,6 +800,65 @@ mod tests {
         let b = body(&snap);
         let l = line_with(&b, "sub_1100(");
         assert!(l.contains("sub_1100(0x1)"), "{l}");
+    }
+
+    fn asked(snap: &Snapshot) -> crate::PseudoFunction {
+        let arch = X64::new();
+        let ctx = Ctx::new(snap, &arch).with_noreturn_on_demand();
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(F), 0x100)).unwrap();
+        DecompPass
+            .run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
+            .unwrap()
+    }
+
+    const SPINS: &[u8] = &[0xeb, 0xfe];
+
+    /// `mov ecx,1; call g; mov eax,7; ret` with `g` a `jmp` to itself. Nothing after the
+    /// call happens, and only `g`'s own body can say so.
+    #[test]
+    fn a_body_stops_at_a_call_that_does_not_come_back() {
+        let then_more = || {
+            let mut f = vec![0xb9, 1, 0, 0, 0];
+            call(&mut f, G);
+            f.extend([0xb8, 7, 0, 0, 0, 0xc3]);
+            f
+        };
+        let snap = image(then_more(), SPINS, RET);
+        let b = asked(&snap);
+        assert!(!b.pseudo.iter().any(|l| l.contains("0x7")), "{:#?}", b.pseudo);
+        let snap = image(then_more(), RET, RET);
+        assert!(asked(&snap).pseudo.iter().any(|l| l.contains("0x7")), "a callee that returns does not stop it");
+    }
+
+    /// Through a function that only calls the one that does not come back.
+    #[test]
+    fn the_proof_goes_through_a_wrapper() {
+        let mut f = vec![];
+        call(&mut f, G);
+        f.extend([0xb8, 7, 0, 0, 0, 0xc3]);
+        // g: call h; nop; ret
+        let mut g = vec![0xe8];
+        g.extend_from_slice(&((H as i64 - (G as i64 + 5)) as i32).to_le_bytes());
+        g.extend([0x90, 0xc3]);
+        let snap = image(f, &g, SPINS);
+        assert!(!asked(&snap).pseudo.iter().any(|l| l.contains("0x7")));
+    }
+
+    /// `g` calls `h` and `h` calls `g`, with a `ret` nowhere. A proof would need a step
+    /// past where the depth ends, and without one it may return.
+    #[test]
+    fn a_cycle_is_no_proof() {
+        let mut f = vec![];
+        call(&mut f, G);
+        f.extend([0xb8, 7, 0, 0, 0, 0xc3]);
+        let mut g = vec![0xe8];
+        g.extend_from_slice(&((H as i64 - (G as i64 + 5)) as i32).to_le_bytes());
+        g.push(0xc3);
+        let mut h = vec![0xe8];
+        h.extend_from_slice(&((G as i64 - (H as i64 + 5)) as i32).to_le_bytes());
+        h.push(0xc3);
+        let snap = image(f, &g, &h);
+        assert!(asked(&snap).pseudo.iter().any(|l| l.contains("0x7")));
     }
 
     fn says_void(snap: &Snapshot) -> String {

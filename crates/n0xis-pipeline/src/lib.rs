@@ -161,11 +161,13 @@ pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), Cor
     // for first — an ARM64 image analysed as x64 and then, correctly, as arm64
     // got the x64 garbage both times, with no error and no way to tell.
     let scope = format!(
-        "{}|{}{}{}",
+        "{}|{}{}{}{}",
         ctx.source.label(),
         ctx.arch.decoder_id(),
         image_identity(ctx),
-        if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") }
+        if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") },
+        // A graph that asked its callees is another graph, for the same bytes.
+        if ctx.noreturn_on_demand { "|noreturn-asked" } else { "" },
     );
     let key = cfg_cache_key(&scope, input, &probe);
     sweep_stale_generations_once();
@@ -293,11 +295,13 @@ pub fn decomp_cached(
     // for first — an ARM64 image analysed as x64 and then, correctly, as arm64
     // got the x64 garbage both times, with no error and no way to tell.
     let scope = format!(
-        "{}|{}{}{}",
+        "{}|{}{}{}{}",
         ctx.source.label(),
         ctx.arch.decoder_id(),
         image_identity(ctx),
-        if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") }
+        if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") },
+        // A graph that asked its callees is another graph, for the same bytes.
+        if ctx.noreturn_on_demand { "|noreturn-asked" } else { "" },
     );
     let key = decomp_cache_key(&scope, input, &probe, style, var_names, var_types, struct_defs);
     sweep_stale_decomp_once();

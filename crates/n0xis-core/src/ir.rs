@@ -525,6 +525,9 @@ fn noreturn_call(ctx: &Ctx, ins: &DecodedInsn, after: &[DecodedInsn], goes_on_at
     if matches!((ctx.noreturn, ins.target.or_else(|| slot_callee(ctx, ins))), (Some(set), Some(t)) if set.contains(&t)) {
         return Some(CallEnds::Proven);
     }
+    if ctx.noreturn_on_demand && ins.target.or_else(|| slot_callee(ctx, ins)).is_some_and(|t| crate::callee::never_returns(ctx, t)) {
+        return Some(CallEnds::Proven);
+    }
     what_follows_the_call(ctx, ins.va.0 + u64::from(ins.len), after, goes_on_at)
 }
 

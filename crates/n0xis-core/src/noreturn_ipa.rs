@@ -111,6 +111,7 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
             symbols: ctx.symbols,
             modules: ctx.modules,
             noreturn: Some(&frozen),
+            noreturn_on_demand: ctx.noreturn_on_demand,
             vtables: ctx.vtables,
             subclassed: ctx.subclassed,
             eh: ctx.eh,

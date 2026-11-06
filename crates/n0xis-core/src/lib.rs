@@ -186,6 +186,11 @@ pub struct Ctx<'a> {
     /// (ROADMAP Phase 10, priority 0 — the CFG-fidelity follow-on). `None` =
     /// intraprocedural analysis with imports as the only noreturn oracle.
     pub noreturn: Option<&'a std::collections::HashSet<n0xis_contracts::Va>>,
+    /// Ask a direct call's local target, from its own body, whether it comes back,
+    /// and stop the caller's graph there if it does not ([`crate::callee`]). A choice
+    /// of the command: a graph built with it differs from one built without, and
+    /// everything that lists a function's extent reads the one without.
+    pub noreturn_on_demand: bool,
     /// Recovered C++ vtable address → class name, from [`scan_msvc_rtti`] or
     /// [`scan_itanium_rtti`] (ROADMAP Phase 10 item 7), with the width of the
     /// slots in them. The frontend scans once and attaches the map so a pass can
@@ -318,6 +323,7 @@ impl<'a> Ctx<'a> {
             symbols: None,
             modules: None,
             noreturn: None,
+            noreturn_on_demand: false,
             vtables: None,
             subclassed: None,
             eh: None,
@@ -337,6 +343,11 @@ impl<'a> Ctx<'a> {
     /// Attach a set of proven-noreturn function addresses (see the field docs).
     pub fn with_noreturn(mut self, noreturn: &'a std::collections::HashSet<n0xis_contracts::Va>) -> Self {
         self.noreturn = Some(noreturn);
+        self
+    }
+    /// Ask callees whether they come back (see the field docs).
+    pub fn with_noreturn_on_demand(mut self) -> Self {
+        self.noreturn_on_demand = true;
         self
     }
     /// Attach the recovered vtable-address → class-name map and how the
