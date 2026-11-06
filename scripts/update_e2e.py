@@ -53,7 +53,8 @@ def step(ok, what):
 
 
 def sha(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    """None for a file that is not there, which then fails the step that compares it."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).is_file() else None
 
 
 def sh(*cmd, **kw):
@@ -401,8 +402,11 @@ def main():
     tls_port = serve(release, certs)
     seen = []
     proxy_port = proxy(tls_port, seen)
-    clean = {k: "" for k in ("ALL_PROXY", "HTTP_PROXY", "NO_PROXY", "no_proxy", "all_proxy", "http_proxy", "https_proxy")}
-    base = {**clean, "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}"}
+    # Removed rather than set empty: a Windows environment does not tell `https_proxy` from `HTTPS_PROXY`,
+    # so under Wine an empty lower-case one took the place of the real one and the binary went direct.
+    for name in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "no_proxy", "all_proxy", "http_proxy", "https_proxy"):
+        os.environ.pop(name, None)
+    base = {"HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}"}
     olds = Path(args.old_dir) if args.old_dir else fixtures
 
     if args.linux:
