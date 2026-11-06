@@ -418,7 +418,7 @@ impl RenderNames {
 
     /// [`Self::display_var`] without recording the variable as printed — for a
     /// caller that has to see the text before deciding whether to print it.
-    fn var_display(&self, name: &str) -> String {
+    pub(crate) fn var_display(&self, name: &str) -> String {
         self.param_names.get(name).cloned().unwrap_or_else(|| self.spell_register(name))
     }
 

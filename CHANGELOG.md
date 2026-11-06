@@ -55,6 +55,8 @@ in a capability's arguments may be text as well, for a client whose own numbers 
 - A memory access states its width and extension: `*(uint8_t*)rdi` for `movzbl (%rdi),%edx`, which printed as `(uint32_t)*rdi` and read as a
   32-bit load. A field reads `*(uint32_t*)&rdi->field_0x10`, a subscript `((int32_t*)rax)[rcx]`, and a local its plain name only where its
   declaration says what the access does. A write states its width the same way. The IR always had these; the printer dropped them.
+- A `switch` selects on the version its table is indexed by. `and $7,%edi` then a table read printed `switch (rdi)` beside a correct `rdi.1`, which
+  read as the unmasked parameter. Where the code subtracted from a value first, the labels are that value's: `case 0x61:`, not `case 0x0:`.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

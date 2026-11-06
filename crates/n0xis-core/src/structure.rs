@@ -18,11 +18,11 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use n0xis_arch::MicroExpr;
+use n0xis_arch::{BinOp, MicroExpr, MicroStmt, Bits, JUMP_TARGET_VAR};
 
 use crate::dom::{DomTree, block_graph};
 use crate::ir::CfgArtifact;
-use crate::render::{negate_condition, render_condition, render_stmt, RenderNames};
+use crate::render::{negate_condition, render_condition, render_expr, render_stmt, RenderNames};
 use crate::ssa::SsaBlock;
 
 /// Result of structuring: the rendered lines plus telemetry mirroring v0's
@@ -116,6 +116,8 @@ struct Ctx<'a> {
     loop_exit: &'a HashMap<usize, Option<usize>>,
     body_lines: &'a [Vec<String>],
     conds: &'a [Option<MicroExpr>],
+    /// The statements behind `body_lines`, for what a block's text does not say.
+    blocks: &'a [SsaBlock],
     visited: Vec<bool>,
     loop_stack: Vec<usize>,
     /// Parallel to `loop_stack`: the block each active loop emits as its
@@ -581,6 +583,169 @@ fn try_short_circuit(ctx: &Ctx, n: usize, cond_a: &str, t: usize, f: usize) -> O
     None
 }
 
+/// What a table dispatch selects on: the value in the table read, and what the
+/// code subtracted from a value to make it the table's index, if that value is
+/// still to be had.
+struct SwitchIndex {
+    value: MicroExpr,
+    subtracted: u128,
+}
+
+/// How far a search through definitions goes. A dispatch computes its target from
+/// its index in a few moves; a chain longer than this is not a table read.
+const MAX_DISPATCH_DEFS: usize = 8;
+
+/// The index a dispatch reads its table with, from the address it jumps to.
+///
+/// `SwitchDispatch::index_reg` names a register, and a name is not a value:
+/// `and $7,%edi; ...; jmp *(%rdx,%rdi,8)` printed `switch (rdi)` beside a correct
+/// `rdi.1`, and the reader took the unmasked parameter. The IR keeps the jump's
+/// address, so the operand the table is scaled by is the version the machine uses.
+fn switch_index(ctx: &Ctx, n: usize, sw: &crate::switch::ResolvedSwitch) -> Option<SwitchIndex> {
+    let defs: HashMap<&str, &MicroExpr> = ctx
+        .blocks
+        .iter()
+        .flat_map(|b| &b.stmts)
+        .filter_map(|s| match &s.stmt {
+            MicroStmt::Assign { dst, value } => Some((dst.as_str(), value)),
+            _ => None,
+        })
+        .collect();
+    let reg = sw.index_reg.as_deref()?;
+    let target = ctx.blocks[n].stmts.iter().rev().find_map(|s| match &s.stmt {
+        MicroStmt::Assign { dst, value } if dst.split('.').next() == Some(JUMP_TARGET_VAR) => Some(value),
+        _ => None,
+    });
+    let found = target.and_then(|t| table_index_in(t, &defs, sw.scale, reg, MAX_DISPATCH_DEFS));
+    let value = found.cloned().or_else(|| reaching_version(ctx, n, reg).map(MicroExpr::Var))?;
+    Some(rebase(ctx, value, &defs))
+}
+
+/// Where a table is read inside `e`, following definitions: its scaled operand.
+fn table_index_in<'e>(e: &'e MicroExpr, defs: &HashMap<&str, &'e MicroExpr>, scale: u32, reg: &str, depth: usize) -> Option<&'e MicroExpr> {
+    match e {
+        MicroExpr::Load { addr, .. } => {
+            index_of_address(addr, scale, reg).or_else(|| table_index_in(addr, defs, scale, reg, depth))
+        }
+        MicroExpr::Var(v) if depth > 0 => table_index_in(defs.get(v.as_str())?, defs, scale, reg, depth - 1),
+        MicroExpr::Binary(_, l, r) => {
+            table_index_in(l, defs, scale, reg, depth).or_else(|| table_index_in(r, defs, scale, reg, depth))
+        }
+        MicroExpr::Cast { expr: x, .. } | MicroExpr::Unary(_, x) | MicroExpr::AddrOf(x) => table_index_in(x, defs, scale, reg, depth),
+        _ => None,
+    }
+}
+
+/// The index operand of `base + index * scale`. With a scale of one nothing marks
+/// it but the register the dispatch detected.
+fn index_of_address<'e>(addr: &'e MicroExpr, scale: u32, reg: &str) -> Option<&'e MicroExpr> {
+    let MicroExpr::Binary(op, l, r) = addr else { return None };
+    match op {
+        BinOp::Mul => match (l.as_ref(), r.as_ref()) {
+            (x, MicroExpr::Const { value, .. }) | (MicroExpr::Const { value, .. }, x) if *value == i128::from(scale) => Some(x),
+            _ => None,
+        },
+        BinOp::Add => {
+            let by_reg = |e: &'e MicroExpr| matches!(e, MicroExpr::Var(v) if scale <= 1 && v.split('.').next() == Some(reg)).then_some(e);
+            index_of_address(l, scale, reg)
+                .or_else(|| index_of_address(r, scale, reg))
+                .or_else(|| by_reg(l))
+                .or_else(|| by_reg(r))
+        }
+        _ => None,
+    }
+}
+
+/// The version of `reg` at the end of block `n`, up a chain of single predecessors.
+/// Nothing is claimed past a join: which arm's version arrives is what a phi says,
+/// and it would be named at the join itself.
+fn reaching_version(ctx: &Ctx, n: usize, reg: &str) -> Option<String> {
+    let mut b = n;
+    for _ in 0..ctx.blocks.len() {
+        let block = &ctx.blocks[b];
+        for s in block.stmts.iter().rev() {
+            let written = match &s.stmt {
+                MicroStmt::Assign { dst, .. } => Some(dst),
+                MicroStmt::Call { ret: Some(dst), .. } => Some(dst),
+                _ => None,
+            };
+            if let Some(dst) = written.filter(|d| d.split('.').next() == Some(reg)) {
+                return Some(dst.clone());
+            }
+        }
+        if let Some(phi) = block.phis.iter().find(|p| p.var == reg) {
+            return Some(phi.dst.clone());
+        }
+        match ctx.pred[b].as_slice() {
+            [] if b == 0 => return Some(format!("{reg}.0")),
+            [p] => b = *p,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// `lea -0x61(%rdi),%eax` and a table from `'a'`: the table's index 0 is the value
+/// `0x61`. Written over the value it came from, the case labels read as the code's
+/// own, and `case 0x0:` under a name the reader has to subtract from no longer needs
+/// the subtraction done. Only over a name written once, so that it holds the same
+/// value here as where the subtraction read it; and only a positive amount, because
+/// a label below zero says nothing clearer than the index does.
+fn rebase(ctx: &Ctx, index: MicroExpr, defs: &HashMap<&str, &MicroExpr>) -> SwitchIndex {
+    let mut width: Option<(bool, Bits)> = None;
+    let mut e = &index;
+    for _ in 0..MAX_DISPATCH_DEFS {
+        match e {
+            MicroExpr::Cast { signed, bits, expr } => {
+                width.get_or_insert((*signed, *bits));
+                e = expr;
+            }
+            MicroExpr::Var(v) => match defs.get(v.as_str()) {
+                Some(def) => e = def,
+                None => break,
+            },
+            // What `lea` computes is arithmetic, and how it subtracts.
+            MicroExpr::AddrOf(inner) => e = inner,
+            MicroExpr::Binary(op @ (BinOp::Sub | BinOp::Add), l, r) => {
+                let MicroExpr::Const { value, .. } = r.as_ref() else { break };
+                let k = if *op == BinOp::Sub { *value } else { -*value };
+                let MicroExpr::Var(from) = l.as_ref() else { break };
+                if k <= 0 || !written_once(ctx, from) {
+                    break;
+                }
+                let value = match width {
+                    Some((signed, bits)) => MicroExpr::Cast { signed, bits, expr: l.clone() },
+                    None => l.as_ref().clone(),
+                };
+                return SwitchIndex { value, subtracted: k as u128 };
+            }
+            _ => break,
+        }
+    }
+    SwitchIndex { value: index, subtracted: 0 }
+}
+
+/// Is `name` one value everywhere it is printed? Coalescing gives versions of a
+/// register one printed name when they do not overlap, and then a later write of
+/// that name changes what an earlier version's read would see.
+fn written_once(ctx: &Ctx, name: &str) -> bool {
+    let shown = ctx.names.var_display(name);
+    let writes = ctx
+        .blocks
+        .iter()
+        .flat_map(|b| {
+            let by_stmt = b.stmts.iter().filter_map(|s| match &s.stmt {
+                MicroStmt::Assign { dst, .. } => Some(dst.as_str()),
+                MicroStmt::Call { ret: Some(dst), .. } => Some(dst.as_str()),
+                _ => None,
+            });
+            b.phis.iter().map(|p| p.dst.as_str()).chain(by_stmt)
+        })
+        .filter(|dst| ctx.names.var_display(dst) == shown)
+        .count();
+    writes <= 1 && !(writes == 1 && name.ends_with(".0"))
+}
+
 fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     let merge = ctx.ipdom[n];
     // The resolved jump-table dispatch for this block's indirect jump (its `at`
@@ -593,7 +758,14 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         (b.start.get(), b.end.get())
     };
     let sw = ctx.cfg.switches.iter().find(|s| s.at.get() >= bstart && s.at.get() < bend);
-    let disp = sw.and_then(|s| s.index_reg.clone()).unwrap_or_else(|| "/* dispatcher */".to_string());
+    let index = sw.and_then(|s| switch_index(ctx, n, s));
+    let (disp, rebased) = match (&index, sw.and_then(|s| s.index_reg.as_deref())) {
+        (Some(i), _) => (render_expr(&i.value, ctx.names), i.subtracted),
+        // A register's name with no version is its value at no point in particular.
+        // Nothing here says which one the table reads, and the text says so.
+        (None, Some(reg)) => (format!("/*index in {reg}*/"), 0),
+        (None, None) => ("/* dispatcher */".to_string(), 0),
+    };
     ctx.out.push(format!("{}switch ({disp}) {{", pad(ctx.indent)));
     let mut emitted: BTreeSet<usize> = BTreeSet::new();
     for &s in &ctx.succ[n].to_vec() {
@@ -613,7 +785,7 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
             ctx.out.push(format!("{}    default:", pad(ctx.indent)));
         } else {
             for i in cases {
-                ctx.out.push(format!("{}    case 0x{i:x}:", pad(ctx.indent)));
+                ctx.out.push(format!("{}    case 0x{:x}:", pad(ctx.indent), rebased + i as u128));
             }
         }
         ctx.indent += 2;
@@ -915,6 +1087,7 @@ fn structure_once(
         loop_exit: &loop_exit,
         body_lines: &body_lines,
         conds: &conds,
+        blocks,
         visited: vec![false; n],
         loop_stack: Vec::new(),
         loop_cont: Vec::new(),

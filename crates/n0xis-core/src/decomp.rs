@@ -1090,6 +1090,53 @@ mod tests {
         assert!(a64(0xb9400020).contains("/*ldr"), "ldr w0,[x1]: {}", a64(0xb9400020));
     }
 
+    /// Four cases that each return a different constant, reached by the table at
+    /// 0x2000 through `prefix` (which ends by jumping), and a default.
+    fn decomp_table_dispatch(prefix: &[u8]) -> Vec<String> {
+        let mut code = prefix.to_vec();
+        for k in 1..=4u8 {
+            code.extend([0xb8, k, 0, 0, 0, 0xc3]); // mov $k,%eax; ret
+        }
+        code.extend([0x31, 0xc0, 0xc3]); // xor %eax,%eax; ret
+        let first_case = 0x1000 + prefix.len() as u64;
+        let table: Vec<u8> = (0..4u64).flat_map(|i| (first_case + 6 * i).to_le_bytes()).collect();
+        let snap = Snapshot::builder().region(Va(0x1000), code).region(Va(0x2000), table).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        let f = DecompPass
+            .run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
+            .unwrap();
+        f.pseudo
+    }
+
+    /// `and $7,%edi; ...; jmp *(,%rdi,8)` printed `switch (rdi)` beside a correct
+    /// `rdi.1`: the register's name, which at that point reads as the unmasked
+    /// parameter. 14 behaviour failures, and 34 of 678 functions of a C library.
+    #[test]
+    fn a_switch_selects_on_the_version_the_table_is_indexed_by() {
+        // and $7,%edi; cmp $3,%edi; ja default; jmp *0x2000(,%rdi,8)
+        let body = decomp_table_dispatch(&[0x83, 0xe7, 0x07, 0x83, 0xff, 0x03, 0x77, 0x1f, 0xff, 0x24, 0xfd, 0x00, 0x20, 0x00, 0x00]).join("\n");
+        assert!(body.contains("rdi.1 = (uint32_t)((uint32_t)rdi.0 & 0x7);"), "{body}");
+        assert!(body.contains("switch (rdi.1) {"), "{body}");
+        for label in ["case 0x0:", "case 0x1:", "case 0x2:", "case 0x3:"] {
+            assert!(body.contains(label), "{label}: {body}");
+        }
+    }
+
+    /// A table for `'a'..='d'`: the code subtracted `'a'` before indexing, and the
+    /// labels say which value each case is for.
+    #[test]
+    fn a_switch_on_a_rebased_index_reads_as_the_value_it_came_from() {
+        // lea -0x61(%rdi),%eax; cmp $3,%eax; ja default; jmp *0x2000(,%rax,8)
+        let body = decomp_table_dispatch(&[0x8d, 0x47, 0x9f, 0x83, 0xf8, 0x03, 0x77, 0x1f, 0xff, 0x24, 0xc5, 0x00, 0x20, 0x00, 0x00]).join("\n");
+        assert!(body.contains("switch ((uint32_t)rdi.0) {"), "{body}");
+        for label in ["case 0x61:", "case 0x62:", "case 0x63:", "case 0x64:"] {
+            assert!(body.contains(label), "{label}: {body}");
+        }
+        assert!(!body.contains("case 0x0:"), "{body}");
+    }
+
     /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is
     /// declared at the wider one, and a bare name would write all eight bytes.
     #[test]

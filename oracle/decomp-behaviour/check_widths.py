@@ -45,7 +45,8 @@ def bytes_width(mn, ops):
         return SUFFIX[m[2]], m[1] == "s"
     if mn == "movabs":
         return None
-    parts = re.split(r",(?![^(]*\))", ops)
+    # objdump adds `# <target>` after a rip-relative operand.
+    parts = re.split(r",(?![^(]*\))", ops.split("#")[0].strip())
     if not mn.startswith("mov"):
         return None
     if mn == "mov":

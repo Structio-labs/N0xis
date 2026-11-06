@@ -590,6 +590,8 @@ How a body reads:
   width, since no struct definition is printed; a field named by a type you defined reads as its name.
   A local reads as its name where its declaration says what the access does, and `*(uint8_t*)&local_18`
   where it does not. A call through a field, `(*rax->field_0x8)(...)`, reads a pointer and says no width.
+- A `switch` names the value its table is read with, and its labels are that value's. `/*index in rdi*/`
+  says a table was found and the version of the register it is read with was not.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).
