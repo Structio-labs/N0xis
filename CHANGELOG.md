@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**`bundle extract --out \\?\C:\...` writes its files.** It failed with os error 123: the file name was joined on with a `/`, which such a path takes literally. Joined by the OS's rule, `out_path` now has a `\` on Windows.
+
 **`function eh --pid` on Windows reads the process's `.pdata`.** It said neither table was present, while `profile --pid` counted 56 entries in it.
 
 **`debug watch --kind execute --when` waits for the call it was asked for on Windows.** A miss resumed into the same fault, so 300 misses were spent in 0.6 s on one instruction,

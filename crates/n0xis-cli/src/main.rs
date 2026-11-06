@@ -6568,11 +6568,14 @@ fn cmd_bundle_extract(a: BundleExtractArgs, pretty: bool) -> bool {
             // variant. The command said it had written files it had not.
             // A single-variant entry keeps the old name, so nothing that
             // already works moves.
-            let out_path = if entry.variants.len() > 1 {
-                format!("{out_dir}/{:016x}.v{vi}.{ext}", entry.path_hash)
+            let file_name = if entry.variants.len() > 1 {
+                format!("{:016x}.v{vi}.{ext}", entry.path_hash)
             } else {
-                format!("{out_dir}/{:016x}.{ext}", entry.path_hash)
+                format!("{:016x}.{ext}", entry.path_hash)
             };
+            // Joined by the OS's rule: a `/` spelled here is a literal character in a
+            // `\\?\` path, and the write failed with os error 123.
+            let out_path = std::path::Path::new(&out_dir).join(file_name).to_string_lossy().into_owned();
             if let Err(e) = std::fs::write(&out_path, &bytes) {
                 return ir_err("write-failed", &format!("write {out_path}: {e}"), pretty);
             }
