@@ -14,6 +14,10 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ### Fixed
 
+- **Functions after a forward tail jump were not looked for, and a `match` through a jump read as many functions.** Function discovery now tells a jump that
+  leaves from one that stays, on x86 and PE. On ripgrep's PE release build it finds 12 775 of 12 846 functions against 10 719, with wrong starts 27 to 0; on a program nothing was tuned on, PE recall 99.85%
+  to 99.99%, wrong starts 19 to 0. On AArch64, which does not yet recognize jump tables, only the sweep's stepping changes, which ends its odd addresses, and in one program lets it reach table cases
+  it reads as functions (33 wrong starts added and 66 removed overall).
 - **A call that does not return was walked past on a stripped image.** Rust calls its panics through a
   slot, and nothing said what they were: the function's end was one byte long, on the first `int3`, and a
   false path ran on through the pseudo-C. What follows a call now says so, with no name needed, in any
