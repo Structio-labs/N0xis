@@ -1155,7 +1155,15 @@ fn a_commit_failure_reports_each_component() {
     let b = Bench::new("commitfails");
     let mcp = b.dir.join("n0xis-mcp");
     fs::write(&mcp, b"old mcp").unwrap();
+    // Something a rename cannot go over. On Windows a directory does not stop it, under Wine at least,
+    // and a file held open with no sharing does.
+    #[cfg(unix)]
     fs::create_dir_all(b.dir.join("n0xis-mcp.previous").join("in-the-way")).unwrap();
+    #[cfg(windows)]
+    let _in_the_way = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new().write(true).create(true).truncate(false).share_mode(0).open(b.dir.join("n0xis-mcp.previous")).unwrap()
+    };
     b.publish(&with_the_mcp(&b, "2.0.0", b"new mcp"));
     let refusal = b.updater().update().expect_err("the sibling cannot be committed");
     assert_eq!(refusal.why, Why::InstallFailed);
