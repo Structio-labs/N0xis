@@ -74,6 +74,9 @@ pub struct RenderNames {
     /// sets. Whether a register is a parameter is decided once, by
     /// `typeinfer::collect_definite_param_regs`, and read from here.
     params: HashSet<String>,
+    /// Entry values this body reads that are not parameters of its signature:
+    /// what the register held when the function was called, printed as such.
+    from_caller: HashSet<String>,
     /// This ISA's stack-pointer name, when the caller knows it. Frame
     /// bookkeeping (`rsp.1 = rsp.0 - 0x90`) is not a statement the program
     /// performs — it is how the prologue is spelled, and the frame is already
@@ -213,6 +216,7 @@ impl RenderNames {
             structs: HashMap::new(),
             param_names: HashMap::new(),
             params: HashSet::new(),
+            from_caller: HashSet::new(),
             display_regs: &[],
             word_bits: None,
             stack_var: None,
@@ -275,6 +279,16 @@ impl RenderNames {
     }
 
     /// Enrich with Phase 4's recovered locals/struct-fields/signature.
+    /// Mark these entry values where they are read ([`Self::from_caller`]).
+    pub(crate) fn with_from_caller(mut self, names: HashSet<String>) -> Self {
+        self.from_caller = names;
+        self
+    }
+
+    pub(crate) fn is_param(&self, name: &str) -> bool {
+        self.params.contains(name)
+    }
+
     pub fn with_types(mut self, types: &TypeArtifact) -> Self {
         self.locals = types.locals.iter().map(|l| (l.offset, l.name.clone())).collect();
         self.local_decls = Some(
@@ -308,6 +322,11 @@ impl RenderNames {
     /// Is this a version of the stack pointer, whose moves the text does not show?
     pub(crate) fn is_stack_variable(&self, name: &str) -> bool {
         self.stack_var.as_deref().is_some_and(|sp| name.split('.').next() == Some(sp))
+    }
+
+    /// Does this address name a slot of this function's frame?
+    pub(crate) fn is_frame_address(&self, addr: &MicroExpr) -> bool {
+        as_base_offset(addr).is_some_and(|(base, _)| self.is_stack_address_base(base))
     }
 
     /// Does `base + offset` name a slot of this function's frame?
@@ -447,7 +466,8 @@ impl RenderNames {
     /// unchanged. Single source of truth so every render site — bare `Var`,
     /// struct-field base, store target — agrees.
     fn display_var(&self, name: &str) -> String {
-        self.shown(self.var_display(name), false)
+        let shown = self.shown(self.var_display(name), false);
+        if self.from_caller.contains(name) { format!("/*from caller*/{shown}") } else { shown }
     }
 
     /// [`Self::display_var`] without recording the variable as printed — for a

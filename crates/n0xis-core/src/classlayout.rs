@@ -512,7 +512,7 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
     }
     let ssa = SsaPass.run(ctx, cfg.clone()).ok()?;
     let opt = OptimizePass.run(ctx, ssa).ok()?;
-    let types = TypeInferPass.run(ctx, TypeInferInput { cfg, blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair }).ok()?;
+    let types = TypeInferPass.run(ctx, TypeInferInput { cfg, blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }).ok()?;
     // Devirtualizing *before* reading the field types was tried here, on the
     // argument that a resolved `this->d->method()` names a class and would feed
     // rule 2 below. Measured on a Qt shared library: typed fields **90 → 90**,

@@ -108,6 +108,10 @@ pub struct OptArtifact {
     /// carried for the same reason.
     #[serde(skip)]
     pub float_return_pair: bool,
+    /// [`SsaArtifact::entry_flow`](crate::ssa::SsaArtifact::entry_flow), which
+    /// this pass folds away the copies of.
+    #[serde(skip)]
+    pub entry_flow: crate::ssa::EntryFlow,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -152,6 +156,7 @@ impl Pass for OptimizePass {
             delta,
             float_return: ssa.float_return,
             float_return_pair: ssa.float_return_pair,
+            entry_flow: ssa.entry_flow,
         })
     }
 }
@@ -160,7 +165,7 @@ impl Pass for OptimizePass {
 // Generic expression rewriting: apply `f` bottom-up over every subexpr.
 // ---------------------------------------------------------------------
 
-fn map_expr(e: &MicroExpr, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroExpr {
+pub(crate) fn map_expr(e: &MicroExpr, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroExpr {
     let rebuilt = match e {
         MicroExpr::Const { .. } | MicroExpr::OpaqueFlags { .. } | MicroExpr::Unknown(_) | MicroExpr::Var(_) => {
             e.clone()
@@ -194,7 +199,7 @@ fn map_expr(e: &MicroExpr, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroE
     f(rebuilt)
 }
 
-fn map_stmt_exprs(stmt: &MicroStmt, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroStmt {
+pub(crate) fn map_stmt_exprs(stmt: &MicroStmt, f: &mut impl FnMut(MicroExpr) -> MicroExpr) -> MicroStmt {
     match stmt {
         MicroStmt::Assign { dst, value } => MicroStmt::Assign { dst: dst.clone(), value: map_expr(value, f) },
         MicroStmt::Store { addr, value, bits } => {

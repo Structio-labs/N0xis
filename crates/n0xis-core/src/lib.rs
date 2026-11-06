@@ -53,6 +53,7 @@ mod typeprop;
 mod slice;
 mod ssa;
 mod structural;
+mod callee;
 mod ceiling;
 mod stack;
 mod structure;

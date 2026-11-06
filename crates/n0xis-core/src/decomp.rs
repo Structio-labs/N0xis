@@ -201,7 +201,7 @@ impl Pass for DecompPass {
         // propagation/DCE resolve pointer origins that raw SSA leaves as
         // opaque — then applied to whichever style's own IR is rendered.
         let mut opt = OptimizePass.run(ctx, ssa.clone())?;
-        let mut types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair })?;
+        let mut types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() })?;
         // Apply user C-type overrides FIRST (while names are still the synthesized
         // keys the overrides are stored under): a local gets a `type_override`, a
         // parameter's `ty` is replaced, and `"@return"` sets the signature return.
@@ -377,6 +377,17 @@ impl Pass for DecompPass {
                 .is_some(),
         );
         let signature = format_signature(crate::unnamed_at(ctx, cfg.start), &types.signature, own_name.as_deref());
+        // The registers a reader would take for a parameter or a result; what a callee
+        // preserves is the caller's by definition, and a save says so where it goes.
+        let could_be_param: std::collections::HashSet<String> = crate::typeinfer::abi_arg_regs(ctx)
+            .into_iter()
+            .chain(crate::ir::float_arg_registers(ctx).iter().copied())
+            .map(str::to_string)
+            .chain(crate::ir::abi_return_register(ctx))
+            .collect();
+        let from_caller = entry_values_read_unlisted(if matches!(input.style, DecompStyle::Ssa) { &opt.blocks } else { &ssa.blocks }, &names, &could_be_param);
+        let marked = from_caller.len();
+        let names = names.with_from_caller(from_caller);
 
         let (pseudo, has_loop, fallback_count, delta, printed, unsaid) = match input.style {
             // (the arms below produce `pseudo`; block-label stripping is applied
@@ -415,7 +426,7 @@ impl Pass for DecompPass {
         let lifted_fraction = if cfg.insn_count == 0 { 0.0 } else { 1.0 - (unlifted as f32 / cfg.insn_count as f32) };
         // Any mark in the text is a body that does not say 1.0, however many
         // instructions dilute it. The switch's mark is the one the structuring adds.
-        let marks = unsaid + pseudo.iter().filter(|l| l.contains("/*index in ")).count();
+        let marks = unsaid + marked + pseudo.iter().filter(|l| l.contains("/*index in ")).count();
         let quality = if cfg.insn_count == 0 {
             0.0
         } else {
@@ -733,6 +744,36 @@ fn unsaid_in_body(blocks: &[SsaBlock], names: &RenderNames, phis: PhiGivesValue)
         }
     }
     unsaid + unset.len()
+}
+
+/// The entry values these blocks read that the signature does not list.
+///
+/// A register's value on arrival is a parameter or it is not; one that is not reads
+/// what the caller happened to leave there. Not one of them, on the other side, is
+/// the save of a register into the frame (kept to give back, and it says so by where
+/// it goes), or what a `ret` reads because it reads it always.
+fn entry_values_read_unlisted(blocks: &[SsaBlock], names: &RenderNames, could_be_param: &std::collections::HashSet<String>) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut look = |e: &n0xis_arch::MicroExpr| {
+        let mut read = std::collections::BTreeSet::new();
+        crate::ssa::collect_expr_vars(e, &mut read);
+        out.extend(read.into_iter().filter(|v| v.strip_suffix(".0").is_some_and(|r| could_be_param.contains(r)) && !names.is_param(v)));
+    };
+    for b in blocks {
+        for s in b.stmts.iter().filter(|s| !crate::render::is_noise(&s.stmt, names)) {
+            match &s.stmt {
+                n0xis_arch::MicroStmt::Store { addr, value: n0xis_arch::MicroExpr::Var(_), .. } if names.is_frame_address(addr) => {}
+                n0xis_arch::MicroStmt::Return(Some(n0xis_arch::MicroExpr::Var(_))) => {}
+                other => crate::optimize::stmt_read_exprs(other).into_iter().for_each(&mut look),
+            }
+        }
+        if b.terminator == "cjmp"
+            && let Some(c) = &b.condition
+        {
+            look(c);
+        }
+    }
+    out
 }
 
 /// How many comments this expression prints for a value.

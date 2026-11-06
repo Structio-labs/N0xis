@@ -605,6 +605,10 @@ How a body reads:
   operand C would give fewer bits is cast up, `(int64_t)(int32_t)rdi * 0x66666667`. `(int64_t)x >> n` is an
   arithmetic shift and `x >> n` of an unsigned value a logical one. A relational is signed unless marked
   `/*u*/`: `a > /*u*/ b` compares as unsigned.
+- A parameter is a register the function reads as it came, or passes on by way of a copy, or passes on untouched
+  to a callee in this image that reads it. `/*from caller*/rsi.0` is a read of what an argument or return register
+  held on arrival, in a function whose signature does not list it: what the caller left there, or a parameter that
+  could not be shown to be one.
 - A `local_` is a slot of this function's frame: reached through `rsp`, or through `rbp` where the function
   set it from `rsp`. Through any other `rbp` it is memory like any other, a field of what `rbp` points at.
 - A branch whose flags cannot be stated prints a mark in place of its condition: `/*cond(jb)*/`, or `/*?*/`

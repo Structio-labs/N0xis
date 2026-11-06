@@ -15,9 +15,9 @@
 //! value is provably *not* that Compare, and the renderer gets an honest
 //! placeholder instead of a stale guess.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use n0xis_arch::{Arch, CallTarget, CmpKind, MicroExpr, MicroStmt, UnliftedReads, FLAGS_VAR, JUMP_TARGET_VAR};
+use n0xis_arch::{Arch, BinOp, CallTarget, CmpKind, MicroExpr, MicroStmt, UnliftedReads, FLAGS_VAR, JUMP_TARGET_VAR};
 use n0xis_contracts::Va;
 use serde::Serialize;
 
@@ -95,6 +95,30 @@ pub struct SsaArtifact {
     /// partial answer and a wrong one.
     #[serde(skip)]
     pub float_return_pair: bool,
+    /// What the form before propagation says about the values that came in.
+    /// In-memory metadata, like `float_return` and for the same reason: the
+    /// optimizer folds away the copies this is read from.
+    #[serde(skip)]
+    pub entry_flow: EntryFlow,
+}
+
+/// What happened to the values a function received, read before propagation.
+///
+/// `mov %rdi,%rbx; call g; mov %rbx,%rdi; call h` is a function reading its first
+/// argument, and after propagation it is two calls with a bare `rdi.0`, which every
+/// call shows whether or not anything was passed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntryFlow {
+    /// Entry values a copy carried to the argument list of a real call: a register
+    /// the compiler moved a value out of, or back into, to pass it. A phi alone is
+    /// no movement, since a branch around a call merges a register nothing touched
+    /// with what the call left in it.
+    pub moved: BTreeSet<String>,
+    /// Entry values stored to the frame and only ever loaded back into the register
+    /// they came from, with nothing reading them there: a save and a restore.
+    pub saved: BTreeSet<String>,
+    /// Where in the frame an entry value was stored as it came, by frame offset.
+    pub stored_at: BTreeMap<String, i128>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -738,6 +762,153 @@ fn expr_reads_memory(e: &MicroExpr) -> bool {
     }
 }
 
+fn ssa_root(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+/// The value this copies, through a width change: `mov %edi,%ebx` moves a value too.
+fn copied_var(e: &MicroExpr) -> Option<&str> {
+    match e {
+        MicroExpr::Var(v) => Some(v),
+        MicroExpr::Cast { expr, .. } => copied_var(expr),
+        _ => None,
+    }
+}
+
+/// Reads [`EntryFlow`] off the blocks as they are before propagation.
+pub(crate) fn entry_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> EntryFlow {
+    // Where each value goes by copy or merge. A name is defined once.
+    let mut goes_to: HashMap<&str, Vec<&str>> = HashMap::new();
+    for b in blocks {
+        for p in &b.phis {
+            for i in &p.inputs {
+                goes_to.entry(i.value.as_str()).or_default().push(p.dst.as_str());
+            }
+        }
+        for s in &b.stmts {
+            if let MicroStmt::Assign { dst, value } = &s.stmt
+                && let Some(from) = copied_var(value)
+            {
+                goes_to.entry(from).or_default().push(dst.as_str());
+            }
+        }
+    }
+    // Every name a real call takes bare, in any position.
+    let mut passed: BTreeSet<&str> = BTreeSet::new();
+    for b in blocks {
+        for s in &b.stmts {
+            if let MicroStmt::Call { target, args, .. } = &s.stmt
+                && !matches!(target, CallTarget::Intrinsic(_))
+            {
+                passed.extend(args.iter().filter_map(|a| if let MicroExpr::Var(v) = a { Some(v.as_str()) } else { None }));
+            }
+        }
+    }
+    let mut moved = BTreeSet::new();
+    for entry in goes_to.keys().copied().filter(|n| n.ends_with(".0")) {
+        // (a name, whether the value has left its register by then): another
+        // register's name on the way is what says a copy happened, also where the
+        // value then comes back to its own, `mov %rdi,%rbx; ...; mov %rbx,%rdi`.
+        let mut seen: BTreeSet<(&str, bool)> = BTreeSet::from([(entry, false)]);
+        let mut work = vec![(entry, false)];
+        while let Some((v, left)) = work.pop() {
+            for &next in goes_to.get(v).into_iter().flatten() {
+                let left = left || ssa_root(next) != ssa_root(entry);
+                if seen.insert((next, left)) {
+                    work.push((next, left));
+                }
+            }
+        }
+        if seen.iter().any(|(n, left)| *left && passed.contains(n)) {
+            moved.insert(entry.to_string());
+        }
+    }
+    let (saved, stored_at) = saved_entries(blocks, stack_pointer);
+    EntryFlow { moved, saved, stored_at }
+}
+
+/// The frame offset an address names, through the stack pointer's versions and any
+/// copy of them (a frame pointer).
+fn frame_offsets(blocks: &[SsaBlock], stack_pointer: &str) -> HashMap<String, i128> {
+    let mut at: HashMap<String, i128> = HashMap::from([(format!("{stack_pointer}.0"), 0)]);
+    loop {
+        let before = at.len();
+        for b in blocks {
+            for s in &b.stmts {
+                if let MicroStmt::Assign { dst, value } = &s.stmt
+                    && !at.contains_key(dst)
+                    && let Some(off) = frame_offset_of(value, &at)
+                {
+                    at.insert(dst.clone(), off);
+                }
+            }
+        }
+        if at.len() == before {
+            return at;
+        }
+    }
+}
+
+fn frame_offset_of(e: &MicroExpr, at: &HashMap<String, i128>) -> Option<i128> {
+    match e {
+        MicroExpr::Var(v) => at.get(v).copied(),
+        MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {
+            (MicroExpr::Var(v), MicroExpr::Const { value, .. }) | (MicroExpr::Const { value, .. }, MicroExpr::Var(v)) => Some(at.get(v)? + value),
+            _ => None,
+        },
+        MicroExpr::Binary(BinOp::Sub, l, r) => match (l.as_ref(), r.as_ref()) {
+            (MicroExpr::Var(v), MicroExpr::Const { value, .. }) => Some(at.get(v)? - value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// See [`EntryFlow::saved`]. A store nothing loads is not a save: at `-O0` that is a
+/// parameter written to its slot and not used, which the bytes do read.
+fn saved_entries(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> (BTreeSet<String>, BTreeMap<String, i128>) {
+    let Some(sp) = stack_pointer else { return Default::default() };
+    let at = frame_offsets(blocks, sp);
+    let mut stored: Vec<(&str, i128)> = Vec::new();
+    let mut loaded: HashMap<i128, Vec<&str>> = HashMap::new();
+    let mut reads: BTreeSet<String> = BTreeSet::new();
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Store { addr, value: MicroExpr::Var(v), .. } if v.ends_with(".0") && frame_offset_of(addr, &at).is_some() => {
+                    stored.push((v.as_str(), frame_offset_of(addr, &at).expect("just checked")));
+                    collect_expr_vars(addr, &mut reads);
+                }
+                MicroStmt::Assign { dst, value: MicroExpr::Load { addr, .. } } if frame_offset_of(addr, &at).is_some() => {
+                    loaded.entry(frame_offset_of(addr, &at).expect("just checked")).or_default().push(dst.as_str());
+                    collect_expr_vars(addr, &mut reads);
+                }
+                // What `ret` reads of the return register says nothing of a value
+                // that was put back there: it reads it on every path.
+                MicroStmt::Return(Some(MicroExpr::Var(_))) => {}
+                other => collect_stmt_vars(other, &mut reads),
+            }
+        }
+        reads.extend(b.phis.iter().flat_map(|p| p.inputs.iter().map(|i| i.value.clone())));
+        if let Some(c) = &b.condition {
+            collect_expr_vars(c, &mut reads);
+        }
+    }
+    let mut saved = BTreeSet::new();
+    let mut not_saved = BTreeSet::new();
+    let stored_at = stored.iter().map(|(e, off)| (e.to_string(), *off)).collect();
+    for (entry, off) in stored {
+        let back = loaded.get(&off).map(Vec::as_slice).unwrap_or_default();
+        if !back.is_empty() && back.iter().all(|d| ssa_root(d) == ssa_root(entry) && !reads.contains(*d)) {
+            saved.insert(entry.to_string());
+        } else {
+            not_saved.insert(entry);
+        }
+    }
+    saved.retain(|e| !not_saved.contains(e.as_str()));
+    (saved, stored_at)
+}
+
 fn build_ssa(
     arch: &dyn Arch,
     cfg: &CfgArtifact,
@@ -754,6 +925,7 @@ fn build_ssa(
             callsites: cfg.callsites.clone(),
             float_return: false,
             float_return_pair: false,
+            entry_flow: EntryFlow::default(),
         };
     }
     let (succ, pred) = block_graph(cfg);
@@ -878,6 +1050,7 @@ fn build_ssa(
         .collect();
 
     let (float_return, float_return_pair) = retarget_float_returns(&mut blocks, &ret_sites, &defs);
+    let entry_flow = entry_flow(&blocks, arch.stack_pointer());
     SsaArtifact {
         start: cfg.start,
         end: cfg.end,
@@ -885,6 +1058,7 @@ fn build_ssa(
         callsites: cfg.callsites.clone(),
         float_return,
         float_return_pair,
+        entry_flow,
     }
 }
 

@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A value that came in and is read is a parameter, through copies too.** `mov %rdi,%rbx; call g; mov %rbx,%rdi; call h` is a function reading its first argument, and the signature said `(void)`, since after copy propagation it is two calls with a bare `rdi.0`, and a bare register at a call was not counted because the lift passes them all. Now a copy that carried the value to a call counts, and a register passed on as it came counts where the callee is known to read that position, asked of its own body a few calls down. A register only pushed and popped back does not count. Exact parameter counts against DWARF on one C image: 421 to 629 of 649 (too few 225 to 17, too many 3 to 3). What a body reads of an argument or return register that is not in its signature prints as `/*from caller*/rsi.0`, and costs it `quality`.
+
 ## [0.3.9] — 2026-11-06
 
 **Read this first: what to check again, and what is still known to be false.** Most of this release corrects answers that were wrong and looked right.

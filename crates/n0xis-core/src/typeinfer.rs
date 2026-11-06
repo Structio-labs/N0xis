@@ -214,6 +214,9 @@ pub struct TypeInferInput {
     /// floating-point struct. Recorded on the signature rather than guessed at
     /// a name the source never had.
     pub float_return_pair: bool,
+    /// [`SsaArtifact::entry_flow`](crate::ssa::SsaArtifact::entry_flow): what the
+    /// blocks here no longer show of the values the function received.
+    pub entry_flow: crate::ssa::EntryFlow,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -237,7 +240,7 @@ impl Pass for TypeInferPass {
                 ctx.arch.name()
             )));
         }
-        Ok(infer(ctx, &input.cfg, &input.blocks, input.float_return, input.float_return_pair))
+        Ok(infer(ctx, &input.cfg, &input.blocks, input.float_return, input.float_return_pair, &input.entry_flow))
     }
 }
 
@@ -619,12 +622,8 @@ fn recover_structs(accesses: &[MemAccess], frames: &BTreeSet<String>) -> Vec<Rec
 /// exactly the evidence — and `double f(double)` reported `(void)` on both
 /// x86-64 ABIs as a result.
 ///
-/// Known under-count: a parameter forwarded *straight through* to an unknown
-/// callee (`void f(T a){ g(a); }`) has no non-argument use and is dropped;
-/// fully resolving it needs Rung 4's whole-program call-site agreement (a
-/// callee's arity, learned from all its call sites, back-propagated to each
-/// forwarding argument). Sound-over-complete: the forwarded value still
-/// renders in the body; only the signature's arity is conservative.
+/// A bare argument that does say something is [`crate::callee::params_read`]'s to
+/// count: one a copy put there, and one the callee is known to take.
 /// `a @ a` for the two operations that yield zero from equal operands — the
 /// dependency-breaking `xor`/`sub` idiom. Equality is on the *SSA name*, so it
 /// only fires when both operands are the identical version (`xmm0.0 ^ xmm0.0`);
@@ -634,7 +633,7 @@ fn self_annihilates(op: BinOp, l: &MicroExpr, r: &MicroExpr) -> bool {
         && matches!((l, r), (MicroExpr::Var(a), MicroExpr::Var(b)) if a == b)
 }
 
-fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
+pub(crate) fn collect_definite_param_regs(blocks: &[SsaBlock], flow: &crate::ssa::EntryFlow) -> BTreeSet<String> {
     fn walk(e: &MicroExpr, out: &mut BTreeSet<String>) {
         match e {
             MicroExpr::Var(n) => {
@@ -697,6 +696,8 @@ fn collect_definite_param_regs(blocks: &[SsaBlock]) -> BTreeSet<String> {
         for s in &b.stmts {
             match &s.stmt {
                 MicroStmt::Assign { value, .. } => walk(value, &mut out),
+                // A register pushed and popped back says nothing of what it held.
+                MicroStmt::Store { addr, value: MicroExpr::Var(v), .. } if flow.saved.contains(v) => walk(addr, &mut out),
                 MicroStmt::Store { addr, value, .. } => {
                     walk(addr, &mut out);
                     walk(value, &mut out);
@@ -1378,7 +1379,7 @@ fn word_bits(ctx: &Ctx) -> Bits {
 /// The byte window scanned when analyzing a callee's signature — generously
 /// function-sized. A larger callee just yields a less-complete signature, never
 /// an error.
-const CALLEE_SCAN_SIZE: usize = 16 * 1024;
+pub(crate) const CALLEE_SCAN_SIZE: usize = 16 * 1024;
 
 /// Recover a called function's parameter types by analyzing it *shallowly* (no
 /// further interprocedural recursion — one level deep). `None` if its bytes do
@@ -1409,7 +1410,7 @@ const CALLEE_TYPES_MAX: usize = 200_000;
 /// for a source with no identity (a live process): its code can change, so
 /// nothing about it is kept. The source's label is not an identity, since it
 /// names only the file.
-fn ctx_identity(ctx: &Ctx) -> Option<String> {
+pub(crate) fn ctx_identity(ctx: &Ctx) -> Option<String> {
     let source = ctx.source.identity()?;
     Some(format!(
         "{source}|{}|{}",
@@ -1455,7 +1456,7 @@ fn callee_param_types(ctx: &Ctx, va: Va) -> Option<Vec<CType>> {
     }
     let ssa = SsaPass.run(ctx, cfg.clone()).ok()?;
     let opt = OptimizePass.run(ctx, ssa).ok()?;
-    let types = infer_with(ctx, &cfg, &opt.blocks, false, opt.float_return, opt.float_return_pair);
+    let types = infer_with(ctx, &cfg, &opt.blocks, false, opt.float_return, opt.float_return_pair, &opt.entry_flow);
     Some(types.signature.params.iter().map(|p| p.ty.clone()).collect())
 }
 
@@ -1541,11 +1542,11 @@ fn user_callee_arg_types(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> B
     out
 }
 
-fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], float_return: bool, float_return_pair: bool) -> TypeArtifact {
+fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], float_return: bool, float_return_pair: bool, flow: &crate::ssa::EntryFlow) -> TypeArtifact {
     // Top-level analysis is interprocedural (`deep`): it consults the recovered
     // signatures of the user functions this one calls. A callee analyzed for that
     // purpose runs shallow (`deep = false`) so the walk never recurses.
-    infer_with(ctx, cfg, blocks, true, float_return, float_return_pair)
+    infer_with(ctx, cfg, blocks, true, float_return, float_return_pair, flow)
 }
 
 fn infer_with(
@@ -1555,6 +1556,7 @@ fn infer_with(
     deep: bool,
     float_return: bool,
     float_return_pair: bool,
+    flow: &crate::ssa::EntryFlow,
 ) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
     let signed_use = collect_signed_use_offsets(blocks);
@@ -1563,7 +1565,7 @@ fn infer_with(
     let structs = recover_structs(&accesses, &frames);
 
     let arg_regs = abi_arg_regs(ctx);
-    let used = collect_definite_param_regs(blocks);
+    let used = crate::callee::params_read(ctx, cfg, blocks, flow, &arg_regs);
     let arity = recover_arity(&used, &arg_regs);
     // On a stack-argument ABI — i386 `cdecl`/`stdcall` — no register carries an
     // argument, so `recover_arity` can only ever answer zero and the signature
@@ -1724,7 +1726,7 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
-        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair }).unwrap()
+        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }).unwrap()
     }
 
     /// A stack-argument ABI states its arity in the return, and it was ignored.
@@ -1764,7 +1766,7 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
         let art = TypeInferPass
-            .run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair })
+            .run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() })
             .unwrap();
         let params: Vec<(&str, Bits)> = art.signature.params.iter().map(|p| (p.name.as_str(), p.ty.bits)).collect();
         assert_eq!(params, vec![("r0", 32), ("r1", 32)], "AArch32 registers are 32 bits wide");
@@ -1904,7 +1906,7 @@ mod tests {
             ],
             condition: None,
         };
-        let used = collect_definite_param_regs(std::slice::from_ref(&block));
+        let used = collect_definite_param_regs(std::slice::from_ref(&block), &crate::ssa::EntryFlow::default());
         assert!(used.contains("r1.0"), "a register the instruction names is read: {used:?}");
         assert!(!used.contains("r2.0") && !used.contains("r3.0"), "a bound is not evidence: {used:?}");
     }
@@ -1936,7 +1938,7 @@ mod tests {
             }],
             condition: None,
         };
-        let used = collect_definite_param_regs(std::slice::from_ref(&join));
+        let used = collect_definite_param_regs(std::slice::from_ref(&join), &crate::ssa::EntryFlow::default());
         assert!(used.contains("rcx.0"), "the phi's result is returned, so its inputs are real: {used:?}");
         assert!(!used.contains("xmm3.0"), "nothing reads this phi — it is the SSA's bookkeeping: {used:?}");
     }
@@ -1986,7 +1988,7 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
-        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair }).unwrap()
+        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }).unwrap()
     }
 
     #[test]
