@@ -973,49 +973,50 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
     // the loop) — the `term == "cjmp"` path above already returned if the header
     // itself was the loop's exit test, so getting here means the real test is the
     // latch below, which is exactly a `do`/`while`.
-    if let Some(LatchEdge { latch: t, through }) = latch_edge {
-        if ctx.cfg.blocks[t].terminator == "cjmp" && copies_may_join_the_body(ctx, t, through, &body_set) {
-            let (tt, tf) = cjmp_arms(ctx.cfg, ctx.succ, t);
-            if let (Some(tt), Some(tf)) = (tt, tf) {
-                let back = through.unwrap_or(h);
-                let tt_back = tt == back;
-                let tf_back = tf == back;
-                let tt_out = !body_set.contains(&tt);
-                let tf_out = !body_set.contains(&tf);
-                let do_while_cond: Option<String> = if tt_back && tf_out {
-                    Some(cond_text(ctx, t))
-                } else if tf_back && tt_out {
-                    Some(negated_cond_text(ctx, t))
-                } else {
-                    None
-                };
-                if let Some(cond_for_loop) = do_while_cond {
-                    let outside = if tt_back && tf_out { tf } else { tt };
-                    // The latch's out-arm is the loop continuation and the only
-                    // `break` target; a value-carrying header exit (the found
-                    // path) is a different block and stays an inline exit.
-                    *ctx.loop_cont.last_mut().expect("loop_cont pushed on entry") = Some(outside);
-                    ctx.out.push(format!("{}do {{", pad(ctx.indent)));
-                    ctx.indent += 1;
-                    ctx.visited[t] = true;
-                    if t != h {
-                        emit_block_body_and_terminator(ctx, h, Some(t));
-                    }
-                    if let Some(b) = through {
-                        ctx.visited[b] = true;
-                    }
-                    for b in std::iter::once(t).chain(through) {
-                        for line in &ctx.body_lines[b] {
-                            ctx.out.push(format!("{}{}", pad(ctx.indent), line));
-                        }
-                    }
-                    ctx.indent -= 1;
-                    ctx.out.push(format!("{}}} while ({cond_for_loop});", pad(ctx.indent)));
-                    ctx.loop_stack.pop();
-                    ctx.loop_cont.pop();
-                    emit_node(ctx, outside, until);
-                    return;
+    if let Some(LatchEdge { latch: t, through }) = latch_edge
+        && ctx.cfg.blocks[t].terminator == "cjmp"
+        && copies_may_join_the_body(ctx, t, through, &body_set)
+    {
+        let (tt, tf) = cjmp_arms(ctx.cfg, ctx.succ, t);
+        if let (Some(tt), Some(tf)) = (tt, tf) {
+            let back = through.unwrap_or(h);
+            let tt_back = tt == back;
+            let tf_back = tf == back;
+            let tt_out = !body_set.contains(&tt);
+            let tf_out = !body_set.contains(&tf);
+            let do_while_cond: Option<String> = if tt_back && tf_out {
+                Some(cond_text(ctx, t))
+            } else if tf_back && tt_out {
+                Some(negated_cond_text(ctx, t))
+            } else {
+                None
+            };
+            if let Some(cond_for_loop) = do_while_cond {
+                let outside = if tt_back && tf_out { tf } else { tt };
+                // The latch's out-arm is the loop continuation and the only
+                // `break` target; a value-carrying header exit (the found
+                // path) is a different block and stays an inline exit.
+                *ctx.loop_cont.last_mut().expect("loop_cont pushed on entry") = Some(outside);
+                ctx.out.push(format!("{}do {{", pad(ctx.indent)));
+                ctx.indent += 1;
+                ctx.visited[t] = true;
+                if t != h {
+                    emit_block_body_and_terminator(ctx, h, Some(t));
                 }
+                if let Some(b) = through {
+                    ctx.visited[b] = true;
+                }
+                for b in std::iter::once(t).chain(through) {
+                    for line in &ctx.body_lines[b] {
+                        ctx.out.push(format!("{}{}", pad(ctx.indent), line));
+                    }
+                }
+                ctx.indent -= 1;
+                ctx.out.push(format!("{}}} while ({cond_for_loop});", pad(ctx.indent)));
+                ctx.loop_stack.pop();
+                ctx.loop_cont.pop();
+                emit_node(ctx, outside, until);
+                return;
             }
         }
     }

@@ -1436,7 +1436,7 @@ mod tests {
         // That is not a matter of coverage: every instruction was lifted.
         assert!(!flagged, "{text}");
         // However many instructions there are, a mark is not diluted away.
-        let mut long = vec![0x48, 0xff, 0xc0].repeat(4000); // inc %rax
+        let mut long = [0x48, 0xff, 0xc0].repeat(4000); // inc %rax
         long.extend([0x48, 0xff, 0x02, 0x72, 0x01, 0xc3, 0xc3]);
         let f = decomp_long(long);
         assert!(f.quality < 1.0, "{}", f.quality);

@@ -51,6 +51,8 @@ in a capability's arguments may be text as well, for a client whose own numbers 
 - `scan value --type f32 --value 0.1` finds the `f32` nearest 0.1. It compared against the double, and found nothing.
 - `--value inf` and `nan` are refused at the flag. They were accepted, and no comparison could match them.
 **A decompiled body says more of what the bytes do.** These change the text of `decomp pseudo`, not what any other command answers.
+**A decompiled body says more of what the bytes do.** These change the text and the `quality` of `decomp pseudo`. Two other answers change with them: `ir value-set` lists the new `old.N` values,
+and `function typeflow` follows the pointers `rbp` now is where it is no frame.
 
 - A memory access states its width and extension: `*(uint8_t*)rdi` for `movzbl (%rdi),%edx`, which printed as `(uint32_t)*rdi` and read as a
   32-bit load. A field reads `*(uint32_t*)&rdi->field_0x10`, a subscript `((int32_t*)rax)[rcx]`, and a local its plain name only where its
