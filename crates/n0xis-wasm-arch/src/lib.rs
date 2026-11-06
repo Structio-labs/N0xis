@@ -283,6 +283,11 @@ impl Arch for Wasm {
     /// this today, because [`decode_range`](Arch::decode_range) below decodes
     /// each body from its start and never resynchronizes; it is the answer the
     /// default sweep would need if it ran here.
+    /// No guard is read here: [`Arch::detect_switch`] recognizes nothing.
+    fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &n0xis_arch::SwitchDispatch) -> Option<u64> {
+        None
+    }
+
     /// A module's control flow is structured: it has no jump table to find.
     fn recognizes_jump_tables(&self) -> bool {
         false

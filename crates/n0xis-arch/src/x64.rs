@@ -590,6 +590,63 @@ impl X64 {
     }
 }
 
+/// What holds a dispatch's index, walking back from the table load
+/// ([`Arch::index_guard`]).
+#[derive(Clone, Copy)]
+enum HeldIndex {
+    Register(Register),
+    /// A value the index was loaded from: `movzx eax, byte ptr [rdi]`. The guard of
+    /// such an index compares that memory, `cmp byte ptr [rdi], 40`, and no register.
+    Memory(Instruction),
+}
+
+/// What an instruction that writes the register holding the index does to it.
+enum WrittenBy {
+    /// The index was this before it.
+    Copy(HeldIndex),
+    /// It masks the register, so the index is at most this.
+    Mask(u64),
+    /// Anything else, which says nothing of the index.
+    Other,
+}
+
+impl HeldIndex {
+    /// Whether `cmp` compares what holds the index against a constant.
+    fn is_compared_by(&self, cmp: &Instruction) -> bool {
+        if cmp.op_count() < 2 || imm_op1(cmp).is_none() {
+            return false;
+        }
+        match self {
+            HeldIndex::Register(r) => cmp.op0_kind() == OpKind::Register && cmp.op0_register().full_register() == *r,
+            HeldIndex::Memory(load) => {
+                cmp.op0_kind() == OpKind::Memory
+                    && cmp.memory_base() == load.memory_base()
+                    && cmp.memory_index() == load.memory_index()
+                    && cmp.memory_index_scale() == load.memory_index_scale()
+                    && cmp.memory_displacement64() == load.memory_displacement64()
+                    && cmp.segment_prefix() == load.segment_prefix()
+                    && cmp.memory_size() == load.memory_size()
+            }
+        }
+    }
+
+    /// What held the index before `ins`, which writes the register holding it.
+    fn before_write(&self, ins: &Instruction) -> WrittenBy {
+        let HeldIndex::Register(_) = self else { return WrittenBy::Other };
+        match ins.mnemonic() {
+            Mnemonic::Mov | Mnemonic::Movzx | Mnemonic::Movsx | Mnemonic::Movsxd => match ins.op1_kind() {
+                OpKind::Register => WrittenBy::Copy(HeldIndex::Register(ins.op1_register().full_register())),
+                OpKind::Memory => WrittenBy::Copy(HeldIndex::Memory(*ins)),
+                _ => WrittenBy::Other,
+            },
+            // A mask of a small constant bounds the index whatever it was. A larger
+            // one is not how a table's index is guarded.
+            Mnemonic::And => imm_op1(ins).filter(|&m| m < 0x10000).map_or(WrittenBy::Other, WrittenBy::Mask),
+            _ => WrittenBy::Other,
+        }
+    }
+}
+
 fn guard_bound(instr: &Instruction) -> Option<u64> {
     if !matches!(instr.mnemonic(), Mnemonic::Cmp | Mnemonic::Sub)
         || instr.op_count() < 2
@@ -940,6 +997,71 @@ impl Arch for X64 {
             d.table = self.table_defined_before(&insns[..block_start], base);
         }
         Some(d)
+    }
+
+    fn index_guard(&self, insns: &[DecodedInsn], dispatch: &SwitchDispatch) -> Option<u64> {
+        /// How many instructions back a guard may sit. It is normally the two
+        /// before the table load, with the index's own extension between them.
+        const WINDOW: usize = 64;
+        let index_name = dispatch.index_reg.as_deref()?;
+        let (jump, before) = insns.split_last()?;
+        // Where the table is read. A `jmp reg` reads it earlier, and the register it
+        // jumps through is often the one the index was in: `movsxd rax, [rdx+rax*4];
+        // add rax, rdx; jmp rax`. What the index was is what the load read.
+        let jump_raw = decode_raw(jump, self.bitness)?;
+        let (upto, index) = if jump_raw.op0_kind() == OpKind::Memory {
+            (before.len(), jump_raw.memory_index().full_register())
+        } else {
+            let at = before.iter().rposition(|di| decode_raw(di, self.bitness).is_some_and(|i| reg_name(i.memory_index()) == index_name))?;
+            (at, decode_raw(&before[at], self.bitness)?.memory_index().full_register())
+        };
+        let scan = &before[upto.saturating_sub(WINDOW)..upto];
+        let mut held = HeldIndex::Register(index);
+        let mut factory = InstructionInfoFactory::new();
+        for (i, di) in scan.iter().enumerate().rev() {
+            let ins = decode_raw(di, self.bitness)?;
+            match di.kind {
+                InsnKind::CondJump => {
+                    let Some(cmp) = i.checked_sub(1).and_then(|p| decode_raw(&scan[p], self.bitness)) else { return None };
+                    if cmp.mnemonic() == Mnemonic::Cmp && held.is_compared_by(&cmp) {
+                        let limit = imm_op1(&cmp)?;
+                        match ins.mnemonic() {
+                            Mnemonic::Ja | Mnemonic::Jg => return Some(limit),
+                            Mnemonic::Jae | Mnemonic::Jge => return limit.checked_sub(1),
+                            // A test of this index that does not bound it from above
+                            // (`cmp rax, 3; je`): the guard is further up.
+                            _ => {}
+                        }
+                    }
+                }
+                InsnKind::Jump | InsnKind::Ret | InsnKind::Int => return None,
+                InsnKind::Call => match held {
+                    HeldIndex::Register(r) if matches!(r, Register::RBX | Register::RBP | Register::R12 | Register::R13 | Register::R14 | Register::R15) => {}
+                    _ => return None,
+                },
+                _ => {
+                    let info = factory.info(&ins);
+                    let writes = |r: Register| info.used_registers().iter().any(|u| u.register().full_register() == r && matches!(u.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite));
+                    match held {
+                        HeldIndex::Register(r) if writes(r) => match held.before_write(&ins) {
+                            WrittenBy::Copy(earlier) => held = earlier,
+                            WrittenBy::Mask(mask) => return Some(mask),
+                            WrittenBy::Other => return None,
+                        },
+                        HeldIndex::Register(_) => {}
+                        HeldIndex::Memory(load) => {
+                            // Between the guard and the load nothing may move what
+                            // the load reads, or be stored over it.
+                            let stored = info.used_memory().iter().any(|m| matches!(m.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite));
+                            if stored || writes(load.memory_base().full_register()) || writes(load.memory_index().full_register()) {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn detect_switch(&self, block: &[DecodedInsn]) -> Option<SwitchDispatch> {

@@ -247,6 +247,13 @@ pub enum HeldBy {
     PltSlot,
     /// An entry of a PE's base relocation table: the word holds the address.
     BaseRelocation,
+    /// An entry of a jump's table, where a guard of the jump's index says how
+    /// many entries there are.
+    JumpTableGuarded,
+    /// An entry of a jump's table, where no guard of the index could be read: the
+    /// entries were walked until one left the function, so the last may be past
+    /// the real end of the table.
+    JumpTableWalked,
     /// **Only a matching value.** No table names the word; it holds a number
     /// equal to the address, on an image where a real pointer looks no different
     /// ([`WordRule::StoredValues`]).

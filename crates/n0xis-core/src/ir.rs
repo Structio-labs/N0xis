@@ -641,6 +641,11 @@ fn what_follows_the_call(ctx: &Ctx, end: u64, after: &[DecodedInsn], goes_on_at:
 /// forward edge reaches past it — without it the heuristic walks straight
 /// into the padding/next function after a `call ExitProcess` (ROADMAP Phase
 /// 10, priority 0: the follow-on the per-block CFG fix deliberately left).
+/// Whether an instruction of this kind ends a block, so the next starts one.
+pub(crate) fn ends_block(kind: InsnKind) -> bool {
+    matches!(kind, InsnKind::CondJump | InsnKind::Jump | InsnKind::Ret | InsnKind::Int)
+}
+
 /// How far any **resolved, guard-bounded** jump table in `instrs` reaches.
 ///
 /// Only a switch whose case count a guard bounds counts: an unbounded probe
@@ -857,7 +862,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
             }
             // A terminator ends the block, so the next instruction starts one —
             // the same rule `compute_leaders` follows.
-            if matches!(ins.kind, InsnKind::CondJump | InsnKind::Jump | InsnKind::Ret | InsnKind::Int) {
+            if ends_block(ins.kind) {
                 block_start = idx + 1;
             }
         }

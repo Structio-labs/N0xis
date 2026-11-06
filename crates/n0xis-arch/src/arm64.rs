@@ -980,6 +980,11 @@ impl Arch for Arm64 {
         frame
     }
 
+    /// No guard is read here: [`Arch::detect_switch`] recognizes nothing.
+    fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &SwitchDispatch) -> Option<u64> {
+        None
+    }
+
     fn detect_switch(&self, _block: &[DecodedInsn]) -> Option<SwitchDispatch> {
         None // ARM64 jump-table idioms differ from x64's; not implemented (documented in the module doc).
     }

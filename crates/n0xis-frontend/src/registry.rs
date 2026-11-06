@@ -2546,21 +2546,37 @@ impl Plugin for AnalysisPasses {
                             Src::Static(img) => img.words_holding(addr).map(|held| (img, held)),
                             _ => None,
                         };
+                        let section_at = |at: u64| match src {
+                            Src::Static(img) => img.section_at(at),
+                            _ => None,
+                        };
+                        // A jump's table, read first: a word of one is a reference
+                        // from the jump, and is not listed a second time as a word.
+                        let n0xis_core::JumpTableReferences { refs: table_refs, searched: jump_tables, tables } = n0xis_core::jump_table_references(ctx, addr, &idx, &section_at);
                         let searched = match held {
-                            Some((img, held)) => {
+                            Some((_, held)) => {
                                 // Every data address code takes, which is what a
                                 // relative table is relative to.
                                 let bases: Vec<u64> = held
                                     .ranges
                                     .iter()
                                     .flat_map(|&(start, size)| idx.edges.range(start.0..start.0.saturating_add(size)).map(|(&base, _)| base))
+                                    .chain(tables.iter().map(|&(base, _)| base))
+                                    .collect::<std::collections::BTreeSet<u64>>()
+                                    .into_iter()
                                     .collect();
-                                refs.extend(n0xis_core::held_references(ctx, addr, &held, &code_ranges, &bases, &|at| img.section_at(at)));
-                                n0xis_core::XrefSearched::with_held(code, &held)
+                                let in_table = |slot: u64| tables.iter().any(|&(base, end)| slot >= base && slot < end);
+                                refs.extend(n0xis_core::held_references(ctx, addr, &held, &code_ranges, &bases, &section_at).into_iter().filter(|r| !r.held.as_ref().is_some_and(|h| in_table(h.slot.0))));
+                                n0xis_core::XrefSearched::with_held(code, &held, jump_tables)
                             }
-                            None => n0xis_core::XrefSearched::code_only(code, not_an_image(src)),
+                            None => {
+                                let mut s = n0xis_core::XrefSearched::code_only(code, not_an_image(src));
+                                s.jump_tables = jump_tables;
+                                s
+                            }
                         };
-                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs, searched };
+                        refs.extend(table_refs);
+                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs, searched, jump_table: None };
                         return ok_json(n0xis_contracts::schema::v1::XREF, art, label);
                     }
                     let windows =
@@ -2591,6 +2607,23 @@ impl Plugin for AnalysisPasses {
                             // What this path did not read is stated by what it was.
                             if dir == n0xis_core::XrefDir::To && !matches!(src, Src::Static(_)) {
                                 art.searched.data = n0xis_core::SearchedData::NotSearched { why: not_an_image(src).to_string() };
+                            }
+                            if dir == n0xis_core::XrefDir::From {
+                                let section_at = |at: u64| match src {
+                                    Src::Static(img) => img.section_at(at),
+                                    _ => None,
+                                };
+                                // The index says where other tables begin. A live source has
+                                // none kept, and an empty one says nothing of them.
+                                let idx = match src {
+                                    Src::Static(_) | Src::Snap(_) if !code_ranges.is_empty() => n0xis_pipeline::xref_index_for(ctx, &code_ranges, label),
+                                    _ => Default::default(),
+                                };
+                                if let Some((table_refs, answer)) = n0xis_core::jump_table_from(ctx, addr, &idx, &section_at) {
+                                    art.refs.extend(table_refs);
+                                    art.count = art.refs.len();
+                                    art.jump_table = Some(answer);
+                                }
                             }
                             ok_json(n0xis_contracts::schema::v1::XREF, art, label)
                         }

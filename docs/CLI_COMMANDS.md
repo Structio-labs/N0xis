@@ -641,6 +641,15 @@ Who references `--addr` (`to`) / what `--addr` references (`from`).
 - A `relative_entry` row is one 32-bit entry of a table relative to a base code takes the address of: `slot`,
   `section`, `relative_to` (the base) and `evidence` `matching_value`, since only its shape says it is one: at
   least two entries from the base, each landing in code, up to the next address code takes.
+- A `jump_table` row is one entry of the table an indexed jump reads, `from` the jump: `slot`, `section`,
+  `relative_to` (for an entry that is an offset from the table) and `evidence`: `jump_table_guarded`, where a
+  guard of the index that reaches the table load says how many entries there are, or `jump_table_walked`,
+  where none could be read and the entries were walked until one left the function. `xref to` lists one row
+  per entry that lands on the address, so a default block has a row for each hole. `xref from` at the jump
+  lists every entry, and `data.jump_table` says `resolved` (`table`, `entries`, `guarded`) or `not_resolved`
+  with `why`. `data.searched.jump_tables` counts the image's indirect jumps (`resolved`; `not_resolved`, with
+  the first of them in `not_resolved_at`; `no_table`, a tail call through a pointer or a table not recognized).
+  A word of a table such a jump reads is listed as this row and not again as `data_word`. x86 and x86-64 only.
 - On a WebAssembly module (see *WebAssembly modules*) each reference carries `from_function` and
   `to_function`, the indices of the functions it is from and to; a call to an imported function
   has `to_function` and no `to` (an import has no position), and its `sym` is the import's name

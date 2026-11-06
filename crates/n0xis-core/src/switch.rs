@@ -94,11 +94,65 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
         None => UNBOUNDED_PROBE_LIMIT,
     };
 
-    let want = count.saturating_mul(entry_size as usize);
-    let Ok(raw) = ctx.source.read(table, want) else {
-        return out;
+    out.cases = read_entries(ctx, disp.kind, table, count);
+    out.resolved = !out.cases.is_empty();
+    out
+}
+
+/// A jump's table read for `xref`: its entries, each with the word it is in.
+#[derive(Clone, Debug)]
+pub struct TableRead {
+    /// `(slot, target)` in table order.
+    pub entries: Vec<(Va, Va)>,
+    /// Whether a guard of the index says how many there are
+    /// ([`Arch::index_guard`](n0xis_arch::Arch::index_guard)). Otherwise the walk
+    /// stopped at the first entry that leaves the function, or leaves code where
+    /// the function's end is not stated.
+    pub guarded: bool,
+    /// The address an entry is relative to.
+    pub relative_to: Option<Va>,
+    /// Bytes per entry.
+    pub entry_size: u64,
+}
+
+/// Read a table as `guard` bounds it. With no guard the count is not known, and
+/// the walk has to stop where the entries stop being this function's: the words
+/// after a table are often the next table, whose entries are code too. Nothing is
+/// read at or past `next_base`, the next address the code takes in data, guarded or
+/// not: an index may be masked to more values than its table has.
+pub fn read_table(ctx: &Ctx, kind: SwitchKind, table: Va, guard: Option<u64>, function: Option<(Va, Va)>, next_base: Option<u64>) -> Option<TableRead> {
+    let pointer_size = ctx.arch.pointer_size()?;
+    let step = u64::from(kind.entry_size(pointer_size));
+    let count = match guard {
+        Some(n) => (n.saturating_add(1) as usize).min(MAX_SWITCH_CASES),
+        None => UNBOUNDED_PROBE_LIMIT,
     };
-    let step = entry_size as usize;
+    let count = next_base.map_or(count, |next| count.min((next.saturating_sub(table.0) / step) as usize));
+    let mut targets = read_entries(ctx, kind, table, count);
+    if guard.is_none()
+        && let Some((start, end)) = function
+    {
+        let inside = targets.iter().take_while(|t| t.0 >= start.0 && t.0 < end.0).count();
+        targets.truncate(inside);
+    }
+    if targets.is_empty() {
+        return None;
+    }
+    let entries = targets.into_iter().enumerate().map(|(i, t)| (Va(table.0 + i as u64 * step), t)).collect();
+    Some(TableRead { entries, guarded: guard.is_some(), relative_to: matches!(kind, SwitchKind::RegRel32).then_some(table), entry_size: step })
+}
+
+/// The entries of a table, in order, up to `count`, stopping at the first that
+/// leaves code. **The one reader**: the CFG's cases and `xref`'s are read by it.
+fn read_entries(ctx: &Ctx, kind: SwitchKind, table: Va, count: usize) -> Vec<Va> {
+    let Some(pointer_size) = ctx.arch.pointer_size() else {
+        return Vec::new();
+    };
+    let step = kind.entry_size(pointer_size) as usize;
+    let want = count.saturating_mul(step);
+    let Ok(raw) = ctx.source.read(table, want) else {
+        return Vec::new();
+    };
     // Prefer the executable ranges as the "is this code?" gate; fall back to
     // mere mapped-ness when the source can't report a code extent.
     //
@@ -107,19 +161,17 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
     // rejected every jump table in 89% of the binary — switch recovery quietly
     // giving up on the bulk of the code, reported as "unresolved".
     let code = ctx.source.code_ranges();
-
+    let mut cases = Vec::new();
     for chunk in raw.chunks_exact(step) {
-        let Some(target) = decode_entry(disp.kind, table, chunk) else {
+        let Some(target) = decode_entry(kind, table, chunk) else {
             break;
         };
         if !is_code(ctx, &code, target) {
             break;
         }
-        out.cases.push(target);
+        cases.push(target);
     }
-
-    out.resolved = !out.cases.is_empty();
-    out
+    cases
 }
 
 /// Does `target` land in executable code? Uses the source's code extent when

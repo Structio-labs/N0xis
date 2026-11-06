@@ -79,7 +79,9 @@ pub struct XrefEntry {
 pub struct HeldIn {
     /// Where the word is.
     pub slot: Va,
-    pub section: String,
+    /// The section it is in. Absent only on a source with no sections.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
     /// What says the word is an address. [`HeldBy::MatchingValue`] is the mark on
     /// what is only a number equal to one.
     pub evidence: HeldBy,
@@ -119,11 +121,33 @@ pub enum SearchedData {
     },
 }
 
+/// Whether the indirect jumps of the code were read for their tables.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SearchedJumps {
+    Read {
+        /// Jumps whose table was read: their entries are references.
+        resolved: usize,
+        /// Jumps with the shape of a table's dispatch whose table could not be
+        /// read: a target of one of these is not in `refs`.
+        not_resolved: usize,
+        /// The first of them.
+        not_resolved_at: Vec<Va>,
+        /// Other indirect jumps, with no table to read: a tail call through a
+        /// pointer, or a table this does not recognize.
+        no_table: usize,
+    },
+    NotRead {
+        why: String,
+    },
+}
+
 /// What a `count` is out of: a zero means no such reference **in this**.
 #[derive(Clone, Debug, Serialize)]
 pub struct XrefSearched {
     pub code: Vec<SearchedCode>,
     pub data: SearchedData,
+    pub jump_tables: SearchedJumps,
     /// Forms of reference this answer does not look for, whatever it found.
     pub not_searched: &'static [&'static str],
 }
@@ -140,17 +164,18 @@ const NOT_SEARCHED: &[&str] = &[
 impl XrefSearched {
     /// Code windows only, and why data was not looked at.
     pub fn code_only(code: Vec<SearchedCode>, why: impl Into<String>) -> Self {
-        Self { code, data: SearchedData::NotSearched { why: why.into() }, not_searched: NOT_SEARCHED }
+        let why = why.into();
+        Self { code, jump_tables: SearchedJumps::NotRead { why: why.clone() }, data: SearchedData::NotSearched { why }, not_searched: NOT_SEARCHED }
     }
 
     /// Code windows, and what [`held_references`] searched.
-    pub fn with_held(code: Vec<SearchedCode>, held: &HeldWords) -> Self {
+    pub fn with_held(code: Vec<SearchedCode>, held: &HeldWords, jump_tables: SearchedJumps) -> Self {
         let rule = match held.rule {
             WordRule::Relocated => "relocations",
             WordRule::StoredValues => "relocations_and_stored_values",
             WordRule::NotRead(_) => "stored_values_only",
         };
-        Self { code, data: SearchedData::Searched { sections: held.sections.clone(), rule, unrelocated_matches: held.unrelocated_matches }, not_searched: NOT_SEARCHED }
+        Self { code, data: SearchedData::Searched { sections: held.sections.clone(), rule, unrelocated_matches: held.unrelocated_matches }, jump_tables, not_searched: NOT_SEARCHED }
     }
 }
 
@@ -163,6 +188,19 @@ pub struct XrefArtifact {
     pub refs: Vec<XrefEntry>,
     /// What was searched: `count` is out of this, and only this.
     pub searched: XrefSearched,
+    /// For `xref from` at an indirect jump: whether its table was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jump_table: Option<JumpTableAnswer>,
+}
+
+/// What `xref from` says of an indirect jump.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum JumpTableAnswer {
+    /// Every entry is in `refs`.
+    Resolved { table: Va, entries: usize, guarded: bool },
+    /// Its targets are not known, and not in `refs`.
+    NotResolved { why: &'static str },
 }
 
 /// Enough bytes to hold any single instruction on the supported ISAs — x86-64
@@ -194,6 +232,192 @@ pub fn xref_entry(ctx: &Ctx, from: Va, to: Option<Va>, to_function: Option<u32>,
     }
 }
 
+/// How far back of an indirect jump to read for the instructions that lead to it,
+/// when no function is stated to start from.
+const JUMP_LOOKBACK: u64 = 4096;
+/// The most of one function decoded for a jump in it.
+const FUNCTION_LOOKBACK: u64 = 1 << 20;
+
+/// The start and exclusive end the image states for the function `at` is in.
+fn stated_function(ctx: &Ctx, at: Va) -> Option<(Va, Va)> {
+    let f = ctx.functions?.extents;
+    let i = f.partition_point(|s| s.start.0 <= at.0);
+    f[..i].iter().rev().take(8).find(|s| s.end.0 > at.0).map(|s| (s.start, s.end))
+}
+
+/// The instructions from where `at`'s function starts up to and including `at`,
+/// and the index where its block starts. `None` when no decode lands on `at`.
+fn instructions_up_to(ctx: &Ctx, at: Va) -> Option<(Vec<n0xis_arch::DecodedInsn>, usize)> {
+    let start = match stated_function(ctx, at) {
+        Some((start, _)) => start.0.max(at.0.saturating_sub(FUNCTION_LOOKBACK)),
+        None => at.0.saturating_sub(JUMP_LOOKBACK),
+    };
+    let bytes = ctx.source.read(Va(start), (at.0 - start + MAX_INSN_BYTES as u64) as usize).ok()?;
+    let mut insns = ctx.arch.decode_range(&bytes, Va(start), bytes.len());
+    let last = insns.iter().position(|i| i.va == at)?;
+    insns.truncate(last + 1);
+    // The same rule the CFG cuts a block by.
+    let block_start = insns[..last].iter().rposition(|i| crate::ir::ends_block(i.kind)).map_or(0, |p| p + 1);
+    Some((insns, block_start))
+}
+
+/// What the index keeps of one indirect jump. Stated from code alone, as the
+/// index's key is the code's bytes; the table is read when it is asked for.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndexedJump {
+    pub at: u64,
+    /// `None`: no table's dispatch. A tail call through a pointer, or a table this
+    /// does not recognize.
+    pub dispatch: Option<IndexedDispatch>,
+}
+
+/// The facts of a dispatch that the code states.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct IndexedDispatch {
+    /// `None`: the table's base is in a register no instruction before it sets.
+    pub table: Option<u64>,
+    /// Entries are 32-bit offsets from the table's base.
+    pub relative: bool,
+    /// The largest index the guard of the index lets through, where one was read.
+    pub guard: Option<u64>,
+}
+
+/// The dispatch of the indirect jump at `at`, from the instructions before it.
+/// `Err` is why there is none.
+fn dispatch_of(ctx: &Ctx, at: Va) -> Result<IndexedDispatch, &'static str> {
+    let (insns, block_start) = instructions_up_to(ctx, at).ok_or("no decode from the start of its function lands on it")?;
+    let disp = ctx.arch.detect_switch_with_context(&insns, block_start).ok_or("no table's dispatch: a tail call through a pointer, or a table this does not recognize")?;
+    Ok(IndexedDispatch { table: disp.table.map(|t| t.0), relative: matches!(disp.kind, n0xis_arch::SwitchKind::RegRel32), guard: ctx.arch.index_guard(&insns, &disp) })
+}
+
+/// Every address code takes that a table may start at: what the index recorded, and
+/// each jump's own table, which a fixed image's `jmp [table+rax*8]` names in no
+/// edge. Where a table ends is where the next begins.
+struct TableBases {
+    sorted: Vec<u64>,
+}
+
+impl TableBases {
+    fn of(idx: &XrefIndex) -> Self {
+        let tables = idx.jumps.iter().filter_map(|j| j.dispatch.as_ref()?.table);
+        let mut sorted: Vec<u64> = idx.edges.keys().copied().chain(tables).collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        Self { sorted }
+    }
+
+    fn after(&self, table: u64) -> Option<u64> {
+        self.sorted.get(self.sorted.partition_point(|&b| b <= table)).copied()
+    }
+}
+
+/// A dispatch's table, read from the image.
+fn read_dispatch(ctx: &Ctx, at: Va, d: &IndexedDispatch, bases: &TableBases) -> Result<crate::switch::TableRead, &'static str> {
+    let table = d.table.ok_or("the dispatch reads its table through a register no instruction before it sets to an address")?;
+    let kind = if d.relative { n0xis_arch::SwitchKind::RegRel32 } else { n0xis_arch::SwitchKind::MemIndexed };
+    crate::switch::read_table(ctx, kind, Va(table), d.guard, stated_function(ctx, at), bases.after(table)).ok_or("the table's first entry is not code, or cannot be read")
+}
+
+/// One reference per entry of a jump's table.
+fn table_rows(ctx: &Ctx, at: Va, read: &crate::switch::TableRead, only: Option<Va>, section_at: &dyn Fn(u64) -> Option<String>) -> Vec<XrefEntry> {
+    let text = ctx
+        .source
+        .read(at, MAX_INSN_BYTES)
+        .ok()
+        .and_then(|b| ctx.arch.decode_range(&b, at, b.len()).into_iter().next())
+        .map(|i| i.text)
+        .unwrap_or_default();
+    let evidence = if read.guarded { HeldBy::JumpTableGuarded } else { HeldBy::JumpTableWalked };
+    read.entries
+        .iter()
+        .filter(|(_, target)| only.is_none_or(|o| o == *target))
+        .map(|&(slot, target)| {
+            let mut entry = xref_entry(ctx, at, Some(target), None, "jump_table", text.clone());
+            entry.held = Some(HeldIn { slot, section: section_at(slot.0), evidence, relative_to: read.relative_to });
+            entry
+        })
+        .collect()
+}
+
+/// What `xref from` adds at `addr`, when it is an indirect jump: every entry of
+/// its table, or why it has none. `None` for any other instruction.
+pub fn jump_table_from(ctx: &Ctx, addr: Va, idx: &XrefIndex, section_at: &dyn Fn(u64) -> Option<String>) -> Option<(Vec<XrefEntry>, JumpTableAnswer)> {
+    let bytes = ctx.source.read(addr, MAX_INSN_BYTES).ok()?;
+    let ins = ctx.arch.decode_range(&bytes, addr, bytes.len()).into_iter().next().filter(|i| i.va == addr)?;
+    if !is_indirect_jump(&ins) {
+        return None;
+    }
+    if !ctx.arch.recognizes_jump_tables() {
+        return Some((Vec::new(), JumpTableAnswer::NotResolved { why: "no table's dispatch is recognized on this instruction set" }));
+    }
+    let bases = TableBases::of(idx);
+    Some(match dispatch_of(ctx, addr).and_then(|d| read_dispatch(ctx, addr, &d, &bases)) {
+        Ok(read) => {
+            let table = read.relative_to.or_else(|| read.entries.first().map(|e| e.0)).unwrap_or(addr);
+            let refs = table_rows(ctx, addr, &read, None, section_at);
+            let answer = JumpTableAnswer::Resolved { table, entries: refs.len(), guarded: read.guarded };
+            (refs, answer)
+        }
+        Err(why) => (Vec::new(), JumpTableAnswer::NotResolved { why }),
+    })
+}
+
+/// What [`jump_table_references`] read.
+pub struct JumpTableReferences {
+    /// One per entry that lands on the address.
+    pub refs: Vec<XrefEntry>,
+    pub searched: SearchedJumps,
+    /// `[start, end)` of every table read, sorted.
+    pub tables: Vec<(u64, u64)>,
+}
+
+/// The references to `addr` from the index's jumps through their tables, and what
+/// was read to say so. Reads every table, which the index does not keep: a table's
+/// bytes are not what the index is keyed on.
+pub fn jump_table_references(ctx: &Ctx, addr: Va, idx: &XrefIndex, section_at: &dyn Fn(u64) -> Option<String>) -> JumpTableReferences {
+    /// So that a wide image's answer stays a screen long; the counts are whole.
+    const LISTED: usize = 32;
+    if !ctx.arch.recognizes_jump_tables() {
+        let searched = SearchedJumps::NotRead { why: "no table's dispatch is recognized on this instruction set".to_string() };
+        return JumpTableReferences { refs: Vec::new(), searched, tables: Vec::new() };
+    }
+    let bases = TableBases::of(idx);
+    let mut refs = Vec::new();
+    let mut tables = Vec::new();
+    let (mut resolved, mut not_resolved, mut no_table) = (0usize, 0usize, 0usize);
+    let mut not_resolved_at = Vec::new();
+    for jump in &idx.jumps {
+        let Some(dispatch) = &jump.dispatch else {
+            no_table += 1;
+            continue;
+        };
+        match read_dispatch(ctx, Va(jump.at), dispatch, &bases) {
+            Ok(read) => {
+                resolved += 1;
+                if let (Some(first), Some(last)) = (read.entries.first(), read.entries.last()) {
+                    tables.push((first.0.0, last.0.0 + read.entry_size));
+                }
+                if read.entries.iter().any(|(_, t)| *t == addr) {
+                    refs.extend(table_rows(ctx, Va(jump.at), &read, Some(addr), section_at));
+                }
+            }
+            Err(_) => {
+                not_resolved += 1;
+                if not_resolved_at.len() < LISTED {
+                    not_resolved_at.push(Va(jump.at));
+                }
+            }
+        }
+    }
+    tables.sort_unstable();
+    tables.dedup();
+    JumpTableReferences { refs, searched: SearchedJumps::Read { resolved, not_resolved, not_resolved_at, no_table }, tables }
+}
+
+fn is_indirect_jump(ins: &n0xis_arch::DecodedInsn) -> bool {
+    ins.kind == InsnKind::Jump && ins.target.is_none() && ins.rip_target.is_none()
+}
+
 /// The longest table [`relative_entries`] walks from one base, as many as the
 /// longest jump table the switch resolver reads.
 const MAX_RELATIVE_ENTRIES: usize = 4096;
@@ -213,12 +437,12 @@ pub fn held_references(ctx: &Ctx, addr: Va, held: &HeldWords, code: &[(Va, u64)]
     for w in &held.words {
         let text = format!("word in {} holds {addr}", w.section);
         let mut entry = xref_entry(ctx, Va(w.at), Some(addr), None, "data_word", text);
-        entry.held = Some(HeldIn { slot: Va(w.at), section: w.section.clone(), evidence: w.by, relative_to: None });
+        entry.held = Some(HeldIn { slot: Va(w.at), section: Some(w.section.clone()), evidence: w.by, relative_to: None });
         refs.push(entry);
     }
     for (slot, base) in relative_entries(ctx, addr, code, bases) {
-        let section = section_at(slot).unwrap_or_default();
-        let text = format!("entry in {section} of a table at {}", Va(base));
+        let section = section_at(slot);
+        let text = format!("entry of a table at {}", Va(base));
         let mut entry = xref_entry(ctx, Va(slot), Some(addr), None, "relative_entry", text);
         entry.held = Some(HeldIn { slot: Va(slot), section, evidence: HeldBy::MatchingValue, relative_to: Some(Va(base)) });
         refs.push(entry);
@@ -337,7 +561,7 @@ impl XrefPass {
                 // range.
                 let end = input.scan_start.get().saturating_add(input.size as u64);
                 if input.addr.get() < input.scan_start.get() || input.addr.get() >= end {
-                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new(), searched });
+                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new(), searched, jump_table: None });
                 }
                 let bytes = ctx.source.read(input.addr, MAX_INSN_BYTES)?;
                 for ins in ctx.arch.decode_range(&bytes, input.addr, bytes.len()) {
@@ -371,6 +595,7 @@ impl XrefPass {
             count: refs.len(),
             refs,
             searched,
+            jump_table: None,
         })
     }
 }
@@ -392,6 +617,9 @@ pub struct XrefIndex {
     pub edges: BTreeMap<u64, Vec<u64>>,
     /// How many instructions were decoded to build this index (for `meta`).
     pub insns: usize,
+    /// Every indirect jump of the code, in address order.
+    #[serde(default)]
+    pub jumps: Vec<IndexedJump>,
 }
 
 impl XrefIndex {
@@ -425,6 +653,8 @@ pub fn build_xref_index(ctx: &Ctx, ranges: &[(Va, u64)]) -> XrefIndex {
 /// [`build_xref_index`] with the sweep's window size given.
 pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64) -> XrefIndex {
     let mut idx = XrefIndex::default();
+    let recognizes = ctx.arch.recognizes_jump_tables();
+    let mut sites = Vec::new();
     for &(start, size) in ranges {
         if size == 0 {
             continue;
@@ -433,6 +663,9 @@ pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64) -
         // index broke out of its chunk loop on a failed read.
         let _ = sweep_code(ctx, start, size, chunk, |ins| {
             idx.insns += 1;
+            if recognizes && is_indirect_jump(ins) {
+                sites.push(ins.va);
+            }
             if let Some(t) = ins.target {
                 idx.edges.entry(t.0).or_default().push(ins.va.0);
             }
@@ -449,6 +682,14 @@ pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64) -
             ControlFlow::Continue(())
         });
     }
+    // After the sweep, each from its function's start: a table's base may be set
+    // far before the jump, and the sweep holds one window of instructions.
+    idx.jumps = sites
+        .into_iter()
+        .map(|at| {
+            IndexedJump { at: at.0, dispatch: dispatch_of(ctx, at).ok() }
+        })
+        .collect();
     idx
 }
 
