@@ -1299,6 +1299,20 @@ mod tests {
         assert!(!top_test(&text) && (text.contains("do {") || text.contains("while (1)")), "{text}");
     }
 
+    /// A test in the middle: statements before it run first, and those after it only
+    /// if it says so. `while (c) { H; B }` had `H` after the test.
+    #[test]
+    fn a_test_after_statements_in_the_header_stays_after_them() {
+        // 0x1000: add $1,%rax; cmp %rcx,%rax; je 0x100e; add %rax,%rdx; jmp 0x1000; ret
+        let code = vec![0x48, 0x83, 0xc0, 0x01, 0x48, 0x39, 0xc8, 0x74, 0x05, 0x48, 0x01, 0xc2, 0xeb, 0xf2, 0xc3];
+        let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
+        assert!(text.contains("while (1) {"), "{text}");
+        let top_test = text.lines().any(|l| l.trim_start().starts_with("while (") && !l.contains("while (1)"));
+        assert!(!top_test, "{text}");
+        assert!(pos_of(&text, "+ 0x1") < pos_of(&text, "if ("), "the header's statement runs before the test: {text}");
+        assert!(pos_of(&text, "if (") < pos_of(&text, "break;"), "{text}");
+    }
+
     /// The test really is first where the header has no statements, and the top
     /// test is then the true form: `while (rcx != 0) { rcx -= 1; }`.
     #[test]
