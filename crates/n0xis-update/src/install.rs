@@ -146,9 +146,7 @@ impl Updater {
         }
         let mut plan = vec![Planned { component: self.component.clone(), target: self.exe.clone(), entry }];
         for (name, raw, file) in manifest.others(&self.component, &self.platform) {
-            if !crate::manifest::is_bare_file_name(file) {
-                return Err(Refusal::new(Why::BadManifest, format!("{name}: the file name is not a bare name")));
-            }
+            // Only the file name is looked at here, and `decode` refuses one that is not a bare name.
             let target = dir.join(file);
             if target != self.exe && target.is_file() {
                 plan.push(Planned { component: name.to_string(), target, entry: Entry::decode(name, raw)? });

@@ -292,11 +292,13 @@ def journey(p, release, olds, seen):
     say(code == 0 and p.version(exe) == old_version, f"and a third back: {p.version(exe)}")
 
     # update.auto, by the detached copy's own entry: the running file replaces itself, between runs.
+    # From a clean state, because the rollbacks above have rightly put a hold on the new version.
+    (config / "update-state.json").unlink()
     p.answer(exe, "config", "set", "update.auto", "true")
     p.run(exe, "__update-check")
     say(p.version(exe) == NEW and sha(previous) == old_sha, f"update.auto: the check installed it: {p.version(exe)}")
     state = json.loads((config / "update-state.json").read_text())
-    say(state.get("installed", {}).get("to") == NEW, "the state says what was installed")
+    say((state.get("installed") or {}).get("to") == NEW, "the state says what was installed")
     p.answer(exe, "update", "--rollback")
     p.run(exe, "__update-check")
     say(p.version(exe) == old_version, f"a rollback holds: the next check leaves it at {p.version(exe)}")

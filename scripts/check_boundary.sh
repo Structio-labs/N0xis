@@ -78,4 +78,27 @@ for crate in $PURE_CRATES; do
   fi
 done
 
+# The other half of the network's rule: the doors are what links it, on rustls, and no
+# door brings in a system TLS library, which would make a shipped binary depend on what
+# the machine has installed. Overridable so this check can be exercised, like the above.
+DOORS="${DOORS:-n0xis-cli n0xis-mcp}"
+for door in $DOORS; do
+  if ! tree=$(cargo tree -p "$door" --edges normal --target all --prefix none 2>&1); then
+    echo "ERROR: cargo tree failed for $door: boundary NOT verified:"
+    echo "$tree" | sed 's/^/  /'
+    status=1
+    continue
+  fi
+  names=$(printf '%s\n' "$tree" | awk '{print $1}' | sort -u)
+  if printf '%s\n' "$names" | grep -Eq '^(openssl|openssl-sys|native-tls)$'; then
+    echo "BOUNDARY VIOLATION: $door links a system TLS library"
+    status=1
+  elif ! printf '%s\n' "$names" | grep -Eq '^n0xis-update$'; then
+    echo "BOUNDARY VIOLATION: $door does not link n0xis-update, so this says nothing"
+    status=1
+  else
+    echo "ok: $door reaches the network through n0xis-update only, with no system TLS library"
+  fi
+done
+
 exit $status

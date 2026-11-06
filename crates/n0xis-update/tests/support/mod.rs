@@ -26,6 +26,8 @@ pub enum Reply {
     CutOff { declared: usize, body: Vec<u8> },
     /// No declared length, and a clean close after `body`: the short body looks complete.
     EndsEarly(Vec<u8>),
+    /// Sends for as long as anyone reads.
+    Endless,
     /// Sends the head and part of a body, then nothing, for longer than a test waits.
     StallsInBody,
     /// Accepts and says nothing, for longer than a test waits.
@@ -133,6 +135,12 @@ fn serve(stream: TcpStream, config: Arc<ServerConfig>, seen: &Mutex<Vec<String>>
             let written = write!(tls, "HTTP/1.1 200 OK\r\n{close}").and_then(|()| tls.write_all(&body));
             tls.conn.send_close_notify();
             written.and_then(|()| tls.flush())
+        }
+        Reply::Endless => {
+            let chunk = vec![b'x'; 64 * 1024];
+            write!(tls, "HTTP/1.1 200 OK\r\n{close}").and_then(|()| loop {
+                tls.write_all(&chunk)?;
+            })
         }
         Reply::StallsInBody => {
             let written = write!(tls, "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n{close}abc").and_then(|()| tls.flush());

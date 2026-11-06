@@ -191,6 +191,7 @@ n0xis-contracts  all wire schemas + shared types — single source of truth
 | `n0xis-cli` | Thin clap frontend → pipeline calls → JSON. The living command surface ([`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md)); the ported v0 commands live on inside that same current reference. | frontend, pipeline, contracts | analysis internals |
 | `n0xis-mcp` | MCP server exposing the same pipeline as agent tools (same `ok/data/meta` envelope). | frontend, pipeline, contracts | analysis internals |
 | `n0xis-bitsquid` | Bitsquid bundle format adapter (archives, resource types). Pluggable asset-format adapter. | contracts | core (never depended on by it) |
+| `n0xis-update` | Updates, and the only network client in the tree. Fetches and verifies a signed manifest, installs by rename, rolls back, runs the daily check. Linked by the two doors only (docs/design/UPDATE.md). | ureq (rustls), ring | contracts, arch, core, every analysis path |
 | `n0xis-lua` | Offline LuaJIT 2.0 bytecode dump decoder/patcher (header, prototypes, instructions, constants). Pluggable scripting-format adapter. | serde | core, OS |
 | `n0xis-luajit` | Live LuaJIT VM introspection: finds/decodes GC objects (starting with `GCstr`) directly in a running process's heap via `MemorySource`, no per-string hand-picked byte pattern. Sibling to `n0xis-lua` (live vs. offline), not a dependency of it. | contracts, sources (traits) | core, concrete OS calls |
 

@@ -247,11 +247,21 @@ fn a_claimed_size_past_what_is_sent_is_refused() {
 }
 
 #[test]
-fn a_file_longer_than_the_manifest_says_stops_being_read() {
+fn a_file_longer_than_the_manifest_says_is_refused() {
     let b = Bench::new("longer");
     let mut m = b.manifest("2.0.0");
     m["components"][COMPONENT][PLATFORM]["size"] = json!(NEW.len() - 1);
     b.publish(&m);
+    b.refused(b.updater().update(), Why::SizeMismatch);
+}
+
+/// The size limit is enforced while reading: a server that never stops is cut off at the limit
+/// straight away, and does not get to run the download out to its time bound or fill a disk.
+#[test]
+fn a_file_that_never_ends_stops_being_read_at_the_limit() {
+    let b = Bench::new("endlessfile");
+    b.publish(&b.manifest("2.0.0"));
+    b.server.route("/file", Reply::Endless);
     b.refused(b.updater().update(), Why::SizeMismatch);
 }
 

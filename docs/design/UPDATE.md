@@ -44,6 +44,32 @@ from is frozen when it ships. **The client asks; it never derives.**
 - One declaration of the version: a release refuses to publish if the tag and the workspace version differ.
 - The four asset names the README links stay published beside the manifest.
 
+### The form it took
+
+What every shipped client reads, and so what every later release must keep publishing:
+
+```json
+{ "version": "0.3.8",
+  "next_key": "<optional: 64 hex digits, the ed25519 public key the next releases are signed by>",
+  "components": {
+    "n0xis": { "linux-x86_64": { "url": "https://…", "size": 13000000, "sha256": "<64 hex>", "file": "n0xis" },
+               "windows-x86_64": { "url": "https://…", "size": 13000000, "sha256": "<64 hex>", "file": "n0xis.exe" } },
+    "n0xis-mcp": { "…": "the same" } } }
+```
+
+- `manifest.json.sig`, beside the manifest wherever it is: lines of hex, one ed25519 signature of the manifest's exact bytes
+  on each. Any line verifying under any key held is enough, and a line that does not read as a signature is skipped.
+- `version` is semver. `components` is required, and an entry is read only when this client is about to use it, so a later
+  component of another shape cannot make the document unreadable.
+- `file` is the name the file has when installed. A component other than the running one is replaced only if a file of that name
+  is already beside the binary, and one with no `file` is left alone, so a later component is never added to an old client's directory.
+- **A next key is remembered by a client that verified a manifest naming it** (`update-keys.json` in the user's configuration
+  directory), and a chain must start at the key in the binary, so that file does nothing under the placeholder. A client that
+  never saw that manifest verifies by the old key for as long as a release is signed by both; one that sees neither fetches by hand.
+  Nothing revokes a key in a copy already shipped.
+- An address that answers with anything that does not verify is passed over like a dead one, and the refusal when none
+  answers is the most serious thing any of them did.
+
 ## 3. The install
 
 The file downloads next to the binary, then size, digest and signature are checked, and only then does it move
