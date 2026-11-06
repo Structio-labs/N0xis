@@ -878,9 +878,6 @@ fn thread_has_ended(pid: u32, tid: u32) -> bool {
 /// clearing leaves that DR7 be.
 fn walk_watch_slots(pid: u32, slot: &WatchSlot, clear: bool) -> Result<TargetSlots, SourceError> {
     slot.dr7_bits()?;
-    if has_no_living_thread(pid) {
-        return Ok(TargetSlots::Gone);
-    }
     let mut s = match seize_group(pid) {
         Ok(s) => s,
         Err(_) if has_no_living_thread(pid) => return Ok(TargetSlots::Gone),

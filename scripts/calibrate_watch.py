@@ -51,7 +51,7 @@ MUTATIONS = [
     (SLOT, "dr0 == self.addr.0 && ", "", *KILL, "every_other_slot_stays_as_it_was"),
     (SLOT, " && dr7 & DR7_RW_LEN == bits & DR7_RW_LEN", " && bits != 0", *READ, "reading_and_clearing_a_slot_is_what_the_kernel_says_is_there"),
     # A target that is gone, or holds nothing, and the mistyped `--pid`.
-    (LINUX, '    if has_no_living_thread(pid) {\n        return Ok(TargetSlots::Gone);\n    }\n', "", *KILL, "a_target_that_is_gone_clears_nothing_and_says_so"),
+    (LINUX, "        Err(_) if has_no_living_thread(pid) => return Ok(TargetSlots::Gone),\n", "", *KILL, "a_target_that_is_gone_clears_nothing_and_says_so"),
     (LINUX, '    matches!(state, Some("Z" | "X" | "x"))', "    let _ = state;\n    false", *KILL, "a_target_that_is_gone_clears_nothing_and_says_so"),
     (CLI, "    if cleared == 0 {\n        data[\"note\"]", "    if false {\n        data[\"note\"]", *KILL, "a_reused_pid_holding_nothing_of_ours_clears_nothing_and_says_so"),
     (CLI, "let elsewhere = pid != rec.pid && cleared == 0;", "let elsewhere = false;", *KILL, "patch_undo_with_another_pid_that_holds_nothing_keeps_the_record"),
@@ -59,7 +59,7 @@ MUTATIONS = [
     (JOURNAL, SETTLE, "    let _ = (rec, found);\n    Ok(true)", *KILL, "a_watch_that_ends_by_itself_leaves_no_record"),
     (SLOT, "            TargetSlots::Present(c) => c.holding == 0 && c.unread == 0,", "            TargetSlots::Present(_) => true,", "n0xis-sources", None, "watch_slot::tests::only_a_thread_read_as_clear_is_clear"),
     # A failed clear in the run itself: the read-back says so and the record stays. Without the read-back, this passes.
-    (LINUX, "            pokeuser(tid, dr_off(7), o7);\n", "", *KILL, "a_watch_that_ends_by_itself_leaves_no_record"),
+    (LINUX, "            pokeuser(tid, dr_off(7), o7);\n            pokeuser(tid, dr_off(0), o0);\n", "", *KILL, "a_watch_that_ends_by_itself_leaves_no_record"),
     # A signal is handled while it waits, which on Linux it was not.
     (LINUX, "    let _interruptible = Interruptible::install();\n    let mut s = seize_group(pid)?;\n    before_arming(&slot)", "    let mut s = seize_group(pid)?;\n    before_arming(&slot)", *KILL, "sigterm_clears_the_register_and_detaches"),
     # An old journal, and a record that is never bytes.

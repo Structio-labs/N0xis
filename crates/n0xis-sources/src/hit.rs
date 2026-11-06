@@ -6,10 +6,11 @@
 //! `n0xis.debug.watchpoint.v1` / `n0xis.debug.await_hit.v1` wire shape.
 //!
 //! Only the *arming* and *event-loop* code is OS-specific; the report types, the
-//! register model, the condition filter, and even the x86 debug-register bit
-//! encodings (the CPU's, identical on either OS) live here. Hoisting them out of
-//! the windows-gated `debug.rs` is what lets a Linux hit be byte-for-byte the
-//! same envelope a Windows hit is — a single source of truth for the contract.
+//! register model and the condition filter live here, and the x86 debug-register
+//! bit encodings (the CPU's, identical on either OS) in [`crate::watch_slot`].
+//! Hoisting them out of the windows-gated `debug.rs` is what lets a Linux hit be
+//! byte-for-byte the same envelope a Windows hit is — a single source of truth for
+//! the contract.
 
 use n0xis_contracts::Va;
 use serde::Serialize;
