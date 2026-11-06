@@ -44,6 +44,12 @@ pub struct RttiVtable {
     /// bases were read, `bases_unknown` (the reason) where they could not be.
     #[serde(flatten)]
     pub bases: Bases,
+    /// The table's methods from the first, where the scan read them: the address
+    /// each slot holds, `null` for one a symbol of another image fills (a pure
+    /// virtual). Only a class read from its structure carries them
+    /// ([`crate::scan_itanium_structure`]), as only that walks its relocations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<Option<Va>>,
 }
 
 /// What an image says about a class's bases.
@@ -318,6 +324,9 @@ pub struct ItaniumScan {
     pub vtables: Vec<RttiVtable>,
     /// Classes with a `_ZTV` symbol that are not reported, and why.
     pub refused: Vec<RefusedVtable>,
+    /// Why the image's data could not be searched for classes with no symbol, where
+    /// it could not: an empty list here says nothing of what the image has.
+    pub structure_not_read: Option<String>,
 }
 
 impl ItaniumScan {
@@ -341,6 +350,10 @@ pub struct RefusedVtable {
 /// Why a class's vtable is not reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VtableRefusal {
+    /// Read from its structure, the class's `type_info` is in more than one table
+    /// with a zero `offset_to_top`: a table for the class and one for a class that
+    /// derives from it virtually, during its construction. No symbol says which.
+    SeveralTables,
     /// The class has virtual bases. Such a vtable begins with its virtual-base
     /// offsets (and vcall offsets) before `offset_to_top`, so the address point
     /// is not `_ZTV` + two pointers: that address is the `type_info` slot, or
@@ -664,7 +677,7 @@ pub(crate) fn read_pointer(src: &dyn MemorySource, va: Va, ptr_size: u8) -> Opti
 /// std::lock_error`. Both wrappers are peeled here; if neither matches, the
 /// mangled type is demangled on its own by re-forming it as a `_ZTS` (type
 /// string) symbol, which every demangler renders as a plain type name.
-fn itanium_class_name(ztv_symbol: &str) -> String {
+pub(crate) fn itanium_class_name(ztv_symbol: &str) -> String {
     let demangled = crate::demangle::demangle(ztv_symbol);
     let peeled = demangled
         .strip_prefix("vtable for ")
@@ -935,11 +948,12 @@ pub fn scan_itanium_rtti(
             // vtable's `type_info` pointer (its second word) as the
             // cross-check; from that pointer alone where it has none.
             bases: itanium_bases(src, own, type_info_word, &infos, ptr_size),
+            slots: Vec::new(),
         });
     }
     out.sort_by_key(|v| v.vtable.get());
     refused.sort_by(|a: &RefusedVtable, b| a.mangled.cmp(&b.mangled));
-    ItaniumScan { vtables: out, refused }
+    ItaniumScan { vtables: out, refused, structure_not_read: None }
 }
 
 const COL_SIZE: usize = 24; // sig,u32 | offset,u32 | cdOffset,u32 | pTD,rva | pClass,rva | pSelf,rva
@@ -1095,6 +1109,7 @@ fn scan_one_range(
                             name,
                             offset,
                             bases,
+                            slots: Vec::new(),
                         });
                     }
                 }
@@ -1584,6 +1599,7 @@ mod tests {
             name: "Foo".into(),
             offset: 0,
             bases: Bases::none(),
+            slots: Vec::new(),
         }];
         let RttiSymbols { functions, data, .. } = rtti_symbol_map(&snap, &vts, Some(text), SLOTS_64);
 
@@ -1637,7 +1653,7 @@ mod tests {
     /// none — and says why where they are not, with no `bases` key at all.
     #[test]
     fn bases_serialize_as_an_array_or_a_reason() {
-        let v = |bases| RttiVtable { vtable: Va(0x10), type_descriptor: Va(0x8), mangled: "_ZTV1A".into(), name: "A".into(), offset: 0, bases };
+        let v = |bases| RttiVtable { vtable: Va(0x10), type_descriptor: Va(0x8), mangled: "_ZTV1A".into(), name: "A".into(), offset: 0, bases, slots: Vec::new() };
         let none = serde_json::to_value(v(Bases::none())).unwrap();
         assert_eq!(none["bases"], serde_json::json!([]));
         assert!(none.get("bases_unknown").is_none());
@@ -1658,7 +1674,7 @@ mod tests {
     /// or one the scan refused, may derive from any of them.
     #[test]
     fn one_unknown_class_makes_every_class_possibly_subclassed() {
-        let v = |name: &str, bases| RttiVtable { vtable: Va(0), type_descriptor: Va(0), mangled: String::new(), name: name.into(), offset: 0, bases };
+        let v = |name: &str, bases| RttiVtable { vtable: Va(0), type_descriptor: Va(0), mangled: String::new(), name: name.into(), offset: 0, bases, slots: Vec::new() };
         let read = [v("Base", Bases::none()), v("Derived", Bases::Known { bases: vec!["Base".into()] })];
         let known = Subclasses::of(&read, 0, PROGRAM);
         assert!(known.may_have_subclass("Base") && !known.may_have_subclass("Derived"), "{known:?}");
@@ -1679,7 +1695,7 @@ mod tests {
     /// it derives from `Derived`.
     #[test]
     fn a_librarys_classes_may_each_have_a_subclass() {
-        let v = |name: &str, bases| RttiVtable { vtable: Va(0), type_descriptor: Va(0), mangled: String::new(), name: name.into(), offset: 0, bases };
+        let v = |name: &str, bases| RttiVtable { vtable: Va(0), type_descriptor: Va(0), mangled: String::new(), name: name.into(), offset: 0, bases, slots: Vec::new() };
         let read = [v("Base", Bases::none()), v("Derived", Bases::Known { bases: vec!["Base".into()] })];
         assert!(!Subclasses::of(&read, 0, PROGRAM).may_have_subclass("Derived"), "in a program nothing derives from Derived");
         let library = Subclasses::of(&read, 0, n0xis_sources::Linkage::SharedLibrary);
@@ -1699,7 +1715,7 @@ mod tests {
         buf[0..4].copy_from_slice(&0x1001u32.to_le_bytes()); // Thumb
         buf[4..8].copy_from_slice(&0x1010u32.to_le_bytes()); // A32
         let snap = Snapshot::builder().region(vt, buf).build();
-        let vts = vec![RttiVtable { vtable: vt, type_descriptor: Va(0), mangled: "_ZTV3Foo".into(), name: "Foo".into(), offset: 0, bases: Bases::none() }];
+        let vts = vec![RttiVtable { vtable: vt, type_descriptor: Va(0), mangled: "_ZTV3Foo".into(), name: "Foo".into(), offset: 0, bases: Bases::none(), slots: Vec::new() }];
         let arm = VtableSlots { pointer_size: 4, code_pointers: CodePointers::ArmInterworking };
         let named = rtti_symbol_map(&snap, &vts, Some(text), arm);
         assert_eq!(named.functions.into_iter().collect::<Vec<_>>(), vec![(0x1010, "Foo::vf1".to_string())], "the A32 slot keeps its index");

@@ -287,7 +287,60 @@ impl Src {
             return Ok(None);
         }
         let pointer_size = self.pointer_size().ok_or(n0xis_core::RttiRefusal::NoNativePointers)?;
-        Ok(Some(n0xis_core::scan_itanium_rtti(self.as_mem(), &img.data_symbols(), &self.code_ranges(), pointer_size, img.relocated_words())))
+        let code = self.code_ranges();
+        let mut scan = n0xis_core::scan_itanium_rtti(self.as_mem(), &img.data_symbols(), &code, pointer_size, img.relocated_words());
+        // What symbols do not name, `strip` having taken them or a class's table being
+        // hidden, its structure does. A class a symbol named, reported or refused, is
+        // not asked about again, so no symbol's answer moves.
+        let (relocated, rule) = img.relocated_addresses();
+        let ranges = img.pointer_ranges();
+        let not_read = match rule {
+            n0xis_sources::WordRule::NotRead(why) => Some(format!("{why:?}")),
+            _ if ranges.is_empty() => Some("NoSections".to_string()),
+            _ => None,
+        };
+        if not_read.is_none() {
+            let known: std::collections::HashSet<String> = scan.vtables.iter().map(|v| v.mangled.clone()).chain(scan.refused.iter().map(|r| r.mangled.clone())).collect();
+            let words = n0xis_core::ImageWords {
+                relocated: &relocated,
+                written: img.relocated_words(),
+                stored_values_are_addresses: rule == n0xis_sources::WordRule::StoredValues,
+                ranges: &ranges,
+            };
+            let found = n0xis_core::scan_itanium_structure(self.as_mem(), &words, &code, pointer_size, &known);
+            scan.vtables.extend(found.vtables);
+            scan.vtables.sort_by_key(|v| v.vtable.get());
+            scan.refused.extend(found.refused);
+        }
+        scan.structure_not_read = not_read;
+        Ok(Some(scan))
+    }
+
+    /// Which class each function in an Itanium class's own table was written in
+    /// ([`n0xis_core::method_owners`]). Empty for anything but a static ELF whose
+    /// relocations were read.
+    pub fn itanium_method_owners(&self) -> std::collections::HashMap<u64, String> {
+        let (Src::Static(img), Some(pointer_size), Ok(Some(scan))) = (self, self.pointer_size(), self.itanium_vtables()) else {
+            return Default::default();
+        };
+        if scan.structure_not_read.is_some() {
+            return Default::default();
+        }
+        let (relocated, rule) = img.relocated_addresses();
+        let ranges = img.pointer_ranges();
+        let code = self.code_ranges();
+        let words = n0xis_core::ImageWords {
+            relocated: &relocated,
+            written: img.relocated_words(),
+            stored_values_are_addresses: rule == n0xis_sources::WordRule::StoredValues,
+            ranges: &ranges,
+        };
+        // A table read by symbol carries no slots, and is walked here. A word past its
+        // end that a relocation writes reads as an unknown slot, which owns nothing.
+        n0xis_core::method_owners(scan.vtables.iter().map(|v| {
+            let slots = if v.slots.is_empty() { n0xis_core::read_slots(self.as_mem(), &words, &code, v.vtable.get(), pointer_size, &|_| false) } else { v.slots.clone() };
+            (v.name.as_str(), &v.bases, slots)
+        }))
     }
 
     /// Why this source's C++ RTTI is not read at all, if it is not: a

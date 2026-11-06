@@ -291,14 +291,7 @@ mod tests {
         let art = StringXrefPass
             .run(
                 &ctx,
-                StringXrefInput {
-                    data_start: Va(0x2000),
-                    data_size: 64,
-                    code_start: Va(0x1000),
-                    code_size: 64,
-                    query: "Hello, world!".into(),
-                    limit: 10,
-                },
+                StringXrefInput::of_code(Va(0x2000), 64, vec![(Va(0x1000), 64)], "Hello, world!".into(), 10),
             )
             .expect("string xref runs");
 

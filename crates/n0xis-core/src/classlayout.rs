@@ -187,6 +187,9 @@ impl crate::ClassLayoutLookup for LayoutStore {
 pub struct ClassLayoutInput {
     pub functions: Vec<Va>,
     pub max_bytes: usize,
+    /// Which class each function in a class's own table was written in
+    /// ([`crate::method_owners`]), for one whose symbol does not say.
+    pub owners: std::collections::HashMap<u64, String>,
 }
 
 /// Unify per-function field recovery into one layout per class.
@@ -202,7 +205,7 @@ impl Pass for ClassLayoutPass {
     }
 
     fn run(&self, ctx: &Ctx, input: ClassLayoutInput) -> Result<LayoutStore, CoreError> {
-        Ok(unify(ctx, &input.functions, input.max_bytes))
+        Ok(unify(ctx, &input.functions, input.max_bytes, &input.owners))
     }
 }
 
@@ -505,7 +508,7 @@ struct FieldFacts {
 
 /// Analyze one function and, if it is a method of a known class, reduce it to
 /// what it says about that class.
-fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
+fn extract(ctx: &Ctx, va: Va, max_bytes: usize, owners: &std::collections::HashMap<u64, String>) -> Option<MethodFacts> {
     let cfg = CfgPass.run(ctx, CfgInput::new(va, max_bytes)).ok()?;
     if cfg.start != va || cfg.blocks.is_empty() {
         return None;
@@ -546,7 +549,12 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<MethodFacts> {
     // failure mode that looks exactly like a result. A symbol says which class
     // the code was *written in*; nothing else does, and where there is no symbol
     // the honest answer is that base and derived cannot be told apart.
-    let class = this_class_of(ctx, va)?;
+    //
+    // Unless it is in a table. A virtual method is an instance method, and of the
+    // classes whose tables list it the one it was written in is the one none of whose
+    // bases do: the membership `this_class_of`'s own comment asks for, which needed
+    // an ELF's relocations read. It is what a stripped image has.
+    let class = this_class_of(ctx, va).or_else(|| owners.get(&va.0).cloned())?;
 
     let aliases = alias_set(&opt.blocks, &this);
 
@@ -863,7 +871,7 @@ fn merge_type(entry: &mut Accum, off: i64, ty: String) {
 }
 
 /// Merge every method's view into one layout per class.
-fn unify(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> LayoutStore {
+fn unify(ctx: &Ctx, functions: &[Va], max_bytes: usize, owners: &std::collections::HashMap<u64, String>) -> LayoutStore {
     let mut store = LayoutStore::default();
     let mut acc: BTreeMap<String, Accum> = BTreeMap::new();
     // The structural facts the fixpoint below settles, kept per method so no
@@ -871,7 +879,7 @@ fn unify(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> LayoutStore {
     let mut pending: Vec<(String, i64, u64)> = Vec::new();
 
     for &va in functions {
-        let Some(facts) = extract(ctx, va, max_bytes) else {
+        let Some(facts) = extract(ctx, va, max_bytes, owners) else {
             store.functions_analyzed += 1;
             continue;
         };

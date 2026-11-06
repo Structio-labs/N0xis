@@ -120,11 +120,13 @@ impl Pass for TracePass {
                         past_depth.insert(t.0);
                     }
                     // The CFG states `direct` of a call it has no name for, which
-                    // `call [rax+8]` is not.
-                    None => {
+                    // `call [rax+8]` is not. One it names through a slot is an import,
+                    // known and not in this image, and a `tail` says what it is.
+                    None if c.kind == "direct" => {
                         c.kind = "indirect".into();
                         not_followed.indirect_calls += 1;
                     }
+                    None => {}
                 }
             }
             let tables = art.switches.iter().filter(|s| s.resolved).count();

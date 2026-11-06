@@ -4622,7 +4622,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
                 Some(f) => ctx.with_type_flow(f),
                 None => ctx,
             };
-            match n0xis_core::Pass::run(&n0xis_core::ClassLayoutPass, &lctx, n0xis_core::ClassLayoutInput { functions: vas, max_bytes: 4096 }) {
+            match n0xis_core::Pass::run(&n0xis_core::ClassLayoutPass, &lctx, n0xis_core::ClassLayoutInput { functions: vas, max_bytes: 4096, owners: src.itanium_method_owners() }) {
                 Ok(store) => {
                     layout_classes = store.classes.len();
                     let generation = format!("layout:{}:{}:{}", total, store.methods_matched, store.typed_fields);
@@ -4645,7 +4645,11 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // names them, so the session finds it only if they are the same.
     progress("indexing-xrefs", 0, 0);
     let code_ranges = src.code_ranges_of(None);
-    let idx = n0xis_pipeline::xref_index_for(&ctx, &code_ranges, &label);
+    // With what `xref to` builds it with, since it finds this one: a jump's table is
+    // read from the start of the function the image states it is in.
+    let stated = n0xis_frontend::stated_functions(&src);
+    let index_ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src));
+    let idx = n0xis_pipeline::xref_index_for(&index_ctx, &code_ranges, &label);
     let xref_targets = idx.edges.len();
     progress("indexing-xrefs", xref_targets, xref_targets);
 

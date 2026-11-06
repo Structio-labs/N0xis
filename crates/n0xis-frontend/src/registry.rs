@@ -1561,7 +1561,10 @@ impl Plugin for AnalysisPasses {
                 // vtable address, and an absent class must not read as one the
                 // image does not have.
                 let (mut refused_virtual_bases, mut refused_first_slot_not_code, mut refused_first_slot_empty) = (0usize, 0usize, 0usize);
+                let (mut refused_several_tables, mut structure_not_read) = (0usize, None);
                 let vtables = if let Some(itanium) = itanium {
+                    refused_several_tables = itanium.count_refused(n0xis_core::VtableRefusal::SeveralTables);
+                    structure_not_read = itanium.structure_not_read.clone();
                     refused_virtual_bases = itanium.count_refused(n0xis_core::VtableRefusal::VirtualBases);
                     refused_first_slot_not_code = itanium.count_refused(n0xis_core::VtableRefusal::FirstSlotNotCode);
                     refused_first_slot_empty = itanium.count_refused(n0xis_core::VtableRefusal::FirstSlotEmpty);
@@ -1582,13 +1585,21 @@ impl Plugin for AnalysisPasses {
                     };
                     n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.data_ranges_of(None), text, pointer_size)
                 };
-                let payload = json!({
+                let mut payload = json!({
                     "count": vtables.len(),
                     "vtables": vtables,
                     "refused_virtual_bases": refused_virtual_bases,
                     "refused_first_slot_not_code": refused_first_slot_not_code,
                     "refused_first_slot_empty": refused_first_slot_empty,
                 });
+                // Said where they apply, and absent where not, so that an answer with
+                // symbols reads as it did.
+                if refused_several_tables > 0 {
+                    payload["refused_several_tables"] = json!(refused_several_tables);
+                }
+                if let Some(why) = structure_not_read {
+                    payload["structure_not_read"] = json!(why);
+                }
                 ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
             }),
         ));
@@ -1738,7 +1749,7 @@ impl Plugin for AnalysisPasses {
                     match n0xis_core::Pass::run(
                         &n0xis_core::ClassLayoutPass,
                         ctx,
-                        n0xis_core::ClassLayoutInput { functions, max_bytes },
+                        n0xis_core::ClassLayoutInput { functions, max_bytes, owners: src.itanium_method_owners() },
                     ) {
                         Ok(mut store) => {
                             if let Some(c) = &only {

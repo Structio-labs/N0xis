@@ -707,8 +707,8 @@ fn for_each_base_relocation(table: &[u8], visit: &mut dyn FnMut(u32, u8)) -> Opt
         if block < 8 {
             return None;
         }
-        for entry in table.get(at + 8..at.checked_add(block)?)?.chunks_exact(2) {
-            let e = u16::from_le_bytes([entry[0], entry[1]]);
+        for entry in table.get(at + 8..at.checked_add(block)?)?.as_chunks::<2>().0 {
+            let e = u16::from_le_bytes(*entry);
             count += 1;
             visit(page.wrapping_add(u32::from(e & 0x0fff)), (e >> 12) as u8);
         }

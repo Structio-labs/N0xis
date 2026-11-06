@@ -115,6 +115,13 @@ fn the_walk(tag: &str, file: &Path) {
     assert_eq!(shallow["truncated"], true, "{tag}: {shallow}");
     assert_eq!(shallow["truncate_reason"], "depth", "{tag}: {shallow}");
 
+    // A call through a slot that names an import is no indirect call.
+    let logs = trace(file, symbol(file, "logs"), 8);
+    let rows = logs["nodes"][0]["calls"].as_array().expect("calls");
+    assert_eq!(rows.len(), 1, "{tag}: {logs}");
+    assert_eq!(rows[0]["kind"], "named", "{tag}: {logs}");
+    assert_eq!(logs["not_followed"]["indirect_calls"], 0, "{tag}: {logs}");
+
     // A walk with nothing unknown and nothing past its depth is whole, and says so.
     let leaf = trace(file, symbol(file, "leaf"), 8);
     assert_eq!(leaf["truncated"], false, "{tag}: {leaf}");
@@ -124,14 +131,14 @@ fn the_walk(tag: &str, file: &Path) {
 
 #[test]
 fn gcc() {
-    if let Some(file) = build("gcc", "g++", &["-fPIE", "-pie", "-fno-devirtualize-speculatively"]) {
+    if let Some(file) = build("gcc", "g++", &["-fPIE", "-pie", "-fno-plt", "-fno-devirtualize-speculatively"]) {
         the_walk("gcc", &file);
     }
 }
 
 #[test]
 fn clang() {
-    if let Some(file) = build("clang", "clang++", &["-fPIE", "-pie"]) {
+    if let Some(file) = build("clang", "clang++", &["-fPIE", "-pie", "-fno-plt"]) {
         the_walk("clang", &file);
     }
 }

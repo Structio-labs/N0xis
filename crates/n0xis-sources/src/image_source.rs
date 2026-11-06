@@ -554,6 +554,27 @@ impl ImageSource {
         Some(HeldWords { words, sections, ranges, rule, unrelocated_matches })
     }
 
+    /// Every word a relocation of this image gives an address to, `(word, address)`
+    /// sorted by word, and how a word no table names is to be read.
+    pub fn relocated_addresses(&self) -> (Vec<(u64, u64)>, crate::WordRule) {
+        let mut out = Vec::new();
+        let rule = self.image.relocated_addresses(&mut |r| out.push((r.at, r.holds)));
+        out.sort_unstable();
+        out.dedup_by_key(|&mut (at, _)| at);
+        (out, rule)
+    }
+
+    /// The ranges of the sections a program's words of data are in, `(va, bytes the
+    /// file holds)` ([`holds_no_pointers`]).
+    pub fn pointer_ranges(&self) -> Vec<(Va, u64)> {
+        self.image
+            .sections()
+            .iter()
+            .filter(|s| s.in_image && s.size > 0 && !s.executable && s.file_size > 0 && !holds_no_pointers(&s.name))
+            .map(|s| (s.va, s.file_size.min(s.size)))
+            .collect()
+    }
+
     /// The name of the section `at` is in, of those that take room in the image.
     pub fn section_at(&self, at: u64) -> Option<String> {
         self.image.sections().iter().find(|s| s.in_image && at >= s.va.get() && at - s.va.get() < s.size).map(|s| s.name.clone())

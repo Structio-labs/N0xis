@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(field(0, "count"), 120, "xref to the callee");
         assert_eq!(field(1, "count"), 60, "xref to the string");
         assert_eq!(field(2, "edges")[p.callee.0.to_string()].as_array().map(Vec::len), Some(120), "the index's edges to the callee");
-        assert_eq!((field(3, "count"), field(3, "found_unreferenced")), (1.into(), 1.into()), "`planted`: the binding name referenced, the string's middle not");
+        assert_eq!((field(3, "count"), field(3, "found_unreferenced")), (2.into(), 0.into()), "`planted`: the binding name referenced, and the middle of the string the 60 loads reach");
         assert_eq!(field(4, "hits")[0]["xrefs"].as_array().map(Vec::len), Some(60), "the string's 60 loads");
         assert_eq!(field(6, "count"), 1, "the binding, window 8");
         assert_eq!((field(9, "count"), field(9, "with_slot")), (60.into(), 60.into()), "every icall with its slot");
