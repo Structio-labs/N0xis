@@ -231,6 +231,31 @@ fn two_tables_side_by_side(tag: &str, b: &Built) {
     assert_eq!(sizes, vec![8, 10], "{tag}: the source writes 10 entries and 8");
 }
 
+/// `ir explain` gives a table's bound from the guard of its index. A step limit of
+/// 99999 stands above the guard in `interpret`, compared in a register, and the guard
+/// itself compares memory. Where there is no guard it does not know.
+fn explain_says_the_guard(tag: &str, b: &Built) {
+    let explain = |function: &str| -> Vec<String> {
+        let mut cmd = support::isolated(Command::new(n0xis_exe()));
+        let out = cmd.args(["ir", "explain", "--file"]).arg(&b.file).args(["--addr", &format!("{:#x}", b.symbol(function))]).output().expect("n0xis");
+        let v: Value = serde_json::from_slice(&out.stdout).expect("an envelope");
+        assert_eq!(v["ok"], true, "{v}");
+        v["data"]["lines"].as_array().expect("lines").iter().filter_map(|l| l.as_str().map(str::to_string)).collect()
+    };
+    let lines = explain("interpret");
+    let table = lines.iter().find(|l| l.contains(" table=")).unwrap_or_else(|| panic!("{tag}: {lines:?}"));
+    assert!(table.contains("bound=12 ") && table.contains("-> 13 cases"), "{tag}: 13 cases, 0 to 12, in the source: {table}");
+    assert_eq!(lines.iter().filter(|l| l.contains("case[")).count(), 13, "{tag}: {lines:?}");
+
+    let lines = explain("big_switch");
+    let table = lines.iter().find(|l| l.contains(" table=")).unwrap_or_else(|| panic!("{tag}: {lines:?}"));
+    assert!(table.contains("bound=40 ") && table.contains("-> 41 cases"), "{tag}: {table}");
+
+    let lines = explain("two_tables");
+    let tables: Vec<&String> = lines.iter().filter(|l| l.contains(" table=")).collect();
+    assert!(!tables.is_empty() && tables.iter().all(|l| l.contains("bound=? ")), "{tag}: no guard in the source: {tables:?}");
+}
+
 /// A jump with no table says it does not know.
 fn a_jump_with_no_table(tag: &str, b: &Built) {
     let jump = b.indirect_jump("through_a_label");
@@ -252,6 +277,7 @@ fn gcc_position_independent() {
     a_table_guarded_by_memory("gcc_pie", &b);
     two_tables_side_by_side("gcc_pie", &b);
     a_jump_with_no_table("gcc_pie", &b);
+    explain_says_the_guard("gcc_pie", &b);
 }
 
 #[test]
@@ -260,6 +286,7 @@ fn gcc_fixed_with_absolute_entries() {
     a_table_of_forty_one("gcc_fixed", &b);
     a_table_guarded_by_memory("gcc_fixed", &b);
     a_jump_with_no_table("gcc_fixed", &b);
+    explain_says_the_guard("gcc_fixed", &b);
 }
 
 #[test]
@@ -269,6 +296,7 @@ fn clang_position_independent() {
     a_table_guarded_by_memory("clang_pie", &b);
     two_tables_side_by_side("clang_pie", &b);
     a_jump_with_no_table("clang_pie", &b);
+    explain_says_the_guard("clang_pie", &b);
 }
 
 #[test]
@@ -277,6 +305,7 @@ fn clang_fixed_with_absolute_entries() {
     a_table_of_forty_one("clang_fixed", &b);
     a_table_guarded_by_memory("clang_fixed", &b);
     a_jump_with_no_table("clang_fixed", &b);
+    explain_says_the_guard("clang_fixed", &b);
 }
 
 #[test]
@@ -285,4 +314,5 @@ fn mingw_pe() {
     a_table_of_forty_one("mingw", &b);
     a_table_guarded_by_memory("mingw", &b);
     a_jump_with_no_table("mingw", &b);
+    explain_says_the_guard("mingw", &b);
 }

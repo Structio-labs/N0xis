@@ -1291,7 +1291,7 @@ pub(crate) fn float_return_registers(ctx: &Ctx) -> (Option<&'static str>, Option
 }
 
 /// Human-readable summary lines (`ir explain`).
-pub fn explain(art: &CfgArtifact) -> Vec<String> {
+pub fn explain(ctx: &Ctx, art: &CfgArtifact) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(
         "Function {} .. {} — {} instructions in {} blocks",
@@ -1342,7 +1342,14 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
         lines.push(format!("switches: {}", art.switches.len()));
         for sw in &art.switches {
             let table = sw.table.map(|t| t.to_string()).unwrap_or_else(|| "?".into());
-            let bound = sw.bound.map(|b| b.to_string()).unwrap_or_else(|| "?".into());
+            // The guard of the index that reaches the table, or not known. `sw.bound`
+            // is the nearest comparison against any constant: on a loop's dispatch it
+            // read a step limit of 99999, and the graph it built reads on past the
+            // table by it. That is the graph's, and is left there; this says what is
+            // so, and lists as many cases as the guard lets through.
+            let guard = crate::xref::index_guard_at(ctx, sw.at);
+            let bound = guard.map(|b| b.to_string()).unwrap_or_else(|| "?".into());
+            let cases = guard.map_or(sw.cases.len(), |g| sw.cases.len().min(g.saturating_add(1) as usize));
             lines.push(format!(
                 "  {} {} table={} idx={} scale={} bound={} -> {} cases",
                 sw.at,
@@ -1351,9 +1358,9 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
                 sw.index_reg.clone().unwrap_or_else(|| "?".into()),
                 sw.scale,
                 bound,
-                sw.cases.len(),
+                cases,
             ));
-            for (n, case) in sw.cases.iter().enumerate() {
+            for (n, case) in sw.cases.iter().take(cases).enumerate() {
                 lines.push(format!("    case[{n}] -> {case}"));
             }
         }

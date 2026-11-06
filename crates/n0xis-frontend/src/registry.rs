@@ -1778,7 +1778,7 @@ impl Plugin for AnalysisPasses {
             Origin::Builtin,
             Box::new(|args| {
                 with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| match n0xis_pipeline::cfg_cached(ctx, input) {
-                    Ok((art, _)) => ok_json(n0xis_contracts::schema::v1::IR_EXPLAIN, json!({ "lines": n0xis_core::explain(&art) }), label),
+                    Ok((art, _)) => ok_json(n0xis_contracts::schema::v1::IR_EXPLAIN, json!({ "lines": n0xis_core::explain(ctx, &art) }), label),
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
             }),

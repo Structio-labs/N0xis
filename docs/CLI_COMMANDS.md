@@ -510,6 +510,10 @@ human-readable summary; `dot` = Graphviz DOT (pipe to `dot -Tsvg`).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schemas: `n0xis.ir.cfg.v1` (build) · `n0xis.ir.explain.v1` (explain) · `n0xis.ir.dot.v1` (dot)
 
+`explain` states a jump table's `bound` from the guard of the index that reaches the table load, and lists that
+many cases; where none could be read, `bound=?`. `ir build` carries the graph's own, still the nearest comparison
+against a constant.
+
 ### `ir slice --reg <reg> [--at <hex>]`
 Backward register slice: what computes `--reg` at `--at`.
 - `--reg` (required) — register to slice backward on (any width: `rax`, `eax`, `r8d`, …).

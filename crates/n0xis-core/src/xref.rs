@@ -318,6 +318,12 @@ impl TableBases {
     }
 }
 
+/// The largest index the guard of the index at the indirect jump at `at` lets
+/// through ([`n0xis_arch::Arch::index_guard`]), where one could be read.
+pub(crate) fn index_guard_at(ctx: &Ctx, at: Va) -> Option<u64> {
+    dispatch_of(ctx, at).ok()?.guard
+}
+
 /// A dispatch's table, read from the image.
 fn read_dispatch(ctx: &Ctx, at: Va, d: &IndexedDispatch, bases: &TableBases) -> Result<crate::switch::TableRead, &'static str> {
     let table = d.table.ok_or("the dispatch reads its table through a register no instruction before it sets to an address")?;
