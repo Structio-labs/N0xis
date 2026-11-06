@@ -6223,8 +6223,7 @@ fn cmd_serve(a: &ServeArgs) {
         }),
         Err(e) => serde_json::json!({ "ok": false, "error": { "code": e.0, "message": e.1 } }),
     };
-    println!("{ready}");
-    let _ = std::io::stdout().flush();
+    emit::print_line(&ready.to_string());
 
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
@@ -6237,8 +6236,7 @@ fn cmd_serve(a: &ServeArgs) {
             break;
         }
         let emit_err = |code: &str, msg: String| {
-            println!("{}", serde_json::json!({ "ok": false, "error": { "code": code, "message": msg } }));
-            let _ = std::io::stdout().flush();
+            emit::print_line(&serde_json::json!({ "ok": false, "error": { "code": code, "message": msg } }).to_string());
         };
         let tokens = match serve_request_tokens(line) {
             Ok(t) => t,

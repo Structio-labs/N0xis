@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A reader that has gone is not a failure.** `n0xis guide | head -1` used to panic with exit code 101, on both systems. A closed pipe now ends the run quietly with 0, also for `--pretty` and for a line of `serve`.
+
 **`bundle extract --out \\?\C:\...` writes its files.** It failed with os error 123: the file name was joined on with a `/`, which such a path takes literally. Joined by the OS's rule, `out_path` now has a `\` on Windows.
 
 **`function eh --pid` on Windows reads the process's `.pdata`.** It said neither table was present, while `profile --pid` counted 56 entries in it.

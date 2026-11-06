@@ -33,16 +33,33 @@ impl Write for Written<'_> {
     }
 }
 
+/// Standard output would not take it. A closed pipe is the reader having had enough, as
+/// `n0xis guide | head -1` does: not a failure of this run, so it ends quietly and with
+/// exit code 0. It used to panic with 101. Anything else (a full disk) still says so.
+fn stdout_failed(e: std::io::Error) -> ! {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        std::process::exit(0);
+    }
+    panic!("failed printing to stdout: {e}");
+}
+
+/// One line of `serve`'s own, by the same rule as an answer.
+pub fn print_line(line: &str) {
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = out.write_all(line.as_bytes()).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush()) {
+        stdout_failed(e);
+    }
+}
+
 /// `value` and its line end, on standard output. Whether all of it went: a failure to
-/// serialize is the other case. A closed pipe panics, with the message and exit code
-/// `println!` has always given it.
+/// serialize is the other case.
 fn write_out<T: Serialize>(value: &T, pretty: bool) -> bool {
     let mut out = BufWriter::with_capacity(BUFFER, Written { out: std::io::stdout().lock(), any: false });
     let written = if pretty { serde_json::to_writer_pretty(&mut out, value) } else { serde_json::to_writer(&mut out, value) };
     let written = written.and_then(|()| out.write_all(b"\n").and_then(|()| out.flush()).map_err(serde_json::Error::io));
     match written {
         Ok(()) => true,
-        Err(e) if e.is_io() => panic!("failed printing to stdout: {e}"),
+        Err(e) if e.is_io() => stdout_failed(e.into()),
         Err(e) => {
             if out.get_ref().any {
                 // What has gone cannot be taken back, and a refusal never follows part of
@@ -56,7 +73,7 @@ fn write_out<T: Serialize>(value: &T, pretty: bool) -> bool {
                 let refusal = Response::<serde_json::Value>::error("serialize", e.to_string());
                 let refusal = serde_json::to_string(&refusal).expect("a refusal is strings") + "\n";
                 if let Err(e) = nothing_written.write_all(refusal.as_bytes()).and_then(|()| nothing_written.flush()) {
-                    panic!("failed printing to stdout: {e}");
+                    stdout_failed(e);
                 }
             }
             false

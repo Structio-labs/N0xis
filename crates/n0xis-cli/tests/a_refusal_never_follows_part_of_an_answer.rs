@@ -81,25 +81,27 @@ fn a_failure_to_serialize_past_the_first_write_adds_no_second_envelope() {
     assert_eq!(out.status.code(), Some(2), "and by the exit code");
 }
 
-/// What a closed pipe has always done, through the real binary. Not pretty, and not this
-/// pass's to change: the buffer must not have turned it into something else.
-#[cfg(unix)]
+/// A reader that has gone asked for no more, whatever it read first: the run ends quietly
+/// and with exit code 0. `n0xis guide | head -1` used to panic with 101. On every OS, and
+/// for the large answer that cannot fit the pipe as well as for the small one.
 #[test]
-fn a_closed_pipe_is_what_it_was() {
+fn a_closed_pipe_ends_the_run_quietly() {
     use std::process::Stdio;
 
     let dir = std::env::temp_dir().join(format!("n0xis_closed_pipe_{}", std::process::id()));
     std::fs::create_dir_all(dir.join(".n0x")).expect("a project");
-    let mut child = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
-        .args(["capability", "list"])
-        .current_dir(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run n0xis");
-    drop(child.stdout.take());
-    let out = child.wait_with_output().expect("wait");
+    for args in [&["capability", "list"][..], &["guide"], &["--pretty", "guide"], &["--pretty", "capability", "list"]] {
+        let mut child = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
+            .args(args)
+            .current_dir(&dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run n0xis");
+        drop(child.stdout.take());
+        let out = child.wait_with_output().expect("wait");
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.stderr.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(out.status.code(), Some(101), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("failed printing to stdout: Broken pipe"), "{}", String::from_utf8_lossy(&out.stderr));
 }
