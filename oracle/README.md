@@ -71,6 +71,11 @@ measures how often each function-discovery rule is right against the DWARF of
 the unstripped build. Its README says how to run it; its numbers are in
 docs/VERIFICATION.md, "How often each rule is right".
 
+`oracle/decomp-behaviour/` asks whether a printed body behaves like its source:
+each body is compiled with one prelude and run against the original on generated
+inputs. Its README says what "same" means, and it also counts the shapes of known
+defect classes over big images.
+
 ## On real Windows
 
 `oracle/windows/` checks the Windows build on a Windows machine over SSH.
