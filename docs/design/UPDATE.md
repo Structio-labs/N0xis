@@ -11,7 +11,7 @@ Today there is no update mechanism and no network client in the tree: a user dow
 - **It never asks a question at the terminal,** because a prompt hangs any script.
 - **In a terminal,** at most once a day, one line on stderr: `[n0x] 0.3.7 is available: n0x update`. The check
   never delays a command: its result is shown by a later run.
-- **In a script or a pipe,** nothing: no request and no line, unless asked.
+- **In a script or a pipe,** nothing: no request and no line, unless asked. "A terminal" means standard error is one, so `2>&1`, CI and a scheduler stay silent, and `--quiet` silences it anywhere. The line never goes to standard output, the JSON is untouched, and the exit code never depends on the check. A test holds each of these.
 - `n0x update --check` answers in the usual envelope, for the GUI and for anything else that wants to ask.
 - **The GUI** asks through that same command and shows its own dialog, so there is no second copy of the logic. It needs nothing here beyond that, and the CLI does not wait for it.
 - **The MCP server** interrupts nothing during a session: its version, and that a newer one exists, are in what it states at the start.
@@ -32,7 +32,7 @@ A copy in the field cannot be repaired by shipping a repair, so what a client co
 from is frozen when it ships. **The client asks; it never derives.**
 
 - Each release publishes `manifest.json`: its version, and for each component and platform the file's URL, size
-  and sha256. A component is a whole file: `n0xis` and `n0xis-mcp` are two self-contained binaries of about 13 MB, each replaced only when it changed. Binary deltas are not worth their complexity at that size. A later GUI or a signature pack is one more entry. Unknown fields are ignored, so it can grow. File names and layouts are not in the client.
+  and sha256. A component is a whole file: `n0xis` and `n0xis-mcp` are two self-contained binaries of about 13 MB, each replaced only when it changed. Deltas are not worth their complexity at that size. A later GUI or a signature pack is one more entry. Unknown fields are ignored, so it can grow: binary deltas, if size ever calls for them, are an optional field beside the whole file, which is always published, so a delta only ever speeds things up and an old client is never stranded. File names and layouts are not in the client.
 - The only thing frozen in the client is the manifest's address, and the repository has moved before. So it is a
   domain the project controls, serving that one static file, with GitHub as the second address and an override in the
   configuration. The binaries stay in the releases, named by the manifest. No login is needed: the repository is public.
