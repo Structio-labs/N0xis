@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A killed `debug watch` or `provenance trace` leaves a way back.** Its debug register stays in the target's threads, and at the next hit the target dies. The watchpoint is now in the journal before it is armed, with its id on stderr, and `patch undo` clears it from every thread that still holds it, says how many, and leaves every other slot alone. It also did the same on Linux when stopped by Ctrl-C, `SIGTERM` or `SIGHUP`, which it did not handle there as it did on Windows: now it clears the register and detaches.
+
 **A hit of `debug await-hit` on Windows is at the address the thread stopped at, as on Linux.** It said one byte past it, so `rip` and `relative_rip` named the middle of an instruction.
 
 **A `pid` past `u32` in a capability's arguments names no process.** It was cut down to one that fits, and so read another process.

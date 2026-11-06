@@ -735,9 +735,16 @@ Show one patch record. `--id` required.
 - Schema: `n0xis.patch.v1`
 
 ### `patch undo [--id <str>] [--pid <u32>] [--force]`
-Restore the original bytes of a patch.
+Restore the original bytes of a patch, or clear the debug register a killed `debug watch` or `provenance trace` left.
 - `--id` — defaults to the most recent applied patch.
-- `--force` — undo even if current bytes no longer match the patched bytes.
+- `--force` — undo even if current bytes no longer match the patched bytes. A debug register has no bytes, and this changes nothing for it.
+- On the record of a debug register (it has `debug_register` and `planted_by`, and no `before_hex`): clears slot 0 on every thread the target has
+  now that still holds the record's address, type and length, and leaves every other slot alone, since the target or another tool may own those.
+  Answers `threads_seen`, `threads_cleared`, `slots_cleared` and `target_present`, with no `restored`, and removes the record, as it is seen to be clear.
+- A target that is gone, or a pid that is another process's now and holds nothing of ours, clears nothing, says so in `note`, and the record goes.
+  `--pid` at another process than the record's, holding nothing of ours, clears nothing and keeps the record (`record_removed: false`).
+- A thread it could not stop or read leaves the record, and answers `undo-incomplete`. A target it cannot attach to, as one a run still traces on
+  Linux, answers `undo-failed`, and the record stays.
 - Schema: `n0xis.patch.v1`
 
 ### `patch detour --pid <u32> --hook-at <hex> [--cave-size <bytes>]`
@@ -806,7 +813,12 @@ from `.pdata`/`.xdata`).
 - `--timeout-ms` (default 30000); `--stack-qwords` (default 16).
 - A 32-bit target on Windows is refused before anything touches it (`target-unsupported`). The same for `debug await-hit` and `provenance trace`.
 - Stopped by Ctrl-C, Ctrl-Break, closing the console, `SIGINT`, `SIGTERM` or `SIGHUP`, it clears the debug registers and detaches, and answers
-  `interrupted`. **Killed**, it can clear nothing, and the target dies at the next hit: nothing recovers that yet.
+  `interrupted`.
+- **Killed** (`kill -9`, Task Manager), it can clear nothing, and the target dies at the next hit: with `SIGTRAP` on Linux, with 0x80000004 on Windows.
+  The watchpoint is recorded before it is armed, with `planted_by: "debug watch"`: `n0xis patch undo --id <id>` clears it, and `patch list --status applied`
+  lists it. The id is on stderr when it is armed. If no record can be kept, nothing is armed.
+- A run that ends any other way leaves no record, which it removes on reading the debug registers back from the target. If it cannot see that they are clear,
+  whatever the watch found, it answers `watchpoint-left`, and the record stays for `patch undo`.
 - `--when <reg>=<value>` — only report a hit whose registers match, e.g. `--when r9=4` (value
   decimal or `0x`). Non-matching hits are resumed with the watchpoint still armed (essential on a
   hot function; guarded by `MAX_CONDITION_MISSES=300`). Landed 2026-07-20; **implemented, not yet
@@ -961,6 +973,7 @@ module+function + decompiled statement (Phase 4c — watchpoint × decompiler, f
   4); `--timeout-ms` (default 30000).
 - `--save-to-table <name>` + `--entry <name>` — record the explained provenance onto a `.n0xt`
   table entry. Live only.
+- Its watchpoint is on the record the way `debug watch`'s is, with `planted_by: "provenance trace"`: killed, `patch undo` clears it.
 - Schema: `n0xis.provenance.v1`
 
 ### `annotate name --addr <hex> [--value <str>]`
