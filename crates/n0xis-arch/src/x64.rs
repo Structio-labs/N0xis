@@ -890,6 +890,12 @@ impl Arch for X64 {
         }
     }
 
+    /// `ud2`. Not `int3`, which is [`Arch::is_padding`]: what a linker fills
+    /// between functions with, and no statement of the compiler's.
+    fn is_trap(&self, insn: &DecodedInsn) -> bool {
+        insn.mnemonic == "ud2"
+    }
+
     /// x86-64 toolchains align function entries to 16 bytes by default
     /// (`-falign-functions=16`, and MSVC's equivalent). Measured on one Qt
     /// build: starts confirmed by `.dynsym` or an `.eh_frame` FDE are aligned

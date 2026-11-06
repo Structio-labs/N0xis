@@ -172,11 +172,11 @@ pub enum NotStated {
 }
 
 /// The end of the control-flow graph built from the start.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug)]
 pub enum CfgEnd {
-    /// Where the graph's end heuristic ended the function.
-    End(Va),
+    /// Where the graph ended the function, and the rule that did: `None` where
+    /// a declared extent bounded the graph and no rule of its own was asked.
+    End { at: Va, by: Option<n0xis_core::EndRule> },
     /// The heuristic found no end in the bytes the graph was built from (its
     /// window, `read` bytes from the start, or fewer where the readable image
     /// ends sooner), and the graph stops at `at` because they do: where the
@@ -185,6 +185,41 @@ pub enum CfgEnd {
     /// 495 times on the rule-accuracy corpus (docs/VERIFICATION.md).
     Cut { at: Va, read: usize },
     NotBuilt { why: String },
+}
+
+/// `{"end": "0x…", "ended_by": "…"}`, `{"cut": {"at": "0x…", "read": n}}` or
+/// `{"not_built": {"why": "…"}}`. By hand, because the rule sits beside an `end`
+/// every reader already takes as a bare address, and an enum's derive would
+/// have moved it.
+impl Serialize for CfgEnd {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            CfgEnd::End { at, by } => {
+                map.serialize_entry("end", at)?;
+                if let Some(by) = by {
+                    map.serialize_entry("ended_by", by)?;
+                }
+            }
+            CfgEnd::Cut { at, read } => {
+                #[derive(Serialize)]
+                struct Cut<'a> {
+                    at: &'a Va,
+                    read: &'a usize,
+                }
+                map.serialize_entry("cut", &Cut { at, read })?;
+            }
+            CfgEnd::NotBuilt { why } => {
+                #[derive(Serialize)]
+                struct NotBuilt<'a> {
+                    why: &'a str,
+                }
+                map.serialize_entry("not_built", &NotBuilt { why })?;
+            }
+        }
+        map.end()
+    }
 }
 
 /// Which signature database a signature name came from.
@@ -330,7 +365,7 @@ fn containing<'a>(
 fn end_va(end: &EndWhy) -> Option<Va> {
     match end {
         EndWhy::Stated { va, .. } => Some(*va),
-        EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::End(va) }) => Some(*va),
+        EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::End { at, .. } }) => Some(*at),
         EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::Cut { at, .. } }) => Some(*at),
         EndWhy::NotStated(NotStated::NotStated { cfg: CfgEnd::NotBuilt { .. } }) => None,
     }

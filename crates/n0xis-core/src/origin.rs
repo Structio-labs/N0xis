@@ -97,6 +97,26 @@ pub enum EndFrom {
     Stated(Sources<StatedBy>),
 }
 
+/// Which rule ended a control-flow graph where nothing states the function's
+/// end (`n0x why`, [`crate::GraphEnd`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndRule {
+    /// A return, a jump out, or an interrupt, and no forward edge past it.
+    Terminator,
+    /// The first bytes that do not decode.
+    Undecodable,
+    /// A call to a function the well-known list names as not returning.
+    CallNamedNoReturn,
+    /// A call to a function the whole-program fixpoint proved does not return.
+    CallProvenNoReturn,
+    /// A call the instruction set's trap follows; the trap is kept in the
+    /// function.
+    CallBeforeTrap,
+    /// A call filler follows, up to an aligned address nothing jumps to.
+    CallBeforeFiller,
+}
+
 /// How the name a function list gives a start was found
 /// ([`crate::function_name_and_source`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

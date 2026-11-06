@@ -538,6 +538,14 @@ pub trait Arch {
     /// decoded instruction, never matched as bytes.
     fn is_padding(&self, insn: &DecodedInsn) -> bool;
 
+    /// Whether `insn` is the instruction a compiler writes where control cannot
+    /// arrive: `ud2`, `brk`, `udf`. Not filler (it belongs to its function), and
+    /// never in the normal flow, so a call it follows does not come back.
+    ///
+    /// Required, with no default: which encoding it is is a fact about the
+    /// instruction set, and `core` holds no opinion on any of them.
+    fn is_trap(&self, insn: &DecodedInsn) -> bool;
+
     /// Recognize a switch / jump-table dispatch whose terminating **indirect
     /// branch is the last instruction of `block`**. Returns the idiom and the
     /// table base/index/bound needed to resolve the cases — but does **not**

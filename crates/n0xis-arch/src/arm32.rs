@@ -1760,6 +1760,11 @@ impl Arch for Arm32 {
         insn.mnemonic == "nop"
     }
 
+    /// `udf`, in A32 and Thumb: what gcc and clang write for "cannot get here".
+    fn is_trap(&self, insn: &DecodedInsn) -> bool {
+        insn.mnemonic == "udf"
+    }
+
     fn resync_step(&self, bytes: &[u8]) -> NonZeroUsize {
         const TWO: NonZeroUsize = NonZeroUsize::new(2).unwrap();
         const FOUR: NonZeroUsize = NonZeroUsize::new(4).unwrap();

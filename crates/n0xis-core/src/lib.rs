@@ -97,7 +97,7 @@ pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
 pub use klass::{ClassScanArtifact, ClassScanInput, ClassScanPass, ClassSummary, KlassArtifact, KlassField, KlassInput, KlassPass, LayoutEvidence};
 pub use icalls::{Icall, IcallArtifact, IcallInput, IcallPass, ResolverCount};
 pub use discover::{discover_entries, discover_pdata, function_index, DiscoverArtifact, DiscoverInput, DiscoverPass, Discovered, DiscoveredStart, FunctionCandidate, StatedEnd};
-pub use origin::{EndFrom, NameFrom, Sources, StartSource, StatedBy, StatedFunction};
+pub use origin::{EndFrom, EndRule, NameFrom, Sources, StartSource, StatedBy, StatedFunction};
 pub use summary::{summarize, FunctionSummary, SummaryInput, SummaryPass};
 pub use devirt::{devirtualize, Devirtualized};
 pub use typeprop::{TypePropInput, TypePropagatePass, TypeStore};

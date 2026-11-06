@@ -921,6 +921,11 @@ impl Arch for Arm64 {
         insn.mnemonic == "nop"
     }
 
+    /// `brk`: what gcc, clang and rustc write for "cannot get here".
+    fn is_trap(&self, insn: &DecodedInsn) -> bool {
+        insn.mnemonic == "brk"
+    }
+
     fn prologues(&self, _abi: &str) -> &'static [&'static [u8]] {
         ARM64_PROLOGUES
     }

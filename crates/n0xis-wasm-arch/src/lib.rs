@@ -272,6 +272,13 @@ impl Arch for Wasm {
         insn.mnemonic == "nop"
     }
 
+    /// A module's `unreachable` is a statement with a meaning and a place in
+    /// its structured control flow, and nothing here has measured what ending a
+    /// block on the `call` before it would do to that: none is named a trap.
+    fn is_trap(&self, _insn: &DecodedInsn) -> bool {
+        false
+    }
+
     /// One byte: an instruction can begin at any byte of a body. Nothing reads
     /// this today, because [`decode_range`](Arch::decode_range) below decodes
     /// each body from its start and never resynchronizes; it is the answer the

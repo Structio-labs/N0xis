@@ -187,7 +187,7 @@ pub enum GraphEnd {
     Stated,
     /// The end heuristic decided it: a terminator no forward edge passes, a
     /// call that does not return, or the first byte that does not decode.
-    Heuristic,
+    Heuristic { by: crate::EndRule },
     /// Nothing states an end and the heuristic found none before the bytes the
     /// graph was built from ran out: `read` bytes from the start (the window
     /// asked for, or fewer where the readable bytes end sooner). The graph's
@@ -263,25 +263,24 @@ impl CfgPass {
                 // every corpus here, and an unbounded loop over a heuristic is
                 // how a function grows to fill a 32 KB window.
                 let mut floor = input.start.0;
-                let (mut instrs, mut ended) = truncate_to_function(&all, input.start.0, end_cap, floor, |ins| {
-                    is_noreturn_call(ctx, ins)
-                });
+                let (mut instrs, mut ended) = truncate_to_function(ctx, &all, input.start.0, end_cap, floor);
                 for _ in 0..3 {
                     let reach = switch_case_reach(ctx, &instrs, input.start.0, end_cap);
                     if reach <= floor {
                         break;
                     }
                     floor = reach;
-                    (instrs, ended) = truncate_to_function(&all, input.start.0, end_cap, floor, |ins| {
-                        is_noreturn_call(ctx, ins)
-                    });
+                    (instrs, ended) = truncate_to_function(ctx, &all, input.start.0, end_cap, floor);
                 }
                 // No terminator ended it, and the decode reached the end of
                 // the bytes: the graph stops because they did. (A decode that
                 // stopped earlier, on bytes that do not decode, is the
                 // heuristic's end, as it always was.)
-                let ran_out = !ended && all.last().is_some_and(|l| l.va.0 + u64::from(l.len) >= end_cap);
-                let how = if ran_out { GraphEnd::BytesRanOut { read: bytes.len() } } else { GraphEnd::Heuristic };
+                let how = match ended {
+                    Some(by) => GraphEnd::Heuristic { by },
+                    None if all.last().is_some_and(|l| l.va.0 + u64::from(l.len) >= end_cap) => GraphEnd::BytesRanOut { read: bytes.len() },
+                    None => GraphEnd::Heuristic { by: crate::EndRule::Undecodable },
+                };
                 (instrs, how)
             }
             (false, _) => (all, GraphEnd::NotAsked),
@@ -477,32 +476,159 @@ fn slot_callee(ctx: &Ctx, ins: &DecodedInsn) -> Option<Va> {
     ctx.symbols?.slot_target(memory_slot(ins)?)
 }
 
-/// Is this instruction a call to a function that never comes back? Two sources,
-/// both ending the block (and, for [`truncate_to_function`], the function):
-/// a well-known noreturn **import** (`ExitProcess`, `abort`, …), resolved by
-/// name; or a direct call to one of N0xis's *own* discovered functions that the
-/// whole-program fixpoint ([`crate::NoReturnPropagatePass`]) proved noreturn,
-/// resolved by address through `ctx.noreturn`. The second is what lets a custom
-/// `FatalError`/`Assert` wrapper — a `sub_XXXX`, not a named import — prune a
-/// caller's dead fall-through (ROADMAP Phase 10, priority 0).
-fn is_noreturn_call(ctx: &Ctx, ins: &DecodedInsn) -> bool {
+/// Why a call does not come back. A rule that needs no name is what a stripped
+/// image has, which calls its panics through slots with nothing to say what they
+/// are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallEnds {
+    /// A well-known noreturn import (`ExitProcess`, `abort`, …), by name.
+    Named,
+    /// One of N0xis's *own* discovered functions the whole-program fixpoint
+    /// ([`crate::NoReturnPropagatePass`]) proved noreturn, by address through
+    /// `ctx.noreturn`: what lets a custom `FatalError`/`Assert` wrapper — a
+    /// `sub_XXXX`, not a named import — prune a caller's dead fall-through
+    /// (ROADMAP Phase 10, priority 0).
+    Proven,
+    /// The trap a compiler writes where control cannot arrive, kept in the
+    /// function.
+    BeforeTrap,
+    /// Filler, outside the function.
+    BeforeFiller,
+}
+
+impl CallEnds {
+    fn rule(self) -> crate::EndRule {
+        match self {
+            CallEnds::Named => crate::EndRule::CallNamedNoReturn,
+            CallEnds::Proven => crate::EndRule::CallProvenNoReturn,
+            CallEnds::BeforeTrap => crate::EndRule::CallBeforeTrap,
+            CallEnds::BeforeFiller => crate::EndRule::CallBeforeFiller,
+        }
+    }
+}
+
+/// Does this call come back? `after` is what the caller decoded after it (read
+/// again from the image where it stops), and `goes_on_at` says whether the
+/// function the caller has in hand is known to go on at an address. Both end the
+/// block (and, for [`truncate_to_function`], the function).
+fn noreturn_call(ctx: &Ctx, ins: &DecodedInsn, after: &[DecodedInsn], goes_on_at: &dyn Fn(u64) -> bool) -> Option<CallEnds> {
     if ins.kind != InsnKind::Call {
-        return false;
+        return None;
     }
     let by_name = resolved_target_name(ctx, ins)
         .as_deref()
         .and_then(|n| n.rsplit('!').next())
-        .map(crate::noreturn::is_known_noreturn)
-        .unwrap_or(false);
-    let by_addr = matches!((ctx.noreturn, ins.target.or_else(|| slot_callee(ctx, ins))), (Some(set), Some(t)) if set.contains(&t));
-    by_name || by_addr
+        .is_some_and(crate::noreturn::is_known_noreturn);
+    if by_name {
+        return Some(CallEnds::Named);
+    }
+    if matches!((ctx.noreturn, ins.target.or_else(|| slot_callee(ctx, ins))), (Some(set), Some(t)) if set.contains(&t)) {
+        return Some(CallEnds::Proven);
+    }
+    what_follows_the_call(ctx, ins.va.0 + u64::from(ins.len), after, goes_on_at)
+}
+
+/// The instruction at `at`, from the image: where the caller's stream stopped, or
+/// (a folded `.cold` partition) goes somewhere else.
+fn decode_at(ctx: &Ctx, at: u64) -> Option<DecodedInsn> {
+    ctx.arch.decode(&ctx.source.read(Va(at), 16).ok()?, Va(at)).ok()
+}
+
+/// Does the function stop at the trap ending `at`? A trap ends the block always,
+/// and the function only where filler comes next. What else comes next is a
+/// landing pad, which only the unwinder reaches, or the next block of the same
+/// function: on the first Rust images with no unwind table, 41 of 41 ends cut with
+/// plain code after the trap were short, and 35 of 35 with `int3` after it exact.
+/// Nothing following it (the bytes end) is the end as well.
+fn function_stops_at_trap(ctx: &Ctx, at: u64, next: Option<&DecodedInsn>) -> bool {
+    match next.filter(|i| i.va.0 == at).cloned().or_else(|| decode_at(ctx, at)) {
+        Some(ins) => ctx.arch.is_padding(&ins),
+        None => true,
+    }
+}
+
+/// The address filler reaches is at least this aligned, on every machine here:
+/// `.p2align 3` and up. `call f; int3; mov …` with `int3` a breakpoint a person
+/// wrote is the case this tells apart from filler, and it costs the ends where
+/// filler stops short of it: 51 of 21 550 `call; int3` on the Rust corpus.
+const FILLER_REACHES: u64 = 8;
+
+/// Filler longer than this is not looked through: no alignment here asks for it.
+const LONGEST_FILLER: u64 = 256;
+
+/// Filler that does nothing and reaches further than this is an alignment a
+/// person asked for inside a function (zstd's `__asm__(".p2align 6")` before a hot
+/// loop, whose jump back is past the window here), not a function's.
+const LONGEST_RUN_THROUGH_FILLER: u64 = 15;
+
+/// What follows a call says it does not return, on any stripped image, in any
+/// language: a compiler puts a trap or filler after a call that does not come
+/// back, and no trap in the normal flow.
+///
+/// A trap, and filler that traps (`int3`), need no more than that. Filler that
+/// does nothing is run if control reaches it, and three things put it after a
+/// call that returns; each has real code behind it (`docs/design/RUST.md`):
+///
+/// - An aligned loop head or join: something jumps to where the filler ends
+///   (`je F; call release; nop…; F:`, and `call init; nop…; F: … jne F`). Not
+///   cured by asking only for a later jump: `je F` before the call is as common.
+/// - Code nothing jumps to directly, with the function going on past it: a case of
+///   a jump table, or a block clang aligns before a loop. So in a graph, whose
+///   instructions say where the function goes on, a call filler follows ends a
+///   block only if its function holds nothing at the end of the filler. A noreturn
+///   call in mid-function with this filler keeps its false path: 9 of 3 916 such
+///   calls on the corpora were in mid-function, and the two read by hand return.
+/// - Statements of gcc `-O0`, `call f; nop; nop; nop; leave`: one-byte `nop`s in a
+///   row are what a compiler writes as code, and no assembler fills with them on
+///   a machine that has longer ones.
+/// - The same, landing on an aligned address by chance: the alignment asked of
+///   filler is what rules most of it out. MSVC's `call f; nop` after a call in a
+///   `try` is this shape too, as is a single unit of `nop` anywhere, and two.
+/// - An alignment asked for by hand before a hot loop ([`LONGEST_RUN_THROUGH_FILLER`]).
+fn what_follows_the_call(ctx: &Ctx, end: u64, after: &[DecodedInsn], goes_on_at: &dyn Fn(u64) -> bool) -> Option<CallEnds> {
+    let mut decoded = after.iter();
+    let mut next_at = |at: u64| -> Option<DecodedInsn> {
+        match decoded.next() {
+            Some(ins) if ins.va.0 == at => Some(ins.clone()),
+            _ => {
+                decoded = [].iter();
+                decode_at(ctx, at)
+            }
+        }
+    };
+    let first = next_at(end)?;
+    if ctx.arch.is_trap(&first) {
+        return Some(CallEnds::BeforeTrap);
+    }
+    if !ctx.arch.is_padding(&first) {
+        return None;
+    }
+    let traps = first.kind == InsnKind::Int;
+    let step = ctx.arch.resync_step(&[]).get() as u64;
+    let mut at = end + u64::from(first.len);
+    let mut longest = first.len;
+    while let Some(ins) = next_at(at).filter(|i| ctx.arch.is_padding(i)) {
+        at += u64::from(ins.len);
+        longest = longest.max(ins.len);
+        if at - end > LONGEST_FILLER {
+            return None;
+        }
+    }
+    if !at.is_multiple_of(FILLER_REACHES) {
+        return None;
+    }
+    if traps {
+        return Some(CallEnds::BeforeFiller);
+    }
+    let fill = at - end;
+    (fill > 2 * step && fill <= LONGEST_RUN_THROUGH_FILLER && longest > 1 && !goes_on_at(at)).then_some(CallEnds::BeforeFiller)
 }
 
 /// Cut the linear stream at the detected function end. Ported from v0
 /// `decode_linear`'s auto-end heuristic: track the furthest forward in-range
 /// edge; a terminator whose fallthrough passes it ends the function.
 ///
-/// `is_noreturn_call` reports a call that never comes back (`ExitProcess`,
+/// [`noreturn_call`] reports a call that never comes back (`ExitProcess`,
 /// `abort`, …). Such a call ends the function exactly like a `ret` when no
 /// forward edge reaches past it — without it the heuristic walks straight
 /// into the padding/next function after a `call ExitProcess` (ROADMAP Phase
@@ -550,17 +676,18 @@ fn switch_case_reach(ctx: &Ctx, instrs: &[DecodedInsn], start: u64, end_cap: u64
     furthest
 }
 
-/// Returns the instructions kept, and whether a terminator ended them (`false`:
-/// nothing did, and every instruction decoded is kept).
-fn truncate_to_function(
-    all: &[DecodedInsn],
-    start: u64,
-    end_cap: u64,
-    floor: u64,
-    is_noreturn_call: impl Fn(&DecodedInsn) -> bool,
-) -> (Vec<DecodedInsn>, bool) {
+/// Returns the instructions kept, and the rule that ended them (`None`: nothing
+/// did, and every instruction decoded is kept).
+fn truncate_to_function(ctx: &Ctx, all: &[DecodedInsn], start: u64, end_cap: u64, floor: u64) -> (Vec<DecodedInsn>, Option<crate::EndRule>) {
     let mut max_forward_leader = start.max(floor);
     let mut cut = None;
+    // Every direct branch in the window, the later ones too: a loop's jump back
+    // to where filler ends comes after the call it would be read past.
+    let jumps: BTreeSet<u64> = all
+        .iter()
+        .filter(|i| matches!(i.kind, InsnKind::Jump | InsnKind::CondJump))
+        .filter_map(|i| i.target.map(|t| t.0))
+        .collect();
     for (idx, ins) in all.iter().enumerate() {
         let next = ins.va.0 + ins.len as u64;
         let tgt = ins.target.map(|v| v.0).unwrap_or(0);
@@ -575,26 +702,43 @@ fn truncate_to_function(
                     max_forward_leader = tgt;
                 }
                 if tail && next > max_forward_leader {
-                    cut = Some(idx + 1);
+                    cut = Some((idx + 1, crate::EndRule::Terminator));
                     break;
                 }
                 if !tail && tgt < next && next > max_forward_leader {
-                    cut = Some(idx + 1);
+                    cut = Some((idx + 1, crate::EndRule::Terminator));
                     break;
                 }
             }
             InsnKind::Ret | InsnKind::Int if next > max_forward_leader => {
-                cut = Some(idx + 1);
+                cut = Some((idx + 1, crate::EndRule::Terminator));
                 break;
             }
-            InsnKind::Call if next > max_forward_leader && is_noreturn_call(ins) => {
-                cut = Some(idx + 1);
-                break;
+            InsnKind::Call if next > max_forward_leader => {
+                match noreturn_call(ctx, ins, &all[idx + 1..], &|at| jumps.contains(&at)) {
+                    Some(CallEnds::BeforeTrap) => {
+                        // The trap is the compiler's, and belongs to the function;
+                        // a stream that stops before it holds no more to keep.
+                        let trap_end = all.get(idx + 1).map(|t| t.va.0 + u64::from(t.len));
+                        if trap_end.is_none_or(|at| function_stops_at_trap(ctx, at, all.get(idx + 2))) {
+                            cut = Some(((idx + 2).min(all.len()), crate::EndRule::CallBeforeTrap));
+                            break;
+                        }
+                    }
+                    Some(ends) => {
+                        cut = Some((idx + 1, ends.rule()));
+                        break;
+                    }
+                    None => {}
+                }
             }
             _ => {}
         }
     }
-    (all[..cut.unwrap_or(all.len())].to_vec(), cut.is_some())
+    match cut {
+        Some((keep, by)) => (all[..keep].to_vec(), Some(by)),
+        None => (all.to_vec(), None),
+    }
 }
 
 /// Largest declared extent this will read for one function. A length that comes
@@ -955,7 +1099,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
                     // abort, …) ends the block like a `ret`: nothing after it
                     // is reachable, so — unlike an ordinary call — it must
                     // not be treated as falling through (ROADMAP Phase 10).
-                    let is_noreturn = is_noreturn_call(ctx, ins);
+                    let is_noreturn = noreturn_call(ctx, ins, &instrs[i + 1..], &|at| valid.contains(&at)).is_some();
                     callsites.push(Callsite {
                         from: ins.va,
                         kind: if target_name.is_some() { "named" } else { "direct" }.into(),

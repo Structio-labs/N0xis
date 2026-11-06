@@ -377,8 +377,10 @@ runs no discovery of its own. Through the registry (`why`), so `serve` and an MC
     "project"}` (the symbol layers' stated length, and whose), `{"va": "0x…", "source":
     "unwind", "table": "pdata" | "eh_frame"}`, `{"va": "0x…", "source": "body", "function":
     n}`; `also` lists other declarations of the same extent when there are any. Where nothing
-    states one: `{"source": "not_stated", "cfg": {"end": "0x…"}}`, the end of the control-flow
-    graph `ir build` builds from the start by default (its end heuristic);
+    states one: `{"source": "not_stated", "cfg": {"end": "0x…", "ended_by": "…"}}`, the end of the
+    control-flow graph `ir build` builds from the start by default (its end heuristic), and the
+    rule that ended it: `terminator`, `undecodable`, `call_named_no_return`,
+    `call_proven_no_return`, `call_before_trap` or `call_before_filler`;
     `{"source": "not_stated", "cfg": {"cut": {"at": "0x…", "read": n}}}` where that heuristic
     found no end in the `n` bytes the graph was built from (a 4 KiB window, or fewer where the
     readable image ends sooner) — the graph was cut at `at`, which is not the function's end;
