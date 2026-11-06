@@ -999,6 +999,21 @@ impl Arch for X64 {
         Some(d)
     }
 
+    fn stated_addresses(&self, insn: &DecodedInsn) -> Vec<Va> {
+        let Some(ins) = decode_raw(insn, self.bitness) else { return Vec::new() };
+        let mut out = Vec::new();
+        for op in 0..ins.op_count() {
+            match ins.op_kind(op) {
+                OpKind::Immediate32 | OpKind::Immediate32to64 | OpKind::Immediate64 => out.push(Va(ins.immediate(op))),
+                OpKind::Memory if ins.memory_base() == Register::None && ins.memory_index() == Register::None && !segment_relative(&ins) => {
+                    out.push(Va(ins.memory_displacement64()));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     fn index_guard(&self, insns: &[DecodedInsn], dispatch: &SwitchDispatch) -> Option<u64> {
         /// How many instructions back a guard may sit. It is normally the two
         /// before the table load, with the index's own extension between them.

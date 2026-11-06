@@ -71,6 +71,12 @@ pub struct XrefEntry {
     /// The word of data this reference is, for a reference that is one.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldIn>,
+    /// `xref string`: where the reference lands against the text asked for, where it
+    /// is not on its first byte. Negative for one that starts before it, so the
+    /// text is the end or the middle of what is referenced; positive for one inside
+    /// it, so what is referenced is its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub string_offset: Option<i64>,
 }
 
 /// A word of an image's data that holds an address ([`XrefEntry::held`]). Its
@@ -229,6 +235,7 @@ pub fn xref_entry(ctx: &Ctx, from: Va, to: Option<Va>, to_function: Option<u32>,
         text,
         sym: to.and_then(|t| crate::ir::symbol_on_entry(ctx, t)).map(|sy| sy.name),
         held: None,
+        string_offset: None,
     }
 }
 

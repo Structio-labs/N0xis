@@ -657,7 +657,14 @@ Who references `--addr` (`to`) / what `--addr` references (`from`).
 - Schema: `n0xis.xref.v1`
 
 ### `xref string --query <str>`
-Find a string literal and who references it via `lea`.
+Find a string and what references it: an instruction's operand, a word of data, and on a fixed image a
+word-sized value an instruction states (`kind` `immediate`, only a number equal to the address). A reference
+counts from the start of the string the text is in to the text's last byte, as a linker merging tails
+leaves `"found\n"` as the end of `"not found\n"`: a row that does not land on the text's first byte has
+`string_offset`, negative where it starts before the text and positive where it is inside it.
+On an image rustc built, which cuts its strings by a length, a reference before the text does not count.
+`found_unreferenced` counts every occurrence nothing reached, past `--limit` too, in what `data.searched` names
+(`code`, `data` as for `xref to`, `not_searched`).
 - `--query` (required) — the string to search for.
 - `--data-start`/`--data-size` — data window to search (defaults to `.rdata`, else `.text`).
 - `--start`/`--size` — code window to scan for the referencing `lea` (defaults to `.text`).

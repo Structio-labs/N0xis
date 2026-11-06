@@ -14,6 +14,13 @@
 //! They are **counted** in `found_unreferenced` all the same, because "absent"
 //! and "present but unreferenced" are opposite facts that must not share one
 //! zero.
+//!
+//! A reference need not land on the text's first byte. A linker merges tails, so
+//! `"not found\n"` and `"found\n"` are one string and the second is its end; a
+//! format's middle is what is searched for as often as its start. So what reaches
+//! an occurrence is any reference from the start of its string to its own last
+//! byte, marked with where it lands ([`XrefEntry::string_offset`]). What is called
+//! unreferenced is what nothing in the [`StringSearched`] reaches.
 
 use std::ops::ControlFlow;
 
@@ -21,7 +28,7 @@ use n0xis_contracts::Va;
 use serde::Serialize;
 
 use crate::sweep::{SWEEP_CHUNK, sweep_code};
-use crate::xref::XrefEntry;
+use crate::xref::{HeldIn, SearchedCode, SearchedData, XrefEntry};
 use crate::{Ctx, CoreError, Pass};
 
 /// What to search for and where.
@@ -30,12 +37,90 @@ pub struct StringXrefInput {
     /// Window searched for `query` (typically `.rdata`).
     pub data_start: Va,
     pub data_size: usize,
-    /// Window decoded and scanned for referencing instructions (typically `.text`).
-    pub code_start: Va,
-    pub code_size: usize,
+    /// Ranges decoded and scanned for referencing instructions (typically `.text`).
+    pub code: Vec<(Va, usize)>,
     pub query: String,
     /// Cap on reported hits (each hit may carry several xrefs).
     pub limit: usize,
+    /// Words of data that reach an occurrence ([`StringOccurrences::reaches`]).
+    pub held: Vec<n0xis_sources::HeldWord>,
+    /// Whether a word-sized value in an instruction is an address here: only on an
+    /// image that runs where it says, whose code names data that way.
+    pub stated_values_are_addresses: bool,
+    /// What the words of data were read from, for the answer.
+    pub words: SearchedData,
+    /// Whether a string here ends at a NUL. Where it does not, a reference before the
+    /// text says nothing of the text ([`StringOccurrences::find`]).
+    pub strings_are_terminated: bool,
+}
+
+impl StringXrefInput {
+    /// Code ranges alone, with no words of data and no value in an instruction
+    /// taken for an address.
+    pub fn of_code(data_start: Va, data_size: usize, code: Vec<(Va, usize)>, query: String, limit: usize) -> Self {
+        let words = SearchedData::NotSearched { why: "no words of data were read for this answer".to_string() };
+        Self { data_start, data_size, code, query, limit, held: Vec::new(), stated_values_are_addresses: false, words, strings_are_terminated: true }
+    }
+}
+
+/// What `found_unreferenced` is out of.
+#[derive(Clone, Debug, Serialize)]
+pub struct StringSearched {
+    pub code: Vec<SearchedCode>,
+    pub data: SearchedData,
+    /// Forms of reference this answer does not look for.
+    pub not_searched: Vec<&'static str>,
+}
+
+/// Each place a query's text is in a window of data, with the start of the string
+/// around it: the run of bytes since the last NUL.
+#[derive(Clone, Debug)]
+pub struct StringOccurrences {
+    /// `(the occurrence, the start of its string)`, in address order.
+    at: Vec<(u64, u64)>,
+    len: u64,
+}
+
+/// The furthest before a text a reference still reaches it from. A C literal longer
+/// than this is rare, and a run of text this long with no NUL in it is rarely one
+/// literal: on one image built by rustc, 118 160 bytes of `.rodata` have none.
+const MAX_BEFORE: usize = 4096;
+
+impl StringOccurrences {
+    /// `terminated` says whether a string here ends at a NUL. An image rustc built
+    /// cuts its literals by a length, so the bytes before a text are other literals,
+    /// and a reference to them does not reach it: only one on the text's own bytes
+    /// does. It was measured: taken as NUL-terminated, every `lea` of a neighbouring
+    /// literal called the text referenced.
+    pub fn find(data: &[u8], data_start: Va, needle: &[u8], terminated: bool) -> Self {
+        let mut at = Vec::new();
+        let mut pos = 0usize;
+        let mut run = 0usize;
+        if !needle.is_empty() {
+            while let Some(rel) = data[pos..].windows(needle.len()).position(|w| w == needle) {
+                let idx = pos + rel;
+                if let Some(nul) = data[pos..idx].iter().rposition(|&b| b == 0) {
+                    run = pos + nul + 1;
+                }
+                let start = if terminated { run.max(idx.saturating_sub(MAX_BEFORE)) } else { idx };
+                at.push((data_start.0 + idx as u64, data_start.0 + start as u64));
+                pos = idx + 1;
+            }
+        }
+        Self { at, len: needle.len() as u64 }
+    }
+
+    /// The occurrences a reference to `target` reaches: those whose string starts
+    /// at or before it, and which do not end before it.
+    fn reached_by(&self, target: u64) -> impl Iterator<Item = usize> + '_ {
+        let first = self.at.partition_point(|&(occ, _)| occ + self.len <= target);
+        (first..self.at.len()).take_while(move |&i| self.at[i].1 <= target)
+    }
+
+    /// Whether a reference to `target` reaches any occurrence.
+    pub fn reaches(&self, target: u64) -> bool {
+        self.reached_by(target).next().is_some()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -62,6 +147,8 @@ pub struct StringXrefArtifact {
     /// it.
     pub found_unreferenced: usize,
     pub hits: Vec<StringHit>,
+    /// What was read for references: `found_unreferenced` is out of this.
+    pub searched: StringSearched,
 }
 
 /// String cross-reference pass.
@@ -86,62 +173,83 @@ impl StringXrefPass {
     /// answer does not depend on it.
     pub(crate) fn run_in(&self, ctx: &Ctx, input: StringXrefInput, chunk: u64) -> Result<StringXrefArtifact, CoreError> {
         let needle = input.query.as_bytes();
+        let mut not_searched = vec!["an address built by more than one instruction", "an image-relative (RVA) word", "a word not aligned to a pointer, unless a relocation names it"];
+        if !input.stated_values_are_addresses {
+            not_searched.push("an address as an immediate operand of an instruction");
+        }
+        if !input.strings_are_terminated {
+            not_searched.push("a reference to bytes before the text: this image cuts its strings by a length, so those are other strings");
+        }
+        let searched = StringSearched {
+            code: input.code.iter().map(|&(start, size)| SearchedCode { start, size: size as u64 }).collect(),
+            data: input.words.clone(),
+            not_searched,
+        };
         if needle.is_empty() {
-            return Ok(StringXrefArtifact { query: input.query, count: 0, found_unreferenced: 0, hits: Vec::new() });
+            return Ok(StringXrefArtifact { query: input.query, count: 0, found_unreferenced: 0, hits: Vec::new(), searched });
         }
 
         let data = ctx.source.read(input.data_start, input.data_size)?;
-        let data_lo = input.data_start.0;
-        // Every instruction whose RIP-relative operand lands on an occurrence
-        // of the needle, in sweep order: (occurrence, instruction, its text).
-        // One sweep answers every occurrence at once. Each occurrence used to
-        // filter the whole decoded window, which had to be held to be filtered
-        // again, and took the code's length times the occurrences.
-        let mut referencing: Vec<(u64, Va, String)> = Vec::new();
-        sweep_code(ctx, input.code_start, input.code_size as u64, chunk, |ins| {
-            if let Some(t) = ins.rip_target
-                && let Some(off) = t.0.checked_sub(data_lo).and_then(|o| usize::try_from(o).ok())
-                && data.get(off..).is_some_and(|rest| rest.starts_with(needle))
-            {
-                referencing.push((t.0, ins.va, ins.text.clone()));
+        let occurrences = StringOccurrences::find(&data, input.data_start, needle, input.strings_are_terminated);
+        // Every reference that reaches an occurrence, as (occurrence, row). One
+        // sweep answers every occurrence at once. Each occurrence used to filter the
+        // whole decoded window, which had to be held to be filtered again, and took
+        // the code's length times the occurrences.
+        let row = |occ: usize, from: Va, target: Va, kind: &str, text: String| -> (usize, XrefEntry) {
+            let offset = target.0 as i64 - occurrences.at[occ].0 as i64;
+            let mut entry = crate::xref_entry(ctx, from, Some(target), None, kind, text);
+            entry.sym = None; // the target is a string literal, not a named symbol
+            entry.string_offset = (offset != 0).then_some(offset);
+            (occ, entry)
+        };
+        let mut referencing: Vec<(usize, XrefEntry)> = Vec::new();
+        for &(code_start, code_size) in &input.code {
+            sweep_code(ctx, code_start, code_size as u64, chunk, |ins| {
+                if let Some(t) = ins.rip_target {
+                    for occ in occurrences.reached_by(t.0) {
+                        referencing.push(row(occ, ins.va, t, "data", ins.text.clone()));
+                    }
+                }
+                if input.stated_values_are_addresses {
+                    for t in ctx.arch.stated_addresses(ins) {
+                        for occ in occurrences.reached_by(t.0) {
+                            referencing.push(row(occ, ins.va, t, "immediate", ins.text.clone()));
+                        }
+                    }
+                }
+                ControlFlow::Continue(())
+            })?;
+        }
+        for w in &input.held {
+            for occ in occurrences.reached_by(w.holds) {
+                let (occ, mut entry) = row(occ, Va(w.at), Va(w.holds), "data_word", format!("word in {} holds {}", w.section, Va(w.holds)));
+                entry.held = Some(HeldIn { slot: Va(w.at), section: Some(w.section.clone()), evidence: w.by, relative_to: None });
+                referencing.push((occ, entry));
             }
-            ControlFlow::Continue(())
-        })?;
-        // By occurrence, each one's references kept in instruction order.
-        referencing.sort_by_key(|&(at, ..)| at);
+        }
+        // By occurrence, each one's references kept in the order they were found.
+        referencing.sort_by_key(|&(occ, _)| occ);
 
         let mut hits = Vec::new();
         let mut found_unreferenced = 0usize;
-        let mut pos = 0usize;
-        while hits.len() < input.limit {
-            let Some(rel) = data[pos..].windows(needle.len()).position(|w| w == needle) else {
-                break;
-            };
-            let idx = pos + rel;
-            let str_addr = Va(input.data_start.0 + idx as u64);
-            let first = referencing.partition_point(|&(at, ..)| at < str_addr.0);
-            let xrefs: Vec<XrefEntry> = referencing[first..]
-                .iter()
-                .take_while(|&&(at, ..)| at == str_addr.0)
-                .map(|(_, from, text)| XrefEntry {
-                    sym: None, // the target is a string literal, not a named symbol
-                    ..crate::xref_entry(ctx, *from, Some(str_addr), None, "data", text.clone())
-                })
-                .collect();
+        let mut rows = referencing.into_iter().peekable();
+        // Every occurrence, past `limit` too: the limit is on what is listed, and
+        // `found_unreferenced` is a statement about the whole of the window.
+        for (occ, &(address, _)) in occurrences.at.iter().enumerate() {
+            let mut xrefs = Vec::new();
+            while let Some((_, entry)) = rows.next_if(|(o, _)| *o == occ) {
+                xrefs.push(entry);
+            }
             if xrefs.is_empty() {
                 found_unreferenced += 1;
-            } else {
+            } else if hits.len() < input.limit {
+                let idx = (address - input.data_start.0) as usize;
                 let end = (idx + 64).min(data.len());
-                hits.push(StringHit {
-                    address: str_addr,
-                    preview: preview_ascii(&data[idx..end]),
-                    xrefs,
-                });
+                hits.push(StringHit { address: Va(address), preview: preview_ascii(&data[idx..end]), xrefs });
             }
-            pos = idx + 1;
         }
 
-        Ok(StringXrefArtifact { query: input.query, count: hits.len(), found_unreferenced, hits })
+        Ok(StringXrefArtifact { query: input.query, count: hits.len(), found_unreferenced, hits, searched })
     }
 }
 
@@ -212,7 +320,7 @@ mod tests {
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
         let art = StringXrefPass
-            .run(&ctx, StringXrefInput { data_start: Va(0x2000), data_size: 32, code_start: Va(0x1000), code_size: 2, query: "orphan".into(), limit: 10 })
+            .run(&ctx, StringXrefInput::of_code(Va(0x2000), 32, vec![(Va(0x1000), 2)], "orphan".into(), 10))
             .unwrap();
         assert_eq!(art.count, 0);
         assert_eq!(art.found_unreferenced, 1, "the string is there; say so");
@@ -233,14 +341,7 @@ mod tests {
         let art = StringXrefPass
             .run(
                 &ctx,
-                StringXrefInput {
-                    data_start: Va(0x2000),
-                    data_size: 64,
-                    code_start: Va(0x1000),
-                    code_size: 64,
-                    query: "orphan-string".into(),
-                    limit: 10,
-                },
+                StringXrefInput::of_code(Va(0x2000), 64, vec![(Va(0x1000), 64)], "orphan-string".into(), 10),
             )
             .expect("string xref runs");
         assert_eq!(art.count, 0);

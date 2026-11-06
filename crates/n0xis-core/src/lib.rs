@@ -148,7 +148,7 @@ pub use valueset::{alias, AliasResult, ValueSet, ValueSetArtifact, ValueSetPass}
 pub use xref::{HeldIn, IndexedDispatch, IndexedJump, JumpTableAnswer, JumpTableReferences, SearchedCode, SearchedData, SearchedJumps, XrefArtifact, XrefDir, XrefEntry, XrefIndex, XrefInput, XrefPass, XrefSearched, build_xref_index, held_references, jump_table_from, jump_table_references, xref_entry, xref_kind};
 pub use strings::{find_strings, utf16_strings, utf8_strings, FoundString, StringEncoding};
 pub use literals::{cut_run, CutBy, CutKind, LiteralCuts, LiteralEvidence, LiteralRefs, NotCut, CODE_PAIR_MAX_LEN, CODE_PAIR_WINDOW};
-pub use xref_string::{StringHit, StringXrefArtifact, StringXrefInput, StringXrefPass};
+pub use xref_string::{StringHit, StringOccurrences, StringSearched, StringXrefArtifact, StringXrefInput, StringXrefPass};
 
 use n0xis_arch::Arch;
 use n0xis_sources::{MemorySource, ModuleProvider, SymbolProvider};

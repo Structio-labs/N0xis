@@ -2695,37 +2695,51 @@ impl Plugin for AnalysisPasses {
                     if data_windows.iter().all(|(_, size)| *size == 0) || code_windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a data/code range; pass data_start/data_size and start/size");
                     }
+                    let code: Vec<(Va, usize)> = code_windows.iter().copied().filter(|(_, s)| *s > 0).collect();
                     let mut merged: Option<n0xis_core::StringXrefArtifact> = None;
                     for (data_start, data_size) in data_windows.into_iter().filter(|(_, s)| *s > 0) {
-                        // Within one data section the code windows rediscover the
-                        // same literals (the data side does not move) and each
-                        // contributes its own referencing instructions, so their
-                        // hits merge by address.
-                        let mut per_data: Option<n0xis_core::StringXrefArtifact> = None;
-                        for (code_start, code_size) in code_windows.iter().copied().filter(|(_, s)| *s > 0) {
-                            let input =
-                                n0xis_core::StringXrefInput { data_start, data_size, code_start, code_size, query: query.clone(), limit };
-                            match n0xis_core::Pass::run(&n0xis_core::StringXrefPass, ctx, input) {
-                                Ok(art) => match &mut per_data {
-                                    Some(acc) => merge_string_hits(acc, art),
-                                    None => per_data = Some(art),
-                                },
-                                Err(e) => return Response::error("xref-string-failed", e.to_string()),
+                        // Words of data that reach the text, which the image's tables
+                        // say. A window of code asks about that code alone.
+                        let terminated = !matches!(src, Src::Static(img) if n0xis_sources::rustc_evidence(img.image()).is_some());
+                        let held = match src {
+                            Src::Static(img) if explicit_code_start.is_none() && code_size_arg.is_none() => ctx.source.read(data_start, data_size).ok().and_then(|data| {
+                                let occurrences = n0xis_core::StringOccurrences::find(&data, data_start, query.as_bytes(), terminated);
+                                img.words_where(&|v| occurrences.reaches(v))
+                            }),
+                            _ => None,
+                        };
+                        let why = if matches!(src, Src::Static(_)) { "a window of code was asked for, or the image has no words of data" } else { not_an_image(src) };
+                        let (words, rule_says_values, listed) = match held {
+                            Some(h) => {
+                                let code_only = n0xis_core::XrefSearched::with_held(Vec::new(), &h, n0xis_core::SearchedJumps::NotRead { why: String::new() });
+                                (code_only.data, h.rule == n0xis_sources::WordRule::StoredValues, h.words)
                             }
-                        }
+                            None => (n0xis_core::SearchedData::NotSearched { why: why.to_string() }, false, Vec::new()),
+                        };
+                        let input = n0xis_core::StringXrefInput {
+                            data_start,
+                            data_size,
+                            code: code.clone(),
+                            query: query.clone(),
+                            limit,
+                            held: listed,
+                            stated_values_are_addresses: rule_says_values,
+                            words,
+                            strings_are_terminated: terminated,
+                        };
                         // Data sections are disjoint address ranges, so each
-                        // contributes new literals (merge by address still holds)
-                        // and its own tally of found-but-unreferenced occurrences,
-                        // which sums rather than being overwritten.
-                        if let Some(pd) = per_data {
-                            match &mut merged {
+                        // contributes new literals and its own tally of
+                        // found-but-unreferenced occurrences, which sums.
+                        match n0xis_core::Pass::run(&n0xis_core::StringXrefPass, ctx, input) {
+                            Ok(pd) => match &mut merged {
                                 Some(acc) => {
                                     let unref = pd.found_unreferenced;
                                     merge_string_hits(acc, pd);
                                     acc.found_unreferenced += unref;
                                 }
                                 None => merged = Some(pd),
-                            }
+                            },
+                            Err(e) => return Response::error("xref-string-failed", e.to_string()),
                         }
                     }
                     match merged {

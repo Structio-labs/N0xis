@@ -86,11 +86,13 @@ fn holds_no_pointers(section: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldWord {
     pub at: u64,
+    /// The address it holds.
+    pub holds: u64,
     pub section: String,
     pub by: crate::HeldBy,
 }
 
-/// What [`ImageSource::words_holding`] found, and what it looked at.
+/// What [`ImageSource::words_where`] found, and what it looked at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldWords {
     pub words: Vec<HeldWord>,
@@ -480,27 +482,32 @@ impl ImageSource {
         self.image.address_words(relocated)
     }
 
-    /// Every word of this image's data that holds `addr` ([`HeldWords`]). `None`
-    /// on an image with no single address space for a word to be in.
+    /// Every word of this image's data that holds `addr` ([`Self::words_where`]).
+    pub fn words_holding(&self, addr: Va) -> Option<HeldWords> {
+        // On 32-bit ARM a Thumb function's address is stated with bit 0 set (the
+        // ARM ELF ABI's interworking rule), and is an address of the same code.
+        let thumb = (self.image.machine().isa == crate::Isa::Arm).then_some(addr.get() | 1);
+        self.words_where(&|v| v == addr.get() || Some(v) == thumb)
+    }
+
+    /// Every word of this image's data whose address `wanted` asks for
+    /// ([`HeldWords`]). `None` on an image with no single address space for a word
+    /// to be in.
     ///
     /// By relocation first: a table naming the word is a fact of the image,
     /// wherever the word is. Then, where the image is one a pointer can be stored
-    /// in with no table saying so ([`crate::WordRule::StoredValues`]), a word equal
-    /// to `addr`, marked as only that ([`crate::HeldBy::MatchingValue`]). Where the
-    /// image may load anywhere ([`crate::WordRule::Relocated`]), such a word stays a
-    /// number and is counted, not listed.
-    pub fn words_holding(&self, addr: Va) -> Option<HeldWords> {
+    /// in with no table saying so ([`crate::WordRule::StoredValues`]), a word
+    /// `wanted` takes, marked as only that ([`crate::HeldBy::MatchingValue`]). Where
+    /// the image may load anywhere ([`crate::WordRule::Relocated`]), such a word
+    /// stays a number and is counted, not listed.
+    pub fn words_where(&self, wanted: &dyn Fn(u64) -> bool) -> Option<HeldWords> {
         use crate::{HeldBy, WordRule};
         let width = self.image.machine().address_model.pointer_width()?;
         let order = self.byte_order();
         let step = usize::from(width.bytes());
-        // On 32-bit ARM a Thumb function's address is stated with bit 0 set (the
-        // ARM ELF ABI's interworking rule), and is an address of the same code.
-        let thumb = (self.image.machine().isa == crate::Isa::Arm).then_some(addr.get() | 1);
-        let holds_it = |v: u64| v == addr.get() || Some(v) == thumb;
         let in_image = |s: &&Section| s.in_image && s.size > 0;
 
-        let mut stored: Vec<u64> = Vec::new();
+        let mut stored: Vec<(u64, u64)> = Vec::new();
         let mut sections = Vec::new();
         let mut ranges = Vec::new();
         let view = self.image.loaded_bytes();
@@ -512,23 +519,25 @@ impl ImageSource {
             // memory, and a section may start anywhere.
             let skip = (step as u64 - s.va.get() % step as u64) % step as u64;
             for (i, word) in bytes.get(skip as usize..).unwrap_or_default().chunks_exact(step).enumerate() {
-                if word.iter().any(|&b| b != 0) && width.read_word(word, order).is_some_and(holds_it) {
-                    stored.push(s.va.get() + skip + (i * step) as u64);
+                if word.iter().any(|&b| b != 0)
+                    && let Some(value) = width.read_word(word, order).filter(|&v| wanted(v))
+                {
+                    stored.push((s.va.get() + skip + (i * step) as u64, value));
                 }
             }
         }
         stored.sort_unstable();
-        let mut relocated: BTreeMap<u64, HeldBy> = BTreeMap::new();
+        let mut relocated: BTreeMap<u64, (HeldBy, u64)> = BTreeMap::new();
         let mut written_otherwise: Vec<u64> = Vec::new();
         let rule = self.image.relocated_addresses(&mut |r| {
-            if holds_it(r.holds) {
-                relocated.insert(r.at, r.by);
-            } else if stored.binary_search(&r.at).is_ok() {
+            if wanted(r.holds) {
+                relocated.insert(r.at, (r.by, r.holds));
+            } else if stored.binary_search_by_key(&r.at, |&(at, _)| at).is_ok() {
                 // The file's word is overwritten at load with something else.
                 written_otherwise.push(r.at);
             }
         });
-        stored.retain(|at| !relocated.contains_key(at) && !written_otherwise.contains(at));
+        stored.retain(|(at, _)| !relocated.contains_key(at) && !written_otherwise.contains(at));
         // A word listed as `MatchingValue` is one no table names, so it cannot be
         // listed where the absence of a table says it is a number.
         let (matching, unrelocated_matches) = match rule {
@@ -537,8 +546,9 @@ impl ImageSource {
         };
         let mut words: Vec<HeldWord> = relocated
             .into_iter()
-            .chain(matching.into_iter().map(|at| (at, HeldBy::MatchingValue)))
-            .map(|(at, by)| HeldWord { at, section: self.section_at(at).unwrap_or_default(), by })
+            .map(|(at, (by, holds))| (at, by, holds))
+            .chain(matching.into_iter().map(|(at, holds)| (at, HeldBy::MatchingValue, holds)))
+            .map(|(at, by, holds)| HeldWord { at, holds, section: self.section_at(at).unwrap_or_default(), by })
             .collect();
         words.sort_by_key(|w| w.at);
         Some(HeldWords { words, sections, ranges, rule, unrelocated_matches })

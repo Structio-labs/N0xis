@@ -447,7 +447,7 @@ mod tests {
             let idx = crate::xref::build_xref_index_in(&ctx, &[(code, size as u64)], chunk);
             out.push(("xref index", json(serde_json::to_value(idx).unwrap())));
             for (query, limit) in [("planted", 100), ("a planted string", 1), ("planted", 0)] {
-                let input = StringXrefInput { data_start: p.data.0, data_size: p.data.1, code_start: code, code_size: size, query: query.into(), limit };
+                let input = StringXrefInput::of_code(p.data.0, p.data.1, vec![(code, size)], query.into(), limit);
                 out.push(("xref string", json(serde_json::to_value(StringXrefPass.run_in(&ctx, input, chunk).unwrap()).unwrap())));
             }
             for window in [8, 3, 0] {

@@ -1765,6 +1765,11 @@ impl Arch for Arm32 {
         insn.mnemonic == "udf"
     }
 
+    /// An address here is built by several instructions, or is an index: none is read.
+    fn stated_addresses(&self, _insn: &DecodedInsn) -> Vec<Va> {
+        Vec::new()
+    }
+
     /// No guard is read here: [`Arch::detect_switch`] recognizes nothing.
     fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &crate::SwitchDispatch) -> Option<u64> {
         None

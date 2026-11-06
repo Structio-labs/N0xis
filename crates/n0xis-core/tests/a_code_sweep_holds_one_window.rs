@@ -215,14 +215,7 @@ fn child(pass: &str) {
             assert_eq!(art.refs.iter().map(|r| r.from.0).collect::<Vec<_>>(), p.calls, "the two planted calls");
         }
         "xref_string" => {
-            let input = StringXrefInput {
-                data_start: Va(DATA),
-                data_size: p.data_len,
-                code_start: code,
-                code_size: size,
-                query: "a planted string".into(),
-                limit: 50,
-            };
+            let input = StringXrefInput::of_code(Va(DATA), p.data_len, vec![(code, size)], "a planted string".into(), 50);
             let art = StringXrefPass.run(&ctx, input).unwrap();
             assert_eq!(art.count, 1);
             assert_eq!(art.hits[0].xrefs.iter().map(|x| x.from.0).collect::<Vec<_>>(), [p.string_load]);
