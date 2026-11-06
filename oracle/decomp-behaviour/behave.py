@@ -13,6 +13,7 @@ Level 1: the same text through one mechanical layer, each rule counted per body:
            and their .0, a scratch frame for rsp/rbp, else uint64_t = 0
   star     unary * on an integer: reads as *(uint64_t*)
   bits     double/float in a signature mean the register bits the intrinsics return
+           and /*unknown*/ in one is a word
   neg_hex  -0xN is a negative number (in C a hex literal may be unsigned first)
   rel      a relational is signed unless marked /*u*/: spelled in C at the first operand's width, however deep it is
            nested; == and != against an operand cast narrow compare at that width too
@@ -325,6 +326,8 @@ def layer(text, sig, rules):
     t = new
     head, sep, rest = t.partition("{")
     h2 = re.sub(r"^\s*double\b", "uint64_t", re.sub(r"^\s*float\b", "uint32_t", head))
+    # A return the engine says it could not determine: as C it would be int, and cut a result in half.
+    h2 = re.sub(r"^\s*/\*unknown\*/\s*", "uint64_t ", h2)
     if h2 != head:
         rules.add("bits")
     rest = signed_rel(rest, rules)

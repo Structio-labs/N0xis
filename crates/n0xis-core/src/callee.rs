@@ -23,7 +23,7 @@ use n0xis_contracts::Va;
 
 use crate::ir::{CfgArtifact, CfgInput, CfgPass};
 use crate::signatures::{KnownSignature, known_signature};
-use crate::ssa::{EntryFlow, SsaBlock};
+use crate::ssa::{RawFlow, SsaBlock};
 use crate::typeinfer::{CALLEE_SCAN_SIZE, abi_arg_regs, collect_definite_param_regs, ctx_identity};
 use crate::{Ctx, OptimizePass, Pass, SsaPass};
 
@@ -67,12 +67,28 @@ struct Shape {
     /// Something in it reads what cannot be listed: an unresolved jump, an instruction
     /// not lifted whose reads are only a bound, a body cut by the window.
     open: bool,
+    /// Whether a path computes what it returns.
+    returns_value: bool,
+    /// Whose result a path returns untouched.
+    returns_of: Vec<Callee>,
+    /// It has a `ret`.
+    returns_at_all: bool,
+}
+
+/// What a function gives back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Gives {
+    Value,
+    Nothing,
+    /// A path returns what something unknown left in the register.
+    Unknown,
 }
 
 #[derive(Default)]
 struct Memo {
     shapes: HashMap<u64, Option<Arc<Shape>>>,
     takes: HashMap<(u64, u8), Takes>,
+    gives: HashMap<(u64, u8), Gives>,
 }
 
 static MEMO: Mutex<Option<(String, Memo)>> = Mutex::new(None);
@@ -150,7 +166,7 @@ fn own_slot(pos: usize, a: &MicroExpr, arg_regs: &[&str]) -> bool {
 }
 
 /// What the function itself reads, and what it passes on untouched.
-fn read_here(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &EntryFlow, arg_regs: &[&str]) -> (BTreeSet<String>, Vec<(usize, Callee)>) {
+fn read_here(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &RawFlow, arg_regs: &[&str]) -> (BTreeSet<String>, Vec<(usize, Callee)>) {
     let mut used = collect_definite_param_regs(blocks, flow);
     used.extend(flow.moved.iter().cloned());
     // Propagation drops a store nothing loads, and storing it did read the register.
@@ -245,11 +261,11 @@ fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
     let ssa = SsaPass.run(ctx, cfg.clone()).ok()?;
     let opt = OptimizePass.run(ctx, ssa).ok()?;
     let arg_regs = abi_arg_regs(ctx);
-    let (mut used, forwards) = read_here(ctx, &cfg, &opt.blocks, &opt.entry_flow, &arg_regs);
-    let unnamed_from = unnamed_arguments_from(&opt.entry_flow, &arg_regs, ctx.arch.pointer_size());
+    let (mut used, forwards) = read_here(ctx, &cfg, &opt.blocks, &opt.raw_flow, &arg_regs);
+    let unnamed_from = unnamed_arguments_from(&opt.raw_flow, &arg_regs, ctx.arch.pointer_size());
     if let Some(from) = unnamed_from {
         // What it keeps there it may or may not read, by what the caller said.
-        let copied: BTreeSet<&str> = opt.entry_flow.moved.iter().map(String::as_str).collect();
+        let copied: BTreeSet<&str> = opt.raw_flow.moved.iter().map(String::as_str).collect();
         for r in &arg_regs[from..] {
             let entry = format!("{r}.0");
             if !copied.contains(entry.as_str()) {
@@ -261,7 +277,9 @@ fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
     let float = highest_read(&used, crate::ir::float_arg_registers(ctx));
     let read = highest_read(&used, &arg_regs).max(if shares { float } else { 0 });
     let open = unnamed_from.is_some() || reads_what_cannot_be_listed(&cfg, &opt.blocks);
-    Some(Shape { read, forwards, open })
+    let returns = &opt.raw_flow.returns;
+    let returns_of = returns.calls.iter().map(|t| callee_of(ctx, &cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == va)).collect();
+    Some(Shape { read, forwards, open, returns_value: returns.value, returns_of, returns_at_all: returns.any })
 }
 
 /// The position a variadic function's unnamed arguments start at, from its register
@@ -270,7 +288,7 @@ fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
 /// read as parameters they gave it six, and with it everything that passes it along.
 /// A function at `-O0` on an ABI whose home slots ascend looks the same, and it only
 /// costs that function its exact count. Two registers at the least: one is any spill.
-fn unnamed_arguments_from(flow: &EntryFlow, arg_regs: &[&str], word: Option<u8>) -> Option<usize> {
+fn unnamed_arguments_from(flow: &RawFlow, arg_regs: &[&str], word: Option<u8>) -> Option<usize> {
     let word = i128::from(word?);
     let at = |pos: usize| flow.stored_at.get(&format!("{}.0", arg_regs[pos])).copied();
     let last = arg_regs.len().checked_sub(1)?;
@@ -292,11 +310,11 @@ fn reads_what_cannot_be_listed(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> bool {
 
 /// The entry values of the function in hand that are its parameters: what it reads
 /// ([`collect_definite_param_regs`]), what a copy carried to a call
-/// ([`EntryFlow::moved`]), and a register passed on as it came to a callee known to
+/// ([`RawFlow::moved`]), and a register passed on as it came to a callee known to
 /// read that position. A register a call takes untouched, on its way to something
 /// unknown, stays out: the lift passes every register at every call, and counting
 /// those made nearly every function take all of them.
-pub(crate) fn params_read(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &EntryFlow, arg_regs: &[&str]) -> BTreeSet<String> {
+pub(crate) fn params_read(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &RawFlow, arg_regs: &[&str]) -> BTreeSet<String> {
     let (mut used, forwards) = read_here(ctx, cfg, blocks, flow, arg_regs);
     let id = ctx_identity(ctx);
     // A source with no identity (a live process) keeps no memo, and asking further
@@ -308,6 +326,116 @@ pub(crate) fn params_read(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flo
         }
     }
     used
+}
+
+fn gives_of(ctx: &Ctx, id: Option<&str>, callee: Callee, depth: u8) -> Gives {
+    match callee {
+        Callee::Known(sig) if sig.ret.is_some() => Gives::Value,
+        Callee::Known(_) => Gives::Nothing,
+        Callee::Unknown => Gives::Unknown,
+        Callee::Body(_) if depth == 0 => Gives::Unknown,
+        Callee::Body(va) => {
+            if let Some(id) = id
+                && let Some(g) = with_memo(id, |m| m.gives.get(&(va.0, depth)).copied())
+            {
+                return g;
+            }
+            let answer = match shape_of(ctx, id, va) {
+                None => Gives::Unknown,
+                // It never comes back, so a caller's `return f();` says nothing of a
+                // value: `int g() { return error(); }` has one in its source.
+                Some(s) if !s.returns_at_all => Gives::Unknown,
+                Some(s) if s.returns_value => Gives::Value,
+                Some(s) => join_gives(ctx, id, &s.returns_of, depth - 1),
+            };
+            if let Some(id) = id {
+                with_memo(id, |m| {
+                    if m.gives.len() < MEMO_MAX {
+                        m.gives.insert((va.0, depth), answer);
+                    }
+                });
+            }
+            answer
+        }
+    }
+}
+
+/// One path that gives a value makes it a function that does; one that nothing can
+/// say about makes it unknown, and not void, since a void answer here is a claim
+/// that no caller reads a result, about a function that may well have one.
+fn join_gives(ctx: &Ctx, id: Option<&str>, callees: &[Callee], depth: u8) -> Gives {
+    let mut unknown = false;
+    for &c in callees {
+        match gives_of(ctx, id, c, depth) {
+            Gives::Value => return Gives::Value,
+            Gives::Unknown => unknown = true,
+            Gives::Nothing => {}
+        }
+    }
+    if unknown { Gives::Unknown } else { Gives::Nothing }
+}
+
+/// What the function in hand gives back, from what its returns hold: a computed value
+/// is a return; an entry value or a call's marker is none; a call's result is what
+/// that callee gives.
+pub(crate) fn function_gives(ctx: &Ctx, cfg: &CfgArtifact, flow: &RawFlow) -> Gives {
+    if flow.returns.value {
+        return Gives::Value;
+    }
+    let id = ctx_identity(ctx);
+    let depth = if id.is_some() { DEPTH } else { 1 };
+    let callees: Vec<Callee> = flow.returns.calls.iter().map(|t| callee_of(ctx, cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == cfg.start)).collect();
+    join_gives(ctx, id.as_deref(), &callees, depth)
+}
+
+/// A function that gives nothing: its `ret` returns nothing, whatever the lift said it
+/// read, and a result folded into the `ret` is a call that still has to happen.
+pub(crate) fn settle_void_returns(blocks: &mut [SsaBlock]) {
+    for b in blocks.iter_mut() {
+        let mut stmts = Vec::with_capacity(b.stmts.len());
+        for mut s in std::mem::take(&mut b.stmts) {
+            match &s.stmt {
+                MicroStmt::Return(Some(MicroExpr::Call { target, args })) => {
+                    let call = MicroStmt::Call { target: target.clone(), args: args.clone(), ret: None };
+                    stmts.push(crate::ssa::SsaStmt { stmt: call, ..s.clone() });
+                    s.stmt = MicroStmt::Return(None);
+                }
+                MicroStmt::Return(Some(MicroExpr::Var(_))) => s.stmt = MicroStmt::Return(None),
+                _ => {}
+            }
+            stmts.push(s);
+        }
+        b.stmts = stmts;
+    }
+}
+
+/// `rax.1 = f();` with nothing reading `rax.1` is `f();`: a call whose result this body
+/// does not use says so, and it is no assignment to look for a reader of.
+pub(crate) fn drop_unread_results(blocks: &mut [SsaBlock]) {
+    let mut read = BTreeSet::new();
+    for b in blocks.iter() {
+        for p in &b.phis {
+            read.extend(p.inputs.iter().map(|i| i.value.clone()));
+        }
+        for s in &b.stmts {
+            for e in crate::optimize::stmt_read_exprs(&s.stmt) {
+                crate::ssa::collect_expr_vars(e, &mut read);
+            }
+        }
+        if let Some(c) = &b.condition {
+            crate::ssa::collect_expr_vars(c, &mut read);
+        }
+    }
+    for b in blocks.iter_mut() {
+        for s in &mut b.stmts {
+            if let MicroStmt::Call { ret, target, .. } = &mut s.stmt
+                && !matches!(target, CallTarget::Intrinsic(_))
+                && ret.as_ref().is_some_and(|r| !read.contains(r))
+            {
+                *ret = None;
+            }
+        }
+    }
 }
 
 /// What stands behind a name in these blocks, for the question "did anything put a
@@ -611,6 +739,78 @@ mod tests {
         let b = body(&snap);
         let l = line_with(&b, "sub_1100(");
         assert!(l.contains("sub_1100(0x1)"), "{l}");
+    }
+
+    fn says_void(snap: &Snapshot) -> String {
+        body(snap).signature
+    }
+
+    /// `ret` alone: the register is what came in.
+    #[test]
+    fn a_function_that_touches_nothing_gives_nothing() {
+        assert!(says_void(&image(vec![0xc3], RET, RET)).starts_with("void "));
+    }
+
+    /// `mov eax,1; ret`: computed here.
+    #[test]
+    fn a_computed_value_is_a_return() {
+        assert!(!says_void(&image(vec![0xb8, 1, 0, 0, 0, 0xc3], RET, RET)).starts_with("void "));
+    }
+
+    /// `test ecx,ecx; je over; mov eax,1; over: ret`: one path is enough.
+    #[test]
+    fn one_path_with_a_value_makes_a_return() {
+        assert!(!says_void(&image(vec![0x85, 0xc9, 0x74, 0x05, 0xb8, 1, 0, 0, 0, 0xc3], RET, RET)).starts_with("void "));
+    }
+
+    /// `call g; ret`: what `g` left. Void if `g` gives nothing, and it prints no
+    /// result, read or returned; a value if `g` gives one.
+    #[test]
+    fn a_value_out_of_a_call_asks_the_callee() {
+        let calls = || {
+            let mut f = vec![0x48, 0x83, 0xec, 0x28];
+            call(&mut f, G);
+            f.extend([0x48, 0x83, 0xc4, 0x28, 0xc3]);
+            f
+        };
+        let snap = image(calls(), RET, RET);
+        let b = body(&snap);
+        assert!(b.signature.starts_with("void "), "{}", b.signature);
+        assert!(b.pseudo.iter().any(|l| l.trim() == "sub_1100();"), "{:#?}", b.pseudo);
+        assert!(!b.pseudo.iter().any(|l| l.contains("return rax")), "{:#?}", b.pseudo);
+        let b = body(&image(calls(), &[0xb8, 1, 0, 0, 0, 0xc3], RET));
+        assert!(!b.signature.starts_with("void "), "{}", b.signature);
+    }
+
+    /// `call rax; ret`: nothing can be asked, and that is said. A false void would
+    /// tell the reader no result exists.
+    #[test]
+    fn a_callee_that_cannot_be_asked_leaves_the_return_unknown() {
+        let snap = image(vec![0xff, 0xd0, 0xc3], RET, RET);
+        let b = body(&snap);
+        assert!(b.signature.starts_with("/*unknown*/"), "{}", b.signature);
+        assert!(b.quality < 1.0, "{}", b.quality);
+    }
+
+    /// `call g; mov rax,rbx; ret` moves a value to the register to return it, and what
+    /// `g` left there does not matter.
+    #[test]
+    fn a_value_moved_to_the_register_is_a_return() {
+        let mut f = vec![];
+        call(&mut f, G);
+        f.extend([0x48, 0x89, 0xd8, 0xc3]);
+        assert!(!says_void(&image(f, RET, RET)).starts_with("void "));
+    }
+
+    /// `g` calls itself on one path and otherwise returns nothing: no value and nothing
+    /// unknown, whichever way the recursion goes.
+    #[test]
+    fn recursion_is_not_a_reason_to_stop_knowing() {
+        // f: test ecx,ecx; je over; call f; over: ret
+        let mut f = vec![0x85, 0xc9, 0x74, 0x05];
+        call(&mut f, F);
+        f.push(0xc3);
+        assert!(says_void(&image(f, RET, RET)).starts_with("void "));
     }
 
     /// The save of a register into the frame is a read of the caller's value, kept to

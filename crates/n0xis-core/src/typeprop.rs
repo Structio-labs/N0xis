@@ -181,7 +181,7 @@ fn extract(ctx: &Ctx, va: Va, max_bytes: usize, known: &BTreeSet<u64>) -> Option
     }
     let ssa = SsaPass.run(ctx, cfg.clone()).ok()?;
     let opt = OptimizePass.run(ctx, ssa).ok()?;
-    let types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }).ok()?;
+    let types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() }).ok()?;
 
     let arg_regs = crate::typeinfer::abi_arg_regs(ctx);
     let param_names: Vec<String> = arg_regs.iter().take(types.signature.params.len()).map(|r| format!("{r}.0")).collect();

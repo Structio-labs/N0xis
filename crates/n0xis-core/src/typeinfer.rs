@@ -214,9 +214,9 @@ pub struct TypeInferInput {
     /// floating-point struct. Recorded on the signature rather than guessed at
     /// a name the source never had.
     pub float_return_pair: bool,
-    /// [`SsaArtifact::entry_flow`](crate::ssa::SsaArtifact::entry_flow): what the
+    /// [`SsaArtifact::raw_flow`](crate::ssa::SsaArtifact::raw_flow): what the
     /// blocks here no longer show of the values the function received.
-    pub entry_flow: crate::ssa::EntryFlow,
+    pub raw_flow: crate::ssa::RawFlow,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -240,7 +240,7 @@ impl Pass for TypeInferPass {
                 ctx.arch.name()
             )));
         }
-        Ok(infer(ctx, &input.cfg, &input.blocks, input.float_return, input.float_return_pair, &input.entry_flow))
+        Ok(infer(ctx, &input.cfg, &input.blocks, input.float_return, input.float_return_pair, &input.raw_flow))
     }
 }
 
@@ -633,7 +633,7 @@ fn self_annihilates(op: BinOp, l: &MicroExpr, r: &MicroExpr) -> bool {
         && matches!((l, r), (MicroExpr::Var(a), MicroExpr::Var(b)) if a == b)
 }
 
-pub(crate) fn collect_definite_param_regs(blocks: &[SsaBlock], flow: &crate::ssa::EntryFlow) -> BTreeSet<String> {
+pub(crate) fn collect_definite_param_regs(blocks: &[SsaBlock], flow: &crate::ssa::RawFlow) -> BTreeSet<String> {
     fn walk(e: &MicroExpr, out: &mut BTreeSet<String>) {
         match e {
             MicroExpr::Var(n) => {
@@ -926,8 +926,14 @@ fn recover_return_type(
     // on any other target it matches nothing, and every `void` function would
     // be given a return value it does not have.
     entry_ret: Option<&str>,
+    gives: crate::callee::Gives,
 ) -> ReturnType {
-    for b in blocks {
+    // Nothing else here can tell a result from what a call left in the register: the
+    // lift returns the register at every `ret`, and every call defines it.
+    if gives == crate::callee::Gives::Unknown {
+        return ReturnType::Unknown;
+    }
+    for b in blocks.iter().filter(|_| gives == crate::callee::Gives::Value) {
         for s in &b.stmts {
             if let MicroStmt::Return(Some(e)) = &s.stmt {
                 let is_untouched_entry = entry_ret.is_some_and(|entry| matches!(e, MicroExpr::Var(n) if n == entry));
@@ -950,6 +956,9 @@ fn recover_return_type(
     // function was modelled. A statement the lift could not express may have
     // left the result somewhere this pass cannot see: on i386 that is the x87
     // stack, where every `float` and `double` comes back.
+    if gives == crate::callee::Gives::Value {
+        return ReturnType::Known(CType::generic(word, false));
+    }
     let modelled = !blocks
         .iter()
         .any(|b| b.stmts.iter().any(|s| matches!(s.stmt, MicroStmt::Unlifted { .. })));
@@ -1456,7 +1465,7 @@ fn callee_param_types(ctx: &Ctx, va: Va) -> Option<Vec<CType>> {
     }
     let ssa = SsaPass.run(ctx, cfg.clone()).ok()?;
     let opt = OptimizePass.run(ctx, ssa).ok()?;
-    let types = infer_with(ctx, &cfg, &opt.blocks, false, opt.float_return, opt.float_return_pair, &opt.entry_flow);
+    let types = infer_with(ctx, &cfg, &opt.blocks, false, opt.float_return, opt.float_return_pair, &opt.raw_flow);
     Some(types.signature.params.iter().map(|p| p.ty.clone()).collect())
 }
 
@@ -1542,7 +1551,7 @@ fn user_callee_arg_types(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock]) -> B
     out
 }
 
-fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], float_return: bool, float_return_pair: bool, flow: &crate::ssa::EntryFlow) -> TypeArtifact {
+fn infer(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], float_return: bool, float_return_pair: bool, flow: &crate::ssa::RawFlow) -> TypeArtifact {
     // Top-level analysis is interprocedural (`deep`): it consults the recovered
     // signatures of the user functions this one calls. A callee analyzed for that
     // purpose runs shallow (`deep = false`) so the walk never recurses.
@@ -1556,7 +1565,7 @@ fn infer_with(
     deep: bool,
     float_return: bool,
     float_return_pair: bool,
-    flow: &crate::ssa::EntryFlow,
+    flow: &crate::ssa::RawFlow,
 ) -> TypeArtifact {
     let accesses = collect_mem_accesses(blocks);
     let signed_use = collect_signed_use_offsets(blocks);
@@ -1695,8 +1704,8 @@ fn infer_with(
 
     let callee_rets = callee_return_types(cfg);
     let entry_ret = crate::ir::abi_return_register(ctx).map(|r| format!("{r}.0"));
-    let ret =
-        recover_return_type(blocks, &callee_rets, word_bits(ctx), float_return, entry_ret.as_deref());
+    let gives = if float_return { crate::callee::Gives::Value } else { crate::callee::function_gives(ctx, cfg, flow) };
+    let ret = recover_return_type(blocks, &callee_rets, word_bits(ctx), float_return, entry_ret.as_deref(), gives);
     // When the result spans both vector return registers, the type above names
     // its FIRST half. Naming the registers is what keeps that from reading as
     // the whole answer — this model has no name for a two-register aggregate,
@@ -1726,7 +1735,7 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
-        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }).unwrap()
+        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() }).unwrap()
     }
 
     /// A stack-argument ABI states its arity in the return, and it was ignored.
@@ -1766,7 +1775,7 @@ mod tests {
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
         let art = TypeInferPass
-            .run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() })
+            .run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() })
             .unwrap();
         let params: Vec<(&str, Bits)> = art.signature.params.iter().map(|p| (p.name.as_str(), p.ty.bits)).collect();
         assert_eq!(params, vec![("r0", 32), ("r1", 32)], "AArch32 registers are 32 bits wide");
@@ -1906,7 +1915,7 @@ mod tests {
             ],
             condition: None,
         };
-        let used = collect_definite_param_regs(std::slice::from_ref(&block), &crate::ssa::EntryFlow::default());
+        let used = collect_definite_param_regs(std::slice::from_ref(&block), &crate::ssa::RawFlow::default());
         assert!(used.contains("r1.0"), "a register the instruction names is read: {used:?}");
         assert!(!used.contains("r2.0") && !used.contains("r3.0"), "a bound is not evidence: {used:?}");
     }
@@ -1938,7 +1947,7 @@ mod tests {
             }],
             condition: None,
         };
-        let used = collect_definite_param_regs(std::slice::from_ref(&join), &crate::ssa::EntryFlow::default());
+        let used = collect_definite_param_regs(std::slice::from_ref(&join), &crate::ssa::RawFlow::default());
         assert!(used.contains("rcx.0"), "the phi's result is returned, so its inputs are real: {used:?}");
         assert!(!used.contains("xmm3.0"), "nothing reads this phi — it is the SSA's bookkeeping: {used:?}");
     }
@@ -1988,7 +1997,7 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
         let ssa = SsaPass.run(&ctx, cfg.clone()).unwrap();
         let opt = OptimizePass.run(&ctx, ssa).unwrap();
-        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }).unwrap()
+        TypeInferPass.run(&ctx, TypeInferInput { cfg, blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() }).unwrap()
     }
 
     #[test]

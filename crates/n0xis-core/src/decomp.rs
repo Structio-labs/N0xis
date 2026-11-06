@@ -201,7 +201,7 @@ impl Pass for DecompPass {
         // propagation/DCE resolve pointer origins that raw SSA leaves as
         // opaque — then applied to whichever style's own IR is rendered.
         let mut opt = OptimizePass.run(ctx, ssa.clone())?;
-        let mut types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() })?;
+        let mut types = TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks.clone(), float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() })?;
         // Apply user C-type overrides FIRST (while names are still the synthesized
         // keys the overrides are stored under): a local gets a `type_override`, a
         // parameter's `ty` is replaced, and `"@return"` sets the signature return.
@@ -275,6 +275,12 @@ impl Pass for DecompPass {
         let params: std::collections::BTreeSet<String> = types.signature.params.iter().filter(|p| !p.reg.is_empty()).map(|p| format!("{}.0", p.reg)).collect();
         crate::callee::settle_call_args(ctx, &cfg, &mut ssa.blocks, &params);
         crate::callee::settle_call_args(ctx, &cfg, &mut opt.blocks, &params);
+        for blocks in [&mut ssa.blocks, &mut opt.blocks] {
+            if types.signature.ret.is_void() {
+                crate::callee::settle_void_returns(blocks);
+            }
+            crate::callee::drop_unread_results(blocks);
+        }
 
         let mut names = RenderNames::new(&cfg.callsites, &|va| crate::unnamed_at(ctx, va))
             .with_stack_pointer(ctx.arch.stack_pointer())
@@ -430,7 +436,8 @@ impl Pass for DecompPass {
         let lifted_fraction = if cfg.insn_count == 0 { 0.0 } else { 1.0 - (unlifted as f32 / cfg.insn_count as f32) };
         // Any mark in the text is a body that does not say 1.0, however many
         // instructions dilute it. The switch's mark is the one the structuring adds.
-        let marks = unsaid + marked + pseudo.iter().filter(|l| l.contains("/*index in ")).count();
+        let unknown_return = usize::from(matches!(types.signature.ret, crate::typeinfer::ReturnType::Unknown));
+        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| l.contains("/*index in ")).count();
         let quality = if cfg.insn_count == 0 {
             0.0
         } else {

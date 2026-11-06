@@ -108,10 +108,10 @@ pub struct OptArtifact {
     /// carried for the same reason.
     #[serde(skip)]
     pub float_return_pair: bool,
-    /// [`SsaArtifact::entry_flow`](crate::ssa::SsaArtifact::entry_flow), which
+    /// [`SsaArtifact::raw_flow`](crate::ssa::SsaArtifact::raw_flow), which
     /// this pass folds away the copies of.
     #[serde(skip)]
-    pub entry_flow: crate::ssa::EntryFlow,
+    pub raw_flow: crate::ssa::RawFlow,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -156,7 +156,7 @@ impl Pass for OptimizePass {
             delta,
             float_return: ssa.float_return,
             float_return_pair: ssa.float_return_pair,
-            entry_flow: ssa.entry_flow,
+            raw_flow: ssa.raw_flow,
         })
     }
 }

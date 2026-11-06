@@ -99,7 +99,7 @@ pub struct SsaArtifact {
     /// In-memory metadata, like `float_return` and for the same reason: the
     /// optimizer folds away the copies this is read from.
     #[serde(skip)]
-    pub entry_flow: EntryFlow,
+    pub raw_flow: RawFlow,
 }
 
 /// What happened to the values a function received, read before propagation.
@@ -107,8 +107,8 @@ pub struct SsaArtifact {
 /// `mov %rdi,%rbx; call g; mov %rbx,%rdi; call h` is a function reading its first
 /// argument, and after propagation it is two calls with a bare `rdi.0`, which every
 /// call shows whether or not anything was passed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EntryFlow {
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RawFlow {
     /// Entry values a copy carried to the argument list of a real call: a register
     /// the compiler moved a value out of, or back into, to pass it. A phi alone is
     /// no movement, since a branch around a call merges a register nothing touched
@@ -119,6 +119,22 @@ pub struct EntryFlow {
     pub saved: BTreeSet<String>,
     /// Where in the frame an entry value was stored as it came, by frame offset.
     pub stored_at: BTreeMap<String, i128>,
+    /// What the function's returns hold.
+    pub returns: ReturnEvidence,
+}
+
+/// What stands behind the return register at each `ret`, where the lift returned it
+/// whether or not anything was meant. Before propagation, so that a value moved to
+/// `rax` from where it was kept is told from one a call just left there.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReturnEvidence {
+    /// Some path computes it, loads it or moves it there: it is a return value.
+    pub value: bool,
+    /// Calls whose result some path returns untouched: only the callee can say.
+    pub calls: Vec<CallTarget>,
+    /// There is a `ret` at all. A function with none gives nothing to a question about
+    /// what it gives, since nothing it left in a register is ever seen.
+    pub any: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -135,7 +151,9 @@ impl Pass for SsaPass {
     fn run(&self, ctx: &Ctx, cfg: CfgArtifact) -> Result<SsaArtifact, CoreError> {
         let lifted = LiftPass.run(ctx, cfg.clone())?;
         let (fr, fr2) = crate::ir::float_return_registers(ctx);
-        Ok(build_ssa(ctx.arch, &cfg, &lifted, fr, fr2))
+        let mut ssa = build_ssa(ctx.arch, &cfg, &lifted, fr, fr2);
+        ssa.raw_flow.returns = return_evidence(&ssa.blocks, crate::ir::abi_return_register(ctx).as_deref());
+        Ok(ssa)
     }
 }
 
@@ -775,8 +793,8 @@ fn copied_var(e: &MicroExpr) -> Option<&str> {
     }
 }
 
-/// Reads [`EntryFlow`] off the blocks as they are before propagation.
-pub(crate) fn entry_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> EntryFlow {
+/// Reads [`RawFlow`] off the blocks as they are before propagation.
+pub(crate) fn raw_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> RawFlow {
     // Where each value goes by copy or merge. A name is defined once.
     let mut goes_to: HashMap<&str, Vec<&str>> = HashMap::new();
     for b in blocks {
@@ -824,7 +842,79 @@ pub(crate) fn entry_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> En
         }
     }
     let (saved, stored_at) = saved_entries(blocks, stack_pointer);
-    EntryFlow { moved, saved, stored_at }
+    RawFlow { moved, saved, stored_at, returns: ReturnEvidence::default() }
+}
+
+/// See [`ReturnEvidence`]. `ret_reg` is the convention's integer return register: its
+/// entry value, and a marker of what a call may have changed, are no value. A phi
+/// asks each of the paths into it.
+fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence {
+    enum Def<'b> {
+        Phi(&'b [crate::ssa::PhiInput]),
+        Call(&'b CallTarget),
+        Copy(&'b str),
+        Clobber,
+        Other,
+    }
+    let mut defs: HashMap<&str, Def> = HashMap::new();
+    for b in blocks {
+        for p in &b.phis {
+            defs.insert(p.dst.as_str(), Def::Phi(&p.inputs));
+        }
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } if u == n0xis_arch::CALL_CLOBBER => {
+                    defs.insert(dst.as_str(), Def::Clobber);
+                }
+                MicroStmt::Assign { dst, value: MicroExpr::Var(from) } => {
+                    defs.insert(dst.as_str(), Def::Copy(from.as_str()));
+                }
+                MicroStmt::Assign { dst, .. } => {
+                    defs.insert(dst.as_str(), Def::Other);
+                }
+                MicroStmt::Call { ret: Some(dst), target, .. } => {
+                    defs.insert(dst.as_str(), Def::Call(target));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = ReturnEvidence::default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut work: Vec<&str> = Vec::new();
+    for b in blocks {
+        for s in &b.stmts {
+            match &s.stmt {
+                MicroStmt::Return(Some(MicroExpr::Var(v))) => {
+                    out.any = true;
+                    work.push(v.as_str());
+                }
+                MicroStmt::Return(Some(_)) => {
+                    out.any = true;
+                    out.value = true;
+                }
+                MicroStmt::Return(None) => out.any = true,
+                _ => {}
+            }
+        }
+    }
+    while let Some(v) = work.pop() {
+        if !seen.insert(v) {
+            continue;
+        }
+        match defs.get(v) {
+            None => out.value |= v.ends_with(".0") && Some(ssa_root(v)) != ret_reg,
+            Some(Def::Clobber) => {}
+            Some(Def::Other) => out.value = true,
+            Some(Def::Call(t)) => out.calls.push((*t).clone()),
+            Some(Def::Phi(inputs)) => work.extend(inputs.iter().map(|i| i.value.as_str())),
+            // One register's version of another of itself passes the question on;
+            // from any other register, somebody moved it here to return it.
+            Some(Def::Copy(from)) if ssa_root(from) == ssa_root(v) => work.push(from),
+            Some(Def::Copy(_)) => out.value = true,
+        }
+    }
+    out
 }
 
 /// The frame offset an address names, through the stack pointer's versions and any
@@ -864,7 +954,7 @@ fn frame_offset_of(e: &MicroExpr, at: &HashMap<String, i128>) -> Option<i128> {
     }
 }
 
-/// See [`EntryFlow::saved`]. A store nothing loads is not a save: at `-O0` that is a
+/// See [`RawFlow::saved`]. A store nothing loads is not a save: at `-O0` that is a
 /// parameter written to its slot and not used, which the bytes do read.
 fn saved_entries(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> (BTreeSet<String>, BTreeMap<String, i128>) {
     let Some(sp) = stack_pointer else { return Default::default() };
@@ -886,7 +976,7 @@ fn saved_entries(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> (BTreeSet<
                 // What `ret` reads of the return register says nothing of a value
                 // that was put back there: it reads it on every path.
                 MicroStmt::Return(Some(MicroExpr::Var(_))) => {}
-                other => collect_stmt_vars(other, &mut reads),
+                other => stmt_uses(other, &mut reads),
             }
         }
         reads.extend(b.phis.iter().flat_map(|p| p.inputs.iter().map(|i| i.value.clone())));
@@ -925,7 +1015,7 @@ fn build_ssa(
             callsites: cfg.callsites.clone(),
             float_return: false,
             float_return_pair: false,
-            entry_flow: EntryFlow::default(),
+            raw_flow: RawFlow::default(),
         };
     }
     let (succ, pred) = block_graph(cfg);
@@ -1050,7 +1140,7 @@ fn build_ssa(
         .collect();
 
     let (float_return, float_return_pair) = retarget_float_returns(&mut blocks, &ret_sites, &defs);
-    let entry_flow = entry_flow(&blocks, arch.stack_pointer());
+    let raw_flow = raw_flow(&blocks, arch.stack_pointer());
     SsaArtifact {
         start: cfg.start,
         end: cfg.end,
@@ -1058,7 +1148,7 @@ fn build_ssa(
         callsites: cfg.callsites.clone(),
         float_return,
         float_return_pair,
-        entry_flow,
+        raw_flow,
     }
 }
 

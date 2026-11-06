@@ -165,7 +165,7 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
     let (params, ret, ret_registers) = match SsaPass
         .run(ctx, cfg.clone())
         .and_then(|ssa| OptimizePass.run(ctx, ssa))
-        .and_then(|opt| TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, entry_flow: opt.entry_flow.clone() }))
+        .and_then(|opt| TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() }))
     {
         Ok(t) => (
             // The pass ran: an empty list here is a real "no parameters".
