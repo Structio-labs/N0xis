@@ -5,6 +5,17 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-11-06
+
+**A run stops itself at a memory ceiling and answers `out-of-memory` instead of being killed, `strings` cuts a Rust binary's literals apart, calls that do not return end their function,
+and function discovery finds what follows a tail jump: on one program's PE release build 12 775 of 12 846 functions, up from 10 719, with no wrong starts.**
+
+What an answer can change for a script: `strings` has `literal_cuts`, and on a Rust image more rows; `function discover` lists different functions on x86 and PE; `why` has `ended_by` beside `end`; a function's end moves where
+a call does not return, and pseudo-C loses the false path after it; `lua strings` and `lua combo` answer undecided on one stray reference; a run past its ceiling answers `out-of-memory`.
+
+Known limits, measured: an image with no FDE at all is still found at about half, because the gap sweep needs declared extents around it; arm64 and i686 position-independent jump tables are not recognized; a table that lies consistently is not caught,
+21 015 silent wrong answers on that corpus (docs/VERIFICATION.md); `strings --min 1` on a large image still stops at the ceiling rather than fitting. Nothing here measures a function's decompiled body.
+
 ### Added
 
 - **`strings` cuts a Rust binary's literals apart.** A `&str` has no terminator, so literals sit side by side and `strings` read
