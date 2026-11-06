@@ -25,7 +25,7 @@ use n0xis_contracts::{Module, SymKind, Symbol, Va};
 use serde::Serialize;
 
 use crate::image::{
-    Binding, CodeView, Extent, Finding, FormatTables, Image, ImageFormat, OpenError, OpenOptions, Opened, SNIFF_LEN, StartCoverage, StartReason,
+    Binding, CodeView, Extent, Finding, FormatTables, Image, ImageFormat, OpenError, OpenOptions, Opened, SNIFF_LEN, Section, StartCoverage, StartReason,
     SymbolKind, SymbolTable,
 };
 use crate::{ByteOrder, Linkage, MemorySource, ModuleProvider, RelocatedWords, SourceError, SourceId, SymbolProvider};
@@ -64,6 +64,45 @@ pub struct DeclaredFunction {
     /// Exclusive; equal to `start` where no extent is stated.
     pub end: Va,
     pub why: StartReason,
+}
+
+/// Sections the search for a stored pointer does not read: their words are the
+/// image's own bookkeeping, and an address there is no reference a program holds.
+/// A symbol's `st_value`, a relocation's addend, a `DT_INIT` are all a word equal
+/// to a function's address, in `.dynsym`, `.rela.dyn` and `.dynamic`. A
+/// relocation names its own word and is not filtered by this.
+fn holds_no_pointers(section: &str) -> bool {
+    const EXACT: [&str; 18] = [
+        ".interp", ".hash", ".gnu.hash", ".dynsym", ".dynstr", ".dynamic", ".eh_frame", ".eh_frame_hdr", ".gcc_except_table", ".symtab", ".strtab", ".shstrtab",
+        ".comment", ".pdata", ".xdata", ".reloc", ".rsrc", ".idata",
+    ];
+    const PREFIX: [&str; 5] = [".note", ".gnu.version", ".rela", ".rel.", ".relr"];
+    // `.rel.ro` in a name is `.data.rel.ro`'s, which holds exactly what is wanted;
+    // `.rel.` above is only a prefix.
+    EXACT.contains(&section) || PREFIX.iter().any(|p| section.starts_with(p)) || section.starts_with(".debug") || section.is_empty()
+}
+
+/// One word of an image's data that holds an address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldWord {
+    pub at: u64,
+    pub section: String,
+    pub by: crate::HeldBy,
+}
+
+/// What [`ImageSource::words_holding`] found, and what it looked at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldWords {
+    pub words: Vec<HeldWord>,
+    /// The sections searched for a stored value, in the image's order. The
+    /// relocation tables are searched whole, and name their own words.
+    pub sections: Vec<String>,
+    /// The same sections' ranges, `(va, bytes the file holds)`.
+    pub ranges: Vec<(Va, u64)>,
+    pub rule: crate::WordRule,
+    /// Words equal to the address on an image that may load anywhere, with no
+    /// relocation writing them: numbers, not listed in `words`.
+    pub unrelocated_matches: usize,
 }
 
 /// An image on disk, served at its preferred base.
@@ -439,6 +478,75 @@ impl ImageSource {
     /// ([`Image::address_words`]).
     pub fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords {
         self.image.address_words(relocated)
+    }
+
+    /// Every word of this image's data that holds `addr` ([`HeldWords`]). `None`
+    /// on an image with no single address space for a word to be in.
+    ///
+    /// By relocation first: a table naming the word is a fact of the image,
+    /// wherever the word is. Then, where the image is one a pointer can be stored
+    /// in with no table saying so ([`crate::WordRule::StoredValues`]), a word equal
+    /// to `addr`, marked as only that ([`crate::HeldBy::MatchingValue`]). Where the
+    /// image may load anywhere ([`crate::WordRule::Relocated`]), such a word stays a
+    /// number and is counted, not listed.
+    pub fn words_holding(&self, addr: Va) -> Option<HeldWords> {
+        use crate::{HeldBy, WordRule};
+        let width = self.image.machine().address_model.pointer_width()?;
+        let order = self.byte_order();
+        let step = usize::from(width.bytes());
+        // On 32-bit ARM a Thumb function's address is stated with bit 0 set (the
+        // ARM ELF ABI's interworking rule), and is an address of the same code.
+        let thumb = (self.image.machine().isa == crate::Isa::Arm).then_some(addr.get() | 1);
+        let holds_it = |v: u64| v == addr.get() || Some(v) == thumb;
+        let in_image = |s: &&Section| s.in_image && s.size > 0;
+
+        let mut stored: Vec<u64> = Vec::new();
+        let mut sections = Vec::new();
+        let mut ranges = Vec::new();
+        let view = self.image.loaded_bytes();
+        for s in self.image.sections().iter().filter(in_image).filter(|s| !s.executable && s.file_size > 0 && !holds_no_pointers(&s.name)) {
+            sections.push(s.name.clone());
+            ranges.push((s.va, s.file_size.min(s.size)));
+            let Ok(bytes) = crate::MemorySource::read(&view, s.va, s.file_size.min(s.size) as usize) else { continue };
+            // By the address, not by the section's start: a pointer is aligned in
+            // memory, and a section may start anywhere.
+            let skip = (step as u64 - s.va.get() % step as u64) % step as u64;
+            for (i, word) in bytes.get(skip as usize..).unwrap_or_default().chunks_exact(step).enumerate() {
+                if word.iter().any(|&b| b != 0) && width.read_word(word, order).is_some_and(holds_it) {
+                    stored.push(s.va.get() + skip + (i * step) as u64);
+                }
+            }
+        }
+        stored.sort_unstable();
+        let mut relocated: BTreeMap<u64, HeldBy> = BTreeMap::new();
+        let mut written_otherwise: Vec<u64> = Vec::new();
+        let rule = self.image.relocated_addresses(&mut |r| {
+            if holds_it(r.holds) {
+                relocated.insert(r.at, r.by);
+            } else if stored.binary_search(&r.at).is_ok() {
+                // The file's word is overwritten at load with something else.
+                written_otherwise.push(r.at);
+            }
+        });
+        stored.retain(|at| !relocated.contains_key(at) && !written_otherwise.contains(at));
+        // A word listed as `MatchingValue` is one no table names, so it cannot be
+        // listed where the absence of a table says it is a number.
+        let (matching, unrelocated_matches) = match rule {
+            WordRule::Relocated => (Vec::new(), stored.len()),
+            WordRule::StoredValues | WordRule::NotRead(_) => (stored, 0),
+        };
+        let mut words: Vec<HeldWord> = relocated
+            .into_iter()
+            .chain(matching.into_iter().map(|at| (at, HeldBy::MatchingValue)))
+            .map(|(at, by)| HeldWord { at, section: self.section_at(at).unwrap_or_default(), by })
+            .collect();
+        words.sort_by_key(|w| w.at);
+        Some(HeldWords { words, sections, ranges, rule, unrelocated_matches })
+    }
+
+    /// The name of the section `at` is in, of those that take room in the image.
+    pub fn section_at(&self, at: u64) -> Option<String> {
+        self.image.sections().iter().find(|s| s.in_image && at >= s.va.get() && at - s.va.get() < s.size).map(|s| s.name.clone())
     }
 
     /// Why a strict parse refused this image, when it had to be opened

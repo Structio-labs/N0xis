@@ -14,6 +14,7 @@ use std::ops::ControlFlow;
 
 use n0xis_arch::InsnKind;
 use n0xis_contracts::Va;
+use n0xis_sources::{HeldBy, HeldWords, WordRule};
 use serde::{Deserialize, Serialize};
 
 use crate::sweep::{SWEEP_CHUNK, sweep_code};
@@ -67,6 +68,90 @@ pub struct XrefEntry {
     /// the instruction `text` itself stays the raw decoded form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sym: Option<String>,
+    /// The word of data this reference is, for a reference that is one.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldIn>,
+}
+
+/// A word of an image's data that holds an address ([`XrefEntry::held`]). Its
+/// three facts travel together, so no reference can state one without the others.
+#[derive(Clone, Debug, Serialize)]
+pub struct HeldIn {
+    /// Where the word is.
+    pub slot: Va,
+    pub section: String,
+    /// What says the word is an address. [`HeldBy::MatchingValue`] is the mark on
+    /// what is only a number equal to one.
+    pub evidence: HeldBy,
+    /// For an entry relative to a table: the table's base, which the entry is
+    /// added to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relative_to: Option<Va>,
+}
+
+/// A range of code decoded for the answer.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct SearchedCode {
+    pub start: Va,
+    pub size: u64,
+}
+
+/// Whether, and how, data was searched for words holding the address.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SearchedData {
+    Searched {
+        /// The sections read for stored values. The relocation tables are read
+        /// whole, and name words in any section.
+        sections: Vec<String>,
+        /// How a word was told from a number: `relocations`, where the image may
+        /// load anywhere, so only a word a relocation writes is an address;
+        /// `relocations_and_stored_values`, where the image runs where it says, so a
+        /// pointer can be a bare value, and those are marked `matching_value`;
+        /// `stored_values_only`, where the relocations were not read.
+        rule: &'static str,
+        /// Words equal to the address that no relocation writes on an image that
+        /// may load anywhere: numbers, so not in `refs`.
+        unrelocated_matches: usize,
+    },
+    NotSearched {
+        why: String,
+    },
+}
+
+/// What a `count` is out of: a zero means no such reference **in this**.
+#[derive(Clone, Debug, Serialize)]
+pub struct XrefSearched {
+    pub code: Vec<SearchedCode>,
+    pub data: SearchedData,
+    /// Forms of reference this answer does not look for, whatever it found.
+    pub not_searched: &'static [&'static str],
+}
+
+/// What no answer of `xref to` looks for. Each is a real way for code to reach an
+/// address, so a zero must not read as if it had been ruled out.
+const NOT_SEARCHED: &[&str] = &[
+    "an address as an immediate operand of an instruction",
+    "an address built by more than one instruction",
+    "an image-relative (RVA) word",
+    "a word not aligned to a pointer, unless a relocation names it",
+];
+
+impl XrefSearched {
+    /// Code windows only, and why data was not looked at.
+    pub fn code_only(code: Vec<SearchedCode>, why: impl Into<String>) -> Self {
+        Self { code, data: SearchedData::NotSearched { why: why.into() }, not_searched: NOT_SEARCHED }
+    }
+
+    /// Code windows, and what [`held_references`] searched.
+    pub fn with_held(code: Vec<SearchedCode>, held: &HeldWords) -> Self {
+        let rule = match held.rule {
+            WordRule::Relocated => "relocations",
+            WordRule::StoredValues => "relocations_and_stored_values",
+            WordRule::NotRead(_) => "stored_values_only",
+        };
+        Self { code, data: SearchedData::Searched { sections: held.sections.clone(), rule, unrelocated_matches: held.unrelocated_matches }, not_searched: NOT_SEARCHED }
+    }
 }
 
 /// The xref artifact (`n0xis.xref.v1`).
@@ -76,6 +161,8 @@ pub struct XrefArtifact {
     pub dir: XrefDir,
     pub count: usize,
     pub refs: Vec<XrefEntry>,
+    /// What was searched: `count` is out of this, and only this.
+    pub searched: XrefSearched,
 }
 
 /// Enough bytes to hold any single instruction on the supported ISAs — x86-64
@@ -103,7 +190,72 @@ pub fn xref_entry(ctx: &Ctx, from: Va, to: Option<Va>, to_function: Option<u32>,
         kind: kind.to_string(),
         text,
         sym: to.and_then(|t| crate::ir::symbol_on_entry(ctx, t)).map(|sy| sy.name),
+        held: None,
     }
+}
+
+/// The longest table [`relative_entries`] walks from one base, as many as the
+/// longest jump table the switch resolver reads.
+const MAX_RELATIVE_ENTRIES: usize = 4096;
+
+/// The references a word of data makes to `addr`: every word `held` found, and
+/// every entry of a table relative to its base.
+///
+/// A relative entry states an offset, so no word of it equals an address and no
+/// relocation names it. What makes it a reference is a base: `bases` are the data
+/// addresses code takes (every `lea` into data, from the index), and a run of
+/// 32-bit entries from one, each landing in code, is a table. Such a run is
+/// recognized by its shape alone, so every one is marked
+/// [`HeldBy::MatchingValue`]. A run stops at the next base, since the entries past
+/// it are relative to that one; a run of one is not called a table.
+pub fn held_references(ctx: &Ctx, addr: Va, held: &HeldWords, code: &[(Va, u64)], bases: &[u64], section_at: &dyn Fn(u64) -> Option<String>) -> Vec<XrefEntry> {
+    let mut refs: Vec<XrefEntry> = Vec::new();
+    for w in &held.words {
+        let text = format!("word in {} holds {addr}", w.section);
+        let mut entry = xref_entry(ctx, Va(w.at), Some(addr), None, "data_word", text);
+        entry.held = Some(HeldIn { slot: Va(w.at), section: w.section.clone(), evidence: w.by, relative_to: None });
+        refs.push(entry);
+    }
+    for (slot, base) in relative_entries(ctx, addr, code, bases) {
+        let section = section_at(slot).unwrap_or_default();
+        let text = format!("entry in {section} of a table at {}", Va(base));
+        let mut entry = xref_entry(ctx, Va(slot), Some(addr), None, "relative_entry", text);
+        entry.held = Some(HeldIn { slot: Va(slot), section, evidence: HeldBy::MatchingValue, relative_to: Some(Va(base)) });
+        refs.push(entry);
+    }
+    refs
+}
+
+/// `(slot, base)` of each relative entry that lands on `addr`; `bases` sorted.
+fn relative_entries(ctx: &Ctx, addr: Va, code: &[(Va, u64)], bases: &[u64]) -> Vec<(u64, u64)> {
+    let in_code = |a: u64| code.iter().any(|&(s, n)| a >= s.0 && a - s.0 < n);
+    let mut found = Vec::new();
+    for (i, &base) in bases.iter().enumerate() {
+        let next = bases.get(i + 1).copied().unwrap_or(u64::MAX);
+        let mut hits = Vec::new();
+        let mut entries = 0usize;
+        while entries < MAX_RELATIVE_ENTRIES {
+            let slot = base + (entries as u64) * 4;
+            if slot >= next {
+                break;
+            }
+            let Ok(b) = ctx.source.read(Va(slot), 4) else { break };
+            let Ok(word) = <[u8; 4]>::try_from(b.as_slice()) else { break };
+            let target = base.wrapping_add(i64::from(i32::from_le_bytes(word)) as u64);
+            if !in_code(target) {
+                break;
+            }
+            if target == addr.0 {
+                hits.push((slot, base));
+            }
+            entries += 1;
+        }
+        if entries >= 2 {
+            found.extend(hits);
+        }
+    }
+    found.sort_unstable();
+    found
 }
 
 /// Whether `ins` references the function `index` by index without a branch
@@ -141,6 +293,15 @@ impl XrefPass {
     pub(crate) fn run_in(&self, ctx: &Ctx, input: XrefInput, chunk: u64) -> Result<XrefArtifact, CoreError> {
         let target = Some(input.addr);
         let mut refs = Vec::new();
+        // A window of code is all this pass is handed; the frontend, which holds
+        // the image, says what else it looked at.
+        let searched = XrefSearched::code_only(
+            vec![SearchedCode { start: input.scan_start, size: input.size as u64 }],
+            match input.dir {
+                XrefDir::To => "a window of code was asked for",
+                XrefDir::From => "`xref from` reads the instruction at the address",
+            },
+        );
         match input.dir {
             XrefDir::To => {
                 // The function that starts at `addr`, where functions are
@@ -176,7 +337,7 @@ impl XrefPass {
                 // range.
                 let end = input.scan_start.get().saturating_add(input.size as u64);
                 if input.addr.get() < input.scan_start.get() || input.addr.get() >= end {
-                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new() });
+                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new(), searched });
                 }
                 let bytes = ctx.source.read(input.addr, MAX_INSN_BYTES)?;
                 for ins in ctx.arch.decode_range(&bytes, input.addr, bytes.len()) {
@@ -209,6 +370,7 @@ impl XrefPass {
             dir: input.dir,
             count: refs.len(),
             refs,
+            searched,
         })
     }
 }

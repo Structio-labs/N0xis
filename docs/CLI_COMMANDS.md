@@ -623,8 +623,24 @@ How a body reads:
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).
-- `--addr` (required); `--start`/`--size` — code window to scan (defaults to `.text`).
+- `--addr` (required); `--start`/`--size` — code window to scan (defaults to every executable section). A
+  window asks about that code alone: no data is searched, and the answer says so.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
+- `data.searched` says what `count` is out of: `code` (the ranges decoded), `data` and `not_searched`, the
+  forms of reference no answer looks for (an immediate operand, an address built by several instructions, an
+  image-relative word, an unaligned word no relocation names). A zero is no such reference in that.
+- `xref to` on a file also reads the image's data, as a `refs` row of `kind` `data_word`, with `slot` (where the
+  word is, also its `from`), `section` and `evidence`, what says the word is an address:
+  `relative_relocation`, `relr_relocation`, `irelative_relocation`, `symbol_relocation`, `got_slot` and
+  `plt_slot` (each an ELF relocation, in any section), `base_relocation` (a PE's table), or `matching_value`.
+  `matching_value` is **only a number equal to the address**, from a section `data.searched.data.sections`
+  names, and only on an image where a pointer looks no different (`rule`: `relocations_and_stored_values`, a
+  fixed `ET_EXEC` or a PE with no base relocations; `stored_values_only`, relocations not read). On an image
+  that may load anywhere (`rule`: `relocations`) a word no relocation writes stays a number whatever it equals:
+  it is not listed, and `unrelocated_matches` counts it.
+- A `relative_entry` row is one 32-bit entry of a table relative to a base code takes the address of: `slot`,
+  `section`, `relative_to` (the base) and `evidence` `matching_value`, since only its shape says it is one: at
+  least two entries from the base, each landing in code, up to the next address code takes.
 - On a WebAssembly module (see *WebAssembly modules*) each reference carries `from_function` and
   `to_function`, the indices of the functions it is from and to; a call to an imported function
   has `to_function` and no `to` (an import has no position), and its `sym` is the import's name

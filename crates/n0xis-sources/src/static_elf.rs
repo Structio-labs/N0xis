@@ -270,6 +270,29 @@ fn relative_reloc_type(e_machine: u16) -> Option<u32> {
     }
 }
 
+/// `IRELATIVE`: the loader runs the resolver at a stated address and stores its
+/// answer. `None` for a machine whose relocations are not read.
+fn irelative_reloc_type(e_machine: u16) -> Option<u32> {
+    match e_machine {
+        0x3E => Some(37),   // R_X86_64_IRELATIVE
+        0x03 => Some(42),   // R_386_IRELATIVE
+        0xB7 => Some(1032), // R_AARCH64_IRELATIVE
+        0x28 => Some(160),  // R_ARM_IRELATIVE
+        _ => None,
+    }
+}
+
+/// The word-sized absolute relocation: a symbol's address plus an addend. `None`
+/// for a machine whose relocations are not read.
+fn absolute_reloc_type(e_machine: u16) -> Option<u32> {
+    match e_machine {
+        0x3E | 0x03 => Some(1), // R_X86_64_64, R_386_32
+        0xB7 => Some(257),      // R_AARCH64_ABS64
+        0x28 => Some(2),        // R_ARM_ABS32
+        _ => None,
+    }
+}
+
 /// Every ELF file starts with `\x7fELF`.
 pub(crate) fn sniff(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x7fELF")
@@ -942,6 +965,66 @@ impl Image for StaticElf {
             });
         }
         AddressWords::Relocated
+    }
+
+    fn relocated_addresses(&self, visit: &mut dyn FnMut(crate::RelocatedAddress)) -> crate::WordRule {
+        use crate::{HeldBy, RelocatedAddress, RelocatedWords, RelocationsNotRead, WordRule};
+        let Ok(elf) = Elf::parse(&self.bytes) else {
+            return WordRule::NotRead(RelocationsNotRead::Malformed);
+        };
+        let RelocatedWords::Read { .. } = &self.relocated else {
+            let RelocatedWords::NotRead(why) = self.relocated else { unreachable!() };
+            return WordRule::NotRead(why);
+        };
+        let machine = elf.header.e_machine;
+        let (Some(relative), Some(irelative), Some(absolute), Some((glob_dat, jump_slot))) =
+            (relative_reloc_type(machine), irelative_reloc_type(machine), absolute_reloc_type(machine), got_reloc_types(machine))
+        else {
+            return WordRule::NotRead(RelocationsNotRead::MachineNotMeasured);
+        };
+        let width = crate::PointerWidth::of_64_bit(elf.is_64);
+        let order = self.machine.byte_order;
+        let view = self.loaded_bytes();
+        let stored = |at: u64| -> Option<u64> {
+            let b = crate::MemorySource::read(&view, Va(at), usize::from(width.bytes())).ok()?;
+            width.read_word(&b, order)
+        };
+        let allocated = elf.shdr_relocs.iter().filter(|(idx, _)| elf.section_headers.get(*idx).is_some_and(|sh| sh.sh_flags & SHF_ALLOC != 0));
+        for r in elf.dynrelas.iter().chain(elf.dynrels.iter()).chain(elf.pltrelocs.iter()).chain(allocated.flat_map(|(_, rs)| rs.iter())) {
+            // A symbol this image defines has its address here; an undefined one
+            // is another image's, and no address of this one.
+            let defined = || elf.dynsyms.get(r.r_sym).filter(|s| s.st_shndx != 0).map(|s| s.st_value);
+            // `RELA` states the addend in the table, and a linker may leave the
+            // word itself zero (lld does); `REL` states it in the word.
+            let addend = || r.r_addend.map(|a| a as u64).or_else(|| stored(r.r_offset));
+            let (holds, by) = if r.r_type == relative {
+                (addend(), HeldBy::RelativeRelocation)
+            } else if r.r_type == irelative {
+                (addend(), HeldBy::IrelativeRelocation)
+            } else if r.r_type == absolute {
+                (defined().zip(addend()).map(|(s, a)| s.wrapping_add(a)), HeldBy::SymbolRelocation)
+            } else if r.r_type == glob_dat {
+                (defined(), HeldBy::GotSlot)
+            } else if r.r_type == jump_slot {
+                (defined(), HeldBy::PltSlot)
+            } else {
+                // `COPY` fills an object, and the TLS relocations hold no address.
+                continue;
+            };
+            if let Some(holds) = holds {
+                visit(RelocatedAddress { at: r.r_offset, holds, by });
+            }
+        }
+        let dyns: &[goblin::elf::dynamic::Dyn] = elf.dynamic.as_ref().map(|d| d.dyns.as_slice()).unwrap_or_default();
+        for (offset, size) in relr_tables(&elf, dyns).unwrap_or_default() {
+            let _ = for_each_relr_word(&elf, &self.bytes, offset, size, &mut |word| {
+                if let Some(holds) = stored(word) {
+                    visit(RelocatedAddress { at: word, holds, by: HeldBy::RelrRelocation });
+                }
+            });
+        }
+        // The same rule as `address_words`: a fixed image runs where its words say.
+        if elf.header.e_type == ET_EXEC { WordRule::StoredValues } else { WordRule::Relocated }
     }
 
     fn binding_at(&self, slot: Va) -> Binding {

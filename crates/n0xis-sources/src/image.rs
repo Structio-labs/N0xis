@@ -856,6 +856,15 @@ pub trait Image: std::fmt::Debug + Send + Sync {
     /// comes to hold, in no order and possibly more than once; handed over
     /// rather than returned, so what it costs is what the caller keeps.
     fn address_words(&self, relocated: &mut dyn FnMut(u64, u64)) -> crate::AddressWords;
+    /// Every word a relocation table of this image gives an address to, handed
+    /// to `visit` in no order and possibly more than once, and how a word no
+    /// table names is to be read. Parsed for the question, so a table's size
+    /// costs what the caller keeps.
+    ///
+    /// Wider than [`Self::address_words`], which answers for `strings` and a call
+    /// through a slot and takes only what is relative: a shared object's vtable
+    /// names a public method by symbol, which is a reference all the same.
+    fn relocated_addresses(&self, visit: &mut dyn FnMut(crate::RelocatedAddress)) -> crate::WordRule;
     /// Whether the word at `va` keeps, for the life of the process, what the
     /// loader left there: an ELF's `PT_GNU_RELRO` and its segments no one can
     /// write. A relocated word anywhere else is the value a variable starts

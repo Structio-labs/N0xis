@@ -458,6 +458,11 @@ impl Image for WasmImage {
         crate::AddressWords::NotStated
     }
 
+    /// A module has no relocations in this sense: its words are in a linear memory.
+    fn relocated_addresses(&self, _visit: &mut dyn FnMut(crate::RelocatedAddress)) -> crate::WordRule {
+        crate::WordRule::NotRead(crate::RelocationsNotRead::FormatNotRead)
+    }
+
     /// A module has no slots a call goes through; a table's are its own.
     fn constant_after_load(&self, _va: Va) -> bool {
         false

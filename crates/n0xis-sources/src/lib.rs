@@ -55,7 +55,7 @@ pub use image::{
     UnlistedSlot, Unread,
 };
 mod image_source;
-pub use image_source::{DeclaredFunction, ImageName, ImageSource};
+pub use image_source::{DeclaredFunction, HeldWord, HeldWords, ImageName, ImageSource};
 
 mod producer;
 pub use producer::{RustcEvidence, rustc_evidence};
@@ -225,6 +225,57 @@ pub enum AddressWords {
     /// Neither can be said: an image with no single address space, or one that
     /// may load anywhere whose relocations were not read.
     NotStated,
+}
+
+/// What says that a word of an image's data holds an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldBy {
+    /// A `RELATIVE` entry of a `RELA` or `REL` table: base plus a stated address.
+    RelativeRelocation,
+    /// A word a `RELR` table names, which holds the address itself.
+    RelrRelocation,
+    /// An `IRELATIVE` entry: the address of a resolver the loader runs.
+    IrelativeRelocation,
+    /// A symbolic absolute relocation (`R_X86_64_64`, `R_386_32`, `R_AARCH64_ABS64`,
+    /// `R_ARM_ABS32`) against a symbol this image defines: how a shared object's
+    /// vtable names a method a program could override.
+    SymbolRelocation,
+    /// A `GLOB_DAT` slot of the GOT, against a symbol this image defines.
+    GotSlot,
+    /// A `JUMP_SLOT` slot, against a symbol this image defines.
+    PltSlot,
+    /// An entry of a PE's base relocation table: the word holds the address.
+    BaseRelocation,
+    /// **Only a matching value.** No table names the word; it holds a number
+    /// equal to the address, on an image where a real pointer looks no different
+    /// ([`WordRule::StoredValues`]).
+    MatchingValue,
+}
+
+/// A word a relocation table of an image gives an address to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelocatedAddress {
+    /// Where the word is.
+    pub at: u64,
+    /// The address it comes to hold, as the image states it.
+    pub holds: u64,
+    pub by: HeldBy,
+}
+
+/// How an image's data words are told from numbers (`Image::relocated_addresses`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordRule {
+    /// The image runs at the addresses it states and no table has to name a
+    /// pointer (an `ET_EXEC`, a PE with no base relocations). A word equal to an
+    /// address is what a pointer looks like, and what a number can look like.
+    StoredValues,
+    /// The image may load anywhere and its relocation tables were read: a word
+    /// no relocation writes keeps its number wherever the image lands, so it is
+    /// no address, whatever it equals.
+    Relocated,
+    /// The image may load anywhere and its relocations were not read.
+    NotRead(RelocationsNotRead),
 }
 
 /// Why an image's load-time relocations were not read.

@@ -79,6 +79,9 @@ pub(crate) struct StaticPe {
     codeview: Option<CodeView>,
     /// A PE's base relocations are not read.
     relocated: RelocatedWords,
+    /// Where the base relocation table is, `(va, size)`, when the image has one.
+    base_relocations: Option<(u64, u32)>,
+    image_base: u64,
 }
 
 /// The longest PDB path kept from a CodeView record; past it the record is
@@ -125,6 +128,7 @@ impl StaticPe {
 
         let oh = pe.header.optional_header.ok_or_else(|| OpenError::Refused("PE has no optional header".into()))?;
         let image_base = oh.windows_fields.image_base;
+        let base_relocations = oh.data_directories.get_base_relocation_table().as_ref().map(|d| (image_base.wrapping_add(u64::from(d.virtual_address)), d.size));
         let size_of_image = oh.windows_fields.size_of_image as u64;
         let size_of_headers = oh.windows_fields.size_of_headers as u64;
 
@@ -315,6 +319,8 @@ impl StaticPe {
             findings: degraded.map(|why| Finding::StrictParseRefused { why }).into_iter().collect(),
             codeview,
             relocated,
+            base_relocations,
+            image_base,
         })
     }
 }
@@ -635,6 +641,37 @@ impl Image for StaticPe {
         crate::AddressWords::Stored
     }
 
+    fn relocated_addresses(&self, visit: &mut dyn FnMut(crate::RelocatedAddress)) -> crate::WordRule {
+        use crate::{HeldBy, RelocatedAddress, RelocationsNotRead, WordRule};
+        // No table: a `/FIXED` image, or one whose table was stripped. It runs at
+        // its preferred base, and a pointer is the number stored.
+        let Some((va, size)) = self.base_relocations.filter(|&(_, size)| size > 0) else {
+            return WordRule::StoredValues;
+        };
+        let view = self.loaded_bytes();
+        let Ok(table) = crate::MemorySource::read(&view, Va(va), size as usize) else {
+            return WordRule::NotRead(RelocationsNotRead::Malformed);
+        };
+        let Some(walked) = for_each_base_relocation(&table, &mut |rva, typ| {
+            let at = self.image_base.wrapping_add(u64::from(rva));
+            // `IMAGE_REL_BASED_HIGHLOW` and `_DIR64`: the two that fill a whole
+            // pointer. The rest (`ABSOLUTE`, padding; ARM's split `MOVW`/`MOVT`)
+            // are not a word of data.
+            let width = match typ {
+                3 => 4,
+                10 => 8,
+                _ => return,
+            };
+            let Ok(b) = crate::MemorySource::read(&view, Va(at), width) else { return };
+            let holds = b.iter().rev().fold(0u64, |v, &x| (v << 8) | u64::from(x));
+            visit(RelocatedAddress { at, holds, by: HeldBy::BaseRelocation });
+        }) else {
+            return WordRule::NotRead(RelocationsNotRead::Malformed);
+        };
+        // A stated table with no entry in it says nothing of the image's pointers.
+        if walked == 0 { WordRule::StoredValues } else { WordRule::Relocated }
+    }
+
     /// Not asked of a PE today, and not answered by a section's flags: the
     /// loader rewrites `__guard_dispatch_icall_fptr` in `.rdata`, so a word in a
     /// read-only section is not a word the loader left as the file states it.
@@ -651,6 +688,33 @@ impl Image for StaticPe {
     fn codeview(&self) -> Option<&CodeView> {
         self.codeview.as_ref()
     }
+}
+
+/// Walk a PE base relocation table, handing `visit` each entry's RVA and type.
+/// Blocks of `{page_rva: u32, block_size: u32}` and then `u16`s of `type << 12 |
+/// offset`. Returns how many entries there were; `None` when a block does not fit
+/// in the table or cannot hold its header, which is no table this reader believes.
+fn for_each_base_relocation(table: &[u8], visit: &mut dyn FnMut(u32, u8)) -> Option<usize> {
+    let mut count = 0usize;
+    let mut at = 0usize;
+    while at < table.len() {
+        // The directory's size may be rounded up past the last block.
+        if table[at..].iter().all(|&b| b == 0) {
+            break;
+        }
+        let page = u32::from_le_bytes(table.get(at..at + 4)?.try_into().ok()?);
+        let block = u32::from_le_bytes(table.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+        if block < 8 {
+            return None;
+        }
+        for entry in table.get(at + 8..at.checked_add(block)?)?.chunks_exact(2) {
+            let e = u16::from_le_bytes([entry[0], entry[1]]);
+            count += 1;
+            visit(page.wrapping_add(u32::from(e & 0x0fff)), (e >> 12) as u8);
+        }
+        at += block;
+    }
+    Some(count)
 }
 
 /// Whether `va` lies in a section the image marks executable.

@@ -1098,6 +1098,16 @@ fn with_cfg_ctx(
 /// `bytes_base` is where an inline `bytes` source gets mapped; each capability
 /// picks it from whichever explicit start it honors, so `--bytes` behaves the
 /// same here as it did in the CLI's hand-written handlers.
+/// Why `xref to` read no words of data on a source: it takes a table of the
+/// image to say a word is an address.
+fn not_an_image(src: &Src) -> &'static str {
+    match src {
+        Src::Static(_) => "a module's data is in a linear memory, which holds no address of the module",
+        Src::Live(_) | Src::Remote(_) => "a live process: no relocation table says which of its words are addresses",
+        Src::Snap(_) => "a snapshot or bytes: no relocation table says which of its words are addresses",
+    }
+}
+
 /// Fold one code window's string-xref result into the accumulated one.
 ///
 /// The data side does not move between windows, so every window rediscovers the
@@ -2528,7 +2538,29 @@ impl Plugin for AnalysisPasses {
                                 n0xis_core::xref_entry(ctx, from, Some(addr), named, kind, text)
                             })
                             .collect::<Vec<_>>();
-                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs };
+                        let mut refs = refs;
+                        let code: Vec<n0xis_core::SearchedCode> = code_ranges.iter().map(|&(start, size)| n0xis_core::SearchedCode { start, size }).collect();
+                        // Words of data. A word of a live process or a snapshot has no
+                        // table saying it is an address; this reads the image's.
+                        let held = match src {
+                            Src::Static(img) => img.words_holding(addr).map(|held| (img, held)),
+                            _ => None,
+                        };
+                        let searched = match held {
+                            Some((img, held)) => {
+                                // Every data address code takes, which is what a
+                                // relative table is relative to.
+                                let bases: Vec<u64> = held
+                                    .ranges
+                                    .iter()
+                                    .flat_map(|&(start, size)| idx.edges.range(start.0..start.0.saturating_add(size)).map(|(&base, _)| base))
+                                    .collect();
+                                refs.extend(n0xis_core::held_references(ctx, addr, &held, &code_ranges, &bases, &|at| img.section_at(at)));
+                                n0xis_core::XrefSearched::with_held(code, &held)
+                            }
+                            None => n0xis_core::XrefSearched::code_only(code, not_an_image(src)),
+                        };
+                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs, searched };
                         return ok_json(n0xis_contracts::schema::v1::XREF, art, label);
                     }
                     let windows =
@@ -2543,7 +2575,10 @@ impl Plugin for AnalysisPasses {
                                 // Keep the first window's framing (start/size
                                 // describe where the search began) and grow the
                                 // hit list across the rest.
-                                Some(acc) => acc.refs.extend(art.refs),
+                                Some(acc) => {
+                                    acc.refs.extend(art.refs);
+                                    acc.searched.code.extend(art.searched.code);
+                                }
                                 None => merged = Some(art),
                             },
                             Err(e) => return Response::error("xref-failed", e.to_string()),
@@ -2553,6 +2588,10 @@ impl Plugin for AnalysisPasses {
                         Some(mut art) => {
                             art.count = art.refs.len();
                             name_imported_functions(&mut art.refs, src);
+                            // What this path did not read is stated by what it was.
+                            if dir == n0xis_core::XrefDir::To && !matches!(src, Src::Static(_)) {
+                                art.searched.data = n0xis_core::SearchedData::NotSearched { why: not_an_image(src).to_string() };
+                            }
                             ok_json(n0xis_contracts::schema::v1::XREF, art, label)
                         }
                         None => Response::error("no-range", "could not resolve a scan range; pass start and size"),
