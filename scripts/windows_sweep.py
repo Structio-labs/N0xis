@@ -334,9 +334,19 @@ class Sweep:
             return f"expected refusal {refuses}, got exit {r['rc']}, not an envelope"
         return None
 
-    def difference(self, w, l):
+    @staticmethod
+    def parsed_lines(out):
+        """`serve` answers a line of JSON each: as many values, or None."""
+        try:
+            return [json.loads(line) for line in out.decode("utf-8").splitlines() if line.strip()]
+        except ValueError:
+            return None
+
+    def difference(self, w, l, ignore=()):
         """The first difference between the two answers after normalising, or None."""
         ew, el = self.parsed(w["o"]), self.parsed(l["o"])
+        if ew is None and el is None:
+            ew, el = self.parsed_lines(w["o"]), self.parsed_lines(l["o"])
         if w["rc"] != l["rc"]:
             return f"exit {w['rc']} here, {l['rc']} on the twin"
         if ew is None or el is None:
@@ -346,7 +356,15 @@ class Sweep:
                 return None
             at = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
             return f"text differs at {at}: {a[max(0, at - 30):at + 50]!r} / {b[max(0, at - 30):at + 50]!r}"
-        return first_diff(self.norm(ew), self.norm(el))
+        return first_diff(without_keys(self.norm(ew), ignore), without_keys(self.norm(el), ignore))
+
+
+def without_keys(v, keys):
+    if not keys:
+        return v
+    if isinstance(v, dict):
+        return {k: without_keys(x, keys) for k, x in v.items() if k not in keys}
+    return [without_keys(x, keys) for x in v] if isinstance(v, list) else v
 
 
 def first_diff(a, b, path=""):
@@ -581,7 +599,7 @@ def static_part(s, table):
         command = s.leaf_of(c["args"])
         w = s.win(c["args"], stdin=c.get("stdin"), bound=c.get("bound", 60))
         l = s.lin(c["args"], stdin=c.get("stdin"), bound=c.get("bound", 60))
-        why = s.contract(w) or (f"on the twin: {s.contract(l)}" if s.contract(l) else None) or s.expectation(w, c.get("refuses")) or s.difference(w, l)
+        why = s.contract(w) or (f"on the twin: {s.contract(l)}" if s.contract(l) else None) or s.expectation(w, c.get("refuses")) or (None if c.get("kind_only") and s.expectation(l, c.get("refuses")) is None else s.difference(w, l, c.get("ignore", ())))
         if not why and c.get("must"):
             text = w["o"].decode("utf-8", "replace").lower()
             gone = [m for m in c["must"] if str(m).lower() not in text]

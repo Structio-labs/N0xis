@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import struct
@@ -695,8 +696,8 @@ def path_free(v):
 
 class Mcp:
     def __init__(self, s, side, env=None):
-        self.q, self.n = [], 0
-        self.lines = __import__("queue").Queue()
+        self.n = 0
+        self.lines = queue.Queue()
         if side == "lin":
             self.p = subprocess.Popen([s.lmcp], cwd=s.L("mcp"), env=s.lin_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         else:
@@ -723,7 +724,7 @@ class Mcp:
         while time.time() < end:
             try:
                 l = self.lines.get(timeout=max(0.1, end - time.time()))
-            except Exception:  # noqa: BLE001 - the queue's Empty: the deadline below decides
+            except queue.Empty:
                 continue
             if l is None:
                 return "ended"
@@ -810,7 +811,7 @@ def mcp_part(s, table):
             died = L.survived()
             why = died or why
             s.row("mcp.live." + id, "", "failed" if why else "passed", str(why or "")[:300])
-        v("process_ps", "process_ps", dict(filter="wtarget"), [f'"pid":{P}', f'"pid": {P}'][:0] + [str(P)])
+        v("process_ps", "process_ps", dict(filter="wtarget"), [str(P)])
         v("module_list", "module_list", dict(pid=P), ["wtarget.exe", L.T.base])
         v("mem_read", "mem_read", dict(pid=P, addr=a["p_i32"], size=4), ["da 00 eb 1c"])
         v("mem_span", "mem_span", dict(pid=P, addr=a["p_i32"], size=4), ["da 00 eb 1c"])
