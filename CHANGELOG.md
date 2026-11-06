@@ -57,6 +57,9 @@ in a capability's arguments may be text as well, for a client whose own numbers 
   declaration says what the access does. A write states its width the same way. The IR always had these; the printer dropped them.
 - A `switch` selects on the version its table is indexed by. `and $7,%edi` then a table read printed `switch (rdi)` beside a correct `rdi.1`, which
   read as the unmasked parameter. Where the code subtracted from a value first, the labels are that value's: `case 0x61:`, not `case 0x0:`.
+- A loop tested at the bottom prints as one. A header with statements printed as `while (c) { H; ... }` tested before `H`, which the machine does not:
+  it read names only set inside the loop, and a countdown ran one iteration short. It is `do { } while (c)` where the back edge's copies allow, `while (1)`
+  with its test in place where they do not, and `while (c)` only where the test really comes first and what it reads has been written.
 
 **One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
 ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`

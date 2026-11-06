@@ -123,7 +123,7 @@ fn stmt_dst(stmt: &MicroStmt) -> Option<&str> {
     }
 }
 
-fn collect_expr_vars(e: &MicroExpr, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_expr_vars(e: &MicroExpr, out: &mut BTreeSet<String>) {
     match e {
         MicroExpr::Var(name) => {
             out.insert(name.clone());

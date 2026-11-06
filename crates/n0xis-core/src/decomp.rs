@@ -1090,6 +1090,10 @@ mod tests {
         assert!(a64(0xb9400020).contains("/*ldr"), "ldr w0,[x1]: {}", a64(0xb9400020));
     }
 
+    fn pos_of(text: &str, needle: &str) -> usize {
+        text.find(needle).unwrap_or_else(|| panic!("no {needle} in {text}"))
+    }
+
     /// Four cases that each return a different constant, reached by the table at
     /// 0x2000 through `prefix` (which ends by jumping), and a default.
     fn decomp_table_dispatch(prefix: &[u8]) -> Vec<String> {
@@ -1135,6 +1139,57 @@ mod tests {
             assert!(body.contains(label), "{label}: {body}");
         }
         assert!(!body.contains("case 0x0:"), "{body}");
+    }
+
+    /// A rotated fill loop: the test comes after the statements. Printed as
+    /// `while (rsi.2 != 0) { ...; rsi.2 = ...` it read a name only set inside it.
+    #[test]
+    fn a_loop_tested_at_the_bottom_prints_as_one() {
+        // 0x1000: movb $0,(%rdi); add $1,%rdi; sub $1,%rsi; jne 0x1000; ret
+        let code = vec![0xc6, 0x07, 0x00, 0x48, 0x83, 0xc7, 0x01, 0x48, 0x83, 0xee, 0x01, 0x75, 0xf3, 0xc3];
+        let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
+        assert!(text.contains("do {") && text.contains("} while ("), "{text}");
+        assert!(!text.lines().any(|l| l.trim_start().starts_with("while (")), "a top test reads what the body sets: {text}");
+        assert!(pos_of(&text, "*(uint8_t*)") < pos_of(&text, "} while ("), "the store runs before the test: {text}");
+    }
+
+    /// gcd as gcc -O2 compiles it, whose answer is the divisor of the last round:
+    /// after the loop the value a back-edge copy would have overwritten is read. In
+    /// a `do { ...; rdx.2 = rdx.4; } while (rdx.4 != 0); return rdx.2;` the copy runs
+    /// on the way out too, and the body returned the zero that ended the loop.
+    #[test]
+    fn a_copy_read_after_the_loop_stays_on_the_back_edge() {
+        let code = vec![
+            0x48, 0x89, 0xf8, 0x48, 0x89, 0xf2, 0x48, 0x85, 0xf6, 0x74, 0x1d, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x48, 0x89, 0xd1, 0x31, 0xd2, 0x48, 0xf7, 0xf1,
+            0x48, 0x89, 0xc8, 0x48, 0x85, 0xd2, 0x75, 0xf0, 0x48, 0x89, 0xc8, 0xc3, 0x0f, 0x1f, 0x40, 0x00, 0x48, 0x89, 0xf9, 0x48, 0x89, 0xc8, 0xc3,
+        ];
+        let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
+        assert!(!text.contains("} while ("), "{text}");
+        assert!(text.contains("while (1) {"), "{text}");
+    }
+
+    /// `sub $1,%edx; jne`, with a statement before it in the same block and a phi
+    /// to copy for: printed `while (rdx.2 != 1) { ... }` it ran one iteration short.
+    #[test]
+    fn a_countdown_tests_after_its_body_and_runs_every_iteration() {
+        // mov $0x20,%edx; xor %eax,%eax
+        // 0x1007: add %eax,%eax; sub $1,%edx; jne 0x1007; ret
+        let code = vec![0xba, 0x20, 0, 0, 0, 0x31, 0xc0, 0x01, 0xc0, 0x83, 0xea, 0x01, 0x75, 0xf9, 0xc3];
+        let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
+        let top_test = text.lines().position(|l| l.trim_start().starts_with("while (") && !l.contains("while (1)"));
+        assert_eq!(top_test, None, "the test goes after the body: {text}");
+        assert!(text.contains("do {") || text.contains("while (1)"), "{text}");
+    }
+
+    /// The test really is first where the header has no statements, and the top
+    /// test is then the true form: `while (rcx != 0) { rcx -= 1; }`.
+    #[test]
+    fn a_loop_tested_at_the_top_stays_a_while() {
+        // 0x1000: test %rcx,%rcx; je 0x100a; dec %rcx; jmp 0x1000; ret
+        let code = vec![0x48, 0x85, 0xc9, 0x74, 0x05, 0x48, 0xff, 0xc9, 0xeb, 0xf6, 0xc3];
+        let text = decomp(code, DecompStyle::Ssa).pseudo.join("\n");
+        assert!(text.lines().any(|l| l.trim_start().starts_with("while (") && !l.contains("while (1)")) || text.contains("for ("), "{text}");
+        assert!(!text.contains("do {"), "{text}");
     }
 
     /// `movb $1,0x8(%rsp)` beside a 64-bit access to the same slot: the local is

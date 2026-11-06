@@ -602,7 +602,7 @@ fn stmt_is_barrier(stmt: &MicroStmt) -> bool {
     }
 }
 
-fn stmt_read_exprs(stmt: &MicroStmt) -> Vec<&MicroExpr> {
+pub(crate) fn stmt_read_exprs(stmt: &MicroStmt) -> Vec<&MicroExpr> {
     match stmt {
         MicroStmt::Assign { value, .. } => vec![value],
         MicroStmt::Store { addr, value, .. } => vec![addr, value],

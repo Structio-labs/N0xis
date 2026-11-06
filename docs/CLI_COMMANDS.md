@@ -592,6 +592,9 @@ How a body reads:
   where it does not. A call through a field, `(*rax->field_0x8)(...)`, reads a pointer and says no width.
 - A `switch` names the value its table is read with, and its labels are that value's. `/*index in rdi*/`
   says a table was found and the version of the register it is read with was not.
+- `while (c)` and `for (; c; step)` test before anything in the loop runs, and only where the machine does.
+  `do { } while (c)` tests at the bottom, and `while (1)` with an `if` and a `break` holds a test with
+  statements before it, or one a copy on the back edge would change.
 
 ### `xref to --addr <hex>` / `xref from --addr <hex>`
 Who references `--addr` (`to`) / what `--addr` references (`from`).

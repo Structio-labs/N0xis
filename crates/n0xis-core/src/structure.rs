@@ -799,6 +799,78 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     }
 }
 
+/// The block whose branch decides a back edge, and the block of copies the edge
+/// runs through when the header's phis needed them on it.
+#[derive(Clone, Copy)]
+struct LatchEdge {
+    latch: usize,
+    through: Option<usize>,
+}
+
+fn latch_of(ctx: &Ctx, back_edge_from: usize) -> LatchEdge {
+    let b = back_edge_from;
+    match ctx.pred[b].as_slice() {
+        [p] if crate::coalesce::is_synthetic_va(ctx.blocks[b].start) => LatchEdge { latch: *p, through: Some(b) },
+        _ => LatchEdge { latch: b, through: None },
+    }
+}
+
+/// May the copies on a back edge go inside `do { } while (c)`, where they run before
+/// the test and on the way out as well? The machine tests first and copies only
+/// when it goes round. So the test must not read what they write, and neither may
+/// anything after the loop: `rdx.2 = rdx.8; } while (rdx.8 != 0); return rdx.2;`
+/// returns the zero that ended a gcd and not the divisor.
+fn copies_may_join_the_body(ctx: &Ctx, latch: usize, through: Option<usize>, body: &BTreeSet<usize>) -> bool {
+    let (Some(b), Some(cond)) = (through, &ctx.conds[latch]) else { return true };
+    let written: BTreeSet<String> = ctx.blocks[b]
+        .stmts
+        .iter()
+        .filter_map(|s| match &s.stmt {
+            MicroStmt::Assign { dst, .. } => Some(ctx.names.var_display(dst)),
+            _ => None,
+        })
+        .collect();
+    let reads_a_copy = |e: &MicroExpr| {
+        let mut read = BTreeSet::new();
+        crate::ssa::collect_expr_vars(e, &mut read);
+        read.iter().any(|v| written.contains(&ctx.names.var_display(v)))
+    };
+    if reads_a_copy(cond) {
+        return false;
+    }
+    !ctx.blocks.iter().enumerate().filter(|(i, _)| !body.contains(i)).any(|(_, block)| {
+        block.condition.as_ref().is_some_and(reads_a_copy)
+            || block.phis.iter().any(|p| p.inputs.iter().any(|i| written.contains(&ctx.names.var_display(&i.value))))
+            || block.stmts.iter().any(|s| crate::optimize::stmt_read_exprs(&s.stmt).into_iter().any(reads_a_copy))
+    })
+}
+
+/// Does what the test at `h` reads have a value on the way in? True of a name
+/// written outside the loop, an entry value, and a phi at the header. A name whose
+/// only writes are inside the loop has none, and `while` is the one form that would
+/// state otherwise: the reader takes the test to read something the first time.
+fn test_reads_only_what_reaches_it(ctx: &Ctx, h: usize, body: &BTreeSet<usize>) -> bool {
+    let Some(cond) = &ctx.conds[h] else { return true };
+    let mut read = BTreeSet::new();
+    crate::ssa::collect_expr_vars(cond, &mut read);
+    read.iter().all(|v| {
+        if v.ends_with(".0") {
+            return true;
+        }
+        let shown = ctx.names.var_display(v);
+        let is_written = |dst: &str| ctx.names.var_display(dst) == shown;
+        ctx.blocks[h].phis.iter().any(|p| is_written(&p.dst))
+            || ctx.blocks.iter().enumerate().filter(|(i, _)| !body.contains(i)).any(|(_, b)| {
+                b.phis.iter().any(|p| is_written(&p.dst))
+                    || b.stmts.iter().any(|s| match &s.stmt {
+                        MicroStmt::Assign { dst, .. } => is_written(dst),
+                        MicroStmt::Call { ret: Some(dst), .. } => is_written(dst),
+                        _ => false,
+                    })
+            })
+    })
+}
+
 fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
     ctx.loop_stack.push(h);
     // Set once each path below knows the block it lays out after the loop.
@@ -818,9 +890,17 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
     // value, the wrong value entirely. Detect it so the top-test fold defers to
     // the do/while reconstruction below, which keeps the header exit in-body
     // ahead of the step.
-    let has_conditional_exit_latch = back_edges
-        .iter()
-        .any(|&b| ctx.cfg.blocks[b].terminator == "cjmp" && ctx.succ[b].iter().any(|&s| !body_set.contains(&s)));
+    //
+    // A back edge that needed copies for the header's phis runs through a block
+    // of its own, and the latch is the block before it.
+    let latch_edge: Option<LatchEdge> = match back_edges.as_slice() {
+        [b] => Some(latch_of(ctx, *b)),
+        _ => None,
+    };
+    let has_conditional_exit_latch = back_edges.iter().any(|&b| {
+        let latch = latch_of(ctx, b).latch;
+        ctx.cfg.blocks[latch].terminator == "cjmp" && ctx.succ[latch].iter().any(|&s| !body_set.contains(&s))
+    });
 
     if term == "cjmp" && !has_conditional_exit_latch {
         let (t_idx, f_idx) = cjmp_arms(ctx.cfg, ctx.succ, h);
@@ -829,6 +909,14 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
             let f_in = body_set.contains(&f);
             if t_in ^ f_in {
                 let cond_for_loop = if t_in { cond_text(ctx, h) } else { negated_cond_text(ctx, h) };
+                let leave_cond = if t_in { negated_cond_text(ctx, h) } else { cond_text(ctx, h) };
+                // `while (c) { H; B }` tests `c` before `H` runs. Where the header
+                // has statements the machine runs them first, and the text is
+                // wrong: `while (rdx.4 != 0) { rdx.4 = __urem(...` reads a name only
+                // set inside it, and a countdown runs one iteration short. So the
+                // test goes first only where it is first, and only where what it
+                // reads has been written by then.
+                let tests_first = real_line_count(ctx, h) == 0 && test_reads_only_what_reaches_it(ctx, h, &body_set);
                 let inside = if t_in { t } else { f };
                 let outside = if t_in { f } else { t };
                 // The header's out-arm is the loop continuation; a `break`
@@ -845,16 +933,24 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                 // direct for-emission it cannot mis-structure a complex loop
                 // (absorb trailing blocks, emit a `for` over an opaque cond).
                 ctx.indent += 1;
-                let mut body: Vec<String> = ctx.body_lines[h].iter().map(|l| format!("{}{}", pad(ctx.indent), l)).collect();
+                let header_lines: Vec<String> = ctx.body_lines[h].iter().map(|l| format!("{}{}", pad(ctx.indent), l)).collect();
                 let saved = std::mem::take(&mut ctx.out);
                 emit_node(ctx, inside, Some(h));
                 let inside_lines = std::mem::replace(&mut ctx.out, saved);
-                body.extend(inside_lines);
+                let body: Vec<String> = header_lines.iter().chain(&inside_lines).cloned().collect();
                 ctx.indent -= 1;
 
                 let pad0 = pad(ctx.indent);
                 let for_form = if cond_for_loop.contains("/*") { None } else { split_trailing_step(&body) };
-                if let Some((body_wo_step, step)) = for_form {
+                if !tests_first {
+                    ctx.out.push(format!("{pad0}while (1) {{"));
+                    ctx.out.extend(header_lines);
+                    ctx.out.push(format!("{}if ({leave_cond}) {{", pad(ctx.indent + 1)));
+                    ctx.out.push(format!("{}break;", pad(ctx.indent + 2)));
+                    ctx.out.push(format!("{}}}", pad(ctx.indent + 1)));
+                    ctx.out.extend(inside_lines);
+                    ctx.out.push(format!("{pad0}}}"));
+                } else if let Some((body_wo_step, step)) = for_form {
                     ctx.out.push(format!("{pad0}for (; {cond_for_loop}; {step}) {{"));
                     ctx.out.extend(body_wo_step);
                     ctx.out.push(format!("{pad0}}}"));
@@ -877,13 +973,13 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
     // the loop) — the `term == "cjmp"` path above already returned if the header
     // itself was the loop's exit test, so getting here means the real test is the
     // latch below, which is exactly a `do`/`while`.
-    if back_edges.len() == 1 {
-        let t = back_edges[0];
-        if t != h && ctx.cfg.blocks[t].terminator == "cjmp" {
+    if let Some(LatchEdge { latch: t, through }) = latch_edge {
+        if ctx.cfg.blocks[t].terminator == "cjmp" && copies_may_join_the_body(ctx, t, through, &body_set) {
             let (tt, tf) = cjmp_arms(ctx.cfg, ctx.succ, t);
             if let (Some(tt), Some(tf)) = (tt, tf) {
-                let tt_back = tt == h;
-                let tf_back = tf == h;
+                let back = through.unwrap_or(h);
+                let tt_back = tt == back;
+                let tf_back = tf == back;
                 let tt_out = !body_set.contains(&tt);
                 let tf_out = !body_set.contains(&tf);
                 let do_while_cond: Option<String> = if tt_back && tf_out {
@@ -902,9 +998,16 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                     ctx.out.push(format!("{}do {{", pad(ctx.indent)));
                     ctx.indent += 1;
                     ctx.visited[t] = true;
-                    emit_block_body_and_terminator(ctx, h, Some(t));
-                    for line in &ctx.body_lines[t] {
-                        ctx.out.push(format!("{}{}", pad(ctx.indent), line));
+                    if t != h {
+                        emit_block_body_and_terminator(ctx, h, Some(t));
+                    }
+                    if let Some(b) = through {
+                        ctx.visited[b] = true;
+                    }
+                    for b in std::iter::once(t).chain(through) {
+                        for line in &ctx.body_lines[b] {
+                            ctx.out.push(format!("{}{}", pad(ctx.indent), line));
+                        }
                     }
                     ctx.indent -= 1;
                     ctx.out.push(format!("{}}} while ({cond_for_loop});", pad(ctx.indent)));
@@ -1231,7 +1334,11 @@ mod tests {
         let text = out.lines.join("\n");
         // The pre-fix bug wired the found edge to the loop's `-1` exit with a
         // `break;`, dropping the `return i` (it became dead code after the loop).
-        assert!(!text.contains("break;"), "the found exit must not collapse to a break:\n{text}");
+        // The one `break;` is the exhaustion test's: the header's statements run
+        // before it, so it cannot be a `while` condition.
+        assert_eq!(text.matches("break;").count(), 1, "the found exit must not collapse to a break:\n{text}");
+        assert!(pos(&text, "break;") < pos(&text, "rax.8 = (uint32_t)local_neg_4;"), "the one break is the exhaustion test's:\n{text}");
+        assert!(pos(&text, ">= local_neg_1c") < pos(&text, "break;"), "the one break is the exhaustion test's:\n{text}");
         // The found value (`local_neg_4`, i.e. `i` at `[rbp-0x4]`) is loaded
         // onto the return path INSIDE the loop, before the exhaustion sentinel
         // `0xffffffff`.
