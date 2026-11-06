@@ -73,7 +73,7 @@ mod sweep;
 mod literals;
 
 pub use stack::{on_analysis_stack, ANALYSIS_STACK_BYTES};
-pub use ceiling::{parse_memory_size, set_memory_ceiling, CeilingAlloc};
+pub use ceiling::{lift_while_writing, parse_memory_size, set_memory_ceiling, CeilingAlloc, LiftedWhileWriting};
 pub use aob::{parse_aob, AobArtifact, AobByte, AobInput, AobScanPass, AobSweepInput, AobSweepPass};
 pub use aot::{parse_aot, AotArtifact, AotSymbol, RvaSize};
 pub use aslr::{rebase, rva_of, va_at};

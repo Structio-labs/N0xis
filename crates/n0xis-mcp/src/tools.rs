@@ -893,7 +893,7 @@ impl N0xisServer {
 
     #[tool(description = "Text in the image: runs of printable UTF-8 or UTF-16LE characters with their addresses. By default the file-backed sections that hold no code; `section`, `all_sections`, or `start`+`size` for others; `contains` filters, `limit`/`offset` page.")]
     fn strings(&self, Parameters(a): Parameters<StringsRequest>) -> String {
-        emit(n0xis_frontend::build_registry().dispatch(
+        emit(n0xis_frontend::build_registry().dispatch_answer(
             "strings",
             &json!({
                 "min": a.min,

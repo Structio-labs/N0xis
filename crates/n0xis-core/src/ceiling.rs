@@ -22,8 +22,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const BLOCK_OVERHEAD: usize = 16;
 const BLOCK_ROUNDING: usize = 16;
 
+/// [`CEILING`] when no ceiling holds. No count of bytes is above it.
+const NO_CEILING: usize = usize::MAX;
+/// [`CEILING`] once a refusal has begun, also above any count of bytes: the refusal
+/// itself needs memory, and another thread past the ceiling simply carries on until the
+/// process exits. It says so apart from [`NO_CEILING`] for [`lift_while_writing`].
+const REFUSING: usize = usize::MAX - 1;
+
 static HELD: AtomicUsize = AtomicUsize::new(0);
-static CEILING: AtomicUsize = AtomicUsize::new(usize::MAX);
+static CEILING: AtomicUsize = AtomicUsize::new(NO_CEILING);
 static REFUSAL: OnceLock<fn(u64)> = OnceLock::new();
 
 fn cost(size: usize) -> usize {
@@ -32,16 +39,16 @@ fn cost(size: usize) -> usize {
 
 fn charge(bytes: usize) {
     let held = HELD.fetch_add(bytes, Ordering::Relaxed).saturating_add(bytes);
-    if held > CEILING.load(Ordering::Relaxed) {
-        // The refusal itself needs memory, so the ceiling goes first. Another
-        // thread past it now simply carries on until the process exits.
-        let ceiling = CEILING.swap(usize::MAX, Ordering::Relaxed);
-        if ceiling != usize::MAX
-            && let Some(refuse) = REFUSAL.get()
-        {
-            refuse(ceiling as u64);
-            std::process::exit(1);
-        }
+    let ceiling = CEILING.load(Ordering::Relaxed);
+    // One thread wins this, against any other past the ceiling and against a writer
+    // lifting it ([`lift_while_writing`]).
+    if held > ceiling
+        && ceiling != REFUSING
+        && CEILING.compare_exchange(ceiling, REFUSING, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        && let Some(refuse) = REFUSAL.get()
+    {
+        refuse(ceiling as u64);
+        std::process::exit(1);
     }
 }
 
@@ -88,8 +95,39 @@ unsafe impl GlobalAlloc for CeilingAlloc {
 pub fn set_memory_ceiling(ceiling: Option<u64>, refuse: fn(u64)) {
     let _ = REFUSAL.set(refuse);
     if let Some(bytes) = ceiling {
-        CEILING.store(usize::try_from(bytes).unwrap_or(usize::MAX), Ordering::Relaxed);
+        let bytes = usize::try_from(bytes).unwrap_or(NO_CEILING);
+        CEILING.store(if bytes >= REFUSING { NO_CEILING } else { bytes }, Ordering::Relaxed);
     }
+}
+
+/// The ceiling held off while an answer is being written, and back when this drops.
+#[must_use = "the ceiling comes back when this drops"]
+pub struct LiftedWhileWriting {
+    ceiling: usize,
+}
+
+impl Drop for LiftedWhileWriting {
+    fn drop(&mut self) {
+        CEILING.store(self.ceiling, Ordering::Relaxed);
+    }
+}
+
+/// A door about to write an answer it has finished computing calls this first. A
+/// refusal is an answer of its own, and once part of the first has left, one more
+/// allocation past the ceiling would append a second envelope to half of it, which no
+/// reader can parse. The ceiling has done its work by then: the answer is built, and
+/// writing it needs a buffer and small change.
+///
+/// If another thread's refusal has already begun, its envelope is the answer, and this
+/// thread waits for the exit rather than write beside it.
+pub fn lift_while_writing() -> LiftedWhileWriting {
+    let ceiling = CEILING.swap(NO_CEILING, Ordering::Relaxed);
+    if ceiling == REFUSING {
+        loop {
+            std::thread::park();
+        }
+    }
+    LiftedWhileWriting { ceiling }
 }
 
 /// A size as the configuration states it: bytes, or with a `K`, `M` or `G` suffix.

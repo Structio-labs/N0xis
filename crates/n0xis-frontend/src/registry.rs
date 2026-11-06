@@ -43,6 +43,36 @@ use crate::source::{SourceSpec, Src, resolve};
 /// are interchangeable at the call site.
 pub type Handler = Box<dyn Fn(&Value) -> Response<Value> + Send + Sync>;
 
+/// A handler whose answer may be too large to build as JSON values: every row of a
+/// million-row answer as a map of its own came to about a kilobyte a row, measured on a
+/// 20 MB image. Its answer serializes to exactly the JSON the value form would.
+pub type AnswerHandler = Box<dyn Fn(&Value) -> Response<Answer> + Send + Sync>;
+
+/// A capability's `data`, on its way out. Writing it builds nothing:
+/// [`Registry::dispatch_answer`] is for a door that only writes what it gets, and
+/// [`Registry::dispatch`] for one that looks inside.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum Answer {
+    Json(Value),
+    Strings(crate::strings_caps::StringsPage),
+}
+
+impl Answer {
+    /// The value form, the whole answer built.
+    pub fn into_value(self) -> Value {
+        match self {
+            Answer::Json(value) => value,
+            Answer::Strings(page) => serde_json::to_value(&page).unwrap_or(Value::Null),
+        }
+    }
+}
+
+enum Run {
+    Json(Handler),
+    Answer(AnswerHandler),
+}
+
 /// Where a capability came from. Agents care: a built-in has been tested with
 /// the release, a plugin is whatever the user registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,16 +90,28 @@ pub struct Capability {
     /// stable one.
     pub schema: Option<String>,
     pub origin: Origin,
-    handler: Handler,
+    run: Run,
 }
 
 impl Capability {
     pub fn new(name: impl Into<String>, summary: impl Into<String>, schema: Option<&str>, origin: Origin, handler: Handler) -> Self {
-        Capability { name: name.into(), summary: summary.into(), schema: schema.map(str::to_string), origin, handler }
+        Capability { name: name.into(), summary: summary.into(), schema: schema.map(str::to_string), origin, run: Run::Json(handler) }
+    }
+
+    /// A built-in whose answer is written without being built ([`AnswerHandler`]).
+    pub fn with_answer(name: impl Into<String>, summary: impl Into<String>, schema: Option<&str>, handler: AnswerHandler) -> Self {
+        Capability { name: name.into(), summary: summary.into(), schema: schema.map(str::to_string), origin: Origin::Builtin, run: Run::Answer(handler) }
     }
 
     pub fn run(&self, args: &Value) -> Response<Value> {
-        (self.handler)(args)
+        self.answer(args).map_data(Answer::into_value)
+    }
+
+    pub fn answer(&self, args: &Value) -> Response<Answer> {
+        match &self.run {
+            Run::Json(handler) => handler(args).map_data(Answer::Json),
+            Run::Answer(handler) => handler(args),
+        }
     }
 }
 
@@ -170,8 +212,14 @@ impl Registry {
     /// unrenamed, with no word. One place covers every consumer behind the
     /// registry, including the ones that only look a name up.
     pub fn dispatch(&self, name: &str, args: &Value) -> Response<Value> {
+        self.dispatch_answer(name, args).map_data(Answer::into_value)
+    }
+
+    /// [`dispatch`](Self::dispatch), for a door that writes the answer and does not look
+    /// inside: the bytes are the same, and a large one is not built first.
+    pub fn dispatch_answer(&self, name: &str, args: &Value) -> Response<Answer> {
         let resp = match self.get(name) {
-            Some(c) => c.run(args),
+            Some(c) => c.answer(args),
             // Not registered, and whether it exists is unknown: a contributor
             // that should have said could not. Its error, not "no such name".
             None => match self.diagnostics.iter().find(|d| !d.covers.is_empty() && name.starts_with(&d.covers)) {
@@ -715,7 +763,7 @@ fn outside_code_note(src: &Src, start: Va) -> Option<String> {
 /// Add a remark without discarding one the capability already made. `with_note`
 /// replaces, and a capability that explains its own result (`decomp pseudo`
 /// does) would silently lose that explanation.
-fn add_note(mut resp: Response<Value>, note: Option<String>) -> Response<Value> {
+fn add_note<T>(mut resp: Response<T>, note: Option<String>) -> Response<T> {
     let Some(note) = note else { return resp };
     if let Response::Ok(ok) = &mut resp {
         ok.meta.note = Some(match ok.meta.note.take() {

@@ -3083,7 +3083,7 @@ fn main() {
 fn refuse_past_the_ceiling(ceiling: u64) {
     let pretty = std::env::args().any(|a| a == "--pretty");
     let message = format!("this run needs more memory than its ceiling of {} MiB, so it stopped", ceiling >> 20);
-    emit(
+    emit::write_refusal_past_the_ceiling(
         &Response::<serde_json::Value>::error("out-of-memory", message)
             .with_hint("ask for less (a narrower range, a limit, a higher --min), or set N0X_MEMORY_MAX; a cgroup's limit stays the upper bound"),
         pretty,
@@ -3888,7 +3888,7 @@ fn ir_args_json(a: &IrArgs) -> serde_json::Value {
 /// this one line plus its argument mapping; the analysis lives in
 /// `n0xis-frontend::registry`, shared with MCP.
 fn run_capability(name: &str, args: serde_json::Value, pretty: bool) -> bool {
-    emit(&n0xis_frontend::build_registry().dispatch(name, &args), pretty)
+    emit(&n0xis_frontend::build_registry().dispatch_answer(name, &args), pretty)
 }
 
 fn cmd_ir(a: IrArgs, view: IrView, pretty: bool) -> bool {
@@ -4764,6 +4764,31 @@ fn cmd_strings(a: StringsArgs, pretty: bool) -> bool {
     )
 }
 
+/// `find`'s `data`, written without being built. As JSON values half a million matches of
+/// one letter came to 800 MiB for 21 MB of answer. Its fields and a row's are in key order,
+/// as a map of values had them: the answer's bytes are what they were.
+#[derive(serde::Serialize)]
+struct FindAnswer<'a> {
+    bytes_scanned: usize,
+    count: usize,
+    matches: FindRows<'a>,
+    pattern_len: usize,
+    truncated: bool,
+}
+
+struct FindRows<'a>(&'a [(Va, String)]);
+
+impl serde::Serialize for FindRows<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Row<'a> {
+            section: &'a str,
+            va: Va,
+        }
+        serializer.collect_seq(self.0.iter().map(|(va, section)| Row { section, va: *va }))
+    }
+}
+
 /// `find` — the disassembler's Ctrl+F: locate a byte pattern / string / escaped
 /// string across the image's file-backed sections (or a named section / explicit
 /// range). Built on the same [`AobScanPass`] the `aob` hooking scan uses — one
@@ -4870,13 +4895,7 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
         Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
     };
 
-    let data = json!({
-        "count": matches.len(),
-        "bytes_scanned": scanned,
-        "pattern_len": pattern.len(),
-        "truncated": truncated,
-        "matches": matches.iter().map(|(va, sec)| json!({ "va": va.to_string(), "section": sec })).collect::<Vec<_>>(),
-    });
+    let data = FindAnswer { bytes_scanned: scanned, count: matches.len(), matches: FindRows(&matches), pattern_len: pattern.len(), truncated };
     match src {
         // A process: a named window may not read, or may stop part-way.
         Src::Live(_) | Src::Remote(_) => emit_swept(schema::v1::FIND, n0xis_sources::Swept { answer: data, read }, label, pretty),

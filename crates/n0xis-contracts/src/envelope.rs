@@ -180,6 +180,14 @@ impl<T> Response<T> {
         self
     }
 
+    /// The same response with its `data` turned into another form, its `meta` as it was.
+    pub fn map_data<U>(self, f: impl FnOnce(T) -> U) -> Response<U> {
+        match self {
+            Response::Ok(ok) => Response::Ok(Success { ok: ok.ok, data: f(ok.data), meta: ok.meta }),
+            Response::Err(failed) => Response::Err(failed),
+        }
+    }
+
     /// `true` for the success arm — a convenient exit-code driver for the CLI.
     pub fn is_ok(&self) -> bool {
         matches!(self, Response::Ok(_))
