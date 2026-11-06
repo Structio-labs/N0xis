@@ -861,6 +861,40 @@ mod tests {
         assert!(asked(&snap).pseudo.iter().any(|l| l.contains("0x7")));
     }
 
+    /// A stub at `G` whose slot the image's relocations bind to its own `H`.
+    struct ThroughPlt;
+    impl n0xis_sources::SymbolProvider for ThroughPlt {
+        fn slot_target(&self, _va: Va) -> Option<Va> {
+            None
+        }
+        fn symbol_at(&self, va: Va) -> Option<n0xis_contracts::Symbol> {
+            (va.0 == H).then(|| n0xis_contracts::Symbol { va: Va(H), module: String::new(), name: "the_export".into(), kind: n0xis_contracts::SymKind::Function })
+        }
+        fn thunk_to(&self, va: Va) -> Option<Va> {
+            (va.0 == G).then_some(Va(H))
+        }
+    }
+
+    /// `mov ecx,1; mov edx,2; call stub; ret`, the stub's slot bound to `h`, which reads
+    /// its first argument: the call has `h`'s name and `h`'s count.
+    #[test]
+    fn a_call_through_the_plt_to_the_images_own_export_has_its_name_and_count() {
+        let mut f = vec![0xb9, 1, 0, 0, 0, 0xba, 2, 0, 0, 0];
+        call(&mut f, G);
+        f.push(0xc3);
+        // The stub: jmp *0x2000(%rip), which no name resolves here.
+        let snap = image(f, &[0xff, 0x25, 0, 0, 0, 0], READS_FIRST);
+        let arch = X64::new();
+        let syms = ThroughPlt;
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&syms);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(F), 0x100)).unwrap();
+        let b = DecompPass
+            .run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
+            .unwrap();
+        let l = line_with(&b, "the_export(");
+        assert!(l.contains("the_export(0x1)"), "{l}");
+    }
+
     fn says_void(snap: &Snapshot) -> String {
         body(snap).signature
     }

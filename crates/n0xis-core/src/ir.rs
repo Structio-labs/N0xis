@@ -445,6 +445,10 @@ fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
         .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
         .or_else(|| ins.rip_target.and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
         .or_else(|| ins.target.and_then(|t| thunk_import(ctx, t)))
+        // A PLT stub of a function this image defines: `.rela.plt` binds its slot to that
+        // function, so it is called by that name. One C image calls its own exports this
+        // way, and 1 190 of 1 550 calls there printed `sub_8BD0` for `luaL_checktype`.
+        .or_else(|| ins.target.and_then(|t| ctx.symbols.and_then(|s| s.thunk_to(t))).and_then(|def| symbol_on_entry(ctx, def)))
         // A slot that holds a known address of this image: the function at that
         // address, named as its entry is everywhere else, or nothing. Never the
         // nearest symbol below: the word names a function, not a place in one.

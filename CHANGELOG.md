@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A call to the image's own export through its PLT has that export's name.** `.rela.plt` binds the stub's slot to a function this image defines, and the call printed `sub_8BD0` for `luaL_checktype`. The name now reaches every answer that reads a call's resolved name.
+
 **A body stops at a call that does not come back.** `decomp pseudo` asks a direct call's local target, from its own graph and a few calls down, whether it ever returns, and the body no longer runs on past such a call into code that belongs to another path. The question has an answer only as proof: an exit that cannot be shown to end, a cycle, or running out of depth all mean it may return. Other commands keep the graph they had, since it says where a function ends for everything that lists one.
 
 **A function that gives nothing says `void`, and one that cannot be known says so.** The lift returns the return register at every `ret`, and every call defines it, so nearly everything read as returning a value. Now a value out of a call asks that callee: void gives void, a value gives a value, and where nothing can be asked the signature prints `/*unknown*/` and `quality` falls by one mark. A `void` body prints `return;`, a result nothing reads prints no assignment, and a function that never comes back answers nothing about a value for those who `return` it.
