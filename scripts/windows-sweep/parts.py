@@ -394,7 +394,7 @@ def rest_group(s, L):
     t("snapshot.info+pid", "snapshot", "info", "ls1")
     t("mem.read+snapshot", "mem", "read", "--addr", a["p_i32"], "--size", "4", "--snapshot", "ls1", must=[tobytes(0x1CEB00DA, 4)])
     t("snapshot.dump+full", "snapshot", "dump", "--name", "lsfull", *FP(), "--force", bound=120)
-    t("find+snapfull", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", "--snapshot", "lsfull", *page_of(a["p_str"]), must=[a["p_str"]])
+    t("find+snapfull", "find", "--string", "N0XIS_LIVE_ASCII_MARKER_77", "--snapshot", "lsfull", "--start", a["p_str"], "--size", "64", must=[a["p_str"]])
     t("decomp+snapfull", "decomp", "pseudo", "--addr", a["magic_mix"], "--snapshot", "lsfull", must=["5bd1e995"])
     t("annotate.name+pid", "annotate", "name", "--addr", a["hooked"], "--value", "мій_хук", *FP())
     t("annotate.show+pid", "annotate", "show", "--addr", a["hooked"], *FP(), must=["мій_хук"])

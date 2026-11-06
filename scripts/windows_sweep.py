@@ -546,7 +546,7 @@ def take_away(s):
     """Everything this run left on the laptop, also when it failed. True when the directory is gone."""
     lap = s.laptop
     lap.stop_runner()
-    out = lap.ps(f"Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{s.wroot}\\*' }} | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; cmd /c rd /s /q '\\?\{s.wroot}'; Test-Path -LiteralPath '{s.wroot}'")
+    out = lap.ps(f"Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{s.wroot}\\*' }} | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; cmd /c rd /s /q '\\\\?\\{s.wroot}'; Test-Path -LiteralPath '{s.wroot}'")
     return out.strip().endswith("False")
 
 
