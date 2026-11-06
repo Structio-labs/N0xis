@@ -7,15 +7,24 @@ and the named test must fail.
 
 The rules are `scripts/calibrate_update.py`'s, and so is the runner: each mutation asserts its anchor is
 there exactly once, files are restored from the bytes read, and the run is judged by the named test failing.
-It edits the work tree while it runs, so nothing else should build from this tree meanwhile.
+It edits the work tree while it runs, so nothing else should build from this tree meanwhile; a run killed part way
+leaves its mutation there, so read `git status` after one. `--skip FILE` skips the tests named in FILE's lines of an earlier
+run that passed the calibration.
 """
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibrate_update import ROOT, run_test  # noqa: E402
+
+# `cargo test --test X` does not build examples, so a test that runs one would run the unmutated
+# one and pass, which reads as a guard that guards nothing. This is how that was found.
+EXAMPLES = {"a_refusal_never_follows_part_of_an_answer": ("n0xis-cli", "an_answer_past_the_ceiling")}
+# A crate alone is built with its default features, and these tests are behind one.
+CARGO_ARGS = {"n0xis-sources": ("--features", "static-pe")}
 
 SUP = "crates/n0xis-mcp/src/supervisor.rs"
 MAIN = "crates/n0xis-mcp/src/main.rs"
@@ -76,8 +85,13 @@ MUTATIONS = [
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-k", help="only mutations whose file or test name contains this")
+    ap.add_argument("--skip", help="an earlier run's output: its calibrated lines are not run again")
     args = ap.parse_args()
     chosen = [m for m in MUTATIONS if (not args.k or args.k in m[0] or args.k in m[5])]
+    if args.skip:
+        done = [line.split() for line in Path(args.skip).read_text().splitlines() if line.startswith("ok ")]
+        marks = {(d[2], line_anchor) for d, line_anchor in ((d, " ".join(d[4:])) for d in done)}
+        chosen = [m for m in chosen if (m[5], " ".join(repr(m[1][:50]).split())) not in marks]
     bad = []
     for path, anchor, replacement, package, binary, test in chosen:
         file = ROOT / path
@@ -86,7 +100,10 @@ def main():
         assert text.count(anchor) == 1, f"{path}: the anchor is there {text.count(anchor)} times: {anchor}"
         try:
             file.write_text(text.replace(anchor, replacement))
-            verdict, log = run_test(package, binary, test)
+            if binary in EXAMPLES:
+                example = EXAMPLES[binary]
+                subprocess.run(["systemd-run", "--user", "--scope", "-q", "--nice=19", "-p", "MemoryMax=6G", "--", "cargo", "build", "-p", example[0], "--example", example[1], "-j", "8"], cwd=ROOT, capture_output=True)
+            verdict, log = run_test(package, binary, test, CARGO_ARGS.get(package, ()))
         finally:
             file.write_bytes(original)
         ok = verdict == "failed"

@@ -255,8 +255,8 @@ MUTATIONS = [
 ]
 
 
-def run_test(package, binary, test):
-    cmd = ["systemd-run", "--user", "--scope", "-q", "--nice=19", "-p", "MemoryMax=6G", "--", "cargo", "test", "-p", package, *(("--test", binary) if binary else ("--lib",)), "-j", "8", "--", "--exact", test]
+def run_test(package, binary, test, cargo_args=()):
+    cmd = ["systemd-run", "--user", "--scope", "-q", "--nice=19", "-p", "MemoryMax=6G", "--", "cargo", "test", "-p", package, *(("--test", binary) if binary else ("--lib",)), *cargo_args, "-j", "8", "--", "--exact", test]
     env = {"CARGO_PROFILE_TEST_DEBUG": "0"}
     p = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env}, capture_output=True, text=True, errors="replace")
     text = p.stdout + p.stderr
