@@ -145,7 +145,32 @@ fn the_whole_program_fixpoint_sees_through_a_slot() {
 
 /// Rule 3: a panic by its demangled name, in the middle of a function, with plain
 /// code after it and no trap or filler to say so. On the stripped image there is
+/// no name, and the rule has nothing to read: what is left there is the fixpoint.
+#[test]
+fn a_panic_is_known_by_its_demangled_name() {
+    let dir = project("panic");
+    let start = address_of(X64_LISTING, "panics_mid_function");
+    let got = cfg(&dir, X64, &start);
+    assert_eq!(terminators(&got)[0], "call-noreturn", "{got}");
+    assert_eq!(got["end"], plus(&start, 6).as_str(), "{got}");
+    assert_eq!(why_end(&dir, X64, &start)["ended_by"], "call_named_no_return");
+    let stripped = cfg(&dir, "noreturn.stripped.so", &start);
+    assert_eq!(terminators(&stripped)[0], "ret", "{stripped}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// False: `std::panicking::panic_count::is_zero_slow_path` is on the way to a
+/// panic in name only. It returns, and the function goes on.
+#[test]
+fn a_name_near_a_panic_is_no_panic() {
+    let dir = project("near");
+    let start = address_of(X64_LISTING, "calls_std_that_returns");
+    let got = cfg(&dir, X64, &start);
+    assert_eq!(terminators(&got), ["ret"], "{got}");
+    assert_eq!(got["end"], plus(&start, 12).as_str(), "{got}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Rule 2: a trap after a call. Nothing follows the call, so the block ends as
 /// `call-noreturn`; the trap is the compiler's and part of the function, so the
 /// end is after it. The same bytes are what a person writes as `helper();
