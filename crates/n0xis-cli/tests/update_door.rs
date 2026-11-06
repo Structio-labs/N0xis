@@ -15,7 +15,7 @@
 #[path = "../../n0xis-update/tests/support/mod.rs"]
 mod planted;
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -54,6 +54,7 @@ impl Proxy {
     }
 
     /// Wait for at least `n` connection attempts, or as long as a detached check could take.
+    #[cfg(unix)]
     fn wait_for(&self, n: usize) -> Vec<String> {
         let start = Instant::now();
         while self.asked().len() < n && start.elapsed() < Duration::from_secs(10) {
@@ -292,6 +293,7 @@ fn config_answers_in_the_envelope_and_keeps_the_setting() {
 /// Standard error on a real terminal is the one thing a pipe cannot stand in for.
 #[cfg(unix)]
 mod on_a_terminal {
+    use std::io::Read;
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::thread::JoinHandle;
 
