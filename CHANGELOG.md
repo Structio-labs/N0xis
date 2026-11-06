@@ -5,6 +5,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**`function eh --pid` on Windows reads the process's `.pdata`.** It said neither table was present, while `profile --pid` counted 56 entries in it.
+
 **`debug watch --kind execute --when` waits for the call it was asked for on Windows.** A miss resumed into the same fault, so 300 misses were spent in 0.6 s on one instruction,
 and a site that runs 10 times a second was called "too hot". A thread now steps off with the Resume Flag, as on Linux. `--exclude-rip` on an execute watch had the same fault.
 

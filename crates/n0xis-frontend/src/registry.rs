@@ -559,8 +559,18 @@ fn itanium_vtable_map(src: &Src) -> std::collections::HashMap<u64, String> {
 /// When an image has both, `.pdata` settles the function set and `.eh_frame`
 /// still contributes the protected ranges it describes — neither table is a
 /// superset of the other.
+///
+/// A process's `.pdata` is read as well, with its loaded base: `function eh --pid`
+/// used to refuse with "neither table is present" while `profile --pid` counted 56
+/// functions in it. Only this question: [`eh_map`] leaves a live PE as it was, since
+/// what it feeds (a control-flow graph's extents, `function discover`) would answer
+/// differently for every `--pid` on Windows, and that is not this question's to change.
 fn scan_unwind(src: &Src) -> Option<Vec<n0xis_core::EhFunction>> {
-    scan_unwind_stated(src).map(|u| u.functions)
+    let base = match src {
+        Src::Live(live) => live.main_module().map(|m| m.base),
+        _ => pe_image_base(src),
+    };
+    scan_unwind_at(src, base).map(|u| u.functions)
 }
 
 /// The function extents an unwind table states, and which table states them.
@@ -582,8 +592,13 @@ struct UnwindFunctions {
 /// below (`function discover`, `why`, `contradictions`, `function eh`, a
 /// CFG's declared extents) then stated nothing, as if it had no table.
 fn scan_unwind_stated(src: &Src) -> Option<UnwindFunctions> {
+    scan_unwind_at(src, pe_image_base(src))
+}
+
+/// `base`: what `.pdata`'s RVAs are relative to, and without it `.pdata` is not read.
+fn scan_unwind_at(src: &Src, base: Option<Va>) -> Option<UnwindFunctions> {
     let eh_frame = src.section_in_order(".eh_frame");
-    let pdata = match (src.section_range(".pdata"), pe_image_base(src)) {
+    let pdata = match (src.section_range(".pdata"), base) {
         (Some(range), Some(base)) => Some((range, base)),
         _ => None,
     };
