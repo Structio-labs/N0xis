@@ -206,3 +206,288 @@ print(json.dumps(calls))
     assert_eq!(pushes.len(), 1, "{calls:?}");
     assert_eq!(pushes[0][2..], ["git@github.com:Structio-labs/N0xis.git", "refs/tags/v9.9.9"]);
 }
+
+/// A checkout of its own with the script in it, so that every refusal below is a real run of the real
+/// script with real `git`, reaching the commands it would run: `cargo`, `gh` and `wine` are planted on
+/// its `PATH`, and the tag goes to a bare repository, by `git`'s own redirection of the frozen address.
+struct Repo {
+    root: PathBuf,
+    fakes: PathBuf,
+    key: PathBuf,
+}
+
+const REPO_VERSION: &str = "1.2.3";
+const OLD_TAG: &str = "v1.2.2";
+const TAG: &str = "v1.2.3";
+
+fn trust_source(key: &str) -> String {
+    format!("pub const RELEASE_PUBLIC_KEY: &str = \"{key}\";\n")
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn write_program(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+impl Repo {
+    /// With `key`'s public half built in, at HEAD. Nothing is tagged.
+    fn new(name: &str, built: &Bench) -> Repo {
+        let bench = built.dir.join(format!("repo-{name}"));
+        let root = bench.join("work");
+        let fakes = bench.join("fakes");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("crates/n0xis-update/src")).unwrap();
+        fs::create_dir_all(&fakes).unwrap();
+        fs::copy(self::root().join("scripts/release.py"), root.join("scripts/release.py")).unwrap();
+        fs::write(root.join("Cargo.toml"), format!("[workspace.package]\nversion = \"{REPO_VERSION}\"\n")).unwrap();
+        fs::write(root.join("CHANGELOG.md"), format!("## [{REPO_VERSION}]\n\nA release.\n")).unwrap();
+        fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        fs::write(root.join("crates/n0xis-update/src/trust.rs"), trust_source(&hex(&built.public()))).unwrap();
+        let repo = Repo { root, fakes, key: built.key() };
+        // Everything the script reaches by name, and nothing else: so that "no wine on the path" is true
+        // here, whatever this machine has.
+        for tool in ["git", "openssl", "sh", "rm", "mkdir"] {
+            let found = Command::new("sh").args(["-c", &format!("command -v {tool}")]).output().expect("sh");
+            let found = String::from_utf8_lossy(&found.stdout).trim().to_string();
+            std::os::unix::fs::symlink(found, repo.fakes.join(tool)).unwrap();
+        }
+        write_program(&repo.fakes.join("cargo"), &format!("#!/bin/sh\nif [ \"$1\" = metadata ]; then printf '{{\"target_directory\":\"{}/target\"}}'; fi\n", repo.root.display()));
+        write_program(&repo.fakes.join("gh"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {0}/gh.log\ncase \"$1 $2\" in\n\"release view\") . {0}/gh-view ;;\n\"release create\") . {0}/gh-create ;;\nesac\nexit 0\n", bench.display()));
+        fs::write(bench.join("gh-view"), "echo release not found >&2; exit 1\n").unwrap();
+        fs::write(bench.join("gh-create"), "exit 0\n").unwrap();
+        repo.built(REPO_VERSION, REPO_VERSION);
+        repo.git(&["init", "-q", "-b", "main"]);
+        repo.commit("first");
+        let bare = bench.join("remote.git");
+        let made = Command::new("git").args(["init", "-q", "--bare"]).arg(&bare).output().unwrap();
+        assert!(made.status.success());
+        repo.git(&["config", &format!("url.{}.insteadOf", bare.display()), "git@github.com:Structio-labs/N0xis.git"]);
+        repo
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.hooksPath=/dev/null"]).args(args).current_dir(&self.root).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn commit(&self, what: &str) {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", what, "--allow-empty"]);
+    }
+
+    /// What `cargo build` is taken to have left: programs stating these versions, where cargo says.
+    fn built(&self, host: &str, windows: &str) {
+        let target = self.root.join("target");
+        for (dir, name, says) in [("release", "n0xis", host), ("release", "n0xis-mcp", host), ("x86_64-pc-windows-gnu/release", "n0xis.exe", windows), ("x86_64-pc-windows-gnu/release", "n0xis-mcp.exe", windows)] {
+            write_program(&target.join(dir).join(name), &format!("#!/bin/sh\necho n0xis {says}\n"));
+        }
+    }
+
+    fn wine(&self) {
+        write_program(&self.fakes.join("wine"), "#!/bin/sh\nexec \"$@\"\n");
+    }
+
+    fn gh_log(&self) -> String {
+        fs::read_to_string(self.root.parent().unwrap().join("gh.log")).unwrap_or_default()
+    }
+
+    fn gh(&self, step: &str, script: &str) {
+        fs::write(self.root.parent().unwrap().join(format!("gh-{step}")), script).unwrap();
+    }
+
+    fn run(&self, extra: &[&str]) -> Output {
+        let python = String::from_utf8_lossy(&Command::new("sh").args(["-c", "command -v python3"]).output().unwrap().stdout).trim().to_string();
+        Command::new(python)
+            .arg(self.root.join("scripts/release.py"))
+            .args(["--tag", TAG, "--key"])
+            .arg(&self.key)
+            .args(extra)
+            .current_dir(&self.root)
+            .env("PATH", &self.fakes)
+            .env("N0XIS_RELEASE_SCOPED", "1")
+            .env_remove("CARGO_TARGET_DIR")
+            .output()
+            .expect("python3")
+    }
+
+    /// The release before this one, whose binary holds `key`, and HEAD one commit on at this source.
+    fn previous_release_holds(&self, key: &str) {
+        let now = self.root.join("crates/n0xis-update/src/trust.rs");
+        let source = fs::read_to_string(&now).unwrap();
+        fs::write(&now, trust_source(key)).unwrap();
+        self.commit("the previous release");
+        self.git(&["tag", OLD_TAG]);
+        fs::write(&now, source).unwrap();
+        self.commit("this one");
+    }
+
+    fn remote_tags(&self) -> String {
+        let bare = self.root.parent().unwrap().join("remote.git");
+        let out = Command::new("git").args(["tag", "--list"]).current_dir(bare).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+}
+
+/// The calibration of everything below: with nothing wrong, a real run gets all the way.
+#[test]
+fn a_real_run_publishes_and_says_which_binaries_ran() {
+    let b = Bench::new("ok");
+    let repo = Repo::new("ok", &b);
+    repo.wine();
+    let out = repo.run(&["--publish"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}{stdout}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("--version: n0xis 1.2.3") && stdout.contains("ran wine "), "{stdout}");
+    assert_eq!(repo.remote_tags(), TAG);
+    let log = repo.gh_log();
+    assert!(log.contains("release create v1.2.3") && log.contains("release edit v1.2.3 --repo Structio-labs/N0xis --draft=false --latest"), "{log}");
+}
+
+#[test]
+fn the_target_directory_is_where_cargo_says() {
+    let b = Bench::new("targetdir");
+    let repo = Repo::new("targetdir", &b);
+    // A stale tree where a guess would look, with cargo pointing elsewhere.
+    let elsewhere = repo.root.parent().unwrap().join("moved");
+    fs::rename(repo.root.join("target"), &elsewhere).unwrap();
+    write_program(&repo.root.join("target/release/n0xis"), "#!/bin/sh\necho n0xis 0.0.1\n");
+    write_program(&repo.fakes.join("cargo"), &format!("#!/bin/sh\nif [ \"$1\" = metadata ]; then printf '{{\"target_directory\":\"{}\"}}'; fi\n", elsewhere.display()));
+    let out = repo.run(&[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains(elsewhere.to_str().unwrap()));
+}
+
+#[test]
+fn a_host_binary_that_does_not_state_this_version_is_refused() {
+    let b = Bench::new("stalehost");
+    let repo = Repo::new("stalehost", &b);
+    repo.built("1.2.2", REPO_VERSION);
+    refused(&repo.run(&["--publish"]), "this release is 1.2.3");
+    assert_eq!(repo.git(&["tag", "--list"]), "", "a refusal tagged");
+    assert_eq!(repo.gh_log(), "");
+}
+
+#[test]
+fn a_windows_binary_that_does_not_state_this_version_is_refused_when_wine_can_run_it() {
+    let b = Bench::new("stalewin");
+    let repo = Repo::new("stalewin", &b);
+    repo.built(REPO_VERSION, "1.2.2");
+    // With no wine it cannot be run, and it says so rather than passing it.
+    let out = repo.run(&[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("NOT RUN"), "{}", String::from_utf8_lossy(&out.stdout));
+    repo.wine();
+    refused(&repo.run(&[]), "this release is 1.2.3");
+}
+
+#[test]
+fn a_change_of_key_that_strands_older_copies_is_refused() {
+    let b = Bench::new("strand");
+    let older = Bench::new("strand-older");
+    let repo = Repo::new("strand", &b);
+    repo.previous_release_holds(&hex(&older.public()));
+    let out = repo.run(&["--publish"]);
+    refused(&out, "--strand-older-copies");
+    assert_eq!(repo.remote_tags(), "", "a refusal pushed");
+
+    // A dry run says the same and writes the release.
+    let dry = repo.run(&[]);
+    assert!(dry.status.success());
+    assert!(String::from_utf8_lossy(&dry.stdout).contains("NOT PUBLISHABLE"), "{}", String::from_utf8_lossy(&dry.stdout));
+
+    // Signed by both, nothing is stranded.
+    let both = repo.run(&["--key", older.key().to_str().unwrap(), "--publish"]);
+    assert!(both.status.success(), "{}", String::from_utf8_lossy(&both.stderr));
+    assert_eq!(repo.remote_tags(), TAG);
+}
+
+#[test]
+fn stranding_older_copies_can_be_said_to_be_meant() {
+    let b = Bench::new("meant");
+    let older = Bench::new("meant-older");
+    let repo = Repo::new("meant", &b);
+    repo.previous_release_holds(&hex(&older.public()));
+    let out = repo.run(&["--strand-older-copies", "--publish"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn a_placeholder_or_no_file_at_the_previous_tag_is_no_constraint() {
+    let b = Bench::new("noconstraint");
+    let repo = Repo::new("noconstraint", &b);
+    repo.previous_release_holds("PLACEHOLDER: the release public key goes here");
+    let out = repo.run(&["--publish"]);
+    assert!(out.status.success(), "a placeholder: {}", String::from_utf8_lossy(&out.stderr));
+
+    let b = Bench::new("nofile");
+    let repo = Repo::new("nofile", &b);
+    let source = repo.root.join("crates/n0xis-update/src/trust.rs");
+    let text = fs::read_to_string(&source).unwrap();
+    fs::remove_file(&source).unwrap();
+    repo.commit("before the client existed");
+    repo.git(&["tag", OLD_TAG]);
+    fs::write(&source, text).unwrap();
+    repo.commit("this one");
+    let out = repo.run(&["--publish"]);
+    assert!(out.status.success(), "no such file: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A failed upload after the push: the commands that recover are printed, and they are what works.
+#[test]
+fn a_failed_upload_prints_the_way_back_and_a_re_run_finishes() {
+    let b = Bench::new("recover");
+    let repo = Repo::new("recover", &b);
+    repo.gh("create", "echo the network went away >&2; exit 1\n");
+    let out = repo.run(&["--publish"]);
+    refused(&out, "gh release create v1.2.3");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("scripts/release.py --tag v1.2.3 --key") && stderr.contains("--publish"), "{stderr}");
+    assert!(stderr.contains(":refs/tags/v1.2.3") && stderr.contains("git tag -d v1.2.3"), "{stderr}");
+    assert_eq!(repo.remote_tags(), TAG, "the state this is about");
+
+    // The tag exists, at HEAD, and no release does.
+    repo.gh("create", "exit 0\n");
+    let again = repo.run(&["--publish"]);
+    assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stderr));
+    assert!(repo.gh_log().lines().filter(|l| l.starts_with("release edit")).count() == 1);
+
+    // A draft left over is finished by uploading over it, and not by creating a second.
+    let b = Bench::new("recover-draft");
+    let repo = Repo::new("draft", &b);
+    repo.git(&["tag", TAG]);
+    repo.gh("view", "echo '{\"isDraft\":true}'; exit 0\n");
+    let out = repo.run(&["--publish"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let log = repo.gh_log();
+    assert!(log.contains("release upload v1.2.3") && log.contains("--clobber") && !log.contains("release create"), "{log}");
+}
+
+#[test]
+fn a_tag_elsewhere_or_already_published_is_refused() {
+    let b = Bench::new("tagged");
+    let repo = Repo::new("tagged", &b);
+    repo.git(&["tag", TAG]);
+    repo.commit("past the tag");
+    refused(&repo.run(&["--publish"]), "that is not HEAD");
+
+    let b = Bench::new("published");
+    let repo = Repo::new("published", &b);
+    repo.git(&["tag", TAG]);
+    repo.gh("view", "echo '{\"isDraft\":false}'; exit 0\n");
+    refused(&repo.run(&["--publish"]), "already published");
+
+    // A gh that cannot say is not a gh that said no.
+    let b = Bench::new("unknown");
+    let repo = Repo::new("unknown", &b);
+    repo.git(&["tag", TAG]);
+    repo.gh("view", "echo token invalid >&2; exit 1\n");
+    refused(&repo.run(&["--publish"]), "cannot tell whether");
+    assert_eq!(repo.remote_tags(), "");
+}
