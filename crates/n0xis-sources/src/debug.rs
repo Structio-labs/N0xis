@@ -51,6 +51,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::SourceError;
+use crate::interrupt::{self, Interruptible};
 use crate::unwind::{self, ModuleRange, UnwindRegs};
 
 /// `CONTEXT`'s floating-point/XMM save area needs 16-byte alignment — the
@@ -100,10 +101,14 @@ const ERROR_SEM_TIMEOUT: u32 = 121;
 /// debug events are just continued unmodified; on return the debugger is
 /// detached (`DebugGuard`'s `Drop`), same as every other function here.
 pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
+    let _interruptible = Interruptible::install();
     let _debug_guard = DebugGuard::attach(pid)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut first_bp_seen = false;
     loop {
+        if interrupt::requested() {
+            return Err(SourceError::Interrupted);
+        }
         if Instant::now() >= deadline {
             break;
         }
@@ -147,15 +152,20 @@ pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
 /// captures the thread's registers and up to `stack_qwords` stack qwords,
 /// rewinds `Rip` back to `addr` so the target resumes as if nothing had
 /// happened, and continues it. The patched byte is restored and the debugger
-/// detached on every path — hit, timeout, or error — via RAII guards; the
-/// process is never killed by detaching (`DebugSetProcessKillOnExit(false)`).
+/// detached on every path — hit, timeout, interruption or error — via RAII guards;
+/// the process is never killed by detaching (`DebugSetProcessKillOnExit(false)`).
+///
+/// `before_planting` is told the byte about to be replaced, before it is: only a
+/// record of it survives this process being killed. If it fails, nothing is written.
 pub fn await_breakpoint_hit(
     pid: u32,
     addr: Va,
     timeout_ms: u64,
     stack_qwords: usize,
     module: Option<&Module>,
+    before_planting: &mut dyn FnMut(u8) -> Result<(), String>,
 ) -> Result<AwaitHitOutcome, SourceError> {
+    let _interruptible = Interruptible::install();
     let h_process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
     if h_process.is_null() {
         return Err(SourceError::Os(format!(
@@ -165,8 +175,12 @@ pub fn await_breakpoint_hit(
     }
     let _process_guard = HandleGuard(h_process);
 
-    let mut bp = BreakpointGuard::arm(h_process, addr)?;
+    // Attach first, and so detach last: from the moment the byte is written until it is
+    // gone again, a thread reaching it needs a debugger to report to, or it dies with
+    // 0x80000003. Both orders were wrong the other way round: the byte went in before
+    // the attach, and came out after the detach.
     let _debug_guard = DebugGuard::attach(pid)?;
+    let mut bp = BreakpointGuard::arm(h_process, addr, before_planting)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut hit: Option<BreakpointHit> = None;
@@ -175,6 +189,9 @@ pub fn await_breakpoint_hit(
     let mut first_bp_seen = false;
 
     loop {
+        if interrupt::requested() {
+            return Err(SourceError::Interrupted);
+        }
         if Instant::now() >= deadline {
             break;
         }
@@ -247,8 +264,9 @@ struct BreakpointGuard {
 }
 
 impl BreakpointGuard {
-    fn arm(handle: HANDLE, addr: Va) -> Result<Self, SourceError> {
+    fn arm(handle: HANDLE, addr: Va, before_planting: &mut dyn FnMut(u8) -> Result<(), String>) -> Result<Self, SourceError> {
         let orig = read_byte(handle, addr)?;
+        before_planting(orig).map_err(SourceError::Os)?;
         write_byte(handle, addr, 0xCC)?;
         unsafe { FlushInstructionCache(handle, addr.0 as *const c_void, 1) };
         Ok(BreakpointGuard { handle, addr, orig, armed: true })
@@ -675,6 +693,7 @@ pub fn await_watchpoint_hit_where(
         )));
     }
     let _process_guard = HandleGuard(h_process);
+    let _interruptible = Interruptible::install();
 
     // Attach BEFORE arming. We arm each thread from inside the event loop
     // while it is stopped at its `CREATE_THREAD` event — the only place a
@@ -697,6 +716,9 @@ pub fn await_watchpoint_hit_where(
     let mut misses: u32 = 0;
 
     loop {
+        if interrupt::requested() {
+            return Err(SourceError::Interrupted);
+        }
         if Instant::now() >= deadline {
             break;
         }

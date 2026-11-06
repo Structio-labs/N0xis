@@ -120,7 +120,7 @@ fn software_breakpoint_fires_and_is_one_shot() {
     let pid = spawn_writer(5);
     nanosleep_ms(60);
 
-    let outcome = await_breakpoint_hit(pid, Va(bp), 3000, 16, None);
+    let outcome = await_breakpoint_hit(pid, Va(bp), 3000, 16, None, &mut |_| Ok(()));
 
     // Must still be alive (byte restored → one-shot) and running.
     let alive_after = is_alive(pid);
@@ -260,7 +260,7 @@ fn multithreaded_breakpoint_survives_concurrent_hits() {
     let pid = spawn_writer_mt(3); // 4 threads hammering tick()
     nanosleep_ms(100);
 
-    let outcome = await_breakpoint_hit(pid, Va(bp), 3000, 8, None);
+    let outcome = await_breakpoint_hit(pid, Va(bp), 3000, 8, None, &mut |_| Ok(()));
 
     let alive = is_alive(pid);
     if alive {

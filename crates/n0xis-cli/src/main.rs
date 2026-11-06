@@ -1225,6 +1225,7 @@ struct DiffFunctionsArgs {
 #[derive(Subcommand)]
 enum DebugCmd {
     /// Arm a software breakpoint and block until it fires (or times out).
+    /// Ctrl-C restores the byte and detaches. If this run is killed, `patch undo` restores it.
     AwaitHit(DebugAwaitHitArgs),
     /// Arm a hardware watchpoint (data read/write, or execute) and block
     /// until it fires (or times out) — no code byte is ever patched.
@@ -3334,7 +3335,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Plugin(c) => cmd_plugin(c, pretty),
         Command::Capability(c) => cmd_capability(c, pretty),
         Command::Dump(c) => cmd_dump(c, pretty),
-        Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty),
+        Command::Debug(DebugCmd::AwaitHit(a)) => cmd_debug_await_hit(a, pretty, quiet),
         Command::Debug(DebugCmd::Watch(a)) => cmd_debug_watch(a, pretty),
         Command::Debug(DebugCmd::Attach(a)) => cmd_debug_attach(a, pretty),
         Command::Stack(StackCmd::Backtrace(a)) => cmd_stack_backtrace(a, pretty),
@@ -5302,7 +5303,7 @@ fn cmd_dump(cmd: DumpCmd, pretty: bool) -> bool {
     }
 }
 
-fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
+fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool, quiet: bool) -> bool {
     let addr = match Va::parse(&a.addr) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e.to_string(), pretty),
@@ -5336,12 +5337,33 @@ fn cmd_debug_await_hit(a: DebugAwaitHitArgs, pretty: bool) -> bool {
             addr
         };
 
-        match await_breakpoint_hit(a.pid, bp_va, a.timeout_ms, a.stack_qwords, module.as_ref()) {
+        use n0xis_project::patch as pj;
+        // The byte goes in the journal before it goes in the target: a run that is killed
+        // cannot restore anything, and this is what `patch undo` restores from then.
+        let mut record = None;
+        let result = await_breakpoint_hit(a.pid, bp_va, a.timeout_ms, a.stack_qwords, module.as_ref(), &mut |original| {
+            let rec = pj::record_before_writing(a.pid, bp_va, &[original], &[0xCC], Some("debug await-hit"))
+                .map_err(|e| format!("nothing was written, because no record of it could be kept: {e}"))?;
+            if !quiet {
+                eprintln!("[n0x] breakpoint at {bp_va} recorded as patch {}: if this run is killed, `n0xis patch undo --id {}` restores the byte", rec.id, rec.id);
+            }
+            record = Some(rec);
+            Ok(())
+        });
+        if let Some(rec) = record {
+            let live = n0xis_frontend::source::attach_live(a.pid).ok();
+            let source = live.as_deref().map(|l| l as &dyn MemorySource);
+            if !matches!(pj::settle_planted(&rec, source), Ok(true)) {
+                let msg = format!("the byte at {bp_va} could not be restored: `n0xis patch undo --id {}` restores it, and until then the target dies at its next pass over it", rec.id);
+                return ir_err("breakpoint-left", &msg, pretty);
+            }
+        }
+        match result {
             Ok(outcome) => emit(
                 &Response::success(schema::v1::DEBUG_AWAIT_HIT, outcome).with_source(label),
                 pretty,
             ),
-            Err(e) => ir_err("await-hit-failed", &e.to_string(), pretty),
+            Err(e) => ir_err(debug_failure("await-hit-failed", &e), &e.to_string(), pretty),
         }
     }
 }
@@ -5607,9 +5629,16 @@ fn cmd_debug_watch(a: DebugWatchArgs, pretty: bool) -> bool {
         match await_watchpoint_hit_where(a.pid, watch_va, kind, a.len, a.timeout_ms, a.stack_qwords, module.as_ref(), &exclude_rip, cond.as_ref())
         {
             Ok(outcome) => emit(&Response::success(schema::v1::WATCHPOINT, outcome).with_source(label), pretty),
-            Err(e) => ir_err("watch-failed", &e.to_string(), pretty),
+            Err(e) => ir_err(debug_failure("watch-failed", &e), &e.to_string(), pretty),
         }
     }
+}
+
+/// A debugger command's refusal code: its own, unless the person stopped it, which is
+/// not a failure of that command.
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
+fn debug_failure<'a>(own: &'a str, e: &n0xis_sources::SourceError) -> &'a str {
+    if matches!(e, n0xis_sources::SourceError::Interrupted) { "interrupted" } else { own }
 }
 
 fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
@@ -5624,7 +5653,7 @@ fn cmd_debug_attach(a: DebugAttachArgs, pretty: bool) -> bool {
             &Response::success(schema::v1::DEBUG_ATTACH, json!({ "pid": a.pid, "timeout_ms": a.timeout_ms, "detached": true })),
             pretty,
         ),
-        Err(e) => ir_err("attach-failed", &e.to_string(), pretty),
+        Err(e) => ir_err(debug_failure("attach-failed", &e), &e.to_string(), pretty),
     }
 }
 
@@ -5748,7 +5777,7 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool) -> bool {
         let kind: WatchKind = a.kind.into();
         let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
             Ok(o) => o,
-            Err(e) => return ir_err("watch-failed", &e.to_string(), pretty),
+            Err(e) => return ir_err(debug_failure("watch-failed", &e), &e.to_string(), pretty),
         };
         let Some(hit) = outcome.hit else {
             let data = json!({ "value_addr": addr, "entries": [], "timedOut": true });
@@ -6353,7 +6382,15 @@ fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
         // Only the hook-site overwrite is journaled: it's the destructive part
         // (existing code replaced) and the only one `patch undo` needs to
         // reverse. The cave is freshly allocated memory with no "original state."
+        let rec = match pj::record_before_writing(a.pid, hook_at, &original, &hook_jmp, None) {
+            Ok(rec) => rec,
+            Err(e) => {
+                let _ = live.free_code_cave(cave);
+                return ir_err("journal-failed", &e.to_string(), pretty);
+            }
+        };
         if let Err(e) = live.write(hook_at, &hook_jmp) {
+            let _ = pj::take_back(&rec);
             return ir_err("hook-write-failed", &e.to_string(), pretty);
         }
         match live.read(hook_at, hook_jmp.len()) {
@@ -6362,20 +6399,6 @@ fn patch_detour(a: PatchDetourArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("verify-read-failed", &e.to_string(), pretty),
         }
 
-        let rec = pj::PatchRecord {
-            id: pj::new_patch_id(),
-            pid: a.pid,
-            address: hook_at.to_string(),
-            size: hook_jmp.len(),
-            before_hex: to_hex_spaced(&original),
-            after_hex: to_hex_spaced(&hook_jmp),
-            status: "applied".to_string(),
-            created_at_unix: pj::now_unix_secs(),
-            undone_at_unix: None,
-        };
-        if let Err(e) = pj::save(&rec) {
-            return ir_err("journal-failed", &e.to_string(), pretty);
-        }
         let data = json!({
             "op": "detour", "pid": a.pid, "hookAt": hook_at, "hookLen": hook_len,
             "cave": cave, "caveSize": a.cave_size, "patchId": rec.id,

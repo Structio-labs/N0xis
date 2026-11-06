@@ -121,6 +121,8 @@ pub use dbg_linux::{attach_and_wait, await_breakpoint_hit, await_watchpoint_hit,
 // so both emit the identical wire shape. Only the arming/event-loop is per-OS.
 #[cfg(feature = "live")]
 mod hit;
+#[cfg(all(feature = "live", any(windows, target_os = "linux", target_os = "android")))]
+mod interrupt;
 #[cfg(feature = "live")]
 pub use hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind};
 
@@ -301,6 +303,10 @@ pub enum SourceError {
     Load(String),
     #[error("os error: {0}")]
     Os(String),
+    /// The person who started a debugger command asked it to stop. By the time
+    /// anyone reads this, what it had put in the target is out of it again.
+    #[error("interrupted: the target was left as it was found, and keeps running")]
+    Interrupted,
 }
 
 impl SourceError {
@@ -313,7 +319,7 @@ impl SourceError {
     pub fn is_about_a_region(&self) -> bool {
         match self {
             SourceError::Unmapped(_) | SourceError::Unreadable { .. } => true,
-            SourceError::ReadOnly | SourceError::Load(_) | SourceError::Os(_) => false,
+            SourceError::ReadOnly | SourceError::Load(_) | SourceError::Os(_) | SourceError::Interrupted => false,
         }
     }
 }

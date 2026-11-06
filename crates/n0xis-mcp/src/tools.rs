@@ -968,6 +968,9 @@ impl N0xisServer {
 
             let outcome = match await_watchpoint_hit(a.pid, addr, kind, a.len, a.timeout_ms, 0, main_module.as_ref()) {
                 Ok(o) => o,
+                // The signal that ends this process is why the wait ended. The target
+                // is free again by now, so what the signal asked for can happen.
+                Err(n0xis_sources::SourceError::Interrupted) => std::process::exit(130),
                 Err(e) => return err("watch-failed", e.to_string()),
             };
             let Some(hit) = outcome.hit else {

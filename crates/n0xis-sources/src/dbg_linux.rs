@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use n0xis_contracts::{Module, Va};
 
+use crate::interrupt::{self, Interruptible};
 use crate::hit::{dr7_slot0, AwaitHitOutcome, BreakpointHit, RegCond, Registers, WatchKind, MAX_CONDITION_MISSES, MAX_UNWIND_FRAMES};
 use crate::{LinuxProcess, LiveTarget, MemorySource, SourceError, UnwindRegs};
 
@@ -578,9 +579,13 @@ fn capture_hit(live: &LinuxProcess, tid: u32, module: Option<&Module>, stack_qwo
 /// arming anything — the diagnostic counterpart of the Win32 `attach_and_wait`.
 /// Forwards the target's own signals; detaches (resuming it) on return.
 pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
+    let _interruptible = Interruptible::install();
     let mut s = seize_group(pid)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     'ev: while Instant::now() < deadline {
+        if interrupt::requested() {
+            return Err(SourceError::Interrupted);
+        }
         loop {
             let mut st: libc::c_int = 0;
             let w = unsafe { libc::waitpid(-1, &mut st, libc::__WALL | libc::WNOHANG) };
@@ -615,10 +620,22 @@ pub fn attach_and_wait(pid: u32, timeout_ms: u64) -> Result<(), SourceError> {
 /// Patch an `int3` at `addr`, run the whole thread-group under trace, and block
 /// until that breakpoint fires or `timeout_ms` elapses. On a hit: rewind rip to
 /// `addr`, restore the byte (one-shot), capture, resume. The byte is restored
-/// and the group detached on every path via [`Session`]'s drop.
-pub fn await_breakpoint_hit(pid: u32, addr: Va, timeout_ms: u64, stack_qwords: usize, module: Option<&Module>) -> Result<AwaitHitOutcome, SourceError> {
+/// and the group detached on every path via [`Session`]'s drop, interruption included.
+///
+/// `before_planting` is told the byte about to be replaced, before it is: only a
+/// record of it survives this process being killed. If it fails, nothing is written.
+pub fn await_breakpoint_hit(
+    pid: u32,
+    addr: Va,
+    timeout_ms: u64,
+    stack_qwords: usize,
+    module: Option<&Module>,
+    before_planting: &mut dyn FnMut(u8) -> Result<(), String>,
+) -> Result<AwaitHitOutcome, SourceError> {
+    let _interruptible = Interruptible::install();
     let mut s = seize_group(pid)?;
     let orig = s.live.read(addr, 1)?.first().copied().ok_or_else(|| os(format!("could not read the byte at {addr}")))?;
+    before_planting(orig).map_err(os)?;
     s.live.write(addr, &[0xCC])?;
     s.patched = Some((addr, orig));
     s.bp_addr = Some(addr); // tracked past the byte-restore, for the teardown rewind
@@ -627,6 +644,9 @@ pub fn await_breakpoint_hit(pid: u32, addr: Va, timeout_ms: u64, stack_qwords: u
     let mut hit: Option<BreakpointHit> = None;
 
     'ev: loop {
+        if interrupt::requested() {
+            return Err(SourceError::Interrupted);
+        }
         if Instant::now() >= deadline {
             break;
         }
@@ -740,6 +760,9 @@ pub fn await_watchpoint_hit_where(
     let arm = Some((addr, dr7_bits));
 
     'ev: loop {
+        if interrupt::requested() {
+            return Err(SourceError::Interrupted);
+        }
         if Instant::now() >= deadline {
             break;
         }

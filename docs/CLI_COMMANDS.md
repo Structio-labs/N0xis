@@ -787,6 +787,12 @@ Arm a software breakpoint and block until it fires (or times out).
 - `--addr` (required); `--addr-rva` (interpret `--addr` as an RVA from the main module base);
   `--timeout-ms` (default 30000); `--stack-qwords` (qwords captured from RSP on a hit, default
   16).
+- Stopped by Ctrl-C, Ctrl-Break, closing the console, `SIGINT`, `SIGTERM` or `SIGHUP`, it restores the byte and detaches,
+  and answers `interrupted`. The target keeps running.
+- **Killed** (`kill -9`, Task Manager), it can restore nothing, and the target dies at its next pass over the `0xCC`.
+  The byte is recorded before it is written, as a patch with `planted_by: "debug await-hit"`: `n0xis patch undo --id <id>`
+  restores it, and `patch list --status applied` lists it. The id is on stderr when the breakpoint is armed. A run that
+  ends any other way leaves no record.
 - Schema: `n0xis.debug.await_hit.v1`
 
 ### `debug watch --pid <u32> --addr <hex>`

@@ -5,6 +5,11 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**A debugger command can be stopped, and a killed one leaves a way back.** `debug await-hit` interrupted used to leave its `0xCC` in the code, and
+on Windows the target died with 0x80000003 at its next pass. Now Ctrl-C, Ctrl-Break, closing the console, `SIGINT`, `SIGTERM` and `SIGHUP` stop every
+debugger command through its own cleanup: the byte is restored, the debugger detached, and the answer is `interrupted`. A kill cannot be handled, so the
+byte goes in the patch journal before it goes in the target, and `patch undo` restores it. `patch apply` and `patch detour` also journal before they write now.
+
 **A number on its way to a target is the number written, or it is refused.** `scan value`, `scan filter`, `scan group`, `locate by-transition`
 and `table pin` used to pass their values through `f64`. Past 2^53 a scan answered "0 matches, exhaustive" about a value the target held, or
 named a neighbour it was not asked for, and a pin of 300 on a `u8` wrote 255. Each value now stays as written until its type is known: integers
