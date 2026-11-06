@@ -8550,6 +8550,7 @@ mod stdin_gate_tests {
         ("n0xis-cli/src/main.rs", "command_stdin", "the gate itself"),
         ("n0xis-cli/src/main.rs", "cmd_serve", "the session's own request channel"),
         ("n0xis-cli/src/main.rs", "cmd_remote_serve", "a request channel of its own; refused inside a session"),
+        ("n0xis-mcp/src/supervisor.rs", "read_client", "the MCP client's request channel, in the parent of the server, which runs no command"),
     ];
 
     fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -36,6 +36,7 @@
 //! transport up in the first place.
 
 pub mod source;
+pub mod supervisor;
 mod tools;
 
 pub use n0xis_contracts as contracts;

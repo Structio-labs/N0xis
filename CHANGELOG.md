@@ -5,6 +5,22 @@ All notable changes to N0xis are recorded here. Versions follow
 
 ## [Unreleased]
 
+**One heavy query no longer ends an MCP client's session.** `n0xis-mcp` is now a small parent and a worker. Past the memory
+ceiling, or at any other death of the engine, each request in flight gets a JSON-RPC error that says which (`-32001`
+`out-of-memory`, `-32002` `engine-crashed`), a new worker takes over with the client's own `initialize`, and the next query is
+answered. No request is retried, a crash loop ends the parent with its reason on stderr, and neither the client closing nor
+the parent being killed leaves a worker behind. The parent never holds a whole response.
+
+**`strings --limit 0 --min 1` fits, and no answer exists twice.** Rows are written as they serialize, from the kept list, instead of
+being built as a tree of JSON values, twice, and then as one string. A 20 MB PE of 2 million rows went from refused at a 3.5 GiB
+ceiling to answering in about 460 MiB. Every command now writes through a buffer, with its JSON unchanged byte for byte.
+
+- A ceiling reached while an answer is being written no longer can append a second envelope to part of it: the ceiling is held off for the
+  write and comes back after.
+- The answer about an answer that cannot be serialized was itself not JSON. It is now, and it is a failure by exit code as well.
+- A `RELR` table is counted before a word of it is kept, and one naming more words than the file holds is malformed. Its words
+  came to 63 times the table, on a length a hostile file chooses.
+
 ## [0.3.8] — 2026-11-06
 
 **A copy now learns of a newer release and installs it when told, from a manifest signed by a key in the binary.** Everything is written and

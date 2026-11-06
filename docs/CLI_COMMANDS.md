@@ -53,7 +53,15 @@ pipelines).
 
 A run stops itself at a memory ceiling and answers `out-of-memory` in the same envelope, instead of being killed by the
 kernel with no answer. The ceiling is three quarters of the machine's memory, or `N0X_MEMORY_MAX` (bytes, or with `K`, `M`, `G`) if
-set, and never more than three quarters of the tightest cgroup limit the process runs under.
+set, and never more than three quarters of the tightest cgroup limit the process runs under. Once an answer has started
+to be written the ceiling is held off until it ends, so a refusal is never appended to part of an answer.
+
+Under `n0xis-mcp` a query past the ceiling ends the engine and not the session. The server runs in a worker, and its small
+parent answers each request in flight with a JSON-RPC error (`-32001`, `data.code` `out-of-memory`; any other death of the
+engine is `-32002`, `engine-crashed`), starts a new worker, and carries on. No request is retried. The target `attach` recorded
+stays, being on disk; what the engine cached in memory is gone. If the worker dies in the middle of a response, the client sees
+that one line unparsable, then the error. An engine that dies more than five times in a minute with no request answered,
+or that does not answer the client's `initialize` when it is given again, ends the parent, with the reason on stderr.
 
 ### Global flags (accepted on every command)
 
