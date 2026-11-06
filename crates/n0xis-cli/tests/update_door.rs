@@ -462,6 +462,71 @@ mod on_a_terminal {
         assert!(start.elapsed() < Duration::from_secs(5), "the pipe stayed open for {:?}", start.elapsed());
     }
 
+    /// A range of numbers once left a pipe held at fd 1024 and up, so this one is above any such range.
+    #[test]
+    fn the_copy_lets_go_of_a_handle_above_1024() {
+        let s = Scene::new("inherited-high");
+        s.server.route("/manifest.json", Reply::Silent);
+        s.set("update.manifest_url", &s.server.url("/manifest.json"));
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
+        if limit.rlim_max < 2000 {
+            eprintln!("not verified here: this system's limit of open files is {}", limit.rlim_max);
+            return;
+        }
+        limit.rlim_cur = limit.rlim_cur.max(2000);
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        let mut ends = [-1, -1];
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+        // Only the copy at the high number goes on to the child.
+        unsafe {
+            libc::fcntl(ends[0], libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(ends[1], libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        let high = unsafe { libc::fcntl(ends[1], libc::F_DUPFD, 1500) };
+        assert!(high >= 1500, "{high}");
+        let (read_end, write_end, high) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1]), OwnedFd::from_raw_fd(high)) };
+        run(s.command(Path::new(BIN), A_COMMAND));
+        assert_eq!(s.proxy.wait_for(1).len(), 1, "the calibration: the copy is out there, hanging");
+        drop(write_end);
+        drop(high);
+        let start = Instant::now();
+        let mut rest = Vec::new();
+        std::fs::File::from(read_end).read_to_end(&mut rest).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(5), "the pipe stayed open for {:?}", start.elapsed());
+    }
+
+    /// Another run holding the lock around the stamp means it is claiming the day, and so this one has
+    /// no claim of its own to make.
+    #[test]
+    fn a_stamp_being_claimed_starts_no_second_check() {
+        let s = Scene::new("stamplock");
+        let lock = std::fs::File::create(s.config.join("update-check.lock")).unwrap();
+        lock.try_lock().unwrap();
+        run(s.command(Path::new(BIN), A_COMMAND));
+        assert!(!s.ever_checked(), "claimed past a held lock");
+        drop(lock);
+        // Another test's spawn can hold a copy of the lock for the instant between its fork and its exec.
+        for _ in 0..20 {
+            run(s.command(Path::new(BIN), A_COMMAND));
+            if s.ever_checked() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(s.ever_checked(), "the calibration: once released, the claim is made");
+    }
+
+    #[test]
+    fn an_escape_in_the_state_file_never_reaches_the_terminal() {
+        let version = env!("CARGO_PKG_VERSION");
+        let s = Scene::new("escape");
+        s.plant_state(json!({ "installed": { "from": "\u{1b}]0;PWNED\u{7}", "to": version }, "latest": "99.0.0\u{1b}[2J" }));
+        let said = run(s.command(Path::new(BIN), A_COMMAND)).stderr;
+        assert!(!said.contains('\u{1b}'), "{said:?}");
+        assert_eq!(said, "", "neither entry reads as a version, so neither is said");
+    }
+
     #[test]
     fn what_update_auto_installed_is_said_once_by_the_binary_that_was_installed() {
         let s = Scene::new("installed");

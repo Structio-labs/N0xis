@@ -15,6 +15,7 @@
 //! script's `wait` only because it is detached costs nothing, since a script gets no copy at all:
 //! the first test here is that standard error is a terminal.
 
+use std::fs::OpenOptions;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,6 +33,7 @@ pub const BACKGROUND_ARG: &str = "__update-check";
 
 const DAY_SECONDS: u64 = 24 * 60 * 60;
 const CHECK_STAMP: &str = "update-check.stamp";
+const CHECK_LOCK: &str = "update-check.lock";
 const NOTICE_STAMP: &str = "update-notice.stamp";
 const STATE: &str = "update-state.json";
 
@@ -71,8 +73,18 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// What is left of the state file once every version in it has read as one. Some of these reach a
+/// terminal, and the file is only as trustworthy as whoever wrote to it: an `installed.from` holding
+/// an escape sequence used to be printed as it stood.
 fn read_state(dir: &Path) -> State {
-    std::fs::read(dir.join(STATE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    let is_version = |v: &String| Version::parse(v).is_ok();
+    let state: State = std::fs::read(dir.join(STATE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    State {
+        latest: state.latest.filter(is_version),
+        installed: state.installed.filter(|i| is_version(&i.from) && is_version(&i.to)),
+        held: state.held.filter(is_version),
+        refusal: state.refusal,
+    }
 }
 
 fn write_state(dir: &Path, state: &State) {
@@ -143,6 +155,13 @@ fn start_check_if_due(dir: &Path, at: u64) {
     if !a_day_has_passed(read_stamp(&path), at) {
         return;
     }
+    // Read and written under one lock, or runs started together each read an old stamp and each
+    // claim the day. Held by another means it is claiming now, and a command never waits for that.
+    let lock = std::fs::create_dir_all(dir).and_then(|()| OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(CHECK_LOCK)));
+    let Ok(lock) = lock else { return };
+    if lock.try_lock().is_err() || !a_day_has_passed(read_stamp(&path), at) {
+        return;
+    }
     // The claim comes first. A directory that cannot be written means no check at all, rather than
     // one per command for ever.
     if crate::write_by_rename(&path, at.to_string().as_bytes()).is_err() {
@@ -178,9 +197,19 @@ fn detach(_child: &mut Command) {}
 /// reading that pipe waits for every holder to close it. The parent will exit in moments; this copy
 /// may wait on the network for a minute, so it must not be one of the holders. Only this process's
 /// first act: nothing in it has opened anything yet that it would miss.
+///
+/// Walked from `/proc/self/fd` because a fixed range misses a pipe above it: 3..1024 once left one at
+/// 1024 held. Where there is no `/proc`, every number up to the limit, itself bounded because a limit
+/// can be a billion.
 #[cfg(unix)]
 fn let_go_of_inherited_handles() {
-    for fd in 3..1024 {
+    // SAFETY: sysconf takes a constant and returns a number.
+    let limit = || unsafe { libc::sysconf(libc::_SC_OPEN_MAX) }.clamp(1024, 1 << 20) as i32;
+    let open: Vec<i32> = match std::fs::read_dir("/proc/self/fd") {
+        Ok(entries) => entries.flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).collect(),
+        Err(_) => (3..limit()).collect(),
+    };
+    for fd in open.into_iter().filter(|&fd| fd >= 3) {
         // SAFETY: closing a descriptor number that may not be open is an error return and no more,
         // and at this point no code in this process holds one it still means to use.
         unsafe { libc::close(fd) };
