@@ -66,7 +66,8 @@ MUTATIONS = [
     (SUP, "        match session.hello.as_ref().filter(|h| h.answered) {", "        match session.hello.as_ref().filter(|_| false) {", *SESSION, "a_query_past_the_ceiling_gets_its_error_and_the_next_answers"),
     # A worker dead mid-line.
     (SUP, '    if mid_line.swap(false, Ordering::SeqCst) {\n        let _ = out.write_all(b"\\n");\n    }\n', "", *SESSION, "a_worker_dead_mid_line_leaves_one_line_that_does_not_parse"),
-    (SUP, "                        // Flushed first: this says the client has it.\n", "                        shared.session().answered(id);\n", *SESSION, "a_worker_dead_mid_line_leaves_one_line_that_does_not_parse"),
+    # A response counts once its line has ended, and not when its id has gone by.
+    (SUP, "            if ends_line {\n                let line = scan.finish();", "            if let Some(id) = (scan.at == At::Settled).then(|| serde_json::from_slice::<Value>(&scan.id).ok()).flatten() {\n                shared.session().answered(&id);\n            }\n            if ends_line {\n                let line = scan.finish();", *SESSION, "a_worker_dead_mid_line_leaves_one_line_that_does_not_parse"),
     # A death is read from the worker, not only from its output.
     (SUP, "        if let Ok(Some(status)) = child.try_wait() {\n            break status;\n        }\n", "", *SESSION, "a_worker_dead_with_its_output_held_open_is_still_noticed"),
     # A crash loop ends.
@@ -77,6 +78,8 @@ MUTATIONS = [
     # No orphan.
     (SUP, "    let status = wait_bounded(&mut child, SHUTDOWN_DEADLINE).or_else(|| {\n        let _ = child.kill();\n        let _ = child.wait();\n        None\n    });", "    let status = wait_bounded(&mut child, SHUTDOWN_DEADLINE);\n    std::mem::forget(child);", *SESSION, "a_worker_that_stays_after_the_client_closes_is_killed"),
     (MAIN, "            Ok(()) => std::process::exit(0),\n", "            Ok(()) => {\n                drop(runtime);\n                std::process::exit(0)\n            }\n", *SESSION, "the_parent_killed_ends_a_busy_real_worker_with_no_orphan"),
+    (SUP, "    session.client_gone = true;\n    session.worker = None;\n", "    session.client_gone = true;\n", *SESSION, "the_client_closing_ends_the_real_worker_with_no_orphan"),
+    (MAIN, "            Ok(()) => std::process::exit(0),\n", "            Ok(()) => loop {\n                std::thread::park();\n            },\n", *SESSION, "the_parent_killed_ends_the_real_worker_with_no_orphan"),
     # The parent holds no whole response.
     (SUP, "        for piece in chunk[..n].split_inclusive(|&b| b == b'\\n') {", "        std::mem::forget(chunk[..n].to_vec());\n        for piece in chunk[..n].split_inclusive(|&b| b == b'\\n') {", *SESSION, "the_parent_holds_no_whole_response"),
 ]
