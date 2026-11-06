@@ -25,16 +25,16 @@ use std::path::PathBuf;
 use semver::Version;
 use serde::Serialize;
 
-pub use install::{RollbackReport, UpdateReport, rollback};
+pub use install::{Outcome, RollbackReport, UpdateReport, rollback};
 pub use manifest::{Entry, Manifest, platform};
 pub use net::{Limits, Transport};
 pub use trust::{RELEASE_PUBLIC_KEY, Trust};
 
-/// Where the manifest is asked for, in order, after the configuration's override.
+/// Where the manifest is asked for, every one of them, unless the configuration's override decides.
 ///
 /// The one thing about releases a shipped client is frozen to, and the repository has moved before,
-/// so the first is a domain the project controls and the second is the fallback. A dead first
-/// address is routine and says nothing: the second answering is a success with no notice.
+/// so the first is a domain the project controls and the second is the fallback. A dead address is
+/// routine and says nothing: another answering is a success with no notice.
 pub const MANIFEST_ADDRESSES: [&str; 2] =
     ["https://updates.structio.dev/n0xis/manifest.json", "https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json"];
 
@@ -67,6 +67,16 @@ pub enum Why {
     ConfigUnreadable,
     UnknownSetting,
     BadSettingValue,
+    /// Another run holds the lock beside the binary.
+    UpdateInProgress,
+    /// The running component's new file, checked and signed, did not answer `--version` as it must.
+    DoesNotRun,
+    /// A file to replace, or a sibling of it, is something other than a regular file.
+    NotARegularFile,
+    /// What is kept for `--rollback` is not what its record says, or there is no record of it.
+    PreviousDoesNotMatch,
+    /// The configuration directory belongs to someone else (`config::user_dir`).
+    ConfigNotYours,
 }
 
 impl Why {
@@ -90,6 +100,11 @@ impl Why {
             Why::ConfigUnreadable => "config-unreadable",
             Why::UnknownSetting => "unknown-setting",
             Why::BadSettingValue => "bad-setting-value",
+            Why::UpdateInProgress => "update-in-progress",
+            Why::DoesNotRun => "does-not-run",
+            Why::NotARegularFile => "not-a-regular-file",
+            Why::PreviousDoesNotMatch => "previous-does-not-match",
+            Why::ConfigNotYours => "config-not-yours",
         }
     }
 }
@@ -100,11 +115,13 @@ pub struct Refusal {
     pub why: Why,
     pub message: String,
     pub hint: Option<String>,
+    /// Where some files moved and some did not, each one's own result. Empty when nothing moved.
+    pub components: Vec<Outcome>,
 }
 
 impl Refusal {
     pub fn new(why: Why, message: impl Into<String>) -> Self {
-        Refusal { why, message: message.into(), hint: None }
+        Refusal { why, message: message.into(), hint: None, components: Vec::new() }
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
@@ -139,7 +156,8 @@ pub struct CheckReport {
     /// Newer, but `n0x update` would refuse, with the code it would refuse with.
     pub blocked: Option<&'static str>,
     pub address: String,
-    /// Addresses asked before the one that answered. A dead first address lands here and nowhere else.
+    /// Addresses asked that gave no manifest to use, beside the one that did. A dead address lands
+    /// here and nowhere else.
     pub tried: Vec<Tried>,
 }
 
@@ -152,6 +170,9 @@ pub struct Updater {
     pub current: Version,
     /// The file to replace.
     pub exe: PathBuf,
+    /// The user's explicit override. When it verifies it decides alone and nothing else is asked.
+    pub pin: Option<String>,
+    /// Asked, every one of them, when there is no pin or the pin gave nothing to use.
     pub addresses: Vec<String>,
     pub trust: Trust,
     pub transport: Transport,
@@ -178,35 +199,44 @@ impl Updater {
             platform: platform(),
             current,
             exe,
-            addresses: addresses(settings.manifest_url.as_deref()),
+            pin: settings.manifest_url,
+            addresses: MANIFEST_ADDRESSES.iter().map(|a| a.to_string()).collect(),
             trust: Trust::of_release(config_dir.as_deref()),
             transport: Transport::standard(version),
             config_dir,
         })
     }
 
-    /// Ask each address in turn and return the first manifest that verifies.
+    /// The manifest to act on: the pin's if it verifies, or else the highest version that verifies
+    /// among all the frozen addresses.
     ///
-    /// Any failure moves on to the next address, a bad signature too. A domain that lapsed and was
-    /// taken over answers with something unsigned, and stopping there would let it strand every
-    /// copy in the field, which is what the second address is for; going on costs nothing, since
-    /// whatever the next address says must verify just the same.
+    /// All of them, because the first that verifies is not the newest. A replayed old signed manifest
+    /// at the first address would otherwise freeze every copy, with the second never asked. Any failure
+    /// moves on, a bad signature too: a domain that lapsed and was taken over answers with something
+    /// unsigned, and going on costs nothing, since whatever the next says must verify just the same.
+    /// A failure beside a success stays in `tried` and is no refusal.
     pub fn fetch_manifest(&self) -> Result<Found, Refusal> {
         let mut tried = Vec::new();
         let mut worst: Option<Why> = None;
-        for address in &self.addresses {
+        let mut best: Option<(Manifest, &String)> = None;
+        for address in self.pin.iter().chain(&self.addresses) {
             match self.fetch_one(address) {
                 Ok(manifest) => {
-                    if let Some(key) = manifest.next_key {
-                        self.trust.remember(self.config_dir.as_deref(), key);
+                    if self.pin.as_ref() == Some(address) {
+                        return Ok(Found { manifest, address: address.clone(), tried });
                     }
-                    return Ok(Found { manifest, address: address.clone(), tried });
+                    if best.as_ref().is_none_or(|(held, _)| manifest.version > held.version) {
+                        best = Some((manifest, address));
+                    }
                 }
                 Err(r) => {
                     worst = Some(worst.map_or(r.why, |w| w.max(r.why)));
                     tried.push(Tried { address: address.clone(), code: r.why.code(), message: r.message });
                 }
             }
+        }
+        if let Some((manifest, address)) = best {
+            return Ok(Found { manifest, address: address.clone(), tried });
         }
         // Reported as the most serious thing any address did: a dead first address must not hide a
         // bad signature at the second, and `Why`'s order is that seriousness.
@@ -220,7 +250,11 @@ impl Updater {
         let signature = self.transport.get_signature(&format!("{address}{SIGNATURE_SUFFIX}"))?;
         // Before a byte of it is parsed: nothing an unverified file says is looked at.
         self.trust.verify(&bytes, &signature)?;
-        Manifest::parse(&bytes)
+        let manifest = Manifest::parse(&bytes)?;
+        if let Some(key) = manifest.next_key {
+            self.trust.remember(self.config_dir.as_deref(), &bytes, &signature, key);
+        }
+        Ok(manifest)
     }
 
     /// `n0x update --check`.
@@ -250,11 +284,6 @@ impl Updater {
     }
 }
 
-/// The addresses in the order they are asked: the override, then the two frozen ones.
-pub fn addresses(manifest_override: Option<&str>) -> Vec<String> {
-    manifest_override.into_iter().map(str::to_string).chain(MANIFEST_ADDRESSES.iter().map(|a| a.to_string())).collect()
-}
-
 /// Lower-case hex, which the manifest and the signature file are written in.
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -274,14 +303,10 @@ pub(crate) fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(out)
 }
 
-pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(digest.as_ref());
-    out
-}
-
 /// Write a file by rename, so a reader sees the old contents or the new and never half of one.
+///
+/// The temporary is opened `create_new`, so a link planted at its name is never followed: this write
+/// fails instead, which costs a stamp or a remembered key and no one's file.
 pub(crate) fn write_by_rename(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -289,7 +314,12 @@ pub(crate) fn write_by_rename(path: &std::path::Path, bytes: &[u8]) -> std::io::
     let mut temp = path.as_os_str().to_owned();
     temp.push(format!(".tmp-{}", std::process::id()));
     let temp = PathBuf::from(temp);
-    let written = std::fs::write(&temp, bytes).and_then(|()| std::fs::rename(&temp, path));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, bytes))
+        .and_then(|()| std::fs::rename(&temp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
     }

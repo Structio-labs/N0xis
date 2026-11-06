@@ -9,7 +9,6 @@ use std::io::{ErrorKind, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ring::digest::{Context, SHA256};
 use ureq::Agent;
 use ureq::tls::{Certificate, RootCerts, TlsConfig, TlsProvider};
 
@@ -31,6 +30,9 @@ pub struct Limits {
     /// To read a whole file. Generous: 13 MB on a slow line takes minutes and is not a failure.
     pub file_body: Duration,
     pub redirects: u32,
+    /// For the new file to answer `--version`. Generous: a first run under a slow scanner or an
+    /// emulation layer is not a failure, and a hang is.
+    pub run: Duration,
 }
 
 impl Default for Limits {
@@ -42,6 +44,7 @@ impl Default for Limits {
             file_body: Duration::from_secs(30 * 60),
             // GitHub's `latest/download` takes two: to the tagged release, then to the asset's store.
             redirects: 5,
+            run: Duration::from_secs(30),
         }
     }
 }
@@ -51,6 +54,7 @@ impl Default for Limits {
 pub struct Transport {
     small: Agent,
     file: Agent,
+    pub(crate) run_bound: Duration,
 }
 
 /// What can happen to a GET before there is a body to judge.
@@ -103,7 +107,7 @@ impl Transport {
                 .build()
                 .into()
         };
-        Transport { small: agent(limits.small_body), file: agent(limits.file_body) }
+        Transport { small: agent(limits.small_body), file: agent(limits.file_body), run_bound: limits.run }
     }
 
     fn get_small(&self, url: &str, max: u64) -> Result<Vec<u8>, Failed> {
@@ -120,13 +124,13 @@ impl Transport {
         self.get_small(url, SIGNATURE_MAX_BYTES).map_err(|f| Refusal::new(Why::NoSignature, format!("no signature at {url}: {}", f.message())))
     }
 
-    /// Write the file at `url` to `out` and return its digest, reading at most `size` bytes plus the
-    /// one that shows it was longer than the manifest said.
-    pub(crate) fn download(&self, url: &str, size: u64, out: &mut impl Write) -> Result<[u8; 32], Refusal> {
+    /// Write the file at `url` to `out`, reading at most `size` bytes plus the one that shows it was
+    /// longer than the manifest said. No digest here: what is checked is the file afterwards, because
+    /// a digest of the stream says nothing about what is on the disk.
+    pub(crate) fn download(&self, url: &str, size: u64, out: &mut impl Write) -> Result<(), Refusal> {
         let failed_with = |f: Failed| Refusal::new(Why::DownloadFailed, format!("{url}: {}", f.message()));
         let mut response = self.file.get(url).call().map_err(failed).map_err(failed_with)?;
         let mut reader = response.body_mut().as_reader();
-        let mut digest = Context::new(&SHA256);
         let mut buffer = vec![0u8; 64 * 1024];
         let mut got: u64 = 0;
         loop {
@@ -146,15 +150,12 @@ impl Transport {
             if got > size {
                 return Err(Refusal::new(Why::SizeMismatch, format!("{url} is longer than the {size} bytes the manifest states")));
             }
-            digest.update(&buffer[..n]);
             out.write_all(&buffer[..n]).map_err(|e| Refusal::new(Why::InstallFailed, format!("writing the download: {e}")))?;
         }
         if got != size {
             return Err(short(url, got, size));
         }
-        let mut sum = [0u8; 32];
-        sum.copy_from_slice(digest.finish().as_ref());
-        Ok(sum)
+        Ok(())
     }
 }
 

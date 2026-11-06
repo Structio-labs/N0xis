@@ -290,6 +290,29 @@ fn config_answers_in_the_envelope_and_keeps_the_setting() {
     assert_eq!(on_disk["update.check"], json!(false));
 }
 
+/// A configuration directory that is not this user's: settings cannot be written, what is read is
+/// said, and a run asks only the frozen addresses. As root every directory here is its own, and this
+/// would measure nothing.
+#[cfg(unix)]
+#[test]
+fn a_directory_of_another_owner_does_not_exist() {
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("not verified here: running as root");
+        return;
+    }
+    let s = Scene::new("notyours");
+    let piped = |args: &[&str]| s.command(Path::new(BIN), args).env("N0X_CONFIG_DIR", "/").output().expect("run");
+    let set = piped(&["config", "set", "update.auto", "true"]);
+    assert_eq!(envelope(&set)["error"]["code"], json!("config-not-yours"));
+    assert_eq!(set.status.code(), Some(2));
+    let got = envelope(&piped(&["config", "get"]));
+    assert_eq!(got["data"]["file"], Value::Null);
+    assert!(got["data"]["note"].as_str().expect("a note").contains("nothing in it is read"), "{got}");
+    assert_eq!(got["data"]["settings"].as_array().unwrap().len(), 3);
+    assert_eq!(envelope(&piped(&["update", "--check"]))["error"]["code"], json!("manifest-unavailable"));
+    assert_eq!(s.proxy.asked(), ["updates.structio.dev:443", "github.com:443"]);
+}
+
 /// Standard error on a real terminal is the one thing a pipe cannot stand in for.
 #[cfg(unix)]
 mod on_a_terminal {

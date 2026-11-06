@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use n0xis_update::config::{self, Settings};
-use n0xis_update::{Why, addresses, MANIFEST_ADDRESSES};
+use n0xis_update::{Why, MANIFEST_ADDRESSES};
 use serde_json::{Value, json};
 
 fn dir(name: &str) -> PathBuf {
@@ -76,10 +76,29 @@ fn a_damaged_file_is_refused_and_not_overwritten() {
 }
 
 #[test]
-fn the_override_is_asked_first_and_the_frozen_addresses_keep_their_order() {
+fn the_frozen_addresses_keep_their_order() {
     assert_eq!(MANIFEST_ADDRESSES[0], "https://updates.structio.dev/n0xis/manifest.json");
     assert_eq!(MANIFEST_ADDRESSES[1], "https://github.com/Structio-labs/N0xis/releases/latest/download/manifest.json");
-    assert_eq!(addresses(None), MANIFEST_ADDRESSES);
-    assert_eq!(addresses(Some("https://a/m"))[0], "https://a/m");
-    assert_eq!(addresses(Some("https://a/m"))[1..], MANIFEST_ADDRESSES);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_of_another_owner_is_not_mine() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    // As root every path here is its own, and this would measure nothing.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("not verified here: running as root");
+        return;
+    }
+    assert!(!config::is_mine(Path::new("/")));
+    assert!(!config::is_mine(Path::new("/no-such-directory/n0x")), "its nearest existing ancestor decides");
+
+    let d = dir("mine");
+    fs::create_dir_all(&d).unwrap();
+    assert!(config::is_mine(&d));
+    assert!(config::is_mine(&d.join("not").join("yet")), "and that can be an ancestor of mine");
+    fs::set_permissions(&d, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(!config::is_mine(&d), "a directory anyone can write to is no one's");
+    fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
 }

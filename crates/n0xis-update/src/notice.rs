@@ -25,7 +25,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, Settings};
-use crate::Updater;
+use crate::{Updater, Why};
 
 /// The hidden first argument that makes a binary the detached copy. Read before the door's argument
 /// parser, so it is in no catalog.
@@ -244,6 +244,8 @@ pub fn run_check(updater: &Updater, auto: bool) {
                         state.installed = Some(Installed { from: done.from, to: done.to });
                         state.held = None;
                     }
+                    // Another run is on it, and whichever finishes will have said what happened.
+                    Err(r) if r.why == Why::UpdateInProgress => {}
                     // The line then offers what could not be done alone, and `n0x update` says why.
                     Err(r) => state.refusal = Some(r.why.code().to_string()),
                 }

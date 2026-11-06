@@ -102,6 +102,6 @@ impl Entry {
 }
 
 /// A name that stays in the directory it is joined to, on every platform.
-pub(crate) fn is_bare_file_name(name: &str) -> bool {
+fn is_bare_file_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
 }

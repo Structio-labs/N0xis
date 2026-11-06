@@ -32,6 +32,9 @@ pub enum Reply {
     StallsInBody,
     /// Accepts and says nothing, for longer than a test waits.
     Silent,
+    /// Sends `at` bytes of `body`, calls `meanwhile`, then sends the rest: for a test to look at or
+    /// alter what the client has on the disk during its download.
+    During { body: Vec<u8>, at: usize, meanwhile: Arc<dyn Fn() + Send + Sync> },
 }
 
 pub struct Server {
@@ -150,6 +153,13 @@ fn serve(stream: TcpStream, config: Arc<ServerConfig>, seen: &Mutex<Vec<String>>
         Reply::Silent => {
             std::thread::sleep(Duration::from_secs(20));
             Ok(())
+        }
+        Reply::During { body, at, meanwhile } => {
+            let first = write!(tls, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{close}", body.len()).and_then(|()| tls.write_all(&body[..at])).and_then(|()| tls.flush());
+            meanwhile();
+            let written = first.and_then(|()| tls.write_all(&body[at..]));
+            tls.conn.send_close_notify();
+            written.and_then(|()| tls.flush())
         }
     };
 }

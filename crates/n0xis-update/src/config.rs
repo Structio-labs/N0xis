@@ -16,7 +16,8 @@ use crate::{Refusal, Why, write_by_rename};
 pub const UPDATE_CHECK: &str = "update.check";
 /// Install without being asked. Off by default.
 pub const UPDATE_AUTO: &str = "update.auto";
-/// An address asked for the manifest ahead of the built-in two. It must still be signed.
+/// An address asked for the manifest ahead of the built-in two, which decides alone when it verifies.
+/// It must still be signed.
 pub const UPDATE_MANIFEST_URL: &str = "update.manifest_url";
 
 /// Every setting there is, and its default.
@@ -26,14 +27,73 @@ pub fn known() -> [(&'static str, Value); 3] {
 
 const FILE: &str = "config.json";
 
-/// The user's configuration directory for this tool. `N0X_CONFIG_DIR` overrides it, because on
-/// Windows the system location is a known folder no environment variable moves, and a test must not
-/// write to the user's own.
-pub fn user_dir() -> Option<PathBuf> {
+/// The directory the environment names. `N0X_CONFIG_DIR` overrides it, because on Windows the system
+/// location is a known folder no environment variable moves, and a test must not write to the user's own.
+fn named_dir() -> Option<PathBuf> {
     match std::env::var_os("N0X_CONFIG_DIR") {
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
         _ => dirs::config_dir().map(|d| d.join("n0x")),
     }
+}
+
+/// The user's configuration directory, **and the one seam by which anything reaches it**: a directory
+/// that is not this user's does not exist.
+///
+/// `None` means the defaults with `update.auto` off, no remembered keys, no stamp and so no daily
+/// check, no detached process and no writes. An explicit `update` and `--rollback` still work, from
+/// the built-in key and the two frozen addresses. The defect this closes: under `sudo -E`, or a sudo
+/// that keeps `HOME`, a root process took its settings and keys from a file the user could write,
+/// and left root-owned files in the user's directory that then broke the user's own runs.
+pub fn user_dir() -> Option<PathBuf> {
+    named_dir().filter(|dir| is_mine(dir))
+}
+
+/// Whether `dir`, or its nearest existing ancestor if it is not there yet, belongs to this effective
+/// user. A directory anyone can write to is no one's, or `N0X_CONFIG_DIR=/tmp` would pass for root.
+#[cfg(unix)]
+pub fn is_mine(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid takes nothing and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    for ancestor in dir.ancestors() {
+        // A relative path ends in the empty one, which is the working directory.
+        let ancestor = if ancestor.as_os_str().is_empty() { Path::new(".") } else { ancestor };
+        match std::fs::metadata(ancestor) {
+            Ok(found) => return found.is_dir() && found.uid() == me && found.mode() & 0o002 == 0,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Windows has no one to sudo to here: the known folder is the user's own.
+#[cfg(not(unix))]
+pub fn is_mine(_dir: &Path) -> bool {
+    true
+}
+
+/// What stands in for a directory of this user's, in words.
+fn no_directory() -> String {
+    match named_dir() {
+        Some(dir) => format!("{} is not this user's own", dir.display()),
+        None => "this system names no configuration directory".to_string(),
+    }
+}
+
+/// `config set` where there is no directory of this user's to write to.
+pub fn not_yours() -> Refusal {
+    Refusal::new(Why::ConfigNotYours, format!("{}, so nothing is written to it", no_directory()))
+}
+
+/// `config get` where there is no directory of this user's to read: what this run goes by, and why.
+pub fn get_without_a_directory(key: Option<&str>) -> Result<Value, Refusal> {
+    let settings = rows(&Map::new(), key)?;
+    Ok(json!({
+        "file": Value::Null,
+        "note": format!("{}, so nothing in it is read: these are the defaults, with no daily check, no remembered keys and nothing written", no_directory()),
+        "settings": settings,
+    }))
 }
 
 /// The settings the code reads, with their defaults where the file is silent.
@@ -97,15 +157,19 @@ fn row(key: &str, default: &Value, map: &Map<String, Value>) -> Value {
 /// `n0x config get [key]`.
 pub fn get(dir: &Path, key: Option<&str>) -> Result<Value, Refusal> {
     let map = read_file(dir)?;
-    let settings: Vec<Value> = match key {
-        Some(key) => {
-            let known = known();
-            let (name, default) = known.iter().find(|(name, _)| *name == key).ok_or_else(|| unknown_setting(key))?;
-            vec![row(name, default, &map)]
-        }
-        None => known().iter().map(|(name, default)| row(name, default, &map)).collect(),
-    };
+    let settings = rows(&map, key)?;
     Ok(json!({ "file": dir.join(FILE).display().to_string(), "settings": settings }))
+}
+
+fn rows(map: &Map<String, Value>, key: Option<&str>) -> Result<Vec<Value>, Refusal> {
+    let known = known();
+    match key {
+        Some(key) => {
+            let (name, default) = known.iter().find(|(name, _)| *name == key).ok_or_else(|| unknown_setting(key))?;
+            Ok(vec![row(name, default, map)])
+        }
+        None => Ok(known.iter().map(|(name, default)| row(name, default, map)).collect()),
+    }
 }
 
 /// `n0x config set <key> <value>`.

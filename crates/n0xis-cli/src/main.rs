@@ -3662,6 +3662,11 @@ fn update_refusal(r: n0xis_update::Refusal) -> Response<serde_json::Value> {
 fn emit_update_answer<T: serde::Serialize>(schema: &str, answer: Result<T, n0xis_update::Refusal>, pretty: bool) -> bool {
     match answer.map(|data| serde_json::to_value(data).unwrap_or(serde_json::Value::Null)) {
         Ok(data) => emit(&Response::success(schema, data), pretty),
+        // Some files moved and some did not: each one's own result, and still a failure.
+        Err(r) if !r.components.is_empty() => {
+            let components = serde_json::to_value(&r.components).unwrap_or(serde_json::Value::Null);
+            emit::emit_refusal_with(&update_refusal(r), "components", components, pretty)
+        }
         Err(r) => emit(&update_refusal(r), pretty),
     }
 }
@@ -3687,8 +3692,11 @@ fn cmd_update(a: UpdateArgs, pretty: bool) -> bool {
 
 fn cmd_config(a: ConfigCmd, pretty: bool) -> bool {
     let Some(dir) = n0xis_update::config::user_dir() else {
-        let why = n0xis_update::Refusal::new(n0xis_update::Why::ConfigUnreadable, "this system names no user configuration directory");
-        return emit(&update_refusal(why), pretty);
+        let answer = match a {
+            ConfigCmd::Get(a) => n0xis_update::config::get_without_a_directory(a.key.as_deref()),
+            ConfigCmd::Set(_) => Err(n0xis_update::config::not_yours()),
+        };
+        return emit_update_answer(schema::v1::CONFIG, answer, pretty);
     };
     let answer = match a {
         ConfigCmd::Get(a) => n0xis_update::config::get(&dir, a.key.as_deref()),

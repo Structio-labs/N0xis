@@ -23,3 +23,11 @@ libc = { workspace = true }
 [dev-dependencies]
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+# What `tests/planted.rs` installs: the running component's new file has to run, on each platform, and
+# no switch in the source lets a test past that. It is built for tests by cargo and released by nothing.
+[[bin]]
+name = "n0xis-update-test-program"
+path = "tests/support/program.rs"
+test = false
+doc = false
