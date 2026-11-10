@@ -209,6 +209,29 @@ impl CallConv {
     }
 }
 
+/// What [`Arch::pic_relative`] knows of the registers at an instruction: which hold
+/// an address of the image, and a thunk's call it has seen and not the `add` after it.
+#[derive(Clone, Debug, Default)]
+pub struct PicState {
+    pub(crate) known: Vec<(String, u64)>,
+    pub(crate) pending: Option<PicPending>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PicPending {
+    /// `call` to the next instruction, whose `pop` takes the address pushed.
+    PopNext(u64),
+    /// A register holds this address, and the `add` that makes it the GOT's follows.
+    Holds(String, u64),
+}
+
+impl PicState {
+    /// Nothing known: where a function starts.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// The ISA abstraction the analysis core is written against.
 ///
 /// **Boundary rule:** implementors may touch `iced-x86` or any ISA library;
@@ -581,6 +604,15 @@ pub trait Arch {
     /// What each is depends on the image: on a fixed one such a value is how code
     /// names data, and elsewhere it is a number. Required, with no default.
     fn stated_addresses(&self, insn: &DecodedInsn) -> Vec<Va>;
+
+    /// The address an instruction reads through a register that holds an address of
+    /// the image itself, on an instruction set whose position-independent code keeps
+    /// one: i386 has no RIP-relative operand, so `call __x86.get_pc_thunk.bx; add ebx,
+    /// imm` puts the GOT's address in `ebx` and `lea eax, [ebx-0x1fdb]` reaches data.
+    /// `state` carries what the instructions before this one set, in address order;
+    /// the caller clears it where a function starts. `read` reads the image.
+    /// Required, with no default: an instruction set without such code says `None`.
+    fn pic_relative(&self, state: &mut PicState, insn: &DecodedInsn, read: &dyn Fn(Va, usize) -> Option<Vec<u8>>) -> Option<Va>;
 
     /// The largest index the guard of a dispatch's index lets through, where a
     /// guard of *that index* can be read: `insns` end at the dispatching jump.

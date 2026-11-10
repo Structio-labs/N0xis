@@ -46,7 +46,7 @@ pub struct StringXrefInput {
     pub held: Vec<n0xis_sources::HeldWord>,
     /// Whether a word-sized value in an instruction is an address here: only on an
     /// image that runs where it says, whose code names data that way.
-    pub stated_values_are_addresses: bool,
+    pub references: crate::xref::CodeReferences,
     /// What the words of data were read from, for the answer.
     pub words: SearchedData,
     /// Whether a string here ends at a NUL. Where it does not, a reference before the
@@ -59,7 +59,7 @@ impl StringXrefInput {
     /// taken for an address.
     pub fn of_code(data_start: Va, data_size: usize, code: Vec<(Va, usize)>, query: String, limit: usize) -> Self {
         let words = SearchedData::NotSearched { why: "no words of data were read for this answer".to_string() };
-        Self { data_start, data_size, code, query, limit, held: Vec::new(), stated_values_are_addresses: false, words, strings_are_terminated: true }
+        Self { data_start, data_size, code, query, limit, held: Vec::new(), references: Default::default(), words, strings_are_terminated: true }
     }
 }
 
@@ -173,10 +173,7 @@ impl StringXrefPass {
     /// answer does not depend on it.
     pub(crate) fn run_in(&self, ctx: &Ctx, input: StringXrefInput, chunk: u64) -> Result<StringXrefArtifact, CoreError> {
         let needle = input.query.as_bytes();
-        let mut not_searched = vec!["an address built by more than one instruction", "an image-relative (RVA) word", "a word not aligned to a pointer, unless a relocation names it"];
-        if !input.stated_values_are_addresses {
-            not_searched.push("an address as an immediate operand of an instruction");
-        }
+        let mut not_searched = crate::xref::not_searched(&input.references);
         if !input.strings_are_terminated {
             not_searched.push("a reference to bytes before the text: this image cuts its strings by a length, so those are other strings");
         }
@@ -203,24 +200,23 @@ impl StringXrefPass {
             (occ, entry)
         };
         let mut referencing: Vec<(usize, XrefEntry)> = Vec::new();
+        // Each instruction that reaches an occurrence, so a word a relocation writes
+        // inside one is not listed again as a word of data.
+        let mut instructions: Vec<(u64, u64)> = Vec::new();
+        let mut scan = crate::xref::CodeScan::new(&input.references);
         for &(code_start, code_size) in &input.code {
             sweep_code(ctx, code_start, code_size as u64, chunk, |ins| {
-                if let Some(t) = ins.rip_target {
+                let named = ins.rip_target.map(|t| (t, "data")).into_iter().chain(scan.of(ctx, ins));
+                for (t, kind) in named {
                     for occ in occurrences.reached_by(t.0) {
-                        referencing.push(row(occ, ins.va, t, "data", ins.text.clone()));
-                    }
-                }
-                if input.stated_values_are_addresses {
-                    for t in ctx.arch.stated_addresses(ins) {
-                        for occ in occurrences.reached_by(t.0) {
-                            referencing.push(row(occ, ins.va, t, "immediate", ins.text.clone()));
-                        }
+                        referencing.push(row(occ, ins.va, t, kind, ins.text.clone()));
+                        instructions.push((ins.va.0, ins.va.0 + u64::from(ins.len)));
                     }
                 }
                 ControlFlow::Continue(())
             })?;
         }
-        for w in &input.held {
+        for w in input.held.iter().filter(|w| !instructions.iter().any(|&(s, e)| w.at >= s && w.at < e)) {
             for occ in occurrences.reached_by(w.holds) {
                 let (occ, mut entry) = row(occ, Va(w.at), Va(w.holds), "data_word", format!("word in {} holds {}", w.section, Va(w.holds)));
                 entry.held = Some(HeldIn { slot: Va(w.at), section: Some(w.section.clone()), evidence: w.by, relative_to: None });

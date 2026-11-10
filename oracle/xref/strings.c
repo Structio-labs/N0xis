@@ -14,6 +14,11 @@ __attribute__((noinline)) void use_tail(const char* s) { puts(s); }
 
 const char* const pointer_table[] = {"pointed at by a table", "another row"};
 
+// A variable `main` reads and writes: by a RIP-relative operand on x86-64, by an
+// absolute address on a fixed i386 or PE32 image, through the GOT's register in i386
+// position-independent code.
+int counter = 3;
+
 int main(int argc, char** argv) {
     // Short enough to be in one merge section with the next, which a longer string
     // is not, since gcc sorts them by alignment.
@@ -21,9 +26,10 @@ int main(int argc, char** argv) {
     use_tail("merged end");
     printf("before the value %d and after\n", argc);
     puts(pointer_table[argc & 1]);
+    counter += argc;
     puts(argv[0] + 1);
     // The middle of a literal, by arithmetic on it the compiler folds.
     const char* s = "prefix the suffix";
     puts(s + 7);
-    return 0;
+    return counter;
 }

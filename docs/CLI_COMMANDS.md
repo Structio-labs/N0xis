@@ -647,6 +647,14 @@ Who references `--addr` (`to`) / what `--addr` references (`from`).
   fixed `ET_EXEC` or a PE with no base relocations; `stored_values_only`, relocations not read). On an image
   that may load anywhere (`rule`: `relocations`) a word no relocation writes stays a number whatever it equals:
   it is not listed, and `unrelocated_matches` counts it.
+- From code, besides a branch (`call`, `jmp`, `cond_jmp`) and a RIP-relative operand (`data`): `immediate`, an
+  address an instruction states as a value (`mov edi, 0x402010`, `mov eax, ds:0x403020`), read on a fixed image
+  where it is **only a number equal to the address**, and on one that may load anywhere only where a relocation
+  writes the instruction's word (a PE32's `push offset`); and `pic_relative`, a read through the register an i386
+  PC thunk set to the GOT (`lea eax, [ebx-0x1fdb]`), as long as nothing else writes it in that function. A word a
+  relocation writes inside such an instruction is that row, not a `data_word`.
+- `data.searched.address_outside_image` is `true` when the address is in no section of the image.
+- `xref from` reads only the instruction at `--addr`, and `data.searched.code` is that instruction.
 - A `relative_entry` row is one 32-bit entry of a table relative to a base code takes the address of: `slot`,
   `section`, `relative_to` (the base) and `evidence` `matching_value`, since only its shape says it is one: at
   least two entries from the base, each landing in code, up to the next address code takes.
@@ -666,8 +674,8 @@ Who references `--addr` (`to`) / what `--addr` references (`from`).
 - Schema: `n0xis.xref.v1`
 
 ### `xref string --query <str>`
-Find a string and what references it: an instruction's operand, a word of data, and on a fixed image a
-word-sized value an instruction states (`kind` `immediate`, only a number equal to the address). A reference
+Find a string and what references it: an instruction's operand, a word of data, a value an instruction states
+(`immediate`) and an i386 read through the GOT's register (`pic_relative`), as for `xref to`. A reference
 counts from the start of the string the text is in to the text's last byte, as a linker merging tails
 leaves `"found\n"` as the end of `"not found\n"`: a row that does not land on the text's first byte has
 `string_offset`, negative where it starts before the text and positive where it is inside it.
@@ -1392,7 +1400,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x type struct` | Define (or replace) a struct. Repeat `--field "OFFSET:NAME[:CTYPE]"` (offset hex `0x68` or decimal). e.g. `--field 0x0:vftable:void* --field 0x68:count:int` |
 | `n0x why` | For one address: the function it is in, and where each fact about it came from, as a category from a closed list — every source of its start (a declaration such as `.pdata`, an `.eh_frame` FDE, an export, a PDB, a WebAssembly body; or a rule: after a declared end, a gap sweep, a call target, a prologue), the one source of its end (or `not_stated`, the control-flow graph's own end), and the layer that named it, with every other layer that names it. No confidence numbers: a category says what produced a fact, not how likely it is |
 | `n0x xref from` | What `--addr` references |
-| `n0x xref string` | Find a string literal and who references it via `lea` |
+| `n0x xref string` | Find a string literal and what references it: an operand, a stated value, a word of data |
 | `n0x xref to` | Who references `--addr` |
 
 ### Live memory (32)

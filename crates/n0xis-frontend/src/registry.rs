@@ -2524,7 +2524,8 @@ impl Plugin for AnalysisPasses {
                         && !code_ranges.is_empty()
                         && matches!(src, Src::Static(_) | Src::Snap(_))
                     {
-                        let idx = n0xis_pipeline::xref_index_for(ctx, &code_ranges, label);
+                        let code_refs = src.code_references();
+                        let idx = n0xis_pipeline::xref_index_for(ctx, &code_ranges, label, &code_refs);
                         let refs = idx
                             .to(addr)
                             .into_iter()
@@ -2532,24 +2533,20 @@ impl Plugin for AnalysisPasses {
                                 // The index stores only source addresses; re-derive the
                                 // reference kind and instruction text by decoding just
                                 // this one `from` instruction (aligned, so exact).
-                                let (kind, named, text) = ctx
+                                let (kind, named, len, text) = ctx
                                     .source
                                     .read(from, 16)
                                     .ok()
                                     .and_then(|b| ctx.arch.decode_range(&b, from, b.len()).into_iter().next())
-                                    .map(|i| {
-                                        // Indexed by a branch target, or else by a
-                                        // data reference: a RIP-relative operand, or
-                                        // a `ref.func` naming the function's body.
-                                        let data = i.rip_target == Some(addr) || i.target_function.is_some_and(|f| f.body == Some(addr));
-                                        let kind = if data && i.target != Some(addr) { "data" } else { n0xis_core::xref_kind(i.kind) };
-                                        (kind, i.target_function.map(|f| f.index), i.text)
-                                    })
-                                    .unwrap_or(("branch", None, String::new()));
-                                n0xis_core::xref_entry(ctx, from, Some(addr), named, kind, text)
+                                    .map(|i| (n0xis_core::indexed_kind(&i, addr, ctx.arch), i.target_function.map(|f| f.index), i.len, i.text))
+                                    .unwrap_or(("branch", None, 0, String::new()));
+                                (n0xis_core::xref_entry(ctx, from, Some(addr), named, kind, text), len)
                             })
                             .collect::<Vec<_>>();
-                        let mut refs = refs;
+                        // A word a relocation writes inside one of these instructions is
+                        // the instruction's reference, and is not listed again.
+                        let instructions: Vec<(u64, u64)> = refs.iter().map(|(r, len)| (r.from.0, r.from.0 + u64::from(*len))).collect();
+                        let mut refs: Vec<n0xis_core::XrefEntry> = refs.into_iter().map(|(r, _)| r).collect();
                         let code: Vec<n0xis_core::SearchedCode> = code_ranges.iter().map(|&(start, size)| n0xis_core::SearchedCode { start, size }).collect();
                         // Words of data. A word of a live process or a snapshot has no
                         // table saying it is an address; this reads the image's.
@@ -2577,8 +2574,13 @@ impl Plugin for AnalysisPasses {
                                     .into_iter()
                                     .collect();
                                 let in_table = |slot: u64| tables.iter().any(|&(base, end)| slot >= base && slot < end);
-                                refs.extend(n0xis_core::held_references(ctx, addr, &held, &code_ranges, &bases, &section_at).into_iter().filter(|r| !r.held.as_ref().is_some_and(|h| in_table(h.slot.0))));
-                                n0xis_core::XrefSearched::with_held(code, &held, jump_tables)
+                                let in_instruction = |slot: u64| instructions.iter().any(|&(s, e)| slot >= s && slot < e);
+                                refs.extend(
+                                    n0xis_core::held_references(ctx, addr, &held, &code_ranges, &bases, &section_at)
+                                        .into_iter()
+                                        .filter(|r| !r.held.as_ref().is_some_and(|h| in_table(h.slot.0) || in_instruction(h.slot.0))),
+                                );
+                                n0xis_core::XrefSearched::with_held(code, &held, jump_tables, &code_refs)
                             }
                             None => {
                                 let mut s = n0xis_core::XrefSearched::code_only(code, not_an_image(src));
@@ -2587,6 +2589,8 @@ impl Plugin for AnalysisPasses {
                             }
                         };
                         refs.extend(table_refs);
+                        let mut searched = searched;
+                        searched.address_outside_image = matches!(src, Src::Static(img) if img.section_at(addr.0).is_none());
                         let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs, searched, jump_table: None };
                         return ok_json(n0xis_contracts::schema::v1::XREF, art, label);
                     }
@@ -2619,6 +2623,7 @@ impl Plugin for AnalysisPasses {
                             if dir == n0xis_core::XrefDir::To && !matches!(src, Src::Static(_)) {
                                 art.searched.data = n0xis_core::SearchedData::NotSearched { why: not_an_image(src).to_string() };
                             }
+                            art.searched.address_outside_image = matches!(src, Src::Static(img) if img.section_at(addr.0).is_none());
                             if dir == n0xis_core::XrefDir::From {
                                 let section_at = |at: u64| match src {
                                     Src::Static(img) => img.section_at(at),
@@ -2627,7 +2632,7 @@ impl Plugin for AnalysisPasses {
                                 // The index says where other tables begin. A live source has
                                 // none kept, and an empty one says nothing of them.
                                 let idx = match src {
-                                    Src::Static(_) | Src::Snap(_) if !code_ranges.is_empty() => n0xis_pipeline::xref_index_for(ctx, &code_ranges, label),
+                                    Src::Static(_) | Src::Snap(_) if !code_ranges.is_empty() => n0xis_pipeline::xref_index_for(ctx, &code_ranges, label, &src.code_references()),
                                     _ => Default::default(),
                                 };
                                 if let Some((table_refs, answer)) = n0xis_core::jump_table_from(ctx, addr, &idx, &section_at) {
@@ -2720,12 +2725,13 @@ impl Plugin for AnalysisPasses {
                             _ => None,
                         };
                         let why = if matches!(src, Src::Static(_)) { "a window of code was asked for, or the image has no words of data" } else { not_an_image(src) };
-                        let (words, rule_says_values, listed) = match held {
+                        let code_refs = src.code_references();
+                        let (words, listed) = match held {
                             Some(h) => {
-                                let code_only = n0xis_core::XrefSearched::with_held(Vec::new(), &h, n0xis_core::SearchedJumps::NotRead { why: String::new() });
-                                (code_only.data, h.rule == n0xis_sources::WordRule::StoredValues, h.words)
+                                let code_only = n0xis_core::XrefSearched::with_held(Vec::new(), &h, n0xis_core::SearchedJumps::NotRead { why: String::new() }, &code_refs);
+                                (code_only.data, h.words)
                             }
-                            None => (n0xis_core::SearchedData::NotSearched { why: why.to_string() }, false, Vec::new()),
+                            None => (n0xis_core::SearchedData::NotSearched { why: why.to_string() }, Vec::new()),
                         };
                         let input = n0xis_core::StringXrefInput {
                             data_start,
@@ -2734,7 +2740,7 @@ impl Plugin for AnalysisPasses {
                             query: query.clone(),
                             limit,
                             held: listed,
-                            stated_values_are_addresses: rule_says_values,
+                            references: code_refs,
                             words,
                             strings_are_terminated: terminated,
                         };

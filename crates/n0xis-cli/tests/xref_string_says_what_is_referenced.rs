@@ -39,6 +39,39 @@ struct Built {
     nm: &'static str,
 }
 
+/// How i386 position-independent code reaches data: through a register a PC thunk
+/// set to the GOT, which the ABI puts at `.got.plt`'s start. `objdump` shows the
+/// operand, `[ebx-0x1fdb]`, and `readelf` where `.got.plt` is.
+fn got(file: &Path) -> Option<u64> {
+    let text = run("readelf", &["-SW"], file);
+    let line = text.lines().find(|l| l.contains(" .got.plt "))?;
+    u64::from_str_radix(line.split(" .got.plt ").nth(1)?.split_whitespace().nth(1)?, 16).ok()
+}
+
+/// The address an operand `[<reg>±0x<n>]` reaches from the GOT, if it is one.
+fn got_relative(text: &str, got: u64, pic: &str) -> Option<u64> {
+    let inside = text.split('[').nth(1)?.split(']').next()?;
+    let (reg, d, neg) = if let Some((r, d)) = inside.split_once('-') { (r, d, true) } else { inside.split_once('+').map(|(r, d)| (r, d, false))? };
+    let disp = d;
+    if reg != pic || inside.contains('*') {
+        return None;
+    }
+    let d = u64::from_str_radix(disp.trim_start_matches("0x"), 16).ok()?;
+    Some(if neg { got.wrapping_sub(d) } else { got.wrapping_add(d) } & 0xffff_ffff)
+}
+
+/// The register `main` keeps the GOT in, as objdump shows it: the one the `add` writes
+/// after a PC thunk's call (gcc), or after a call to the next instruction and the
+/// `pop` that takes its address (clang).
+fn pic_register(lines: &[(u64, String)]) -> Option<String> {
+    let at = lines.windows(2).position(|w| {
+        let (call, next) = (&w[0].1, &w[1]);
+        call.starts_with("call") && (call.contains("get_pc_thunk") || call.split_whitespace().nth(1) == Some(format!("{:x}", next.0).as_str()))
+    })?;
+    let add = lines[at + 1..].iter().take(3).find(|(_, t)| t.starts_with("add "))?;
+    Some(add.1.trim_start_matches("add").trim().split(',').next()?.to_string())
+}
+
 fn run(tool: &str, args: &[&str], file: &Path) -> String {
     let out = Command::new(tool).env("LC_ALL", "C").args(args).arg(file).output().unwrap_or_else(|e| panic!("{tool}: {e}"));
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -81,14 +114,28 @@ impl Built {
     /// address)`. The comment on a RIP-relative operand, and a bare hex immediate.
     fn named_by_main(&self) -> Vec<(u64, u64)> {
         let mut out = Vec::new();
-        for line in run(self.objdump, &["-d", "-M", "intel", "--no-show-raw-insn", "--disassemble=main"], &self.file).lines() {
-            let Some((head, text)) = line.split_once(":\t") else { continue };
-            let Ok(at) = u64::from_str_radix(head.trim(), 16) else { continue };
-            if let Some(comment) = text.split("# ").nth(1) {
+        let got = got(&self.file);
+        // A PE32 names C functions with a leading underscore.
+        let main = if self.nm.starts_with("i686") { "--disassemble=_main" } else { "--disassemble=main" };
+        let lines: Vec<(u64, String)> = run(self.objdump, &["-d", "-M", "intel", "--no-show-raw-insn", main], &self.file)
+            .lines()
+            .filter_map(|l| {
+                let (head, text) = l.split_once(":\t")?;
+                Some((u64::from_str_radix(head.trim(), 16).ok()?, text.trim().to_string()))
+            })
+            .collect();
+        let pic = pic_register(&lines);
+        for (at, text) in &lines {
+            let (at, text) = (*at, text.as_str());
+            if let Some(v) = got.zip(pic.as_deref()).and_then(|(g, r)| got_relative(text, g, r)) {
+                out.push((at, v));
+            } else if let Some(v) = text.split("ds:0x").nth(1).and_then(|r| u64::from_str_radix(r.split(|c: char| !c.is_ascii_hexdigit()).next()?, 16).ok()) {
+                out.push((at, v));
+            } else if let Some(comment) = text.split("# ").nth(1) {
                 if let Ok(v) = u64::from_str_radix(comment.split_whitespace().next().unwrap_or(""), 16) {
                     out.push((at, v));
                 }
-            } else if let Some(imm) = text.rsplit(',').next().and_then(|o| o.trim().strip_prefix("0x"))
+            } else if let Some(imm) = text.rsplit([',', ' ']).next().and_then(|o| o.trim().strip_prefix("0x"))
                 && let Ok(v) = u64::from_str_radix(imm, 16)
             {
                 out.push((at, v));
@@ -122,11 +169,12 @@ impl Built {
     }
 
     fn symbol(&self, name: &str) -> u64 {
+        let underscored = format!("_{name}");
         run(self.nm, &[], &self.file)
             .lines()
             .find_map(|l| {
                 let f: Vec<&str> = l.split_whitespace().collect();
-                (f.len() == 3 && f[2] == name).then(|| u64::from_str_radix(f[0], 16).expect("hex"))
+                (f.len() == 3 && (f[2] == name || f[2] == underscored)).then(|| u64::from_str_radix(f[0], 16).expect("hex"))
             })
             .unwrap_or_else(|| panic!("nm has no {name}"))
     }
@@ -219,6 +267,17 @@ fn the_answers(tag: &str, b: &Built, data_evidence: &str) {
     assert_eq!(answer["searched"]["data"]["state"], "searched", "{tag}: {answer}");
     assert!(!answer["searched"]["code"].as_array().expect("code").is_empty(), "{tag}: {answer}");
 
+    // A variable: every instruction of `main` objdump shows naming it, and no other.
+    let counter = b.symbol("counter");
+    let want: BTreeSet<u64> = b.named_by_main().into_iter().filter(|&(_, v)| v == counter).map(|(a, _)| a).collect();
+    assert!(!want.is_empty(), "{tag}: main uses counter, and the reference found no instruction: the fixture is broken");
+    let mut cmd = support::isolated(Command::new(n0xis_exe()));
+    let out = cmd.args(["xref", "to", "--file"]).arg(&b.file).args(["--addr", &format!("{counter:#x}")]).output().expect("n0xis");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("an envelope");
+    let in_main: BTreeSet<u64> = b.named_by_main().into_iter().map(|(a, _)| a).collect();
+    let got: BTreeSet<u64> = v["data"]["refs"].as_array().expect("refs").iter().filter(|r| r["kind"] != "data_word").map(|r| hex(&r["from"])).filter(|f| in_main.contains(f)).collect();
+    assert_eq!(got, want, "{tag}: xref to counter: {v}");
+
     // Absent is another answer.
     let answer = b.query("this text is in no image");
     assert_eq!(answer["found_unreferenced"], 0, "{tag}: {answer}");
@@ -257,6 +316,42 @@ fn clang_fixed() {
     let flags = ["-fuse-ld=lld", "-Wl,-O2", "-fno-pie", "-no-pie"];
     let Some(b) = build("clang_fixed", "clang", "objdump", "nm", &flags) else { return };
     the_answers("clang_fixed", &b, "matching_value");
+}
+
+/// i386: no RIP-relative operand, so a string is named by an absolute address on a fixed
+/// image, and through the GOT's register in position-independent code.
+#[test]
+fn gcc_i386_position_independent() {
+    let flags = ["-m32", "-fmerge-constants", "-Wl,-O2", "-fPIE", "-pie", "-Wl,-z,nopack-relative-relocs"];
+    let Some(b) = build("gcc_i386_pie", "gcc", "objdump", "nm", &flags) else { return };
+    the_answers("gcc_i386_pie", &b, "relative_relocation");
+    let answer = b.query("the value");
+    assert_eq!(all_rows(&answer).first().map(|x| x["kind"].clone()), Some(Value::from("pic_relative")), "{answer}");
+}
+
+#[test]
+fn clang_i386_position_independent() {
+    let flags = ["-m32", "-fPIE", "-pie", "-Wl,-z,nopack-relative-relocs"];
+    let Some(b) = build("clang_i386_pie", "clang", "objdump", "nm", &flags) else { return };
+    the_answers("clang_i386_pie", &b, "relative_relocation");
+}
+
+#[test]
+fn gcc_i386_fixed() {
+    let flags = ["-m32", "-fmerge-constants", "-fno-pie", "-no-pie"];
+    let Some(b) = build("gcc_i386_fixed", "gcc", "objdump", "nm", &flags) else { return };
+    the_answers("gcc_i386_fixed", &b, "matching_value");
+}
+
+/// A PE32 states an address in an instruction, and its base relocations name the word.
+#[test]
+fn mingw_pe32() {
+    let flags = ["-fmerge-constants", "-static"];
+    let Some(b) = build("mingw32", "i686-w64-mingw32-gcc", "i686-w64-mingw32-objdump", "i686-w64-mingw32-nm", &flags) else { return };
+    let relocated = run("i686-w64-mingw32-objdump", &["-p"], &b.file).contains("HIGHLOW");
+    the_answers("mingw32", &b, if relocated { "base_relocation" } else { "matching_value" });
+    let answer = b.query("the value");
+    assert_eq!(all_rows(&answer).first().map(|x| x["kind"].clone()), Some(Value::from("immediate")), "{answer}");
 }
 
 #[test]

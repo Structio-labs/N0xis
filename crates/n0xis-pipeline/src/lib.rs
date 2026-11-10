@@ -422,8 +422,8 @@ static XREF_MEMO: std::sync::Mutex<Option<(String, std::sync::Arc<n0xis_core::Xr
 /// Soundness follows the IR cache: the disk key hashes the analyzer generation
 /// **and the actual code bytes**, so changed bytes miss (never a stale hit), and
 /// the in-process memo is keyed by the source's identity.
-pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str) -> std::sync::Arc<n0xis_core::XrefIndex> {
-    let memo_key = ctx.source.identity().map(|id| format!("{id}|{}|{ranges:?}", ctx.arch.decoder_id()));
+pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str, refs: &n0xis_core::CodeReferences) -> std::sync::Arc<n0xis_core::XrefIndex> {
+    let memo_key = ctx.source.identity().map(|id| format!("{id}|{}|{ranges:?}|{refs:?}", ctx.arch.decoder_id()));
     if let Some(wanted) = &memo_key
         && let Ok(memo) = XREF_MEMO.lock()
         && let Some((kept, idx)) = memo.as_ref()
@@ -437,6 +437,9 @@ pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str) -> std::sync
     let mut h = std::collections::hash_map::DefaultHasher::new();
     "xref".hash(&mut h);
     label.hash(&mut h);
+    // What code is read for besides branches comes from the image's relocations,
+    // which are not the code's bytes.
+    refs.hash(&mut h);
     for (start, size) in ranges {
         start.0.hash(&mut h);
         size.hash(&mut h);
@@ -452,7 +455,7 @@ pub fn xref_index_for(ctx: &Ctx, ranges: &[(Va, u64)], label: &str) -> std::sync
     {
         idx
     } else {
-        let built = n0xis_core::build_xref_index(ctx, ranges);
+        let built = n0xis_core::build_xref_index_with(ctx, ranges, refs);
         if let Ok(json) = serde_json::to_string(&built) {
             let _ = n0xis_project::xref_index::put(&key, &json);
         }

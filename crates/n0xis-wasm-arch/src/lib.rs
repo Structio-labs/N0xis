@@ -283,6 +283,11 @@ impl Arch for Wasm {
     /// this today, because [`decode_range`](Arch::decode_range) below decodes
     /// each body from its start and never resynchronizes; it is the answer the
     /// default sweep would need if it ran here.
+    /// No register here is kept holding the image's own address.
+    fn pic_relative(&self, _state: &mut n0xis_arch::PicState, _insn: &DecodedInsn, _read: &dyn Fn(Va, usize) -> Option<Vec<u8>>) -> Option<Va> {
+        None
+    }
+
     /// An address here is built by several instructions, or is an index: none is read.
     fn stated_addresses(&self, _insn: &DecodedInsn) -> Vec<Va> {
         Vec::new()

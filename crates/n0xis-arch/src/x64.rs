@@ -999,6 +999,75 @@ impl Arch for X64 {
         Some(d)
     }
 
+    fn pic_relative(&self, state: &mut crate::PicState, insn: &DecodedInsn, read: &dyn Fn(Va, usize) -> Option<Vec<u8>>) -> Option<Va> {
+        use crate::PicPending;
+        if self.bitness != 32 {
+            return None;
+        }
+        let ins = decode_raw(insn, 32)?;
+        let next = insn.va.0.wrapping_add(u64::from(insn.len));
+        // What this instruction reads, by what the registers held before it.
+        let mut answer = None;
+        if !segment_relative(&ins) && ins.memory_base() != Register::None && (0..ins.op_count()).any(|op| ins.op_kind(op) == OpKind::Memory) {
+            let base = reg_name(ins.memory_base());
+            if let Some((_, v)) = state.known.iter().find(|(r, _)| *r == base) {
+                answer = Some(Va(v.wrapping_add(u64::from(ins.memory_displacement32())) & 0xffff_ffff));
+            }
+        }
+        if insn.kind == InsnKind::Call {
+            // `mov <reg>, [esp]; ret`: a thunk returning where it was called from.
+            const BY_FIELD: [Register; 8] = [Register::EAX, Register::ECX, Register::EDX, Register::EBX, Register::ESP, Register::EBP, Register::ESI, Register::EDI];
+            match insn.target {
+                Some(t) if t.0 == next => state.pending = Some(PicPending::PopNext(next)),
+                Some(t) => {
+                    if let Some(b) = read(t, 4)
+                        && let [0x8b, modrm, 0x24, 0xc3] = b.as_slice()
+                        && modrm & 0xc7 == 0x04
+                    {
+                        state.pending = Some(PicPending::Holds(reg_name(BY_FIELD[usize::from((modrm >> 3) & 7)]), next));
+                    }
+                }
+                None => {}
+            }
+            // The registers a call may change; the callee keeps the others.
+            state.known.retain(|(r, _)| !matches!(r.as_str(), "rax" | "rcx" | "rdx"));
+            return answer;
+        }
+        let op0 = (ins.op_count() > 0 && ins.op0_kind() == OpKind::Register).then(|| reg_name(ins.op0_register()));
+        match (ins.mnemonic(), &state.pending, &op0) {
+            (Mnemonic::Pop, Some(PicPending::PopNext(at)), Some(r)) => {
+                state.pending = Some(PicPending::Holds(r.clone(), *at));
+                return answer;
+            }
+            (Mnemonic::Add, Some(PicPending::Holds(held, at)), Some(r)) if held == r && imm_op1(&ins).is_some() => {
+                let value = at.wrapping_add(imm_op1(&ins).unwrap_or(0)) & 0xffff_ffff;
+                state.known.retain(|(k, _)| k != r);
+                state.known.push((r.clone(), value));
+                state.pending = None;
+                return answer;
+            }
+            _ => {}
+        }
+        // A write ends what a register held, except taking the same value back off the
+        // stack: an epilogue's `pop ebx`, or a spill reloaded.
+        let restores = ins.mnemonic() == Mnemonic::Pop
+            || (ins.mnemonic() == Mnemonic::Mov && ins.op1_kind() == OpKind::Memory && matches!(ins.memory_base(), Register::ESP | Register::EBP));
+        let mut factory = InstructionInfoFactory::new();
+        let info = factory.info(&ins);
+        for u in info.used_registers() {
+            if matches!(u.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite) {
+                let name = reg_name(u.register());
+                if !restores {
+                    state.known.retain(|(k, _)| *k != name);
+                }
+                if matches!(&state.pending, Some(PicPending::Holds(r, _)) if *r == name) {
+                    state.pending = None;
+                }
+            }
+        }
+        answer
+    }
+
     fn stated_addresses(&self, insn: &DecodedInsn) -> Vec<Va> {
         let Some(ins) = decode_raw(insn, self.bitness) else { return Vec::new() };
         let mut out = Vec::new();
@@ -1037,7 +1106,7 @@ impl Arch for X64 {
             let ins = decode_raw(di, self.bitness)?;
             match di.kind {
                 InsnKind::CondJump => {
-                    let Some(cmp) = i.checked_sub(1).and_then(|p| decode_raw(&scan[p], self.bitness)) else { return None };
+                    let cmp = i.checked_sub(1).and_then(|p| decode_raw(&scan[p], self.bitness))?;
                     if cmp.mnemonic() == Mnemonic::Cmp && held.is_compared_by(&cmp) {
                         let limit = imm_op1(&cmp)?;
                         match ins.mnemonic() {
@@ -1051,7 +1120,7 @@ impl Arch for X64 {
                 }
                 InsnKind::Jump | InsnKind::Ret | InsnKind::Int => return None,
                 InsnKind::Call => match held {
-                    HeldIndex::Register(r) if matches!(r, Register::RBX | Register::RBP | Register::R12 | Register::R13 | Register::R14 | Register::R15) => {}
+                    HeldIndex::Register(Register::RBX | Register::RBP | Register::R12 | Register::R13 | Register::R14 | Register::R15) => {}
                     _ => return None,
                 },
                 _ => {

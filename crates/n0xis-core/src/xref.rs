@@ -155,33 +155,152 @@ pub struct XrefSearched {
     pub data: SearchedData,
     pub jump_tables: SearchedJumps,
     /// Forms of reference this answer does not look for, whatever it found.
-    pub not_searched: &'static [&'static str],
+    pub not_searched: Vec<&'static str>,
+    /// The address is in no section of the image: what a zero says there is that
+    /// nothing in the image points outside it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub address_outside_image: bool,
 }
 
-/// What no answer of `xref to` looks for. Each is a real way for code to reach an
-/// address, so a zero must not read as if it had been ruled out.
-const NOT_SEARCHED: &[&str] = &[
-    "an address as an immediate operand of an instruction",
-    "an address built by more than one instruction",
-    "an image-relative (RVA) word",
-    "a word not aligned to a pointer, unless a relocation names it",
-];
+/// Whether a value an instruction states (`mov edi, 0x402010`, `mov eax, ds:0x403020`)
+/// is an address on this image.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub enum StatedValues {
+    /// Not read for addresses: the image's relocations were not read, or it has no
+    /// image at all.
+    #[default]
+    NotRead,
+    /// The image runs where it says, so a value inside one of these `(start, size)`
+    /// ranges is the address it equals, and only that: it may be a number.
+    InImage(Vec<(u64, u64)>),
+    /// The image may load anywhere, so a value is an address where a relocation
+    /// writes a word of the instruction, and a number elsewhere. These are the words
+    /// of code a relocation writes, sorted (a PE32's `push offset`, a `movabs`).
+    WhereRelocated(Vec<u64>),
+}
+
+/// What in code names an address besides a branch and a RIP-relative operand.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct CodeReferences {
+    pub stated: StatedValues,
+    /// An i386 ELF: position-independent code reads data through a register a PC
+    /// thunk sets ([`n0xis_arch::Arch::pic_relative`]).
+    pub pic_register: bool,
+}
+
+/// What no answer of `xref to` or `xref string` looks for, given what it read. Each
+/// is a real way for code to reach an address, so a zero must not read as if it had
+/// been ruled out.
+pub fn not_searched(refs: &CodeReferences) -> Vec<&'static str> {
+    let mut out = vec![
+        "an address built by more than one instruction, other than an i386 PC thunk's register",
+        "an image-relative (RVA) word",
+        "a word not aligned to a pointer, unless a relocation names it",
+    ];
+    match refs.stated {
+        StatedValues::NotRead => out.insert(0, "an address as an immediate operand of an instruction"),
+        StatedValues::WhereRelocated(_) => out.insert(0, "an immediate operand no relocation names, which on this image is a number"),
+        StatedValues::InImage(_) => {}
+    }
+    out
+}
+
+/// Walks code in address order, and says what each instruction names beyond its
+/// branch target and RIP-relative operand ([`CodeReferences`]).
+pub(crate) struct CodeScan<'a> {
+    refs: &'a CodeReferences,
+    pic: n0xis_arch::PicState,
+    function: Option<u64>,
+}
+
+impl<'a> CodeScan<'a> {
+    pub(crate) fn new(refs: &'a CodeReferences) -> Self {
+        Self { refs, pic: n0xis_arch::PicState::default(), function: None }
+    }
+
+    /// `(address, kind)`: `immediate` for a value the instruction states, and
+    /// `pic_relative` for a read through a register a PC thunk set.
+    pub(crate) fn of(&mut self, ctx: &Ctx, ins: &n0xis_arch::DecodedInsn) -> Vec<(Va, &'static str)> {
+        let mut out = Vec::new();
+        let stated = match &self.refs.stated {
+            StatedValues::NotRead => false,
+            StatedValues::InImage(_) => true,
+            StatedValues::WhereRelocated(words) => {
+                let first = words.partition_point(|&w| w < ins.va.0);
+                words.get(first).is_some_and(|&w| w < ins.va.0 + u64::from(ins.len))
+            }
+        };
+        if stated {
+            for t in ctx.arch.stated_addresses(ins) {
+                let inside = match &self.refs.stated {
+                    StatedValues::InImage(ranges) => ranges.iter().any(|&(s, n)| t.0 >= s && t.0 - s < n),
+                    _ => true,
+                };
+                if inside && Some(t) != ins.rip_target && Some(t) != ins.target {
+                    out.push((t, "immediate"));
+                }
+            }
+        }
+        if self.refs.pic_register {
+            // What a function set is that function's: where one starts, nothing is known.
+            let function = stated_function(ctx, ins.va).map(|(s, _)| s.0);
+            if function != self.function {
+                self.pic.clear();
+                self.function = function;
+            }
+            if let Some(t) = ctx.arch.pic_relative(&mut self.pic, ins, &|va, n| ctx.source.read(va, n).ok())
+                && !out.iter().any(|(o, _)| *o == t)
+            {
+                out.push((t, "pic_relative"));
+            }
+        }
+        out
+    }
+}
+
+/// The kind of a reference the index holds from `ins` to `addr`, which it does not
+/// keep: the one rule the index and a scan state it by.
+pub fn indexed_kind(ins: &n0xis_arch::DecodedInsn, addr: Va, arch: &dyn n0xis_arch::Arch) -> &'static str {
+    if ins.target == Some(addr) {
+        branch_kind(ins.kind).unwrap_or("branch")
+    } else if ins.rip_target == Some(addr) || ins.target_function.is_some_and(|f| f.body == Some(addr)) {
+        "data"
+    } else if arch.stated_addresses(ins).contains(&addr) {
+        "immediate"
+    } else {
+        // What else the index keeps of an instruction is a read through a PC thunk's
+        // register.
+        "pic_relative"
+    }
+}
 
 impl XrefSearched {
     /// Code windows only, and why data was not looked at.
     pub fn code_only(code: Vec<SearchedCode>, why: impl Into<String>) -> Self {
         let why = why.into();
-        Self { code, jump_tables: SearchedJumps::NotRead { why: why.clone() }, data: SearchedData::NotSearched { why }, not_searched: NOT_SEARCHED }
+        Self {
+            code,
+            jump_tables: SearchedJumps::NotRead { why: why.clone() },
+            data: SearchedData::NotSearched { why },
+            not_searched: not_searched(&CodeReferences::default()),
+            address_outside_image: false,
+        }
     }
 
     /// Code windows, and what [`held_references`] searched.
-    pub fn with_held(code: Vec<SearchedCode>, held: &HeldWords, jump_tables: SearchedJumps) -> Self {
+    pub fn with_held(code: Vec<SearchedCode>, held: &HeldWords, jump_tables: SearchedJumps, refs: &CodeReferences) -> Self {
         let rule = match held.rule {
             WordRule::Relocated => "relocations",
             WordRule::StoredValues => "relocations_and_stored_values",
             WordRule::NotRead(_) => "stored_values_only",
         };
-        Self { code, data: SearchedData::Searched { sections: held.sections.clone(), rule, unrelocated_matches: held.unrelocated_matches }, jump_tables, not_searched: NOT_SEARCHED }
+        Self {
+            code,
+            data: SearchedData::Searched { sections: held.sections.clone(), rule, unrelocated_matches: held.unrelocated_matches },
+            jump_tables,
+            not_searched: not_searched(refs),
+            address_outside_image: false,
+        }
     }
 }
 
@@ -532,7 +651,7 @@ impl XrefPass {
         let mut refs = Vec::new();
         // A window of code is all this pass is handed; the frontend, which holds
         // the image, says what else it looked at.
-        let searched = XrefSearched::code_only(
+        let mut searched = XrefSearched::code_only(
             vec![SearchedCode { start: input.scan_start, size: input.size as u64 }],
             match input.dir {
                 XrefDir::To => "a window of code was asked for",
@@ -581,6 +700,7 @@ impl XrefPass {
                     if ins.va != input.addr {
                         continue;
                     }
+                    searched.code = vec![SearchedCode { start: input.addr, size: u64::from(ins.len) }];
                     let named = ins.target_function.map(|f| f.index);
                     match (ins.target, ins.target_function) {
                         (Some(t), _) => {
@@ -660,12 +780,18 @@ pub fn xref_kind(kind: InsnKind) -> &'static str {
 /// where the whole-range decode resumes when an undecodable byte follows it
 /// (`crate::sweep` says why).
 pub fn build_xref_index(ctx: &Ctx, ranges: &[(Va, u64)]) -> XrefIndex {
-    build_xref_index_in(ctx, ranges, SWEEP_CHUNK)
+    build_xref_index_in(ctx, ranges, SWEEP_CHUNK, &CodeReferences::default())
+}
+
+/// [`build_xref_index`], keeping also what [`CodeReferences`] says code names.
+pub fn build_xref_index_with(ctx: &Ctx, ranges: &[(Va, u64)], refs: &CodeReferences) -> XrefIndex {
+    build_xref_index_in(ctx, ranges, SWEEP_CHUNK, refs)
 }
 
 /// [`build_xref_index`] with the sweep's window size given.
-pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64) -> XrefIndex {
+pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64, refs: &CodeReferences) -> XrefIndex {
     let mut idx = XrefIndex::default();
+    let mut scan = CodeScan::new(refs);
     let recognizes = ctx.arch.recognizes_jump_tables();
     let mut sites = Vec::new();
     for &(start, size) in ranges {
@@ -683,6 +809,9 @@ pub(crate) fn build_xref_index_in(ctx: &Ctx, ranges: &[(Va, u64)], chunk: u64) -
                 idx.edges.entry(t.0).or_default().push(ins.va.0);
             }
             if let Some(t) = ins.rip_target {
+                idx.edges.entry(t.0).or_default().push(ins.va.0);
+            }
+            for (t, _) in scan.of(ctx, ins) {
                 idx.edges.entry(t.0).or_default().push(ins.va.0);
             }
             // A function named by index with no branch to it (`ref.func`)

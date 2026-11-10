@@ -343,6 +343,29 @@ impl Src {
         }))
     }
 
+    /// What code in this source names besides branches and RIP-relative operands
+    /// ([`n0xis_core::CodeReferences`]), by the image's own relocations. Nothing for a
+    /// source that is not an image.
+    pub fn code_references(&self) -> n0xis_core::CodeReferences {
+        let Src::Static(img) = self else { return Default::default() };
+        if img.pointer_size().is_none() {
+            return Default::default();
+        }
+        let (relocated, rule) = img.relocated_addresses();
+        let code = self.code_ranges();
+        let stated = match rule {
+            n0xis_sources::WordRule::StoredValues => {
+                n0xis_core::StatedValues::InImage(img.sections_detailed().into_iter().filter(|&(_, _, size, _)| size > 0).map(|(_, va, size, _)| (va.0, size)).collect())
+            }
+            n0xis_sources::WordRule::Relocated => n0xis_core::StatedValues::WhereRelocated(
+                relocated.iter().map(|&(at, _)| at).filter(|&at| code.iter().any(|&(s, n)| at >= s.0 && at - s.0 < n)).collect(),
+            ),
+            n0xis_sources::WordRule::NotRead(_) => n0xis_core::StatedValues::NotRead,
+        };
+        let pic_register = img.format() == n0xis_sources::ImageFormat::Elf && img.machine() == "x86";
+        n0xis_core::CodeReferences { stated, pic_register }
+    }
+
     /// Why this source's C++ RTTI is not read at all, if it is not: a
     /// big-endian image, whose pointers every RTTI reader would read
     /// byte-swapped, and an image with no pointer width (a WebAssembly

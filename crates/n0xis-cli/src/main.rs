@@ -2363,7 +2363,7 @@ enum XrefCmd {
     To(XrefArgs),
     /// What `--addr` references.
     From(XrefArgs),
-    /// Find a string literal and who references it via `lea`.
+    /// Find a string literal and what references it: an operand, a stated value, a word of data.
     String(XrefStringArgs),
 }
 
@@ -4649,7 +4649,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // read from the start of the function the image states it is in.
     let stated = n0xis_frontend::stated_functions(&src);
     let index_ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src));
-    let idx = n0xis_pipeline::xref_index_for(&index_ctx, &code_ranges, &label);
+    let idx = n0xis_pipeline::xref_index_for(&index_ctx, &code_ranges, &label, &src.code_references());
     let xref_targets = idx.edges.len();
     progress("indexing-xrefs", xref_targets, xref_targets);
 
