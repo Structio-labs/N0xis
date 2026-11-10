@@ -609,6 +609,12 @@ How a body reads:
   to a callee in this image that reads it. `/*from caller*/rsi.0` is a read of what an argument or return register
   held on arrival, in a function whose signature does not list it: what the caller left there, or a parameter that
   could not be shown to be one.
+- A call shows what it is passed: a callee in this image is asked how many it takes, a `printf`-family call takes
+  what its format asks for, and any other keeps what a definition reaches. A signature says `void` where the
+  return register holds nothing the function gave it, and `/*unknown*/` where it holds what a callee nothing can
+  ask left there, or a value something else also reads. `// unreachable: call does not return` follows a call
+  whose callee's own graph shows it never comes back. `switch (/*table not read*/)` is a dispatch whose table
+  could not be read: its cases have no values.
 - A `local_` is a slot of this function's frame: reached through `rsp`, or through `rbp` where the function
   set it from `rsp`. Through any other `rbp` it is memory like any other, a field of what `rbp` points at.
 - A branch whose flags cannot be stated prints a mark in place of its condition: `/*cond(jb)*/`, or `/*?*/`
