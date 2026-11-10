@@ -94,7 +94,7 @@ struct Memo {
     takes: HashMap<(u64, u8), Takes>,
     gives: HashMap<(u64, u8), Gives>,
     comes_back: HashMap<(u64, u8), bool>,
-    flows: HashMap<u64, Option<Arc<(usize, Vec<FlowBlock>)>>>,
+    flows: HashMap<u64, Option<Flow>>,
 }
 
 static MEMO: Mutex<Option<(String, Memo)>> = Mutex::new(None);
@@ -679,6 +679,9 @@ pub(crate) fn drop_unread_results(blocks: &mut [SsaBlock]) {
     }
 }
 
+/// A function's graph for that question: its entry block and every block.
+type Flow = Arc<(usize, Vec<FlowBlock>)>;
+
 /// One block of a function's graph as the question of whether it comes back reads it.
 #[derive(Clone, Debug)]
 struct FlowBlock {
@@ -698,7 +701,7 @@ enum FlowExit {
     Goes(Vec<usize>),
 }
 
-fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Arc<(usize, Vec<FlowBlock>)>> {
+fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Flow> {
     if let Some(f) = with_memo(id, |m| m.flows.get(&va.0).cloned()) {
         return f;
     }
