@@ -94,7 +94,7 @@ struct Memo {
     takes: HashMap<(u64, u8), Takes>,
     gives: HashMap<(u64, u8), Gives>,
     comes_back: HashMap<(u64, u8), bool>,
-    flows: HashMap<u64, Option<Arc<Vec<FlowBlock>>>>,
+    flows: HashMap<u64, Option<Arc<(usize, Vec<FlowBlock>)>>>,
 }
 
 static MEMO: Mutex<Option<(String, Memo)>> = Mutex::new(None);
@@ -698,7 +698,7 @@ enum FlowExit {
     Goes(Vec<usize>),
 }
 
-fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Arc<Vec<FlowBlock>>> {
+fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Arc<(usize, Vec<FlowBlock>)>> {
     if let Some(f) = with_memo(id, |m| m.flows.get(&va.0).cloned()) {
         return f;
     }
@@ -706,11 +706,25 @@ fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Arc<Vec<FlowBlock>>> {
     let plain = Ctx { noreturn_on_demand: false, ..*ctx };
     let flow = CfgPass.run(&plain, CfgInput::new(va, CALLEE_SCAN_SIZE)).ok().filter(|c| c.start == va && !c.blocks.is_empty()).map(|cfg| {
         let by_start: HashMap<u64, usize> = cfg.blocks.iter().enumerate().map(|(i, b)| (b.start.0, i)).collect();
-        Arc::new(
+        // Blocks are in address order, and a `.cold` part folded in sits below the
+        // entry: index 0 was where `_Unwind_Resume` is called, and a function that
+        // returns read as one that never does.
+        let entry = by_start.get(&va.0).copied().unwrap_or(0);
+        Arc::new((
+            entry,
             cfg.blocks
                 .iter()
                 .map(|b| FlowBlock {
-                    calls: cfg.callsites.iter().filter(|c| c.from >= b.start && c.from < b.end).filter_map(|c| c.target).collect(),
+                    // Calls only: the call sites also list a conditional jump out of the
+                    // function, which only one branch takes. Read as a call on the path,
+                    // a jump into a `.cold` assertion stopped a 12 KiB function that returns.
+                    calls: cfg
+                        .callsites
+                        .iter()
+                        .filter(|c| c.from >= b.start && c.from < b.end)
+                        .filter(|c| b.insns.iter().any(|i| i.va == c.from && i.flow == n0xis_arch::InsnKind::Call))
+                        .filter_map(|c| c.target)
+                        .collect(),
                     exit: match b.terminator.as_str() {
                         "call-noreturn" => FlowExit::Ends,
                         "tail-call" if crate::noreturn_ipa::tail_call_is_noreturn(b, &Default::default()) => FlowExit::Ends,
@@ -725,7 +739,7 @@ fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Arc<Vec<FlowBlock>>> {
                     },
                 })
                 .collect::<Vec<_>>(),
-        )
+        ))
     });
     with_memo(id, |m| {
         if m.flows.len() < MEMO_MAX {
@@ -759,7 +773,7 @@ fn comes_back(ctx: &Ctx, id: &str, va: Va, depth: u8) -> bool {
     }
     let back = match flow_of(ctx, id, va) {
         None => true,
-        Some(flow) => walk_flow(ctx, id, &flow, depth),
+        Some(flow) => walk_flow(ctx, id, flow.0, &flow.1, depth),
     };
     with_memo(id, |m| {
         if m.comes_back.len() < MEMO_MAX {
@@ -769,9 +783,9 @@ fn comes_back(ctx: &Ctx, id: &str, va: Va, depth: u8) -> bool {
     back
 }
 
-fn walk_flow(ctx: &Ctx, id: &str, flow: &[FlowBlock], depth: u8) -> bool {
+fn walk_flow(ctx: &Ctx, id: &str, entry: usize, flow: &[FlowBlock], depth: u8) -> bool {
     let mut seen = vec![false; flow.len()];
-    let mut free = vec![0usize];
+    let mut free = vec![entry];
     let mut with_calls = Vec::new();
     loop {
         let (i, ask) = match (free.pop(), with_calls.pop()) {
@@ -1262,6 +1276,21 @@ mod tests {
         g.extend([0x90, 0xc3]);
         let snap = image(f, &g, SPINS);
         assert!(!asked(&snap).pseudo.iter().any(|l| l.contains("0x7")));
+    }
+
+    /// `h`: `test ecx,ecx; jne g; ret`, with `g` a loop with no exit. One branch leaves
+    /// for `g`; the other returns. A jump out is no call on every path.
+    #[test]
+    fn a_conditional_jump_out_is_no_call_on_the_path() {
+        let mut f = vec![];
+        call(&mut f, H);
+        f.extend([0xb8, 7, 0, 0, 0, 0xc3]);
+        let rel = (G as i64 - (H as i64 + 8)) as i32;
+        let mut h = vec![0x85, 0xc9, 0x0f, 0x85];
+        h.extend_from_slice(&rel.to_le_bytes());
+        h.push(0xc3);
+        let snap = image(f, SPINS, &h);
+        assert!(asked(&snap).pseudo.iter().any(|l| l.contains("0x7")), "{:#?}", asked(&snap).pseudo);
     }
 
     /// `g` calls `h` and `h` calls `g`, with a `ret` nowhere. A proof would need a step
