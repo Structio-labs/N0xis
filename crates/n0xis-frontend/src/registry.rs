@@ -1933,16 +1933,17 @@ impl Plugin for AnalysisPasses {
                     // cache (instant re-view). `explain` (the large opt-delta) is
                     // rare and re-viewed rarely, so it runs uncached.
                     let mut val = if explain {
-                        let cfg = match n0xis_pipeline::cfg_cached(ctx, input) {
-                            Ok((a, _)) => a,
-                            Err(e) => return Response::error("ir-failed", e.to_string()),
-                        };
-                        match n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: true, strip_block_labels: true, var_names, var_types, struct_defs: struct_defs.clone() }) {
+                        let built = n0xis_pipeline::with_kept_answers(ctx, || {
+                            let cfg = n0xis_pipeline::cfg_cached(ctx, input).map_err(|e| ("ir-failed", e.to_string()))?.0;
+                            n0xis_core::Pass::run(&n0xis_core::DecompPass, ctx, n0xis_core::DecompInput { cfg, style, explain: true, strip_block_labels: true, var_names, var_types, struct_defs: struct_defs.clone() })
+                                .map_err(|e| ("decomp-failed", e.to_string()))
+                        });
+                        match built {
                             Ok(pf) => match serde_json::to_value(&pf) {
                                 Ok(v) => v,
                                 Err(e) => return Response::error("encode-failed", e.to_string()),
                             },
-                            Err(e) => return Response::error("decomp-failed", e.to_string()),
+                            Err((code, e)) => return Response::error(code, e),
                         }
                     } else {
                         match n0xis_pipeline::decomp_cached(ctx, input, style, &var_names, &var_types, &struct_defs) {

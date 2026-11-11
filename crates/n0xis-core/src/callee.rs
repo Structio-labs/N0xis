@@ -14,12 +14,17 @@
 //! so they are memoised on both: [`DEPTH`] ends a cycle as well, without a set of
 //! functions on the way down whose contents would make the answer depend on who
 //! asked first.
+//!
+//! Being pure, the answers are also kept between processes ([`with_kept_answers`]):
+//! a command line runs one process per function, and every one of them asked the same
+//! callees again, which doubled the time of a body.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use n0xis_arch::{CallTarget, MicroExpr, MicroStmt};
 use n0xis_contracts::Va;
+use serde::{Deserialize, Serialize};
 
 use crate::ir::{CfgArtifact, CfgInput, CfgPass};
 use crate::signatures::{KnownSignature, known_signature};
@@ -32,7 +37,7 @@ const DEPTH: u8 = 4;
 
 /// How many arguments a function takes, in the positions of the integer argument
 /// registers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Takes {
     /// Exactly this many: every path through it was read and nothing it forwards
     /// to is unknown.
@@ -80,7 +85,7 @@ struct Shape {
 }
 
 /// What a function gives back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Gives {
     Value,
     Nothing,
@@ -95,6 +100,19 @@ struct Memo {
     gives: HashMap<(u64, u8), Gives>,
     comes_back: HashMap<(u64, u8), bool>,
     flows: HashMap<u64, Option<Flow>>,
+    /// Whether what an earlier process kept for this image was taken in.
+    taken_in: bool,
+    /// How many answers the store holds, as far as this process knows: more here
+    /// is something to keep.
+    kept: usize,
+}
+
+impl Memo {
+    /// The answers, not the shapes and graphs they were worked out from: those are
+    /// cheap beside the questions and large beside the answers.
+    fn answers(&self) -> usize {
+        self.takes.len() + self.gives.len() + self.comes_back.len()
+    }
 }
 
 static MEMO: Mutex<Option<(String, Memo)>> = Mutex::new(None);
@@ -108,6 +126,82 @@ fn with_memo<R>(id: &str, f: impl FnOnce(&mut Memo) -> R) -> R {
         *guard = Some((id.to_string(), Memo::default()));
     }
     f(&mut guard.as_mut().expect("just set").1)
+}
+
+/// The answers about an image's functions, as kept between processes: what each takes
+/// and gives back, and whether it comes back, at each depth they were asked. Opaque:
+/// they are read and written only here, so a store holds nothing it can get wrong.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct KeptAnswers {
+    takes: Vec<(u64, u8, Takes)>,
+    gives: Vec<(u64, u8, Gives)>,
+    comes_back: Vec<(u64, u8, bool)>,
+}
+
+impl KeptAnswers {
+    /// How many answers it holds.
+    pub fn len(&self) -> usize {
+        self.takes.len() + self.gives.len() + self.comes_back.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Where the answers about one image are kept between processes. `identity` is what
+/// they are answers about in this process: the image, its names and the decoder
+/// (`ctx_identity`). It says nothing of the engine that worked them out, which the
+/// store's key has to add, since another build may answer otherwise.
+pub trait AnswerStore {
+    fn load(&self, identity: &str) -> Option<KeptAnswers>;
+    fn store(&self, identity: &str, answers: &KeptAnswers);
+}
+
+/// Run `f` with what an earlier process found about this image taken in first, and
+/// what `f` found besides kept after. A source with no identity keeps nothing, as
+/// in the memo. The store is read once a process for an image, and written when
+/// there is something new; a store that cannot be read is an empty one, since every
+/// answer can be worked out again.
+pub fn with_kept_answers<R>(ctx: &Ctx, store: &dyn AnswerStore, f: impl FnOnce() -> R) -> R {
+    let Some(id) = ctx_identity(ctx) else { return f() };
+    if !with_memo(&id, |m| m.taken_in) {
+        let kept = store.load(&id).unwrap_or_default();
+        with_memo(&id, |m| {
+            m.taken_in = true;
+            m.kept = kept.len();
+            for (va, depth, t) in kept.takes {
+                if m.takes.len() < MEMO_MAX {
+                    m.takes.entry((va, depth)).or_insert(t);
+                }
+            }
+            for (va, depth, g) in kept.gives {
+                if m.gives.len() < MEMO_MAX {
+                    m.gives.entry((va, depth)).or_insert(g);
+                }
+            }
+            for (va, depth, b) in kept.comes_back {
+                if m.comes_back.len() < MEMO_MAX {
+                    m.comes_back.entry((va, depth)).or_insert(b);
+                }
+            }
+        });
+    }
+    let out = f();
+    let fresh = with_memo(&id, |m| {
+        (m.taken_in && m.answers() > m.kept).then(|| {
+            m.kept = m.answers();
+            KeptAnswers {
+                takes: m.takes.iter().map(|(&(va, d), &t)| (va, d, t)).collect(),
+                gives: m.gives.iter().map(|(&(va, d), &g)| (va, d, g)).collect(),
+                comes_back: m.comes_back.iter().map(|(&(va, d), &b)| (va, d, b)).collect(),
+            }
+        })
+    });
+    if let Some(answers) = fresh {
+        store.store(&id, &answers);
+    }
+    out
 }
 
 /// A call's callee, by the names the graph resolved for it. A call through a PLT to a

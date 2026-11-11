@@ -127,6 +127,7 @@ impl ProjectRoot {
             ("xref-index", self.xref_index_dir()),
             ("decomp-cache", self.decomp_cache_dir()),
             (store::DISCOVERED.dir_name(), self.dir.join(store::DISCOVERED.dir_name())),
+            (store::KEPT_ANSWERS.dir_name(), self.dir.join(store::KEPT_ANSWERS.dir_name())),
         ]
     }
 

@@ -91,6 +91,10 @@ pub struct Store {
 /// Function discovery over an image's code: the starts it finds, before names.
 pub const DISCOVERED: Store = Store::new("discover-cache");
 
+/// What an image's functions take, give back and whether they come back, as a
+/// decompile asks of every callee: one entry an image.
+pub const KEPT_ANSWERS: Store = Store::new("answers-cache");
+
 impl Store {
     pub const fn new(dir: &'static str) -> Self {
         Self { dir }

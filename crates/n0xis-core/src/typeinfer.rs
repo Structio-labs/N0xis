@@ -1418,11 +1418,14 @@ const CALLEE_TYPES_MAX: usize = 200_000;
 /// The inputs that can change a callee's inferred parameter types, or `None`
 /// for a source with no identity (a live process): its code can change, so
 /// nothing about it is kept. The source's label is not an identity, since it
-/// names only the file.
+/// names only the file. The decoder is part of it: the same bytes read as
+/// x86-64 and as AArch64 (`--arch`) are two programs, and with answers kept
+/// between processes one would be handed the other's.
 pub(crate) fn ctx_identity(ctx: &Ctx) -> Option<String> {
     let source = ctx.source.identity()?;
     Some(format!(
-        "{source}|{}|{}|{}",
+        "{source}|{}|{}|{}|{}",
+        ctx.arch.decoder_id(),
         ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
         ctx.vtables.map_or(0, |v| v.classes.len()),
         ctx.noreturn_on_demand,

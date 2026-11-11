@@ -311,12 +311,65 @@ pub fn decomp_cached(
     {
         return Ok((v, true));
     }
-    let (cfg, _) = cfg_cached(ctx, input)?;
-    let pf = DecompPass.run(ctx, DecompInput { cfg, style, explain: false, strip_block_labels: true, var_names: var_names.clone(), var_types: var_types.clone(), struct_defs: struct_defs.clone() })?;
+    let pf = with_kept_answers(ctx, || {
+        let (cfg, _) = cfg_cached(ctx, input)?;
+        DecompPass.run(ctx, DecompInput { cfg, style, explain: false, strip_block_labels: true, var_names: var_names.clone(), var_types: var_types.clone(), struct_defs: struct_defs.clone() })
+    })?;
     let json = serde_json::to_string(&pf).map_err(|e| CoreError::Other(e.to_string()))?;
     let _ = n0xis_project::decomp_cache::put(&key, &json);
     let v = serde_json::from_str(&json).map_err(|e| CoreError::Other(e.to_string()))?;
     Ok((v, false))
+}
+
+/// Key prefix of the answers kept about an image's functions: the analyzer's
+/// generation, as for every kept answer, and the format of what is kept, on its
+/// own for the reason [`discover_cache_generation`] gives.
+fn answers_cache_generation() -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    analysis_fingerprint().hash(&mut h);
+    format!("answers{ANSWERS_FORMAT}-{:08x}-", h.finish() as u32)
+}
+
+/// The format of a kept [`n0xis_core::KeptAnswers`].
+const ANSWERS_FORMAT: u32 = 1;
+
+/// The project's `.n0x/answers-cache/`, one entry an image, keyed by the
+/// analyzer's generation and what the answers are about (the image, its names,
+/// the decoder). A read or parse failure is no entry.
+struct ProjectAnswers;
+
+impl ProjectAnswers {
+    fn key(identity: &str) -> String {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        "answers".hash(&mut h);
+        identity.hash(&mut h);
+        format!("{}{:016x}", answers_cache_generation(), h.finish())
+    }
+}
+
+impl n0xis_core::AnswerStore for ProjectAnswers {
+    fn load(&self, identity: &str) -> Option<n0xis_core::KeptAnswers> {
+        static SWEPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        SWEPT.get_or_init(|| {
+            let _ = n0xis_project::store::KEPT_ANSWERS.retain_prefix(&answers_cache_generation());
+        });
+        let json = n0xis_project::store::KEPT_ANSWERS.get(&Self::key(identity)).ok()??;
+        serde_json::from_str(&json).ok()
+    }
+
+    fn store(&self, identity: &str, answers: &n0xis_core::KeptAnswers) {
+        if let Ok(json) = serde_json::to_string(answers) {
+            let _ = n0xis_project::store::KEPT_ANSWERS.put(&Self::key(identity), &json);
+        }
+    }
+}
+
+/// Run `f`, a decompile or anything else that asks callees what they take, give
+/// back and whether they come back, with the answers an earlier process kept for
+/// this image, and keep what it adds. A command line runs one process a function,
+/// and each asked every callee again: `decomp pseudo` took twice as long for it.
+pub fn with_kept_answers<R>(ctx: &Ctx, f: impl FnOnce() -> R) -> R {
+    n0xis_core::with_kept_answers(ctx, &ProjectAnswers, f)
 }
 
 /// Generation prefix for the reverse-xref index — the analyzer fingerprint, so a

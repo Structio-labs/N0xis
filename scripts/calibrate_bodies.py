@@ -21,9 +21,14 @@ import calibrate_update  # noqa: E402
 
 CORE = "crates/n0xis-core/src/"
 LIB = ("n0xis-core", None)
+# A test that spawns a compiler is a local instrument, built only with the `oracle` feature.
+ORACLE = ("--features", "oracle")
 
-# (file, anchor, replacement, package, test binary or None for the library's own, test name)
+# (file, anchor, replacement, package, test binary or None for the library's own, test name[, cargo arguments])
 MUTATIONS = [
+    # What an earlier process found about the image is read, and only for that image.
+    (CORE + "callee.rs", "        let kept = store.load(&id).unwrap_or_default();", "        let kept = KeptAnswers::default();", "n0xis-cli", "kept_answers_are_the_images", "a_kept_answer_is_read_and_only_for_its_image", ORACLE),
+    ("crates/n0xis-pipeline/src/lib.rs", "        identity.hash(&mut h);\n        format!(\"{}{:016x}\", answers_cache_generation(), h.finish())", "        format!(\"{}{:016x}\", answers_cache_generation(), h.finish())", "n0xis-cli", "kept_answers_are_the_images", "a_kept_answer_is_read_and_only_for_its_image", ORACLE),
     # What a function takes.
     (CORE + "ssa.rs", "if seen.iter().any(|(n, left)| *left && passed.contains(n)) {", "if false {", *LIB, "callee::tests::a_value_moved_to_a_call_is_a_parameter"),
     (CORE + "callee.rs", "        if takes_of(ctx, id.as_deref(), callee, depth).floor() > pos {", "        if false {", *LIB, "callee::tests::a_register_passed_on_as_it_came_is_a_parameter_when_the_callee_reads_it"),
@@ -53,7 +58,7 @@ MUTATIONS = [
 ]
 
 
-def run_test(package, binary, test):
+def run_test(package, binary, test, cargo_args=()):
     """`calibrate_update.run_test`, at the jobs this machine allows when others build too (`CARGO_BUILD_JOBS`, else 4)."""
     jobs = os.environ.get("CARGO_BUILD_JOBS", "4")
     real = calibrate_update.subprocess.run
@@ -63,7 +68,7 @@ def run_test(package, binary, test):
 
     calibrate_update.subprocess.run = capped
     try:
-        return calibrate_update.run_test(package, binary, test)
+        return calibrate_update.run_test(package, binary, test, cargo_args)
     finally:
         calibrate_update.subprocess.run = real
 
@@ -74,14 +79,14 @@ def main():
     args = ap.parse_args()
     chosen = [m for m in MUTATIONS if (not args.k or args.k in m[0] or args.k in m[5])]
     bad = []
-    for path, anchor, replacement, package, binary, test in chosen:
+    for path, anchor, replacement, package, binary, test, *cargo_args in chosen:
         file = ROOT / path
         original = file.read_bytes()
         text = original.decode()
         assert text.count(anchor) == 1, f"{path}: the anchor is there {text.count(anchor)} times: {anchor}"
         try:
             file.write_text(text.replace(anchor, replacement))
-            verdict, log = run_test(package, binary, test)
+            verdict, log = run_test(package, binary, test, *cargo_args)
         finally:
             file.write_bytes(original)
         ok = verdict == "failed"

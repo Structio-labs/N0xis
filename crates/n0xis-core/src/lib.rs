@@ -93,6 +93,7 @@ pub use ui_locate::{
 };
 pub use decode::{DecodeInput, DecodeOutput, DecodePass};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
+pub use callee::{with_kept_answers, AnswerStore, KeptAnswers};
 pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBranch};
 pub use demangle::{demangle, elf_unversioned, qualified_name_only};
 pub use diff::{DiffArtifact, DiffHunk, DiffInput, DiffOp, DiffPass};
