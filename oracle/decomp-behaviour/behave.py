@@ -81,8 +81,11 @@ def parse_sig(text, head_only=None):
         if c == "," and d == 0:
             ps.append(cur); cur = ""
             continue
-        d += c in "(["
-        d -= c in ")]"
+        # A template argument list is one parameter's type: `std::tuple<void (*)(T*, unsigned long), T*,
+        # unsigned long>` is one `this`, which counting its commas made three (four libFuzzer
+        # destructors once their class was named, read as a fall in exact parameter counts).
+        d += c in "([<"
+        d -= c in ")]>"
         cur += c
     if cur.strip():
         ps.append(cur)
