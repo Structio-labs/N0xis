@@ -26,7 +26,7 @@ pub mod types;
 
 pub use envelope::{ErrorBody, Failure, Meta, Response, Success};
 pub use number::NumberLiteral;
-pub use searched::{NotSearched, Over, Searched, Shown};
+pub use searched::{Listed, NotSearched, Over, Searched, Shown};
 pub use table::{Provenance, Table, TableEntry, TableLocator, TableValueType, VerificationState};
 pub use types::{Module, Reg, SymKind, Symbol, Va};
 

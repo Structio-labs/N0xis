@@ -33,6 +33,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **A scan of a file window answers in the shape a scan of a process does.** `scan aob`, `scan value`, `scan group` and `scan filter` on `--file` used to answer with their result and nothing more, on the ground that what a file holds does not change; they now carry `regions_scanned`, `regions_not_read`, `not_read`, `regions_read_short`, `read_short` and `searched` as well, and `exhaustive` is derived as on `--pid`: a reader that read only `matches` and `bytes_scanned` is unaffected, one that checked for exactly those keys is not.
 
+**A list cut at its limit says how long it was.** `ir manifest` answered `count: 200` on an image with 1126 functions, `mem map` `count: 256` of a map of 440, and `function typeflow` and `function layout` `considered: 400` of 1126, with nothing saying the rest had not been looked at. Each, and `function summary`, now carries `total` and `truncated`; the entries themselves are as before. `mem map --limit 0` lists the whole map, where it listed nothing.
+
 ## [0.3.9] — 2026-11-06
 
 **Read this first: what to check again, and what is still known to be false.** Most of this release corrects answers that were wrong and looked right.

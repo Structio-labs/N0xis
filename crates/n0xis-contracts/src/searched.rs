@@ -139,6 +139,16 @@ impl Shown {
     }
 }
 
+/// A list and its cut, in one object: the list's own fields, then `total` and
+/// `truncated` beside them.
+#[derive(Clone, Debug, Serialize)]
+pub struct Listed<T> {
+    #[serde(flatten)]
+    pub list: T,
+    #[serde(flatten)]
+    pub shown: Shown,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

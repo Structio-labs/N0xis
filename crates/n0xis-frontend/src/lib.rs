@@ -55,8 +55,13 @@ pub use source::{FrontendError, ResolvedSource, SourceSpec, Src, base_for_module
 
 /// Every function of the target, `.pdata`-exact when the format offers it and a
 /// prologue scan otherwise — the discovery both whole-program passes
-/// (`function summary`, `function typeflow`) start from. `limit == 0` means
-/// every function.
+/// (`function summary`, `function typeflow`) start from, cut to `limit`
+/// (`0` is every function), with how many there were and whether it was cut.
+///
+/// It used to hand back the cut list alone, and `function typeflow` and `function
+/// layout` answered `considered: 400` on an image with 1126 functions, nothing
+/// saying the other 726 were never looked at. [`Shown`](n0xis_contracts::Shown)
+/// comes with the list or not at all.
 ///
 /// Shared rather than duplicated because the two passes must reason over the
 /// *same* program: a type propagated into a function the other pass never saw
@@ -66,7 +71,7 @@ pub fn discovered_functions(
     src: &source::Src,
     module: Option<&str>,
     limit: usize,
-) -> Vec<n0xis_contracts::Va> {
+) -> (Vec<n0xis_contracts::Va>, n0xis_contracts::Shown) {
     let mut all: Vec<n0xis_contracts::Va> = src
         .module_base()
         .and_then(|b| n0xis_core::discover_pdata(ctx.source, b).ok())
@@ -85,10 +90,8 @@ pub fn discovered_functions(
         all.sort_by_key(|v| v.get());
         all.dedup();
     }
-    if limit != 0 {
-        all.truncate(limit);
-    }
-    all
+    let shown = n0xis_contracts::Shown::cap(&mut all, limit);
+    (all, shown)
 }
 
 /// The persisted whole-program type store, adapted to the core's

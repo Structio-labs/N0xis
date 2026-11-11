@@ -528,6 +528,9 @@ Per-function index with quality scoring, over discovered candidates.
   `--limit` (candidates to summarize, default 200), `--max-bytes` (byte window handed to `ir
   build` per candidate, default 4096), `--arch`.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
+- `data`: `count`, `entries`, and `total` (the candidates discovered) with `truncated`, true when
+  `--limit` cut the list. `function typeflow` and `function layout` say the same beside
+  `considered`, and `function summary` beside `count`.
 - Schema: `n0xis.ir.manifest.v1`
 
 ### `ir value-set`
@@ -803,7 +806,9 @@ Write bytes to a live process (flips page protection as needed).
 
 ### `mem map --pid <u32>`
 Dump the address-space region map of a live process.
-- `--pid` (required); `--limit` (default 256). Live only.
+- `--pid` (required); `--limit` (default 256, `0` for all). Live only.
+- `data`: `count`, `regions`, and `total` (the regions in the map) with `truncated`, true when
+  `--limit` cut the list.
 - Schema: `n0xis.mem.map.v1`
 
 ### `patch dry-run` / `patch apply` — `--addr <hex> --bytes "<hex>" --pid <u32>`

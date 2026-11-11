@@ -1676,8 +1676,8 @@ impl Plugin for AnalysisPasses {
                 with_src_ctx(args, Va(0), Lift::Needed, move |ctx, src, _region_len, label| {
                     // One address summarizes just that function; without it the
                     // whole discovered set up to `limit`.
-                    let functions: Vec<Va> = match explicit {
-                        Some(a) => vec![a],
+                    let (functions, shown) = match explicit {
+                        Some(a) => (vec![a], n0xis_contracts::Shown { total: 1, truncated: false }),
                         None => crate::discovered_functions(ctx, src, module.as_deref(), limit),
                     };
                     let total = functions.len();
@@ -1689,7 +1689,7 @@ impl Plugin for AnalysisPasses {
                         Ok(sums) => add_note(
                             ok_json(
                                 n0xis_contracts::schema::v1::FUNCTION_SUMMARY,
-                                json!({ "count": sums.len(), "requested": total, "summaries": sums }),
+                                json!({ "count": sums.len(), "requested": total, "summaries": sums, "total": shown.total, "truncated": shown.truncated }),
                                 label,
                             ),
                             note,
@@ -1710,7 +1710,7 @@ impl Plugin for AnalysisPasses {
                 let max_bytes = usize_arg(args, "max_bytes", 4096);
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 with_src_ctx(args, Va(0), Lift::Needed, move |ctx, src, _region_len, label| {
-                    let functions = crate::discovered_functions(ctx, src, module.as_deref(), limit);
+                    let (functions, shown) = crate::discovered_functions(ctx, src, module.as_deref(), limit);
                     if functions.is_empty() {
                         return Response::error("no-functions", "no functions discovered to propagate types over".to_string());
                     }
@@ -1722,7 +1722,7 @@ impl Plugin for AnalysisPasses {
                     ) {
                         Ok(store) => ok_json(
                             n0xis_contracts::schema::v1::FUNCTION_TYPEFLOW,
-                            json!({ "considered": total, "store": store }),
+                            json!({ "considered": total, "store": store, "total": shown.total, "truncated": shown.truncated }),
                             label,
                         ),
                         Err(e) => Response::error("typeflow-failed", e.to_string()),
@@ -1749,8 +1749,8 @@ impl Plugin for AnalysisPasses {
                     // One address reports what that single function contributes —
                     // the audit answer to "why does this class have that field?",
                     // which a merged store deliberately cannot give.
-                    let functions: Vec<Va> = match explicit {
-                        Some(a) => vec![a],
+                    let (functions, shown) = match explicit {
+                        Some(a) => (vec![a], n0xis_contracts::Shown { total: 1, truncated: false }),
                         None => crate::discovered_functions(ctx, src, module.as_deref(), limit),
                     };
                     if functions.is_empty() {
@@ -1768,7 +1768,7 @@ impl Plugin for AnalysisPasses {
                             }
                             ok_json(
                                 n0xis_contracts::schema::v1::FUNCTION_LAYOUT,
-                                json!({ "considered": total, "store": store }),
+                                json!({ "considered": total, "store": store, "total": shown.total, "truncated": shown.truncated }),
                                 label,
                             )
                         }
@@ -2094,11 +2094,14 @@ impl Plugin for AnalysisPasses {
                     Ok(l) => l,
                     Err((c, m)) => return Response::error(&c, m),
                 };
-                let regions = live.regions(limit);
+                // The whole map, then the cut: `regions(limit)` stopped listing at
+                // the limit and the answer said `count: 256` of a map of 440.
+                let mut regions = live.regions(n0xis_sources::ALL_REGIONS);
+                let shown = n0xis_contracts::Shown::cap(&mut regions, limit);
                 let regions_v = serde_json::to_value(&regions).unwrap_or(Value::Null);
                 ok_json(
                     n0xis_contracts::schema::v1::MEM_MAP,
-                    json!({ "count": regions.len(), "regions": regions_v }),
+                    json!({ "count": regions.len(), "regions": regions_v, "total": shown.total, "truncated": shown.truncated }),
                     &n0xis_sources::MemorySource::label(live.as_ref()),
                 )
             }),
@@ -2817,27 +2820,26 @@ impl Plugin for AnalysisPasses {
                     if windows.iter().all(|(_, size)| *size == 0) {
                         return Response::error("no-range", "could not resolve a scan range; pass start and size");
                     }
+                    // Every candidate is discovered and the cut made after, on the
+                    // result and once across windows, so the answer can say how many
+                    // there were: it said `count: 200` of 1126 and nothing more.
+                    // Discovery is a prologue scan; the cost the limit bounds is the
+                    // lift of each entry below, which stays bounded.
                     let mut candidates: Vec<n0xis_core::ManifestCandidate> = Vec::new();
                     for (start, size) in windows.into_iter().filter(|(_, s)| *s > 0) {
-                        // The cap is on the *result*, so it is shared across
-                        // windows rather than applied afresh to each — asking
-                        // for 20 candidates must not return 20 per section.
-                        let remaining = limit.saturating_sub(candidates.len());
-                        if limit != 0 && remaining == 0 {
-                            break;
-                        }
                         let discovered = match n0xis_core::Pass::run(
                             &n0xis_core::DiscoverPass,
                             ctx,
-                            n0xis_core::DiscoverInput { start, size, limit: remaining, offset: 0 },
+                            n0xis_core::DiscoverInput { start, size, limit: 0, offset: 0 },
                         ) {
                             Ok(d) => d,
                             Err(e) => return Response::error("discover-failed", e.to_string()),
                         };
                         candidates.extend(discovered.functions.into_iter().map(|f| n0xis_core::ManifestCandidate { name: f.name, va: f.va }));
                     }
+                    let shown = n0xis_contracts::Shown::cap(&mut candidates, limit);
                     match n0xis_core::Pass::run(&n0xis_core::ManifestPass, ctx, n0xis_core::ManifestInput { candidates, max_bytes }) {
-                        Ok(art) => ok_json(n0xis_contracts::schema::v1::IR_MANIFEST, art, label),
+                        Ok(art) => ok_json(n0xis_contracts::schema::v1::IR_MANIFEST, n0xis_contracts::Listed { list: art, shown }, label),
                         Err(e) => Response::error("manifest-failed", e.to_string()),
                     }
                 })

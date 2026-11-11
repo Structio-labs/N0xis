@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calibrate the tests of a scan that says what it searched: remove what each guards, and the named test must fail.
+"""Calibrate the tests of an answer that says what it looked through (a scan's `searched`, a list's `total`): remove what each guards, and the named test must fail.
 
     python3 scripts/calibrate_searched.py            all of them
     python3 scripts/calibrate_searched.py -k window  those whose source file or test name match
@@ -23,6 +23,7 @@ SEARCHED = "crates/n0xis-contracts/src/searched.rs"
 REGISTRY = "crates/n0xis-frontend/src/registry.rs"
 NEW = ("n0xis-cli", "a_scan_says_what_it_searched")
 OLD = ("n0xis-cli", "scan_states_what_it_did_not_read")
+CUT = ("n0xis-cli", "a_cut_list_says_its_total")
 
 JOIN = "Some((at, run)) if at.0.checked_add(run.len() as u64) == Some(start.0)"
 GO_ON = "while !bytes.is_empty() && bytes.len() < size {"
@@ -43,6 +44,13 @@ MUTATIONS = [
     (SEARCHED, "self.stride == 1 && self.not_searched.is_empty()", "self.not_searched.is_empty()", *OLD, "every_other_scan_states_the_same"),
     # A file window states nothing of what it searched, as it did.
     (REGISTRY, "Ok(stated) => ok_json(schema, stated, label),", "Ok(stated) => ok_json(schema, stated.answer, label),", *OLD, "a_file_window_says_what_it_searched"),
+    # A cut list's total is the cut's length again.
+    (SEARCHED, "Shown { total, truncated: all.len() < total }", "Shown { total: all.len(), truncated: false }", *CUT, "a_function_list_cut_at_a_limit_says_its_total"),
+    (SEARCHED, "Shown { total, truncated: all.len() < total }", "Shown { total: all.len(), truncated: false }", *CUT, "a_memory_map_cut_at_a_limit_says_its_total"),
+    # The map listed only up to the limit, as it was.
+    (REGISTRY, "let mut regions = live.regions(n0xis_sources::ALL_REGIONS);", "let mut regions = live.regions(limit.max(1));", *CUT, "a_memory_map_cut_at_a_limit_says_its_total"),
+    # Discovery stops at the limit again, so the total is the cut.
+    (REGISTRY, "n0xis_core::DiscoverInput { start, size, limit: 0, offset: 0 },\n                        ) {\n                            Ok(d) => d,\n                            Err(e) => return Response::error(\"discover-failed\"", "n0xis_core::DiscoverInput { start, size, limit, offset: 0 },\n                        ) {\n                            Ok(d) => d,\n                            Err(e) => return Response::error(\"discover-failed\"", *CUT, "a_function_list_cut_at_a_limit_says_its_total"),
 ]
 
 
