@@ -53,6 +53,11 @@ impl CfgInput {
 pub struct CfgArtifact {
     pub start: Va,
     pub end: Va,
+    /// How the graph's end was decided, in every graph: whether `end` is where
+    /// the function ends or where reading it stopped ([`GraphEnd::is_cut`]).
+    /// No default on reading it back: a kept graph from before the field is a
+    /// miss, never a graph that ended by itself.
+    pub end_by: GraphEnd,
     pub block_count: usize,
     pub insn_count: usize,
     pub blocks: Vec<CfgBlock>,
@@ -175,15 +180,16 @@ impl Pass for CfgPass {
     }
 
     fn run(&self, ctx: &Ctx, input: CfgInput) -> Result<CfgArtifact, CoreError> {
-        self.run_with_end(ctx, input).map(|(cfg, _)| cfg)
+        self.build_graph(ctx, input)
     }
 }
 
-/// How the end of a graph [`CfgPass`] built was decided.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How the end of a graph [`CfgPass`] built was decided ([`CfgArtifact::end_by`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GraphEnd {
     /// An extent the image declares ended it (a symbol's size, an unwind
-    /// entry).
+    /// entry), and all of it was read.
     Stated,
     /// The end heuristic decided it: a terminator no forward edge passes, a
     /// call that does not return, or the first byte that does not decode.
@@ -193,18 +199,74 @@ pub enum GraphEnd {
     /// asked for, or fewer where the readable bytes end sooner). The graph's
     /// `end` is where those bytes end, which says nothing about where the
     /// function does — on the rule-accuracy corpus 495 such ends were exactly
-    /// the start plus the 4 KiB window, inside an instruction.
-    BytesRanOut { read: usize },
+    /// the start plus the 4 KiB window, inside an instruction. `stated` is the
+    /// extent the image claims where it claims one past what could be read
+    /// (past the 1 MiB a stated extent is believed to, or past the readable
+    /// bytes).
+    BytesRanOut { read: usize, stated: Option<usize> },
+    /// The decode stopped at its instruction limit before the bytes ended, and
+    /// nothing ended the function before that: `read` bytes decoded. Only where
+    /// no extent is stated, since a stated one is decoded to its end.
+    InstructionCap { read: usize, stated: Option<usize> },
     /// The caller turned the end heuristic off: the whole window, by request.
     NotAsked,
 }
 
+impl GraphEnd {
+    /// The graph stops where reading the function stopped, not where it ends:
+    /// what is past `end` is unknown, and a body built on it must say so.
+    pub fn is_cut(&self) -> bool {
+        matches!(self, GraphEnd::BytesRanOut { .. } | GraphEnd::InstructionCap { .. })
+    }
+
+    /// Of a cut graph, the most a body built on it may claim to say: the share
+    /// of the stated extent that was read, or one half where the image states
+    /// none, since then nothing says how much is missing. `None` for a whole one.
+    pub fn quality_cap(&self) -> Option<f32> {
+        match *self {
+            GraphEnd::BytesRanOut { read, stated: Some(s) } | GraphEnd::InstructionCap { read, stated: Some(s) } if s > 0 => Some((read as f32 / s as f32).min(1.0 - f32::EPSILON)),
+            GraphEnd::BytesRanOut { .. } | GraphEnd::InstructionCap { .. } => Some(0.5),
+            _ => None,
+        }
+    }
+
+    /// Of a cut graph ending at `at`, where and why, in words: what a body built
+    /// on it prints, before any number.
+    pub fn cut_words(&self, at: Va) -> Option<String> {
+        let stated = |s: Option<usize>| s.map(|s| format!(", of the {s} the image states")).unwrap_or_else(|| ", and the image states no end".to_string());
+        match *self {
+            GraphEnd::BytesRanOut { read, stated: s } => Some(format!("cut at {at}: {read} bytes read with no end in them{}; the function goes on", stated(s))),
+            GraphEnd::InstructionCap { read, stated: s } => Some(format!("cut at {at}: the instruction limit reached after {read} bytes{}; the function goes on", stated(s))),
+            _ => None,
+        }
+    }
+}
+
+/// Where and why a graph stops short of its function, as every answer built on
+/// one states it: from [`CfgArtifact::end_by`] and nowhere else.
+#[derive(Clone, Debug, Serialize)]
+pub struct Cut {
+    pub at: Va,
+    pub end_by: GraphEnd,
+    pub words: String,
+}
+
+impl CfgArtifact {
+    /// Where and why this graph stops short of its function, or `None` where its
+    /// end is the function's.
+    pub fn cut(&self) -> Option<Cut> {
+        self.end_by.cut_words(self.end).map(|words| Cut { at: self.end, end_by: self.end_by, words })
+    }
+}
+
 impl CfgPass {
-    /// [`Pass::run`], and how the graph's end was decided — what a caller that
-    /// reports the end as a fact about the function (`n0x why`) needs to know,
-    /// and `CfgArtifact` does not carry: its shape is kept on disk and in every
-    /// `ir cfg` answer, and the end it states is the graph's either way.
-    pub fn run_with_end(&self, ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, GraphEnd), CoreError> {
+    /// [`Pass::run`]. How the end was decided is part of the graph
+    /// ([`CfgArtifact::end_by`]). It was once kept out, so that the graph's
+    /// shape on disk and in `ir cfg` stayed the same, and returned beside it to
+    /// `n0x why` alone; every other answer then read a graph cut at the window
+    /// as a whole function, at quality 1.0 and with no return, which is the
+    /// false claim an audit of the commands found in five of them.
+    fn build_graph(&self, ctx: &Ctx, input: CfgInput) -> Result<CfgArtifact, CoreError> {
         // The declared extent is a **fact** about the function; `max_bytes` is a
         // budget for guessing when there is none. Reading only the budget and
         // then discarding a declared end that fell outside it is the worst of
@@ -223,9 +285,19 @@ impl CfgPass {
         };
         let bytes = ctx.source.read(input.start, want)?;
         let end_cap = input.start.0 + bytes.len() as u64;
-        let all = ctx
-            .arch
-            .decode_stream(&bytes, input.start, DEFAULT_MAX_INSNS);
+        // A stated extent is decoded to its end: an instruction is at least a
+        // byte, so as many instructions as bytes, within the ceiling above. It
+        // was 8 192 for every function, and one of 0xf38c bytes stopped at
+        // 0xf434 by its own symbol table, as a whole body. Without a stated
+        // extent the limit stays, and where it binds the graph says so.
+        let limit = if stated_len.is_some() { bytes.len().max(DEFAULT_MAX_INSNS) } else { DEFAULT_MAX_INSNS };
+        let all = ctx.arch.decode_stream(&bytes, input.start, limit);
+        let decoded_to = all.last().map_or(input.start.0, |l| l.va.0 + u64::from(l.len));
+        let read = decoded_to.saturating_sub(input.start.0) as usize;
+        let ran_out = decoded_to >= end_cap;
+        let limited = all.len() >= limit && input.start.0 + (read as u64) < end_cap;
+        // What the image claims, where it claims more than could be read.
+        let beyond = stated_len.filter(|n| *n as usize > bytes.len()).map(|n| n as usize);
         // An authoritative extent beats the heuristic outright. Two sources
         // state one, and both are read here: the linker's `st_size` on a
         // symbolized ELF (and a PE's `.pdata`, which `symbol_size` reports),
@@ -278,7 +350,8 @@ impl CfgPass {
                 // heuristic's end, as it always was.)
                 let how = match ended {
                     Some(by) => GraphEnd::Heuristic { by },
-                    None if all.last().is_some_and(|l| l.va.0 + u64::from(l.len) >= end_cap) => GraphEnd::BytesRanOut { read: bytes.len() },
+                    None if ran_out && !limited => GraphEnd::BytesRanOut { read: bytes.len(), stated: beyond },
+                    None if limited => GraphEnd::InstructionCap { read, stated: beyond },
                     None => GraphEnd::Heuristic { by: crate::EndRule::Undecodable },
                 };
                 (instrs, how)
@@ -294,7 +367,7 @@ impl CfgPass {
         // conditional branch with no in-function successor.
         let instrs = fold_cold_partitions(ctx, input.start, instrs);
 
-        build(ctx, &instrs, input.start).map(|cfg| (cfg, how))
+        build(ctx, &instrs, input.start, how)
     }
 }
 
@@ -811,7 +884,7 @@ fn edge_confidence(kind: &str) -> f32 {
     }
 }
 
-fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, CoreError> {
+fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Result<CfgArtifact, CoreError> {
     let frame = ctx.arch.analyze_frame(instrs);
     // The function's nominal end is the end of the **primary** contiguous run
     // that begins at `start` — not `instrs.last()`, because a folded `.cold`
@@ -1187,6 +1260,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va) -> Result<CfgArtifact, Co
     Ok(CfgArtifact {
         start,
         end: Va(end_ip),
+        end_by,
         block_count: blocks.len(),
         insn_count: instrs.len(),
         blocks,
@@ -1845,4 +1919,48 @@ mod tests {
         assert_eq!(art.stats.tail_calls, 2, "the taken branch and the fall-through both leave");
     }
 
+
+    /// A function whose extent the image states is read to that end, past the 8 192
+    /// instructions every graph stopped at: one of 0xf38c bytes ended at 0xf434 by its
+    /// own symbol table, and every answer read that as the whole function.
+    #[test]
+    fn a_stated_extent_is_read_to_its_end() {
+        let n = 9000usize;
+        let code: Vec<u8> = std::iter::repeat_n(0x90u8, n).chain([0xc3]).collect();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let stated = [crate::StatedFunction::new(Va(0x1000), Va(0x1000 + n as u64 + 1), crate::StatedBy::EhFrame)];
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 4096)).unwrap();
+        assert_eq!(cfg.insn_count, n + 1, "every instruction of the stated extent");
+        assert_eq!(cfg.end, Va(0x1000 + n as u64 + 1));
+        assert_eq!(cfg.end_by, GraphEnd::Stated);
+    }
+
+    /// Where no extent is stated the instruction limit stays, and the graph says it
+    /// stopped there.
+    #[test]
+    fn the_instruction_limit_is_said_where_it_binds() {
+        let code: Vec<u8> = std::iter::repeat_n(0x90u8, 9000).chain([0xc3]).collect();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 9001)).unwrap();
+        assert_eq!(cfg.end_by, GraphEnd::InstructionCap { read: DEFAULT_MAX_INSNS, stated: None });
+        assert!(cfg.cut().is_some_and(|c| c.words.contains("instruction limit")));
+    }
+
+    /// A kept graph from before `end_by` is no graph: read back without it, it fails,
+    /// and the cache reads a failure as a miss, never as a graph that ended by itself.
+    #[test]
+    fn a_kept_graph_without_its_end_is_not_read() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0xc3]).build();
+        let arch = X64::new();
+        let cfg = CfgPass.run(&Ctx::new(&snap, &arch), CfgInput::new(Va(0x1000), 16)).unwrap();
+        let json = serde_json::to_value(&cfg).unwrap();
+        let mut old = json.clone();
+        old.as_object_mut().unwrap().remove("end_by");
+        assert!(serde_json::from_value::<CfgArtifact>(json).is_ok());
+        assert!(serde_json::from_value::<CfgArtifact>(old).is_err());
+    }
 }

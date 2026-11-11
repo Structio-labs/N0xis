@@ -29,6 +29,17 @@ MUTATIONS = [
     # What an earlier process found about the image is read, and only for that image.
     (CORE + "callee.rs", "        let kept = store.load(&id).unwrap_or_default();", "        let kept = KeptAnswers::default();", "n0xis-cli", "kept_answers_are_the_images", "a_kept_answer_is_read_and_only_for_its_image", ORACLE),
     ("crates/n0xis-pipeline/src/lib.rs", "        identity.hash(&mut h);\n        format!(\"{}{:016x}\", answers_cache_generation(), h.finish())", "        format!(\"{}{:016x}\", answers_cache_generation(), h.finish())", "n0xis-cli", "kept_answers_are_the_images", "a_kept_answer_is_read_and_only_for_its_image", ORACLE),
+    # Where a graph ends, and a body cut where reading stopped. (`a_kept_graph_without_its_end_is_not_read` is not here:
+    # what it guards is a field with no default, and a mutation that gives one does not compile.)
+    (CORE + "ir.rs", "        let limit = if stated_len.is_some() { bytes.len().max(DEFAULT_MAX_INSNS) } else { DEFAULT_MAX_INSNS };", "        let limit = DEFAULT_MAX_INSNS;", *LIB, "ir::tests::a_stated_extent_is_read_to_its_end"),
+    (CORE + "ir.rs", "None if ran_out && !limited =>", "None if false && ran_out && !limited =>", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
+    (CORE + "ir.rs", "                    None if limited => GraphEnd::InstructionCap { read, stated: beyond },\n", "", *LIB, "ir::tests::the_instruction_limit_is_said_where_it_binds"),
+    (CORE + "decomp.rs", "        let quality = cfg.end_by.quality_cap().map_or(quality, |cap| quality.min(cap));\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
+    (CORE + "decomp.rs", "            .chain(cut.as_ref().map(|c| format!(\"    /* {} */\", c.words)))\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
+    (CORE + "manifest.rs", "    if art.callsites.is_empty() && !cut {", "    if art.callsites.is_empty() {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
+    (CORE + "manifest.rs", "if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {", "if art.stats.returns == 0 && art.stats.tail_calls == 0 {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
+    (CORE + "trace.rs", "            not_followed.cut_bodies += usize::from(cut.is_some());\n", "", *LIB, "trace::tests::a_cut_body_truncates_the_walk"),
+    (CORE + "summary.rs", " && !has_unknown_call && !cfg.end_by.is_cut(),", " && !has_unknown_call,", *LIB, "summary::tests::a_cut_function_has_no_complete_clobbers"),
     # What a function takes.
     (CORE + "ssa.rs", "if seen.iter().any(|(n, left)| *left && passed.contains(n)) {", "if false {", *LIB, "callee::tests::a_value_moved_to_a_call_is_a_parameter"),
     (CORE + "callee.rs", "        if takes_of(ctx, id.as_deref(), callee, depth).floor() > pos {", "        if false {", *LIB, "callee::tests::a_register_passed_on_as_it_came_is_a_parameter_when_the_callee_reads_it"),

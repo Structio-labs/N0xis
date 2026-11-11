@@ -153,6 +153,11 @@ pub struct PseudoFunction {
     /// under. A front end renames what the user points at by looking it up here,
     /// instead of guessing from the text which words are variables.
     pub variables: Vec<DecompVar>,
+    /// Where and why the body stops before its function does: the graph was cut
+    /// where reading it stopped ([`crate::CfgArtifact::cut`]). Present only then,
+    /// and said in the body's first line as well.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<crate::ir::Cut>,
 }
 
 /// One variable of a decompiled function.
@@ -447,6 +452,10 @@ impl Pass for DecompPass {
             let left = 1.0 - ((unlifted + marks) as f32 / cfg.insn_count as f32);
             if marks + unlifted > 0 { left.clamp(0.0, 1.0 - f32::EPSILON) } else { left }
         };
+        // A body cut where reading stopped says at most what was read of it. The
+        // words come first (`cut`, and the body's first line); this is second.
+        let cut = cfg.cut();
+        let quality = cfg.end_by.quality_cap().map_or(quality, |cap| quality.min(cap));
         let mut flags: Vec<&'static str> = vec![input.style.as_str()];
         if !cfg.switches.is_empty() {
             flags.push("has-switch");
@@ -462,6 +471,9 @@ impl Pass for DecompPass {
         }
         if fallback_count > 0 {
             flags.push("structured-partial");
+        }
+        if cut.is_some() {
+            flags.push("cut");
         }
         // How much was lifted, which is what the name says and what a filter on
         // it asked: a body short of `quality` for its names is not short of coverage.
@@ -486,6 +498,7 @@ impl Pass for DecompPass {
         };
 
         let body_lines: Vec<String> = std::iter::once(format!("{signature} {{"))
+            .chain(cut.as_ref().map(|c| format!("    /* {} */", c.words)))
             .chain(preamble)
             .chain(pseudo)
             .chain(std::iter::once("}".to_string()))
@@ -510,6 +523,7 @@ impl Pass for DecompPass {
             instruction_count: cfg.insn_count,
             delta,
             devirtualized,
+            cut,
         })
     }
 }
@@ -2061,4 +2075,29 @@ mod tests {
         assert_eq!(format_signature(crate::UnnamedFunction::Address(Va(0x1000)), &none, Some("f")), "void f(void)");
     }
 
+
+    /// A body read to the end of its window with no end in it says where it stops and
+    /// why, first, and claims at most half. One cut at start + 0x1000 said quality 1.0,
+    /// with no return and no word. The window here ends inside an instruction, as a
+    /// real one does as often as not.
+    #[test]
+    fn a_body_cut_by_the_window_says_so() {
+        // 40 times `mov eax, 1`, five bytes each, no `ret`, in a 128-byte window.
+        let code: Vec<u8> = std::iter::repeat_n([0xb8, 1, 0, 0, 0], 40).flatten().collect();
+        let f = decomp(code, DecompStyle::Ssa);
+        let cut = f.cut.as_ref().unwrap_or_else(|| panic!("the body says it was cut: {:#?}", f.pseudo));
+        assert_eq!(cut.at, Va(0x1000 + 128), "where the window ends");
+        assert!(f.pseudo[1].contains("cut at 0x1080"), "said first, in words: {:#?}", f.pseudo);
+        assert!(f.quality <= 0.5, "a cut body with no stated extent claims at most half: {}", f.quality);
+        assert!(f.flags.contains(&"cut"), "{:?}", f.flags);
+    }
+
+    /// A function that ends inside its window is not cut.
+    #[test]
+    fn a_body_that_ends_in_its_window_is_not_cut() {
+        let code: Vec<u8> = std::iter::repeat_n([0xb8, 1, 0, 0, 0], 4).flatten().chain([0xc3]).collect();
+        let f = decomp(code, DecompStyle::Ssa);
+        assert!(f.cut.is_none(), "{:#?}", f.pseudo);
+        assert!(!f.flags.contains(&"cut"));
+    }
 }

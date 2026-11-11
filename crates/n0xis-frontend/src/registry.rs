@@ -3021,10 +3021,12 @@ impl Plugin for AnalysisPasses {
                         // The graph's end is the function's only where its
                         // heuristic decided it; where the bytes ran out first,
                         // the answer says the graph was cut there.
-                        match n0xis_core::CfgPass.run_with_end(&cfg_ctx, n0xis_core::CfgInput::new(start, 4096)) {
-                            Ok((cfg, n0xis_core::GraphEnd::BytesRanOut { read })) => crate::why::CfgEnd::Cut { at: cfg.end, read },
-                            Ok((cfg, n0xis_core::GraphEnd::Heuristic { by })) => crate::why::CfgEnd::End { at: cfg.end, by: Some(by) },
-                            Ok((cfg, n0xis_core::GraphEnd::Stated | n0xis_core::GraphEnd::NotAsked)) => crate::why::CfgEnd::End { at: cfg.end, by: None },
+                        match n0xis_core::Pass::run(&n0xis_core::CfgPass, &cfg_ctx, n0xis_core::CfgInput::new(start, 4096)) {
+                            Ok(cfg) => match cfg.end_by {
+                                n0xis_core::GraphEnd::BytesRanOut { read, .. } | n0xis_core::GraphEnd::InstructionCap { read, .. } => crate::why::CfgEnd::Cut { at: cfg.end, read },
+                                n0xis_core::GraphEnd::Heuristic { by } => crate::why::CfgEnd::End { at: cfg.end, by: Some(by) },
+                                n0xis_core::GraphEnd::Stated | n0xis_core::GraphEnd::NotAsked => crate::why::CfgEnd::End { at: cfg.end, by: None },
+                            },
                             Err(e) => crate::why::CfgEnd::NotBuilt { why: e.to_string() },
                         }
                     };

@@ -59,6 +59,10 @@ pub struct ManifestEntry {
     pub quality: f32,
     /// Short categorical flags, e.g. `leaf`, `has-switch`, `stub`, `no-frame`.
     pub flags: Vec<&'static str>,
+    /// Where and why its graph stops before the function does
+    /// ([`crate::CfgArtifact::cut`]); with the flag `cut`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<crate::ir::Cut>,
 }
 
 /// Batch summarization pass. Never fails outright — a candidate that can't be
@@ -105,6 +109,7 @@ fn summarize(ctx: &Ctx, candidate: ManifestCandidate, max_bytes: usize) -> Manif
             frame_size: art.frame.frame_size,
             quality: quality_score(&art),
             flags: flags(&art),
+            cut: art.cut(),
         },
         Err(_) => ManifestEntry {
             va: candidate.va,
@@ -120,6 +125,7 @@ fn summarize(ctx: &Ctx, candidate: ManifestCandidate, max_bytes: usize) -> Manif
             frame_size: 0,
             quality: 0.0,
             flags: vec!["unreadable"],
+            cut: None,
         },
     }
 }
@@ -162,7 +168,13 @@ fn quality_score(art: &CfgArtifact) -> f32 {
 /// Categorical flags for fast filtering / display in a manifest.
 fn flags(art: &CfgArtifact) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
-    if art.callsites.is_empty() {
+    // Of a graph cut where reading stopped, what was not read is not known: it
+    // may call, and it may return. `no-return` was said of one that returns.
+    let cut = art.end_by.is_cut();
+    if cut {
+        out.push("cut");
+    }
+    if art.callsites.is_empty() && !cut {
         out.push("leaf");
     }
     if !art.switches.is_empty() {
@@ -182,7 +194,7 @@ fn flags(art: &CfgArtifact) -> Vec<&'static str> {
     if no_frame {
         out.push("no-frame");
     }
-    if art.stats.returns == 0 && art.stats.tail_calls == 0 {
+    if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {
         out.push("no-return");
     }
     if art.stats.noreturn_calls > 0 {
@@ -284,5 +296,19 @@ mod tests {
         let art = ManifestPass.run(&ctx, input).expect("manifest builds");
         assert_eq!(art.entries[0].flags, vec!["unreadable"]);
         assert_eq!(art.entries[0].quality, 0.0);
+    }
+
+    /// A graph cut where reading stopped is said, and is neither a leaf nor a function
+    /// that does not return: an audit found `no-return` said of one that returns.
+    #[test]
+    fn a_cut_graph_says_so_and_claims_nothing_of_the_rest() {
+        let code: Vec<u8> = std::iter::repeat_n([0xb8u8, 1, 0, 0, 0], 40).flatten().collect();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let input = ManifestInput { candidates: vec![ManifestCandidate { name: "cut".into(), va: Va(0x1000) }], max_bytes: 64 };
+        let e = &ManifestPass.run(&ctx, input).expect("manifest builds").entries[0];
+        assert!(e.cut.is_some() && e.flags.contains(&"cut"), "{:?}", e.flags);
+        assert!(!e.flags.contains(&"no-return") && !e.flags.contains(&"leaf"), "{:?}", e.flags);
     }
 }

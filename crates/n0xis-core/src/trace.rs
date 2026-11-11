@@ -42,6 +42,10 @@ pub struct TraceNode {
     /// empty in that case, but the node is still reported so the caller can
     /// see the call graph reached there.
     pub unreadable: bool,
+    /// Where and why this function's graph stops before the function does
+    /// ([`crate::CfgArtifact::cut`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<crate::ir::Cut>,
 }
 
 /// What the walk reached and did not go through.
@@ -56,6 +60,9 @@ pub struct NotFollowed {
     pub past_depth: usize,
     /// Functions reached and left in the queue at `max_nodes`.
     pub past_max_nodes: usize,
+    /// Functions whose graph stops before they do (each node's `cut` says
+    /// where): what they call past that is not in the walk.
+    pub cut_bodies: usize,
 }
 
 /// The trace artifact (`n0xis.function.trace.v1`).
@@ -108,7 +115,7 @@ impl Pass for TracePass {
             let mut art = match CfgPass.run(ctx, cfg_input) {
                 Ok(a) => a,
                 Err(_) => {
-                    nodes.push(TraceNode { addr, depth, end: addr, calls: Vec::new(), unreadable: true });
+                    nodes.push(TraceNode { addr, depth, end: addr, calls: Vec::new(), unreadable: true, cut: None });
                     continue;
                 }
             };
@@ -132,7 +139,9 @@ impl Pass for TracePass {
             let tables = art.switches.iter().filter(|s| s.resolved).count();
             not_followed.indirect_jumps += art.stats.indirect_branches.saturating_sub(tables);
 
-            nodes.push(TraceNode { addr, depth, end: art.end, calls: art.callsites, unreadable: false });
+            let cut = art.cut();
+            not_followed.cut_bodies += usize::from(cut.is_some());
+            nodes.push(TraceNode { addr, depth, end: art.end, calls: art.callsites, unreadable: false, cut });
         }
 
         not_followed.past_depth = past_depth.iter().filter(|a| !seen.contains(a)).count();
@@ -142,6 +151,8 @@ impl Pass for TracePass {
             Some("depth")
         } else if not_followed.indirect_calls + not_followed.indirect_jumps > 0 {
             Some("indirect")
+        } else if not_followed.cut_bodies > 0 {
+            Some("cut")
         } else {
             None
         };
@@ -264,5 +275,18 @@ mod tests {
         assert_eq!(art.node_count, 3, "leaf deduplicated despite two callers");
         let leaf_node = art.nodes.iter().find(|n| n.addr == Va(0x1200)).unwrap();
         assert_eq!(leaf_node.depth, 1, "reached directly from root before mid's edge");
+    }
+
+    /// A walk through a function whose graph is cut says so, and is not whole.
+    #[test]
+    fn a_cut_body_truncates_the_walk() {
+        let code: Vec<u8> = std::iter::repeat_n([0xb8u8, 1, 0, 0, 0], 40).flatten().collect();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let art = TracePass.run(&ctx, TraceInput { root: Va(0x1000), depth: 1, max_nodes: 0, max_bytes: 64 }).expect("trace runs");
+        assert_eq!(art.not_followed.cut_bodies, 1);
+        assert!(art.truncated && art.truncate_reason == Some("cut"), "{:?}", art.truncate_reason);
+        assert!(art.nodes[0].cut.is_some());
     }
 }

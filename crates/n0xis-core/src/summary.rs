@@ -85,6 +85,11 @@ pub struct FunctionSummary {
     /// or an import through a slot) — the reason `clobbers_complete` and any
     /// transitive property cannot be closed for this function by itself.
     pub has_unknown_call: bool,
+    /// Where and why its graph stops before the function does
+    /// ([`crate::CfgArtifact::cut`]): `end`, `calls` and `clobbers` are then
+    /// those of what was read, and the clobbers are not complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<crate::ir::Cut>,
 }
 
 /// Which functions to summarize, and how large a window each may occupy.
@@ -200,11 +205,13 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
         ret,
         ret_registers,
         clobbers: clobbers.into_iter().collect(),
-        // Only a leaf's clobber set is closed by this function alone.
-        clobbers_complete: calls.is_empty() && !has_unknown_call,
+        // Only a leaf's clobber set is closed by this function alone, and only
+        // where all of it was read.
+        clobbers_complete: calls.is_empty() && !has_unknown_call && !cfg.end_by.is_cut(),
         calls: calls.into_iter().map(Va).collect(),
         writes_memory,
         has_unknown_call,
+        cut: cfg.cut(),
     })
 }
 
@@ -319,5 +326,16 @@ mod tests {
         let ctx2 = Ctx::new(&snap2, &arch2);
         let s2 = summarize(&ctx2, Va(0x2000), 64).expect("summarized");
         assert!(!s2.returns, "an infinite loop never returns to its caller");
+    }
+
+    /// The clobbers of a function read only in part are not complete, and the summary
+    /// says where it was cut.
+    #[test]
+    fn a_cut_function_has_no_complete_clobbers() {
+        let (snap, arch) = ctx_for(std::iter::repeat_n([0xb8u8, 1, 0, 0, 0], 40).flatten().collect(), 0x1000);
+        let ctx = Ctx::new(&snap, &arch);
+        let s = summarize(&ctx, Va(0x1000), 64).expect("summarized");
+        assert!(s.cut.is_some());
+        assert!(!s.clobbers_complete, "a leaf read in part");
     }
 }

@@ -510,6 +510,17 @@ human-readable summary; `dot` = Graphviz DOT (pipe to `dot -Tsvg`).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schemas: `n0xis.ir.cfg.v1` (build) · `n0xis.ir.explain.v1` (explain) · `n0xis.ir.dot.v1` (dot)
 
+Every graph says how its end was decided, in `end_by`: `{"kind":"stated"}` (an extent the image declares, read to its
+end, past the 8192-instruction limit up to 1 MiB), `heuristic` with the rule `by`, `not_asked` (`--no-auto-end`),
+or one of the two cuts, where `end` is where reading stopped and not where the function does: `bytes_ran_out` (the
+window, or the readable bytes, ended with no end found in them) and `instruction_cap` (the decode limit of 8192
+instructions, only where no extent is stated), each with the bytes `read` and the extent the image `stated`, or
+`null`. A cut graph is said as such by every command built on it: `decomp pseudo`, `function summary`, `function
+trace` and `ir manifest` carry `cut` (`at`, `end_by`, `words`) where it is cut and nothing where it is not, and a
+cut function's summary has `clobbers_complete: false`. A graph
+kept in `.n0x/ir-cache/` by a build before `end_by` is not read: the key carries the build, and an entry without
+the field does not parse.
+
 `explain` states a jump table's `bound` from the guard of the index that reaches the table load, and lists that
 many cases; where none could be read, `bound=?`. `ir build` carries the graph's own, still the nearest comparison
 against a constant.
@@ -527,6 +538,8 @@ Per-function index with quality scoring, over discovered candidates.
 - Args: a discovery range instead of a single `--addr` — `--start`/`--size` (default `.text`),
   `--limit` (candidates to summarize, default 200), `--max-bytes` (byte window handed to `ir
   build` per candidate, default 4096), `--arch`.
+- An entry whose graph is cut where reading stopped has `cut` and the flag `cut`, and neither `leaf` nor
+  `no-return`: what was not read may call and may return.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - `data`: `count`, `entries`, and `total` (the candidates discovered) with `truncated`, true when
   `--limit` cut the list. `function typeflow` and `function layout` say the same beside
@@ -578,7 +591,8 @@ Walk the call graph from a root function.
 - A call's `kind` is `named`, `direct`, or `indirect`: no target can be stated, as of `call [rax+8]`.
 - `not_followed` counts what the walk reached and did not go through: `indirect_calls`, `indirect_jumps` (no
   table answers for them), `past_depth`, `past_max_nodes`. `truncated` is any of them; `truncate_reason` the first
-  of `max_nodes`, `depth`, `indirect`.
+  of `max_nodes`, `depth`, `indirect`, `cut`. `cut_bodies` counts functions whose graph stops before they do; each such
+  node has `cut`, and what it calls past that point is not in the walk.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.function.trace.v1`
 
@@ -596,6 +610,10 @@ Pseudo-C for one function.
   not that it is right; for that, `oracle/decomp-behaviour` runs bodies against their source. Before this
   release it was only the share of instructions lifted, which is what the `low-coverage` flag still
   reads (below 0.8).
+- A body cut where reading its function stopped (`end_by` above) says so first: its first line is
+  `/* cut at 0x…: … */`, `data.cut` says where and why, and `flags` has `cut`. Its quality is never 1.0 and is
+  at most what was read: the bytes read over the bytes the image states for the function, or 0.5 where the
+  image states no extent, since then nothing says how much is missing.
 - `data.variables` lists every variable the page shows: `name` as printed (after any rename),
   `key` (what `annotate var --var` and `annotate vartype --var` take: the name before the
   user renamed it) and `kind` (`param`, `local` or `value`). Only a `param` or a `local` takes

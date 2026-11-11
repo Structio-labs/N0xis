@@ -66,6 +66,35 @@ INTENDED = {
     "scan value --file": (COVERAGE, "a file window says what it searched and did not read, as every scan does (claims audit 2026-11)"),
 }
 ELAPSED = re.compile(rb'"elapsed_ms"\s*:\s*\d+')
+# What a change meant to add: (command, key path in the answer, why). The key is taken out of both answers before
+# they are compared, and how many it was taken from is printed, so that a difference anywhere else still shows and
+# the list cannot hide a key that is not there. Only for commands whose answer is small enough to read whole.
+INTENDED = [
+    ("ir build", ("data", "end_by"), "how the graph's end was decided, in every graph: a cut one read as whole"),
+]
+
+
+def intended_for(args):
+    cmd = " ".join(args[:2])
+    return [path for c, path, _ in INTENDED if c == cmd]
+
+
+def without(text, paths):
+    """`text` with each key path taken out, compact, and how many it was in."""
+    import json
+    try:
+        v = json.loads(text)
+    except ValueError:
+        return text, 0
+    found = 0
+    for path in paths:
+        node = v
+        for k in path[:-1]:
+            node = node.get(k) if isinstance(node, dict) else None
+        if isinstance(node, dict) and path[-1] in node:
+            del node[path[-1]]
+            found += 1
+    return json.dumps(v, separators=(",", ":"), ensure_ascii=False).encode(), found
 
 
 def limited():
@@ -76,6 +105,12 @@ def run(binary, args, cwd):
     env = {**os.environ, "N0X_MEMORY_MAX": CEILING, "N0X_NO_UPDATE_CHECK": "1", "N0X_CONFIG_DIR": str(Path(cwd) / "config")}
     p = subprocess.Popen([binary, *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=limited, env=env, cwd=cwd)
     digest, size, head, tail = hashlib.sha256(), 0, b"", b""
+    paths = intended_for(args)
+    if paths:
+        whole = p.stdout.read()
+        text, found = without(ELAPSED.sub(b'"elapsed_ms":0', whole), paths)
+        digest.update(text)
+        return {"exit": p.wait(), "digest": digest.hexdigest(), "size": len(whole), "head": whole[:400], "tail": whole[-400:], "intended": found}
     while chunk := p.stdout.read(1 << 20):
         # Wall time differs from run to run and says nothing about the answer. It is near the end of a
         # line, and a chunk boundary inside it would show as a difference: never silently the same.
@@ -83,7 +118,7 @@ def run(binary, args, cwd):
         size += len(chunk)
         head = head or chunk[:400]
         tail = (tail + chunk)[-400:]
-    return {"exit": p.wait(), "digest": digest.hexdigest(), "size": size, "head": head, "tail": tail}
+    return {"exit": p.wait(), "digest": digest.hexdigest(), "size": size, "head": head, "tail": tail, "intended": 0}
 
 
 def project():
@@ -200,6 +235,7 @@ def main():
         addr = first_function(args.old, image)
         jobs += [(args.old, args.new, image, addr, t, pretty) for t in COMMANDS for pretty in (False, True)]
     differ = done = ok = 0
+    intended = {"old": 0, "new": 0}
     empty = {}
     commands = set()
     with concurrent.futures.ThreadPoolExecutor(args.j) as pool:
@@ -208,6 +244,8 @@ def main():
                 continue
             done += 1
             ok += r["ok"]
+            intended["old"] += r["old"]["intended"]
+            intended["new"] += r["new"]["intended"]
             commands.add(re.sub(r" --addr.*| --file.*| --bytes.*", "", r["cmd"]))
             if not r["ok"]:
                 key = re.sub(r" --addr.*| --file.*| --bytes.*", "", r["cmd"])
@@ -218,6 +256,7 @@ def main():
                 differ += 1
                 print("DIFFER", Path(r["image"]).name, r["cmd"].replace(r["image"], "F"), "old", r["old"]["exit"], r["old"]["size"], "new", r["new"]["exit"], r["new"]["size"], flush=True)
     print(f"{done} answers over {len(args.images)} images and {len(commands)} commands: {differ} differ, {ok} of them ok:true")
+    print("intended keys taken out:", ", ".join(f"{c} {'.'.join(p)}" for c, p, _ in INTENDED), f"(old {intended['old']}, new {intended['new']} answers)")
     print("not ok:true by command:", " ".join(f"{k.replace(' ', '_')}={v}" for k, v in sorted(empty.items())))
     return 1 if differ else 0
 

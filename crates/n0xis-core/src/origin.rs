@@ -99,7 +99,7 @@ pub enum EndFrom {
 
 /// Which rule ended a control-flow graph where nothing states the function's
 /// end (`n0x why`, [`crate::GraphEnd`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndRule {
     /// A return, a jump out, or an interrupt, and no forward edge past it.

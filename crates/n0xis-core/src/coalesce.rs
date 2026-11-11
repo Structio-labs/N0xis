@@ -507,6 +507,7 @@ mod tests {
         crate::ir::CfgArtifact {
             start: blocks[0].start,
             end: blocks.last().unwrap().end,
+            end_by: crate::ir::GraphEnd::Stated,
             block_count: blocks.len(),
             insn_count: 0,
             blocks: cfg_blocks,
