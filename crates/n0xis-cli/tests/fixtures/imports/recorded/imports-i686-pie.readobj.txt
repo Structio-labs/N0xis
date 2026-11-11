@@ -1,0 +1,293 @@
+
+File: crates/n0xis-cli/tests/fixtures/imports/imports-i686-pie
+Format: elf32-i386
+Arch: i386
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: SharedObject (0x3)
+  Machine: EM_386 (0x3)
+  Version: 1
+  Entry: 0x1090
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x365C
+  Flags [ (0x0)
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 13
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 30
+  StringTableSectionIndex: 29
+}
+DynamicSection [ (28 entries)
+  Tag        Type         Name/Value
+  0x00000001 NEEDED       Shared library: [libm.so.6]
+  0x00000001 NEEDED       Shared library: [libgcc_s.so.1]
+  0x00000001 NEEDED       Shared library: [libc.so.6]
+  0x0000000C INIT         0x1000
+  0x0000000D FINI         0x1234
+  0x00000019 INIT_ARRAY   0x3ED8
+  0x0000001B INIT_ARRAYSZ 4 (bytes)
+  0x0000001A FINI_ARRAY   0x3EDC
+  0x0000001C FINI_ARRAYSZ 4 (bytes)
+  0x6FFFFEF5 GNU_HASH     0x20C
+  0x00000005 STRTAB       0x2EC
+  0x00000006 SYMTAB       0x22C
+  0x0000000A STRSZ        211 (bytes)
+  0x0000000B SYMENT       16 (bytes)
+  0x00000015 DEBUG        0x0
+  0x00000003 PLTGOT       0x3FF4
+  0x00000002 PLTRELSZ     48 (bytes)
+  0x00000014 PLTREL       REL
+  0x00000017 JMPREL       0x478
+  0x00000011 REL          0x438
+  0x00000012 RELSZ        64 (bytes)
+  0x00000013 RELENT       8 (bytes)
+  0x6FFFFFFB FLAGS_1      PIE 
+  0x6FFFFFFE VERNEED      0x3D8
+  0x6FFFFFFF VERNEEDNUM   2
+  0x6FFFFFF0 VERSYM       0x3C0
+  0x6FFFFFFA RELCOUNT     4
+  0x00000000 NULL         0x0
+]
+NeededLibraries [
+  libc.so.6
+  libgcc_s.so.1
+  libm.so.6
+]
+Relocations [
+  Section (8) .rel.dyn {
+    0x3ED8 R_386_RELATIVE -
+    0x3EDC R_386_RELATIVE -
+    0x3FF0 R_386_RELATIVE -
+    0x401C R_386_RELATIVE -
+    0x3FE0 R_386_GLOB_DAT __gmon_start__
+    0x3FE4 R_386_GLOB_DAT _ITM_deregisterTMCloneTable
+    0x3FE8 R_386_GLOB_DAT _ITM_registerTMCloneTable
+    0x3FEC R_386_GLOB_DAT __cxa_finalize@GLIBC_2.1.3
+  }
+  Section (9) .rel.plt {
+    0x4000 R_386_JUMP_SLOT free@GLIBC_2.0
+    0x4004 R_386_JUMP_SLOT cos@GLIBC_2.0
+    0x4008 R_386_JUMP_SLOT malloc@GLIBC_2.0
+    0x400C R_386_JUMP_SLOT puts@GLIBC_2.0
+    0x4010 R_386_JUMP_SLOT __libc_start_main@GLIBC_2.34
+    0x4014 R_386_JUMP_SLOT exit@GLIBC_2.0
+  }
+]
+DynamicSymbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __gmon_start__ (29)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_deregisterTMCloneTable (1)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: free@GLIBC_2.0 (94)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _ITM_registerTMCloneTable (44)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: cos@GLIBC_2.0 (70)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: malloc@GLIBC_2.0 (104)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: puts@GLIBC_2.0 (89)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __libc_start_main@GLIBC_2.34 (111)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: __cxa_finalize@GLIBC_2.1.3 (129)
+    Value: 0x0
+    Size: 0
+    Binding: Weak (0x2)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: exit@GLIBC_2.0 (99)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: _IO_stdin_used (74)
+    Value: 0x2004
+    Size: 4
+    Binding: Global (0x1)
+    Type: Object (0x1)
+    Other: 0
+    Section: .rodata (0xE)
+  }
+]
+VersionSymbols [
+  Symbol {
+    Version: 0
+    Name: 
+  }
+  Symbol {
+    Version: 0
+    Name: __gmon_start__
+  }
+  Symbol {
+    Version: 0
+    Name: _ITM_deregisterTMCloneTable
+  }
+  Symbol {
+    Version: 2
+    Name: free@GLIBC_2.0
+  }
+  Symbol {
+    Version: 0
+    Name: _ITM_registerTMCloneTable
+  }
+  Symbol {
+    Version: 3
+    Name: cos@GLIBC_2.0
+  }
+  Symbol {
+    Version: 2
+    Name: malloc@GLIBC_2.0
+  }
+  Symbol {
+    Version: 2
+    Name: puts@GLIBC_2.0
+  }
+  Symbol {
+    Version: 4
+    Name: __libc_start_main@GLIBC_2.34
+  }
+  Symbol {
+    Version: 5
+    Name: __cxa_finalize@GLIBC_2.1.3
+  }
+  Symbol {
+    Version: 2
+    Name: exit@GLIBC_2.0
+  }
+  Symbol {
+    Version: 1
+    Name: _IO_stdin_used
+  }
+]
+VersionDefinitions [
+]
+VersionRequirements [
+  Dependency {
+    Version: 1
+    Count: 1
+    FileName: libm.so.6
+    Entries [
+      Entry {
+        Hash: 225011984
+        Flags [ (0x0)
+        ]
+        Index: 3
+        Name: GLIBC_2.0
+      }
+    ]
+  }
+  Dependency {
+    Version: 1
+    Count: 3
+    FileName: libc.so.6
+    Entries [
+      Entry {
+        Hash: 157884275
+        Flags [ (0x0)
+        ]
+        Index: 5
+        Name: GLIBC_2.1.3
+      }
+      Entry {
+        Hash: 110530996
+        Flags [ (0x0)
+        ]
+        Index: 4
+        Name: GLIBC_2.34
+      }
+      Entry {
+        Hash: 225011984
+        Flags [ (0x0)
+        ]
+        Index: 2
+        Name: GLIBC_2.0
+      }
+    ]
+  }
+]

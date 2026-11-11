@@ -1,0 +1,6 @@
+00001030 <free@plt>:
+00001040 <cos@plt>:
+00001050 <malloc@plt>:
+00001060 <puts@plt>:
+00001070 <__libc_start_main@plt>:
+00001080 <exit@plt>:

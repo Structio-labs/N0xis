@@ -21,11 +21,13 @@
 //!   them, so it is checked as the set), and the references are the undefined
 //!   dynamic symbols, each attributed to the file its version requirement
 //!   names (`--version-info`), reached through the slots its `GLOB_DAT` and
-//!   `JUMP_SLOT` relocations name (`--relocations`) and, on x86-64, through
-//!   the PLT entries `llvm-objdump` names after it.
+//!   `JUMP_SLOT` relocations name (`--relocations`) and, on x86-64 and i386,
+//!   through the PLT entries `llvm-objdump` names after it.
 //!
 //! **A recorded gap, which the answer states:** the engine decodes PLT stubs
-//! on x86-64 only. On the other machines `llvm-objdump` names PLT entries and
+//! on x86-64 and i386 (since 2026-11-11: a fixed i386 image's stubs jump
+//! through an absolute slot, a position-independent one's through `ebx`; both
+//! are fixtures). On the other machines `llvm-objdump` names PLT entries and
 //! the engine lists none as a reach, and the answer says so in
 //! `reach_not_read`; both are asserted, and so is the converse (no such
 //! statement where the stubs are decoded or there are none), so the day the
@@ -142,9 +144,9 @@ fn block<'a>(text: &'a str, head: &str) -> Vec<&'a str> {
 }
 
 /// An ELF's answer, as `llvm-readobj` and `llvm-objdump` state it, and whether
-/// it is an x86-64 image (whose PLT stubs the engine decodes).
+/// it is an x86-64 or an i386 image (whose PLT stubs the engine decodes).
 fn elf_expected(text: &str, plt: &str) -> (Answered, bool) {
-    let x86_64 = text.lines().any(|l| field(l, "Machine:").is_some_and(|m| m.starts_with("EM_X86_64")));
+    let decoded = text.lines().any(|l| field(l, "Machine:").is_some_and(|m| m.starts_with("EM_X86_64") || m.starts_with("EM_386")));
     let needed: Vec<String> = block(text, "DynamicSection [")
         .iter()
         .filter_map(|l| l.split_once("Shared library: [").map(|(_, rest)| rest.trim_end_matches(']').to_string()))
@@ -230,10 +232,10 @@ fn elf_expected(text: &str, plt: &str) -> (Answered, bool) {
             None => Lib::Unattributed,
         };
         let slots = slots.get(name).cloned().unwrap_or_default();
-        let stubs = if x86_64 && !slots.is_empty() { stubs.get(name).cloned().unwrap_or_default() } else { BTreeSet::new() };
+        let stubs = if decoded && !slots.is_empty() { stubs.get(name).cloned().unwrap_or_default() } else { BTreeSet::new() };
         references.push(Reference { name: Name::Named(name.clone()), kind: kind.clone(), library, slots, stubs });
     }
-    (Answered { format: "elf".into(), binding: "flat".into(), libraries, references }, x86_64)
+    (Answered { format: "elf".into(), binding: "flat".into(), libraries, references }, decoded)
 }
 
 /// The command's answer, through the CLI.
@@ -306,10 +308,11 @@ fn engine(fixture: &str) -> (Answered, Unread) {
 #[test]
 fn every_fixture_imports_what_llvm_readobj_lists() {
     let (mut ordinals, mut second_library, mut stubs, mut empty, mut stub_gaps) = (0, 0, 0, 0, 0);
+    let mut i386_stubs = 0;
     let list = fixtures();
     for fixture in &list {
         let text = recording(fixture, "readobj");
-        let (want, x86_64) = if text.contains("Format: COFF-") {
+        let (want, decoded) = if text.contains("Format: COFF-") {
             (pe_expected(&text), true)
         } else {
             elf_expected(&text, &recording(fixture, "plt"))
@@ -325,10 +328,13 @@ fn every_fixture_imports_what_llvm_readobj_lists() {
         ordinals += want.references.iter().filter(|r| matches!(r.name, Name::Ordinal(_))).count();
         second_library += want.references.iter().filter(|r| matches!(r.library, Lib::Binds(i) | Lib::Named(i) if i > 0)).count();
         stubs += want.references.iter().map(|r| r.stubs.len()).sum::<usize>();
+        if text.lines().any(|l| field(l, "Machine:").is_some_and(|m| m.starts_with("EM_386"))) {
+            i386_stubs += want.references.iter().map(|r| r.stubs.len()).sum::<usize>();
+        }
         empty += usize::from(want.libraries.is_empty() && want.references.is_empty());
         // The stubs llvm-objdump names and the engine does not decode are
         // the gap the answer states, and only they.
-        let gap = !x86_64 && !recording(fixture, "plt").is_empty();
+        let gap = !decoded && !recording(fixture, "plt").is_empty();
         let stated: Vec<&str> = unread.reach.iter().map(String::as_str).collect();
         assert_eq!(stated, if gap { vec!["PLT stubs"] } else { vec![] }, "{fixture}: what the answer says it did not reach through");
         // And the starts say the same of the stubs: they are not starts either.
@@ -338,13 +344,15 @@ fn every_fixture_imports_what_llvm_readobj_lists() {
         stub_gaps += usize::from(gap);
     }
     // A fixture set that lost a shape must not pass by checking nothing.
-    assert_eq!(list.len(), 16, "the fixtures listed");
+    assert_eq!(list.len(), 18, "the fixtures listed");
     assert_eq!(ordinals, 1, "one import by ordinal only (the planted PE32)");
     assert!(second_library >= 3, "references attributed past the first library: {second_library}");
     assert!(stubs >= 5, "x86-64 PLT stubs checked: {stubs}");
+    // The two i386 executables have six each, through an absolute slot and through `ebx`.
+    assert!(i386_stubs >= 12, "i386 PLT stubs checked: {i386_stubs}");
     assert!(empty >= 2, "fixtures that import nothing: {empty}");
     assert_eq!(
-        stub_gaps, 4,
+        stub_gaps, 3,
         "ELF images of other machines whose PLT entries llvm-objdump names, the engine does not decode, and the answer says so"
     );
 }

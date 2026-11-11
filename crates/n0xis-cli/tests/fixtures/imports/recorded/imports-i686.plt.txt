@@ -1,0 +1,6 @@
+08049030 <free@plt>:
+08049040 <cos@plt>:
+08049050 <malloc@plt>:
+08049060 <puts@plt>:
+08049070 <__libc_start_main@plt>:
+08049080 <exit@plt>:

@@ -608,7 +608,7 @@ pub struct Imports {
     /// What the image reaches its imports through that no reference's
     /// [`ImportReference::reach`] lists, for the whole image: an ELF's PLT
     /// stubs on a machine whose stubs are not decoded (every machine but
-    /// x86-64). Each reference's reach is still the slots that were read; the
+    /// x86-64 and i386). Each reference's reach is still the slots that were read; the
     /// stubs that jump through them are what this names. Empty when nothing
     /// was left out.
     pub reach_not_read: Vec<Unread>,

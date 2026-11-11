@@ -8,9 +8,9 @@
 //! own that does not return was not asked about it.
 //!
 //! `oracle/summary/returns.c` names each function by its answer: `RET_` returns, `NR_`
-//! does not. Built at `-O2` by gcc and clang for x64, by gcc for a fixed i386 image and
-//! by mingw for PE32; `nm` says where each one is. A position-independent i386 image is
-//! not built here: its PLT stubs jump through `ebx`, and the reader does not decode them.
+//! does not. Built at `-O2` by gcc and clang for x64, by gcc for a fixed and for a
+//! position-independent i386 image (whose PLT stubs jump through `ebx`) and by mingw for
+//! PE32; `nm` says where each one is.
 
 // It builds its target with a compiler at run time, so its answer depends on that
 // compiler's version: a local instrument, not a CI gate.
@@ -76,6 +76,7 @@ fn every_function_says_whether_it_returns() {
         ("gcc", "gcc", &["-O2"]),
         ("clang", "clang", &["-O2"]),
         ("i386", "gcc", &["-m32", "-O2", "-fno-pie", "-no-pie"]),
+        ("i386-pie", "gcc", &["-m32", "-O2", "-fPIE", "-pie"]),
         ("pe32", "i686-w64-mingw32-gcc", &["-O2"]),
     ];
     let mut asked = 0;

@@ -100,6 +100,10 @@ MUTATIONS = [
     # A 32-bit slot named by its absolute address is not a slot: a PE32 import thunk has no name.
     ("crates/n0xis-core/src/ir.rs", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [slot] => Some(*slot),", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [_slot] if false => None,", *CORE_LIB, "ir::tests::a_call_to_an_i386_stub_through_an_absolute_slot_to_abort_ends_the_block"),
     ("crates/n0xis-core/src/ir.rs", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [slot] => Some(*slot),", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [_slot] if false => None,", "n0xis-cli", "returns_is_what_the_source_says", "every_function_says_whether_it_returns", ("--features", "oracle")),
+    # i386 PLT stubs are not decoded again, or only the absolute ones.
+    ("crates/n0xis-sources/src/static_elf.rs", "    matches!(e_machine, 0x3E | 0x03)", "    e_machine == 0x3E", "n0xis-cli", "imports_are_what_llvm_readobj_lists", "every_fixture_imports_what_llvm_readobj_lists"),
+    ("crates/n0xis-sources/src/static_elf.rs", "        [0xFF, 0xA3] => Some(plt_got?.wrapping_add(u64::from(word)) & 0xFFFF_FFFF),", "        [0xFF, 0xA3] => plt_got.and(None),", "n0xis-cli", "imports_are_what_llvm_readobj_lists", "every_fixture_imports_what_llvm_readobj_lists"),
+    ("crates/n0xis-sources/src/static_elf.rs", "        [0xFF, 0xA3] => Some(plt_got?.wrapping_add(u64::from(word)) & 0xFFFF_FFFF),", "        [0xFF, 0xA3] => plt_got.and(None),", "n0xis-cli", "returns_is_what_the_source_says", "every_function_says_whether_it_returns", ("--features", "oracle")),
     # `function summary` does not ask a callee of the image's own whether it comes back.
     ("crates/n0xis-frontend/src/registry.rs", "                    let asking = ctx.with_noreturn_on_demand();\n                    let ctx = &asking;\n                    // One address summarizes", "                    // One address summarizes", "n0xis-cli", "returns_is_what_the_source_says", "every_function_says_whether_it_returns", ("--features", "oracle")),
     # `writes_memory`: every store counts, the frame's too.

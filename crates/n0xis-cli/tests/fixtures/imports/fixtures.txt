@@ -1,6 +1,8 @@
 crates/n0xis-cli/tests/fixtures/imports/ordinals-i686.exe
 crates/n0xis-cli/tests/fixtures/imports/planted-i686.dll
 crates/n0xis-cli/tests/fixtures/imports/imports-x86_64.so
+crates/n0xis-cli/tests/fixtures/imports/imports-i686
+crates/n0xis-cli/tests/fixtures/imports/imports-i686-pie
 crates/n0xis-cli/tests/fixtures/native_pe.dll
 crates/n0xis-cli/tests/fixtures/native_pe_b.dll
 crates/n0xis-pdb/tests/fixtures/pdbtarget.exe

@@ -17,6 +17,11 @@
 #   imports-x86_64.so  needs libm.so.6 then libc.so.6, imports from each by a
 #                      versioned name, and calls its own `n0x_self` through its
 #                      PLT (a jump slot bound to its own definition)
+#   imports-i686       an i386 executable of a fixed address (imports_exe.c,
+#                      added 2026-11-11): its PLT stubs jump through absolute
+#                      slots
+#   imports-i686-pie   the same, position-independent: its stubs jump through
+#                      `ebx`, which holds the address DT_PLTGOT states
 set -eu
 cd "$(dirname "$0")"
 work=$(mktemp -d)
@@ -25,3 +30,5 @@ i686-w64-mingw32-dlltool -d planted.def -l "$work/libplanted.a"
 i686-w64-mingw32-gcc -O1 -s -nostdlib -Wl,-e,_start -Wl,--no-insert-timestamp -o ordinals-i686.exe ordinals.c -L"$work" -lplanted -lkernel32
 i686-w64-mingw32-gcc -O1 -s -shared -nostdlib -Wl,-e,__DllMainCRTStartup -Wl,--no-insert-timestamp -o planted-i686.dll planted_dll.c planted_dll.def
 gcc -O1 -fPIC -fno-builtin -shared -Wl,--no-as-needed -o imports-x86_64.so imports.c -lm
+gcc -m32 -O1 -fno-builtin -fno-pie -no-pie -Wl,--no-as-needed -o imports-i686 imports_exe.c -lm
+gcc -m32 -O1 -fno-builtin -fPIE -pie -Wl,--no-as-needed -o imports-i686-pie imports_exe.c -lm

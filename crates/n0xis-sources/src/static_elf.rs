@@ -76,12 +76,26 @@ fn copy_reloc_type(e_machine: u16) -> Option<u32> {
     }
 }
 
-/// Whether this reader decodes the PLT stubs of a machine: x86-64 only. **The
+/// Whether this reader decodes the PLT stubs of a machine: x86-64 and i386. **The
 /// one statement of it**, read by the decoder's gate and by the answers that
 /// say the stubs were not read ([`plt_stubs_unread`]), so the two cannot
 /// drift apart.
 fn decodes_plt_stubs(e_machine: u16) -> bool {
-    e_machine == 0x3E
+    matches!(e_machine, 0x3E | 0x03)
+}
+
+/// The GOT slot an i386 PLT stub's jump at `bytes[i..]` goes through, if one is
+/// there. A fixed image's stub is `jmp dword ptr [slot]` (`FF 25`, the slot
+/// absolute); a position-independent one is `jmp dword ptr [ebx+disp]` (`FF A3`),
+/// and the i386 ABI has the caller hold the GOT's address in `ebx` at a call
+/// into the PLT: the address `DT_PLTGOT` states, the image's own word for it.
+fn i386_plt_slot(bytes: &[u8], i: usize, plt_got: Option<u64>) -> Option<u64> {
+    let word = u32::from_le_bytes(bytes.get(i + 2..i + 6)?.try_into().ok()?);
+    match bytes.get(i..i + 2)? {
+        [0xFF, 0x25] => Some(u64::from(word)),
+        [0xFF, 0xA3] => Some(plt_got?.wrapping_add(u64::from(word)) & 0xFFFF_FFFF),
+        _ => None,
+    }
 }
 
 /// The sections a PLT stub lives in: executable, named `.plt…` (`.plt`,
@@ -98,7 +112,7 @@ fn plt_stubs_unread(e_machine: u16, sections: &[SectionRange]) -> Option<Unread>
     (!decodes_plt_stubs(e_machine) && !names.is_empty()).then(|| Unread {
         part: "PLT stubs".into(),
         why: format!(
-            "the image has {}, and the PLT stubs of machine {e_machine:#x} are not decoded (x86-64's are), so no stub is a start or a \
+            "the image has {}, and the PLT stubs of machine {e_machine:#x} are not decoded (x86-64's and i386's are), so no stub is a start or a \
              reach of the import its slot is bound to",
             names.join(", ")
         ),
@@ -581,20 +595,40 @@ impl StaticElf {
         // the slot must already be bound above, which is what keeps `.plt`'s
         // resolver stub (PLT0, whose `jmp` goes through `GOT+0x10`, not a
         // symbol) and any non-PLT `FF 25` out.
+        //
+        // An i386 stub is the same jump, through an absolute slot or through `ebx`
+        // ([`i386_plt_slot`]); it was not read, so every call to an import there
+        // was to a nameless `sub_`, and a function ending in `call exit@plt` was
+        // said to return (audit 2026-11-06, row 7). The same self-validation keeps
+        // PLT0's `jmp [ebx+8]` out.
         let mut stub_of_slot: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         if decodes_plt_stubs(elf.header.e_machine) {
+            let i386 = elf.header.e_machine == 0x03;
+            // The tag's own value, an address: goblin's `info.pltgot` is that address
+            // turned into a file offset, which on a PIE is another number.
+            let plt_got = elf
+                .dynamic
+                .as_ref()
+                .and_then(|d| d.dyns.iter().find(|x| x.d_tag == goblin::elf::dynamic::DT_PLTGOT).map(|x| x.d_val))
+                .filter(|&a| a != 0);
             for sec in plt_sections(&sections) {
                 let bytes = &bytes[sec.file_offset..(sec.file_offset + sec.file_size).min(bytes.len())];
                 let mut i = 0usize;
                 while i + 6 <= bytes.len() {
-                    if bytes[i] != 0xFF || bytes[i + 1] != 0x25 {
+                    let slot = if i386 {
+                        i386_plt_slot(bytes, i, plt_got)
+                    } else if bytes[i] == 0xFF && bytes[i + 1] == 0x25 {
+                        let disp = i32::from_le_bytes([bytes[i + 2], bytes[i + 3], bytes[i + 4], bytes[i + 5]]);
+                        // RIP is the address of the *next* instruction (`FF 25` + rel32 = 6 bytes).
+                        let jmp_va = sec.va_start + i as u64;
+                        Some(jmp_va.wrapping_add(6).wrapping_add(disp as i64 as u64))
+                    } else {
+                        None
+                    };
+                    let Some(slot) = slot else {
                         i += 1;
                         continue;
-                    }
-                    let disp = i32::from_le_bytes([bytes[i + 2], bytes[i + 3], bytes[i + 4], bytes[i + 5]]);
-                    // RIP is the address of the *next* instruction (`FF 25` + rel32 = 6 bytes).
-                    let jmp_va = sec.va_start + i as u64;
-                    let slot = jmp_va.wrapping_add(6).wrapping_add(disp as i64 as u64);
+                    };
                     let import = got.contains_key(&slot);
                     if !import && !local_slot.contains_key(&slot) {
                         i += 1;
@@ -607,8 +641,8 @@ impl StaticElf {
                     if start > 0 && bytes[start - 1] == 0xF2 {
                         start -= 1; // `bnd` prefix (`-z now` + `.plt.sec`)
                     }
-                    if start >= 4 && bytes[start - 4..start] == [0xF3, 0x0F, 0x1E, 0xFA] {
-                        start -= 4; // `endbr64` (CET)
+                    if start >= 4 && (bytes[start - 4..start] == [0xF3, 0x0F, 0x1E, 0xFA] || bytes[start - 4..start] == [0xF3, 0x0F, 0x1E, 0xFB]) {
+                        start -= 4; // `endbr64` / `endbr32` (CET)
                     }
                     let stub_va = sec.va_start + start as u64;
                     starts.push(DeclaredStart { va: Va(stub_va), why: StartReason::Stub { slot: Va(slot) }, extent: Extent::Unknown });
