@@ -537,7 +537,7 @@ fn thunk_import_slot(ctx: &Ctx, target: Va) -> Option<(Va, n0xis_contracts::Symb
     if ins.kind != InsnKind::Jump || ins.target.is_some() {
         return None;
     }
-    let slot = ins.rip_target?;
+    let slot = memory_slot(ctx, &ins)?;
     ctx.symbols.and_then(|s| s.iat_slot(slot)).map(|sym| (slot, sym))
 }
 
@@ -565,7 +565,7 @@ pub(crate) fn entry_symbol(ctx: &Ctx, va: Va) -> Option<(n0xis_contracts::Symbol
 fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
     ins.target
         .and_then(|t| ctx.symbols.and_then(|s| s.symbol_at(t)))
-        .or_else(|| ins.rip_target.and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
+        .or_else(|| memory_slot(ctx, ins).and_then(|t| ctx.symbols.and_then(|s| s.iat_slot(t))))
         .or_else(|| ins.target.and_then(|t| thunk_import(ctx, t)))
         // A PLT stub of a function this image defines: `.rela.plt` binds its slot to that
         // function, so it is called by that name. One C image calls its own exports this
@@ -588,10 +588,29 @@ fn resolved_target_name(ctx: &Ctx, ins: &DecodedInsn) -> Option<String> {
 }
 
 /// The memory slot a call/branch goes *through*, for the indirect-through-
-/// memory shape (`call`/`jmp qword ptr [rip+disp]`). `None` for a direct
-/// branch — there the callee address is the operand itself, in `target`.
-fn memory_slot(ins: &DecodedInsn) -> Option<Va> {
-    ins.target.is_none().then_some(ins.rip_target).flatten()
+/// memory shape: `call`/`jmp qword ptr [rip+disp]` on x64, and an absolute
+/// operand, `jmp dword ptr [0x40724c]`, which is how a 32-bit machine names one.
+/// `None` for a direct branch — there the callee address is the operand itself,
+/// in `target`.
+///
+/// The absolute form was not read: a PE32 import thunk and an i386 PLT stub of a
+/// fixed image are that form, so every call to `exit` or `abort` there went
+/// through a stub with no name, and `returns: true` was said of functions that
+/// end in one (audit 2026-11-06, row 7).
+fn memory_slot(ctx: &Ctx, ins: &DecodedInsn) -> Option<Va> {
+    if ins.target.is_some() {
+        return None;
+    }
+    if ins.rip_target.is_some() {
+        return ins.rip_target;
+    }
+    if !matches!(ins.kind, InsnKind::Call | InsnKind::Jump) {
+        return None;
+    }
+    match ctx.arch.stated_addresses(ins).as_slice() {
+        [slot] => Some(*slot),
+        _ => None,
+    }
 }
 
 /// The function a `call` or `jmp` through a memory slot goes to, where the slot
@@ -599,7 +618,7 @@ fn memory_slot(ins: &DecodedInsn) -> Option<Va> {
 /// everything through one, panics included, and a call nothing resolves has no
 /// name and is invisible to the whole-program fixpoint.
 fn slot_callee(ctx: &Ctx, ins: &DecodedInsn) -> Option<Va> {
-    ctx.symbols?.slot_target(memory_slot(ins)?)
+    ctx.symbols?.slot_target(memory_slot(ctx, ins)?)
 }
 
 /// Why a call does not come back. A rule that needs no name is what a stripped
@@ -1126,7 +1145,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Resu
                             kind: "tail".into(),
                             target: ins.target,
                             target_name,
-                            via_slot: memory_slot(ins),
+                            via_slot: memory_slot(ctx, ins),
                         });
                     } else if let Some(t) = ins.target {
                         terminator = "jmp".into();
@@ -1196,7 +1215,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Resu
                                 kind: "tail".into(),
                                 target: Some(t),
                                 target_name: target_name.clone(),
-                                via_slot: memory_slot(ins),
+                                via_slot: memory_slot(ctx, ins),
                             });
                         }
                     }
@@ -1240,7 +1259,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Resu
                         kind: if target_name.is_some() { "named" } else { "direct" }.into(),
                         target: ins.target.or_else(|| slot_callee(ctx, ins)),
                         target_name,
-                        via_slot: memory_slot(ins),
+                        via_slot: memory_slot(ctx, ins),
                     });
                     if is_noreturn {
                         stats.noreturn_calls += 1;
@@ -1757,6 +1776,30 @@ mod tests {
             "the rip_target/iat_slot fallback must resolve the IAT call's name"
         );
         assert_eq!(art.stats.noreturn_calls, 1);
+    }
+
+    /// A 32-bit machine names a slot by its absolute address: `call _abort` goes to a
+    /// stub `jmp dword ptr [0x3000]` (a PE32 import thunk, an i386 PLT stub of a fixed
+    /// image). Only `[rip+disp]` was read as a slot, so the stub had no name and a
+    /// function ending in a call to it was said to return (audit 2026-11-06, row 7).
+    #[test]
+    fn a_call_to_an_i386_stub_through_an_absolute_slot_to_abort_ends_the_block() {
+        // 0x1000: call 0x1010 ; 0x1005: ret ; 0x1010: jmp dword ptr [0x3000]. Code after
+        // the call, not a trap: a trap there ends the block with no name needed.
+        let mut code = vec![0xE8, 0x0B, 0x00, 0x00, 0x00, 0xC3];
+        code.resize(0x10, 0xCC);
+        code.extend_from_slice(&[0xFF, 0x25, 0x00, 0x30, 0x00, 0x00]);
+        let snap = Snapshot::builder()
+            .region(Va(0x1000), code)
+            .iat_symbol(
+                Va(0x3000),
+                n0xis_contracts::Symbol { va: Va(0x3000), module: "msvcrt".into(), name: "abort".into(), kind: n0xis_contracts::SymKind::Import },
+            )
+            .build();
+        let arch = X64::x86();
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&snap);
+        let art = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 64)).expect("cfg builds");
+        assert_eq!(art.blocks[0].terminator, "call-noreturn", "{:?}", art.blocks[0]);
     }
 
     #[test]

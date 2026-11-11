@@ -1674,6 +1674,13 @@ impl Plugin for AnalysisPasses {
                 };
                 let module = args.get("module").and_then(Value::as_str).map(str::to_string);
                 with_src_ctx(args, Va(0), Lift::Needed, move |ctx, src, _region_len, label| {
+                    // `returns: false` of a function that ends in a call to one of the
+                    // image's own that does not come back is for that callee's body to
+                    // say, as a decompile asks it. Not asked, `NR_wrapper(c) { NR_exit(c
+                    // + 1); }` was said to return on i386, where no filler follows the
+                    // call to say otherwise (audit 2026-11-06, row 7).
+                    let asking = ctx.with_noreturn_on_demand();
+                    let ctx = &asking;
                     // One address summarizes just that function; without it the
                     // whole discovered set up to `limit`.
                     let (functions, shown) = match explicit {
