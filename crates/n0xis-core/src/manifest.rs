@@ -174,7 +174,9 @@ fn flags(art: &CfgArtifact) -> Vec<&'static str> {
     if cut {
         out.push("cut");
     }
-    if art.callsites.is_empty() && !cut {
+    // Nothing called, and nothing jumped to that could be a call: `jmp *%rax` is a tail
+    // call as far as anything here can tell, and was flagged `leaf` (audit 2026-11-06, row 31).
+    if art.callsites.is_empty() && !cut && !art.leaves_by_an_unresolved_jump() {
         out.push("leaf");
     }
     if !art.switches.is_empty() {
@@ -252,6 +254,18 @@ mod tests {
         );
         assert!(stub_entry.flags.contains(&"stub"));
         assert!(real_entry.flags.contains(&"leaf"));
+    }
+
+    /// `jmp rax` with no table behind it calls nothing this can name, which is not
+    /// calling nothing.
+    #[test]
+    fn an_unresolved_indirect_jump_is_not_a_leaf() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0xff, 0xe0]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let input = ManifestInput { candidates: vec![ManifestCandidate { name: "f".into(), va: Va(0x1000) }], max_bytes: 64 };
+        let art = ManifestPass.run(&ctx, input).expect("manifest builds");
+        assert!(!art.entries[0].flags.contains(&"leaf"), "{:?}", art.entries[0].flags);
     }
 
     #[test]

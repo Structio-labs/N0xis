@@ -164,6 +164,12 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
             None => has_unknown_call = true,
         }
     }
+    // A tail call through a register (`f(p)` at -O2 is `jmp *%rax`) or a computed goto:
+    // what runs next is as unknown as an indirect call's callee, and counting calls only
+    // said `has_unknown_call: false, clobbers_complete: true` on it (audit 2026-11-06, row 7).
+    if cfg.leaves_by_an_unresolved_jump() {
+        has_unknown_call = true;
+    }
 
     // Types come from the same chain a decompile runs; a failure anywhere just
     // means no recovered signature, never a wrong one.
@@ -280,6 +286,17 @@ mod tests {
         assert!(s.has_unknown_call, "an indirect callee is unknown, not absent");
         assert!(!s.clobbers_complete);
         assert!(s.calls.is_empty(), "an unknown target is not a call-graph edge");
+    }
+
+    /// `jmp rax` with nothing to say where: a tail call to an unknown function, as far as
+    /// a caller can tell, so the clobber set is not closed. Both said otherwise.
+    #[test]
+    fn an_unresolved_indirect_jump_is_an_unknown_call() {
+        let (snap, arch) = ctx_for(vec![0xFF, 0xE0], 0x1000);
+        let ctx = Ctx::new(&snap, &arch);
+        let s = summarize(&ctx, Va(0x1000), 64).expect("summarized");
+        assert!(s.has_unknown_call, "{s:?}");
+        assert!(!s.clobbers_complete, "{s:?}");
     }
 
     /// An address that does not decode into a function at that exact start is

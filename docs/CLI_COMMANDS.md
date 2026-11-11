@@ -544,6 +544,8 @@ Per-function index with quality scoring, over discovered candidates.
 - `data`: `count`, `entries`, and `total` (the candidates discovered) with `truncated`, true when
   `--limit` cut the list. `function typeflow` and `function layout` say the same beside
   `considered`, and `function summary` beside `count`.
+- The flag `leaf` means nothing is called and no indirect jump is left unresolved: `jmp *%rax` with no table behind it
+  is a tail call as far as anything can tell.
 - Schema: `n0xis.ir.manifest.v1`
 
 ### `ir value-set`
@@ -1116,11 +1118,11 @@ module+function + decompiled statement (Phase 4c — watchpoint × decompiler, f
 - Its watchpoint is on the record the way `debug watch`'s is, with `planted_by: "provenance trace"`: killed, `patch undo` clears it.
 - No hit: `entries: []`, `timedOut`, and `ended` as `debug watch` gives it (`timed-out` or `target-exited`); an unmapped
   `--addr` is refused (`bad-addr`).
-- Schema: `n0xis.provenance.v1`
-
 - The containing function is searched with what the image states (`.eh_frame` and symbols), as `function discover`
   does. With none found, `context_unavailable` says so, and that `instruction_va` is then the trap's address, the
   instruction after a data access.
+- Schema: `n0xis.provenance.v1`
+
 ### `annotate name --addr <hex> [--value <str>]`
 Assert (or clear, with no `--value`) a function/variable name at an address (versioned with full
 history).
@@ -1438,7 +1440,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x function eh` | Exception edges: the protected ranges and landing pads an unwinder uses. A `try`/`catch` landing pad has NO incoming branch, so it is invisible to a CFG built from instructions alone — this is where that control flow is actually written down. ELF (`.eh_frame` + `.gcc_except_table`) today |
 | `n0x function layout` | Program-wide class layouts: unify per-function field recovery into ONE field set per RTTI class. Each method sees its own slice of the object and names it after a register (`struct_rdi_0`), so nothing it learns survives leaving the function; keyed on the class instead, every method's observations merge, and a field is typed from what is stored into it |
 | `n0x function noreturn` | Whole-program noreturn analysis: discover functions, then run the call-graph fixpoint that proves which never return — including a program's own `FatalError`/`Assert` wrappers, not just named imports |
-| `n0x function summary` | Per-function interprocedural summary — the substrate the whole-program passes read instead of re-analyzing a callee once per question: does it return, what types are its parameters and result, which volatile registers does it clobber (and is that set complete), whom does it call |
+| `n0x function summary` | Per-function interprocedural summary — the substrate the whole-program passes read instead of re-analyzing a callee once per question: does it return, what types are its parameters and result, which volatile registers does it clobber (and is that set complete), whom does it call. `has_unknown_call` counts an indirect jump the graph resolved no targets for (a tail call through a register), and then `clobbers_complete` is false |
 | `n0x function trace` | Walk the call graph from a root function |
 | `n0x function typeflow` | Whole-program type propagation: flow recovered types along the call graph to a fixpoint, so a class recovered in one function (from RTTI, or from concrete field accesses) reaches every function that touches the same object — a persistent, call-graph-wide type database |
 | `n0x imports` | What an image file needs from other images: its libraries in the order it states them, and each imported name with the library it is attributed to and how it is reached. The same question for every format; `not_read` where the table was not read: a PE only a permissive parse opened, a PE with a delay-load import table, an ELF relocatable object |

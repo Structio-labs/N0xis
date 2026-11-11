@@ -35,6 +35,8 @@ PATCH = "crates/n0xis-project/src/patch.rs"
 MAIN = "crates/n0xis-cli/src/main.rs"
 UNWIND = "crates/n0xis-sources/src/unwind.rs"
 LIVE = ("--features", "live")
+PROVENANCE = ("n0xis-cli", "a_provenance_names_the_writer")
+CORE_LIB = ("n0xis-core", None)
 
 JOIN = "Some((at, run)) if at.0.checked_add(run.len() as u64) == Some(start.0)"
 GO_ON = "while !bytes.is_empty() && bytes.len() < size {"
@@ -86,6 +88,11 @@ MUTATIONS = [
     (UNWIND, "if caller && owner.is_none() && reader.read(regs.rip, 1).is_none() {", "if false {", *UNWIND_LIB, "unwind::dwarf::tests::a_return_address_in_no_mapping_is_not_a_frame", LIVE),
     # The backtrace says only how many threads it walked.
     (MAIN, "let threads_in_process = in_process.len();", "let threads_in_process = 1usize;", *WALK, "a_backtrace_of_one_thread_says_how_many_the_process_has"),
+    # Provenance searches with an empty context again: none of the functions the image states.
+    ("crates/n0xis-frontend/src/provenance.rs", "\n        .with_stated_functions(&stated, crate::registry::stated_coverage(&src));", ";", *PROVENANCE, "the_writer_an_unaligned_function_after_a_jmp_is_named_with_its_instruction"),
+    # An unresolved indirect jump is not counted as an unknown call, nor kept from `leaf`.
+    ("crates/n0xis-core/src/summary.rs", "if cfg.leaves_by_an_unresolved_jump() {", "if false {", *CORE_LIB, "summary::tests::an_unresolved_indirect_jump_is_an_unknown_call"),
+    ("crates/n0xis-core/src/manifest.rs", "if art.callsites.is_empty() && !art.leaves_by_an_unresolved_jump() {", "if art.callsites.is_empty() {", *CORE_LIB, "manifest::tests::an_unresolved_indirect_jump_is_not_a_leaf"),
 ]
 
 

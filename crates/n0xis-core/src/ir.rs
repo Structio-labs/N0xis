@@ -71,6 +71,16 @@ pub struct CfgArtifact {
     pub stats: CfgStats,
 }
 
+impl CfgArtifact {
+    /// An indirect jump this graph found no targets for: control goes where the function
+    /// does not say, a tail call through a register or a computed goto. A jump table the
+    /// graph resolved has its targets, and is not this. Whatever a caller may assume about
+    /// what this function calls, clobbers or reads stops being closed here.
+    pub fn leaves_by_an_unresolved_jump(&self) -> bool {
+        self.blocks.iter().any(|b| b.terminator == "ijmp" && b.successors.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct CfgStats {
     pub returns: usize,
