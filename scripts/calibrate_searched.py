@@ -93,6 +93,17 @@ MUTATIONS = [
     # An unresolved indirect jump is not counted as an unknown call, nor kept from `leaf`.
     ("crates/n0xis-core/src/summary.rs", "if cfg.leaves_by_an_unresolved_jump() {", "if false {", *CORE_LIB, "summary::tests::an_unresolved_indirect_jump_is_an_unknown_call"),
     ("crates/n0xis-core/src/manifest.rs", "if art.callsites.is_empty() && !art.leaves_by_an_unresolved_jump() {", "if art.callsites.is_empty() {", *CORE_LIB, "manifest::tests::an_unresolved_indirect_jump_is_not_a_leaf"),
+    # `writes_memory`: every store counts, the frame's too.
+    ("crates/n0xis-core/src/summary.rs", "MicroStmt::Store { addr, .. } => frame.offset(addr).is_none(),", "MicroStmt::Store { .. } => true,", *CORE_LIB, "summary::tests::a_store_into_its_own_frame_is_not_a_write"),
+    ("crates/n0xis-core/src/summary.rs", "MicroStmt::Store { addr, .. } => frame.offset(addr).is_none(),", "MicroStmt::Store { .. } => true,", "n0xis-cli", "writes_memory_is_outside_the_frame", "every_function_says_whether_it_stores_outside_its_frame", ("--features", "oracle")),
+    # An instruction the lift kept verbatim writes nothing.
+    ("crates/n0xis-core/src/summary.rs", "MicroStmt::Unlifted { mem, .. } => mem.may_write(),", "MicroStmt::Unlifted { .. } => false,", *CORE_LIB, "summary::tests::a_store_outside_the_frame_is_a_write_and_a_load_is_not"),
+    # The address of a frame expression is not placed: a pointer into the frame is not the frame.
+    ("crates/n0xis-core/src/ssa.rs", "MicroExpr::AddrOf(inner) => of(inner),", "MicroExpr::AddrOf(inner) if false => of(inner),", *CORE_LIB, "summary::tests::a_store_into_its_own_frame_is_not_a_write"),
+    # A cut to the width of an address is not seen through: nothing on i386 is placed.
+    ("crates/n0xis-core/src/ssa.rs", "MicroExpr::Cast { bits, expr, .. } if Some(*bits) == address_bits => {", "MicroExpr::Cast { bits, expr, .. } if false && Some(*bits) == address_bits => {", *CORE_LIB, "summary::tests::an_i386_local_is_in_the_frame_and_a_store_through_an_argument_is_not"),
+    # Seen through without wrapping: a 32-bit displacement stays an unsigned word.
+    ("crates/n0xis-core/src/ssa.rs", "(*bits > 0 && *bits < 128).then(|| (off << shift) >> shift)", "(*bits > 0 && *bits < 128 && shift > 0).then_some(off)", *CORE_LIB, "ssa::tests::an_i386_slot_is_placed_at_its_signed_offset"),
 ]
 
 

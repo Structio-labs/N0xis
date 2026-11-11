@@ -975,7 +975,21 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
 }
 
 /// The frame offset of every version of the stack pointer and every copy of one (a
-/// frame pointer), from the stack pointer at entry.
+/// frame pointer), from the stack pointer at entry, or from the root
+/// [`frame_offsets_from`] is given: what the stack-pointer tracking places at an
+/// offset from it, on either side of it. One notion of the frame for every reader:
+/// the stack arguments a call is given and a function takes, the saves, and
+/// `writes_memory`.
+///
+/// A version is placed when its definition is the root, a placed version plus or
+/// minus a constant (any number of times: the optimizer folds a chain into one
+/// expression, `&(rsp.1 - 0x20) + 4`), the address of such an expression (`lea
+/// rbp, [rsp+0x20]`, `lea 0x8(%esp),%ecx`), or a phi whose every input is placed
+/// at the same offset. Anything else is not placed, and neither is a phi whose
+/// inputs disagree. The phi case is solved as a fixpoint over a three-step lattice
+/// (not yet seen, one offset, not the frame), so a loop's phi of the stack pointer
+/// with its own unchanged version is placed: it used to be left out, and with it
+/// every slot addressed inside the loop.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Frame {
     at: HashMap<String, i128>,
@@ -983,33 +997,42 @@ pub(crate) struct Frame {
     /// registers and casts each result to 32 bits, so on i386 every address is
     /// `(uint32_t)(esp.0 + 0x4)`: a cast to the word is the value itself there, and
     /// on x86-64 a cast to 32 bits of a stack address is no address of the frame.
+    /// Without it nothing on i386 was placed at all.
     word_bits: Option<u32>,
 }
 
 impl Frame {
+    /// The frame of a function's SSA blocks, raw or optimized, from the stack
+    /// pointer at entry. Empty for an architecture with no stack pointer.
+    pub(crate) fn of(blocks: &[SsaBlock], arch: &dyn Arch) -> Frame {
+        arch.stack_pointer().map(|sp| frame_offsets(blocks, sp, arch.pointer_size())).unwrap_or_default()
+    }
+
     /// The frame offset an address names.
     pub(crate) fn offset_of(&self, e: &MicroExpr) -> Option<i128> {
         let (base, c) = self.split(e)?;
         Some(self.wrap(self.at.get(base)? + c))
     }
 
-    /// `e` as a variable and a constant away from it, if it is one.
+    /// `e` as a variable and a constant away from it, if it is one: through a
+    /// constant added or taken away, on either side, any number of times, and
+    /// through what [`Frame::bare`] takes off.
     fn split<'e>(&self, e: &'e MicroExpr) -> Option<(&'e str, i128)> {
-        let var = |e: &'e MicroExpr| match self.bare(e) {
-            MicroExpr::Var(v) => Some(v.as_str()),
-            _ => None,
-        };
         let constant = |e: &MicroExpr| match self.bare(e) {
             MicroExpr::Const { value, .. } => Some(*value),
             _ => None,
         };
         match self.bare(e) {
             MicroExpr::Var(v) => Some((v.as_str(), 0)),
-            MicroExpr::Binary(BinOp::Add, l, r) => match (var(l), constant(r), constant(l), var(r)) {
-                (Some(v), Some(c), _, _) | (_, _, Some(c), Some(v)) => Some((v, c)),
-                _ => None,
+            MicroExpr::Binary(BinOp::Add, l, r) => match (constant(r), constant(l)) {
+                (Some(c), _) => self.split(l).map(|(v, o)| (v, o + c)),
+                (None, Some(c)) => self.split(r).map(|(v, o)| (v, o + c)),
+                (None, None) => None,
             },
-            MicroExpr::Binary(BinOp::Sub, l, r) => Some((var(l)?, -constant(r)?)),
+            MicroExpr::Binary(BinOp::Sub, l, r) => {
+                let c = constant(r)?;
+                self.split(l).map(|(v, o)| (v, o - c))
+            }
             _ => None,
         }
     }
@@ -1019,7 +1042,7 @@ impl Frame {
     /// `main` asked for a billion arguments.
     fn wrap(&self, off: i128) -> i128 {
         match self.word_bits {
-            Some(w) if w < 128 => {
+            Some(w) if w > 0 && w < 128 => {
                 let shift = 128 - w;
                 (off << shift) >> shift
             }
@@ -1027,9 +1050,10 @@ impl Frame {
         }
     }
 
-    /// `e` with what changes nothing taken off: the casts to the target's word, and
-    /// the `lea` that makes an address a value (`AddrOf`), so `lea 0x8(%esp),%ecx` is
-    /// eight bytes up the frame like `esp.0 + 0x8` is.
+    /// `e` with what changes nothing taken off: the casts to the target's word or
+    /// wider, and the `lea` that makes an address a value (`AddrOf`), so `lea
+    /// 0x8(%esp),%ecx` is eight bytes up the frame like `esp.0 + 0x8` is. A cut to
+    /// any narrower width is not: on x86-64 `(u32)rsp` is not in the frame.
     fn bare<'e>(&self, mut e: &'e MicroExpr) -> &'e MicroExpr {
         loop {
             match e {
@@ -1079,23 +1103,96 @@ pub(crate) fn frame_root(blocks: &[SsaBlock], v: &str, word_bytes: Option<u8>) -
 
 /// Offsets from `root` rather than from the stack pointer at entry. See [`frame_root`].
 pub(crate) fn frame_offsets_from(blocks: &[SsaBlock], root: &str, word_bytes: Option<u8>) -> Frame {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Place {
+        At(i128),
+        NotFrame,
+    }
+    // `placed` is the frame so far, read by each step for the newest answer; `at`
+    // beside it also knows what was decided not to be the frame. A version absent
+    // from both has not been reached yet; one never reached is not placed.
     let mut frame = Frame { at: HashMap::from([(root.to_string(), 0)]), word_bits: word_bytes.map(|b| u32::from(b) * 8) };
+    let mut at: HashMap<String, Place> = HashMap::from([(root.to_string(), Place::At(0))]);
+    let defined: BTreeSet<&str> = blocks
+        .iter()
+        .flat_map(|b| {
+            b.phis.iter().map(|p| p.dst.as_str()).chain(b.stmts.iter().filter_map(|s| match &s.stmt {
+                MicroStmt::Assign { dst, .. } => Some(dst.as_str()),
+                _ => None,
+            }))
+        })
+        .collect();
+    // Raise `var` to `p` (never lower it): a phi decided on part of its inputs is
+    // raised again when the rest arrive, and what was placed through it follows.
+    let raise = |at: &mut HashMap<String, Place>, frame: &mut Frame, var: &str, p: Place| -> bool {
+        let next = match at.get(var) {
+            None => p,
+            Some(old) if *old == p => return false,
+            Some(_) => Place::NotFrame,
+        };
+        if at.get(var) == Some(&next) {
+            return false;
+        }
+        match next {
+            Place::At(off) => frame.at.insert(var.to_string(), off),
+            Place::NotFrame => frame.at.remove(var),
+        };
+        at.insert(var.to_string(), next);
+        true
+    };
     loop {
-        let before = frame.at.len();
+        let mut changed = false;
         for b in blocks {
+            for phi in &b.phis {
+                if phi.dst == root {
+                    continue;
+                }
+                let mut joined: Option<Place> = None;
+                for input in &phi.inputs {
+                    let p = match at.get(&input.value) {
+                        Some(p) => *p,
+                        // Defined nowhere in the function: an entry value that is not the
+                        // root, so not the frame.
+                        None if !defined.contains(input.value.as_str()) => Place::NotFrame,
+                        None => continue,
+                    };
+                    joined = Some(match joined {
+                        None => p,
+                        Some(j) if j == p => j,
+                        Some(_) => Place::NotFrame,
+                    });
+                }
+                if let Some(p) = joined {
+                    changed |= raise(&mut at, &mut frame, &phi.dst, p);
+                }
+            }
             for s in &b.stmts {
                 if let MicroStmt::Assign { dst, value } = &s.stmt
-                    && !frame.at.contains_key(dst)
-                    && let Some(off) = frame.offset_of(value)
+                    && dst != root
                 {
-                    frame.at.insert(dst.clone(), off);
+                    let p = match frame.offset_of(value) {
+                        Some(off) => Place::At(off),
+                        // Not placeable from what is known: decided once every operand
+                        // it names is decided.
+                        None if frame_operands_decided(value, &at, &defined) => Place::NotFrame,
+                        None => continue,
+                    };
+                    changed |= raise(&mut at, &mut frame, dst, p);
                 }
             }
         }
-        if frame.at.len() == before {
+        if !changed {
             return frame;
         }
     }
+}
+
+/// Every version `e` names has a decided place (or is defined nowhere), so an
+/// expression [`Frame::offset_of`] cannot place now never will be.
+fn frame_operands_decided<P>(e: &MicroExpr, at: &HashMap<String, P>, defined: &BTreeSet<&str>) -> bool {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    vars.iter().all(|v| at.contains_key(v) || !defined.contains(v.as_str()))
 }
 
 /// See [`RawFlow::saved`]. A store nothing loads is not a save: at `-O0` that is a
@@ -1302,6 +1399,30 @@ mod tests {
     use n0xis_arch::{BinOp, X64};
     use n0xis_contracts::Va;
     use n0xis_sources::Snapshot;
+
+    /// The frame offsets of an i386 body's stores, in order. Every step of `esp` is
+    /// cut to 32 bits there, and a displacement arrives as its unsigned word.
+    fn i386_store_offsets(code: Vec<u8>) -> Vec<Option<i128>> {
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::x86();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = crate::CfgPass.run(&ctx, crate::CfgInput::new(Va(0x1000), 64)).unwrap();
+        let ssa = SsaPass.run(&ctx, cfg).unwrap();
+        let frame = Frame::of(&ssa.blocks, &arch);
+        ssa.blocks.iter().flat_map(|b| &b.stmts).filter_map(|s| match &s.stmt {
+            MicroStmt::Store { addr, .. } => Some(frame.offset_of(addr)),
+            _ => None,
+        }).collect()
+    }
+
+    /// `ebp - 0xc` is 0x10 below the entry `esp` after `push ebp; mov ebp, esp`, and
+    /// not 4 GiB above it: the cut to 32 bits is arithmetic modulo 2^32.
+    #[test]
+    fn an_i386_slot_is_placed_at_its_signed_offset() {
+        // push ebp ; mov ebp,esp ; mov dword [ebp-0xc],0 ; pop ebp ; ret
+        let offsets = i386_store_offsets(vec![0x55, 0x89, 0xE5, 0xC7, 0x45, 0xF4, 0x00, 0x00, 0x00, 0x00, 0x5D, 0xC3]);
+        assert_eq!(offsets, vec![Some(-4), Some(-0x10)], "the push, then the local");
+    }
 
     fn build(code: Vec<u8>) -> SsaArtifact {
         let snap = Snapshot::builder().region(Va(0x1000), code).build();

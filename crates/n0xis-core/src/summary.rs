@@ -33,6 +33,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use n0xis_arch::MicroStmt;
 use n0xis_contracts::Va;
 use serde::Serialize;
 use crate::typeinfer::ReturnType;
@@ -77,9 +78,20 @@ pub struct FunctionSummary {
     pub clobbers_complete: bool,
     /// Direct callees — the call-graph edges out of this function.
     pub calls: Vec<Va>,
-    /// This function performs at least one store. (A load is not tracked
-    /// separately: essentially every function reads memory, so the bit would
-    /// carry no information.)
+    /// This function's own instructions store to an address outside its own stack
+    /// frame. The frame is what the stack-pointer tracking places at an offset from
+    /// the entry stack pointer, on either side of it, whatever register carries it:
+    /// a `push`, a call's return address, a spill and a `-O0` local at `[rbp-4]` are
+    /// in it, so the answer does not change with the optimisation level. A store
+    /// whose address cannot be placed counts, and so does one through a frame
+    /// address plus a variable index, which is not placed at an offset.
+    ///
+    /// What a callee writes is not counted: `calls` and `has_unknown_call` say that.
+    ///
+    /// It was a text match on `mov ` and `[` (audit 2026-11-06, row 7): `mov
+    /// (%rdi),%eax` was a store and `addl $1,(%rdi)` was not, 13 of 17 wrong. (A
+    /// load is not tracked separately: essentially every function reads memory, so
+    /// the bit would carry no information.)
     pub writes_memory: bool,
     /// Calls something whose target is not statically known (an indirect call,
     /// or an import through a slot) — the reason `clobbers_complete` and any
@@ -123,6 +135,24 @@ impl Pass for SummaryPass {
     }
 }
 
+/// Whether the function's own statements store to an address outside its own
+/// stack frame: see [`FunctionSummary::writes_memory`].
+///
+/// The frame is what [`crate::ssa::Frame`] places at an offset from the
+/// entry stack pointer, through whatever register carries it. The optimized form is
+/// read rather than the raw one because it has forwarded what a slot held: at `-O0`
+/// a pointer into the frame is kept in a slot of its own and loaded back before the
+/// store through it, and only the forwarded address names the frame. An instruction
+/// the lift kept verbatim says it writes but not where, so it counts.
+fn stores_outside_its_frame(ctx: &Ctx, blocks: &[crate::ssa::SsaBlock]) -> bool {
+    let frame = crate::ssa::Frame::of(blocks, ctx.arch);
+    blocks.iter().flat_map(|b| &b.stmts).any(|s| match &s.stmt {
+        MicroStmt::Store { addr, .. } => frame.offset_of(addr).is_none(),
+        MicroStmt::Unlifted { mem, .. } => mem.may_write(),
+        _ => false,
+    })
+}
+
 /// Summarize one function. `None` when it cannot be decoded at `va`.
 pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary> {
     let cfg = CfgPass.run(ctx, CfgInput::new(va, max_bytes)).ok()?;
@@ -138,7 +168,6 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
     let volatile: std::collections::HashMap<String, &'static str> =
         crate::ir::volatile_registers(ctx).into_iter().map(|n| (ctx.arch.normalize_reg(n), n)).collect();
     let mut clobbers: BTreeSet<String> = BTreeSet::new();
-    let mut writes_memory = false;
     for block in &cfg.blocks {
         for insn in &block.insns {
             for w in &insn.writes {
@@ -146,10 +175,6 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
                 if let Some(name) = volatile.get(&root) {
                     clobbers.insert((*name).to_string());
                 }
-            }
-            // A store is the one memory effect worth a bit of its own.
-            if insn.text.contains("mov ") && insn.text.contains('[') && !insn.text.contains("lea ") {
-                writes_memory = true;
             }
         }
     }
@@ -172,10 +197,15 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
     }
 
     // Types come from the same chain a decompile runs; a failure anywhere just
-    // means no recovered signature, never a wrong one.
-    let (params, ret, ret_registers) = match SsaPass
-        .run(ctx, cfg.clone())
-        .and_then(|ssa| OptimizePass.run(ctx, ssa))
+    // means no recovered signature, never a wrong one. The optimized form is kept:
+    // `writes_memory` reads its stores.
+    let optimized = SsaPass.run(ctx, cfg.clone()).and_then(|ssa| OptimizePass.run(ctx, ssa));
+    // Nothing lifted is nothing placed: every store it may hold counts.
+    let writes_memory = match &optimized {
+        Ok(opt) => stores_outside_its_frame(ctx, &opt.blocks),
+        Err(_) => true,
+    };
+    let (params, ret, ret_registers) = match optimized
         .and_then(|opt| TypeInferPass.run(ctx, TypeInferInput { cfg: cfg.clone(), blocks: opt.blocks, float_return: opt.float_return, float_return_pair: opt.float_return_pair, raw_flow: opt.raw_flow.clone() }))
     {
         Ok(t) => (
@@ -354,5 +384,75 @@ mod tests {
         let s = summarize(&ctx, Va(0x1000), 64).expect("summarized");
         assert!(s.cut.is_some());
         assert!(!s.clobbers_complete, "a leaf read in part");
+    }
+
+    /// `writes_memory` of a body, decoded as x64 or as i386.
+    fn writes(code: &[u8], i386: bool) -> bool {
+        let snap = Snapshot::builder().region(Va(0x1000), code.to_vec()).build();
+        let arch = if i386 { X64::x86() } else { X64::new() };
+        let ctx = Ctx::new(&snap, &arch);
+        summarize(&ctx, Va(0x1000), 256).expect("summarized").writes_memory
+    }
+
+    /// A store through a parameter, a read-modify-write through one, and one through
+    /// an address loaded from memory leave the frame; a load does not store.
+    ///
+    /// It was a text match on `mov ` and `[` (audit 2026-11-06, row 7): the load was
+    /// a store and the `add` was not.
+    #[test]
+    fn a_store_outside_the_frame_is_a_write_and_a_load_is_not() {
+        // mov [rdi], esi ; ret
+        assert!(writes(&[0x89, 0x37, 0xC3], false), "through a parameter");
+        // add dword [rdi], 1 ; ret
+        assert!(writes(&[0x83, 0x07, 0x01, 0xC3], false), "read-modify-write through a parameter");
+        // mov rax, [rip+0x100] ; mov [rax], edi ; ret
+        assert!(writes(&[0x48, 0x8B, 0x05, 0x00, 0x01, 0x00, 0x00, 0x89, 0x38, 0xC3], false), "through a loaded address");
+        // xchg [rdi], eax ; ret: kept verbatim by the lift, which says it writes and not where
+        assert!(writes(&[0x87, 0x07, 0xC3], false), "an instruction not lifted that writes");
+        // mov eax, [rdi] ; ret
+        assert!(!writes(&[0x8B, 0x07, 0xC3], false), "a load");
+    }
+
+    /// A `push`, a spill of a vector register and the `-O0` shape of a pointer into
+    /// the frame kept in a slot of its own and stored through: all in the frame.
+    #[test]
+    fn a_store_into_its_own_frame_is_not_a_write() {
+        // push rbx ; sub rsp,0x10 ; movsd [rsp+8],xmm0 ; mov ebx,edi ; add rsp,0x10 ; pop rbx ; ret
+        let spill = [0x53, 0x48, 0x83, 0xEC, 0x10, 0xF2, 0x0F, 0x11, 0x44, 0x24, 0x08, 0x89, 0xFB, 0x48, 0x83, 0xC4, 0x10, 0x5B, 0xC3];
+        assert!(!writes(&spill, false), "a push and a spill");
+        // push rbp ; mov rbp,rsp ; mov [rbp-0x34],edi ; lea rax,[rbp-0x20] ; add rax,4
+        // mov [rbp-0x28],rax ; mov rax,[rbp-0x28] ; mov edx,[rbp-0x34] ; mov [rax],edx ; pop rbp ; ret
+        let o0 = [
+            0x55, 0x48, 0x89, 0xE5, 0x89, 0x7D, 0xCC, 0x48, 0x8D, 0x45, 0xE0, 0x48, 0x83, 0xC0, 0x04, 0x48, 0x89, 0x45, 0xD8, 0x48, 0x8B, 0x45,
+            0xD8, 0x8B, 0x55, 0xCC, 0x89, 0x10, 0x5D, 0xC3,
+        ];
+        assert!(!writes(&o0, false), "a frame pointer kept in a slot and stored through");
+    }
+
+    /// A frame address plus a variable index is not placed at an offset, so it
+    /// counts: what it reaches is not known to be in the frame.
+    #[test]
+    fn a_frame_address_with_a_variable_index_counts_as_a_write() {
+        // sub rsp,0x28 ; mov [rsp+rsi*4],edi ; add rsp,0x28 ; ret
+        assert!(writes(&[0x48, 0x83, 0xEC, 0x28, 0x89, 0x3C, 0xB4, 0x48, 0x83, 0xC4, 0x28, 0xC3], false));
+    }
+
+    /// On i386 every step of `esp` is cut to 32 bits and a displacement arrives as an
+    /// unsigned word (`ebp + 0xfffffff4`): nothing was placed there at all, so every
+    /// local was a write.
+    #[test]
+    fn an_i386_local_is_in_the_frame_and_a_store_through_an_argument_is_not() {
+        // sub esp,0x10 ; mov eax,[esp+0x14] ; mov [esp+0xc],eax ; mov eax,[esp+0xc] ; add esp,0x10 ; ret
+        let local = [0x83, 0xEC, 0x10, 0x8B, 0x44, 0x24, 0x14, 0x89, 0x44, 0x24, 0x0C, 0x8B, 0x44, 0x24, 0x0C, 0x83, 0xC4, 0x10, 0xC3];
+        assert!(!writes(&local, true), "a local through esp");
+        // push ebp ; mov ebp,esp ; sub esp,0x10 ; mov dword [ebp-0xc],0 ; lea eax,[ebp-0x10]
+        // mov dword [eax],7 ; leave ; ret
+        let o0 = [
+            0x55, 0x89, 0xE5, 0x83, 0xEC, 0x10, 0xC7, 0x45, 0xF4, 0x00, 0x00, 0x00, 0x00, 0x8D, 0x45, 0xF0, 0xC7, 0x00, 0x07, 0x00, 0x00, 0x00,
+            0xC9, 0xC3,
+        ];
+        assert!(!writes(&o0, true), "locals through ebp, one of them by its address");
+        // mov eax,[esp+4] ; mov dword [eax],1 ; ret
+        assert!(writes(&[0x8B, 0x44, 0x24, 0x04, 0xC7, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC3], true), "through the first argument");
     }
 }
