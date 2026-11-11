@@ -37,6 +37,11 @@ pub enum WatchFailed {
     /// Whatever the watch answered, the register is not known to be out of the target,
     /// and that comes first.
     Left { addr: Va, id: String },
+    /// No mapping of the target holds the address, so nothing was armed. Armed, it
+    /// answered `timed_out: true` after the whole wait, as if the address were one the
+    /// target holds and leaves alone (audit 2026-11-06, row 11); a static address of a
+    /// position-independent image, handed over unrebased, looks exactly like this.
+    Unmapped { addr: Va, pid: u32 },
 }
 
 impl std::fmt::Display for WatchFailed {
@@ -47,6 +52,10 @@ impl std::fmt::Display for WatchFailed {
                 f,
                 "the debug register at {addr} could not be seen to be clear: `n0xis patch undo --id {id}` clears it, and until then a thread still holding it dies at its next hit"
             ),
+            WatchFailed::Unmapped { addr, pid } => write!(
+                f,
+                "address {addr} is in no mapping of process {pid}, so nothing was armed: a watch there could only time out (an image's static address needs its module's base added, as `--addr-rva` does)"
+            ),
         }
     }
 }
@@ -55,6 +64,13 @@ impl std::fmt::Display for WatchFailed {
 /// before the first register, after the attach, so a run that could not attach leaves
 /// nothing, and if it cannot be written nothing is armed.
 pub fn await_watch_on_record(w: &Watch<'_>) -> Result<AwaitHitOutcome, WatchFailed> {
+    // Mapped is asked of the target, as `debug await-hit` asks it by reading the byte it
+    // replaces. A mapping that only forbids reading is still a place a write can land.
+    if let Ok(live) = crate::source::attach_live(w.pid)
+        && matches!(live.read(w.addr, 1), Err(SourceError::Unmapped(_)))
+    {
+        return Err(WatchFailed::Unmapped { addr: w.addr, pid: w.pid });
+    }
     let mut record = None;
     let result = await_watchpoint_hit_where(w.pid, w.addr, w.kind, w.len, w.timeout_ms, w.stack_qwords, w.module, w.exclude_rip, w.cond, &mut |slot| {
         let rec = pj::record_before_arming(w.pid, slot, w.planted_by)

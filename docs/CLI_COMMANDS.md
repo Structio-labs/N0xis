@@ -916,6 +916,9 @@ Arm a hardware watchpoint (data read/write, or execute) and block until it fires
 is ever patched. Returns the faulting instruction + a true cross-process caller chain (unwound
 from `.pdata`/`.xdata`).
 - `--addr` (required); `--addr-rva`.
+- `data`: `breakpoint_va`, `timed_out`, `hit` when there was one, and `ended`, which says why the wait ended: `hit`,
+  `timed-out` (the deadline passed with the target alive), or `target-exited` (no thread of the target was left, before the
+  deadline). `timed_out` is true for `timed-out` only; before 2026-11, a target killed during the wait answered `timed_out: true`.
 - `--kind execute|write|read-or-write` (default `write`; there is no hardware read-only mode on
   x86 — only `write` or `read-or-write`).
 - `--len 1|2|4|8` (watch width in bytes, default 4; `--addr` must be aligned to it).
@@ -944,6 +947,10 @@ Become the target's debugger and hold the attach without arming anything, then d
 Diagnostic: isolates whether instability comes from `DebugActiveProcess` itself (anti-debug) vs.
 a specific breakpoint/watchpoint. `--timeout-ms` default 10000.
 - Schema: `n0xis.debug.attach.v1`
+- `data`: as `debug await-hit`'s, with `ended` (`hit`, `timed-out`, `target-exited`); `excluded_hits`, the hits
+  `--exclude-rip` set aside, when it was given; `condition_misses`, the hits `--when` did not match, when it was given.
+- An address no mapping of the target holds is refused (`bad-addr`) before anything is armed, as `debug await-hit` refuses
+  it: armed, it could only time out. A static address of a position-independent image needs its base: `--addr-rva`.
 
 ### `scan value --type <t> --save-as <name>`
 First scan: find every address matching a criterion.
@@ -1107,6 +1114,8 @@ Assert (or clear, with no `--value`) a function/variable name at an address (ver
 history).
 - Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
   session supplies its own. They say whose records are read and written: a WebAssembly module
+- No hit: `entries: []`, `timedOut`, and `ended` as `debug watch` gives it (`timed-out` or `target-exited`); an unmapped
+  `--addr` is refused (`bad-addr`).
   keeps its own, under its identity; every native target shares one map, the one used without a
   source, as before.
 - Schema: `n0xis.annotation.v1`

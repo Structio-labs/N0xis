@@ -985,10 +985,12 @@ impl N0xisServer {
                 // is free again by now, so what the signal asked for can happen.
                 Err(n0xis_frontend::watch::WatchFailed::Source(n0xis_sources::SourceError::Interrupted)) => std::process::exit(130),
                 Err(e @ n0xis_frontend::watch::WatchFailed::Left { .. }) => return err("watchpoint-left", e.to_string()),
+                Err(e @ n0xis_frontend::watch::WatchFailed::Unmapped { .. }) => return err("bad-addr", e.to_string()),
                 Err(e) => return err("watch-failed", e.to_string()),
             };
-            let Some(hit) = outcome.hit else {
-                return emit(Response::success(schema::v1::PROVENANCE, json!({ "value_addr": addr, "entries": [], "timedOut": true })).with_source(label));
+            let (timed_out, ended) = (outcome.timed_out(), outcome.ended.word());
+            let Some(hit) = outcome.into_hit() else {
+                return emit(Response::success(schema::v1::PROVENANCE, json!({ "value_addr": addr, "entries": [], "timedOut": timed_out, "ended": ended })).with_source(label));
             };
 
             let live = match n0xis_frontend::source::attach_live(a.pid) {

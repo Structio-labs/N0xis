@@ -5729,6 +5729,7 @@ fn watch_failure(e: &WatchFailed) -> &'static str {
         WatchFailed::Left { .. } => "watchpoint-left",
     }
 }
+        WatchFailed::Unmapped { .. } => "bad-addr",
 
 /// A debugger command's refusal code: its own, unless the person stopped it or the target
 /// is one it does not take, neither of which is a failure of that command.
@@ -5892,8 +5893,9 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool, quiet: bool) -> bo
             Ok(o) => o,
             Err(e) => return ir_err(watch_failure(&e), &e.to_string(), pretty),
         };
-        let Some(hit) = outcome.hit else {
-            let data = json!({ "value_addr": addr, "entries": [], "timedOut": true });
+        let (timed_out, ended) = (outcome.timed_out(), outcome.ended.word());
+        let Some(hit) = outcome.into_hit() else {
+            let data = json!({ "value_addr": addr, "entries": [], "timedOut": timed_out, "ended": ended });
             return emit(&Response::success(schema::v1::PROVENANCE, data).with_source(label), pretty);
         };
 

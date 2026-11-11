@@ -29,7 +29,7 @@ use n0xis_contracts::{Module, Va};
 
 // The OS-free hit vocabulary now lives in `crate::hit`, shared with the Linux
 // adapter; this module keeps only the Win32 arming + event loop.
-use crate::hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, SlotCensus, TargetSlots, WatchKind, WatchSlot, MAX_UNWIND_FRAMES};
+use crate::hit::{AwaitHitOutcome, BreakpointHit, Ended, RegCond, Registers, SlotCensus, TargetSlots, WatchKind, WatchSlot, MAX_UNWIND_FRAMES};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT,
@@ -39,7 +39,7 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     CONTEXT, CONTEXT_CONTROL_AMD64, CONTEXT_DEBUG_REGISTERS_AMD64, CONTEXT_FULL_AMD64, CREATE_PROCESS_DEBUG_EVENT,
     CREATE_THREAD_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcess,
     DebugActiveProcessStop, DebugSetProcessKillOnExit, EXCEPTION_DEBUG_EVENT,
-    EXIT_THREAD_DEBUG_EVENT, FlushInstructionCache, GetThreadContext, ReadProcessMemory,
+    EXIT_PROCESS_DEBUG_EVENT, EXIT_THREAD_DEBUG_EVENT, FlushInstructionCache, GetThreadContext, ReadProcessMemory,
     SetThreadContext, WaitForDebugEvent, WriteProcessMemory,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -174,7 +174,9 @@ pub fn await_breakpoint_hit(
     let mut bp = BreakpointGuard::arm(h_process, addr, before_planting)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
-    let mut hit: Option<BreakpointHit> = None;
+    // Each way out of the loop says which it is: a process that exited is not a deadline
+    // passed, and before this one was waited for to the deadline and called that.
+    let mut ended = Ended::TimedOut;
 
     loop {
         if interrupt::requested() {
@@ -207,7 +209,7 @@ pub fn await_breakpoint_hit(
                 bp.disarm();
                 let captured = capture_hit(h_process, ev.dwThreadId, module, stack_qwords)?;
                 unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
-                hit = Some(captured);
+                ended = Ended::Hit(Box::new(captured));
                 break;
             }
 
@@ -217,11 +219,15 @@ pub fn await_breakpoint_hit(
         }
 
         unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
+        if ev.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
+            ended = Ended::TargetExited;
+            break;
+        }
     }
 
     // `bp`/`_debug_guard`/`_process_guard` restore/detach/close on drop below,
     // whether we broke out on a hit or fell through on timeout.
-    Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+    Ok(AwaitHitOutcome::new(addr, ended))
 }
 
 /// Refuse a 32-bit target before anything touches it.
@@ -786,7 +792,8 @@ pub fn await_watchpoint_hit_where(
     before_arming(&slot).map_err(SourceError::Os)?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
-    let mut hit: Option<BreakpointHit> = None;
+    let mut ended = Ended::TimedOut;
+    let mut excluded = 0u64;
     // Budget for non-matching conditional hits — see the bail-out below. The
     // one shared number, not a per-OS copy (`crate::hit`).
     use crate::hit::MAX_CONDITION_MISSES;
@@ -829,6 +836,7 @@ pub fn await_watchpoint_hit_where(
                 {
                     prepare_to_resume_armed(ev.dwThreadId, kind);
                     unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
+                    excluded += 1;
                     continue;
                 }
                 // Not the call we asked for: resume it with the watchpoint still
@@ -859,7 +867,7 @@ pub fn await_watchpoint_hit_where(
                 watch.disarm();
                 clear_dr6(ev.dwThreadId);
                 unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
-                hit = Some(captured?);
+                ended = Ended::Hit(Box::new(captured?));
                 break;
             }
 
@@ -879,9 +887,18 @@ pub fn await_watchpoint_hit_where(
             _ => {}
         }
         unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
+        if ev.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
+            ended = Ended::TargetExited;
+            break;
+        }
     }
 
-    Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+    Ok(AwaitHitOutcome {
+        breakpoint_va: addr,
+        ended,
+        excluded_hits: (!exclude_rip.is_empty()).then_some(excluded),
+        condition_misses: cond.map(|_| misses),
+    })
 }
 
 /// The threads `pid` has now.

@@ -106,8 +106,8 @@ fn watchpoint_catches_a_data_write() {
     kill_and_reap(pid);
 
     let outcome = outcome.expect("watchpoint call returned Err");
-    assert!(!outcome.timed_out, "watchpoint should have caught a write to GLOBAL");
-    let hit = outcome.hit.expect("a hit");
+    assert!(!outcome.timed_out(), "watchpoint should have caught a write to GLOBAL");
+    let hit = outcome.into_hit().expect("a hit");
     assert_eq!(hit.thread_id, pid, "single-threaded child");
     assert!(hit.rsp.0 != 0, "rsp captured");
     assert!(!hit.frames.is_empty(), "unwinder recovered frames: {:#x?}", hit);
@@ -130,8 +130,8 @@ fn software_breakpoint_fires_and_is_one_shot() {
     kill_and_reap(pid);
 
     let outcome = outcome.expect("breakpoint call returned Err");
-    assert!(!outcome.timed_out, "breakpoint at tick() should have fired");
-    let hit = outcome.hit.expect("a hit");
+    assert!(!outcome.timed_out(), "breakpoint at tick() should have fired");
+    let hit = outcome.into_hit().expect("a hit");
     assert_eq!(hit.rip, Va(bp), "reported rip is the breakpoint addr, not addr+1");
     assert!(alive_after, "child must survive (0xCC restored, one-shot)");
 }
@@ -151,8 +151,8 @@ fn watchpoint_times_out_on_an_untouched_address() {
     kill_and_reap(pid);
 
     let outcome = outcome.expect("call ok");
-    assert!(outcome.timed_out, "an address nobody writes must time out");
-    assert!(outcome.hit.is_none());
+    assert!(outcome.timed_out(), "an address nobody writes must time out");
+    assert!(outcome.hit().is_none());
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn condition_filter_selects_the_matching_hit() {
     // spurious matching hit.
     match outcome {
         Err(e) => assert!(e.to_string().contains("too hot"), "expected the miss-budget diagnostic, got: {e}"),
-        Ok(o) => assert!(o.timed_out, "an impossible condition must not yield a hit"),
+        Ok(o) => assert!(o.timed_out(), "an impossible condition must not yield a hit"),
     }
 }
 
@@ -272,7 +272,7 @@ fn multithreaded_breakpoint_survives_concurrent_hits() {
     kill_and_reap(pid);
 
     let outcome = outcome.expect("breakpoint call returned Err");
-    assert!(!outcome.timed_out, "a hot 4-thread tick() must hit the breakpoint");
+    assert!(!outcome.timed_out(), "a hot 4-thread tick() must hit the breakpoint");
     assert!(alive, "the multithreaded target must survive the concurrent int3 session");
     assert!(alive_after_settle, "the target must keep running after the session (no stranded-sibling crash)");
 }
@@ -295,7 +295,7 @@ fn multithreaded_watchpoint_covers_all_threads() {
     kill_and_reap(pid);
 
     let outcome = outcome.expect("watchpoint call returned Err");
-    assert!(!outcome.timed_out, "a write to GLOBAL from some thread must be caught");
+    assert!(!outcome.timed_out(), "a write to GLOBAL from some thread must be caught");
     assert!(alive, "the multithreaded target must survive the watchpoint session");
 }
 

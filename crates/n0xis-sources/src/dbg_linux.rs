@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use n0xis_contracts::{Module, Va};
 
 use crate::interrupt::{self, Interruptible};
-use crate::hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers, SlotCensus, TargetSlots, WatchKind, WatchSlot, MAX_CONDITION_MISSES, MAX_UNWIND_FRAMES};
+use crate::hit::{AwaitHitOutcome, BreakpointHit, Ended, RegCond, Registers, SlotCensus, TargetSlots, WatchKind, WatchSlot, MAX_CONDITION_MISSES, MAX_UNWIND_FRAMES};
 use crate::{LinuxProcess, LiveTarget, MemorySource, SourceError, UnwindRegs};
 
 /// The thread ids of a process, from `/proc/<pid>/task`. The main thread's tid
@@ -641,7 +641,8 @@ pub fn await_breakpoint_hit(
     s.bp_addr = Some(addr); // tracked past the byte-restore, for the teardown rewind
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
-    let mut hit: Option<BreakpointHit> = None;
+    // Each way out of the loop says which it is: no thread left is not a deadline passed.
+    let mut ended = Ended::TimedOut;
 
     'ev: loop {
         if interrupt::requested() {
@@ -658,7 +659,10 @@ pub fn await_breakpoint_hit(
             }
             if w == -1 {
                 match std::io::Error::last_os_error().raw_os_error() {
-                    Some(libc::ECHILD) => break 'ev,
+                    Some(libc::ECHILD) => {
+                        ended = Ended::TargetExited;
+                        break 'ev;
+                    }
                     Some(libc::EINTR) => continue,
                     e => return Err(os(format!("waitpid failed: {:?}", e))),
                 }
@@ -668,6 +672,7 @@ pub fn await_breakpoint_hit(
                 // Leader exit ≠ process exit; end only when no tracee remains.
                 Ev::Exited => {
                     if s.tids.is_empty() {
+                        ended = Ended::TargetExited;
                         break 'ev;
                     }
                 }
@@ -686,7 +691,7 @@ pub fn await_breakpoint_hit(
                         s.patched = None;
                         let captured = capture_hit(&s.live, tid, module, stack_qwords);
                         s.cont(tid, 0);
-                        hit = Some(captured?);
+                        ended = Ended::Hit(Box::new(captured?));
                         break 'ev;
                     }
                     // A stray/target int3 — swallow it (data=0) and keep waiting.
@@ -697,7 +702,7 @@ pub fn await_breakpoint_hit(
         std::thread::sleep(POLL_SLICE);
     }
 
-    Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+    Ok(AwaitHitOutcome::new(addr, ended))
 }
 
 /// Arm a hardware watchpoint (DR0 slot 0) on `addr` across every thread and block
@@ -768,7 +773,8 @@ pub fn await_watchpoint_hit_where(
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let mut misses = 0u32;
-    let mut hit: Option<BreakpointHit> = None;
+    let mut excluded = 0u64;
+    let mut ended = Ended::TimedOut;
     let arm = Some((addr, dr7_bits));
 
     'ev: loop {
@@ -786,7 +792,10 @@ pub fn await_watchpoint_hit_where(
             }
             if w == -1 {
                 match std::io::Error::last_os_error().raw_os_error() {
-                    Some(libc::ECHILD) => break 'ev,
+                    Some(libc::ECHILD) => {
+                        ended = Ended::TargetExited;
+                        break 'ev;
+                    }
                     Some(libc::EINTR) => continue,
                     e => return Err(os(format!("waitpid failed: {:?}", e))),
                 }
@@ -796,6 +805,7 @@ pub fn await_watchpoint_hit_where(
                 // Leader exit ≠ process exit; end only when no tracee remains.
                 Ev::Exited => {
                     if s.tids.is_empty() {
+                        ended = Ended::TargetExited;
                         break 'ev;
                     }
                 }
@@ -820,6 +830,7 @@ pub fn await_watchpoint_hit_where(
                             set_eflags_rf(tid);
                         }
                         s.cont(tid, 0);
+                        excluded += 1;
                         continue;
                     }
                     let matched = match (cond, &captured) {
@@ -846,7 +857,7 @@ pub fn await_watchpoint_hit_where(
                     }
                     // Match (or no condition): `?` only now — break lets `Session`
                     // drop disarm-all + detach (which resumes the thread).
-                    hit = Some(captured?);
+                    ended = Ended::Hit(Box::new(captured?));
                     break 'ev;
                 }
             }
@@ -854,7 +865,12 @@ pub fn await_watchpoint_hit_where(
         std::thread::sleep(POLL_SLICE);
     }
 
-    Ok(AwaitHitOutcome { breakpoint_va: addr, timed_out: hit.is_none(), hit })
+    Ok(AwaitHitOutcome {
+        breakpoint_va: addr,
+        ended,
+        excluded_hits: (!exclude_rip.is_empty()).then_some(excluded),
+        condition_misses: cond.map(|_| misses),
+    })
 }
 
 /// A process with no thread left that could run: none listed, or only ones that have ended

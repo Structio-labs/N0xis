@@ -128,7 +128,7 @@ mod hit;
 #[cfg(all(feature = "live", any(windows, target_os = "linux", target_os = "android")))]
 mod interrupt;
 #[cfg(feature = "live")]
-pub use hit::{AwaitHitOutcome, BreakpointHit, RegCond, Registers};
+pub use hit::{AwaitHitOutcome, BreakpointHit, Ended, RegCond, Registers};
 
 #[cfg(all(feature = "live", windows))]
 mod debug;

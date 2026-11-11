@@ -130,11 +130,97 @@ pub struct BreakpointHit {
     pub frames: Vec<unwind::Frame>,
 }
 
+/// How a wait on a breakpoint or a watchpoint ended.
+///
+/// It used to be `timed_out: hit.is_none()`, and so a target that was killed half way
+/// through a three-second wait was reported as one that ran the whole three seconds
+/// without reaching the site (audit 2026-11-06, row 11): an answer about the program
+/// made of what the loop happened to leave with. Each loop now says which of these
+/// ended it, where it ends.
+#[derive(Clone, Debug)]
+pub enum Ended {
+    /// The site was reached; what the thread held then.
+    Hit(Box<BreakpointHit>),
+    /// The deadline passed with the target alive and the site not reached.
+    TimedOut,
+    /// No thread of the target was left to reach the site: it exited or was killed
+    /// before the deadline.
+    TargetExited,
+}
+
+impl Ended {
+    /// The word an answer carries for it.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Ended::Hit(_) => "hit",
+            Ended::TimedOut => "timed-out",
+            Ended::TargetExited => "target-exited",
+        }
+    }
+}
+
 /// Result of one await-hit call.
-#[derive(Clone, Debug, Serialize)]
+///
+/// On the wire: `breakpoint_va`, `timed_out` (true for [`Ended::TimedOut`] only, as
+/// the field always meant), `hit` when there was one, `ended`, and the counts of hits
+/// a filter set aside when the wait had that filter. Written by hand so the wire keeps
+/// the fields it always had beside the one that says why.
+#[derive(Clone, Debug)]
 pub struct AwaitHitOutcome {
     pub breakpoint_va: Va,
-    pub timed_out: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hit: Option<BreakpointHit>,
+    pub ended: Ended,
+    /// Hits at a site in an `exclude_rip` range, resumed and not counted: `None`
+    /// when the wait was given no such range.
+    pub excluded_hits: Option<u64>,
+    /// Hits whose registers did not satisfy the condition: `None` when the wait
+    /// was given no condition.
+    pub condition_misses: Option<u32>,
+}
+
+impl AwaitHitOutcome {
+    /// An outcome with no filter.
+    pub fn new(breakpoint_va: Va, ended: Ended) -> Self {
+        AwaitHitOutcome { breakpoint_va, ended, excluded_hits: None, condition_misses: None }
+    }
+
+    pub fn hit(&self) -> Option<&BreakpointHit> {
+        match &self.ended {
+            Ended::Hit(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn into_hit(self) -> Option<BreakpointHit> {
+        match self.ended {
+            Ended::Hit(h) => Some(*h),
+            _ => None,
+        }
+    }
+
+    /// The deadline passed with the target alive and the site not reached.
+    pub fn timed_out(&self) -> bool {
+        matches!(self.ended, Ended::TimedOut)
+    }
+}
+
+impl Serialize for AwaitHitOutcome {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let hit = self.hit();
+        let n = 3 + usize::from(hit.is_some()) + usize::from(self.excluded_hits.is_some()) + usize::from(self.condition_misses.is_some());
+        let mut st = s.serialize_struct("AwaitHitOutcome", n)?;
+        st.serialize_field("breakpoint_va", &self.breakpoint_va)?;
+        st.serialize_field("timed_out", &self.timed_out())?;
+        if let Some(h) = hit {
+            st.serialize_field("hit", h)?;
+        }
+        st.serialize_field("ended", self.ended.word())?;
+        if let Some(n) = self.excluded_hits {
+            st.serialize_field("excluded_hits", &n)?;
+        }
+        if let Some(n) = self.condition_misses {
+            st.serialize_field("condition_misses", &n)?;
+        }
+        st.end()
+    }
 }

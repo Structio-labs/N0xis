@@ -111,8 +111,8 @@ fn watchpoint_hit_recovers_the_real_caller_chain() {
     let outcome = await_watchpoint_hit(pid, Va(counter_va), WatchKind::Write, 8, 8000, 16, None, &mut |_| Ok(()))
         .expect("await_watchpoint_hit should not error");
 
-    assert!(!outcome.timed_out, "the tight write loop should trip the watchpoint well within the timeout");
-    let hit = outcome.hit.expect("a write watchpoint hit was captured");
+    assert!(!outcome.timed_out(), "the tight write loop should trip the watchpoint well within the timeout");
+    let hit = outcome.into_hit().expect("a write watchpoint hit was captured");
 
     // The core claim: we recovered more than just the hit frame — real callers
     // were unwound out of the target's own .pdata/.xdata.
