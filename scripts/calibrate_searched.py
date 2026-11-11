@@ -79,6 +79,8 @@ MUTATIONS = [
     (PATCH, "if landed.changed == 0 && landed.read_back == landed.of {", "if true {", *LANDED, "a_patch_that_fails_part_way_keeps_its_record_and_says_what_changed"),
     # Old bytes are read one mapping at a time again: 4 of 8 across two readable mappings.
     (REGIONS, "    let mut bytes = src.read(start, size)?;\n    read_on(src, start, size, &mut bytes)?;", "    let bytes = src.read(start, size)?;", *LANDED, "a_patch_that_fails_part_way_keeps_its_record_and_says_what_changed"),
+    # An undo that fails part way says only that it failed.
+    (PATCH, "        if landed.changed == 0 && landed.read_back == landed.of {\n            return Err(anyhow!(\"{e}\"));\n        }\n        return Err(anyhow!(\"{e}: {landed}; patch {} stays", "        if true {\n            return Err(anyhow!(\"{e}\"));\n        }\n        return Err(anyhow!(\"{e}: {landed}; patch {} stays", *LANDED, "an_undo_that_fails_part_way_says_what_changed_and_keeps_its_record"),
     # `mem write` says only that it failed.
     (REGISTRY, 'format!("{e}: {}", n0xis_project::patch::Landed::read(live.as_ref(), addr, &before, bytes.len()))', "e.to_string()", *LANDED, "mem_write_across_a_mappings_end_says_how_many_bytes_changed"),
     # A caller's unwind rule is looked up at its return address again.

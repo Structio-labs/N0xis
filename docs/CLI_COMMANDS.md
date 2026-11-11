@@ -858,6 +858,8 @@ Show one patch record. `--id` required.
 Restore the original bytes of a patch, or clear the debug register a killed `debug watch` or `provenance trace` left.
 - `--id` — defaults to the most recent applied patch.
 - `--force` — undo even if current bytes no longer match the patched bytes. A debug register has no bytes, and this changes nothing for it.
+- An undo whose write fails part way (a page that takes no write) says how many of the bytes changed, read back from the target,
+  and the record stays `applied` with the bytes that finish it: `patch undo --id <id> --force` again.
 - On the record of a debug register (it has `debug_register` and `planted_by`, and no `before_hex`): clears slot 0 on every thread the target has
   now that still holds the record's address, type and length, and leaves every other slot alone, since the target or another tool may own those.
   Answers `threads_seen`, `threads_cleared`, `slots_cleared` and `target_present`, with no `restored`, and removes the record, as it is seen to be clear.

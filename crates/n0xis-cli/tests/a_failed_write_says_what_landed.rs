@@ -196,3 +196,32 @@ fn a_patch_that_fails_part_way_keeps_its_record_and_says_what_changed() {
     assert_eq!(records[0]["before_hex"], "33 33 33 33 22 22 22 22", "{records:?}");
     assert!(msg.contains(records[0]["id"].as_str().unwrap()), "{a}");
 }
+
+/// An undo is a write too, and fails part way the same: `patch undo --force` over the
+/// same seam put back 4 of the 8 bytes and said only that it failed (audit 2026-11-06,
+/// left from the second pass). What changed is counted from the target, and the record
+/// stays applied with what finishes it.
+#[test]
+fn an_undo_that_fails_part_way_says_what_changed_and_keeps_its_record() {
+    let t = Target::spawn("undo");
+    let at = format!("{:#x}", t.wall - 4);
+    let a = t.answer(&["patch", "apply", "--addr", &at, "--bytes", BYTES]);
+    assert_eq!(a["ok"], false, "{a}");
+    let records = t.records();
+    assert_eq!(records.len(), 1, "{a}");
+    let id = records[0]["id"].as_str().expect("an id").to_string();
+    let applied = t.before_seam(t.wall);
+    assert!(applied.iter().any(|&b| b != 0x33), "this test needs a patch that landed part way: {applied:x?}");
+    let u = t.answer(&["patch", "undo", "--id", &id, "--force"]);
+    assert_eq!(u["ok"], false, "{u}");
+    let restored = t.before_seam(t.wall);
+    let changed = applied.iter().zip(&restored).filter(|(a, b)| a != b).count();
+    assert!(changed > 0, "this test needs an undo that lands part way: {applied:x?} -> {restored:x?}: {u}");
+    let msg = u["error"]["message"].as_str().unwrap_or("");
+    assert!(msg.contains(&format!("{changed} of the 8 bytes changed")), "{u}");
+    assert!(msg.contains(&id) && msg.contains("--force"), "{u}");
+    let records = t.records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["status"], "applied", "{records:?}");
+    assert_eq!(records[0]["before_hex"], "33 33 33 33 22 22 22 22", "{records:?}");
+}

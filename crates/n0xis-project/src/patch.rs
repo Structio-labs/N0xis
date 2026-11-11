@@ -373,7 +373,16 @@ pub fn undo(rec: &mut PatchRecord, live: &dyn MemorySource, force: bool) -> Resu
     if current != after && !force {
         return Err(anyhow!("current bytes no longer match the applied patch; re-run with --force"));
     }
-    live.write(addr, &before).map_err(|e| anyhow!("{e}"))?;
+    if let Err(e) = live.write(addr, &before) {
+        // A write fails part way (a page that takes no write), as `apply`'s does: what
+        // changed is counted against what was there, and the record stays applied with
+        // the bytes that finish it. "It failed" alone read as "nothing changed".
+        let landed = Landed::read(live, addr, &current, before.len());
+        if landed.changed == 0 && landed.read_back == landed.of {
+            return Err(anyhow!("{e}"));
+        }
+        return Err(anyhow!("{e}: {landed}; patch {} stays applied, and `patch undo --id {} --force` puts back the rest", rec.id, rec.id));
+    }
     rec.status = "undone".to_string();
     rec.undone_at_unix = Some(now_unix_secs());
     save(rec)?;
