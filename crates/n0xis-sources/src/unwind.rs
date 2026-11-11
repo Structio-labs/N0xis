@@ -187,8 +187,23 @@ pub fn unwind(reader: &dyn MemReader, modules: &[ModuleRange], start: UnwindRegs
     let mut pdata_cache: Vec<(u64, Option<Vec<RuntimeFunction>>)> = Vec::new();
     let mut eh_cache: Vec<(u64, Option<u64>)> = Vec::new();
 
-    for _ in 0..max_frames {
-        let owner = module_containing(modules, regs.rip);
+    for depth in 0..max_frames {
+        // Frame 0 is where the thread stopped; every other is a return address, the byte
+        // after a call. After a call to a function that does not return, that byte is the
+        // first of the next function, and its unwind rule is not the caller's: looked up
+        // there, the walk read a made-up return address (0x801000, in no mapping) and
+        // stopped at 5 frames of 8 (audit 2026-11-06, row 8). The call is at `rip - 1`,
+        // and so is the rule; the address printed is still the return address.
+        let caller = depth > 0;
+        let at = if caller { regs.rip.wrapping_sub(1) } else { regs.rip };
+        let owner = module_containing(modules, at);
+        // A return address in no module that the target cannot even read is not one:
+        // the rule that gave it was wrong, and the frame is not made up. (One in a
+        // module is mapped by being there; one outside every module, readable, can be
+        // code made at run time.)
+        if caller && owner.is_none() && reader.read(regs.rip, 1).is_none() {
+            break;
+        }
         frames.push(make_frame(regs.rip, owner));
 
         let Some(m) = owner else { break };
@@ -196,7 +211,7 @@ pub fn unwind(reader: &dyn MemReader, modules: &[ModuleRange], start: UnwindRegs
 
         let step = match module_format(reader, m.base) {
             Format::Pe => pe_step(reader, m, &mut regs, &mut pdata_cache),
-            Format::Elf => dwarf::elf_step(reader, m, &mut regs, &mut eh_cache),
+            Format::Elf => dwarf::elf_step(reader, m, &mut regs, &mut eh_cache, at),
             Format::Unknown => break,
         };
         match step {
@@ -985,9 +1000,10 @@ mod dwarf {
     }
 
     /// Advance one ELF/DWARF frame. Same [`super::Step`] contract as `pe_step`.
-    pub(super) fn elf_step(reader: &dyn MemReader, m: &ModuleRange, regs: &mut UnwindRegs, cache: &mut Vec<(u64, Option<u64>)>) -> super::Step {
+    /// `pc` is where the frame's rule is looked up: `regs.rip` for the frame the thread
+    /// stopped in, `regs.rip - 1` for a caller, whose `rip` is the byte after its call.
+    pub(super) fn elf_step(reader: &dyn MemReader, m: &ModuleRange, regs: &mut UnwindRegs, cache: &mut Vec<(u64, Option<u64>)>, pc: u64) -> super::Step {
         let hdr_addr = hdr_cached(cache, reader, m.base)?; // no PT_GNU_EH_FRAME → stop
-        let pc = regs.rip;
         let Some(fde_addr) = find_fde(reader, hdr_addr, pc) else {
             return leaf_return(reader, regs);
         };
@@ -1194,10 +1210,46 @@ mod dwarf {
             let mut regs = regs_at(func_start + 0x20, STACK - 0x40, rbp);
             let mut cache = Vec::new();
             let m0 = ModuleRange { base: BASE, size: 0x100_0000, name: "t".into() };
-            assert_eq!(elf_step(&m, &m0, &mut regs, &mut cache), Some(true));
+            let pc = regs.rip;
+            assert_eq!(elf_step(&m, &m0, &mut regs, &mut cache, pc), Some(true));
             assert_eq!(regs.rip, ret);
             assert_eq!(regs.gpr[reg::RBP], saved_rbp);
             assert_eq!(regs.gpr[reg::RSP], rbp + 16);
+        }
+
+        /// A caller whose call was the last instruction of its function: its return
+        /// address is one past the function's FDE, where the next function's begins.
+        /// The rule is the one at `rip - 1`. Here the function called itself last, so
+        /// frame 1's return address is the FDE's end; read by it, the walk reaches the
+        /// outer caller, and read by the return address it stopped there.
+        #[test]
+        fn a_return_address_past_its_functions_end_unwinds_by_the_call() {
+            let (mut m, func_start) = build();
+            let (inner, outer) = (STACK, STACK + 0x100);
+            let end = func_start + 0x40;
+            let ret = BASE + 0x1234;
+            m.put_u64(inner, outer); // frame 0's saved rbp
+            m.put_u64(inner + 8, end); // its return address: one past the FDE
+            m.put_u64(outer, 0);
+            m.put_u64(outer + 8, ret);
+            m.put(BASE + 0x1000, &[0x90; 0x300]); // the code, so its addresses are mapped
+            let m0 = ModuleRange { base: BASE, size: 0x100_0000, name: "t".into() };
+            let frames = super::super::unwind(&m, std::slice::from_ref(&m0), regs_at(func_start + 0x20, STACK - 0x40, inner), 3);
+            let rips: Vec<u64> = frames.iter().map(|f| f.rip).collect();
+            assert_eq!(rips, vec![func_start + 0x20, end, ret], "the printed address stays the return address");
+        }
+
+        /// A rule that gives a return address in no mapping gave a wrong one: the walk
+        /// ends there, and prints nothing for it. It printed `{rip: 0x801000}`.
+        #[test]
+        fn a_return_address_in_no_mapping_is_not_a_frame() {
+            let (mut m, func_start) = build();
+            m.put_u64(STACK, 0);
+            m.put_u64(STACK + 8, 0x80_1000);
+            let m0 = ModuleRange { base: BASE, size: 0x100_0000, name: "t".into() };
+            let frames = super::super::unwind(&m, std::slice::from_ref(&m0), regs_at(func_start + 0x20, STACK - 0x40, STACK), 3);
+            let rips: Vec<u64> = frames.iter().map(|f| f.rip).collect();
+            assert_eq!(rips, vec![func_start + 0x20]);
         }
 
         #[test]
@@ -1209,7 +1261,8 @@ mod dwarf {
             let mut regs = regs_at(func_start + 1, rsp, 0xDEAD);
             let mut cache = Vec::new();
             let m0 = ModuleRange { base: BASE, size: 0x100_0000, name: "t".into() };
-            assert_eq!(elf_step(&m, &m0, &mut regs, &mut cache), Some(true));
+            let pc = regs.rip;
+            assert_eq!(elf_step(&m, &m0, &mut regs, &mut cache, pc), Some(true));
             assert_eq!(regs.rip, ret);
             assert_eq!(regs.gpr[reg::RSP], rsp + 16);
         }

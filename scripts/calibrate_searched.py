@@ -24,12 +24,23 @@ REGISTRY = "crates/n0xis-frontend/src/registry.rs"
 NEW = ("n0xis-cli", "a_scan_says_what_it_searched")
 OLD = ("n0xis-cli", "scan_states_what_it_did_not_read")
 CUT = ("n0xis-cli", "a_cut_list_says_its_total")
+WAIT = ("n0xis-cli", "a_wait_says_why_it_ended")
+LANDED = ("n0xis-cli", "a_failed_write_says_what_landed")
+WALK = ("n0xis-cli", "a_backtrace_after_a_call_that_does_not_return")
+UNWIND_LIB = ("n0xis-sources", None)
+HIT = "crates/n0xis-sources/src/hit.rs"
+DBG_LINUX = "crates/n0xis-sources/src/dbg_linux.rs"
+WATCH = "crates/n0xis-frontend/src/watch.rs"
+PATCH = "crates/n0xis-project/src/patch.rs"
+MAIN = "crates/n0xis-cli/src/main.rs"
+UNWIND = "crates/n0xis-sources/src/unwind.rs"
+LIVE = ("--features", "live")
 
 JOIN = "Some((at, run)) if at.0.checked_add(run.len() as u64) == Some(start.0)"
 GO_ON = "while !bytes.is_empty() && bytes.len() < size {"
 WINDOW = "Some((start, size)) => match n0xis_sources::window_regions(pe.as_ref(), start, size) {"
 
-# (file, anchor, replacement, package, test binary or None for the library's own, test name)
+# (file, anchor, replacement, package, test binary or None for the library's own, test name[, cargo args])
 MUTATIONS = [
     # Two regions that touch are searched apart again: the seam hides the value.
     (REGIONS, JOIN, "Some((at, run)) if false && at.0.checked_add(run.len() as u64) == Some(start.0)", *NEW, "a_value_across_two_mappings_is_found_by_every_scan"),
@@ -51,6 +62,30 @@ MUTATIONS = [
     (REGISTRY, "let mut regions = live.regions(n0xis_sources::ALL_REGIONS);", "let mut regions = live.regions(limit.max(1));", *CUT, "a_memory_map_cut_at_a_limit_says_its_total"),
     # Discovery stops at the limit again, so the total is the cut.
     (REGISTRY, "n0xis_core::DiscoverInput { start, size, limit: 0, offset: 0 },\n                        ) {\n                            Ok(d) => d,\n                            Err(e) => return Response::error(\"discover-failed\"", "n0xis_core::DiscoverInput { start, size, limit, offset: 0 },\n                        ) {\n                            Ok(d) => d,\n                            Err(e) => return Response::error(\"discover-failed\"", *CUT, "a_function_list_cut_at_a_limit_says_its_total"),
+    # A wait with no hit is a timeout again, whatever ended it.
+    (HIT, "matches!(self.ended, Ended::TimedOut)", "self.hit().is_none()", *WAIT, "a_target_killed_during_await_hit_is_gone_not_timed_out"),
+    (HIT, "matches!(self.ended, Ended::TimedOut)", "self.hit().is_none()", *WAIT, "a_target_killed_during_a_watch_is_gone_not_timed_out"),
+    # An unmapped address is armed and waited on, as it was.
+    (WATCH, "matches!(live.read(w.addr, 1), Err(SourceError::Unmapped(_)))", "false", *WAIT, "a_watch_on_an_address_no_mapping_holds_is_refused"),
+    # Hits set aside go uncounted.
+    (DBG_LINUX, "excluded_hits: (!exclude_rip.is_empty()).then_some(excluded),", "excluded_hits: None,", *WAIT, "hits_set_aside_by_exclude_rip_are_counted"),
+    # Old bytes read up to the mapping's end, as they were: the patch is written, and recorded short.
+    (PATCH, "    if bytes.len() < len {\n        return Err(anyhow!(", "    if false && bytes.len() < len {\n        return Err(anyhow!(", *LANDED, "a_patch_across_a_mappings_end_is_refused_and_writes_nothing"),
+    # The dry run reads up to the end again and says `wouldChange`.
+    (MAIN, "n0xis_project::patch::read_exact(live.as_ref(), addr, desired.len())", "n0xis_project::patch::read_exact(live.as_ref(), addr, 0).map(|_| live.read(addr, desired.len()).unwrap_or_default())", *LANDED, "a_patch_across_a_mappings_end_is_refused_and_writes_nothing"),
+    # A failed write takes its record back whatever it changed.
+    (PATCH, "if landed.changed == 0 && landed.read_back == landed.of {", "if true {", *LANDED, "a_patch_that_fails_part_way_keeps_its_record_and_says_what_changed"),
+    # Old bytes are read one mapping at a time again: 4 of 8 across two readable mappings.
+    (REGIONS, "    let mut bytes = src.read(start, size)?;\n    read_on(src, start, size, &mut bytes)?;", "    let bytes = src.read(start, size)?;", *LANDED, "a_patch_that_fails_part_way_keeps_its_record_and_says_what_changed"),
+    # `mem write` says only that it failed.
+    (REGISTRY, 'format!("{e}: {}", n0xis_project::patch::Landed::read(live.as_ref(), addr, &before, bytes.len()))', "e.to_string()", *LANDED, "mem_write_across_a_mappings_end_says_how_many_bytes_changed"),
+    # A caller's unwind rule is looked up at its return address again.
+    (UNWIND, "let at = if caller { regs.rip.wrapping_sub(1) } else { regs.rip };", "let at = regs.rip;", *WALK, "the_walk_goes_on_past_a_call_that_ends_its_function"),
+    (UNWIND, "let at = if caller { regs.rip.wrapping_sub(1) } else { regs.rip };", "let at = regs.rip;", *UNWIND_LIB, "unwind::dwarf::tests::a_return_address_past_its_functions_end_unwinds_by_the_call", LIVE),
+    # A return address in no mapping is printed as a frame again.
+    (UNWIND, "if caller && owner.is_none() && reader.read(regs.rip, 1).is_none() {", "if false {", *UNWIND_LIB, "unwind::dwarf::tests::a_return_address_in_no_mapping_is_not_a_frame", LIVE),
+    # The backtrace says only how many threads it walked.
+    (MAIN, "let threads_in_process = in_process.len();", "let threads_in_process = 1usize;", *WALK, "a_backtrace_of_one_thread_says_how_many_the_process_has"),
 ]
 
 
@@ -60,14 +95,14 @@ def main():
     args = ap.parse_args()
     chosen = [m for m in MUTATIONS if (not args.k or args.k in m[0] or args.k in m[5])]
     bad = []
-    for path, anchor, replacement, package, binary, test in chosen:
+    for path, anchor, replacement, package, binary, test, *cargo_args in chosen:
         file = ROOT / path
         original = file.read_bytes()
         text = original.decode()
         assert text.count(anchor) == 1, f"{path}: the anchor is there {text.count(anchor)} times: {anchor}"
         try:
             file.write_text(text.replace(anchor, replacement))
-            verdict, log = run_test(package, binary, test)
+            verdict, log = run_test(package, binary, test, *cargo_args)
         finally:
             file.write_bytes(original)
         ok = verdict == "failed"

@@ -5729,9 +5729,9 @@ fn watch_failure(e: &WatchFailed) -> &'static str {
     match e {
         WatchFailed::Source(e) => debug_failure("watch-failed", e),
         WatchFailed::Left { .. } => "watchpoint-left",
+        WatchFailed::Unmapped { .. } => "bad-addr",
     }
 }
-        WatchFailed::Unmapped { .. } => "bad-addr",
 
 /// A debugger command's refusal code: its own, unless the person stopped it or the target
 /// is one it does not take, neither of which is a failure of that command.
@@ -5788,13 +5788,19 @@ fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
     #[derive(serde::Serialize)]
     struct BtOut {
         pid: u32,
+        /// The threads walked here.
         thread_count: usize,
         threads: Vec<BtThread>,
+        /// The threads the process has, by `/proc`: `thread_count: 1` alone, on the
+        /// main thread of a process of two, read as a process of one (audit 2026-11-06).
+        threads_in_process: usize,
     }
 
+    let in_process = list_thread_ids(a.pid);
+    let threads_in_process = in_process.len();
     let tids = match (a.tid, a.all_threads) {
         (Some(t), _) => vec![t],
-        (None, true) => list_thread_ids(a.pid),
+        (None, true) => in_process,
         (None, false) => vec![a.pid],
     };
     if tids.is_empty() {
@@ -5830,7 +5836,7 @@ fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
         }
     }
 
-    let out = BtOut { pid: a.pid, thread_count: threads.len(), threads };
+    let out = BtOut { pid: a.pid, thread_count: threads.len(), threads, threads_in_process };
     emit(&Response::success(schema::v1::STACK_BACKTRACE, out).with_source(label), pretty)
 }
 

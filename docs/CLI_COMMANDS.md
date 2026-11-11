@@ -916,6 +916,9 @@ Arm a software breakpoint and block until it fires (or times out).
   The byte is recorded before it is written, as a patch with `planted_by: "debug await-hit"`: `n0xis patch undo --id <id>`
   restores it, and `patch list --status applied` lists it. The id is on stderr when the breakpoint is armed. A run that
   ends any other way leaves no record.
+- `data`: `breakpoint_va`, `timed_out`, `hit` when there was one, and `ended`, which says why the wait ended: `hit`,
+  `timed-out` (the deadline passed with the target alive), or `target-exited` (no thread of the target was left, before the
+  deadline). `timed_out` is true for `timed-out` only; before 2026-11, a target killed during the wait answered `timed_out: true`.
 - Schema: `n0xis.debug.await_hit.v1`
 
 ### `debug watch --pid <u32> --addr <hex>`
@@ -923,9 +926,6 @@ Arm a hardware watchpoint (data read/write, or execute) and block until it fires
 is ever patched. Returns the faulting instruction + a true cross-process caller chain (unwound
 from `.pdata`/`.xdata`).
 - `--addr` (required); `--addr-rva`.
-- `data`: `breakpoint_va`, `timed_out`, `hit` when there was one, and `ended`, which says why the wait ended: `hit`,
-  `timed-out` (the deadline passed with the target alive), or `target-exited` (no thread of the target was left, before the
-  deadline). `timed_out` is true for `timed-out` only; before 2026-11, a target killed during the wait answered `timed_out: true`.
 - `--kind execute|write|read-or-write` (default `write`; there is no hardware read-only mode on
   x86 — only `write` or `read-or-write`).
 - `--len 1|2|4|8` (watch width in bytes, default 4; `--addr` must be aligned to it).
@@ -947,6 +947,10 @@ from `.pdata`/`.xdata`).
   condition budget. For a field a `memcpy`/serialization helper constantly rewrites, exclude the
   copy site's range and the next distinct writer (the semantic setter) is what surfaces. RVA when
   `--addr-rva`, else absolute VA.
+- `data`: as `debug await-hit`'s, with `ended` (`hit`, `timed-out`, `target-exited`); `excluded_hits`, the hits
+  `--exclude-rip` set aside, when it was given; `condition_misses`, the hits `--when` did not match, when it was given.
+- An address no mapping of the target holds is refused (`bad-addr`) before anything is armed, as `debug await-hit` refuses
+  it: armed, it could only time out. A static address of a position-independent image needs its base: `--addr-rva`.
 - Schema: `n0xis.debug.watchpoint.v1`
 
 ### `debug attach --pid <u32> [--timeout-ms <n>]`
@@ -954,10 +958,6 @@ Become the target's debugger and hold the attach without arming anything, then d
 Diagnostic: isolates whether instability comes from `DebugActiveProcess` itself (anti-debug) vs.
 a specific breakpoint/watchpoint. `--timeout-ms` default 10000.
 - Schema: `n0xis.debug.attach.v1`
-- `data`: as `debug await-hit`'s, with `ended` (`hit`, `timed-out`, `target-exited`); `excluded_hits`, the hits
-  `--exclude-rip` set aside, when it was given; `condition_misses`, the hits `--when` did not match, when it was given.
-- An address no mapping of the target holds is refused (`bad-addr`) before anything is armed, as `debug await-hit` refuses
-  it: armed, it could only time out. A static address of a position-independent image needs its base: `--addr-rva`.
 
 ### `scan value --type <t> --save-as <name>`
 First scan: find every address matching a criterion.
@@ -1114,6 +1114,8 @@ module+function + decompiled statement (Phase 4c — watchpoint × decompiler, f
 - `--save-to-table <name>` + `--entry <name>` — record the explained provenance onto a `.n0xt`
   table entry. Live only.
 - Its watchpoint is on the record the way `debug watch`'s is, with `planted_by: "provenance trace"`: killed, `patch undo` clears it.
+- No hit: `entries: []`, `timedOut`, and `ended` as `debug watch` gives it (`timed-out` or `target-exited`); an unmapped
+  `--addr` is refused (`bad-addr`).
 - Schema: `n0xis.provenance.v1`
 
 ### `annotate name --addr <hex> [--value <str>]`
@@ -1121,8 +1123,6 @@ Assert (or clear, with no `--value`) a function/variable name at an address (ver
 history).
 - Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
   session supplies its own. They say whose records are read and written: a WebAssembly module
-- No hit: `entries: []`, `timedOut`, and `ended` as `debug watch` gives it (`timed-out` or `target-exited`); an unmapped
-  `--addr` is refused (`bad-addr`).
   keeps its own, under its identity; every native target shares one map, the one used without a
   source, as before.
 - Schema: `n0xis.annotation.v1`
@@ -1523,7 +1523,7 @@ sections above document a subset in depth; every command has `--help`, and
 |---|---|
 | `n0x aot symbols` | List/resolve managed method names from NativeAOT stack-trace metadata |
 | `n0x serve` | Persistent static session: load `--file` once, then read one command line per line from stdin (e.g. `decomp pseudo --addr 0x…`) and write one compact JSON envelope per line to stdout — the image is parsed once and reused, so repeated decompile/disasm/xref calls avoid the per-call file re-load. A GUI or a script drives this instead of spawning the CLI per click. Blank line or EOF exits |
-| `n0x stack backtrace` | Snapshot a thread's registers and walk its call stack. Frame 0 is the current instruction; each caller is recovered through that module's unwind data (never a raw `[rsp]` guess). Reads registers via `ptrace` and stack/unwind bytes with `process_vm_readv`; `/proc/<pid>/maps` (and `/proc/<pid>/task` for `--all-threads`) supplies only the module map. The thread is held stopped just for the duration of the walk |
+| `n0x stack backtrace` | Snapshot a thread's registers and walk its call stack. Frame 0 is the current instruction; each caller is recovered through that module's unwind data (never a raw `[rsp]` guess). A caller's rule is looked up at its return address less one, the call itself: after a call that does not return, the return address is the next function's first byte. A return address outside every module that cannot be read ends the walk and is not printed. `threads_in_process` is the process's thread count by `/proc`, beside `thread_count`, the threads walked. Reads registers via `ptrace` and stack/unwind bytes with `process_vm_readv`; `/proc/<pid>/maps` (and `/proc/<pid>/task` for `--all-threads`) supplies only the module map. The thread is held stopped just for the duration of the walk |
 
 ### Script & asset archives (Bitsquid/LuaJIT) (9)
 
