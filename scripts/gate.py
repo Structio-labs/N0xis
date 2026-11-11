@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""The local gate in one command: everything CI checks that can be checked here.
+"""The local gate in one command: everything CI checks that can be checked here, and the oracle tests.
 
     python3 scripts/gate.py            boundary law, tests, clippy for Linux and for Windows
     python3 scripts/gate.py --wine     also the Windows test suite under Wine (slower)
+    python3 scripts/gate.py --no-oracle   without the tests behind the `oracle` features (below)
     python3 scripts/gate.py --no-clippy
     python3 scripts/gate.py -p n0xis-core -p n0xis-arch      tests of these crates only
 
@@ -18,6 +19,14 @@ Why it is not `cargo test`:
 - Tests run with the stack a Windows main thread has (`TEST_STACK_KIB`). Rust gives no warning
   of a stack overflow and a process that hits one dies with no answer, so a binary that fits in
   Linux's 8 MiB and not in Windows's 1 MiB used to be found by CI only, after the push.
+
+The `oracle` tests build their targets with a compiler, an assembler or a processor emulator
+at run time and check against what that build holds, so their answer depends on the toolchain's
+version. CI does not run them, so this does, in a target directory of its own so the plain build
+keeps its cache, and only the binaries the features change. They are the checks against a source
+that is not the tool, and for a while nothing ran them: they stopped compiling and nobody saw.
+One needs a module list in N0XIS_WASM_CORPUS and takes over ten minutes; without it, it is named
+as not run.
 
 Memory: it runs in a capped scope when systemd is there (`MEMORY_HIGH`, `MEMORY_MAX`).
 """
@@ -46,6 +55,10 @@ MEMORY_HIGH, MEMORY_MAX = "5G", "6G"
 WINE_ONLY_FAILURES = {"phase6_remote_exit", "phase5_exit"}
 # Measures wall-clock deadlines of its own child processes, so it runs alone, after the others.
 RUNS_ALONE = {"plugin_deadline"}
+ORACLE_FEATURES = "n0xis-core/oracle,n0xis-cli/oracle,n0xis-sources/oracle,n0xis-wasm/oracle"
+ORACLE_CFG = 'feature = "oracle"'
+# Oracle tests that cannot run without an input named in the environment: not run, and said so.
+ORACLE_NEEDS = {"wasm_facts_are_what_wasm_objdump_lists": "N0XIS_WASM_CORPUS"}
 LOG_ROOT = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "n0xis-gate"
 
 # No debug info: the single biggest saving of memory and time. Incremental stays on: after a change to
@@ -113,16 +126,18 @@ def report(log, step, ok, seconds, note=""):
     log.line(f"{step:<12} {'ok' if ok else 'FAILED':<7} {seconds:6.0f}s  {note}".rstrip())
 
 
-def compile_tests(log, packages, target=None, target_dir=None, env=None):
+def compile_tests(log, packages, target=None, target_dir=None, env=None, features=None, step=None):
     """Build the test binaries; returns (name, manifest directory, executable) of each."""
     cmd = ["cargo", "test", "--no-run", "--message-format=json", "-j", str(os.cpu_count() or 4)]
     cmd += [a for p in packages for a in ("-p", p)] or ["--workspace"]
     if target:
         cmd += ["--target", target]
+    if features:
+        cmd += ["--features", features]
     full_env = {**os.environ, **BUILD_ENV, **(env or {})}
     if target_dir:
         full_env["CARGO_TARGET_DIR"] = str(target_dir)
-    step = f"build-{target}" if target else "build"
+    step = step or (f"build-{target}" if target else "build")
     start = time.time()
     with open(log.path(step), "wb") as err:
         p = subprocess.run(cmd, cwd=ROOT, env=full_env, stdout=subprocess.PIPE, stderr=err)
@@ -237,6 +252,31 @@ def wine(log):
     return run_suite(log, "tests-wine", binaries, runner=("wine",), env={"WINEDEBUG": "-all"}, allowed=WINE_ONLY_FAILURES)
 
 
+def switched_by_oracle(name, manifest_dir):
+    """True when the feature changes what this binary runs; a binary whose source is not found runs."""
+    crate = Path(manifest_dir)
+    test = crate / "tests" / f"{name}.rs"
+    if test.exists():
+        return ORACLE_CFG in test.read_text(errors="replace")
+    if name == crate.name.replace("-", "_"):
+        return any(ORACLE_CFG in f.read_text(errors="replace") for f in (crate / "src").rglob("*.rs"))
+    return True
+
+
+def oracle(log):
+    """The test binaries the `oracle` features switch on, built in a directory of their own."""
+    rc, binaries, built = compile_tests(log, [], target_dir=ROOT / "target" / "gate-oracle", features=ORACLE_FEATURES, step="build-oracle")
+    report(log, "build-oracle", rc == 0, built, f"{len(binaries)} test binaries")
+    if rc != 0:
+        tail_errors(log, "build-oracle")
+        return False
+    switched = [b for b in binaries if switched_by_oracle(b[0], b[1])]
+    unmet = {b[0]: ORACLE_NEEDS[b[0]] for b in switched if b[0] in ORACLE_NEEDS and not os.environ.get(ORACLE_NEEDS[b[0]])}
+    for name, var in sorted(unmet.items()):
+        log.line(f"not run      {name}: it needs {var}, which is not set")
+    return run_suite(log, "tests-oracle", [b for b in switched if b[0] not in unmet])
+
+
 def memory_peak():
     """This scope's peak, page cache included, so an upper bound on what the gate needed."""
     try:
@@ -249,6 +289,7 @@ def memory_peak():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--wine", action="store_true", help="also run the Windows test suite under Wine")
+    ap.add_argument("--no-oracle", action="store_true", help="skip the tests behind the `oracle` features")
     ap.add_argument("--no-clippy", action="store_true", help="tests only")
     ap.add_argument("-p", dest="packages", action="append", default=[], help="tests of this crate only")
     args = ap.parse_args()
@@ -271,8 +312,10 @@ def main():
         ok = all([f.result() for f in [pool.submit(j) for j in jobs]])
     if ok and args.wine:
         ok = wine(log)
+    if ok and not args.no_oracle:
+        ok = oracle(log)
 
-    scope = "" if not args.packages and not args.no_clippy else " (partial: not what CI checks)"
+    scope = "" if not (args.packages or args.no_clippy or args.no_oracle) else " (partial)"
     log.line(f"GATE {'OK' if ok else 'FAILED'}{scope} in {time.time() - start:.0f}s{memory_peak()}; logs in {log.dir}")
     sys.exit(0 if ok else 1)
 
