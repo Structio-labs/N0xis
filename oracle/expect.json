@@ -201,10 +201,7 @@
           "params": [
             "stack"
           ],
-          "ret": "int",
-          "known_open": {
-            "params": "same as i386_cdecl_v_v"
-          }
+          "ret": "int"
         },
         "i386_cdecl_i_i3": {
           "params": [
@@ -212,10 +209,7 @@
             "stack",
             "stack"
           ],
-          "ret": "int",
-          "known_open": {
-            "params": "same as i386_cdecl_v_v \u2014 this one reads [esp+4], [esp+8] and [esp+0Ch], three slots plainly visible"
-          }
+          "ret": "int"
         },
         "i386_cdecl_v_pi": {
           "params": [
@@ -224,7 +218,6 @@
           ],
           "ret": "void",
           "known_open": {
-            "params": "same as i386_cdecl_v_v",
             "ret": "the body uses eax as scratch for the pointer, so the ABI's return register is written and the function reads as returning a value. Distinguishing a scratch write from a result needs the callee's source-level type, which no ABI records."
           }
         },
@@ -262,10 +255,7 @@
           "params": [
             "stack"
           ],
-          "ret": "int",
-          "known_open": {
-            "params": "same as i386_cdecl_v_v"
-          }
+          "ret": "int"
         },
         "i386_stdcall_i_i2": {
           "params": [

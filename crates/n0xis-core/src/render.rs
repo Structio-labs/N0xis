@@ -305,8 +305,8 @@ impl RenderNames {
                 .collect(),
         );
         self.structs = types.structs.iter().map(|s| (s.base_var.clone(), std::collections::BTreeMap::new())).collect();
-        self.param_names = types.signature.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
-        self.params = types.signature.params.iter().map(|p| format!("{}.0", p.reg)).collect();
+        self.param_names = types.signature.entries().map(|(entry, p)| (entry, p.name.clone())).collect();
+        self.params = types.signature.entries().map(|(entry, _)| entry).collect();
         // Only a *measured* void suppresses the return line; an unknown one
         // must not, or a value the function does return disappears.
         self.void_return = types.signature.ret.is_void();

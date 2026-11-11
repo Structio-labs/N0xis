@@ -66,6 +66,17 @@ MUTATIONS = [
     (CORE + "ir.rs", "        .or_else(|| ins.target.and_then(|t| ctx.symbols.and_then(|s| s.thunk_to(t))).and_then(|def| symbol_on_entry(ctx, def)))\n", "", *LIB, "callee::tests::a_call_through_the_plt_to_the_images_own_export_has_its_name_and_count"),
     (CORE + "render.rs", "let rest = args[n..].iter().filter(|_| sig.variadic)", "let rest = args[n..].iter().filter(|_| false)", *LIB, "callee::tests::a_format_shows_its_text_and_takes_what_it_asks_for"),
     (CORE + "callee.rs", '                    used.insert(format!("{reg}.0"));\n', "", *LIB, "callee::tests::a_double_the_format_asks_for_comes_from_its_register"),
+    # The stack convention (i386): a slot read is a parameter, a tail jump passes the caller's on, a push is an argument.
+    (CORE + "typeinfer.rs", "callee_cleanup_arity(ctx, cfg).or_else(|| crate::callee::stack_params(ctx, cfg, blocks, flow).map(|t| t.floor()).filter(|n| *n > 0))", "callee_cleanup_arity(ctx, cfg)", *LIB, "stack_args::tests::a_stack_slot_read_is_a_parameter"),
+    (CORE + "ssa.rs", "MicroExpr::Cast { bits, expr, .. } if self.word_bits.is_some_and(|w| *bits >= w) => e = expr,", "MicroExpr::Cast { bits, expr, .. } if false => e = expr,", *LIB, "stack_args::tests::a_stack_slot_read_is_a_parameter"),
+    (CORE + "ssa.rs", "                MicroExpr::AddrOf(inner) => e = inner,\n", "", *LIB, "stack_args::tests::a_displacement_wraps_at_the_word"),
+    (CORE + "ssa.rs", "        Some(self.wrap(self.at.get(base)? + c))", "        Some(self.at.get(base)? + c)", *LIB, "stack_args::tests::a_displacement_wraps_at_the_word"),
+    ("crates/n0xis-arch/src/x64_lift.rs", "                && instr.near_branch_target() == instr.next_ip() =>", "                && false =>", *LIB, "stack_args::tests::a_call_to_the_next_instruction_is_a_push"),
+    (CORE + "decomp.rs", "            crate::stack_args::name_params(ctx, blocks, stack_params);\n", "", *LIB, "stack_args::tests::a_stack_slot_read_is_a_parameter"),
+    (CORE + "typeinfer.rs", "                (crate::stack_args::arg_entry(stack - 1), p)", "                (format!(\"{}.0\", p.reg), p)", *LIB, "stack_args::tests::a_stack_slot_read_is_a_parameter"),
+    (CORE + "callee.rs", "own.tails.iter().flat_map(", "own.tails.iter().take(0).flat_map(", *LIB, "stack_args::tests::a_tail_jump_passes_its_own_arguments_on"),
+    (CORE + "callee.rs", "            let (frame, loaded, entry) = if frame.get(&version).is_some() {", "            let (frame, loaded, entry) = if true {", *LIB, "stack_args::tests::a_realigned_stack_still_passes_what_was_stored"),
+    (CORE + "callee.rs", "    settle_stack_args(ctx, cfg, blocks, raw);\n", "", *LIB, "stack_args::tests::what_is_pushed_before_a_call_is_its_arguments"),
 ]
 
 

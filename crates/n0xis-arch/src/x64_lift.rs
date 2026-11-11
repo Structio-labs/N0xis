@@ -1284,6 +1284,22 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Ret | Mnemonic::Retf => {
             out.push(MicroStmt::Return(Some(MicroExpr::var("rax"))));
         }
+        // `call 1f; 1: pop %eax` is how clang's i386 PIC code reads its own address:
+        // a push of the next instruction's, which goes nowhere. Lifted as a call it
+        // left the stack pointer a word high after the `pop`, and every argument the
+        // function then read was taken for the one after it. 32-bit code only: x86-64
+        // reads its address with `lea` off `rip`, and the tests here write a call
+        // with no callee in mind as `e8 00000000`.
+        Mnemonic::Call
+            if instr.code_size() == CodeSize::Code32
+                && matches!(instr.op0_kind(), OpKind::NearBranch32)
+                && instr.near_branch_target() == instr.next_ip() =>
+        {
+            let delta = i128::from(instr.stack_pointer_increment());
+            let slot = MicroExpr::binary(BinOp::Add, MicroExpr::var(stack_pointer(&instr)), MicroExpr::constant(delta, 64));
+            out.push(MicroStmt::Store { addr: slot.clone(), value: MicroExpr::constant(i128::from(instr.next_ip()), 64), bits: (delta.unsigned_abs() as Bits) * 8 });
+            out.push(MicroStmt::Assign { dst: stack_pointer(&instr), value: slot });
+        }
         Mnemonic::Call => {
             let cc = cc_for(arch, abi);
             out.push(MicroStmt::Call {

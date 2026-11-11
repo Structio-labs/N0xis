@@ -194,6 +194,25 @@ pub struct RecoveredSignature {
     pub params_known: bool,
 }
 
+impl RecoveredSignature {
+    /// Each parameter with the name its value has at entry in the body: `rdi.0` for
+    /// one in a register, and for one on the stack the slot's own entry value,
+    /// [`crate::stack_args::arg_entry`]. The one place a parameter is keyed so: a
+    /// stack parameter has no register, and keyed by an empty one every stack
+    /// parameter was `.0`, the same name, and none of them was a parameter to the body.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (String, &ParamInfo)> {
+        let mut stack = 0;
+        self.params.iter().map(move |p| {
+            if p.reg.is_empty() {
+                stack += 1;
+                (crate::stack_args::arg_entry(stack - 1), p)
+            } else {
+                (format!("{}.0", p.reg), p)
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct TypeArtifact {
     pub locals: Vec<LocalVar>,
@@ -1585,7 +1604,12 @@ fn infer_with(
     // then *states* `(void)` for a function that plainly has parameters. A
     // callee-cleanup return says the argument size outright, and 2 361 of the
     // 3 130 returns in one 32-bit system DLL carry one.
-    let stack_arity = arg_regs.is_empty().then(|| callee_cleanup_arity(ctx, cfg)).flatten();
+    // Without one, the slots it reads and passes on in place ([`crate::stack_args`]):
+    // reading `esp.0 + 0x8` is the second argument as surely as reading `rsi.0` is.
+    let stack_arity = arg_regs
+        .is_empty()
+        .then(|| callee_cleanup_arity(ctx, cfg).or_else(|| crate::callee::stack_params(ctx, cfg, blocks, flow).map(|t| t.floor()).filter(|n| *n > 0)))
+        .flatten();
     // The **other** argument file. A floating-point parameter never touches an
     // integer register, so scanning only those could not see one: measured on a
     // purpose-built target, `double f(double)`, `double f(double,double,double)`,
@@ -1660,7 +1684,7 @@ fn infer_with(
         Some(n) => (0..n)
             .map(|i| ParamInfo {
                 reg: "",
-                name: format!("arg{i}"),
+                name: crate::stack_args::arg_name(i),
                 ty: CType::generic(word_bits(ctx), false),
             })
             .collect(),
@@ -1983,15 +2007,20 @@ mod tests {
 
     /// `(void)` is C for "takes nothing"; `()` is C for "unspecified". On a
     /// stack-argument ABI with a plain `ret` there is no argument register to
-    /// scan and no callee cleanup to read — nothing is measured, and the
-    /// signature must not claim a count it does not have.
+    /// scan and no callee cleanup to read: a function that reads no slot of its
+    /// own says nothing of its count, and the signature must not claim one. One
+    /// that reads `[esp+4]` takes that argument ([`crate::stack_args`]).
     #[test]
     fn a_caller_cleanup_return_leaves_the_arity_unknown_not_zero() {
-        // 8b 44 24 04   mov eax,[esp+4]
-        // c3            ret            (cdecl: the caller cleans up)
-        let art = infer_code_x86(vec![0x8b, 0x44, 0x24, 0x04, 0xc3]);
+        // b8 01 00 00 00   mov eax,1
+        // c3               ret            (cdecl: the caller cleans up)
+        let art = infer_code_x86(vec![0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3]);
         assert!(art.signature.params.is_empty(), "nothing is recovered here");
         assert!(!art.signature.params_known, "and the emptiness is ignorance, not a measurement");
+        // 8b 44 24 04   mov eax,[esp+4]
+        // c3            ret
+        let art = infer_code_x86(vec![0x8b, 0x44, 0x24, 0x04, 0xc3]);
+        assert_eq!(art.signature.params.len(), 1, "the slot it reads is its first argument");
     }
 
     fn infer_code(code: Vec<u8>) -> TypeArtifact {

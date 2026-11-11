@@ -421,9 +421,8 @@ pub(crate) fn class_closure(
 ) -> BTreeMap<String, Classed> {
     let mut cls: BTreeMap<String, Classed> = types
         .signature
-        .params
-        .iter()
-        .filter_map(|p| Some((format!("{}.0", p.reg), Classed::new(class_of(p.ty.name.as_deref()?)?, ClassFrom::Parameter))))
+        .entries()
+        .filter_map(|(entry, p)| Some((entry, Classed::new(class_of(p.ty.name.as_deref()?)?, ClassFrom::Parameter))))
         .collect();
     let everywhere = built == BuiltClasses::Everywhere;
     // Constructors first, in program order, so the most derived one wins — see

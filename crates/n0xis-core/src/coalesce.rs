@@ -255,7 +255,7 @@ fn liveness(blocks: &[SsaBlock]) -> (Vec<HashSet<String>>, Vec<HashSet<String>>)
 pub fn coalesce_vars(blocks: &[SsaBlock], sig: &RecoveredSignature) -> HashMap<String, String> {
     // A recovered parameter's entry version renders under its parameter name
     // (Rung 3b baseline — holds whether or not the parameter is in a phi web).
-    let param_name: HashMap<String, String> = sig.params.iter().map(|p| (format!("{}.0", p.reg), p.name.clone())).collect();
+    let param_name: HashMap<String, String> = sig.entries().map(|(entry, p)| (entry, p.name.clone())).collect();
 
     // Build phi-congruence classes: union each phi dst with its input values.
     let mut uf = Uf::default();

@@ -121,6 +121,18 @@ pub struct RawFlow {
     pub stored_at: BTreeMap<String, i128>,
     /// What the function's returns hold.
     pub returns: ReturnEvidence,
+    /// The frame offsets loaded from and stored to, before propagation: a load whose
+    /// value nothing reads is gone after it, and it read the slot all the same. On i386
+    /// gcc passes a local function's arguments in registers, and the load of a
+    /// parameter into one went with the register the call no longer reads.
+    pub frame: FrameAccess,
+}
+
+/// See [`RawFlow::frame`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameAccess {
+    pub loaded: BTreeSet<i128>,
+    pub stored: BTreeSet<i128>,
 }
 
 /// What stands behind the return register at each `ret`, where the lift returned it
@@ -801,7 +813,7 @@ fn copied_var(e: &MicroExpr) -> Option<&str> {
 }
 
 /// Reads [`RawFlow`] off the blocks as they are before propagation.
-pub(crate) fn raw_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> RawFlow {
+pub(crate) fn raw_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>, word_bytes: Option<u8>) -> RawFlow {
     // Where each value goes by copy or merge. A name is defined once.
     let mut goes_to: HashMap<&str, Vec<&str>> = HashMap::new();
     for b in blocks {
@@ -848,8 +860,12 @@ pub(crate) fn raw_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> RawF
             moved.insert(entry.to_string());
         }
     }
-    let (saved, stored_at) = saved_entries(blocks, stack_pointer);
-    RawFlow { moved, saved, stored_at, returns: ReturnEvidence::default() }
+    let (saved, stored_at) = saved_entries(blocks, stack_pointer, word_bytes);
+    let frame = stack_pointer.map(|sp| frame_offsets(blocks, sp, word_bytes)).map_or_else(FrameAccess::default, |f| FrameAccess {
+        loaded: crate::stack_args::loaded_offsets(blocks, &f),
+        stored: crate::stack_args::stored_offsets(blocks, &f),
+    });
+    RawFlow { moved, saved, stored_at, returns: ReturnEvidence::default(), frame }
 }
 
 /// See [`ReturnEvidence`]. `ret_reg` is the convention's integer return register: its
@@ -958,60 +974,147 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
     out
 }
 
-/// The frame offset an address names, through the stack pointer's versions and any
-/// copy of them (a frame pointer).
-pub(crate) fn frame_offsets(blocks: &[SsaBlock], stack_pointer: &str) -> HashMap<String, i128> {
-    let mut at: HashMap<String, i128> = HashMap::from([(format!("{stack_pointer}.0"), 0)]);
-    loop {
-        let before = at.len();
-        for b in blocks {
-            for s in &b.stmts {
-                if let MicroStmt::Assign { dst, value } = &s.stmt
-                    && !at.contains_key(dst)
-                    && let Some(off) = frame_offset_of(value, &at)
-                {
-                    at.insert(dst.clone(), off);
-                }
+/// The frame offset of every version of the stack pointer and every copy of one (a
+/// frame pointer), from the stack pointer at entry.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Frame {
+    at: HashMap<String, i128>,
+    /// The target's word, in bits. A 32-bit lift computes on the canonical 64-bit
+    /// registers and casts each result to 32 bits, so on i386 every address is
+    /// `(uint32_t)(esp.0 + 0x4)`: a cast to the word is the value itself there, and
+    /// on x86-64 a cast to 32 bits of a stack address is no address of the frame.
+    word_bits: Option<u32>,
+}
+
+impl Frame {
+    /// The frame offset an address names.
+    pub(crate) fn offset_of(&self, e: &MicroExpr) -> Option<i128> {
+        let (base, c) = self.split(e)?;
+        Some(self.wrap(self.at.get(base)? + c))
+    }
+
+    /// `e` as a variable and a constant away from it, if it is one.
+    fn split<'e>(&self, e: &'e MicroExpr) -> Option<(&'e str, i128)> {
+        let var = |e: &'e MicroExpr| match self.bare(e) {
+            MicroExpr::Var(v) => Some(v.as_str()),
+            _ => None,
+        };
+        let constant = |e: &MicroExpr| match self.bare(e) {
+            MicroExpr::Const { value, .. } => Some(*value),
+            _ => None,
+        };
+        match self.bare(e) {
+            MicroExpr::Var(v) => Some((v.as_str(), 0)),
+            MicroExpr::Binary(BinOp::Add, l, r) => match (var(l), constant(r), constant(l), var(r)) {
+                (Some(v), Some(c), _, _) | (_, _, Some(c), Some(v)) => Some((v, c)),
+                _ => None,
+            },
+            MicroExpr::Binary(BinOp::Sub, l, r) => Some((var(l)?, -constant(r)?)),
+            _ => None,
+        }
+    }
+
+    /// An offset as the target's address arithmetic has it: on i386 `ecx.1 + 0xfffffffc`
+    /// is four bytes below `ecx.1`, not four GiB above, and read as the second, gcc's
+    /// `main` asked for a billion arguments.
+    fn wrap(&self, off: i128) -> i128 {
+        match self.word_bits {
+            Some(w) if w < 128 => {
+                let shift = 128 - w;
+                (off << shift) >> shift
+            }
+            _ => off,
+        }
+    }
+
+    /// `e` with what changes nothing taken off: the casts to the target's word, and
+    /// the `lea` that makes an address a value (`AddrOf`), so `lea 0x8(%esp),%ecx` is
+    /// eight bytes up the frame like `esp.0 + 0x8` is.
+    fn bare<'e>(&self, mut e: &'e MicroExpr) -> &'e MicroExpr {
+        loop {
+            match e {
+                MicroExpr::Cast { bits, expr, .. } if self.word_bits.is_some_and(|w| *bits >= w) => e = expr,
+                MicroExpr::AddrOf(inner) => e = inner,
+                _ => return e,
             }
         }
-        if at.len() == before {
-            return at;
-        }
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<i128> {
+        self.at.get(name).copied()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &i128)> {
+        self.at.iter()
     }
 }
 
-pub(crate) fn frame_offset_of(e: &MicroExpr, at: &HashMap<String, i128>) -> Option<i128> {
-    match e {
-        MicroExpr::Var(v) => at.get(v).copied(),
-        MicroExpr::Binary(BinOp::Add, l, r) => match (l.as_ref(), r.as_ref()) {
-            (MicroExpr::Var(v), MicroExpr::Const { value, .. }) | (MicroExpr::Const { value, .. }, MicroExpr::Var(v)) => Some(at.get(v)? + value),
+/// See [`Frame`]. `word_bytes` is the target's pointer size.
+pub(crate) fn frame_offsets(blocks: &[SsaBlock], stack_pointer: &str, word_bytes: Option<u8>) -> Frame {
+    frame_offsets_from(blocks, &format!("{stack_pointer}.0"), word_bytes)
+}
+
+/// The version `v` is a constant away from, as far back as constants go. Past
+/// `and $-8,%esp` the offset from entry is lost, and what a call is given is still a
+/// constant away from what that left: [`frame_offsets_from`] it.
+pub(crate) fn frame_root(blocks: &[SsaBlock], v: &str, word_bytes: Option<u8>) -> String {
+    let probe = Frame { at: HashMap::new(), word_bits: word_bytes.map(|b| u32::from(b) * 8) };
+    let defs: HashMap<&str, &MicroExpr> = blocks
+        .iter()
+        .flat_map(|b| &b.stmts)
+        .filter_map(|s| match &s.stmt {
+            MicroStmt::Assign { dst, value } => Some((dst.as_str(), value)),
             _ => None,
-        },
-        MicroExpr::Binary(BinOp::Sub, l, r) => match (l.as_ref(), r.as_ref()) {
-            (MicroExpr::Var(v), MicroExpr::Const { value, .. }) => Some(at.get(v)? - value),
-            _ => None,
-        },
-        _ => None,
+        })
+        .collect();
+    let mut cur = v;
+    for _ in 0..=defs.len() {
+        match defs.get(cur).and_then(|e| probe.split(e)) {
+            Some((base, _)) if base != cur => cur = base,
+            _ => break,
+        }
+    }
+    cur.to_string()
+}
+
+/// Offsets from `root` rather than from the stack pointer at entry. See [`frame_root`].
+pub(crate) fn frame_offsets_from(blocks: &[SsaBlock], root: &str, word_bytes: Option<u8>) -> Frame {
+    let mut frame = Frame { at: HashMap::from([(root.to_string(), 0)]), word_bits: word_bytes.map(|b| u32::from(b) * 8) };
+    loop {
+        let before = frame.at.len();
+        for b in blocks {
+            for s in &b.stmts {
+                if let MicroStmt::Assign { dst, value } = &s.stmt
+                    && !frame.at.contains_key(dst)
+                    && let Some(off) = frame.offset_of(value)
+                {
+                    frame.at.insert(dst.clone(), off);
+                }
+            }
+        }
+        if frame.at.len() == before {
+            return frame;
+        }
     }
 }
 
 /// See [`RawFlow::saved`]. A store nothing loads is not a save: at `-O0` that is a
 /// parameter written to its slot and not used, which the bytes do read.
-fn saved_entries(blocks: &[SsaBlock], stack_pointer: Option<&str>) -> (BTreeSet<String>, BTreeMap<String, i128>) {
+fn saved_entries(blocks: &[SsaBlock], stack_pointer: Option<&str>, word_bytes: Option<u8>) -> (BTreeSet<String>, BTreeMap<String, i128>) {
     let Some(sp) = stack_pointer else { return Default::default() };
-    let at = frame_offsets(blocks, sp);
+    let at = frame_offsets(blocks, sp, word_bytes);
     let mut stored: Vec<(&str, i128)> = Vec::new();
     let mut loaded: HashMap<i128, Vec<&str>> = HashMap::new();
     let mut reads: BTreeSet<String> = BTreeSet::new();
     for b in blocks {
         for s in &b.stmts {
             match &s.stmt {
-                MicroStmt::Store { addr, value: MicroExpr::Var(v), .. } if v.ends_with(".0") && frame_offset_of(addr, &at).is_some() => {
-                    stored.push((v.as_str(), frame_offset_of(addr, &at).expect("just checked")));
+                MicroStmt::Store { addr, value: MicroExpr::Var(v), .. } if v.ends_with(".0") && at.offset_of(addr).is_some() => {
+                    stored.push((v.as_str(), at.offset_of(addr).expect("just checked")));
                     collect_expr_vars(addr, &mut reads);
                 }
-                MicroStmt::Assign { dst, value: MicroExpr::Load { addr, .. } } if frame_offset_of(addr, &at).is_some() => {
-                    loaded.entry(frame_offset_of(addr, &at).expect("just checked")).or_default().push(dst.as_str());
+                MicroStmt::Assign { dst, value: MicroExpr::Load { addr, .. } } if at.offset_of(addr).is_some() => {
+                    loaded.entry(at.offset_of(addr).expect("just checked")).or_default().push(dst.as_str());
                     collect_expr_vars(addr, &mut reads);
                 }
                 // What `ret` reads of the return register says nothing of a value
@@ -1181,7 +1284,7 @@ fn build_ssa(
         .collect();
 
     let (float_return, float_return_pair) = retarget_float_returns(&mut blocks, &ret_sites, &defs);
-    let raw_flow = raw_flow(&blocks, arch.stack_pointer());
+    let raw_flow = raw_flow(&blocks, arch.stack_pointer(), arch.pointer_size());
     SsaArtifact {
         start: cfg.start,
         end: cfg.end,
