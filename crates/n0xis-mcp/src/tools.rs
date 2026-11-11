@@ -15,6 +15,8 @@ use n0xis_contracts::{Response, Va, schema};
 use n0xis_core::{CoordSpace, Rect};
 #[cfg(windows)]
 use n0xis_core::{Ctx, Pass};
+#[cfg(windows)]
+use n0xis_sources::MemorySource;
 // Needed only by the tools that still require Win32 — the watchpoint-driven
 // provenance trace and the UI-localization family. The list is an inventory of
 // what a Linux adapter has yet to reach.
