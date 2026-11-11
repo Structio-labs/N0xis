@@ -35,7 +35,6 @@ const PREVIOUS: &str = ".previous";
 const RECORD: &str = ".previous.json";
 /// Beside the running binary, and it stays: the kernel releases the lock on a kill, whoever holds it.
 const LOCK: &str = ".update-lock";
-const LOCK_PATIENCE: Duration = Duration::from_millis(500);
 /// Beside each file: the version `--rollback` went back from, which `update.auto` leaves alone. Here and
 /// not in the state file, because a check in flight rewrites that file and once wrote a hold away, and
 /// so that it needs no configuration directory.
@@ -312,7 +311,7 @@ impl Updater {
         let mut locks = Vec::new();
         let mut changing = Vec::new();
         for item in plan {
-            match lock_for_install(&item, asked, &manifest.version) {
+            match lock_for_install(&item, asked, &manifest.version, self.transport.lock_patience) {
                 Ok(lock) => locks.push(lock),
                 Err(r) if item.runs && r.why == Why::Held => {
                     report.skipped.push(Skipped::of(&item.component, r));
@@ -450,8 +449,8 @@ fn sibling(dir: &Path, name: &str, raw: &serde_json::Value, file: &str) -> Resul
 
 /// This file's own lock, and under it its hold. A hold that does not read decides nothing in favour of
 /// installing: `update.auto` turned on by a user must not undo what that user went back from.
-fn lock_for_install(item: &Planned, asked: Asked, version: &Version) -> Result<Held, Refusal> {
-    let lock = take_lock(&item.target, |e| not_writable(&item.target, &item.entry, e))?;
+fn lock_for_install(item: &Planned, asked: Asked, version: &Version, patience: Duration) -> Result<Held, Refusal> {
+    let lock = take_lock(&item.target, |e| not_writable(&item.target, &item.entry, e), patience)?;
     if asked == Asked::Auto {
         let path = with_suffix(&item.target, HOLD);
         let held = match read_ours(&path) {
@@ -508,8 +507,8 @@ fn commit(item: &Planned, files: &Prepared) -> io::Result<()> {
 /// `n0x update --rollback`: back to the file kept beside `exe`, or beside the file called `name` next
 /// to it, and that file alone, with its own record and lock. It needs no network and no configuration,
 /// and it is one shot: the file gone back from is not kept, so a second run says there is nothing to go
-/// back to and never goes forward.
-pub fn rollback(exe: &Path, name: Option<&str>) -> Result<RollbackReport, Refusal> {
+/// back to and never goes forward. Of `limits` it reads only `lock`, how long another run may hold it.
+pub fn rollback(exe: &Path, name: Option<&str>, limits: &crate::Limits) -> Result<RollbackReport, Refusal> {
     let beside = match name {
         None => exe.to_path_buf(),
         Some(name) if is_bare_file_name(name) => exe.with_file_name(name),
@@ -520,7 +519,7 @@ pub fn rollback(exe: &Path, name: Option<&str>) -> Result<RollbackReport, Refusa
     if fs::symlink_metadata(with_suffix(&target, PREVIOUS)).is_err() {
         return Err(no_previous(&target));
     }
-    let _lock = take_lock(&target, |e| Refusal::new(Why::NotWritable, format!("{} cannot be replaced from here: {e}", target.display())))?;
+    let _lock = take_lock(&target, |e| Refusal::new(Why::NotWritable, format!("{} cannot be replaced from here: {e}", target.display())), limits.lock)?;
     sweep(&target);
     let record = kept_for(&target)?;
     let file = target.display().to_string();
@@ -605,7 +604,7 @@ pub(crate) fn file_at(path: &Path) -> Option<String> {
 }
 
 /// Held until dropped, or by the kernel until the process dies: there is no state to go stale.
-fn take_lock(target: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -> Result<Held, Refusal> {
+fn take_lock(target: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal, patience: Duration) -> Result<Held, Refusal> {
     let path = with_suffix(target, LOCK);
     let file = open_ours(&path, OpenOptions::new().create(true).truncate(false).write(true)).map_err(|e| match e {
         Unusable::NotOurs(what) => Refusal::new(Why::NotOurs, format!("{} {what}, so it is not a lock this client takes", path.display())),
@@ -619,7 +618,7 @@ fn take_lock(target: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -
             // A holder that lets go by its close, as one killed does and as a client before `Held`
             // did, leaves the lock with whatever process its own forked just then, until that one's
             // exec. A moment's patience, so that only a real holder is called one.
-            Err((back, TryLockError::WouldBlock)) if start.elapsed() < LOCK_PATIENCE => {
+            Err((back, TryLockError::WouldBlock)) if start.elapsed() < patience => {
                 file = back;
                 std::thread::sleep(Duration::from_millis(20));
             }

@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 UPDATE = "crates/n0xis-update/src/"
 
 # What is installed is read under the lock, not before it: the same test, done ahead of the loop.
-LOCK_THEN = """            match lock_for_install(&item, asked, &manifest.version) {
+LOCK_THEN = """            match lock_for_install(&item, asked, &manifest.version, self.transport.lock_patience) {
                 Ok(lock) => locks.push(lock),
                 Err(r) if item.runs && r.why == Why::Held => {
                     report.skipped.push(Skipped::of(&item.component, r));
@@ -131,6 +131,8 @@ MUTATIONS = [
     (UPDATE + "install.rs", "for item in &changing {\n            sweep(&item.target);\n        }\n", "", *PLANTED, "what_a_dead_run_left_is_swept_under_the_lock"),
     # E. The small ones, and the push.
     (UPDATE + "install.rs", READ_UNDER_THE_LOCK, READ_BEFORE_THE_LOCK, *PLANTED, "a_run_that_waited_out_another_reads_what_it_left"),
+    # The bench waits out a held lock for a minute, not the shipped 500 ms: shorter than the case's own hold, it is refused.
+    ("crates/n0xis-update/tests/planted.rs", "lock: Duration::from_secs(60) }", "lock: Duration::from_millis(50) }", *PLANTED, "a_run_that_waited_out_another_reads_what_it_left"),
     (UPDATE + "notice.rs", "entries.flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).collect()", "{ let _ = entries; (3..1024).collect() }", *DOOR, "on_a_terminal::the_copy_lets_go_of_a_handle_above_1024"),
     (UPDATE + "notice.rs", "if lock.try_lock().is_err() || !a_day_has_passed(read_stamp(&path), at) {", "let _ = &lock;\n    if !a_day_has_passed(read_stamp(&path), at) {", *DOOR, "on_a_terminal::a_stamp_being_claimed_starts_no_second_check"),
     (UPDATE + "notice.rs", "installed: state.installed.filter(|i| is_version(&i.from) && is_version(&i.to)),", "installed: state.installed,", *DOOR, "on_a_terminal::an_escape_in_the_state_file_never_reaches_the_terminal"),
@@ -139,8 +141,8 @@ MUTATIONS = [
     (UPDATE + "install.rs", "let _ = fs::remove_file(with_suffix(&target, RECORD));", "let _ = fs::remove_file(with_suffix(&target, RECORD));\n    for e in fs::read_dir(target.parent().unwrap()).unwrap().flatten() {\n        let p = e.path();\n        if p != target && fs::symlink_metadata(with_suffix(&p, PREVIOUS)).is_ok() {\n            let _ = put_in_place(&with_suffix(&p, PREVIOUS), &p);\n        }\n    }", *PLANTED, "rollback_leaves_a_sibling_and_another_copy_alone"),
     (UPDATE + "install.rs", "let _lock = take_lock(&target,", "let _lock = take_lock(exe,", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
     (UPDATE + "install.rs", "Some(name) if is_bare_file_name(name) => exe.with_file_name(name),", "Some(name) if !name.is_empty() => exe.with_file_name(name),", *PLANTED, "rollback_takes_a_bare_name_and_that_files_own_lock"),
-    (UPDATE + "install.rs", "match lock_for_install(&item, asked, &manifest.version) {", "match (if item.runs { lock_for_install(&item, asked, &manifest.version) } else { File::open(&item.target).map_err(|e| Refusal::new(Why::InstallFailed, e.to_string())) }) {", *PLANTED, "an_install_skips_a_sibling_whose_own_lock_is_held"),
-    ("crates/n0xis-cli/src/main.rs", '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref()));', '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref().filter(|_| false)));', *DOOR, "rollback_takes_a_bare_name"),
+    (UPDATE + "install.rs", "match lock_for_install(&item, asked, &manifest.version, self.transport.lock_patience) {", "match (if item.runs { lock_for_install(&item, asked, &manifest.version, self.transport.lock_patience) } else { File::open(&item.target).map_err(|e| Refusal::new(Why::InstallFailed, e.to_string())) }) {", *PLANTED, "an_install_skips_a_sibling_whose_own_lock_is_held"),
+    ("crates/n0xis-cli/src/main.rs", '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref(), &n0xis_update::Limits::default()));', '.and_then(|exe| n0xis_update::rollback(&exe, name.as_deref().filter(|_| false), &n0xis_update::Limits::default()));', *DOOR, "rollback_takes_a_bare_name"),
     # 4. A sibling's version is not known.
     (UPDATE + "install.rs", "from: item.runs.then(|| report.from.clone()),", "from: Some(report.from.clone()),", *PLANTED, "a_siblings_version_is_not_known"),
     (UPDATE + "install.rs", "        None => (None, None),\n", "        None => (Some(record.to), None),\n", *PLANTED, "a_siblings_version_is_not_known"),

@@ -19,7 +19,7 @@ use crate::{Refusal, Why};
 const MANIFEST_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const SIGNATURE_MAX_BYTES: u64 = 64 * 1024;
 
-/// The bounds of every request.
+/// The bounds of every request, and how long another run's lock is waited out.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub connect: Duration,
@@ -33,6 +33,10 @@ pub struct Limits {
     /// For the new file to answer `--version`. Generous: a first run under a slow scanner or an
     /// emulation layer is not a failure, and a hang is.
     pub run: Duration,
+    /// For another run to let go of a file's lock before this one says `update-in-progress`. Short:
+    /// it covers a run that is about to finish, a killed holder whose lock a process forked from
+    /// it keeps until its exec, and a client before `Held` that let go by its close.
+    pub lock: Duration,
 }
 
 impl Default for Limits {
@@ -45,6 +49,7 @@ impl Default for Limits {
             // GitHub's `latest/download` takes two: to the tagged release, then to the asset's store.
             redirects: 5,
             run: Duration::from_secs(30),
+            lock: Duration::from_millis(500),
         }
     }
 }
@@ -55,6 +60,7 @@ pub struct Transport {
     small: Agent,
     file: Agent,
     pub(crate) run_bound: Duration,
+    pub(crate) lock_patience: Duration,
 }
 
 /// What can happen to a GET before there is a body to judge.
@@ -107,7 +113,7 @@ impl Transport {
                 .build()
                 .into()
         };
-        Transport { small: agent(limits.small_body), file: agent(limits.file_body), run_bound: limits.run }
+        Transport { small: agent(limits.small_body), file: agent(limits.file_body), run_bound: limits.run, lock_patience: limits.lock }
     }
 
     fn get_small(&self, url: &str, max: u64) -> Result<Vec<u8>, Failed> {

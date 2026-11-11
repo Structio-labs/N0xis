@@ -3679,7 +3679,7 @@ fn cmd_update(a: UpdateArgs, pretty: bool) -> bool {
         // Asks nothing of the settings or the network: going back has to work when those are what broke.
         let answer = std::env::current_exe()
             .map_err(|e| n0xis_update::Refusal::new(n0xis_update::Why::InstallFailed, format!("cannot tell where this binary is: {e}")))
-            .and_then(|exe| n0xis_update::rollback(&exe, name.as_deref()));
+            .and_then(|exe| n0xis_update::rollback(&exe, name.as_deref(), &n0xis_update::Limits::default()));
         return emit_update_answer(schema::v1::UPDATE, answer, pretty);
     }
     let updater = match n0xis_update::Updater::for_running(UPDATE_COMPONENT, env!("CARGO_PKG_VERSION")) {
