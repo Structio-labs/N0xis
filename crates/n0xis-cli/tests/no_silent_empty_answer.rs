@@ -44,7 +44,10 @@ fn n0xis_exe() -> PathBuf {
 }
 
 /// An answer that cannot honestly be empty on this target, and the field that
-/// carries it. `{target}` and `{entry}` are filled in.
+/// carries it. `{target}`, `{entry}` and `{call}` are filled in: `{call}` is the
+/// first direct call `objdump` lists in `.text`, since `xref from` reads the one
+/// instruction at its address, and the first function's first instruction
+/// (`endbr64`) references nothing.
 struct MustAnswer {
     args: &'static [&'static str],
     field: &'static str,
@@ -63,7 +66,7 @@ const MUST_ANSWER: &[MustAnswer] = &[
     MustAnswer { args: &["ir", "explain", "--file", "{target}", "--addr", "{entry}"], field: "lines" },
     MustAnswer { args: &["ir", "value-set", "--file", "{target}", "--addr", "{entry}"], field: "sets" },
     MustAnswer { args: &["ir", "manifest", "--file", "{target}"], field: "entries" },
-    MustAnswer { args: &["xref", "from", "--file", "{target}", "--addr", "{entry}"], field: "refs" },
+    MustAnswer { args: &["xref", "from", "--file", "{target}", "--addr", "{call}"], field: "refs" },
     MustAnswer { args: &["module", "list", "--file", "{target}"], field: "modules" },
     // A listed start is in a function, so `function` is `{"found": ...}`.
     MustAnswer { args: &["why", "--file", "{target}", "--addr", "{entry}"], field: "function" },
@@ -81,6 +84,21 @@ const HONESTLY_EMPTY: &[(&str, &str)] = &[
 fn run(args: &[String]) -> Option<Value> {
     let out = support::isolated(Command::new(n0xis_exe())).args(args).output().ok()?;
     serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()
+}
+
+/// The address of the first `call <target>` in `.text`, by `objdump`, not by the tool.
+fn first_direct_call(file: &str) -> String {
+    let out = Command::new("objdump").args(["-d", "--no-show-raw-insn", "-j", ".text", file]).output().expect("objdump runs");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|line| {
+            let (addr, text) = line.trim().split_once(':')?;
+            let mut words = text.split_whitespace();
+            let direct = words.next() == Some("call") && words.next().is_some_and(|t| u64::from_str_radix(t, 16).is_ok());
+            let addr = u64::from_str_radix(addr.trim(), 16).ok()?;
+            direct.then(|| format!("{addr:#x}"))
+        })
+        .expect("objdump lists a direct call in .text")
 }
 
 fn build_target(dir: &Path) -> Option<PathBuf> {
@@ -109,11 +127,12 @@ fn no_operation_reports_success_with_an_empty_answer() {
     let listing = run(&["function".into(), "discover".into(), "--file".into(), target.clone(), "--quiet".into()])
         .expect("function discover");
     let entry = listing["data"]["functions"][0]["va"].as_str().expect("an entry address").to_string();
+    let call = first_direct_call(&target);
 
     let mut silent = Vec::new();
     for m in MUST_ANSWER {
         let mut args: Vec<String> =
-            m.args.iter().map(|a| a.replace("{target}", &target).replace("{entry}", &entry)).collect();
+            m.args.iter().map(|a| a.replace("{target}", &target).replace("{entry}", &entry).replace("{call}", &call)).collect();
         args.push("--quiet".into());
         let Some(v) = run(&args) else {
             silent.push(format!("{}: no envelope at all", m.args.join(" ")));

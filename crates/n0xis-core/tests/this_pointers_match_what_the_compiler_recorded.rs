@@ -187,12 +187,13 @@ fn check(so: &Path, level: &str) -> (usize, usize, usize) {
     // rule that never fires and was the harness handing it neither. Measuring
     // a rule while starving it is the third time in this project that the
     // instrument, not the subject, was the broken part.
+    let pointer_size = elf.pointer_size().expect("an x86-64 shared object states its pointer size");
     let vtables: std::sync::Arc<std::collections::HashMap<u64, String>> = std::sync::Arc::new(
         n0xis_core::scan_itanium_rtti(
             &elf as &dyn n0xis_sources::MemorySource,
             &elf.data_symbols(),
             &n0xis_sources::MemorySource::code_ranges(&elf),
-            elf.pointer_size(),
+            pointer_size,
             elf.relocated_words(),
         )
         .vtables
@@ -203,7 +204,7 @@ fn check(so: &Path, level: &str) -> (usize, usize, usize) {
     let ctx = Ctx::new(&elf, &arch)
         .with_symbols(&elf as &dyn SymbolProvider)
         // x86-64 code: a slot holds the method's address as it is.
-        .with_vtables(&vtables, n0xis_core::VtableSlots { pointer_size: elf.pointer_size(), code_pointers: n0xis_core::CodePointers::Address });
+        .with_vtables(&vtables, n0xis_core::VtableSlots { pointer_size, code_pointers: n0xis_core::CodePointers::Address });
 
     let mut found = Vec::new();
     let mut missed = Vec::new();
