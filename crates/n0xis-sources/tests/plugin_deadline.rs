@@ -328,7 +328,13 @@ fn never_reads_a_large_request() {
     let argv = helper_argv("never-read", Some(&marker));
     // Far past any OS pipe buffer (64 KiB on Linux, 4 KiB to 64 KiB on
     // Windows), so the writer blocks for as long as the plugin does not read.
-    let request = json!({ "blob": "x".repeat(8 << 20) });
+    // And no larger: `call_once` serializes the request inside its deadline,
+    // before the spawn. At 8 MiB that took a debug build 0.7 to 2.8 s on a
+    // loaded machine (load average 35 on 12 cores, 30 samples), so the
+    // deadline was often spent before the helper was started and it was
+    // killed with its marker empty; the helper itself writes its first marker
+    // 2 to 14 ms after the spawn. 1 MiB is 16 times the largest buffer.
+    let request = json!({ "blob": "x".repeat(1 << 20) });
     let err = plugin_call_once(&argv, &request, SHORT_DEADLINE).unwrap_err();
     assert!(
         matches!(err, PluginError::TimedOut { pending: PluginPending::WritingRequest, .. }),
