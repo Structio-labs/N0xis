@@ -13,6 +13,9 @@
 //! where each `_ZTV` is and where each method is. The engine is asked of the copy
 //! `strip` made, which has neither.
 
+// It builds its target with a compiler at run time, so its answer depends on that
+// compiler's version: a local instrument, not a CI gate.
+#![cfg(feature = "oracle")]
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeMap;

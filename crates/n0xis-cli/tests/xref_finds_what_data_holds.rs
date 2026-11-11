@@ -19,6 +19,9 @@
 //! load anywhere it is a number and must not be listed; on a fixed image it cannot
 //! be told from a pointer and must be listed as only that.
 
+// It builds its target with a compiler at run time, so its answer depends on that
+// compiler's version: a local instrument, not a CI gate.
+#![cfg(feature = "oracle")]
 #![cfg(target_os = "linux")]
 
 use std::collections::{BTreeMap, BTreeSet};

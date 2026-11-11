@@ -11,6 +11,9 @@
 //! where the jump and the guard's branch are, and `objdump -h` where the file holds
 //! each entry, which is read here and not taken from the answer.
 
+// It builds its target with a compiler at run time, so its answer depends on that
+// compiler's version: a local instrument, not a CI gate.
+#![cfg(feature = "oracle")]
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeSet;

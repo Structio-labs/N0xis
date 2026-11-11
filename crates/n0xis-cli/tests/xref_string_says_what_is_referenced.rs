@@ -14,6 +14,9 @@
 //! is. Both directions are held: every reference of `main` that reaches the text is in
 //! the answer, and the answer has none from `main` that is not one.
 
+// It builds its target with a compiler at run time, so its answer depends on that
+// compiler's version: a local instrument, not a CI gate.
+#![cfg(feature = "oracle")]
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeSet;

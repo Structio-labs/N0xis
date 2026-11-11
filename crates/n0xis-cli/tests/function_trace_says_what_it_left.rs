@@ -10,6 +10,9 @@
 //! `oracle/xref/trace.cpp` says what `root` calls, and `objdump -d` where each call
 //! is: which name a direct one, and which go through memory or a register.
 
+// It builds its target with a compiler at run time, so its answer depends on that
+// compiler's version: a local instrument, not a CI gate.
+#![cfg(feature = "oracle")]
 #![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
