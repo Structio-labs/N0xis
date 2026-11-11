@@ -108,7 +108,7 @@ fn summarize(ctx: &Ctx, candidate: ManifestCandidate, max_bytes: usize) -> Manif
             switches: art.switches.len(),
             frame_size: art.frame.frame_size,
             quality: quality_score(&art),
-            flags: flags(&art),
+            flags: flags(ctx, &art),
             cut: art.cut(),
         },
         Err(_) => ManifestEntry {
@@ -166,7 +166,7 @@ fn quality_score(art: &CfgArtifact) -> f32 {
 }
 
 /// Categorical flags for fast filtering / display in a manifest.
-fn flags(art: &CfgArtifact) -> Vec<&'static str> {
+fn flags(ctx: &Ctx, art: &CfgArtifact) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     // Of a graph cut where reading stopped, what was not read is not known: it
     // may call, and it may return. `no-return` was said of one that returns.
@@ -196,18 +196,12 @@ fn flags(art: &CfgArtifact) -> Vec<&'static str> {
     if no_frame {
         out.push("no-frame");
     }
-    // No `ret` and no tail call read, and no jump that goes where a tail call goes:
-    // `jmp *%rax` with no table behind it may come back, and was said `no-return`
-    // (audit 2026-11-06, the audit's `WM_ind`), where `function summary` said
-    // `returns: true`.
-    //
-    // Not `noreturn_ipa::function_returns`, which `returns` reads: that one counts a
-    // graph that falls off the end the image states (`call exit@plt` last, with the
-    // name not known) as one that may return, and this counts it as one that does
-    // not. Measured, the rule here is the right one on 4 such ends of 4 looked at
-    // (`_start`'s `hlt`, `my_die`, two `.cold` parts ending in an assert), so the two
-    // are not one rule yet.
-    if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut && !art.leaves_by_an_unresolved_jump() {
+    // The one rule `function summary`'s `returns` and the whole-program fixpoint
+    // read. The flag had its own, counting `ret`s and tail calls, and said
+    // `no-return` of `jmp *%rax` with no table behind it (audit 2026-11-06, the
+    // audit's `WM_ind`), where `function summary` said `returns: true`.
+    let none: std::collections::HashSet<Va> = std::collections::HashSet::new();
+    if !cut && !crate::noreturn_ipa::function_returns(art, ctx.noreturn.unwrap_or(&none)) {
         out.push("no-return");
     }
     if art.stats.noreturn_calls > 0 {

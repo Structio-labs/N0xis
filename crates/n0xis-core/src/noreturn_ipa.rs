@@ -162,6 +162,16 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
     }
 }
 
+/// The block falls off the function's end, and that end is the one the image
+/// states, right after the call the block ends in: `call exit@plt` last, with the
+/// next byte another function's. Where the end was decided by the heuristic, or
+/// reading stopped, what follows is not known and this is `false`.
+fn runs_off_its_stated_end_after_a_call(cfg: &CfgArtifact, b: &crate::ir::CfgBlock) -> bool {
+    b.terminator == "fall"
+        && matches!(cfg.end_by, crate::ir::GraphEnd::Stated)
+        && b.insns.last().is_some_and(|i| i.flow == n0xis_arch::InsnKind::Call && i.va.0 + u64::from(i.len) == cfg.end.0)
+}
+
 /// Does this function's CFG have a reachable **returning** exit?
 ///
 /// Sound-over-complete: returns `true` on any doubt (a `ret`, an exit we cannot
@@ -176,6 +186,11 @@ pub fn propagate_noreturn(ctx: &Ctx, functions: &[Va], max_bytes: usize) -> NoRe
 /// wrapper as a tail-call to the noreturn helper, so a tail-call to a known
 /// noreturn — by import name or by a proven address — is a non-returning exit,
 /// not a return.
+///
+/// And a function whose body reaches the end the image states (a symbol's size,
+/// an unwind entry) right after a call, with no `ret` or jump, does not return
+/// there: the call does not come back, whether or not its callee has a name here.
+/// A heuristic end says nothing of the kind, and gives no such answer.
 pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> bool {
     if cfg.blocks.is_empty() {
         return true; // no evidence → assume it returns
@@ -209,6 +224,9 @@ pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> boo
             // cannot rule out a return down that path.
             "fall" | "jmp" | "cjmp" => {
                 if b.successors.is_empty() {
+                    if runs_off_its_stated_end_after_a_call(cfg, b) {
+                        continue;
+                    }
                     return true;
                 }
                 for s in &b.successors {
@@ -271,6 +289,25 @@ mod tests {
             name: "ExitProcess".into(),
             kind: SymKind::Export,
         }
+    }
+
+    /// `call` to a function with no name here, and then the end: where the image
+    /// states that end (a symbol's size, an unwind entry), the call does not come
+    /// back; where it is where reading stopped or the heuristic's, nothing is known.
+    /// The manifest's own `no-return` said the first of `my_die` (`call exit@plt`
+    /// last on i386) and `returns` said it returns.
+    #[test]
+    fn a_body_that_runs_off_its_stated_end_after_a_call_does_not_return() {
+        let snap = Snapshot::builder().region(Va(0x1000), call_then(0x1000, 0x2000, &[])).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let mut cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 5)).expect("cfg builds");
+        assert_eq!(cfg.end, Va(0x1005));
+        let none = HashSet::new();
+        cfg.end_by = crate::ir::GraphEnd::Stated;
+        assert!(!function_returns(&cfg, &none), "the stated end is right after the call");
+        cfg.end_by = crate::ir::GraphEnd::Heuristic { by: crate::EndRule::Terminator };
+        assert!(function_returns(&cfg, &none), "a heuristic end says nothing of the call");
     }
 
     #[test]

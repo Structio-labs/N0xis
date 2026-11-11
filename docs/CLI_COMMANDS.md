@@ -546,8 +546,9 @@ Per-function index with quality scoring, over discovered candidates.
   `considered`, and `function summary` beside `count`.
 - The flag `leaf` means nothing is called and no indirect jump is left unresolved: `jmp *%rax` with no table behind it
   is a tail call as far as anything can tell.
-- The flag `no-return` means the graph read has no `ret`, no tail call and no indirect jump nothing resolved: such a
-  jump may come back.
+- The flag `no-return` is the rule `function summary`'s `returns: false` is: every path ends in a call that does not
+  return, runs off the end the image states right after a call, or ends nowhere. An indirect jump nothing resolved may
+  come back.
 - Schema: `n0xis.ir.manifest.v1`
 
 ### `ir value-set`

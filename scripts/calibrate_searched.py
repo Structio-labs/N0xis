@@ -95,8 +95,12 @@ MUTATIONS = [
     # An unresolved indirect jump is not counted as an unknown call, nor kept from `leaf`.
     ("crates/n0xis-core/src/summary.rs", "if cfg.leaves_by_an_unresolved_jump() {", "if false {", *CORE_LIB, "summary::tests::an_unresolved_indirect_jump_is_an_unknown_call"),
     ("crates/n0xis-core/src/manifest.rs", "if art.callsites.is_empty() && !cut && !art.leaves_by_an_unresolved_jump() {", "if art.callsites.is_empty() && !cut {", *CORE_LIB, "manifest::tests::an_unresolved_indirect_jump_is_not_a_leaf"),
-    # `no-return` of a graph that leaves by a jump nothing resolved, again.
-    ("crates/n0xis-core/src/manifest.rs", "if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut && !art.leaves_by_an_unresolved_jump() {", "if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {", *CORE_LIB, "manifest::tests::an_unresolved_indirect_jump_is_not_said_not_to_return"),
+    # Running off a stated end after a call is a return again.
+    ("crates/n0xis-core/src/noreturn_ipa.rs", "                    if runs_off_its_stated_end_after_a_call(cfg, b) {", "                    if false && runs_off_its_stated_end_after_a_call(cfg, b) {", *CORE_LIB, "noreturn_ipa::tests::a_body_that_runs_off_its_stated_end_after_a_call_does_not_return"),
+    # ... and so is any end, the heuristic's too.
+    ("crates/n0xis-core/src/noreturn_ipa.rs", "        && matches!(cfg.end_by, crate::ir::GraphEnd::Stated)\n", "\n", *CORE_LIB, "noreturn_ipa::tests::a_body_that_runs_off_its_stated_end_after_a_call_does_not_return"),
+    # `no-return` counted from `ret`s and tail calls again, beside the rule `returns` reads.
+    ("crates/n0xis-core/src/manifest.rs", "if !cut && !crate::noreturn_ipa::function_returns(art, ctx.noreturn.unwrap_or(&none)) {", "if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {", *CORE_LIB, "manifest::tests::an_unresolved_indirect_jump_is_not_said_not_to_return"),
     # A 32-bit slot named by its absolute address is not a slot: a PE32 import thunk has no name.
     ("crates/n0xis-core/src/ir.rs", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [slot] => Some(*slot),", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [_slot] if false => None,", *CORE_LIB, "ir::tests::a_call_to_an_i386_stub_through_an_absolute_slot_to_abort_ends_the_block"),
     ("crates/n0xis-core/src/ir.rs", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [slot] => Some(*slot),", "    match ctx.arch.stated_addresses(ins).as_slice() {\n        [_slot] if false => None,", "n0xis-cli", "returns_is_what_the_source_says", "every_function_says_whether_it_returns", ("--features", "oracle")),
