@@ -17,7 +17,7 @@
 //! with `live`; both are gated so this crate stays OS-free by default.
 
 mod regions;
-pub use regions::{window_regions, LiveAnswer, StatedAnswer, MAX_RUN, NOT_READ_SHOWN, NOTHING_READABLE, NothingReadable, RegionCoverage, RegionNotRead, RegionReadShort, Swept};
+pub use regions::{read_across, window_regions, LiveAnswer, StatedAnswer, MAX_RUN, NOT_READ_SHOWN, NOTHING_READABLE, NothingReadable, RegionCoverage, RegionNotRead, RegionReadShort, Swept};
 
 mod snapshot;
 

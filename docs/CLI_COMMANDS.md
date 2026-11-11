@@ -820,6 +820,8 @@ lies between two runs instead of ending the read.
 ### `mem write --addr <hex> --bytes "<hex>" --pid <u32>`
 Write bytes to a live process (flips page protection as needed).
 - `--addr`, `--bytes` (e.g. `"90 90 c3"`), `--pid` — all required. Live only.
+- Unjournaled. A write that fails part way (a mapping that ends, a page that takes no write) answers `write-failed`
+  with how many of the bytes changed, read back from the target, and how many could not be read back.
 - Schema: `n0xis.mem.write.v1`
 
 ### `mem map --pid <u32>`
@@ -833,6 +835,11 @@ Dump the address-space region map of a live process.
 `dry-run` previews a patch without writing; `apply` writes it and journals the undo record under
 `.n0x/patches/`.
 - `--addr`, `--bytes`, `--pid` — all required.
+- The old bytes are read whole first, across adjacent mappings: if fewer than all of them can be read, both refuse
+  (`read-failed`, "only N of the M bytes") and nothing is written, since a patch whose old bytes are not all known cannot
+  be put back.
+- A write that fails part way keeps its record when the target shows a byte changed, and says how many: `patch undo
+  --id <id> --force` writes back what was there. A write that changed nothing leaves no record.
 - Schema: `n0xis.patch.v1`
 
 ### `patch list [--status <str>] [--limit <n>]`

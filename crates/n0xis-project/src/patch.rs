@@ -282,16 +282,74 @@ pub fn settle_armed(rec: &WatchRecord, found: &TargetSlots) -> Result<bool> {
     Ok(clear)
 }
 
+/// The `len` bytes at `addr`, every one of them, or a refusal naming how many there are.
+///
+/// [`MemorySource::read`] reads *up to* `len`, stopping where a mapping ends. A patch
+/// recorded from that kept 4 of its 8 old bytes; the write then changed the 4 that were
+/// there and failed on the rest, the record was taken back as "nothing was written", and
+/// the 4 bytes stayed changed with nothing to put them back (audit 2026-11-06, row 10).
+/// A patch whose old bytes are not all known cannot be undone, so it is not written.
+pub fn read_exact(live: &dyn MemorySource, addr: Va, len: usize) -> Result<Vec<u8>> {
+    let bytes = n0xis_sources::read_across(live, addr, len).map_err(|e| anyhow!("{e}"))?;
+    if bytes.len() < len {
+        return Err(anyhow!(
+            "only {} of the {len} bytes at {addr} can be read, so nothing was written: a patch whose old bytes are not all known cannot be put back",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// What a write that failed left behind, read back from the target: how many of the
+/// bytes it was given now differ from what was there before it. A write fails part way
+/// (a mapping that ends, a page that refuses), and "it failed" alone reads as "nothing
+/// changed".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Landed {
+    /// Bytes that now differ from what was there.
+    pub changed: usize,
+    /// Bytes that could be read back; the rest are not known either way.
+    pub read_back: usize,
+    /// Bytes the write was given.
+    pub of: usize,
+}
+
+impl Landed {
+    /// Read back what is at `addr` now and compare it with `before`, what was there, read
+    /// before a write of `of` bytes. Only bytes known both before and after are counted;
+    /// a `before` shorter than `of` leaves the rest unknown, and says so.
+    pub fn read(live: &dyn MemorySource, addr: Va, before: &[u8], of: usize) -> Landed {
+        let now = n0xis_sources::read_across(live, addr, before.len()).unwrap_or_default();
+        let changed = now.iter().zip(before).filter(|(a, b)| a != b).count();
+        Landed { changed, read_back: now.len().min(before.len()), of }
+    }
+}
+
+impl std::fmt::Display for Landed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} of the {} bytes changed before the write failed", self.changed, self.of)?;
+        if self.read_back < self.of {
+            write!(f, "; the {} past the first {} could not be read back, and may have changed too", self.of - self.read_back, self.read_back)?;
+        }
+        Ok(())
+    }
+}
+
 /// Read-verify-write-journal an in-place byte patch against a live process.
 /// Shared by the CLI's `patch apply` and any other frontend driving a
 /// live-process patch — same read/verify/journal sequence either way, not a
 /// copy per caller.
 pub fn apply(live: &dyn MemorySource, pid: u32, addr: Va, desired: &[u8]) -> Result<PatchRecord> {
-    let before = live.read(addr, desired.len()).map_err(|e| anyhow!("{e}"))?;
+    let before = read_exact(live, addr, desired.len())?;
     let rec = record_before_writing(pid, addr, &before, desired, None)?;
     if let Err(e) = live.write(addr, desired) {
-        take_back(&rec)?;
-        return Err(anyhow!("{e}"));
+        // The record goes only when the target says nothing changed: a write fails part way.
+        let landed = Landed::read(live, addr, &before, desired.len());
+        if landed.changed == 0 && landed.read_back == landed.of {
+            take_back(&rec)?;
+            return Err(anyhow!("{e}"));
+        }
+        return Err(anyhow!("{e}: {landed}; what was there is kept as patch {}, for `patch undo --id {} --force`", rec.id, rec.id));
     }
     let after = live.read(addr, desired.len()).map_err(|e| anyhow!("{e}"))?;
     if after != desired {
@@ -311,7 +369,7 @@ pub fn undo(rec: &mut PatchRecord, live: &dyn MemorySource, force: bool) -> Resu
     let addr = Va::parse(&rec.address).map_err(|e| anyhow!("{e}"))?;
     let before = parse_hex_spaced(&rec.before_hex)?;
     let after = parse_hex_spaced(&rec.after_hex)?;
-    let current = live.read(addr, after.len()).map_err(|e| anyhow!("{e}"))?;
+    let current = n0xis_sources::read_across(live, addr, after.len()).map_err(|e| anyhow!("{e}"))?;
     if current != after && !force {
         return Err(anyhow!("current bytes no longer match the applied patch; re-run with --force"));
     }

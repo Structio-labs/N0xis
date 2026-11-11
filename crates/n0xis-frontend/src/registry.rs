@@ -2070,13 +2070,17 @@ impl Plugin for AnalysisPasses {
                     Ok(l) => l,
                     Err((c, m)) => return Response::error(&c, m),
                 };
+                // Unjournaled, so what was there is read only to say, if the write fails,
+                // how much of it changed: "write-failed" alone read as "nothing changed"
+                // after 4 of 8 bytes had (audit 2026-11-06, row 10).
+                let before = n0xis_sources::read_across(live.as_ref(), addr, bytes.len()).unwrap_or_default();
                 match n0xis_sources::MemorySource::write(live.as_ref(), addr, &bytes) {
                     Ok(()) => ok_json(
                         n0xis_contracts::schema::v1::MEM_WRITE,
                         json!({ "address": addr, "written": bytes.len(), "hex": to_hex_spaced(&bytes) }),
                         &n0xis_sources::MemorySource::label(live.as_ref()),
                     ),
-                    Err(e) => Response::error("write-failed", e.to_string()),
+                    Err(e) => Response::error("write-failed", format!("{e}: {}", n0xis_project::patch::Landed::read(live.as_ref(), addr, &before, bytes.len()))),
                 }
             }),
         ));

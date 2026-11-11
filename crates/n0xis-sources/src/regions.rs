@@ -105,14 +105,7 @@ impl RegionCoverage {
                 return Ok(Vec::new());
             }
         };
-        while !bytes.is_empty() && bytes.len() < size {
-            match src.read(start.offset(bytes.len() as u64), size - bytes.len()) {
-                Ok(more) if !more.is_empty() => bytes.extend_from_slice(&more[..more.len().min(size - bytes.len())]),
-                Ok(_) => break,
-                Err(e) if e.is_about_a_region() => break,
-                Err(e) => return Err(e),
-            }
-        }
+        read_on(src, start, size, &mut bytes)?;
         self.record(start, size, Ok(bytes.len()))?;
         Ok(bytes)
     }
@@ -335,6 +328,32 @@ impl std::fmt::Display for NothingReadable {
 }
 
 impl std::error::Error for NothingReadable {}
+
+/// Up to `size` bytes at `start`, read on across the end of a mapping or a section into
+/// the next for as long as the source gives bytes. A source's read stops where its
+/// mapping ends, and two mappings side by side hold one run of bytes: a patch of 8 bytes
+/// across an `rw-p` mapping and the one after it read as 4, and was refused as a patch
+/// whose old bytes could not all be read. An error only when `start` itself does not read.
+pub fn read_across<S: MemorySource + ?Sized>(src: &S, start: Va, size: usize) -> Result<Vec<u8>, SourceError> {
+    let mut bytes = src.read(start, size)?;
+    read_on(src, start, size, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Go on reading after `bytes`, the first read at `start`, until there are `size` or the
+/// source gives no more. Stopping at a region (unmapped, unreadable) is the end of the
+/// run, not an error; anything else is.
+fn read_on<S: MemorySource + ?Sized>(src: &S, start: Va, size: usize, bytes: &mut Vec<u8>) -> Result<(), SourceError> {
+    while !bytes.is_empty() && bytes.len() < size {
+        match src.read(start.offset(bytes.len() as u64), size - bytes.len()) {
+            Ok(more) if !more.is_empty() => bytes.extend_from_slice(&more[..more.len().min(size - bytes.len())]),
+            Ok(_) => break,
+            Err(e) if e.is_about_a_region() => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

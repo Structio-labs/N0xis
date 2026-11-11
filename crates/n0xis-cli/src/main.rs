@@ -5111,7 +5111,9 @@ fn patch_dry_run(a: PatchWriteArgs, pretty: bool) -> bool {
             Ok(l) => l,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let current = match live.read(addr, desired.len()) {
+        // The refusal `patch apply` gives, given here: a dry run that read 4 of 8 bytes
+        // said `wouldChange` of a patch that could not be written whole.
+        let current = match n0xis_project::patch::read_exact(live.as_ref(), addr, desired.len()) {
             Ok(b) => b,
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
         };
@@ -5144,7 +5146,7 @@ fn patch_apply(a: PatchWriteArgs, pretty: bool) -> bool {
             Ok(l) => l,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let before = match live.read(addr, desired.len()) {
+        let before = match pj::read_exact(live.as_ref(), addr, desired.len()) {
             Ok(b) => b,
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
         };
