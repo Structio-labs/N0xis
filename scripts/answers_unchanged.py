@@ -69,14 +69,16 @@ ELAPSED = re.compile(rb'"elapsed_ms"\s*:\s*\d+')
 # What a change meant to add: (command, key path in the answer, why). The key is taken out of both answers before
 # they are compared, and how many it was taken from is printed, so that a difference anywhere else still shows and
 # the list cannot hide a key that is not there. Only for commands whose answer is small enough to read whole.
-INTENDED = [
+# Named apart from INTENDED above: two branches each brought one under the same name, and the
+# second replaced the first, so the script stopped at its first scan.
+INTENDED_KEYS = [
     ("ir build", ("data", "end_by"), "how the graph's end was decided, in every graph: a cut one read as whole"),
 ]
 
 
 def intended_for(args):
     cmd = " ".join(args[:2])
-    return [path for c, path, _ in INTENDED if c == cmd]
+    return [path for c, path, _ in INTENDED_KEYS if c == cmd]
 
 
 def without(text, paths):
@@ -256,7 +258,7 @@ def main():
                 differ += 1
                 print("DIFFER", Path(r["image"]).name, r["cmd"].replace(r["image"], "F"), "old", r["old"]["exit"], r["old"]["size"], "new", r["new"]["exit"], r["new"]["size"], flush=True)
     print(f"{done} answers over {len(args.images)} images and {len(commands)} commands: {differ} differ, {ok} of them ok:true")
-    print("intended keys taken out:", ", ".join(f"{c} {'.'.join(p)}" for c, p, _ in INTENDED), f"(old {intended['old']}, new {intended['new']} answers)")
+    print("intended keys taken out:", ", ".join(f"{c} {'.'.join(p)}" for c, p, _ in INTENDED_KEYS), f"(old {intended['old']}, new {intended['new']} answers)")
     print("not ok:true by command:", " ".join(f"{k.replace(' ', '_')}={v}" for k, v in sorted(empty.items())))
     return 1 if differ else 0
 
