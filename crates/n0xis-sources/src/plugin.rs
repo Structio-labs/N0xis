@@ -232,12 +232,17 @@ fn with_quoting_hint(argv: &[String], reason: String) -> String {
 /// differently by feature. Listed as open in
 /// `docs/COMMUNITY_ROADMAP.md`'s plugin section.
 pub fn call_once(argv: &[String], request: &Value, deadline: Duration) -> Result<Value, PluginError> {
-    let started = Instant::now();
     let command = argv.join(" ");
     let mut line = serde_json::to_vec(request)
         .map_err(|e| PluginError::Io { command: command.clone(), reason: format!("serialize the request: {e}") })?;
     line.push(b'\n');
 
+    // The clock starts here, at the spawn, and not before the request is serialized: that is
+    // this host's own work, and it used to be counted, so a plugin that answers at once timed
+    // out when the request was large. An 8 MiB request took a debug build 0.7 to 2.8 s to
+    // serialize on a loaded machine, more than a 1.5 s deadline, and the plugin was killed
+    // before it had started.
+    let started = Instant::now();
     let mut child =
         spawn_piped(argv).map_err(|reason| PluginError::Spawn { reason: with_quoting_hint(argv, reason), command: command.clone() })?;
     let mut stdin = child.stdin.take().expect("piped stdin");

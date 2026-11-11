@@ -101,6 +101,11 @@ fn run_helper(mode: &str, marker: Option<&Path>, arg: Option<&str>) -> ! {
             reply(&json!({ "ok": true, "echo": req }).to_string());
             std::process::exit(0)
         }
+        // Answers before it reads a byte, the fastest a plugin can be.
+        "reply-unread" => {
+            reply(&json!({ "ok": true }).to_string());
+            std::process::exit(0)
+        }
         "reply-linger" => {
             read_request();
             reply(&json!({ "ok": true, "lingering": true }).to_string());
@@ -328,12 +333,10 @@ fn never_reads_a_large_request() {
     let argv = helper_argv("never-read", Some(&marker));
     // Far past any OS pipe buffer (64 KiB on Linux, 4 KiB to 64 KiB on
     // Windows), so the writer blocks for as long as the plugin does not read.
-    // And no larger: `call_once` serializes the request inside its deadline,
-    // before the spawn. At 8 MiB that took a debug build 0.7 to 2.8 s on a
-    // loaded machine (load average 35 on 12 cores, 30 samples), so the
-    // deadline was often spent before the helper was started and it was
-    // killed with its marker empty; the helper itself writes its first marker
-    // 2 to 14 ms after the spawn. 1 MiB is 16 times the largest buffer.
+    // And no larger: 1 MiB is 16 times the largest buffer. At 8 MiB, when
+    // `call_once` still counted serializing the request in its deadline, that
+    // took a debug build 0.7 to 2.8 s on a loaded machine (load average 35 on
+    // 12 cores, 30 samples), and the helper was killed before it started.
     let request = json!({ "blob": "x".repeat(1 << 20) });
     let err = plugin_call_once(&argv, &request, SHORT_DEADLINE).unwrap_err();
     assert!(
@@ -341,6 +344,42 @@ fn never_reads_a_large_request() {
         "a plugin that never reads its input must time out with the request unwritten, got {err:?}"
     );
     assert_helper_is_gone(&marker);
+}
+
+/// The deadline that [`a_request_slow_to_serialize_is_not_the_plugins_time`]
+/// hands `call_once`. A plugin that answers before reading needs only its own
+/// start inside it: 2 to 14 ms on a loaded machine (30 samples, load average
+/// 35 on 12 cores).
+const SERIALIZE_CASE_DEADLINE: Duration = Duration::from_millis(500);
+
+/// What that case may take in all, for the watchdog: it serializes the request
+/// itself, growing it, until serializing takes longer than its deadline.
+const SERIALIZE_CASE_BOUND: Duration = Duration::from_secs(60);
+
+/// The deadline is the plugin's, from its spawn. Serializing the request is
+/// the host's own work, and it used to be counted: a plugin that answered at
+/// once timed out behind a request large enough to take longer than the
+/// deadline to serialize.
+fn a_request_slow_to_serialize_is_not_the_plugins_time() {
+    let deadline = SERIALIZE_CASE_DEADLINE;
+    // How large is measured here, on this machine at this load, not assumed:
+    // grown until serializing it alone takes twice the deadline, or 128 MiB.
+    let mut size: usize = 1 << 20;
+    let (request, serialized) = loop {
+        let request = json!({ "blob": "x".repeat(size) });
+        let started = Instant::now();
+        drop(serde_json::to_vec(&request).unwrap());
+        let took = started.elapsed();
+        if took >= deadline * 2 || size >= 128 << 20 {
+            break (request, took);
+        }
+        let factor = (deadline * 2).as_secs_f64() / took.as_secs_f64().max(1e-3);
+        size = ((size as f64 * factor * 1.2) as usize).clamp(size * 2, 128 << 20);
+    };
+    assert!(serialized > deadline, "serializing took {serialized:?}, inside the {deadline:?} deadline, so this case measured nothing");
+    let reply = plugin_call_once(&helper_argv("reply-unread", None), &request, deadline)
+        .unwrap_or_else(|e| panic!("a plugin that answers at once is answered, whatever serializing took ({serialized:?}): {e:?}"));
+    assert_eq!(reply["ok"], true);
 }
 
 fn exits_with_no_reply() {
@@ -545,6 +584,7 @@ const CASES: &[Case] = &[
     ("replies_and_does_not_exit", replies_and_does_not_exit, Duration::from_secs(3)),
     ("reads_and_sleeps", reads_and_sleeps, SHORT_DEADLINE),
     ("never_reads_a_large_request", never_reads_a_large_request, SHORT_DEADLINE),
+    ("a_request_slow_to_serialize_is_not_the_plugins_time", a_request_slow_to_serialize_is_not_the_plugins_time, SERIALIZE_CASE_BOUND),
     ("exits_with_no_reply", exits_with_no_reply, PLUGIN_DEADLINE),
     ("writes_invalid_json", writes_invalid_json, PLUGIN_DEADLINE),
     ("a_null_reply_is_an_error", a_null_reply_is_an_error, PLUGIN_DEADLINE),
