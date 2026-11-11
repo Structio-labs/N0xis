@@ -196,7 +196,18 @@ fn flags(art: &CfgArtifact) -> Vec<&'static str> {
     if no_frame {
         out.push("no-frame");
     }
-    if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {
+    // No `ret` and no tail call read, and no jump that goes where a tail call goes:
+    // `jmp *%rax` with no table behind it may come back, and was said `no-return`
+    // (audit 2026-11-06, the audit's `WM_ind`), where `function summary` said
+    // `returns: true`.
+    //
+    // Not `noreturn_ipa::function_returns`, which `returns` reads: that one counts a
+    // graph that falls off the end the image states (`call exit@plt` last, with the
+    // name not known) as one that may return, and this counts it as one that does
+    // not. Measured, the rule here is the right one on 4 such ends of 4 looked at
+    // (`_start`'s `hlt`, `my_die`, two `.cold` parts ending in an assert), so the two
+    // are not one rule yet.
+    if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut && !art.leaves_by_an_unresolved_jump() {
         out.push("no-return");
     }
     if art.stats.noreturn_calls > 0 {
@@ -266,6 +277,19 @@ mod tests {
         let input = ManifestInput { candidates: vec![ManifestCandidate { name: "f".into(), va: Va(0x1000) }], max_bytes: 64 };
         let art = ManifestPass.run(&ctx, input).expect("manifest builds");
         assert!(!art.entries[0].flags.contains(&"leaf"), "{:?}", art.entries[0].flags);
+    }
+
+    /// The same `jmp rax` goes where a tail call goes, and comes back if that does:
+    /// counting `ret`s and tail calls said `no-return` of it (audit 2026-11-06, the
+    /// audit's `WM_ind`), where `function summary` said `returns: true`.
+    #[test]
+    fn an_unresolved_indirect_jump_is_not_said_not_to_return() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0xff, 0xe0]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let input = ManifestInput { candidates: vec![ManifestCandidate { name: "f".into(), va: Va(0x1000) }], max_bytes: 64 };
+        let art = ManifestPass.run(&ctx, input).expect("manifest builds");
+        assert!(!art.entries[0].flags.contains(&"no-return"), "{:?}", art.entries[0].flags);
     }
 
     #[test]

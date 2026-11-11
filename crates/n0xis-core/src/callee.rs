@@ -711,7 +711,7 @@ fn unnamed_arguments_from(flow: &RawFlow, arg_regs: &[&str], word: Option<u8>) -
 
 fn reads_what_cannot_be_listed(cfg: &CfgArtifact, blocks: &[SsaBlock]) -> bool {
     let window = cfg.end.0.saturating_sub(cfg.start.0) >= CALLEE_SCAN_SIZE as u64;
-    let jump = cfg.blocks.iter().any(|b| b.terminator == "ijmp" && b.successors.is_empty());
+    let jump = cfg.leaves_by_an_unresolved_jump();
     let unlifted = blocks.iter().any(|b| b.stmts.iter().any(|s| matches!(&s.stmt, MicroStmt::Unlifted { reads, .. } if reads.exact().is_none())));
     window || jump || unlifted
 }
