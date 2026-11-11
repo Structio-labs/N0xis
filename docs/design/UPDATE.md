@@ -104,7 +104,8 @@ on a full disk, and it poisoned the file `--rollback` goes back to.
 
 **The lock.** `<file>.update-lock` beside each file, taken by `update`, `--rollback` and the detached `update.auto` install. An install takes the running
 file's and then each sibling's, and a rollback only that of the file it goes back for. The kernel releases it on a kill, so it cannot go stale, and the
-file stays. Held means the refusal `update-in-progress`, a sibling `skipped`, or a silent skip in the detached copy. A stalled download can hold it for its
+file stays. A run lets go of it by an unlock, not by its close: on Unix a process forked meanwhile from another thread holds a copy of the descriptor until its exec,
+and the close alone left the lock held after `update` had returned. Held means the refusal `update-in-progress`, a sibling `skipped`, or a silent skip in the detached copy. A stalled download can hold it for its
 bound, and a rollback in that time says `update-in-progress`, which is true.
 
 **Under the lock, exact names only.** `<file>.update-new`, `<file>.previous-new`, `<file>.previous.json.new`, `<file>.update-hold-new` and, on Windows only,

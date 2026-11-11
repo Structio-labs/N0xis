@@ -25,7 +25,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{Entry, is_bare_file_name};
-use crate::{Found, Refusal, Updater, Why, from_hex, to_hex};
+use crate::{Found, Held, Refusal, Updater, Why, from_hex, to_hex};
 
 /// Beside each file: what `--rollback` goes back to. Startup never deletes it, or rollback would be
 /// unreachable by construction.
@@ -450,7 +450,7 @@ fn sibling(dir: &Path, name: &str, raw: &serde_json::Value, file: &str) -> Resul
 
 /// This file's own lock, and under it its hold. A hold that does not read decides nothing in favour of
 /// installing: `update.auto` turned on by a user must not undo what that user went back from.
-fn lock_for_install(item: &Planned, asked: Asked, version: &Version) -> Result<File, Refusal> {
+fn lock_for_install(item: &Planned, asked: Asked, version: &Version) -> Result<Held, Refusal> {
     let lock = take_lock(&item.target, |e| not_writable(&item.target, &item.entry, e))?;
     if asked == Asked::Auto {
         let path = with_suffix(&item.target, HOLD);
@@ -605,21 +605,26 @@ pub(crate) fn file_at(path: &Path) -> Option<String> {
 }
 
 /// Held until dropped, or by the kernel until the process dies: there is no state to go stale.
-fn take_lock(target: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -> Result<File, Refusal> {
+fn take_lock(target: &Path, cannot_create: impl FnOnce(&io::Error) -> Refusal) -> Result<Held, Refusal> {
     let path = with_suffix(target, LOCK);
     let file = open_ours(&path, OpenOptions::new().create(true).truncate(false).write(true)).map_err(|e| match e {
         Unusable::NotOurs(what) => Refusal::new(Why::NotOurs, format!("{} {what}, so it is not a lock this client takes", path.display())),
         Unusable::Failed(e) => cannot_create(&e),
     })?;
     let start = Instant::now();
+    let mut file = file;
     loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(file),
-            // A process forked just as a holder let go keeps a copy of the lock until its exec, for
-            // an instant. A moment's patience, so that only a real holder is called one.
-            Err(TryLockError::WouldBlock) if start.elapsed() < LOCK_PATIENCE => std::thread::sleep(Duration::from_millis(20)),
-            Err(TryLockError::WouldBlock) => return Err(Refusal::new(Why::UpdateInProgress, format!("another run holds {}", path.display()))),
-            Err(TryLockError::Error(e)) => return Err(Refusal::new(Why::InstallFailed, format!("cannot lock {}: {e}", path.display()))),
+        match Held::try_take(file) {
+            Ok(held) => return Ok(held),
+            // A holder that lets go by its close, as one killed does and as a client before `Held`
+            // did, leaves the lock with whatever process its own forked just then, until that one's
+            // exec. A moment's patience, so that only a real holder is called one.
+            Err((back, TryLockError::WouldBlock)) if start.elapsed() < LOCK_PATIENCE => {
+                file = back;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err((_, TryLockError::WouldBlock)) => return Err(Refusal::new(Why::UpdateInProgress, format!("another run holds {}", path.display()))),
+            Err((_, TryLockError::Error(e))) => return Err(Refusal::new(Why::InstallFailed, format!("cannot lock {}: {e}", path.display()))),
         }
     }
 }

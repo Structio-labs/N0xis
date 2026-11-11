@@ -25,7 +25,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, Settings};
-use crate::{Updater, Why};
+use crate::{Held, Updater, Why};
 
 /// The hidden first argument that makes a binary the detached copy. Read before the door's argument
 /// parser, so it is in no catalog.
@@ -161,7 +161,8 @@ fn start_check_if_due(dir: &Path, at: u64) {
     // claim the day. Held by another means it is claiming now, and a command never waits for that.
     let lock = std::fs::create_dir_all(dir).and_then(|()| OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(CHECK_LOCK)));
     let Ok(lock) = lock else { return };
-    if lock.try_lock().is_err() || !a_day_has_passed(read_stamp(&path), at) {
+    let Ok(_held) = Held::try_take(lock) else { return };
+    if !a_day_has_passed(read_stamp(&path), at) {
         return;
     }
     // The claim comes first. A directory that cannot be written means no check at all, rather than

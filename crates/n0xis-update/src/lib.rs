@@ -297,6 +297,33 @@ impl Updater {
     }
 }
 
+/// A file lock this process holds, let go of by an explicit unlock when dropped, never by the close.
+///
+/// On Unix the lock is `flock`, which belongs to the open file description and is freed by the last
+/// close of it. A process forked elsewhere in this one, by a `Command::spawn` on another thread, holds
+/// a copy of every descriptor until its exec, so closing alone left the lock taken for that instant
+/// after its holder had returned: `update` came back with a sibling's lock still held, and whoever
+/// tried it next was told `update-in-progress` (13 of 93 runs of the planted tests under load). An
+/// unlock through any copy frees it for all of them. Windows has no fork, the lock is `LockFileEx` on
+/// a handle std does not make inheritable, and `UnlockFile` before the close changes nothing there.
+pub(crate) struct Held(std::fs::File);
+
+impl Held {
+    /// Taken now, or the file handed back with why not.
+    pub(crate) fn try_take(file: std::fs::File) -> Result<Held, (std::fs::File, std::fs::TryLockError)> {
+        match file.try_lock() {
+            Ok(()) => Ok(Held(file)),
+            Err(e) => Err((file, e)),
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// Lower-case hex, which the manifest and the signature file are written in.
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
