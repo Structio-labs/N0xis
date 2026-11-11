@@ -938,11 +938,14 @@ First scan: find every address matching a criterion.
 - `--save-as` (required) — persist result under `.n0x/dumps/scan/<name>.json`; `--force` to
   overwrite.
 - Sources: `--pid` | `--file`.
-- `data`: `value_type`, `regions`, `total_matches`, `shown`, `matches`, and `exhaustive`, true when
-  `matches` is everything there is to know: all of `total_matches` is shown (a reply carries 1000 at
-  most) and every region was read whole. So false for a preview, and false when a region was not
-  read or read short, whatever was found. On `--pid` the fields below say which regions. `scan
-  filter` and the `report` of `locate by-transition` answer the same way.
+- `data`: `value_type`, `regions`, `total_matches`, `shown`, `matches`, `searched` (below), and
+  `exhaustive`, true when `matches` is everything there is to know: all of `total_matches` is shown
+  (a reply carries 1000 at most), every region was read whole, and every byte of what `searched`
+  names was a place the value was tried. So false for a preview; false when a region was not read
+  or read short, whatever was found; false at an `--align` past 1, since a value at an offset the
+  stride steps over was never looked for; and false over the default set on `--pid`, since the rest
+  of the process is outside it. The fields below say which regions. `scan filter` and the `report`
+  of `locate by-transition` answer the same way.
 - Schema: `n0xis.scan.v1`
 
 ### `scan filter --from <name> --criterion <c> --save-as <name>`
@@ -963,9 +966,8 @@ AOB (array-of-bytes) signature scan with `??` wildcards, e.g. `"48 8B ?? 68"`.
 - `--pattern` (required); `--start`/`--size` (on `--pid`, defaults to every committed writable
   region; `--start` required for `--file`).
 - Sources: `--pid` | `--file`.
-- `data`: `matches`, `bytes_scanned`. On `--pid`, also what the scan did not read, below. On
-  `--file`, those two fields and nothing more; a window outside the image is the error
-  `nothing-readable`.
+- `data`: `matches`, `bytes_scanned`, what the scan did not read and what it `searched`, both below;
+  a window outside the image is the error `nothing-readable`.
 - Schema: `n0xis.scan.aob.v1`
 
 #### What a scan of a process did not read
@@ -974,9 +976,9 @@ A process's regions come and go, and some will not read. A sweep of them goes on
 that gives nothing, and states it, in the same object as its result. This goes for `scan aob`,
 `scan value`, `scan filter`, `scan group`, `scan pointer-path`, `locate by-transition`, `lua
 strings`, `lua combo`, `lua seedscan`, `il2cpp classes` and `ui locate`, for `find` and
-`strings` on `--pid` or `--remote-cmd`, and for `scan filter` on `--file`. An answer about a window of a file or a snapshot states
-none of it, except that a window of which nothing reads is `nothing-readable` there too: `scan aob`,
-`scan value`, `scan group`, `find` and `strings`.
+`strings` on `--pid` or `--remote-cmd`, and for `scan aob`, `scan value`, `scan group` and `scan
+filter` on `--file`. Other answers about a window of a file or a snapshot state none of it, except
+that a window of which nothing reads is `nothing-readable` there too: `find` and `strings`.
 
 - `regions_scanned`: regions a read gave at least one byte of.
 - `regions_not_read`, and `not_read: [{start, size, why}]`: regions that gave nothing; `why` is
@@ -986,7 +988,22 @@ none of it, except that a window of which nothing reads is `nothing-readable` th
 - Each list holds at most 64 entries (`NOT_READ_SHOWN`); the counts are always the true ones.
 
 A window on `--pid` is cut where the process's map changes, so each gap and each mapping in it is one
-region here, read or stated. The default set, with no window, stays the writable mappings.
+region here, read or stated. A window on `--file` is cut where the image's bytes start and stop, so
+it is read past its first section, and each gap between sections (the headers, alignment, a `.bss`
+the file holds no bytes for) is one region not read. The default set, with no window, stays the
+writable mappings. Regions that touch are searched as one stretch, so a value or a pattern across
+two adjacent mappings, or two sections, is found.
+
+`scan value`, `scan aob` and `scan group` also say what they searched, in `searched`:
+
+- `over`: `{"kind":"window","start","size"}`, the window named; `{"kind":"chosen","set":"committed
+  writable mappings"}`, the set picked when none is named on `--pid`; or `{"kind":"saved"}`, the
+  addresses a `scan filter` reads again.
+- `stride`: a match was tried at every `stride`-th byte from the start of each stretch; 1 is every
+  byte. `scan aob` is always 1.
+- `not_searched: [{what, count, bytes}]`: what is outside a chosen set, or appeared in the process
+  while the scan ran (a writable mapping made or grown during it, listed again once it is done).
+  Over a chosen set it is never empty.
 
 A region is judged by what the read returned, never by its path or kind: two device mappings side
 by side can differ, one reading and the next faulting on its first byte.

@@ -20,11 +20,13 @@
 pub mod envelope;
 pub mod number;
 pub mod schema;
+pub mod searched;
 pub mod table;
 pub mod types;
 
 pub use envelope::{ErrorBody, Failure, Meta, Response, Success};
 pub use number::NumberLiteral;
+pub use searched::{NotSearched, Over, Searched, Shown};
 pub use table::{Provenance, Table, TableEntry, TableLocator, TableValueType, VerificationState};
 pub use types::{Module, Reg, SymKind, Symbol, Va};
 

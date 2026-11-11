@@ -38,7 +38,7 @@
 //! stays in `n0xis-sources`/`n0xis-cli`, handed in here as plain `(Va, usize)`
 //! ranges so this pass never touches an OS API.
 
-use n0xis_contracts::{NumberLiteral, Va};
+use n0xis_contracts::{NumberLiteral, Searched, Va};
 use n0xis_sources::{RegionCoverage, Swept};
 use serde::{Deserialize, Serialize};
 
@@ -401,9 +401,10 @@ impl ScanState {
     }
 
     /// Build the bounded response summary for a CLI/MCP reply. `read` is what
-    /// the sweep behind this state read: a state alone cannot say what it never
-    /// saw, so the caller has to hand that over.
-    pub fn report(&self, read: &RegionCoverage) -> ScanReport {
+    /// the sweep behind this state read and `searched` what it went through: a
+    /// state alone cannot say what it never saw, or where it never looked, so
+    /// the caller has to hand both over.
+    pub fn report(&self, read: &RegionCoverage, searched: &Searched) -> ScanReport {
         let total = self.total();
         let matches = self.materialize(PREVIEW_LIMIT);
         ScanReport {
@@ -411,7 +412,7 @@ impl ScanState {
             regions: self.regions.len(),
             total_matches: total,
             shown: matches.len(),
-            exhaustive: matches.len() == total && read.read_whole(),
+            exhaustive: matches.len() == total && read.read_whole() && searched.whole(),
             matches,
         }
     }
@@ -534,12 +535,11 @@ impl Pass for ScanPass {
         let mut regions = Vec::new();
         let mut read = RegionCoverage::default();
 
-        for (start, len) in &input.regions {
-            let bytes = read.read_region(ctx.source, *start, *len)?;
+        for (start, bytes) in read.read_runs(ctx.source, &input.regions)? {
             match input.criterion {
                 ScanCriterion::Unknown => {
                     if bytes.len() >= size {
-                        regions.push(RegionState { base: *start, data: RegionData::Dense { bytes } });
+                        regions.push(RegionState { base: start, data: RegionData::Dense { bytes } });
                     }
                 }
                 ref crit => {
@@ -554,7 +554,7 @@ impl Pass for ScanPass {
                         off += align;
                     }
                     if !slots.is_empty() {
-                        regions.push(RegionState { base: *start, data: RegionData::Sparse { slots } });
+                        regions.push(RegionState { base: start, data: RegionData::Sparse { slots } });
                     }
                 }
             }
@@ -657,10 +657,16 @@ pub struct ScanReport {
     /// How many are included in `matches` below.
     pub shown: usize,
     /// True when `matches` is everything there is to know: all of `total_matches`
-    /// is shown, and every region was read whole. False for a preview, and false
-    /// when a region was not read or read short, whatever was found: `regions_not_read`
-    /// and `regions_read_short`, on a live target, say which. It used to mean the
-    /// first half only, and a scan that had skipped regions said `true`.
+    /// is shown, every region was read whole, and what the answer's `searched`
+    /// names was searched at every byte ([`Searched::whole`]). False for a
+    /// preview, false when a region was not read or read short, whatever was
+    /// found (`regions_not_read` and `regions_read_short` say which), false at a
+    /// stride past one byte, and false over the set of mappings the tool picks
+    /// when the caller names no window, since the rest of the process is outside
+    /// it. It used to mean the first half only, and a scan that had skipped
+    /// regions said `true`; then the first two, and a scan for a value the
+    /// process held in `.rodata`, or at an offset its stride stepped over, said
+    /// `true, total_matches: 0`.
     pub exhaustive: bool,
     pub matches: Vec<ScanMatch>,
 }
@@ -754,8 +760,7 @@ impl Pass for GroupScanPass {
             return Ok(Swept { answer: GroupArtifact { hits, total_hits, bytes_scanned, window: input.window, field_count: 0 }, read });
         }
 
-        for (start, len) in &input.regions {
-            let bytes = read.read_region(ctx.source, *start, *len)?;
+        for (start, bytes) in read.read_runs(ctx.source, &input.regions)? {
             bytes_scanned += bytes.len();
 
             // One pass over the region: collect each field's match offsets (kept
@@ -1181,12 +1186,20 @@ mod tests {
         let snap = Snapshot::builder().region(Va(0x1000), vec![7; 16]).build();
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
-        let scan = |regions: Vec<(Va, usize)>| {
-            ScanPass.run(&ctx, ScanInput { regions, value_type: ValueType::U32, criterion: ScanCriterion::Unknown, align: 4 }).unwrap()
+        let scan_at = |regions: Vec<(Va, usize)>, align: usize| {
+            ScanPass.run(&ctx, ScanInput { regions, value_type: ValueType::U32, criterion: ScanCriterion::Unknown, align }).unwrap()
         };
-        let report = |swept: &n0xis_sources::Swept<ScanState>| swept.answer.report(&swept.read);
+        let scan = |regions: Vec<(Va, usize)>| scan_at(regions, 1);
+        let over = |swept: &n0xis_sources::Swept<ScanState>| Searched::window(Va(0x1000), 16, swept.answer.align as u64);
+        let report = |swept: &n0xis_sources::Swept<ScanState>| swept.answer.report(&swept.read, &over(swept));
 
         assert!(report(&scan(vec![(Va(0x1000), 16)])).exhaustive, "all read, all shown");
+        // Every fourth offset: a value at the other three was never looked for.
+        assert!(!report(&scan_at(vec![(Va(0x1000), 16)], 4)).exhaustive, "a stride past one byte");
+        // The tool's own pick of regions leaves the rest of the process out.
+        let picked = Searched::chosen("writable mappings", 1, n0xis_contracts::NotSearched::new("the rest"));
+        let all = scan(vec![(Va(0x1000), 16)]);
+        assert!(!all.answer.report(&all.read, &picked).exhaustive, "a set the tool chose");
         // The second region has no mapping; the first region's matches are all shown.
         let skipped = report(&scan(vec![(Va(0x1000), 16), (Va(0x9000), 16)]));
         assert_eq!(skipped.shown, skipped.total_matches);
@@ -1202,6 +1215,6 @@ mod tests {
             .run(&ctx, ScanInput { regions: vec![(Va(0x1000), 4 * (PREVIEW_LIMIT + 1))], value_type: ValueType::U32, criterion: ScanCriterion::Unknown, align: 4 })
             .unwrap();
         assert!(many.read.read_whole());
-        assert!(!many.answer.report(&many.read).exhaustive, "a preview");
+        assert!(!many.answer.report(&many.read, &Searched::window(Va(0x1000), 4 * (PREVIEW_LIMIT as u64 + 1), 1)).exhaustive, "a preview");
     }
 }

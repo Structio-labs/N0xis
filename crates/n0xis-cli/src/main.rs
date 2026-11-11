@@ -7188,7 +7188,7 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
             Ok(l) => l,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let regions = match resolve_scan_regions_live(live.as_ref(), a.start.as_deref(), a.size) {
+        let (regions, scope) = match n0xis_frontend::source::live_scan_scope(live.as_ref(), a.start.as_deref(), a.size) {
             Ok(r) => r,
             Err(e) => return ir_err("bad-region", &e, pretty),
         };
@@ -7267,7 +7267,8 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
             return ir_err("save-failed", &e.to_string(), pretty);
         }
 
-        let report = state.report(&read);
+        let searched = scope.searched(Some(live.as_ref()), state.align as u64);
+        let report = state.report(&read, &searched);
         let report_v = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
         let note = if final_count == 1 {
             "exactly one survivor — the transition diff localized the value (RE_METHOD W1)".to_string()
@@ -7284,6 +7285,7 @@ fn cmd_locate_by_transition(a: LocateByTransitionArgs, pretty: bool) -> bool {
             "predicate": predicate_label,
             "saved_as": a.save_as,
             "report": report_v,
+            "searched": searched,
             "note": note,
         });
         emit_swept(schema::v1::LOCATE_TRANSITION, n0xis_sources::Swept { answer: data, read }, label, pretty)

@@ -17,7 +17,7 @@
 //! with `live`; both are gated so this crate stays OS-free by default.
 
 mod regions;
-pub use regions::{LiveAnswer, NOT_READ_SHOWN, NOTHING_READABLE, NothingReadable, RegionCoverage, RegionNotRead, RegionReadShort, Swept};
+pub use regions::{window_regions, LiveAnswer, StatedAnswer, MAX_RUN, NOT_READ_SHOWN, NOTHING_READABLE, NothingReadable, RegionCoverage, RegionNotRead, RegionReadShort, Swept};
 
 mod snapshot;
 
@@ -82,7 +82,7 @@ mod host_memory;
 pub use host_memory::memory_ceiling;
 
 mod target;
-pub use target::{ALL_REGIONS, LiveTarget, MemRegion, ProcInfo, is_default_scan_region};
+pub use target::{ALL_REGIONS, LiveTarget, MemRegion, ProcInfo, in_default_scan_set, is_default_scan_region};
 
 /// Does this build have a live-process adapter behind [`LiveTarget`]?
 ///

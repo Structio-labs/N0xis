@@ -29,7 +29,7 @@
 //! through [`Swept::live`] or [`Swept::window`], which is where a sweep that read
 //! nothing becomes [`NothingReadable`] instead of an empty result.
 
-use n0xis_contracts::Va;
+use n0xis_contracts::{Searched, Va};
 use serde::Serialize;
 
 use crate::{MemorySource, SourceError};
@@ -39,6 +39,10 @@ use crate::{MemorySource, SourceError};
 /// mappings; the first few say what kind of thing was missed, and a reply the
 /// size of the memory map says nothing more.
 pub const NOT_READ_SHOWN: usize = 64;
+
+/// The longest stretch [`RegionCoverage::read_runs`] joins regions into: a
+/// scan's saved working set keeps a match's offset in its stretch as a `u32`.
+pub const MAX_RUN: usize = u32::MAX as usize;
 
 /// The error code of [`NothingReadable`], for every front door.
 pub const NOTHING_READABLE: &str = "nothing-readable";
@@ -88,17 +92,60 @@ impl RegionCoverage {
 
     /// Read one region and [`record`](Self::record) it. A region that did not
     /// read gives no bytes here, so a loop's body needs no case for it.
+    ///
+    /// A source's read stops where its mapping or section ends. A region that
+    /// goes on into the next one, which [`read_runs`](Self::read_runs) makes by
+    /// joining two that touch, is read on across the seam for as long as the
+    /// source gives bytes, so it reads whole or is noted short where it stopped.
     pub fn read_region<S: MemorySource + ?Sized>(&mut self, src: &S, start: Va, size: usize) -> Result<Vec<u8>, SourceError> {
-        match src.read(start, size) {
-            Ok(bytes) => {
-                self.record(start, size, Ok(bytes.len()))?;
-                Ok(bytes)
-            }
+        let mut bytes = match src.read(start, size) {
+            Ok(bytes) => bytes,
             Err(e) => {
                 self.record(start, size, Err(e))?;
-                Ok(Vec::new())
+                return Ok(Vec::new());
+            }
+        };
+        while !bytes.is_empty() && bytes.len() < size {
+            match src.read(start.offset(bytes.len() as u64), size - bytes.len()) {
+                Ok(more) if !more.is_empty() => bytes.extend_from_slice(&more[..more.len().min(size - bytes.len())]),
+                Ok(_) => break,
+                Err(e) if e.is_about_a_region() => break,
+                Err(e) => return Err(e),
             }
         }
+        self.record(start, size, Ok(bytes.len()))?;
+        Ok(bytes)
+    }
+
+    /// Read each of `regions`, in the order given, and join each to the one
+    /// before it when they touch and the one before read whole: the stretches a
+    /// sweep looks for a match in, as `(start, bytes)`.
+    ///
+    /// A process's map lists two writable mappings side by side as two regions,
+    /// and an image's window crosses from one section into the next. Each was
+    /// read alone and searched alone, so a value or a pattern lying across the
+    /// seam was in neither: measured on a live process, a `u32` across an
+    /// `rw-p` mapping and the `rwxp` one after it was not found at any stride,
+    /// by `scan value`, `scan aob` or `scan group`, and each said it had read
+    /// everything. What is noted per region is as before: one entry each.
+    ///
+    /// A stretch stops growing short of [`MAX_RUN`] bytes, where a match's offset
+    /// would no longer fit a scan's saved working set.
+    pub fn read_runs<S: MemorySource + ?Sized>(&mut self, src: &S, regions: &[(Va, usize)]) -> Result<Vec<(Va, Vec<u8>)>, SourceError> {
+        let mut runs: Vec<(Va, Vec<u8>)> = Vec::new();
+        for &(start, size) in regions {
+            let bytes = self.read_region(src, start, size)?;
+            if bytes.is_empty() {
+                continue;
+            }
+            match runs.last_mut() {
+                Some((at, run)) if at.0.checked_add(run.len() as u64) == Some(start.0) && run.len() + bytes.len() <= MAX_RUN => {
+                    run.extend_from_slice(&bytes)
+                }
+                _ => runs.push((start, bytes)),
+            }
+        }
+        Ok(runs)
     }
 
     /// Fold in a later sweep of the same regions, as `pointer path` and
@@ -206,9 +253,60 @@ impl<T> Swept<T> {
         Ok(self.answer)
     }
 
+    /// The answer of a scan, about a process or a window of an image: the result,
+    /// what the sweep did not read and what it `searched`, or the refusal when
+    /// no region gave a byte.
+    pub fn stated(self, searched: Searched) -> Result<StatedAnswer<T>, NothingReadable> {
+        if self.read.nothing_read() {
+            return Err(NothingReadable(self.read));
+        }
+        Ok(StatedAnswer { answer: self.answer, read: self.read, searched })
+    }
+
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Swept<U> {
         Swept { answer: f(self.answer), read: self.read }
     }
+}
+
+/// A window of a source cut where what it holds starts and stops: each stretch
+/// [`crate::read_runs`] finds, and each gap before, between and after them, in
+/// address order and adding up to the window.
+///
+/// A window of an image was one region, read from its start: the read stopped
+/// at the end of the first section, so the rest of the window was never
+/// searched and the answer said nothing of it, and a window starting in a gap
+/// between sections read nothing at all and was refused as `nothing-readable`
+/// while holding data. Cut here, each stretch is read whole and each gap is
+/// noted as not read, with the source's own reason.
+pub fn window_regions<S: MemorySource + ?Sized>(src: &S, start: Va, size: usize) -> Result<Vec<(Va, usize)>, SourceError> {
+    let end = start.0.saturating_add(size as u64);
+    let mut parts = Vec::new();
+    let mut at = start.0;
+    for (va, bytes) in crate::read_runs(src, start, size)? {
+        if va.0 > at {
+            parts.push((Va(at), (va.0 - at) as usize));
+        }
+        parts.push((va, bytes.len()));
+        at = va.0 + bytes.len() as u64;
+    }
+    if at < end || parts.is_empty() {
+        parts.push((Va(at), (end - at) as usize));
+    }
+    Ok(parts)
+}
+
+/// A result, what the sweep behind it did not read, and what it searched.
+///
+/// The form every scan's answer takes: the third part is what lets a reader
+/// tell "not in the process" from "not where this looked", and [`Swept::stated`]
+/// will not make one without it.
+#[derive(Clone, Debug, Serialize)]
+pub struct StatedAnswer<T> {
+    #[serde(flatten)]
+    pub answer: T,
+    #[serde(flatten)]
+    pub read: RegionCoverage,
+    pub searched: Searched,
 }
 
 /// A result and, in the same object, what the sweep behind it did not read.

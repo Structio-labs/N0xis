@@ -671,6 +671,65 @@ pub fn module_base_of(src: &Src) -> Option<Va> {
 /// With no window it is every committed writable region, the conventional default
 /// scan set. With one, it is [`live_window_regions`].
 pub fn live_scan_regions(live: &dyn LiveTarget, start: Option<&str>, size: Option<usize>) -> Result<Vec<(Va, usize)>, String> {
+    live_scan_scope(live, start, size).map(|(regions, _)| regions)
+}
+
+/// What the regions of a scan were chosen as, kept until the sweep is done so its
+/// answer can say what it searched ([`ScanScope::searched`]).
+#[derive(Clone, Debug)]
+pub enum ScanScope {
+    /// A window the caller named, of a process or an image.
+    Window { start: Va, size: u64 },
+    /// Every committed writable mapping, as listed when the scan began: the set
+    /// a scan of a process picks when the caller names no window.
+    Writable { listed: Vec<(Va, usize)>, rest: n0xis_contracts::NotSearched },
+    /// The addresses a saved working set holds.
+    Saved,
+}
+
+/// The name [`ScanScope::Writable`] goes by in an answer.
+pub const WRITABLE_SET: &str = "committed writable mappings";
+
+impl ScanScope {
+    /// What a scan over this scope searched, at `stride`. Asked once the sweep
+    /// is done: over the writable set, `live` is listed again, and a writable
+    /// mapping that is there now and was not when the scan began is named as not
+    /// searched. A scan takes seconds, and one measured missed a mapping made
+    /// 400 ms into it while calling itself exhaustive.
+    pub fn searched(&self, live: Option<&dyn LiveTarget>, stride: u64) -> n0xis_contracts::Searched {
+        use n0xis_contracts::{NotSearched, Searched};
+        match self {
+            ScanScope::Window { start, size } => Searched::window(*start, *size, stride),
+            ScanScope::Saved => Searched::saved(),
+            ScanScope::Writable { listed, rest } => {
+                let searched = Searched::chosen(WRITABLE_SET, stride, rest.clone());
+                let Some(live) = live else { return searched };
+                // Against the union of what was listed: two listed mappings the
+                // kernel has since merged into one were searched, both of them.
+                let mut sorted = listed.clone();
+                sorted.sort_by_key(|&(b, _)| b.0);
+                let covered = |base: Va, size: usize| {
+                    let (mut at, end) = (base.0, base.0.saturating_add(size as u64));
+                    for &(b, s) in &sorted {
+                        if b.0 <= at && b.0.saturating_add(s as u64) > at {
+                            at = b.0.saturating_add(s as u64);
+                        }
+                    }
+                    at >= end
+                };
+                let appeared: Vec<(Va, usize)> = live.default_writable_regions().into_iter().filter(|&(b, s)| !covered(b, s)).collect();
+                if appeared.is_empty() {
+                    return searched;
+                }
+                let bytes = appeared.iter().map(|&(_, s)| s as u64).sum();
+                searched.left_out(NotSearched::new("writable mappings made or grown while the scan ran").count(appeared.len() as u64).bytes(bytes))
+            }
+        }
+    }
+}
+
+/// [`live_scan_regions`] with what they were chosen as.
+pub fn live_scan_scope(live: &dyn LiveTarget, start: Option<&str>, size: Option<usize>) -> Result<(Vec<(Va, usize)>, ScanScope), String> {
     // A size with nowhere to start is half a window. It used to be dropped, so
     // `--size 256` scanned every writable region of the process, 348 160 bytes on
     // the target it was measured on, and answered as if asked for that.
@@ -680,13 +739,26 @@ pub fn live_scan_regions(live: &dyn LiveTarget, start: Option<&str>, size: Optio
     if let Some(s) = start {
         let va = Va::parse(s).map_err(|e| e.to_string())?;
         let sz = size.ok_or("provide size with start")?;
-        return Ok(live_window_regions(live, va, sz));
+        return Ok((live_window_regions(live, va, sz), ScanScope::Window { start: va, size: sz as u64 }));
     }
-    let regions = live.default_writable_regions();
+    // One listing for both halves, so the set searched and the rest named beside
+    // it are the same moment's map.
+    let (mut regions, mut rest, mut rest_bytes) = (Vec::new(), 0u64, 0u64);
+    for r in live.regions(n0xis_sources::ALL_REGIONS) {
+        if n0xis_sources::in_default_scan_set(&r) {
+            regions.push((r.base, r.size as usize));
+        } else if r.state == "commit" {
+            rest += 1;
+            rest_bytes += r.size;
+        }
+    }
     if regions.is_empty() {
         return Err("no committed writable regions found (and no start/size given)".to_string());
     }
-    Ok(regions)
+    let rest = n0xis_contracts::NotSearched::new("committed mappings without write permission: code, read-only data, guard pages")
+        .count(rest)
+        .bytes(rest_bytes);
+    Ok((regions.clone(), ScanScope::Writable { listed: regions, rest }))
 }
 
 /// A window of a live process, cut where the process's map changes: every mapping

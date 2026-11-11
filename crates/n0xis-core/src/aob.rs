@@ -101,8 +101,7 @@ impl Pass for AobSweepPass {
         let mut read = RegionCoverage::default();
         let mut matches = Vec::new();
         let mut bytes_scanned = 0usize;
-        for (start, size) in input.regions {
-            let bytes = read.read_region(ctx.source, start, size)?;
+        for (start, bytes) in read.read_runs(ctx.source, &input.regions)? {
             bytes_scanned += bytes.len();
             matches_in(&bytes, start, &input.pattern, &mut matches);
         }

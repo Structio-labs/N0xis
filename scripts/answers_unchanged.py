@@ -17,6 +17,7 @@ Prints the sha256 of both binaries, since the comparison is only as good as its 
 import argparse
 import concurrent.futures
 import hashlib
+import json
 import os
 import re
 import resource
@@ -52,7 +53,18 @@ COMMANDS = [
     "rtti scan --file {f}",
     "contradictions --file {f} --limit 0",
     "capability list",
+    "scan aob --file {f} --start {a} --size 64 --pattern ??",
+    "scan value --file {f} --start {a} --size 256 --type u8 --criterion unknown --save-as w --force",
 ]
+
+# Differences meant to be there: a command's answer gained these keys in `data`, on purpose. Such an answer is
+# compared with them taken out of NEW's `data`, every other byte as before, and printed as INTENDED with the
+# reason; any other difference is still a DIFFER.
+COVERAGE = ["regions_scanned", "regions_not_read", "not_read", "regions_read_short", "read_short", "searched"]
+INTENDED = {
+    "scan aob --file": (COVERAGE, "a file window says what it searched and did not read, as every scan does (claims audit 2026-11)"),
+    "scan value --file": (COVERAGE, "a file window says what it searched and did not read, as every scan does (claims audit 2026-11)"),
+}
 ELAPSED = re.compile(rb'"elapsed_ms"\s*:\s*\d+')
 
 
@@ -111,7 +123,29 @@ def compare(job):
     a, b = results
     same = a["digest"] == b["digest"] and a["exit"] == b["exit"]
     ok = re.search(rb'"ok"\s*:\s*true', a["head"]) is not None
-    return {"image": image, "cmd": " ".join(args), "same": same, "ok": ok, "size": a["size"], "old": a, "new": b}
+    intended = next((v for k, v in INTENDED.items() if template.startswith(k)), None)
+    if not same and intended:
+        same = intended_only(old, new, args, intended[0]) and a["exit"] == b["exit"]
+        intended = intended[1] if same else None
+    return {"image": image, "cmd": " ".join(args), "same": same, "ok": ok, "size": a["size"], "old": a, "new": b, "intended": intended if not a["digest"] == b["digest"] else None}
+
+
+def intended_only(old, new, args, added):
+    """OLD's and NEW's answers are the same once the keys `added` are taken out of NEW's `data`."""
+    answers = []
+    for binary in (old, new):
+        d = project()
+        try:
+            answers.append(json.loads(ELAPSED.sub(b'"elapsed_ms":0', run_capture(binary, args, d))))
+        except ValueError:
+            return False
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    a, b = answers
+    if isinstance(b.get("data"), dict):
+        for k in added:
+            b["data"].pop(k, None)
+    return a == b
 
 
 def rows_of(text):
@@ -178,6 +212,8 @@ def main():
             if not r["ok"]:
                 key = re.sub(r" --addr.*| --file.*| --bytes.*", "", r["cmd"])
                 empty[key] = empty.get(key, 0) + 1
+            if r.get("intended"):
+                print("INTENDED", Path(r["image"]).name, r["cmd"].replace(r["image"], "F"), "--", r["intended"], flush=True)
             if not r["same"]:
                 differ += 1
                 print("DIFFER", Path(r["image"]).name, r["cmd"].replace(r["image"], "F"), "old", r["old"]["exit"], r["old"]["size"], "new", r["new"]["exit"], r["new"]["size"], flush=True)

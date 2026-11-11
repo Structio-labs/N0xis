@@ -337,8 +337,28 @@ fn every_other_scan_states_the_same() {
     assert!(d["matches"].as_array().expect("matches").iter().any(|m| m["addr"] == anon.as_str()), "scan value got past the fault: {d}");
     assert_eq!(d["shown"], d["total_matches"], "{d}");
     assert_eq!(d["exhaustive"], false, "all that was found is shown, and a region was not read: {d}");
-    // The same scan of what does read, for the other half of that.
-    let d = t.ok(&["scan", "value", "--pid", &pid, "--start", &anon, "--size", &t.at("page").to_string(), "--type", "u32", "--value", &dword, "--save-as", "clean", "--force"]);
+    // The same scan of what does read, for the other half of that: whole at
+    // every byte offset, and not at the default stride of four, which steps
+    // over three offsets in four. A copy of the dword planted at an odd offset,
+    // by the kernel and not by n0xis, is the value such a stride never sees.
+    let odd = t.at("anon") + 0x101;
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut mem = std::fs::OpenOptions::new().write(true).open(format!("/proc/{}/mem", t.pid)).expect("open the target's memory");
+        mem.seek(SeekFrom::Start(odd)).unwrap();
+        mem.write_all(&dword.parse::<u32>().unwrap().to_le_bytes()).expect("plant the odd copy");
+    }
+    let page = t.at("page").to_string();
+    let window = |align: &str| {
+        t.ok(&["scan", "value", "--pid", &pid, "--start", &anon, "--size", &page, "--type", "u32", "--value", &dword, "--align", align, "--save-as", "clean", "--force"])
+    };
+    let d = window("4");
+    let value_addrs = |d: &Value| -> Vec<u64> { d["matches"].as_array().expect("matches").iter().map(|m| u64::from_str_radix(m["addr"].as_str().expect("addr").trim_start_matches("0x"), 16).unwrap()).collect() };
+    assert!(!value_addrs(&d).contains(&odd), "a stride of four cannot reach {odd:#x}: {d}");
+    assert_eq!(d["exhaustive"], false, "offsets were stepped over: {d}");
+    assert_eq!(d["searched"]["stride"], 4, "{d}");
+    let d = window("1");
+    assert!(value_addrs(&d).contains(&odd), "every byte offset reaches {odd:#x}: {d}");
     assert_eq!(d["exhaustive"], true, "{d}");
 
     let d = t.ok(&["scan", "filter", "--pid", &pid, "--from", "first", "--criterion", "unchanged", "--save-as", "second", "--force"]);
@@ -531,10 +551,12 @@ fn a_refused_target_is_an_error_not_an_empty_scan() {
     assert!(failure.contains("denied"), "{failure}");
 }
 
-/// A window of a file states no coverage: what a file holds does not come and go.
-/// Its answer is the two fields it has always been.
+/// A window of a file says what it searched and what it did not read, as every
+/// other scan does. It used to state neither, as what a file holds does not come
+/// and go; but a window crosses gaps between sections, and the answer said
+/// nothing of what it had not read.
 #[test]
-fn a_file_window_states_no_coverage() {
+fn a_file_window_says_what_it_searched() {
     let bytes = std::fs::read(target_exe()).expect("read the image");
     let elf = goblin::elf::Elf::parse(&bytes).expect("an ELF");
     let text = elf.section_headers.iter().find(|s| elf.shdr_strtab.get_at(s.sh_name) == Some(".text")).expect("a .text");
@@ -548,7 +570,9 @@ fn a_file_window_states_no_coverage() {
         .expect("run n0xis");
     let v: Value = serde_json::from_slice(&out.stdout).expect("one JSON object");
     assert_eq!(v["data"]["bytes_scanned"], 64, "the window has to have been read: {v}");
-    let keys: Vec<String> = v["data"].as_object().expect("an object").keys().cloned().collect();
-    assert_eq!(keys, ["bytes_scanned", "matches"], "{v}");
+    assert_eq!(v["data"]["searched"]["over"], serde_json::json!({"kind": "window", "start": hex(text.sh_addr), "size": 64}), "{v}");
+    assert_eq!(v["data"]["searched"]["stride"], 1, "a pattern is tried at every byte: {v}");
+    assert_eq!(v["data"]["regions_not_read"], 0, "{v}");
+    assert_eq!(v["data"]["regions_read_short"], 0, "{v}");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1248,19 +1248,6 @@ fn with_src_ctx_names(
     spelled(&*arch, attach.annotate(resp))
 }
 
-/// What a scan swept, which decides what its answer has to state.
-#[derive(Clone, Copy)]
-enum ScanTarget {
-    /// Regions that can fail to be there, so the answer says what it read, and
-    /// reading nothing is an error: a running process's, which come and go, and
-    /// those of a saved working set, whose addresses may be from another target.
-    Regions,
-    /// One window the caller named in an image file. Its answer states no
-    /// coverage, since what a file holds does not change; a window that misses
-    /// the image is still an error.
-    File,
-}
-
 /// Which addresses a scan reads.
 enum ScanRegions<'a> {
     /// A caller's window, or on a process every committed writable region.
@@ -1269,17 +1256,30 @@ enum ScanRegions<'a> {
     Saved,
 }
 
-impl ScanTarget {
-    fn answer<T: serde::Serialize>(self, schema: &str, swept: n0xis_sources::Swept<T>, label: &str) -> Response<Value> {
-        match self {
-            ScanTarget::File => match swept.window() {
-                Ok(answer) => ok_json(schema, answer, label),
-                Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
-            },
-            ScanTarget::Regions => match swept.live() {
-                Ok(stated) => ok_json(schema, stated, label),
-                Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
-            },
+/// What a scan's regions were chosen as, and the process they were chosen in:
+/// what its answer is built from, so that no scan answers without saying what
+/// it searched.
+struct ScanTarget<'a> {
+    scope: crate::source::ScanScope,
+    live: Option<&'a dyn n0xis_sources::LiveTarget>,
+}
+
+impl ScanTarget<'_> {
+    /// What the scan searched, at `stride`: asked after the sweep, see
+    /// [`crate::source::ScanScope::searched`].
+    fn searched(&self, stride: u64) -> n0xis_contracts::Searched {
+        self.scope.searched(self.live, stride)
+    }
+
+    /// The answer: the result, what the sweep did not read, and what it
+    /// searched, about a process or a window of an image alike. A window of an
+    /// image used to state no coverage, as what a file holds does not change;
+    /// but a window crosses gaps between sections, and the answer said nothing
+    /// of the part it had not read. Reading nothing is the error `nothing-readable`.
+    fn answer<T: serde::Serialize>(&self, schema: &str, swept: n0xis_sources::Swept<T>, stride: u64, label: &str) -> Response<Value> {
+        match swept.stated(self.searched(stride)) {
+            Ok(stated) => ok_json(schema, stated, label),
+            Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
         }
     }
 }
@@ -1287,9 +1287,11 @@ impl ScanTarget {
 /// Answer a first scan or a rescan, and save the working set `scan.filter`
 /// narrows. A scan that read nothing saves nothing: it would overwrite the set
 /// under that name with an empty one.
-fn answer_and_save(target: ScanTarget, swept: n0xis_sources::Swept<n0xis_core::ScanState>, save_as: &str, force: bool, label: &str) -> Response<Value> {
+fn answer_and_save(target: &ScanTarget<'_>, swept: n0xis_sources::Swept<n0xis_core::ScanState>, save_as: &str, force: bool, label: &str) -> Response<Value> {
     let n0xis_sources::Swept { answer: state, read } = swept;
-    let answer = target.answer(n0xis_contracts::schema::v1::SCAN, n0xis_sources::Swept { answer: state.report(&read), read }, label);
+    let stride = state.align as u64;
+    let report = state.report(&read, &target.searched(stride));
+    let answer = target.answer(n0xis_contracts::schema::v1::SCAN, n0xis_sources::Swept { answer: report, read }, stride, label);
     if matches!(answer, Response::Err(_)) {
         return answer;
     }
@@ -1313,7 +1315,7 @@ fn answer_and_save(target: ScanTarget, swept: n0xis_sources::Swept<n0xis_core::S
 fn with_scan_ctx(
     args: &Value,
     addresses: ScanRegions<'_>,
-    work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str, ScanTarget) -> Response<Value>,
+    work: impl FnOnce(&n0xis_core::Ctx, Vec<(Va, usize)>, &str, &ScanTarget<'_>) -> Response<Value>,
 ) -> Response<Value> {
     let explicit = args.get("arch").and_then(|v| v.as_str());
     if let Some(pid) = pid_arg(args, "pid") {
@@ -1325,33 +1327,42 @@ fn with_scan_ctx(
             Ok(l) => l,
             Err((c, m)) => return Response::error(&c, m),
         };
-        let regions = match addresses {
-            ScanRegions::Window { start, size } => match crate::source::live_scan_regions(live.as_ref(), start, size) {
+        let (regions, scope) = match addresses {
+            ScanRegions::Window { start, size } => match crate::source::live_scan_scope(live.as_ref(), start, size) {
                 Ok(r) => r,
                 Err(e) => return Response::error("bad-region", e),
             },
-            ScanRegions::Saved => Vec::new(),
+            ScanRegions::Saved => (Vec::new(), crate::source::ScanScope::Saved),
         };
         let label = n0xis_sources::MemorySource::label(live.as_ref());
         let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
-        return work(&ctx, regions, &label, ScanTarget::Regions);
+        return work(&ctx, regions, &label, &ScanTarget { scope, live: Some(live.as_ref()) });
     }
     if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
-        let (regions, target) = match addresses {
+        let window = match addresses {
             ScanRegions::Window { start, size } => {
                 let (Some(start_s), Some(size)) = (start, size) else {
                     return Response::error("missing-region", "provide start and size for a file source");
                 };
                 match Va::parse(start_s) {
-                    Ok(v) => (vec![(v, size)], ScanTarget::File),
+                    Ok(v) => Some((v, size)),
                     Err(e) => return Response::error("bad-addr", e.to_string()),
                 }
             }
-            ScanRegions::Saved => (Vec::new(), ScanTarget::Regions),
+            ScanRegions::Saved => None,
         };
         let pe = match crate::source::load_image_cached(std::path::Path::new(file)) {
             Ok(p) => p,
             Err((c, m)) => return Response::error(&c, m),
+        };
+        // The window cut where the image's bytes start and stop, each stretch
+        // read whole and each gap noted: see `n0xis_sources::window_regions`.
+        let (regions, scope) = match window {
+            Some((start, size)) => match n0xis_sources::window_regions(pe.as_ref(), start, size) {
+                Ok(r) => (r, crate::source::ScanScope::Window { start, size: size as u64 }),
+                Err(e) => return Response::error("read-failed", e.to_string()),
+            },
+            None => (Vec::new(), crate::source::ScanScope::Saved),
         };
         let label = n0xis_sources::MemorySource::label(pe.as_ref());
         // A WebAssembly module's architecture is the one built from it, never
@@ -1370,7 +1381,7 @@ fn with_scan_ctx(
             Err(e) => return Response::error("bad-arch", e),
         };
         let ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref());
-        return work(&ctx, regions, &label, target);
+        return work(&ctx, regions, &label, &ScanTarget { scope, live: None });
     }
     Response::error("missing-source", "provide pid or file")
 }
@@ -2233,7 +2244,8 @@ impl Plugin for AnalysisPasses {
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
                 with_scan_ctx(args, ScanRegions::Window { start: start.as_deref(), size }, move |ctx, regions, label, target| {
                     match n0xis_core::Pass::run(&n0xis_core::AobSweepPass, ctx, n0xis_core::AobSweepInput { regions, pattern }) {
-                        Ok(swept) => target.answer(n0xis_contracts::schema::v1::AOB_SCAN, swept, label),
+                        // A pattern is tried at every byte.
+                        Ok(swept) => target.answer(n0xis_contracts::schema::v1::AOB_SCAN, swept, 1, label),
                         Err(e) => Response::error("aob-failed", e.to_string()),
                     }
                 })
@@ -2311,8 +2323,9 @@ impl Plugin for AnalysisPasses {
                 let size = args.get("size").and_then(|v| v.as_u64()).map(|v| v as usize);
                 with_scan_ctx(args, ScanRegions::Window { start: start.as_deref(), size }, move |ctx, regions, label, target| {
                     let input = n0xis_core::GroupScanInput { regions, fields, window, align, limit };
+                    let stride = align.max(1) as u64;
                     match n0xis_core::Pass::run(&n0xis_core::GroupScanPass, ctx, input) {
-                        Ok(swept) => target.answer(n0xis_contracts::schema::v1::SCAN_GROUP, swept, label),
+                        Ok(swept) => target.answer(n0xis_contracts::schema::v1::SCAN_GROUP, swept, stride, label),
                         Err(e) => Response::error("group-failed", e.to_string()),
                     }
                 })
@@ -2365,7 +2378,10 @@ impl Plugin for AnalysisPasses {
                     let ctx = n0xis_core::Ctx::new(live.as_ref(), arch.as_ref());
                     let input = n0xis_core::PointerPathInput { target, search_regions, roots, max_depth, max_offset, pointer_size: 8 };
                     match n0xis_core::Pass::run(&n0xis_core::PointerPathPass, &ctx, input) {
-                        Ok(swept) => ScanTarget::Regions.answer(n0xis_contracts::schema::v1::POINTER_PATH, swept, &label),
+                        Ok(swept) => match swept.live() {
+                            Ok(stated) => ok_json(n0xis_contracts::schema::v1::POINTER_PATH, stated, &label),
+                            Err(nothing) => Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
+                        },
                         Err(e) => Response::error("pointer-path-failed", e.to_string()),
                     }
                 }

@@ -59,6 +59,12 @@ pub fn is_default_scan_region(protect: &str) -> bool {
     matches!(protect, "rw-" | "rwx" | "rc-" | "rcx")
 }
 
+/// A region is in the set a scan of a process reads when the caller names no
+/// window: committed, and [`is_default_scan_region`].
+pub fn in_default_scan_set(r: &MemRegion) -> bool {
+    r.state == "commit" && is_default_scan_region(&r.protect)
+}
+
 /// More regions than any process has: what to ask [`LiveTarget::regions`] for when
 /// the question is about the whole map, not a page of it.
 pub const ALL_REGIONS: usize = 1_000_000;
@@ -113,7 +119,7 @@ pub trait LiveTarget: MemorySource + ModuleProvider + SymbolProvider {
     fn default_writable_regions(&self) -> Vec<(Va, usize)> {
         self.regions(ALL_REGIONS)
             .into_iter()
-            .filter(|r| r.state == "commit" && is_default_scan_region(&r.protect))
+            .filter(in_default_scan_set)
             .map(|r| (r.base, r.size as usize))
             .collect()
     }
