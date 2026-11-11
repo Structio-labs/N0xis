@@ -132,9 +132,16 @@ fn explain_hit(ctx: &Ctx, hit: ProvenanceHit, module: Option<&Module>, scan_star
         // arithmetic") is a guess the code did not verify, and it was wrong: it
         // fired for `damage`, a function with a canonical `push rbp; mov rsp,rbp`
         // prologue that `function discover` finds by the `call` that reaches it.
+        // And the address is then the trap's, which for a data access is the instruction
+        // *after* the one that made it: said, since the field's name says otherwise.
+        let after = if hit.access_kind == "execute" {
+            ""
+        } else {
+            "; instruction_va is the address the trap reported, the instruction after the access"
+        };
         context_unavailable = Some(format!(
             "no recovered function covers {} — discovery found no function extent containing it \
-             in the scanned code range",
+             in the scanned code range{after}",
             hit.instruction_va
         ));
     }

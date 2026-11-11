@@ -1118,6 +1118,9 @@ module+function + decompiled statement (Phase 4c — watchpoint × decompiler, f
   `--addr` is refused (`bad-addr`).
 - Schema: `n0xis.provenance.v1`
 
+- The containing function is searched with what the image states (`.eh_frame` and symbols), as `function discover`
+  does. With none found, `context_unavailable` says so, and that `instruction_va` is then the trap's address, the
+  instruction after a data access.
 ### `annotate name --addr <hex> [--value <str>]`
 Assert (or clear, with no `--value`) a function/variable name at an address (versioned with full
 history).

@@ -12,19 +12,20 @@
 
 use n0xis_arch::X64;
 use n0xis_contracts::{Response, Va, schema};
-use n0xis_core::{CoordSpace, Ctx, Pass, Rect};
+use n0xis_core::{CoordSpace, Rect};
+#[cfg(windows)]
+use n0xis_core::{Ctx, Pass};
 // Needed only by the tools that still require Win32 — the watchpoint-driven
 // provenance trace and the UI-localization family. The list is an inventory of
 // what a Linux adapter has yet to reach.
 // Provenance is portable now that a Linux debug adapter exists; the UI-locate
 // family is still Win32-only.
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
-use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
 #[cfg(windows)]
 use n0xis_core::{AabbLayout, UiLocateInput, UiLocatePass};
 use n0xis_sources::{PLUGIN_DEADLINE, plugin_call_once, split_command_line};
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
-use n0xis_sources::{MemorySource, WatchKind};
+use n0xis_sources::WatchKind;
 #[cfg(windows)]
 use n0xis_sources::{best_window, encode_png, focus, list_windows, screenshot, CaptureMethod, LiveProcess};
 use rmcp::handler::server::wrapper::Parameters;
@@ -997,24 +998,7 @@ impl N0xisServer {
                 Ok(l) => l,
                 Err((c, m)) => return err(&c, m),
             };
-            let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
-            let arch = X64::new();
-            let source: &dyn MemorySource = &*live;
-            let ctx = Ctx::new(source, &arch);
-            let (code_scan_start, code_scan_size) = match insn_module.as_ref().and_then(|m| live.section_range_of(m.base, ".text")) {
-                Some((start, size)) => (Some(start), size as usize),
-                None => (None, 0),
-            };
-            let graph = ProvenancePass.run(
-                &ctx,
-                ProvenanceInput {
-                    value_addr: addr,
-                    hits: vec![ProvenanceHit { instruction_va: hit.rip, access_kind: a.kind.clone() }],
-                    module: insn_module,
-                    code_scan_start,
-                    code_scan_size,
-                },
-            );
+            let graph = n0xis_frontend::provenance::explain_hit(live, &X64::new(), addr, hit.rip, &a.kind);
             match graph {
                 Ok(g) => emit(Response::success(schema::v1::PROVENANCE, g).with_source(label)),
                 Err(e) => err("provenance-failed", e.to_string()),

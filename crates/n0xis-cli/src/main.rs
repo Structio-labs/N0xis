@@ -41,7 +41,6 @@ use n0xis_core::{CoordSpace, Rect};
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
 use n0xis_contracts::{TableEntry, TableLocator};
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
-use n0xis_core::{ProvenanceHit, ProvenanceInput, ProvenancePass};
 // The scan and filter passes are platform-neutral in the core — they read
 // through `MemorySource` and never touch an OS API. What used to be Win32-only
 // was the *CLI's* import of them, which is why `locate by-transition` refused to
@@ -5914,47 +5913,16 @@ fn cmd_provenance_trace(a: ProvenanceTraceArgs, pretty: bool, quiet: bool) -> bo
             Ok(l) => l,
             Err((c, m)) => return ir_err(&c, &m, pretty),
         };
-        let insn_module = live.modules().iter().find(|m| m.contains(hit.rip)).cloned();
         let arch = match resolve_arch(a.arch.as_deref()) {
             Ok(x) => x,
             Err(e) => return ir_err("bad-arch", &e, pretty),
         };
-        // Upcast the live target to the byte-source `Ctx` wants; the decompiler
-        // never learns it is a Linux `/proc` process vs a Win32 handle.
-        let source: &dyn MemorySource = &*live;
-        let ctx = Ctx::new(source, arch.as_ref());
-
         let access_kind = match a.kind {
             WatchKindArg::Execute => "execute",
             WatchKindArg::Write => "write",
             WatchKindArg::ReadOrWrite => "read-or-write",
         };
-        // The code window the static half of provenance searches for the function
-        // containing the hit. `.text` from section headers is the precise answer,
-        // but it is not always reachable — a stripped ELF, or a module whose
-        // headers aren't mapped — and `section_range_of` has no fallback, so it
-        // returned `None` and the whole chain (containing function -> decompiled
-        // statement) was skipped, degrading the answer to a bare address — which
-        // is the whole result this command exists to add to.
-        // `code_ranges_of` already falls back to the module's executable mappings,
-        // so use it and take the range that actually contains the instruction.
-        let code_ranges = insn_module.as_ref().map(|m| live.code_ranges_of(m.base)).unwrap_or_default();
-        let (code_scan_start, code_scan_size) = code_ranges
-            .iter()
-            .find(|(start, size)| hit.rip.get() >= start.get() && hit.rip.get() < start.get().saturating_add(*size))
-            .or_else(|| code_ranges.first())
-            .map(|(start, size)| (Some(*start), *size as usize))
-            .unwrap_or((None, 0));
-        let graph = match ProvenancePass.run(
-            &ctx,
-            ProvenanceInput {
-                value_addr: addr,
-                hits: vec![ProvenanceHit { instruction_va: hit.rip, access_kind: access_kind.to_string() }],
-                module: insn_module,
-                code_scan_start,
-                code_scan_size,
-            },
-        ) {
+        let graph = match n0xis_frontend::provenance::explain_hit(live, arch.as_ref(), addr, hit.rip, access_kind) {
             Ok(g) => g,
             Err(e) => return ir_err("provenance-failed", &e.to_string(), pretty),
         };

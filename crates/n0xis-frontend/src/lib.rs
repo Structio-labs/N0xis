@@ -45,6 +45,8 @@ pub mod static_names;
 pub mod strings_caps;
 pub mod symbols_caps;
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
+pub mod provenance;
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
 pub mod watch;
 pub mod why;
 
