@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **What is verified is written down, and the gate holds it to its test.** `docs/verification/ledger.toml` lists each statement a reader acts on with the source outside the tool that checks it, the test that does, and the numbers; `scripts/gate.py` fails when a claim marked verified names a test that did not pass in that run. ROADMAP's ✅ now means built, and an item is verified only where it cites the ledger. Known wrong answers are listed there too, as `false`.
 
+**`profile` counts `.pdata` functions, not entries; `function discover --pdata` refuses `--arch`.** `pdata_functions` was the table's size over 12, every continuation entry a function of its own: 2 512 and 1 930 on two system DLLs whose functions are 2 504 and 1 920. It counts through the table `function discover --pdata` reads. `--arch` beside `--pdata` was accepted and changed nothing, since the table is read in the layout the image's header states; it is refused.
+
 **`ir slice` refuses a register that is not one, and a place outside the function.** `--reg zzz` and `--at` an address the function does not cover answered `ok: true` with no nodes, the shape of "nothing computes it". They are refused as `unknown-register` and `not-in-function`.
 
 **`find` over a whole image finds bytes that run over the seam of two sections.** The sections were searched one at a time, so eight bytes over the end of `.note.gnu.build-id` and the start of `.interp`, one run in memory and in the file, answered `count: 0`. A match that starts in a section runs on into the bytes that follow it in memory, and is listed under the section it starts in; a window or a section named is still searched alone.

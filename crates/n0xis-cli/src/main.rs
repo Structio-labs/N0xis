@@ -4189,6 +4189,19 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
 }
 
 fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
+    // `--pdata` reads the exception table in the layout the image's own header
+    // states (its machine), and decodes no instruction: `--arch` was accepted
+    // with it and changed nothing, so an answer could be taken for one read as
+    // the architecture asked for.
+    if a.pdata
+        && let Some(asked) = a.arch.as_deref()
+    {
+        return ir_err(
+            "bad-arg",
+            &format!("--pdata reads the exception table in the layout the image's header states, and decodes no instruction: --arch {asked} would change nothing; drop it"),
+            pretty,
+        );
+    }
     let explicit_start = match opt_hex(&a.start) {
         Ok(v) => v,
         Err(e) => return ir_err("bad-addr", &e, pretty),

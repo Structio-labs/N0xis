@@ -193,7 +193,9 @@ results.
   non-forwarded exports only; lower than `export_count - forwarded_count` when the linker
   folded identical bodies), `folded` groups, `thunk_count` (exports
   that are branch stubs, whose real implementation lives at the branch target),
-  `pdata_present` / `pdata_functions`, and `engine_hints` with the evidence for each.
+  `pdata_present` / `pdata_functions` (functions, through the table `function discover --pdata`
+  reads: a continuation entry, `UNW_FLAG_CHAININFO`, is part of its function, not one), and
+  `engine_hints` with the evidence for each.
 - `data.il2cpp` — metadata path and format version, read from the blob header, when an
   IL2CPP layout is found beside the image.
 - `data.debug_info` — on a PE whose CodeView record names a PDB: its file name, the path the
@@ -576,7 +578,8 @@ Discover functions by prologue scanning (`.text` by default).
 - A row is `va`, `name` and, where an extent is known, `end`. There is no `start` or `size` field to read.
 - `--pdata` — discover from the PE `.pdata` exception table instead of prologue scanning: every
   function with unwind info, exact start+end, no heuristic and no cap (x64 `--pid`/`--file` only).
-- `--arch`.
+- `--arch` (not with `--pdata`, which reads the table in the layout the image's header states and
+  decodes nothing: refused, `bad-arg`).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.function.discover.v1`. `meta.total` is how many functions the whole range has,
   on every page. The scan always covers the whole range; the page only cuts what is returned.
@@ -1464,7 +1467,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x ir dot` | Render the CFG as Graphviz DOT (pipe to `dot -Tsvg`) |
 | `n0x ir explain` | Human-readable IR summary |
 | `n0x ir manifest` | Per-function index with quality scoring, over discovered candidates |
-| `n0x ir slice` | Backward register slice: what computes `--reg` at `--at`  A name that is no register of the instruction set and that no instruction of the function reads or writes is refused (`unknown-register`), as is an `--at` in no instruction of the function (`not-in-function`) |
+| `n0x ir slice` | Backward register slice: what computes `--reg` at `--at`. A name that is no register of the instruction set and that no instruction of the function reads or writes is refused (`unknown-register`), as is an `--at` in no instruction of the function (`not-in-function`) |
 | `n0x ir value-set` | Light value-set / alias analysis over SSA (Phase 7): the bounded set of possible values each SSA variable can hold |
 | `n0x module list` | List modules of a live process (`--pid`) or a single PE (`--file`) |
 | `n0x rtti scan` | Recover C++ classes and their vtables: MSVC RTTI from a PE's data sections, Itanium RTTI from an ELF's `_ZTV`/`_ZTI` symbols, and for a class with none from the structure of its `type_info` and vtable, by relocation (a `slots` array then lists its methods, `null` for one another image's symbol fills; `refused_several_tables` counts a class with more than one table it could be, and `structure_not_read` says why the data could not be searched), at the image's pointer width. `data.vtables[]`: `vtable` (the vptr an object stores), `type_descriptor`, `mangled`, `name`, `offset`, and either `bases` — an array, `[]` for none — where the image says, or, where it does not, no `bases` key and `bases_unknown`. Itanium bases are read from the class's own `_ZTI` symbol where the image has one (its size states no base, one or several), with the vtable's `type_info` pointer as a cross-check where it holds an address; the reasons: `type-info-not-in-file` (no own `_ZTI` in the image, and the vtable's `type_info` pointer is a relocation the file does not hold), `type-info-disagrees` (that pointer holds an address that is not the own `_ZTI`'s), `base-not-named` (the class's `type_info` has a base whose pointer names no `_ZTI` of this image, such as a base in another library, or one reached by a symbolic relocation, as in a shared object) or `hierarchy-unreadable` (including a `type_info` whose symbol states no size, or none of the ABI's three). Itanium classes not listed are counted: `data.refused_virtual_bases`, classes with virtual bases (a VTT, a vtable whose first word is not `offset_to_top` = 0 or whose own `type_info` is not in its second word, a `type_info` with a virtual base, or a class with its own `_ZTI` whose vtable's second word is zero and written by no relocation), whose vptr is not `_ZTV` + two pointers; `data.refused_first_slot_not_code`, classes whose word at `_ZTV` + two pointers is an address outside every executable section; `data.refused_first_slot_empty`, classes whose word there is zero, written by no relocation, after a word that is no `type_info` pointer (a class built without RTTI whose virtual base shares its vptr; also an abstract class GCC built without RTTI, whose destructor slots it leaves zero). The relocations are read for executables and shared objects of x86, x86-64, ARM and AArch64, `RELR` included; elsewhere a zero there is taken for a slot the loader fills. A big-endian ELF is refused with `big-endian-image` |

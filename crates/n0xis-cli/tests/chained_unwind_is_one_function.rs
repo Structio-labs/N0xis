@@ -237,3 +237,27 @@ fn the_whole_program_lists_hold_functions_not_continuations() {
     let of_g = sums.iter().find(|s| s["va"] == hex(g)).expect("g's summary");
     assert_eq!(of_g["calls"], serde_json::json!([hex(h)]), "{summary}");
 }
+
+/// `profile` counts functions through the same table: it counted the table's
+/// entries (its size over 12), continuations among them, and said 2 512 and
+/// 1 930 on two system DLLs whose functions are 2 504 and 1 920.
+#[test]
+fn the_profile_counts_functions_not_entries() {
+    let truth = readobj_functions();
+    let v = run(&project("profile"), &["profile", "--file", &image()]);
+    assert_eq!(v["data"]["image"]["pdata_functions"], truth.len(), "{v}");
+}
+
+/// `--arch` with `--pdata` changed nothing and was accepted: refused, so no
+/// answer reads as one the architecture asked for shaped.
+#[test]
+fn an_arch_with_the_pdata_list_is_refused() {
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
+        .args(["function", "discover", "--file", &image(), "--pdata", "--arch", "arm64"])
+        .current_dir(project("pdata-arch"))
+        .output()
+        .expect("run n0xis");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(v["error"]["code"], "bad-arg", "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("--arch"), "{v}");
+}

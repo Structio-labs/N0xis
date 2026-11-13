@@ -282,9 +282,23 @@ pub fn profile_image(
 
     let exports = ExportDirectory::from_header(&hdr).map_or_else(Vec::new, |dir| read_exports(source, arch, module_base, dir));
 
-    // `.pdata` entries are 12 bytes each; the count is exact, so report it
-    // rather than re-walking the table.
-    let pdata = (exception_rva != 0 && exception_size != 0).then_some((exception_size as usize) / 12);
+    // Functions, through the table `function discover --pdata` reads: one per
+    // root entry, its continuations (`UNW_FLAG_CHAININFO`) its parts. Counted as
+    // the table's size over 12 bytes, every continuation was a function: 2 512
+    // and 1 930 on two system DLLs whose functions are 2 504 and 1 920
+    // (`llvm-readobj --unwind`).
+    let pdata = if exception_rva != 0 && exception_size != 0 {
+        let table = n0xis_sources::read_unwind_table(
+            source,
+            module_base,
+            module_base.offset(u64::from(exception_rva)),
+            exception_size as usize,
+            n0xis_sources::pe_isa(source, module_base),
+        )?;
+        Some(table.functions.len())
+    } else {
+        None
+    };
 
     Ok(assemble_profile(module_base, machine_name(machine), sections, exports, pdata, with_exports))
 }
@@ -631,9 +645,26 @@ mod tests {
         let dd = e_lfanew + 24 + 112;
         let export_rva = 0x400u32;
         img[dd..dd + 4].copy_from_slice(&export_rva.to_le_bytes());
-        // Exception directory: 2 entries' worth (24 bytes) at some rva.
+        // Exception directory at rva 0x1000: three entries, the third a
+        // continuation of the second (`UNW_FLAG_CHAININFO`), so two functions.
+        // It was 24 bytes of zeros, counted as 2 functions by size / 12.
+        let entries: [(u32, u32, u32); 3] = [(0x200, 0x210, 0x1100), (0x280, 0x290, 0x1110), (0x290, 0x2a0, 0x1120)];
+        for (i, (begin, end, unwind)) in entries.iter().enumerate() {
+            let at = 0x1000 + i * 12;
+            for (k, word) in [begin, end, unwind].into_iter().enumerate() {
+                img[at + k * 4..at + k * 4 + 4].copy_from_slice(&word.to_le_bytes());
+            }
+        }
+        // `UNWIND_INFO`: version 1, no flags, no codes; the chained one has
+        // flag 4 and its parent's `RUNTIME_FUNCTION` after its (empty) codes.
+        img[0x1100] = 0x01;
+        img[0x1110] = 0x01;
+        img[0x1120] = 0x01 | (0x4 << 3);
+        for (k, word) in [0x280u32, 0x290, 0x1110].into_iter().enumerate() {
+            img[0x1124 + k * 4..0x1128 + k * 4].copy_from_slice(&word.to_le_bytes());
+        }
         img[dd + 24..dd + 28].copy_from_slice(&0x1000u32.to_le_bytes());
-        img[dd + 28..dd + 32].copy_from_slice(&24u32.to_le_bytes());
+        img[dd + 28..dd + 32].copy_from_slice(&36u32.to_le_bytes());
 
         let sec = e_lfanew + 24 + 240;
         img[sec..sec + 5].copy_from_slice(b".text");
@@ -700,7 +731,7 @@ mod tests {
         assert_eq!(thunked.thunk_kind, Some("direct"));
 
         assert!(p.pdata_present);
-        assert_eq!(p.pdata_functions, 2, "24 bytes / 12 per RUNTIME_FUNCTION");
+        assert_eq!(p.pdata_functions, 2, "three entries, one a continuation: two functions");
     }
 
     /// A 32-bit PE has a shorter optional header, and the section table follows
