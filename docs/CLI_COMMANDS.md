@@ -560,7 +560,9 @@ variable can hold.
 
 ### `ir deobfuscate`
 Pattern-based deobfuscation report (Phase 7): junk instructions and value-set-provable opaque
-predicates.
+predicates. A `mov`/`xchg` of a register with itself or an `add`/`sub`/`or` of zero is junk only where
+its lift changes nothing: on x86-64 `mov eax, eax` clears the upper half of `rax`, and `add reg, 0`
+writes the flags, so neither is.
 - Args: same as `ir build` (`IrArgs`).
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - Schema: `n0xis.deobfuscate.v1`

@@ -13,8 +13,12 @@
 //! - **Junk instructions**: structural, no-dataflow-needed identities a
 //!   packer/obfuscator inserts as filler — `mov reg, reg`, `xchg reg, reg`,
 //!   `push reg` immediately undone by `pop reg`, and `add/sub/or reg, 0`.
-//!   Each is a semantic no-op regardless of any other context, so these are
-//!   flagged with full confidence.
+//!   A `mov`, `xchg`, `add`, `sub` or `or` is flagged only where the
+//!   instruction's own lift says it changes nothing: every statement it lifts
+//!   to gives a register its own value. The shape of the text is not enough:
+//!   on x86-64 `mov eax, eax` clears the upper half of `rax` (a processor
+//!   running a function with and without it returned `100000002` and `2`), and
+//!   `add eax, 0` writes the flags. Both were called junk (audit 2026-11-06).
 //! - **Opaque predicates**: a conditional branch whose condition
 //!   [`ValueSetPass`] can *prove* constant (both sides of the comparison
 //!   resolve to known values) is dead code disguised as a branch — one
@@ -25,6 +29,8 @@
 
 use n0xis_contracts::Va;
 use serde::Serialize;
+
+use n0xis_arch::{MicroExpr, MicroStmt};
 
 use crate::ir::CfgArtifact;
 use crate::ssa::SsaPass;
@@ -95,6 +101,24 @@ impl Pass for DeobfuscatePass {
         let start = cfg.start;
         let end = cfg.end;
 
+        // What each instruction does, by its lift: the one statement of an
+        // instruction's effect the rest of the pipeline reads.
+        let lifted = crate::lift::LiftPass.run(ctx, cfg.clone())?;
+        let mut effects: std::collections::BTreeMap<Va, Vec<&MicroStmt>> = std::collections::BTreeMap::new();
+        for stmt in lifted.blocks.iter().flat_map(|b| &b.stmts) {
+            effects.entry(stmt.va).or_default().push(&stmt.stmt);
+        }
+        let changes_nothing = |va: Va| {
+            effects.get(&va).is_some_and(|stmts| {
+                !stmts.is_empty()
+                    && stmts.iter().all(|s| match s {
+                        MicroStmt::Nop => true,
+                        MicroStmt::Assign { dst, value: MicroExpr::Var(v) } => v == dst,
+                        _ => false,
+                    })
+            })
+        };
+
         let mut junk = Vec::new();
         for block in &cfg.blocks {
             let insns = &block.insns;
@@ -103,6 +127,7 @@ impl Pass for DeobfuscatePass {
                     "mov" | "xchg" => {
                         if let Some((a, b)) = two_operands(&insn.text)
                             && a == b
+                            && changes_nothing(insn.va)
                         {
                             junk.push(JunkInsn {
                                 va: insn.va,
@@ -115,6 +140,7 @@ impl Pass for DeobfuscatePass {
                     "add" | "sub" | "or" => {
                         if let Some((_, b)) = two_operands(&insn.text)
                             && is_zero_literal(b)
+                            && changes_nothing(insn.va)
                         {
                             junk.push(JunkInsn {
                                 va: insn.va,
@@ -207,18 +233,28 @@ mod tests {
 
     #[test]
     fn flags_a_self_move_as_junk() {
-        // mov eax, eax ; ret
-        let art = deobfuscate(vec![0x89, 0xc0, 0xc3]);
-        assert_eq!(art.junk.len(), 1);
+        // mov rax, rax ; ret. It was `mov eax, eax`, which on x86-64 is not junk.
+        let art = deobfuscate(vec![0x48, 0x89, 0xc0, 0xc3]);
+        assert_eq!(art.junk.len(), 1, "{:?}", art.junk);
         assert!(art.junk[0].reason.contains("self-mov"));
     }
 
+    /// `mov eax, eax` on x86-64 zeroes the upper half of `rax`: not junk.
     #[test]
-    fn flags_identity_add_as_junk() {
-        // add eax, 0 ; ret
-        let art = deobfuscate(vec![0x83, 0xc0, 0x00, 0xc3]);
-        assert_eq!(art.junk.len(), 1);
-        assert!(art.junk[0].reason.contains("identity arithmetic"));
+    fn a_32_bit_self_move_on_x86_64_is_not_junk() {
+        let art = deobfuscate(vec![0x89, 0xc0, 0xc3]);
+        assert!(art.junk.is_empty(), "{:?}", art.junk);
+    }
+
+    /// `add eax, 0` writes the flags, and on x86-64 zeroes the upper half of
+    /// `rax`; `add rax, 0` writes the flags. Neither changes nothing. The test
+    /// asserted `add eax, 0` was junk.
+    #[test]
+    fn identity_arithmetic_that_writes_the_flags_is_not_junk() {
+        for code in [vec![0x83, 0xc0, 0x00, 0xc3], vec![0x48, 0x83, 0xc0, 0x00, 0xc3]] {
+            let art = deobfuscate(code.clone());
+            assert!(art.junk.is_empty(), "{code:02x?}: {:?}", art.junk);
+        }
     }
 
     #[test]
