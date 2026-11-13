@@ -101,6 +101,12 @@ MUTATIONS = [
     ("crates/n0xis-arch/src/flags.rs", "        \"neg\" => (NEG_FLAGS,", "        \"neg_\" => (NEG_FLAGS,", "n0xis-core", "flags_after_arithmetic_agree_with_the_processor", "every_condition_after_arithmetic_answers_as_the_processor_does"),
     ("crates/n0xis-arch/src/flags.rs", "        (DEC_FLAGS, [a, _]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, a.clone(), one()))),", "        (DEC_FLAGS, [_, r]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, r.clone(), MicroExpr::constant(0, 64)))),", "n0xis-core", "flags_after_arithmetic_agree_with_the_processor", "every_condition_after_arithmetic_answers_as_the_processor_does"),
     (CORE + "render.rs", "        MicroExpr::Binary(op @ (BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge), l, r) if word.is_some() => {", "        MicroExpr::Binary(op @ (BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge), l, r) if false && word.is_some() => {", *LIB, "render::tests::a_signed_order_at_the_word_says_it_is_signed"),
+    # A jump back to a loop's header is that loop's `continue` only where it is the innermost (round 3, item 4).
+    (CORE + "structure.rs", "    if ctx.loop_stack.last() == Some(&n) {", "    if ctx.loop_stack.contains(&n) {", *LIB, "structure::tests::a_jump_to_an_outer_loop_header_is_not_the_inner_loops_continue"),
+    (CORE + "structure.rs", "                    ctx.out.extend(header_lines.iter().map(|l| format!(\"{pad0}{}\", l.trim_start())));\n                    ctx.out.push(format!(\"{pad0}while ({cond_for_loop}) {{\"));\n                    ctx.out.extend(inside_lines);", "                    ctx.out.push(format!(\"{pad0}while ({cond_for_loop}) {{\"));\n                    ctx.out.extend(body);", *LIB, "structure::tests::a_goto_to_a_loop_that_tests_first_lands_on_its_test"),
+    # One name for one frame slot: an index steps from the slot's own name, which is declared (round 3, item 4).
+    (CORE + "render.rs", "    if names.is_frame_address(base)\n", "    if false && names.is_frame_address(base)\n", *LIB, "decomp::tests::an_indexed_frame_slot_is_named_by_the_slot_it_steps_from"),
+    (CORE + "typeinfer.rs", "indexed_base(addr, *bits) {\n                out.push(MemAccess { base, offset, bits: *bits, signed: *signed, indexed: true });", "indexed_base(addr, *bits).filter(|_| false) {\n                out.push(MemAccess { base, offset, bits: *bits, signed: *signed, indexed: true });", *LIB, "decomp::tests::an_indexed_frame_slot_is_named_by_the_slot_it_steps_from"),
 ]
 
 

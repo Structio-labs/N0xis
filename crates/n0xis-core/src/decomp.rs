@@ -2083,6 +2083,35 @@ mod tests {
     /// why, first, and claims at most half. One cut at start + 0x1000 said quality 1.0,
     /// with no return and no word. The window here ends inside an instruction, as a
     /// real one does as often as not.
+    /// gcc -O2's `int x[4]; x[0] = 1; x[k & 3] += 2; return x[k & 3] + x[1];`, the
+    /// stack protector left out: the indexed access steps from the slot `local_0`
+    /// already names, and says so. It printed `((uint32_t*)rsp.1)[rdi.1]`, a second
+    /// name for that slot and one nothing in the text defines.
+    #[test]
+    fn an_indexed_frame_slot_is_named_by_the_slot_it_steps_from() {
+        let code = vec![
+            0x48, 0x83, 0xec, 0x18, // sub rsp, 0x18
+            0x83, 0xe7, 0x03, // and edi, 3
+            0xc7, 0x04, 0x24, 0x01, 0x00, 0x00, 0x00, // mov dword [rsp], 1
+            0x83, 0x04, 0xbc, 0x02, // add dword [rsp+rdi*4], 2
+            0x8b, 0x04, 0xbc, // mov eax, [rsp+rdi*4]
+            0x03, 0x44, 0x24, 0x04, // add eax, [rsp+4]
+            0x48, 0x83, 0xc4, 0x18, // add rsp, 0x18
+            0xc3, // ret
+        ];
+        let f = decomp(code, DecompStyle::Ssa);
+        let text = f.pseudo.join("\n");
+        assert!(text.contains("((uint32_t*)&local_0)[rdi.1]"), "{text}");
+        assert!(!text.contains("rsp."), "a stack register's version is no name for a slot: {text}");
+        assert!(f.pseudo.iter().any(|l| l.trim() == "uint32_t local_0;"), "the slot it steps from is declared: {text}");
+        // Declared also where no access names it but the index's.
+        let only_indexed = vec![0x48, 0x83, 0xec, 0x18, 0x83, 0xe7, 0x03, 0x8b, 0x04, 0xbc, 0x03, 0x44, 0x24, 0x04, 0x48, 0x83, 0xc4, 0x18, 0xc3];
+        let f = decomp(only_indexed, DecompStyle::Ssa);
+        let text = f.pseudo.join("\n");
+        assert!(text.contains("((uint32_t*)&local_0)["), "{text}");
+        assert!(f.pseudo.iter().any(|l| l.trim() == "uint32_t local_0;"), "declared by the index alone: {text}");
+    }
+
     #[test]
     fn a_body_cut_by_the_window_says_so() {
         // 40 times `mov eax, 1`, five bytes each, no `ret`, in a 128-byte window.

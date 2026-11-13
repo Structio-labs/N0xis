@@ -812,7 +812,7 @@ fn min_max_idiom<'a>(cond: &'a MicroExpr, a: &'a MicroExpr, b: &'a MicroExpr) ->
 /// semantics, far more readable. Requires an explicit `* stride` with `stride ≥
 /// 2`: a byte array (`base + i`) is left as a pointer add, since a bare sum is
 /// too ambiguous to reshape soundly.
-fn as_array_index(addr: &MicroExpr, bits: n0xis_arch::Bits) -> Option<(&MicroExpr, &MicroExpr)> {
+pub(crate) fn as_array_index(addr: &MicroExpr, bits: n0xis_arch::Bits) -> Option<(&MicroExpr, &MicroExpr)> {
     let stride = i128::from(bits / 8);
     if stride < 2 {
         return None;
@@ -847,7 +847,17 @@ fn as_array_index(addr: &MicroExpr, bits: n0xis_arch::Bits) -> Option<(&MicroExp
 /// and subscripting recovers the load. A base with no symbol (the clang
 /// anonymous-table path, and a plain register base) renders without a leading
 /// `&` and is therefore unaffected.
+///
+/// A slot of this function's frame is the exception: it is declared as a scalar,
+/// so its address is what the subscript steps from, `&local_0`. Printed as the
+/// stack register's version instead, `((uint32_t*)rsp.1)[k]` gave the slot
+/// `local_0` already names a second name, and a name nothing in the text defines.
 fn render_array_base(base: &MicroExpr, names: &RenderNames) -> String {
+    if names.is_frame_address(base)
+        && let Some(place) = Place::of(base, names)
+    {
+        return format!("&{}", place.bare());
+    }
     let text = render_expr(base, names);
     match text.strip_prefix('&') {
         Some(bare) => bare.to_string(),

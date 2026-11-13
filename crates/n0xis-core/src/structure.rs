@@ -187,8 +187,20 @@ fn emit_node(ctx: &mut Ctx, n: usize, until: Option<usize>) {
     if Some(n) == until {
         return;
     }
-    if ctx.loop_stack.contains(&n) {
+    // `continue` goes to the innermost loop around it, and nowhere else. An edge
+    // to the header of a loop further out said `continue;` too, and C reads that
+    // as the inner loop's: gcc -O2's nested search with a `goto next` printed
+    // `continue;` inside the inner `do { } while`, which runs the inner test where
+    // the machine goes back to the outer header. That edge is a `goto` to the
+    // outer header's label, which every loop form lays out where the header's
+    // own code starts.
+    if ctx.loop_stack.last() == Some(&n) {
         ctx.out.push(format!("{}continue;", pad(ctx.indent)));
+        return;
+    }
+    if ctx.loop_stack.contains(&n) {
+        ctx.out.push(format!("{}goto block_{n};", pad(ctx.indent)));
+        ctx.fallback_count += 1;
         return;
     }
     if let Some(&Some(cont)) = ctx.loop_cont.last()
@@ -979,12 +991,18 @@ fn emit_loop(ctx: &mut Ctx, h: usize, until: Option<usize>) {
                     ctx.out.extend(inside_lines);
                     ctx.out.push(format!("{pad0}}}"));
                 } else if let Some((body_wo_step, step)) = for_form {
+                    // The header holds the test and nothing else, so its label is
+                    // where the test is: before the loop. Inside, a `goto` to it
+                    // from a loop further in skipped the test.
+                    let (label, rest) = body_wo_step.split_at(header_lines.len());
+                    ctx.out.extend(label.iter().map(|l| format!("{pad0}{}", l.trim_start())));
                     ctx.out.push(format!("{pad0}for (; {cond_for_loop}; {step}) {{"));
-                    ctx.out.extend(body_wo_step);
+                    ctx.out.extend(rest.iter().cloned());
                     ctx.out.push(format!("{pad0}}}"));
                 } else {
+                    ctx.out.extend(header_lines.iter().map(|l| format!("{pad0}{}", l.trim_start())));
                     ctx.out.push(format!("{pad0}while ({cond_for_loop}) {{"));
-                    ctx.out.extend(body);
+                    ctx.out.extend(inside_lines);
                     ctx.out.push(format!("{pad0}}}"));
                 }
                 ctx.loop_stack.pop();
@@ -1576,6 +1594,121 @@ mod tests {
         let text = out.lines.join("\n");
         assert!(!text.contains("goto"), "no residual goto expected: {text}");
         assert_eq!(out.fallback_count, 0, "should structure cleanly: {text}");
+    }
+
+    /// gcc -O2's `for i { for j { if (a[j] == i) goto next; s += a[j] ^ i; } s += 1; next:; }`:
+    /// the found path goes back to the outer header from inside the inner
+    /// `do { } while`. A `continue;` there is the inner loop's, and runs its test.
+    const NESTED_SEARCH: [u8; 122] = [
+        0x41, 0x89, 0xf0, 0x49, 0x89, 0xf9, 0x31, 0xc9, 0x31, 0xf6, 0x45, 0x85, 0xc0, 0x7e, 0x4c, 0x85, 0xd2, 0x7e, 0x5a, 0x89,
+        0xd2, 0x49, 0x8d, 0x3c, 0x91, 0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xca, 0xeb, 0x28, 0x0f, 0x1f, 0x44,
+        0x00, 0x00, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x31, 0xc8, 0x48, 0x83, 0xc2, 0x04, 0x01, 0xc6, 0x48, 0x39, 0xfa, 0x74, 0x13, 0x8b, 0x02, 0x39,
+        0xc8, 0x75, 0xed, 0x83, 0xc1, 0x01, 0x44, 0x39, 0xc1, 0x75, 0xc5, 0x89, 0xf0, 0xc3, 0x66, 0x90, 0x83, 0xc1, 0x01, 0x83,
+        0xc6, 0x01, 0x44, 0x39, 0xc1, 0x75, 0xb5, 0xeb, 0xee, 0x83, 0xc1, 0x01, 0x83, 0xc6, 0x01, 0x41, 0x39, 0xc8, 0x75, 0x97,
+        0xeb, 0xe1,
+    ];
+
+    /// The lines inside each `do { ... } while`, nested ones included.
+    fn do_while_bodies(lines: &[String]) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.trim() != "do {" {
+                continue;
+            }
+            let mut depth = 0i32;
+            for (j, m) in lines[i..].iter().enumerate() {
+                depth += brace_delta(m);
+                if depth == 0 {
+                    out.push(lines[i + 1..i + j].to_vec());
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// The whole pipeline's text, optimizer included: the inner loop is a
+    /// `do { } while` only once the copies are gone.
+    fn decompiled(code: Vec<u8>) -> Vec<String> {
+        let window = code.len();
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = PassCtx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), window)).unwrap();
+        let input = crate::DecompInput {
+            cfg,
+            style: crate::DecompStyle::Ssa,
+            explain: false,
+            strip_block_labels: false,
+            var_names: Default::default(),
+            var_types: Default::default(),
+            struct_defs: Default::default(),
+        };
+        crate::DecompPass.run(&ctx, input).unwrap().pseudo
+    }
+
+    #[test]
+    fn a_jump_to_an_outer_loop_header_is_not_the_inner_loops_continue() {
+        let lines = decompiled(NESTED_SEARCH.to_vec());
+        let text = lines.join("\n");
+        let bodies = do_while_bodies(&lines);
+        assert!(!bodies.is_empty(), "the inner loop is a do-while here: {text}");
+        for body in &bodies {
+            // A `continue;` belongs to the innermost loop around it: one inside a
+            // loop nested in this do-while is that loop's, one inside an `if` is
+            // the do-while's.
+            let mut open: Vec<bool> = Vec::new();
+            for l in body {
+                let l = l.trim();
+                assert!(!(l == "continue;" && !open.contains(&true)), "a continue inside the inner do-while: {text}");
+                if l.starts_with('}') {
+                    open.pop();
+                }
+                if l.ends_with('{') {
+                    open.push(l.starts_with("while (") || l.starts_with("for (") || l == "do {");
+                }
+            }
+        }
+        // The edge is still there, as a jump to the outer header's label.
+        let wanted: Vec<&str> = lines.iter().filter_map(|l| l.trim().strip_prefix("goto ")?.strip_suffix(';')).collect();
+        assert!(!wanted.is_empty(), "{text}");
+        for label in wanted {
+            let labelled = |l: &String| l.trim().starts_with(&format!("{label}:")) || l.trim().starts_with(&format!("// {label}:"));
+            assert!(lines.iter().any(labelled), "no label {label}: {text}");
+        }
+    }
+
+    /// gcc -Os's `for i { j = 0; while (j < m) { if (a[j] == i) goto nx; s += a[j]; j++; } s ^= i; nx:; }`:
+    /// both loops test first, and the found path goes from the inner one to the
+    /// outer header, a `goto` to its label. That label was inside the outer `while`,
+    /// after its test, and the jump skipped the test.
+    #[test]
+    fn a_goto_to_a_loop_that_tests_first_lands_on_its_test() {
+        let code = vec![
+            0x49, 0x89, 0xf8, 0x41, 0x89, 0xd1, 0x89, 0xf7, 0x31, 0xd2, 0x31, 0xc0, 0x39, 0xfa, 0x7d, 0x1d, 0x31, 0xc9, 0x41, 0x39,
+            0xc9, 0x7e, 0x10, 0x48, 0xff, 0xc1, 0x41, 0x8b, 0x74, 0x88, 0xfc, 0x39, 0xd6, 0x74, 0x06, 0x01, 0xf0, 0xeb, 0xeb, 0x31,
+            0xd0, 0xff, 0xc2, 0xeb, 0xdf, 0xc3,
+        ];
+        let out = structure_code(code);
+        let text = out.lines.join("\n");
+        let targets: BTreeSet<usize> = out
+            .lines
+            .iter()
+            .filter_map(|l| l.trim().strip_prefix("goto block_")?.trim_end_matches(';').parse().ok())
+            .collect();
+        assert!(!targets.is_empty(), "{text}");
+        let mut headers = 0;
+        for n in targets {
+            let at = out.lines.iter().position(|l| anchor_block_id(l) == Some(n)).unwrap_or_else(|| panic!("no label {n}: {text}"));
+            let before = out.lines[..at].iter().rev().find(|l| is_code_line(l)).map(|l| l.trim());
+            assert!(
+                !before.is_some_and(|l| (l.starts_with("while (") && l != "while (1) {") || l.starts_with("for (")),
+                "the label of block {n} is past its loop's test: {text}"
+            );
+            headers += usize::from(out.lines.get(at + 1).is_some_and(|l| l.trim().starts_with("while (")));
+        }
+        assert_eq!(headers, 1, "one goto is to the outer header, whose label is before its test: {text}");
     }
 
     #[test]

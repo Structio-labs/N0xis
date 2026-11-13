@@ -414,6 +414,17 @@ struct MemAccess {
     offset: i64,
     bits: Bits,
     signed: bool,
+    /// The access is `base + offset` stepped by a computed index, `base[k]`, not
+    /// the slot itself. A frame slot so indexed is named by the text (`&local_0`
+    /// is what the subscript steps from) and is declared with it; a pointer so
+    /// indexed says nothing about a field at that offset of what it points at.
+    indexed: bool,
+}
+
+/// `base + offset` of an access `addr` makes at a computed index: the render's
+/// own subscript shape, so what is declared is what is printed.
+fn indexed_base(addr: &MicroExpr, bits: Bits) -> Option<(String, i64)> {
+    crate::render::as_array_index(addr, bits).and_then(|(base, _)| as_base_offset(base))
 }
 
 /// Find every `Load` anywhere in `e`'s expression tree — not just a
@@ -425,7 +436,9 @@ fn walk_loads(e: &MicroExpr, out: &mut Vec<MemAccess>) {
     match e {
         MicroExpr::Load { addr, bits, signed } => {
             if let Some((base, offset)) = as_base_offset(addr) {
-                out.push(MemAccess { base, offset, bits: *bits, signed: *signed });
+                out.push(MemAccess { base, offset, bits: *bits, signed: *signed, indexed: false });
+            } else if let Some((base, offset)) = indexed_base(addr, *bits) {
+                out.push(MemAccess { base, offset, bits: *bits, signed: *signed, indexed: true });
             }
             walk_loads(addr, out); // a computed address may itself contain a load
         }
@@ -466,7 +479,9 @@ fn collect_mem_accesses(blocks: &[SsaBlock]) -> Vec<MemAccess> {
                 MicroStmt::Store { addr, value, bits } => {
                     // The store's own address is itself a write access.
                     if let Some((base, offset)) = as_base_offset(addr) {
-                        out.push(MemAccess { base, offset, bits: *bits, signed: false });
+                        out.push(MemAccess { base, offset, bits: *bits, signed: false, indexed: false });
+                    } else if let Some((base, offset)) = indexed_base(addr, *bits) {
+                        out.push(MemAccess { base, offset, bits: *bits, signed: false, indexed: true });
                     }
                     walk_loads(addr, &mut out);
                     walk_loads(value, &mut out);
@@ -595,7 +610,7 @@ fn recover_locals(accesses: &[MemAccess], signed_use: &BTreeSet<i64>, frames: &B
 fn recover_structs(accesses: &[MemAccess], frames: &BTreeSet<String>) -> Vec<RecoveredType> {
     let mut by_base: BTreeMap<String, BTreeMap<i64, (Bits, bool, usize)>> = BTreeMap::new();
     for a in accesses {
-        if is_stack_base(&a.base, frames) {
+        if is_stack_base(&a.base, frames) || a.indexed {
             continue;
         }
         let fields = by_base.entry(a.base.clone()).or_default();
@@ -2199,7 +2214,7 @@ mod tests {
         ));
         assert!(collect_signed_use_offsets(std::slice::from_ref(&ublk)).is_empty());
         // recover_locals honors the signed-use set even for an unsigned access.
-        let acc = vec![MemAccess { base: "rsp".into(), offset: 8, bits: 32, signed: false }];
+        let acc = vec![MemAccess { base: "rsp".into(), offset: 8, bits: 32, signed: false, indexed: false }];
         let locals = recover_locals(&acc, &signed, &BTreeSet::new());
         assert_eq!(locals.len(), 1);
         assert!(locals[0].signed, "the compared-signed local should render signed");
@@ -2209,7 +2224,7 @@ mod tests {
     /// under two names. Both were `local_8`.
     #[test]
     fn a_slot_and_its_mirror_are_declared_under_two_names() {
-        let acc = |offset| MemAccess { base: "rsp.1".into(), offset, bits: 64, signed: false };
+        let acc = |offset| MemAccess { base: "rsp.1".into(), offset, bits: 64, signed: false, indexed: false };
         let locals = recover_locals(&[acc(8), acc(-8)], &BTreeSet::new(), &BTreeSet::new());
         let mut names: Vec<&str> = locals.iter().map(|l| l.name.as_str()).collect();
         names.sort();
