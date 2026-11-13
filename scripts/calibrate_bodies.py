@@ -95,6 +95,12 @@ MUTATIONS = [
     ("crates/n0xis-arch/src/x64_lift.rs", "        Mnemonic::Mul | Mnemonic::Imul if instr.op_count() == 1 && op_bits(&instr, 0) >= 32 => {", "        Mnemonic::Mul if instr.op_count() == 1 && op_bits(&instr, 0) >= 32 => {", "n0xis-arch", None, "x64_lift::tests::a_one_operand_imul_has_a_signed_high_half"),
     (CORE + "emulate.rs", "            let p = sign_extend_128(arg(0)?, bits) * sign_extend_128(arg(1)?, bits);", "            let p = (mask(arg(0)?, bits) * mask(arg(1)?, bits)) as i128;", *LIB, "emulate::tests::the_signed_high_half_of_a_product"),
     (CORE + "render.rs", "        MicroExpr::Binary(BinOp::Shl, l, r) if word.is_some_and(|w| w > 32) && matches!(l.as_ref(), MicroExpr::Const { .. }) => {", "        MicroExpr::Binary(BinOp::Shl, l, r) if false && word.is_some_and(|w| w > 32) && matches!(l.as_ref(), MicroExpr::Const { .. }) => {", *LIB, "render::tests::a_shifted_64_bit_constant_says_its_width"),
+    # A signed order or the carry after a register inc, dec or neg reads the operation; the zero and the sign, the result.
+    ("crates/n0xis-arch/src/flags.rs", "        \"inc\" => (INC_FLAGS,", "        \"inc_\" => (INC_FLAGS,", "n0xis-core", "flags_after_arithmetic_agree_with_the_processor", "every_condition_after_arithmetic_answers_as_the_processor_does"),
+    ("crates/n0xis-arch/src/flags.rs", "        \"dec\" => (DEC_FLAGS,", "        \"dec_\" => (DEC_FLAGS,", "n0xis-core", "flags_after_arithmetic_agree_with_the_processor", "every_condition_after_arithmetic_answers_as_the_processor_does"),
+    ("crates/n0xis-arch/src/flags.rs", "        \"neg\" => (NEG_FLAGS,", "        \"neg_\" => (NEG_FLAGS,", "n0xis-core", "flags_after_arithmetic_agree_with_the_processor", "every_condition_after_arithmetic_answers_as_the_processor_does"),
+    ("crates/n0xis-arch/src/flags.rs", "        (DEC_FLAGS, [a, _]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, a.clone(), one()))),", "        (DEC_FLAGS, [_, r]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, r.clone(), MicroExpr::constant(0, 64)))),", "n0xis-core", "flags_after_arithmetic_agree_with_the_processor", "every_condition_after_arithmetic_answers_as_the_processor_does"),
+    (CORE + "render.rs", "        MicroExpr::Binary(op @ (BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge), l, r) if word.is_some() => {", "        MicroExpr::Binary(op @ (BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge), l, r) if false && word.is_some() => {", *LIB, "render::tests::a_signed_order_at_the_word_says_it_is_signed"),
 ]
 
 

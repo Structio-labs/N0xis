@@ -21,7 +21,7 @@
 //! `Arm64::branch_condition`, where that mapping is also what absorbs the
 //! opposite polarity of the two architectures' carry flags.
 
-use crate::microir::{BinOp, Bits, CallTarget, CmpKind, MicroExpr};
+use crate::microir::{BinOp, Bits, CallTarget, CmpKind, MicroExpr, UnOp};
 
 /// The width a value carries, where the expression states one.
 ///
@@ -196,6 +196,8 @@ fn is_float_compare(name: &str) -> bool {
 pub(crate) const ADD_FLAGS: &str = "__flags_add";
 pub(crate) const INC_FLAGS: &str = "__flags_inc";
 pub(crate) const DEC_FLAGS: &str = "__flags_dec";
+/// `neg a`: the flags of `0 - a`, the carry included.
+pub(crate) const NEG_FLAGS: &str = "__flags_neg";
 pub(crate) const BT_FLAGS: &str = "__flags_bt";
 
 /// What flags left as a stored result say once the operation is known: `add` keeps
@@ -205,6 +207,55 @@ pub(crate) const BT_FLAGS: &str = "__flags_bt";
 /// is left out, since printing it at the branch would read it again, past whatever
 /// wrote it since. `None` where the definition is not the plain sum.
 pub(crate) fn flags_of_add(flags_value: &MicroExpr, def_of: &dyn Fn(&str) -> Option<MicroExpr>) -> Option<MicroExpr> {
+    let (lhs, def) = result_and_definition(flags_value, def_of)?;
+    let (a, b) = sum_operands(&def)?;
+    let clean = |e: &MicroExpr| !matches!(e, MicroExpr::Load { .. } | MicroExpr::Call { .. });
+    (clean(a) && clean(b)).then(|| MicroExpr::intrinsic(ADD_FLAGS, vec![a.clone(), b.clone(), lhs.clone()]))
+}
+
+/// The same for a register `inc`, `dec` or `neg`, which keep their result as a
+/// [`CmpKind::Result`] too: it answers `je`, `jne`, `js` and `jns` exactly, and a
+/// signed order or the carry read the overflow and the carry it does not hold. `inc`
+/// is a sum with one and `dec` a difference with one, each leaving the carry alone;
+/// `neg a` is `0 - a`, carry and all. `jg` after `dec` printed `/*cond(jg)*/`.
+pub(crate) fn flags_of_step(mnemonic: &str, flags_value: &MicroExpr, def_of: &dyn Fn(&str) -> Option<MicroExpr>) -> Option<MicroExpr> {
+    let (lhs, def) = result_and_definition(flags_value, def_of)?;
+    let (name, a) = match mnemonic {
+        "inc" => (INC_FLAGS, sum_operands(&def).filter(|(_, b)| is_one(b))?.0.clone()),
+        "dec" => (DEC_FLAGS, difference_of_one(&def)?.clone()),
+        "neg" => (NEG_FLAGS, negated(&def)?.clone()),
+        _ => return None,
+    };
+    let clean = !matches!(a, MicroExpr::Load { .. } | MicroExpr::Call { .. });
+    clean.then(|| MicroExpr::intrinsic(name, vec![a, lhs]))
+}
+
+fn is_one(e: &MicroExpr) -> bool {
+    matches!(e, MicroExpr::Const { value: 1, .. })
+}
+
+/// `a` of `a - 1`, as a write leaves it ([`sum_operands`]).
+fn difference_of_one(e: &MicroExpr) -> Option<&MicroExpr> {
+    match e {
+        MicroExpr::Binary(BinOp::Sub, a, b) if is_one(b) => Some(a),
+        MicroExpr::Cast { expr, .. } => difference_of_one(expr),
+        MicroExpr::Binary(BinOp::Or, _, low) => difference_of_one(low),
+        _ => None,
+    }
+}
+
+/// `a` of `-a`, as a write leaves it.
+fn negated(e: &MicroExpr) -> Option<&MicroExpr> {
+    match e {
+        MicroExpr::Unary(UnOp::Neg, a) => Some(a),
+        MicroExpr::Cast { expr, .. } => negated(expr),
+        MicroExpr::Binary(BinOp::Or, _, low) => negated(low),
+        _ => None,
+    }
+}
+
+/// The result a [`CmpKind::Result`] flags value names, and that result's definition.
+fn result_and_definition(flags_value: &MicroExpr, def_of: &dyn Fn(&str) -> Option<MicroExpr>) -> Option<(MicroExpr, MicroExpr)> {
     let MicroExpr::Compare { kind: CmpKind::Result, lhs, .. } = flags_value else { return None };
     let name = match lhs.as_ref() {
         MicroExpr::Var(name) => name,
@@ -214,10 +265,7 @@ pub(crate) fn flags_of_add(flags_value: &MicroExpr, def_of: &dyn Fn(&str) -> Opt
         },
         _ => return None,
     };
-    let def = def_of(name)?;
-    let (a, b) = sum_operands(&def)?;
-    let clean = |e: &MicroExpr| !matches!(e, MicroExpr::Load { .. } | MicroExpr::Call { .. });
-    (clean(a) && clean(b)).then(|| MicroExpr::intrinsic(ADD_FLAGS, vec![a.clone(), b.clone(), lhs.as_ref().clone()]))
+    Some((lhs.as_ref().clone(), def_of(name)?))
 }
 
 /// The operands of a sum as a write leaves it: under the cast a 32-bit write has, or
@@ -307,14 +355,32 @@ fn arithmetic_condition(name: &str, jcc: &str, args: &[MicroExpr]) -> Option<Opt
         (ADD_FLAGS, [a, b]) => sum_condition(jcc, a, b, None, true),
         (ADD_FLAGS, [a, b, r]) => sum_condition(jcc, a, b, Some(r), true),
         (INC_FLAGS, [a]) => sum_condition(jcc, a, &one(), None, false),
+        (INC_FLAGS, [a, r]) => sum_condition(jcc, a, &one(), Some(r), false),
+        // With the result in hand, what reads only the zero and the sign reads it, as
+        // the stored result says; the rest is the operation's.
+        (DEC_FLAGS | NEG_FLAGS, [_, r]) if reads_only_zero_and_sign(jcc) => {
+            Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Result, r.clone(), MicroExpr::constant(0, 64))))
+        }
+        (DEC_FLAGS, [_, _]) if reads_carry(jcc) => None,
+        (DEC_FLAGS, [a, _]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, a.clone(), one()))),
+        (NEG_FLAGS, [a, _]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, MicroExpr::constant(0, 64), a.clone()))),
         // `dec` is `cmp a, 1` in every flag but the carry, which it leaves.
-        (DEC_FLAGS, [a]) => match jcc {
-            "ja" | "jae" | "jb" | "jbe" | "jc" | "jnc" | "jnb" | "jnae" | "jna" | "jnbe" => None,
-            _ => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, a.clone(), one()))),
-        },
+        (DEC_FLAGS, [_]) if reads_carry(jcc) => None,
+        (DEC_FLAGS, [a]) => Some(branch_condition(jcc, &MicroExpr::compare(CmpKind::Cmp, a.clone(), one()))),
         (BT_FLAGS, [x, n]) => bit_test_condition(jcc, x, n),
         _ => return None,
     })
+}
+
+/// Whether a condition reads the carry, which `inc` and `dec` leave alone.
+fn reads_carry(jcc: &str) -> bool {
+    matches!(jcc, "ja" | "jae" | "jb" | "jbe" | "jc" | "jnc" | "jnb" | "jnae" | "jna" | "jnbe")
+}
+
+/// Whether a condition reads only the zero and the sign flag, which a stored result
+/// answers by itself.
+fn reads_only_zero_and_sign(jcc: &str) -> bool {
+    matches!(jcc, "je" | "jz" | "jne" | "jnz" | "js" | "jns")
 }
 
 /// The condition-code table: which combination of the flags each condition

@@ -151,6 +151,15 @@ fn every_condition_after_arithmetic_answers_as_the_processor_does() {
         Operation { name: "incl (%rdx)", bytes: &[0xff, 0x02], conditions: &WITHOUT_CARRY, machine: machine!("inc dword ptr [rdx]") },
         Operation { name: "decq (%rdx)", bytes: &[0x48, 0xff, 0x0a], conditions: &WITHOUT_CARRY, machine: machine!("dec qword ptr [rdx]") },
         Operation { name: "decl (%rdx)", bytes: &[0xff, 0x0a], conditions: &WITHOUT_CARRY, machine: machine!("dec dword ptr [rdx]") },
+        // A register keeps its result as the flags, and what a signed order or the carry
+        // reads is the operation's: `dec` from the least value under `jg`, `inc` to it
+        // under `jl`, `neg` of it, at both widths.
+        Operation { name: "inc %rdi", bytes: &[0x48, 0xff, 0xc7], conditions: &WITHOUT_CARRY, machine: machine!("inc rdi") },
+        Operation { name: "inc %edi", bytes: &[0xff, 0xc7], conditions: &WITHOUT_CARRY, machine: machine!("inc edi") },
+        Operation { name: "dec %rdi", bytes: &[0x48, 0xff, 0xcf], conditions: &WITHOUT_CARRY, machine: machine!("dec rdi") },
+        Operation { name: "dec %edi", bytes: &[0xff, 0xcf], conditions: &WITHOUT_CARRY, machine: machine!("dec edi") },
+        Operation { name: "neg %rdi", bytes: &[0x48, 0xf7, 0xdf], conditions: &EVERY_CONDITION, machine: machine!("neg rdi") },
+        Operation { name: "neg %edi", bytes: &[0xf7, 0xdf], conditions: &EVERY_CONDITION, machine: machine!("neg edi") },
         Operation { name: "bt %rsi,%rdi", bytes: &[0x48, 0x0f, 0xa3, 0xf7], conditions: &CARRY_ONLY, machine: machine!("bt rdi, rsi") },
         Operation { name: "bt %esi,%edi", bytes: &[0x0f, 0xa3, 0xf7], conditions: &CARRY_ONLY, machine: machine!("bt edi, esi") },
         Operation { name: "bt $5,%rdi", bytes: &[0x48, 0x0f, 0xba, 0xe7, 0x05], conditions: &CARRY_ONLY, machine: machine!("bt rdi, 5") },

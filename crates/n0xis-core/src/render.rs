@@ -896,6 +896,21 @@ fn widen_left(l: &MicroExpr, r: &MicroExpr, word: n0xis_arch::Bits) -> (bool, bo
     }
 }
 
+/// One side of a signed comparison at the word, as C must read it to compare signed:
+/// what is already signed as it is, an `int` literal as it is (the other side makes
+/// the comparison the word's), and anything else cast to the signed word or to its
+/// own signed width.
+fn signed_side(e: &MicroExpr, word: n0xis_arch::Bits, names: &RenderNames) -> String {
+    match e {
+        MicroExpr::Cast { signed: true, .. } | MicroExpr::Load { signed: true, .. } => render_expr(e, names),
+        MicroExpr::Const { value, .. } if (-0x8000_0000..=0x7fff_ffff).contains(value) => render_expr(e, names),
+        MicroExpr::Cast { signed: false, bits, .. } | MicroExpr::Load { signed: false, bits, .. } if *bits < word => {
+            format!("({}){}", c_type(*bits, true), render_expr(e, names))
+        }
+        _ => format!("({}){}", c_type(word, true), render_expr(e, names)),
+    }
+}
+
 pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
     render_computed(e, names, false)
 }
@@ -948,6 +963,13 @@ fn render_computed(e: &MicroExpr, names: &RenderNames, under_narrow_cast: bool) 
         MicroExpr::Binary(BinOp::Shl, l, r) if word.is_some() => {
             let w = word.expect("just checked");
             format!("({} << {})", at_word(l, w, names), render_expr(r, names))
+        }
+        // A signed order is signed by its operator, and C's by the types of what it
+        // compares: `test %rsi,%rsi; jle` printed `rsi <= 0x0` of a `uint64_t`, which C
+        // reads as `rsi == 0`. At the word, each side that is not already signed says so.
+        MicroExpr::Binary(op @ (BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge), l, r) if word.is_some() => {
+            let w = word.expect("just checked");
+            format!("({} {} {})", signed_side(l, w, names), bin_op_text(*op), signed_side(r, w, names))
         }
         MicroExpr::Binary(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r) if word.is_some() => {
             let w = word.expect("just checked");
@@ -1316,6 +1338,22 @@ pub fn negate_condition(e: &MicroExpr) -> MicroExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `test %rsi,%rsi; jle` compares signed, and `rsi` prints as a `uint64_t`: with no
+    /// cast C compares unsigned, and `rsi <= 0x0` is `rsi == 0`.
+    #[test]
+    fn a_signed_order_at_the_word_says_it_is_signed() {
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_word_bits(Some(64));
+        let e = MicroExpr::binary(BinOp::Sle, MicroExpr::var("rsi"), MicroExpr::constant(0, 64));
+        assert_eq!(render_expr(&e, &names), "((int64_t)rsi <= 0x0)");
+        // Already signed: as it is.
+        let narrow = MicroExpr::Cast { signed: true, bits: 32, expr: Box::new(MicroExpr::var("rdi")) };
+        let e = MicroExpr::binary(BinOp::Sgt, narrow, MicroExpr::constant(5, 32));
+        assert_eq!(render_expr(&e, &names), "((int32_t)rdi > 0x5)");
+        // A constant past `int` is cast too, or C compares it unsigned.
+        let e = MicroExpr::binary(BinOp::Slt, MicroExpr::var("rax"), MicroExpr::constant(0xffff_ffff_ffff_ffff, 64));
+        assert!(render_expr(&e, &names).ends_with("< (int64_t)0xffffffffffffffff)"), "{}", render_expr(&e, &names));
+    }
 
     /// `sp = sp - 0x90` is how a prologue is spelled, not something the program
     /// does, and the frame is reported on its own line already. Measured
