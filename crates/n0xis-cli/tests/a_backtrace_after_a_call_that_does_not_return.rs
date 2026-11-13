@@ -168,4 +168,17 @@ fn a_backtrace_of_one_thread_says_how_many_the_process_has() {
     let answer: Value = serde_json::from_slice(&out.stdout).expect("JSON");
     assert_eq!(answer["data"]["thread_count"], 1, "{answer}");
     assert_eq!(answer["data"]["threads_in_process"], tasks, "the kernel's count: {answer}");
+    // And says, in the answer's words, that the others were not walked: the
+    // two counts side by side were still read as a process of one.
+    let said = answer["data"]["not_walked"].as_str().unwrap_or_else(|| panic!("no statement of the threads not walked: {answer}"));
+    assert!(said.starts_with(&format!("{} of the process's {tasks} threads not walked", tasks - 1)), "{answer}");
+    assert!(said.contains("--all-threads"), "{answer}");
+    // With every thread walked there is nothing to say.
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
+        .args(["stack", "backtrace", "--pid", &pid.to_string(), "--all-threads"])
+        .output()
+        .expect("run n0xis");
+    let all: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(all["data"]["thread_count"], tasks, "{all}");
+    assert!(all["data"].get("not_walked").is_none(), "{all}");
 }

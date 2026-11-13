@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **What is verified is written down, and the gate holds it to its test.** `docs/verification/ledger.toml` lists each statement a reader acts on with the source outside the tool that checks it, the test that does, and the numbers; `scripts/gate.py` fails when a claim marked verified names a test that did not pass in that run. ROADMAP's ✅ now means built, and an item is verified only where it cites the ledger. Known wrong answers are listed there too, as `false`.
 
+**`stack backtrace` of one thread says the others were not walked.** `thread_count: 1` beside `threads_in_process: 2` still read as a process of one thread. An answer that walked fewer threads than the process has states it in `not_walked`: how many, and that `--all-threads` walks every one.
+
 **`sig gen` on an image that names no function refuses, saying which names were not read.** A mingw PE whose names are in its COFF symbol table, which is not read, answered `functions_total: 0, emitted: 0, ok: true` while the image holds over a hundred functions: a library of nothing, stated as built. A signature is a function's name keyed by its bytes, so the command refuses with `no-named-functions` and the tables the image states that this reader does not read.
 
 **`sig validate` blesses only samples that differ and a pattern that fixes a byte.** Three copies of `48 89 e5` blessed `48 89 e5`, and `?? ?? ?? ??` was blessed over three samples it matches as it matches anything. The bar of three is counted in samples that differ from each other, and a signature with no fixed byte is refused, each with the reason.

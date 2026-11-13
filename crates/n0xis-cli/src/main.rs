@@ -5812,6 +5812,12 @@ fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
         /// The threads the process has, by `/proc`: `thread_count: 1` alone, on the
         /// main thread of a process of two, read as a process of one (audit 2026-11-06).
         threads_in_process: usize,
+        /// Said when fewer threads were walked than the process has: `thread_count`
+        /// and `threads_in_process` side by side still read as a process of one
+        /// to whoever reads the first (audit 2026-11-06, again after the second
+        /// field was added). Absent when every thread was walked.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        not_walked: Option<String>,
     }
 
     let in_process = list_thread_ids(a.pid);
@@ -5854,7 +5860,15 @@ fn cmd_stack_backtrace(a: StackBacktraceArgs, pretty: bool) -> bool {
         }
     }
 
-    let out = BtOut { pid: a.pid, thread_count: threads.len(), threads, threads_in_process };
+    let walked = threads.len();
+    let not_walked = (walked < threads_in_process).then(|| {
+        format!(
+            "{} of the process's {threads_in_process} threads not walked: only {}; --all-threads walks every one",
+            threads_in_process - walked,
+            if a.tid.is_some() { "the thread --tid names" } else { "the main thread" }
+        )
+    });
+    let out = BtOut { pid: a.pid, thread_count: walked, threads, threads_in_process, not_walked };
     emit(&Response::success(schema::v1::STACK_BACKTRACE, out).with_source(label), pretty)
 }
 
