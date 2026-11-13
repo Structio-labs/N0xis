@@ -564,6 +564,12 @@ pub fn readable() -> Result<()> {
 fn set_field(scope: &Scope, va: Va, field: &str, value: Option<String>) -> Result<AnnotationRecord> {
     let mut all = load_all(scope)?;
     let key = va.to_string();
+    // Clearing a field where there is no record changes nothing, and makes no
+    // record: one was written, with a history entry of `None` to `None`, and
+    // `annotate list` counted an annotation nobody made (audit 2026-11-06).
+    if value.is_none() && !all.contains_key(&key) {
+        return Ok(AnnotationRecord { va, ..Default::default() });
+    }
     let record = all.entry(key).or_insert_with(|| AnnotationRecord { va, ..Default::default() });
 
     let old = match field {
@@ -731,6 +737,20 @@ mod tests {
         std::env::set_current_dir(prev).unwrap();
         fs::remove_dir_all(&tmp).ok();
         result
+    }
+
+    /// Clearing a field at an address with no record makes none; clearing
+    /// one that exists records the change.
+    #[test]
+    fn clearing_nothing_makes_no_record() {
+        in_temp_project(|| {
+            set_name(&Scope::Native, Va(0x1234), None).unwrap();
+            set_comment(&Scope::Native, Va(0x1234), None).unwrap();
+            assert!(list(&Scope::Native).unwrap().is_empty());
+            set_name(&Scope::Native, Va(0x1234), Some("f".into())).unwrap();
+            let rec = set_name(&Scope::Native, Va(0x1234), None).unwrap();
+            assert_eq!((rec.name, rec.history.len()), (None, 2));
+        });
     }
 
     #[test]
