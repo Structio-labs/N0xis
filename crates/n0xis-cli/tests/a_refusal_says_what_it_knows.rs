@@ -69,3 +69,21 @@ fn sig_gen_on_an_image_that_names_nothing_refuses() {
     assert_eq!(a["ok"], false, "{a}");
     assert_eq!(a["error"]["code"], "no-named-functions", "{a}");
 }
+
+/// `ir slice` of a name that is no register, or at a place outside the
+/// function, answered `ok: true` with no nodes: the shape of "nothing computes
+/// it" (audit 2026-11-06). The bytes are `mov rax, rdi; ret` at 0x1000.
+#[test]
+fn ir_slice_of_no_register_or_outside_the_function_refuses() {
+    let dir = project("slice");
+    let base = ["ir", "slice", "--bytes", "48 89 f8 c3", "--addr", "0x1000"];
+    let ok = n0x(&dir, &[&base[..], &["--reg", "rax"]].concat());
+    assert_eq!(ok["data"]["node_count"], 1, "{ok}");
+    let unknown = n0x(&dir, &[&base[..], &["--reg", "zzz"]].concat());
+    assert_eq!(unknown["error"]["code"], "unknown-register", "{unknown}");
+    let outside = n0x(&dir, &[&base[..], &["--reg", "rax", "--at", "0x10"]].concat());
+    assert_eq!(outside["error"]["code"], "not-in-function", "{outside}");
+    // Inside the function, past the last write, is a place: rax at the `ret`.
+    let inside = n0x(&dir, &[&base[..], &["--reg", "rax", "--at", "0x1003"]].concat());
+    assert_eq!(inside["data"]["node_count"], 1, "{inside}");
+}

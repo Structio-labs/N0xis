@@ -1901,6 +1901,26 @@ impl Plugin for AnalysisPasses {
                         Ok((a, _)) => a,
                         Err(e) => return Response::error("ir-failed", e.to_string()),
                     };
+                    // An empty slice is an answer about a register at a place
+                    // in the function: of a name that is no register, or of a
+                    // place outside the function, it is not, and both came back
+                    // `ok: true` with no nodes (audit 2026-11-06).
+                    let insns = || art.blocks.iter().flat_map(|b| &b.insns);
+                    let reg = ctx.arch.normalize_reg(&reg_name);
+                    if ctx.arch.regs().by_name(&reg).is_none() && !insns().any(|i| i.reads.contains(&reg) || i.writes.contains(&reg)) {
+                        return Response::error(
+                            "unknown-register",
+                            format!("`{reg_name}` is not a register of {}, and no instruction of the function reads or writes it", ctx.arch.name()),
+                        );
+                    }
+                    if let Some(at) = at
+                        && !insns().any(|i| at.get() >= i.va.get() && at.get() < i.va.get() + u64::from(i.len))
+                    {
+                        return Response::error(
+                            "not-in-function",
+                            format!("{at} is in no instruction of the function at {start} ({}..{}), so nothing there computes `{reg_name}`", art.start, art.end),
+                        );
+                    }
                     // Default the query point to the last decoded instruction —
                     // "the final value of `reg`" is what you usually want.
                     let query = at.unwrap_or_else(|| {

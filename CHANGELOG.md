@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **What is verified is written down, and the gate holds it to its test.** `docs/verification/ledger.toml` lists each statement a reader acts on with the source outside the tool that checks it, the test that does, and the numbers; `scripts/gate.py` fails when a claim marked verified names a test that did not pass in that run. ROADMAP's ✅ now means built, and an item is verified only where it cites the ledger. Known wrong answers are listed there too, as `false`.
 
+**`ir slice` refuses a register that is not one, and a place outside the function.** `--reg zzz` and `--at` an address the function does not cover answered `ok: true` with no nodes, the shape of "nothing computes it". They are refused as `unknown-register` and `not-in-function`.
+
 **`find` over a whole image finds bytes that run over the seam of two sections.** The sections were searched one at a time, so eight bytes over the end of `.note.gnu.build-id` and the start of `.interp`, one run in memory and in the file, answered `count: 0`. A match that starts in a section runs on into the bytes that follow it in memory, and is listed under the section it starts in; a window or a section named is still searched alone.
 
 **`lua seedscan` says how many of its hits chance gives.** A process that draws no random number at all gave 24 "seeds" for a four-step sequence, listed as found. A sequence of `n` draws in `0..k` matches a word that is not the seed about once in `k^n`; the answer now carries `chance`: the words tried, the matches expected by chance over them, and whether that is below the stated bound of 0.01, the only case where a hit is a finding.
