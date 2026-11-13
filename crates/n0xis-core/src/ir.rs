@@ -80,7 +80,8 @@ impl CfgArtifact {
         self.unresolved_jumps().next().is_some()
     }
 
-    /// The blocks that end in such a jump.
+    /// The blocks that end in such a jump. **The one test of it**: what a body prints
+    /// there, and whether it is a tail call through a pointer, start from this list.
     pub fn unresolved_jumps(&self) -> impl Iterator<Item = &CfgBlock> {
         self.blocks.iter().filter(|b| b.terminator == "ijmp" && b.successors.is_empty())
     }

@@ -291,7 +291,7 @@ fn emit_block_body_and_terminator(ctx: &mut Ctx, n: usize, until: Option<usize>)
         "int" | "trap" => ctx.out.push(format!("{}// int / abort", pad(ctx.indent))),
         "call-noreturn" => ctx.out.push(format!("{}// unreachable: call does not return", pad(ctx.indent))),
         "ijmp" if !is_switch => {
-            ctx.out.push(format!("{}// indirect jump (unrecovered)", pad(ctx.indent)));
+            ctx.out.push(format!("{}{UNRECOVERED_JUMP}", pad(ctx.indent)));
         }
         "jmp" | "fall" => {
             if let Some(&j) = ctx.succ[n].first() {
@@ -467,7 +467,7 @@ fn arm_diverges(lines: &[String]) -> bool {
     match lines.iter().rev().find(|l| is_code_line(l)) {
         Some(l) => {
             let t = l.trim();
-            t == "break;" || t == "continue;" || t.starts_with("return") || t.starts_with("goto ")
+            t == "break;" || t == "continue;" || t.starts_with("return") || t.starts_with("goto ") || t == UNRECOVERED_JUMP
         }
         None => false,
     }
@@ -478,11 +478,27 @@ fn anchor_block_id(l: &str) -> Option<usize> {
     l.trim_start().strip_prefix("// block_")?.split(':').next()?.trim().parse().ok()
 }
 
+/// What a body says where control leaves through an indirect jump whose targets
+/// were not read. **One text**: the structurer, the `goto` style and the count of
+/// marks in `quality` all take it from here.
+///
+/// It is written as a comment and is a statement all the same: control leaves the
+/// arm there, for a place the engine does not know. Read as a comment, an arm
+/// holding only it was empty and dropped whole, and with it the only word that a
+/// table was not read: an i686 `switch` printed `if (k > 10) { return -1; }` and
+/// then each case's `eax = 0x64; return eax;` in a row, as if the first one were
+/// what every other index returned, at `quality` 1.0.
+pub(crate) const UNRECOVERED_JUMP: &str = "// indirect jump (unrecovered)";
+
+/// What starts a block no branch the graph read leads to, before its address.
+pub(crate) const UNREACHED_PREFIX: &str = "// no branch the engine read comes here: ";
+
 /// A rendered line that is real code — not blank and not a `//` comment (a bare
-/// `// block_N:` label does not make an arm non-empty).
+/// `// block_N:` label does not make an arm non-empty), or the mark an unread
+/// indirect jump leaves, which is where control goes ([`UNRECOVERED_JUMP`]).
 fn is_code_line(l: &str) -> bool {
     let t = l.trim();
-    !t.is_empty() && !t.starts_with("//")
+    !t.is_empty() && (!t.starts_with("//") || t == UNRECOVERED_JUMP)
 }
 
 /// Net brace nesting a rendered pseudo-C line changes: `if (…) {` → +1, `}` →
@@ -1230,8 +1246,16 @@ fn structure_once(
     // until a `goto` targets it: then the **label is the content**, and
     // without it the output carried a `goto` to a block it never printed.
     // `keep_labels` names exactly those, learned from the previous pass.
+    // A block no edge reaches says so: its label goes when nothing jumps to it, and
+    // what was left read as the next statements of the region before. Behind an
+    // indirect jump whose targets were not read, an i686 `switch`'s cases printed
+    // `eax = 0x64; return eax; eax = 0x142; return eax; ...` in a row, each as dead
+    // code after the one before.
     for b in 0..n {
         if !ctx.visited[b] && (real_line_count(&ctx, b) > 0 || ctx.keep_labels.contains(&b)) {
+            if b != 0 && ctx.pred[b].is_empty() {
+                ctx.out.push(format!("{}{UNREACHED_PREFIX}{}", pad(ctx.indent), ctx.blocks[b].start));
+            }
             emit_node(&mut ctx, b, None);
         }
     }

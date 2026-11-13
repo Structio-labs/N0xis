@@ -42,6 +42,7 @@ mod noreturn;
 mod noreturn_ipa;
 mod optimize;
 mod pointer;
+mod pointer_tail;
 mod profile;
 mod provenance;
 mod render;

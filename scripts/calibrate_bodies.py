@@ -77,6 +77,16 @@ MUTATIONS = [
     (CORE + "callee.rs", "own.tails.iter().flat_map(", "own.tails.iter().take(0).flat_map(", *LIB, "stack_args::tests::a_tail_jump_passes_its_own_arguments_on"),
     (CORE + "callee.rs", "            let (frame, loaded, entry) = if frame.get(&version).is_some() {", "            let (frame, loaded, entry) = if true {", *LIB, "stack_args::tests::a_realigned_stack_still_passes_what_was_stored"),
     (CORE + "callee.rs", "    settle_stack_args(ctx, cfg, blocks, raw);\n", "", *LIB, "stack_args::tests::what_is_pushed_before_a_call_is_its_arguments"),
+    # An indirect jump nothing was read for: said, counted, and what it may reach set apart (round 3, item 3).
+    (CORE + "structure.rs", "    !t.is_empty() && (!t.starts_with(\"//\") || t == UNRECOVERED_JUMP)", "    !t.is_empty() && !t.starts_with(\"//\")", *LIB, "decomp::tests::an_unread_jump_is_said_and_what_it_may_reach_is_set_apart"),
+    (CORE + "structure.rs", "                ctx.out.push(format!(\"{}{UNREACHED_PREFIX}{}\", pad(ctx.indent), ctx.blocks[b].start));\n", "", *LIB, "decomp::tests::an_unread_jump_is_said_and_what_it_may_reach_is_set_apart"),
+    (CORE + "decomp.rs", "\"/* dispatcher */\", crate::structure::UNRECOVERED_JUMP]", "\"/* dispatcher */\"]", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
+    # A jump with the frame given back is a tail call through a pointer, and only that (item 3b).
+    (CORE + "decomp.rs", "        let cfg = crate::pointer_tail::with_tail_calls_through_pointers(ctx, input.cfg)?;", "        let cfg = input.cfg;", *LIB, "decomp::tests::a_jump_through_a_slot_with_the_frame_given_back_is_a_tail_call"),
+    (CORE + "pointer_tail.rs", "            at == Some(0) && !is_constant", "            !is_constant", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
+    (CORE + "pointer_tail.rs", " && !read_through_an_index(target, &defs, 0)", "", *LIB, "decomp::tests::a_jump_through_a_table_with_no_frame_is_not_a_tail_call"),
+    (CORE + "pointer_tail.rs", "        if v.split('.').next() == Some(self.sp) {\n            return None;\n        }\n", "", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
+    (CORE + "callee.rs", "                (None, Takes::AtLeast(n)) if tail =>", "                (None, Takes::AtLeast(n)) if false =>", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
 ]
 
 

@@ -197,7 +197,7 @@ impl Pass for DecompPass {
     }
 
     fn run(&self, ctx: &Ctx, input: DecompInput) -> Result<PseudoFunction, CoreError> {
-        let cfg = input.cfg;
+        let cfg = crate::pointer_tail::with_tail_calls_through_pointers(ctx, input.cfg)?;
 
         let mut ssa = SsaPass.run(ctx, cfg.clone())?;
         let unlifted = count_unlifted(&ssa.blocks);
@@ -445,9 +445,10 @@ impl Pass for DecompPass {
 
         let lifted_fraction = if cfg.insn_count == 0 { 0.0 } else { 1.0 - (unlifted as f32 / cfg.insn_count as f32) };
         // Any mark in the text is a body that does not say 1.0, however many
-        // instructions dilute it. The switch's mark is the one the structuring adds.
+        // instructions dilute it. The switch's marks and an unread jump's are the ones the
+        // structuring adds.
         let unknown_return = usize::from(matches!(types.signature.ret, crate::typeinfer::ReturnType::Unknown));
-        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| ["/*index in ", "/*table not read*/", "/* dispatcher */"].iter().any(|m| l.contains(m))).count();
+        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| ["/*index in ", "/*table not read*/", "/* dispatcher */", crate::structure::UNRECOVERED_JUMP].iter().any(|m| l.contains(m))).count();
         let quality = if cfg.insn_count == 0 {
             0.0
         } else {
@@ -859,7 +860,7 @@ fn render_goto(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) -> V
                         }
                     }
                 } else {
-                    lines.push("    // indirect jump (unrecovered)".to_string());
+                    lines.push(format!("    {}", crate::structure::UNRECOVERED_JUMP));
                 }
             }
             "jmp" | "fall" => {
@@ -2101,5 +2102,83 @@ mod tests {
         let f = decomp(code, DecompStyle::Ssa);
         assert!(f.cut.is_none(), "{:#?}", f.pseudo);
         assert!(!f.flags.contains(&"cut"));
+    }
+
+    /// `push rbx; mov rax,[rcx]; mov r9,[rax+0x18]; mov edx,5; pop rbx; jmp r9`: the
+    /// frame is given back and the jump goes through an object's slot. It is a call
+    /// whose result is this function's, and what was put in `edx` is its argument. It
+    /// printed `// indirect jump (unrecovered)`, and the `5` went as dead.
+    #[test]
+    fn a_jump_through_a_slot_with_the_frame_given_back_is_a_tail_call() {
+        let code = vec![0x53, 0x48, 0x8b, 0x01, 0x4c, 0x8b, 0x48, 0x18, 0xba, 0x05, 0x00, 0x00, 0x00, 0x5b, 0x41, 0xff, 0xe1];
+        let f = decomp(code, DecompStyle::Ssa);
+        assert!(!f.pseudo.iter().any(|l| l.contains(crate::structure::UNRECOVERED_JUMP)), "{:#?}", f.pseudo);
+        let ret = f.pseudo.iter().find(|l| l.trim_start().starts_with("return (*")).unwrap_or_else(|| panic!("a call through the slot, returned: {:#?}", f.pseudo));
+        // The argument put in `edx` is passed, and its value is said where it is put.
+        assert!(ret.contains("rdx.1"), "{ret}");
+        assert!(f.pseudo.iter().any(|l| l.trim() == "rdx.1 = 0x5;"), "{:#?}", f.pseudo);
+        assert!(f.flags.contains(&"has-tail"), "{:?}", f.flags);
+    }
+
+    /// The same jump with `rbx` still pushed: the return address is not on top of the
+    /// stack, so this is not a call, and the body says it does not know where it goes.
+    #[test]
+    fn a_jump_with_the_frame_still_up_is_not_a_tail_call() {
+        let code = vec![0x53, 0x48, 0x8b, 0x01, 0x4c, 0x8b, 0x48, 0x18, 0xba, 0x05, 0x00, 0x00, 0x00, 0x41, 0xff, 0xe1];
+        let f = decomp(code, DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.trim() == crate::structure::UNRECOVERED_JUMP), "{:#?}", f.pseudo);
+        assert!(f.quality < 1.0, "an unread jump is a mark: {}", f.quality);
+    }
+
+    /// `lea rax,[rip+0x100]; and edi,1; jmp [rax+rdi*8]` with no frame: the stack is
+    /// as at entry, but the address is a table's entry, a computed `goto` (no bound,
+    /// so the table is not read). Its targets are this function's, not a callee.
+    #[test]
+    fn a_jump_through_a_table_with_no_frame_is_not_a_tail_call() {
+        let code = vec![0x48, 0x8d, 0x05, 0x00, 0x01, 0x00, 0x00, 0x83, 0xe7, 0x01, 0xff, 0x24, 0xf8];
+        let f = decomp(code, DecompStyle::Ssa);
+        assert!(f.pseudo.iter().any(|l| l.trim() == crate::structure::UNRECOVERED_JUMP), "{:#?}", f.pseudo);
+        assert!(!f.pseudo.iter().any(|l| l.contains("return (*")), "{:#?}", f.pseudo);
+        assert!(f.quality < 1.0, "an unread jump is a mark: {}", f.quality);
+    }
+
+    /// `if (edi > 10) return -1;` then a jump through a table that is not there to
+    /// read, and a case past it that no branch the graph has leads to. The arm holding
+    /// only the jump was empty to the structurer and went whole, and the case printed
+    /// as the next statements: `eax = 0xb; return eax;` at quality 1.0, as if every
+    /// index in range returned 11 (an i686 `switch`, audit 2026-11-06).
+    #[test]
+    fn an_unread_jump_is_said_and_what_it_may_reach_is_set_apart() {
+        let code = vec![
+            0x83, 0xff, 0x0a, 0x77, 0x10, 0x48, 0x8d, 0x05, 0x00, 0x01, 0x00, 0x00, 0xff, 0x24, 0xf8, //
+            0xb8, 0x0b, 0x00, 0x00, 0x00, 0xc3, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        let f = decomp(code, DecompStyle::Ssa);
+        let jump = f.pseudo.iter().position(|l| l.trim() == crate::structure::UNRECOVERED_JUMP).unwrap_or_else(|| panic!("the jump is said: {:#?}", f.pseudo));
+        let apart = f.pseudo.iter().position(|l| l.contains(crate::structure::UNREACHED_PREFIX) && l.contains("0x100f")).unwrap_or_else(|| panic!("the case is set apart: {:#?}", f.pseudo));
+        assert!(jump < apart, "{:#?}", f.pseudo);
+        assert!(f.quality < 1.0, "an unread jump is a mark: {}", f.quality);
+    }
+
+    /// i386: `push esi; mov esi,[esp+8]; mov eax,[esi]; mov dword [esp+0xc],7;
+    /// mov eax,[eax+4]; pop esi; jmp eax`. The arguments of a jump with the frame given
+    /// back are in the caller's slots: the first passed on as it came, the second
+    /// written with 7. Asked as a call's, both slots had been read here first, so they
+    /// read as locals and the call was given nothing.
+    ///
+    /// Behind twelve `push eax; pop eax`: the object is loaded from a slot named through
+    /// the stack pointer's two dozen versions, and followed down them the search for a
+    /// table ran out of depth and kept the mark.
+    #[test]
+    fn an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites() {
+        let mut code: Vec<u8> = std::iter::repeat_n([0x50, 0x58], 12).flatten().collect();
+        code.extend_from_slice(&[0x56, 0x8b, 0x74, 0x24, 0x08, 0x8b, 0x06, 0xc7, 0x44, 0x24, 0x0c, 0x07, 0x00, 0x00, 0x00, 0x8b, 0x40, 0x04, 0x5e, 0xff, 0xe0]);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::x86();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 128)).unwrap();
+        let f = DecompPass.run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: false, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() }).unwrap();
+        let ret = f.pseudo.iter().find(|l| l.trim_start().starts_with("return (*")).unwrap_or_else(|| panic!("a call through the slot, returned: {:#?}", f.pseudo));
+        assert!(ret.ends_with("(arg0, 0x7);"), "{ret}");
     }
 }

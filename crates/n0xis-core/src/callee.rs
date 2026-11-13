@@ -1268,6 +1268,12 @@ fn settle_stack_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], raw:
             let count = match (formatted, takes_of(ctx, id.as_deref(), callee_of(ctx, cfg, target), depth)) {
                 (Some(at), _) => at + 1,
                 (None, Takes::Exactly(n)) => n,
+                // A tail jump's slots are the caller's arguments: read as this body's own,
+                // written again as the callee's, and the ones not written passed on as they
+                // came. Up to the last one written is what it is given. Asked as for a call
+                // (a slot read and then stored to is a local), an i386 jump through an
+                // object's slot with both rewritten was given none.
+                (None, Takes::AtLeast(n)) if tail => n.max((0..TAIL_SLOTS).rev().find(|&k| stored(k).is_some()).map_or(0, |k| k + 1)),
                 (None, Takes::AtLeast(n)) => n.max((0..TAIL_SLOTS).take_while(|&k| stored(k).is_some() && !loaded.contains(&slot(k))).count()),
             };
             let args = (0..count)
