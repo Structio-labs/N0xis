@@ -1288,8 +1288,10 @@ direction sequence `{"up","down",…}` straight out of memory.
 
 ### `lua seedscan --pid <u32> --combo <str>`
 Recover an LCG seed from an observed sequence: scan a live process for a 4-byte word whose
-`s'=s*a+c` LCG reproduces a known sequence — locating the seed field and validating the RNG model
-at once.
+`s'=s*a+c` LCG reproduces a known sequence. `chance` weighs the hits: a word that is not the seed
+gives a sequence of `n` draws in `0..k` about once in `k^n`, so over `words_tried` words
+`expected_by_chance` hits come by chance; only below `bound` (0.01) is `above_chance` true and a hit a
+finding. A short sequence over a large region gives hits by the hundred and locates nothing.
 - `--combo` (required) — observed directions (`up,down,down,up`), mapped `left=0,up=1,right=2,down=3`.
 - `--start`/`--size` (omit to scan every committed writable region); `--lcg-a` (default
   1664525); `--lcg-c` (default 1013904223); `--range` (default 4 — the commonly observed

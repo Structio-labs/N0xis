@@ -6982,14 +6982,16 @@ fn cmd_lua_seedscan(a: LuaSeedscanArgs, pretty: bool) -> bool {
             Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
         };
         let label = live.label();
-        let swept = swept.map(|hits| {
+        let swept = swept.map(|scan| {
+            let chance = scan.chance(a.range, target.len());
             json!({
                 "combo": a.combo,
                 "codes": target,
                 "lcg": { "a": a.lcg_a, "c": a.lcg_c, "range": a.range },
                 "seed_bounded": a.seed_bound,
-                "count": hits.len(),
-                "hits": hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
+                "count": scan.hits.len(),
+                "hits": scan.hits.iter().map(|h| json!({ "addr": h.addr.to_string(), "seed": h.seed })).collect::<Vec<_>>(),
+                "chance": chance,
             })
         });
         emit_swept(schema::v1::LUA_SEEDSCAN, swept, label, pretty)

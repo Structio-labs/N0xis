@@ -26,7 +26,7 @@ mod layout;
 mod lcg;
 mod obj;
 pub use layout::{locate_strings, LayoutCandidate, LayoutChoice, LayoutDecision, LocatedGcStr, LocatedStrings, References, GCSTR_LEN_OFFSETS};
-pub use lcg::{find_seeds, Lcg, SeedHit};
+pub use lcg::{find_seeds, ChanceMatches, Lcg, SeedHit, SeedScan, CHANCE_BOUND};
 pub use obj::{decode_tvalue, read_table, string_ref_candidates, LuaLayout, TValue, TableDump};
 
 /// Read a `GCstr` object at `addr` and return its text, using `layout` for the

@@ -59,6 +59,66 @@ pub struct SeedHit {
     pub seed: u32,
 }
 
+/// What a seed scan found, and how many words it tried: the number a count of
+/// hits is out of.
+#[derive(Debug, Clone, Serialize)]
+pub struct SeedScan {
+    pub hits: Vec<SeedHit>,
+    /// Words taken as a seed: every aligned word read, less those outside the
+    /// seed bounds.
+    pub words_tried: u64,
+}
+
+/// Fewer matches than this expected by chance over the words tried, and a hit
+/// stands out from chance. At or above it, the hits are what any memory of
+/// that size gives, and say nothing of where the seed is.
+pub const CHANCE_BOUND: f64 = 0.01;
+
+/// How many of a scan's hits chance alone would give.
+///
+/// A sequence of `n` draws of `random(0, k-1)` from an LCG matches a word that
+/// is not the seed about once in `k^n` (the draws are uniform over the state;
+/// exactly so where `k` divides `2^32`). A process that uses no random number
+/// at all gave 24 hits for a four-step sequence, stated as found seeds (audit
+/// 2026-11-06): `4^4` is 256, and 24 is what 6 000 words give.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChanceMatches {
+    /// `k^-n`: the chance one word that is not the seed gives the sequence.
+    pub per_word: f64,
+    pub words_tried: u64,
+    /// `words_tried * per_word`.
+    pub expected_by_chance: f64,
+    /// [`CHANCE_BOUND`].
+    pub bound: f64,
+    /// Whether `expected_by_chance` is below the bound: only then is a hit a
+    /// finding rather than what chance gives.
+    pub above_chance: bool,
+    pub note: String,
+}
+
+impl SeedScan {
+    /// The chance matches for a sequence of `n` draws in `0..k`.
+    pub fn chance(&self, k: u32, n: usize) -> ChanceMatches {
+        let per_word = f64::from(k.max(1)).powi(-(n.min(i32::MAX as usize) as i32));
+        let expected_by_chance = self.words_tried as f64 * per_word;
+        let above_chance = expected_by_chance < CHANCE_BOUND;
+        let note = if above_chance {
+            format!(
+                "{expected_by_chance:.2e} matches expected by chance over {} words, below {CHANCE_BOUND}: a hit stands out from chance",
+                self.words_tried
+            )
+        } else {
+            format!(
+                "{expected_by_chance:.1} matches expected by chance over {} words (one in {k}^{n}), not below {CHANCE_BOUND}: {} hit(s) are what \
+                 chance gives, and do not locate a seed; observe a longer sequence or narrow the region",
+                self.words_tried,
+                self.hits.len()
+            )
+        };
+        ChanceMatches { per_word, words_tried: self.words_tried, expected_by_chance, bound: CHANCE_BOUND, above_chance, note }
+    }
+}
+
 /// Scan `regions` for 4-byte-aligned words that, as an [`Lcg`] seed, generate
 /// `target` (a sequence of `random(0, k-1)` draws, so every element must be
 /// `< k`). Optionally require the seed itself to fall in `[seed_min, seed_max]`
@@ -72,11 +132,12 @@ pub fn find_seeds(
     k: u32,
     target: &[u32],
     seed_bounds: Option<(u32, u32)>,
-) -> Result<Swept<Vec<SeedHit>>, SourceError> {
+) -> Result<Swept<SeedScan>, SourceError> {
     let mut out = Vec::new();
+    let mut tried = 0u64;
     let mut read = RegionCoverage::default();
     if target.is_empty() || k == 0 {
-        return Ok(Swept { answer: out, read });
+        return Ok(Swept { answer: SeedScan { hits: out, words_tried: tried }, read });
     }
     for &(base, size) in regions {
         let bytes = read.read_region(source, base, size)?;
@@ -88,6 +149,7 @@ pub fn find_seeds(
             {
                 continue;
             }
+            tried += 1;
             // Cheap reject on the first draw before generating the whole seq.
             let first = {
                 let s = lcg.next(seed);
@@ -101,7 +163,7 @@ pub fn find_seeds(
             }
         }
     }
-    Ok(Swept { answer: out, read })
+    Ok(Swept { answer: SeedScan { hits: out, words_tried: tried }, read })
 }
 
 #[cfg(test)]
@@ -134,7 +196,7 @@ mod tests {
         buf[24..28].copy_from_slice(&seed.to_le_bytes());
         let snap = Snapshot::builder().region(base, buf).build();
 
-        let hits = find_seeds(&snap, &[(base, 64)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE))).unwrap().answer;
+        let hits = find_seeds(&snap, &[(base, 64)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE))).unwrap().answer.hits;
         assert!(hits.iter().any(|h| h.addr == base.offset(24) && h.seed == seed), "planted seed must be found");
     }
 
@@ -148,7 +210,31 @@ mod tests {
         let mut buf = vec![0u8; 16];
         buf[0..4].copy_from_slice(&0u32.to_le_bytes());
         let snap = Snapshot::builder().region(base, buf).build();
-        let hits = find_seeds(&snap, &[(base, 16)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE))).unwrap().answer;
+        let hits = find_seeds(&snap, &[(base, 16)], &lcg, 4, &target, Some((1, 0x7FFF_FFFE))).unwrap().answer.hits;
         assert!(hits.iter().all(|h| h.seed != 0));
+    }
+
+    /// Over memory with no seed in it, a short sequence matches as often as
+    /// `k^-n` says, and the answer says the hits are what chance gives; a long
+    /// one over the same memory stands out. The memory is a counter's words,
+    /// none of them a seed planted for the sequence.
+    #[test]
+    fn hits_are_weighed_against_what_chance_gives() {
+        let lcg = Lcg { a: A, c: C };
+        let words: Vec<u8> = (1u32..=40_000).flat_map(|w| w.wrapping_mul(2_654_435_761).to_le_bytes()).collect();
+        let base = Va(0x10_0000);
+        let snap = Snapshot::builder().region(base, words.clone()).build();
+        let short = [1, 3, 3, 1];
+        let scan = find_seeds(&snap, &[(base, words.len())], &lcg, 4, &short, None).unwrap().answer;
+        assert_eq!(scan.words_tried, 40_000);
+        let chance = scan.chance(4, short.len());
+        assert!((chance.expected_by_chance - 40_000.0 / 256.0).abs() < 1e-9);
+        // The count is what chance gives, give or take: 156 expected.
+        assert!(scan.hits.len() > 100 && scan.hits.len() < 220, "{} hits", scan.hits.len());
+        assert!(!chance.above_chance && chance.note.contains("what chance gives"), "{}", chance.note);
+        // Twenty draws: 4^-20 a word, so a hit would stand out.
+        let long = lcg.range_seq(0x1234_5678, 4, 20);
+        let scan = find_seeds(&snap, &[(base, words.len())], &lcg, 4, &long, None).unwrap().answer;
+        assert!(scan.chance(4, long.len()).above_chance);
     }
 }
