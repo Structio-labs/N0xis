@@ -277,6 +277,19 @@ def oracle(log):
     return run_suite(log, "tests-oracle", [b for b in switched if b[0] not in unmet])
 
 
+def ledger(log, partial):
+    """docs/verification/ledger.toml against this run: a `verified` claim's test must have passed here."""
+    t = time.time()
+    cmd = [sys.executable, "scripts/check_ledger.py", str(log.dir)] + (["--partial"] if partial else [])
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    log.path("ledger").write_text(p.stdout + p.stderr)
+    first = (p.stdout.splitlines() or ["ledger: no output"])[0]
+    report(log, "ledger", p.returncode == 0, time.time() - t, first.removeprefix("ledger: "))
+    if p.returncode != 0:
+        tail_errors(log, "ledger")
+    return p.returncode == 0
+
+
 def memory_peak():
     """This scope's peak, page cache included, so an upper bound on what the gate needed."""
     try:
@@ -314,6 +327,10 @@ def main():
         ok = wine(log)
     if ok and not args.no_oracle:
         ok = oracle(log)
+
+    partial = bool(args.packages or args.no_oracle)  # suites a claim's test may live in were skipped
+    if ok:
+        ok = ledger(log, partial)
 
     scope = "" if not (args.packages or args.no_clippy or args.no_oracle) else " (partial)"
     log.line(f"GATE {'OK' if ok else 'FAILED'}{scope} in {time.time() - start:.0f}s{memory_peak()}; logs in {log.dir}")

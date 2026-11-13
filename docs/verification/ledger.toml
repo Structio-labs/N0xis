@@ -1,0 +1,97 @@
+# The verification ledger: one entry per statement a reader acts on.
+#
+# status:
+#   verified          a test in this repository checks it against a source that is not n0xis,
+#                     and the gate fails if that test is removed, renamed, skipped or fails
+#   measured-private  measured against an independent source with an input or instrument that
+#                     cannot be public; the numbers and the date are in `measured`
+#   built             built and tested against itself only: not verified
+#   false             known to give a wrong answer: a recorded defect, with how it was measured
+#
+# ROADMAP.md's ✅ means built. An item is verified only where it carries `[ledger: <id>]`.
+# `python3 scripts/check_ledger.py <gate log dir>` checks this file; the gate runs it last.
+
+[[claim]]
+id = "pe.extents.chained"
+layer = "function extents"
+says = "A PE function the x64 exception table splits over chained entries (UNW_FLAG_CHAININFO) is one function: no continuation is listed as a function, its end is the end of the run contiguous with its first entry, and a part apart from it is inside it."
+oracle = "llvm-readobj --unwind on a fixture whose tables are written by hand (crates/n0xis-cli/tests/fixtures/chained)"
+test = [
+  "the_pdata_list_holds_one_function_per_chain_with_its_whole_extent",
+  "the_default_list_starts_no_function_in_a_continuation",
+  "a_window_narrows_the_pdata_list",
+  "decomp_ends_where_the_last_contiguous_part_ends_and_goes_on_in_the_part_apart",
+  "why_places_an_address_in_a_part_apart_in_its_function",
+  "a_call_in_a_part_apart_is_a_call_of_its_function",
+]
+status = "verified"
+measured = "2026-11-13, 0ddd734. Two runtime DLLs of a Windows compatibility layer: continuations listed 8 and 10 before, 0 after; decomp ends 9 of 9 (0 of 9 before). Five x64 system DLLs of one OS build with their vendor's PDBs, privately: continuations listed 0 (43 to 1 675 before); decomp ends 1 353 of 1 386, 30 of the rest end before an inline jump table, 3 are `pe.ir.inline-table-as-code`."
+
+[[claim]]
+id = "pe.ir.inline-table-as-code"
+layer = "basic blocks"
+says = "ir build decodes the words of a jump table placed inside a function's stated extent as instructions, and the last one crosses the stated end by a byte."
+oracle = "llvm-objdump and llvm-readobj --unwind on the same images"
+status = "false"
+measured = "2026-11-13, 0ddd734: 3 functions in five x64 system DLLs (private set); pseudo-C does not print them. Rule to build: bytes a recognized table occupies are not code, and no instruction crosses a stated end."
+
+[[claim]]
+id = "profile.pdata-functions"
+layer = "image inventory"
+says = "profile's pdata_functions counts .pdata records, continuations included, not functions."
+oracle = "llvm-readobj --unwind"
+status = "false"
+measured = "2026-11-13: 2 512 and 1 930 on the two runtime DLLs, where the functions are 2 504 and 1 920."
+
+[[claim]]
+id = "summary.writes-memory"
+layer = "function summary"
+says = "writes_memory says whether the function's own instructions store outside its own stack frame; a callee's writes are not counted."
+oracle = "the fixture's source and objdump, gcc and clang, -O0 and -O2"
+test = "every_function_says_whether_it_stores_outside_its_frame"
+status = "verified"
+measured = "2026-11-14, a89d061: the claims audit's 51 functions agree with an objdump reading of own stores (0 wrong; 30 wrong at 0ddd734)."
+
+[[claim]]
+id = "summary.returns"
+layer = "function summary"
+says = "returns is true, false, or not known; a jump through a pointer with the frame given back is a tail call and returns as a call does; any other unresolved jump is not known."
+oracle = "the fixture's source and objdump, five builds"
+test = "every_function_says_whether_it_returns"
+status = "verified"
+measured = "2026-11-14, a89d061."
+
+[[claim]]
+id = "decomp.tail-call-through-pointer"
+layer = "the decompiled body"
+says = "A jump through a register or memory with the stack pointer back at its entry value, not read out of a table and not a constant, prints as `return (*target)(args);`."
+oracle = "planted bytes whose answer is known before the question; gcc and clang builds read by hand against the source"
+test = [
+  "a_jump_through_a_slot_with_the_frame_given_back_is_a_tail_call",
+  "a_jump_with_the_frame_still_up_is_not_a_tail_call",
+  "a_jump_through_a_table_with_no_frame_is_not_a_tail_call",
+]
+status = "verified"
+measured = "2026-11-14, bc901d4: a function-pointer and a method-slot tail call, gcc and clang -O2, print the source's call; 0.3.9 printed `// indirect jump (unrecovered)` with `void` at quality 1.0."
+
+[[claim]]
+id = "decomp.condition-after-arithmetic"
+layer = "the decompiled body"
+says = "A condition after inc, dec, add, neg or test reads the flags the processor reads: signed where the jump is signed, at the operation's width."
+oracle = "the processor, every boundary value"
+test = "every_condition_after_arithmetic_answers_as_the_processor_does"
+status = "verified"
+measured = "2026-11-13, f982917 (on main as bc901d4)."
+
+[[claim]]
+id = "noreturn.traps"
+layer = "control flow"
+says = "ud2, hlt and int 0x29 do not return; a trap ends the function only where filler follows it."
+oracle = "planted bytes; objdump on two release PE images (26 functions ending in int 0x29)"
+test = [
+  "a_trap_after_a_call_ends_the_block_and_stays_in_the_function",
+  "a_trap_with_code_after_it_ends_the_block_and_not_the_function",
+  "trapping_filler_after_a_call_is_outside_the_function",
+]
+status = "verified"
+measured = "2026-11-13, claims-3; `hlt` is taken as a trap everywhere, which is wrong in ring-0 code (`sti; hlt; ret`)."

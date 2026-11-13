@@ -2580,6 +2580,9 @@ NEON instruction.
 
 ### Confident-wrong-answer regressions closed (calibrated)
 
+- **Chained unwind entries listed as functions, and bodies cut at the first entry** (Open since 2026-10-04): closed 2026-11-13 in 0ddd734, [ledger: pe.extents.chained]. On five x64 system DLLs of one OS build the continuations listed went from 43 / 1 675 / 1 672 / 1 155 / 373 to 0, and `decomp pseudo` ends agree with the unwind table on 1 353 of 1 386 functions with parts; of the rest, 30 end before an inline jump table and 3 are [ledger: pe.ir.inline-table-as-code].
+
+
 A pass over the tool's own output found defects that *compiled and passed the
 suite* yet returned a confident wrong answer — the worst shape, since the caller
 has no error to branch on. Each was fixed and guarded by a test that fails on its
@@ -2616,7 +2619,6 @@ sentence is stale.
 | --- | --- | --- |
 | AArch64 **lift `-O0`** | Unmeasured: `-O0` reproduced 0 of 240 because stack stores are not lifted; the "526 of 960" figure rests on `-O1/-O2/-Os` only. Not "55% coverage" of AArch64 generally. | AArch64 lift oracle |
 | AArch64 extending-register add | The dominant remaining `Unlifted` at optimised levels (`add x0, x0, w2, uxth`). | AArch64 lift oracle |
-| `function discover` lists chained unwind fragments as functions | Measured 2026-10-04. An unwind entry flagged `UNW_FLAG_CHAININFO` continues another function (confirmed with `llvm-readobj --unwind`), yet `--pdata` lists every such entry as a function: 43 / 1 672 / 1 155 / 373 on four PE32+/MSVC system DLLs (0.9 / 2.6 / 1.4 / 2.0 MB), none of them a function the matching PDB names. The prologue scan lists the same fragments (all of them on three DLLs, 1 669 of 1 672 on the fourth). | PDB oracle, ROADMAP gap-closing item 1 |
 | Functions a PDB names that discovery misses | Measured 2026-10-04 on the same four DLLs: 41 / 14 / 20 / 10 function publics found by neither discovery mode. Not yet triaged: each is either a missed function or a public flagged as code that does not start a function. | PDB oracle, ROADMAP gap-closing item 1 |
 | `provenance trace` names neither the function nor the global | Measured 2026-10-05 on Linux with `examples/config-demo` built `-O2 -g`: the write's address, the instruction (`objdump`: the byte store at `decrypt_config+0x36`) and the containing function are right, but `function_name` is `null` and the statements read `*(uint8_t*)((rdi.1 + v2)) = …`, although the ELF's symbol table names `config` and `decrypt_config`. The README says so beside its example. Re-measured 2026-10-20 on three builds of the same source: the store is right on all three, the function only on gcc `-O2`; clang `-O2` and gcc `-O1` answer the loop head (listed under wrong answers above). | `nm` and `objdump` on the same binary |
 | Data exports reach `sig gen` | Measured 2026-10-05: `named_functions()` still includes named exports outside executable sections, 4 814 of 152 546 across 123 images (9 on one x64 system DLL), so a data export can be fingerprinted as code. | Section flags of the image |

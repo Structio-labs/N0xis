@@ -31,6 +31,10 @@ It runs the layering law (`scripts/check_boundary.sh`), the tests with the stack
 thread has, and clippy for Linux and Windows, all with warnings as errors. Then the tests behind
 the `oracle` features, which CI does not run: they build their targets with gcc, clang, mingw and
 the like, and check against what that build holds, so they need those tools here.
+Last, `scripts/check_ledger.py` reads `docs/verification/ledger.toml`: every claim marked
+`verified` names a test, and that test must have passed in this run; every `[ledger: <id>]` in
+the documents must name a claim. To mark something verified, add its claim there with the
+independent source it is checked against; a test that checks the tool against itself is `built`.
 
 Zero warnings is enforced, not a suggestion — every phase in this project's
 history shipped with a clean build, and that's not going to change now.

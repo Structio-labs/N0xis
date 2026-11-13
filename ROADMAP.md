@@ -5,7 +5,9 @@
 > re-deriving them from a blank page. Each phase ends with the tool **buildable and
 > usable** — no phase leaves `main`/CLI broken.
 
-Legend: 🎯 milestone · ✅ done · ⏳ in progress · ⬜ todo · ⚠️ caveat.
+Legend: 🎯 milestone · ✅ built · ⏳ in progress · ⬜ todo · ⚠️ caveat.
+
+✅ means built and passing its own tests, not that its answers are verified. An item is verified only where it carries `[ledger: <id>]`: [`docs/verification/ledger.toml`](docs/verification/ledger.toml) names the independent source and the test, and the gate fails when that test is gone or fails. The 2026-11-06 claims audit found 74 of 220 statements false in commands marked ✅, which is why the two are now apart.
 
 ---
 
