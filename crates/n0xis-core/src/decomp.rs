@@ -849,7 +849,7 @@ fn render_goto(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) -> V
             }
         }
         match b.terminator.as_str() {
-            "ret" | "tail-call" | "int" | "call-noreturn" => {}
+            "ret" | "tail-call" | "int" | "trap" | "call-noreturn" => {}
             "ijmp" => {
                 if b.successors.iter().any(|s| s.kind == "switch-case") {
                     lines.push("    // switch dispatch:".to_string());

@@ -288,7 +288,7 @@ fn emit_block_body_and_terminator(ctx: &mut Ctx, n: usize, until: Option<usize>)
         "ret" | "tail-call" => {
             // Body lift already pushed `return ...;`.
         }
-        "int" => ctx.out.push(format!("{}// int / abort", pad(ctx.indent))),
+        "int" | "trap" => ctx.out.push(format!("{}// int / abort", pad(ctx.indent))),
         "call-noreturn" => ctx.out.push(format!("{}// unreachable: call does not return", pad(ctx.indent))),
         "ijmp" if !is_switch => {
             ctx.out.push(format!("{}// indirect jump (unrecovered)", pad(ctx.indent)));
@@ -1121,7 +1121,7 @@ fn structure_once(
     // structure as a clean fall-through instead of a `goto`, exactly as the
     // standard treatment (no-return paths are dropped from the CFG for structuring).
     let is_exit: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "ret" | "tail-call")).collect();
-    let mut is_abort: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "call-noreturn" | "int")).collect();
+    let mut is_abort: Vec<bool> = cfg.blocks.iter().map(|b| matches!(b.terminator.as_str(), "call-noreturn" | "int" | "trap")).collect();
     // A function with no normal return (every path aborts) — let the aborts act
     // as exits so post-dominance stays defined instead of empty.
     if !is_exit.iter().any(|&e| e) {

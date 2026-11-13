@@ -908,7 +908,7 @@ fn flow_of(ctx: &Ctx, id: &str, va: Va) -> Option<Flow> {
                         .filter_map(|c| c.target)
                         .collect(),
                     exit: match b.terminator.as_str() {
-                        "call-noreturn" => FlowExit::Ends,
+                        "call-noreturn" | "trap" => FlowExit::Ends,
                         "tail-call" if crate::noreturn_ipa::tail_call_is_noreturn(b, &Default::default()) => FlowExit::Ends,
                         "tail-call" => FlowExit::Tail(b.insns.last().and_then(|i| i.target)),
                         "fall" | "jmp" | "cjmp" if !b.successors.is_empty() => {

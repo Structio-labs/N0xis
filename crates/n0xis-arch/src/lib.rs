@@ -570,8 +570,10 @@ pub trait Arch {
     fn is_padding(&self, insn: &DecodedInsn) -> bool;
 
     /// Whether `insn` is the instruction a compiler writes where control cannot
-    /// arrive: `ud2`, `brk`, `udf`. Not filler (it belongs to its function), and
-    /// never in the normal flow, so a call it follows does not come back.
+    /// arrive: `ud2`, `brk`, `udf`, and x86's `hlt`, which faults outside the
+    /// kernel. Not filler (it belongs to its function), and never in the normal
+    /// flow: it ends its block with no successor, and a call it follows does not
+    /// come back.
     ///
     /// Required, with no default: which encoding it is is a fact about the
     /// instruction set, and `core` holds no opinion on any of them.

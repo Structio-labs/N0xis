@@ -964,10 +964,15 @@ impl Arch for X64 {
         }
     }
 
-    /// `ud2`. Not `int3`, which is [`Arch::is_padding`]: what a linker fills
-    /// between functions with, and no statement of the compiler's.
+    /// `ud2`, and `hlt`, which faults outside the kernel: `_start` writes it after
+    /// the call to `__libc_start_main`, where control cannot arrive. In code that
+    /// runs in ring 0 (a kernel's idle loop, `sti; hlt; ret`) `hlt` comes back,
+    /// and that is the case this is wrong for: nothing here knows which ring an
+    /// image runs in. Not `int3`,
+    /// which is [`Arch::is_padding`]: what a linker fills between functions with,
+    /// and no statement of the compiler's.
     fn is_trap(&self, insn: &DecodedInsn) -> bool {
-        insn.mnemonic == "ud2"
+        matches!(insn.mnemonic.as_str(), "ud2" | "hlt")
     }
 
     /// x86-64 toolchains align function entries to 16 bytes by default

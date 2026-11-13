@@ -217,8 +217,9 @@ pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> boo
                     return true;
                 }
             }
-            // Proven non-returning — this path dead-ends here, follow no edge.
-            "call-noreturn" => {}
+            // Proven non-returning — this path dead-ends here, follow no edge. A
+            // trap is the same: it does not fall through.
+            "call-noreturn" | "trap" => {}
             // Internal edge: keep walking, but any successor we cannot place in
             // this function's own block set leaves the analyzed window, so we
             // cannot rule out a return down that path.
@@ -308,6 +309,42 @@ mod tests {
         assert!(!function_returns(&cfg, &none), "the stated end is right after the call");
         cfg.end_by = crate::ir::GraphEnd::Heuristic { by: crate::EndRule::Terminator };
         assert!(function_returns(&cfg, &none), "a heuristic end says nothing of the call");
+    }
+
+    /// A trap ends its path: a `.cold` part that is one `ud2`, and `ud2` with code
+    /// after it that only a fall-through from the trap would reach. Both were read
+    /// as returning, the first because the body ends in no call, the second
+    /// because the trap fell into the `ret` (audit 2026-11-06, row 7).
+    #[test]
+    fn a_trap_ends_its_path_and_the_function_does_not_return() {
+        let none = HashSet::new();
+        let arch = X64::new();
+        // ud2, with the end the image states right after it.
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x0f, 0x0b]).build();
+        let ctx = Ctx::new(&snap, &arch);
+        let mut cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 2)).expect("cfg builds");
+        cfg.end_by = crate::ir::GraphEnd::Stated;
+        assert_eq!(cfg.blocks[0].terminator, "trap", "{:?}", cfg.blocks);
+        assert!(!function_returns(&cfg, &none), "a `.cold` part that is one `ud2` does not return");
+        // ud2; mov eax, 1; ret: the `ret` is past the trap, and nothing jumps to it.
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x0f, 0x0b, 0xb8, 1, 0, 0, 0, 0xc3]).build();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 8)).expect("cfg builds");
+        assert!(cfg.blocks[0].successors.is_empty(), "a trap has no fall-through: {:?}", cfg.blocks);
+        assert!(!function_returns(&cfg, &none), "the `ret` after the trap is not reached");
+    }
+
+    /// `_start`'s `call __libc_start_main; hlt`, with a callee that has no name
+    /// here and an end the heuristic decided: `hlt` faults in user mode, so the
+    /// call does not come back, as it does not before a `ud2`.
+    #[test]
+    fn a_call_before_hlt_does_not_return() {
+        let snap = Snapshot::builder().region(Va(0x1000), call_then(0x1000, 0x2000, &[0xf4, 0x90, 0x90])).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 8)).expect("cfg builds");
+        assert_eq!(cfg.blocks[0].terminator, "call-noreturn", "{:?}", cfg.blocks);
+        assert!(!function_returns(&cfg, &HashSet::new()), "`call; hlt` does not return");
     }
 
     #[test]

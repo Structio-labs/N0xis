@@ -104,7 +104,9 @@ pub struct CfgBlock {
     pub end: Va,
     /// How the block leaves: `fall` / `jmp` / `cjmp` / `ijmp` / `ret` / `int` /
     /// `tail-call` / `call-noreturn` (a call to a well-known noreturn import —
-    /// zero successors, nothing after it is reachable).
+    /// zero successors, nothing after it is reachable) / `trap` (an instruction
+    /// the architecture says traps, [`n0xis_arch::Arch::is_trap`]: zero
+    /// successors, and it does not come back).
     pub terminator: String,
     pub successors: Vec<Successor>,
     pub insns: Vec<IrInsn>,
@@ -868,6 +870,13 @@ fn truncate_to_function(ctx: &Ctx, all: &[DecodedInsn], start: u64, end_cap: u64
                 cut = Some((idx + 1, crate::EndRule::Terminator));
                 break;
             }
+            // A trap ends its block always, and the function only where filler
+            // follows it: cut at every `ud2`, a Rust function with no unwind
+            // table loses the landing pad after it.
+            _ if ctx.arch.is_trap(ins) && next > max_forward_leader && function_stops_at_trap(ctx, next, all.get(idx + 1)) => {
+                cut = Some((idx + 1, crate::EndRule::Terminator));
+                break;
+            }
             InsnKind::Call if next > max_forward_leader => {
                 match noreturn_call(ctx, ins, &all[idx + 1..], &|at| jumps.contains(&at)) {
                     Some(CallEnds::BeforeTrap) => {
@@ -1124,6 +1133,15 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Resu
                 last_def.insert(w.clone(), (cur_index, ins.va.0));
             }
 
+            // A trap (`ud2`, `brk`, a user-mode `hlt`) does not fall through: the
+            // path ends there and does not come back. It fell into the next block,
+            // and a `.cold` part that is one `ud2`, or `_start`'s `call; hlt`, was
+            // read as returning (audit 2026-11-06, row 7, the one no-return rule).
+            if ctx.arch.is_trap(ins) {
+                terminator = "trap".into();
+                i += 1;
+                break;
+            }
             match ins.kind {
                 InsnKind::Ret => {
                     stats.returns += 1;
