@@ -334,6 +334,22 @@ mod tests {
         assert!(!function_returns(&cfg, &none), "the `ret` after the trap is not reached");
     }
 
+    /// `mov ecx,7; int 0x29`, the fail-fast a Rust PE build ends `abort` with, and code
+    /// after it that only a fall-through would reach: the process ends at the `int`.
+    /// Read as an `int` that may come back, 26 functions of two Rust PE builds were
+    /// said to return.
+    #[test]
+    fn a_fail_fast_does_not_return() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0xb9, 7, 0, 0, 0, 0xcd, 0x29, 0xb8, 1, 0, 0, 0, 0xc3]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 13)).expect("cfg builds");
+        assert_eq!(cfg.blocks[0].terminator, "trap", "{:?}", cfg.blocks);
+        assert!(!function_returns(&cfg, &HashSet::new()), "nothing comes back from `int 0x29`");
+        // Code follows, so the function does not end at it.
+        assert_eq!(cfg.end, Va(0x100d), "{:?}", cfg.blocks);
+    }
+
     /// `_start`'s `call __libc_start_main; hlt`, with a callee that has no name
     /// here and an end the heuristic decided: `hlt` faults in user mode, so the
     /// call does not come back, as it does not before a `ud2`.

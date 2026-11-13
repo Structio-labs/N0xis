@@ -866,14 +866,17 @@ fn truncate_to_function(ctx: &Ctx, all: &[DecodedInsn], start: u64, end_cap: u64
                     break;
                 }
             }
-            InsnKind::Ret | InsnKind::Int if next > max_forward_leader => {
-                cut = Some((idx + 1, crate::EndRule::Terminator));
-                break;
-            }
             // A trap ends its block always, and the function only where filler
             // follows it: cut at every `ud2`, a Rust function with no unwind
-            // table loses the landing pad after it.
-            _ if ctx.arch.is_trap(ins) && next > max_forward_leader && function_stops_at_trap(ctx, next, all.get(idx + 1)) => {
+            // table loses the landing pad after it. Before the `int` below: `int
+            // 0x29` is a trap, and follows the trap's rule.
+            _ if ctx.arch.is_trap(ins) => {
+                if next > max_forward_leader && function_stops_at_trap(ctx, next, all.get(idx + 1)) {
+                    cut = Some((idx + 1, crate::EndRule::Terminator));
+                    break;
+                }
+            }
+            InsnKind::Ret | InsnKind::Int if next > max_forward_leader => {
                 cut = Some((idx + 1, crate::EndRule::Terminator));
                 break;
             }

@@ -971,8 +971,14 @@ impl Arch for X64 {
     /// image runs in. Not `int3`,
     /// which is [`Arch::is_padding`]: what a linker fills between functions with,
     /// and no statement of the compiler's.
+    ///
+    /// And `int 0x29`, the fail-fast a Windows program ends a path with
+    /// (`__fastfail`, Rust's `abort` on PE): the process ends there. No other
+    /// system gives user code that vector, so elsewhere it faults. Read as an `int`
+    /// that may come back, 12 and 14 functions of two Rust PE builds that end in it
+    /// were said to return.
     fn is_trap(&self, insn: &DecodedInsn) -> bool {
-        matches!(insn.mnemonic.as_str(), "ud2" | "hlt")
+        matches!(insn.mnemonic.as_str(), "ud2" | "hlt") || (insn.mnemonic == "int" && insn.bytes.ends_with(&[0xcd, 0x29]))
     }
 
     /// x86-64 toolchains align function entries to 16 bytes by default
