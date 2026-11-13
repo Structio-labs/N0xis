@@ -211,3 +211,29 @@ fn a_call_in_a_part_apart_is_a_call_of_its_function() {
     let callees: Vec<&Value> = root["calls"].as_array().expect("calls").iter().map(|c| &c["target"]).collect();
     assert_eq!(callees, vec![&Value::String(hex(h))], "the call in the part apart is g's: {v}");
 }
+
+#[test]
+fn the_whole_program_lists_hold_functions_not_continuations() {
+    // `ir manifest` and `function summary` start from the function list, and
+    // each builds every function's graph: one entry per function, ending where
+    // its last contiguous part ends, and `g`'s calls are the one in its part
+    // apart, not the tail jump into it.
+    let truth = readobj_functions();
+    let dir = project("lists");
+    let ends: BTreeMap<String, String> = truth.iter().map(|(s, t)| (hex(*s), hex(t.end))).collect();
+    let manifest = run(&dir, &["ir", "manifest", "--file", &image()]);
+    let got: BTreeMap<String, String> = manifest["data"]["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| (e["va"].as_str().unwrap_or("").to_string(), e["end"].as_str().unwrap_or("").to_string()))
+        .collect();
+    assert_eq!(got, ends, "{manifest}");
+    let (&g, _) = truth.iter().find(|(_, t)| !t.apart.is_empty()).expect("a function with a part apart");
+    let (&h, _) = truth.iter().find(|(_, t)| t.continuations.is_empty()).expect("h");
+    let summary = run(&dir, &["function", "summary", "--file", &image()]);
+    let sums = summary["data"]["summaries"].as_array().expect("summaries");
+    assert_eq!(sums.len(), truth.len(), "{summary}");
+    let of_g = sums.iter().find(|s| s["va"] == hex(g)).expect("g's summary");
+    assert_eq!(of_g["calls"], serde_json::json!([hex(h)]), "{summary}");
+}

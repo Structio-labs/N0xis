@@ -177,7 +177,7 @@ struct Entry {
 pub fn read_unwind_table(src: &dyn MemorySource, image_base: Va, table: Va, size: usize, isa: Isa) -> Result<UnwindTable, SourceError> {
     let bytes = src.read(table, size.min(MAX_EXCEPTION_TABLE))?;
     let mut entries: Vec<Entry> = Vec::new();
-    for rec in bytes.chunks_exact(12) {
+    for rec in bytes.as_chunks::<12>().0 {
         let word = |i: usize| u32::from_le_bytes(rec[i * 4..i * 4 + 4].try_into().expect("four bytes"));
         let e = Entry { begin: word(0), end: word(1), unwind: word(2) };
         if e.begin == 0 && e.end == 0 {
