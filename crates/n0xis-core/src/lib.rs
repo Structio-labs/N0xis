@@ -49,6 +49,7 @@ mod scan;
 mod signatures;
 mod classlayout;
 mod summary;
+mod tail_jump;
 mod typeprop;
 mod slice;
 mod ssa;
@@ -122,7 +123,7 @@ pub use emulate::{
 pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
 pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
 pub use noreturn::is_known_noreturn;
-pub use noreturn_ipa::{propagate_noreturn, NoReturnArtifact, NoReturnInput, NoReturnPropagatePass};
+pub use noreturn_ipa::{propagate_noreturn, NoReturnArtifact, NoReturnInput, NoReturnPropagatePass, Returns};
 pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};
 pub use pointer::{resolve_pointer_path, PointerPath, PointerPathArtifact, PointerPathInput, PointerPathPass, PointerRoot};
 pub use provenance::{ProvenanceEntry, ProvenanceGraph, ProvenanceHit, ProvenanceInput, ProvenancePass};

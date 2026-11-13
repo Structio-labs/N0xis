@@ -48,8 +48,9 @@ pub struct FunctionSummary {
     pub va: Va,
     pub name: String,
     pub end: Va,
-    /// `false` = proven never to hand control back to its caller.
-    pub returns: bool,
+    /// `false` = proven never to hand control back to its caller; `{"unknown": true}`
+    /// where no path is seen to return and one ends where nothing can tell.
+    pub returns: crate::Returns,
     /// Recovered parameter types, in ABI argument order — **absent when nothing
     /// determined them**, which is not the same as an empty list.
     ///
@@ -236,7 +237,7 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
         // made a genuinely non-returning function look like it returns.)
         // `ctx.noreturn`, when the caller has run the fixpoint, additionally
         // classifies a tail call to a proven-noreturn function.
-        returns: crate::noreturn_ipa::function_returns(&cfg, &proven),
+        returns: crate::noreturn_ipa::returns(&cfg, &proven, &cfg.tail_calls_through_pointers(ctx)),
         params,
         ret,
         ret_registers,
@@ -285,7 +286,7 @@ mod tests {
         let (snap, arch) = ctx_for(vec![0x31, 0xC0, 0xC3], 0x1000);
         let ctx = Ctx::new(&snap, &arch);
         let s = summarize(&ctx, Va(0x1000), 64).expect("summarized");
-        assert!(s.returns, "a `ret` returns");
+        assert_eq!(s.returns, crate::Returns::Yes, "a `ret` returns");
         assert!(s.clobbers_complete, "a leaf's clobber set is closed");
         assert!(s.calls.is_empty());
         assert!(!s.has_unknown_call);
@@ -365,14 +366,14 @@ mod tests {
         let (snap, arch) = ctx_for(code, 0x1000);
         let ctx = Ctx::new(&snap, &arch);
         let s = summarize(&ctx, Va(0x1000), 64).expect("summarized");
-        assert!(s.returns, "the reachable `ret` decides it");
+        assert_eq!(s.returns, crate::Returns::Yes, "the reachable `ret` decides it");
 
         // And the mirror: with no reachable returning exit the verdict is
         // `false` even though blocks exist.
         let (snap2, arch2) = ctx_for(vec![0xEB, 0xFE], 0x2000); // jmp $ — infinite loop
         let ctx2 = Ctx::new(&snap2, &arch2);
         let s2 = summarize(&ctx2, Va(0x2000), 64).expect("summarized");
-        assert!(!s2.returns, "an infinite loop never returns to its caller");
+        assert_eq!(s2.returns, crate::Returns::Never, "an infinite loop never returns to its caller");
     }
 
     /// The clobbers of a function read only in part are not complete, and the summary

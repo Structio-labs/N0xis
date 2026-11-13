@@ -77,7 +77,12 @@ impl CfgArtifact {
     /// graph resolved has its targets, and is not this. Whatever a caller may assume about
     /// what this function calls, clobbers or reads stops being closed here.
     pub fn leaves_by_an_unresolved_jump(&self) -> bool {
-        self.blocks.iter().any(|b| b.terminator == "ijmp" && b.successors.is_empty())
+        self.unresolved_jumps().next().is_some()
+    }
+
+    /// The blocks that end in such a jump.
+    pub fn unresolved_jumps(&self) -> impl Iterator<Item = &CfgBlock> {
+        self.blocks.iter().filter(|b| b.terminator == "ijmp" && b.successors.is_empty())
     }
 }
 

@@ -30,7 +30,7 @@
 //! noreturn only when *provably* so — every ambiguous exit is read as "may
 //! return", so the pass never prunes a live path, only dead ones.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use n0xis_contracts::Va;
 use serde::{Deserialize, Serialize};
@@ -172,14 +172,54 @@ fn runs_off_its_stated_end_after_a_call(cfg: &CfgArtifact, b: &crate::ir::CfgBlo
         && b.insns.last().is_some_and(|i| i.flow == n0xis_arch::InsnKind::Call && i.va.0 + u64::from(i.len) == cfg.end.0)
 }
 
-/// Does this function's CFG have a reachable **returning** exit?
+/// Whether a function hands control back to its caller, as far as its graph says.
+/// Serialized as `true`, `false`, or `{"unknown": true}`, the way the summary's `ret`
+/// beside it says it does not know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Returns {
+    /// A reachable `ret`, or a tail call to a function not proven to stay.
+    Yes,
+    /// Every reachable path ends in something that does not come back, or none ends.
+    Never,
+    /// No path is seen to return, and one ends where nothing here can tell: an
+    /// indirect jump with no table behind it (`__longjmp`'s `jmp *%rdx`), an `int`, an
+    /// edge out of the analysed window, a body that runs off an end nobody stated.
+    /// These were said to return: `returns: true` of `__longjmp` as a fact.
+    NotKnown,
+}
+
+impl Serialize for Returns {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Returns::Yes => s.serialize_bool(true),
+            Returns::Never => s.serialize_bool(false),
+            Returns::NotKnown => {
+                use serde::ser::SerializeMap;
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_entry("unknown", &true)?;
+                m.end()
+            }
+        }
+    }
+}
+
+/// Does this function's CFG have a reachable **returning** exit? `true` unless it is
+/// proven not to: [`returns`] is not [`Returns::Never`]. The one rule `ir manifest`'s
+/// `no-return`, `function summary`'s `returns` and the whole-program fixpoint read.
+pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> bool {
+    returns(cfg, noreturn, &BTreeSet::new()) != Returns::Never
+}
+
+/// Whether this function's CFG returns, never does, or cannot be told.
 ///
-/// Sound-over-complete: returns `true` on any doubt (a `ret`, an exit we cannot
-/// prove non-returning, an edge leaving the analyzed window, an unrecognized
-/// terminator, or a CFG we could not build). Only a function whose every
-/// reachable exit is proven non-returning — a `call-noreturn`, or a `tail-call`
-/// whose target is itself noreturn — or which has no reachable exit at all (an
-/// infinite loop), returns `false`.
+/// [`Returns::Never`] only for a function whose every reachable exit is proven
+/// non-returning — a `call-noreturn`, a trap, or a `tail-call` whose target is itself
+/// noreturn — or which has no reachable exit at all (an infinite loop).
+/// [`Returns::Yes`] on a reachable `ret`, or a tail call to a function not proven to
+/// stay: it returns what its callee returns, and a call is taken to come back
+/// everywhere else here. Any other exit (an exit we do not model, an edge leaving
+/// the analyzed window, a CFG we could not build) is [`Returns::NotKnown`] unless
+/// another path returns.
 ///
 /// `noreturn` is the set proven so far, used to classify a *tail-call* exit
 /// (`jmp <fn>` leaving the function): MSVC routinely compiles a throw/abort
@@ -191,15 +231,16 @@ fn runs_off_its_stated_end_after_a_call(cfg: &CfgArtifact, b: &crate::ir::CfgBlo
 /// an unwind entry) right after a call, with no `ret` or jump, does not return
 /// there: the call does not come back, whether or not its callee has a name here.
 /// A heuristic end says nothing of the kind, and gives no such answer.
-pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> bool {
+pub(crate) fn returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>, pointer_tails: &BTreeSet<usize>) -> Returns {
     if cfg.blocks.is_empty() {
-        return true; // no evidence → assume it returns
+        return Returns::NotKnown;
     }
     let by_start: HashMap<u64, usize> = cfg.blocks.iter().enumerate().map(|(i, b)| (b.start.0, i)).collect();
     let entry = by_start.get(&cfg.start.0).copied().unwrap_or(0);
 
     let mut seen = vec![false; cfg.blocks.len()];
     let mut stack = vec![entry];
+    let mut doubt = false;
     while let Some(i) = stack.pop() {
         if seen[i] {
             continue;
@@ -207,14 +248,18 @@ pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> boo
         seen[i] = true;
         let b = &cfg.blocks[i];
         match b.terminator.as_str() {
-            // A definite return, or an exit we cannot prove non-returning.
-            "ret" | "ijmp" | "int" => return true,
+            "ret" => return Returns::Yes,
+            // A tail call through a pointer ([`CfgArtifact::tail_calls_through_pointers`]):
+            // it returns as a call to an unknown function is taken to.
+            "ijmp" if pointer_tails.contains(&b.id) => return Returns::Yes,
+            // An exit we cannot follow: it may come back, and may not.
+            "ijmp" | "int" => doubt = true,
             // A tail-call: non-returning iff its target is itself noreturn
             // (a known import by name, or a proven function by address);
-            // otherwise it returns whatever the callee returns — assume it may.
+            // otherwise it returns whatever the callee returns.
             "tail-call" => {
                 if !tail_call_is_noreturn(b, noreturn) {
-                    return true;
+                    return Returns::Yes;
                 }
             }
             // Proven non-returning — this path dead-ends here, follow no edge. A
@@ -225,10 +270,10 @@ pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> boo
             // cannot rule out a return down that path.
             "fall" | "jmp" | "cjmp" => {
                 if b.successors.is_empty() {
-                    if runs_off_its_stated_end_after_a_call(cfg, b) {
-                        continue;
+                    if !runs_off_its_stated_end_after_a_call(cfg, b) {
+                        doubt = true;
                     }
-                    return true;
+                    continue;
                 }
                 for s in &b.successors {
                     match by_start.get(&s.to.0) {
@@ -237,16 +282,17 @@ pub(crate) fn function_returns(cfg: &CfgArtifact, noreturn: &HashSet<Va>) -> boo
                                 stack.push(j);
                             }
                         }
-                        None => return true,
+                        None => doubt = true,
                     }
                 }
             }
-            // Something we do not model — assume it may return.
-            _ => return true,
+            // Something we do not model.
+            _ => doubt = true,
         }
     }
-    // Every reachable exit was proven non-returning, or there was no exit at all.
-    false
+    // Every reachable exit was proven non-returning, or there was no exit at all,
+    // unless one of them could not be told.
+    if doubt { Returns::NotKnown } else { Returns::Never }
 }
 
 /// Is a `tail-call` block's target a noreturn function? The terminating
@@ -332,6 +378,30 @@ mod tests {
         let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), 8)).expect("cfg builds");
         assert!(cfg.blocks[0].successors.is_empty(), "a trap has no fall-through: {:?}", cfg.blocks);
         assert!(!function_returns(&cfg, &none), "the `ret` after the trap is not reached");
+    }
+
+    /// `__longjmp` ends in `jmp *%rdx`: it may lose the no-return flag, since nothing
+    /// here can follow it, but it is not therefore a function that returns. `returns`
+    /// said `true` of it and of `_Unwind_Resume` as a fact; with a `ret` on another
+    /// path it does return.
+    #[test]
+    fn an_unresolved_jump_is_not_a_return() {
+        let none = HashSet::new();
+        let arch = X64::new();
+        let cfg_of = |bytes: Vec<u8>| {
+            let n = bytes.len();
+            let snap = Snapshot::builder().region(Va(0x1000), bytes).build();
+            CfgPass.run(&Ctx::new(&snap, &arch), CfgInput::new(Va(0x1000), n)).expect("cfg builds")
+        };
+        // mov rax,[rdi]; jmp rax
+        let cfg = cfg_of(vec![0x48, 0x8b, 0x07, 0xff, 0xe0]);
+        assert_eq!(returns(&cfg, &none, &BTreeSet::new()), Returns::NotKnown, "{:?}", cfg.blocks);
+        assert!(function_returns(&cfg, &none), "and so no `no-return` flag");
+        // Shown a tail call through a pointer, it returns as any call is taken to.
+        assert_eq!(returns(&cfg, &none, &cfg.unresolved_jumps().map(|b| b.id).collect()), Returns::Yes);
+        // test edi,edi; je +2; jmp rax; ret
+        let cfg = cfg_of(vec![0x85, 0xff, 0x74, 0x02, 0xff, 0xe0, 0xc3]);
+        assert_eq!(returns(&cfg, &none, &BTreeSet::new()), Returns::Yes, "{:?}", cfg.blocks);
     }
 
     /// `mov ecx,7; int 0x29`, the fail-fast a Rust PE build ends `abort` with, and code
