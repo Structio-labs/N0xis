@@ -29,12 +29,14 @@ const ELF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/strings_p
 const PLANTED: &[u8] = b"n0xis-planted-ascii-7f3a";
 
 /// The fixture with no section headers, and where the planted string is loaded.
-fn sectionless() -> (PathBuf, PathBuf, u64) {
+/// A directory of the test's own (`tag`): two tests in this file run at once,
+/// and one sharing a directory removed it under the other.
+fn sectionless(tag: &str) -> (PathBuf, PathBuf, u64) {
     let mut b = std::fs::read(ELF).expect("the fixture");
     let va = support::elf64_load_address_of(&b, PLANTED);
     b[0x28..0x30].fill(0); // e_shoff
     b[0x3c..0x40].fill(0); // e_shnum, e_shstrndx
-    let dir = std::env::temp_dir().join(format!("n0xis-sectionless-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("n0xis-sectionless-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".n0x")).expect("a project of its own");
     let path = dir.join("noshdr.so");
@@ -49,7 +51,7 @@ fn n0x(dir: &PathBuf, args: &[&str]) -> Value {
 
 #[test]
 fn reads_by_address_go_through_the_loadable_segments() {
-    let (dir, path, va) = sectionless();
+    let (dir, path, va) = sectionless("reads");
     let file = path.to_str().unwrap();
     let addr = format!("{va:#x}");
 
@@ -72,7 +74,7 @@ fn reads_by_address_go_through_the_loadable_segments() {
 
 #[test]
 fn what_a_section_name_finds_is_said_to_be_not_read() {
-    let (dir, path, _) = sectionless();
+    let (dir, path, _) = sectionless("said");
     let file = path.to_str().unwrap();
     let has_eh_frame_segment = support::elf64_program_headers(&std::fs::read(&path).unwrap()).iter().any(|&(ty, ..)| ty == 0x6474_e550);
     assert!(has_eh_frame_segment, "the fixture has a PT_GNU_EH_FRAME");
