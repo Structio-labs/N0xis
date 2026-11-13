@@ -120,8 +120,8 @@ fn readobj_functions() -> BTreeMap<u64, Truth> {
     out
 }
 
-/// `[va, end, [[start, end] of every part apart]]` of every function a list
-/// holds.
+/// `va → (end, [(start, end)] of every part apart)` of every function a list
+/// holds; an end nothing states is `0`, which no truth has.
 fn listed(data: &Value) -> BTreeMap<u64, (u64, Vec<(u64, u64)>)> {
     let num = |v: &Value| u64::from_str_radix(v.as_str().expect("an address").trim_start_matches("0x"), 16).expect("hex");
     data["functions"]
@@ -130,7 +130,7 @@ fn listed(data: &Value) -> BTreeMap<u64, (u64, Vec<(u64, u64)>)> {
         .iter()
         .map(|f| {
             let apart = f["detached"].as_array().map(|ps| ps.iter().map(|p| (num(&p["start"]), num(&p["end"]))).collect()).unwrap_or_default();
-            (num(&f["va"]), (num(&f["end"]), apart))
+            (num(&f["va"]), (if f["end"].is_null() { 0 } else { num(&f["end"]) }, apart))
         })
         .collect()
 }
@@ -205,5 +205,9 @@ fn a_call_in_a_part_apart_is_a_call_of_its_function() {
     let (&g, _) = truth.iter().find(|(_, t)| !t.apart.is_empty()).expect("a function with a part apart");
     let (&h, _) = truth.iter().find(|(_, t)| t.continuations.is_empty()).expect("h");
     let v = run(&project("trace"), &["function", "trace", "--file", &image(), "--addr", &hex(g), "--depth", "1"]);
-    assert!(v["data"].to_string().contains(&hex(h)), "the call in the part apart: {v}");
+    // On `g`'s own node, not on a node of the part taken for a function the
+    // jump tail-calls.
+    let root = v["data"]["nodes"].as_array().expect("nodes").iter().find(|n| n["addr"] == hex(g)).expect("g's node").clone();
+    let callees: Vec<&Value> = root["calls"].as_array().expect("calls").iter().map(|c| &c["target"]).collect();
+    assert_eq!(callees, vec![&Value::String(hex(h))], "the call in the part apart is g's: {v}");
 }
