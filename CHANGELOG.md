@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **What is verified is written down, and the gate holds it to its test.** `docs/verification/ledger.toml` lists each statement a reader acts on with the source outside the tool that checks it, the test that does, and the numbers; `scripts/gate.py` fails when a claim marked verified names a test that did not pass in that run. ROADMAP's ✅ now means built, and an item is verified only where it cites the ledger. Known wrong answers are listed there too, as `false`.
 
+**`profile` says when the IL2CPP metadata beside an image is a version `il2cpp metadata` does not read.** It named the version and said nothing, and the command then refused the file. A version outside 16..=31 is an advisory against `il2cpp metadata`, from the one statement of the range the reader refuses by.
+
 **Clearing an annotation where there is none makes no record.** `annotate name --addr A` with no value at an address with nothing wrote a record with a history entry from nothing to nothing, and `annotate list` counted it. A clear at an address with no record changes nothing and writes nothing.
 
 **`rtti scan` of a PE that finds no MSVC RTTI says the GNU ABI's is not read.** A PE built by mingw holds Itanium `_ZTV`/`_ZTI` objects, which this reader does not read on a PE, and was answered `count: 0` alone, the shape of an image with no class. Where nothing is found on a PE, `not_read` says so.

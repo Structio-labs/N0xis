@@ -156,6 +156,8 @@ MUTATIONS = [
     (REGISTRY, "if msvc_only && none_found {", "if false && msvc_only && none_found {", "n0xis-cli", "a_count_of_nothing_says_what_was_not_read", "an_rtti_scan_of_a_pe_that_finds_nothing_says_only_msvc_is_read"),
     # Clearing nothing writes a record.
     ("crates/n0xis-project/src/annotate.rs", "if value.is_none() && !all.contains_key(&key) {", "if false {", "n0xis-project", None, "annotate::tests::clearing_nothing_makes_no_record"),
+    # A metadata version the reader refuses goes unsaid.
+    ("crates/n0xis-frontend/src/il2cpp_caps.rs", "    (!read).then(|| n0xis_core::Advisory {", "    (!read && false).then(|| n0xis_core::Advisory {", "n0xis-cli", "a_count_of_nothing_says_what_was_not_read", "a_metadata_version_il2cpp_metadata_does_not_read_is_said"),
 ]
 
 

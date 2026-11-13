@@ -39,6 +39,10 @@ use crate::Il2CppError;
 /// `0xFAB11BAF`, little-endian, at file offset 0.
 pub const SANITY: u32 = 0xFAB1_1BAF;
 
+/// The metadata versions this reader takes: every other is refused. The one
+/// statement of it, read by `profile` to say when a file is outside it.
+pub const KNOWN_VERSIONS: std::ops::RangeInclusive<i32> = 16..=31;
+
 /// `sanity` + `version` + twenty offset/size pairs.
 const FIXED_PREFIX: usize = 8 + 20 * 8;
 
@@ -138,8 +142,12 @@ pub fn parse(bytes: &[u8]) -> Result<Metadata, Il2CppError> {
     let version = u32_at(bytes, 4).expect("length checked") as i32;
     // 16 is the oldest shipped format; anything outside the known band is far
     // more likely a mis-identified file than a version worth guessing at.
-    if !(16..=31).contains(&version) {
-        return Err(Il2CppError::Malformed(format!("metadata version {version} is outside the known range 16..=31")));
+    if !KNOWN_VERSIONS.contains(&version) {
+        return Err(Il2CppError::Malformed(format!(
+            "metadata version {version} is outside the known range {}..={}",
+            KNOWN_VERSIONS.start(),
+            KNOWN_VERSIONS.end()
+        )));
     }
 
     let mut tables = Vec::with_capacity(FIXED_TABLES.len());

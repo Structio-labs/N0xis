@@ -4124,6 +4124,7 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
             .collect();
         let profile = n0xis_core::assemble_profile(elf.image_base(), elf.machine(), sections, exports, None, a.exports);
         let mut advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+        advisories.extend(n0xis_frontend::il2cpp_caps::version_advisory(metadata_version));
         // An image with no section headers is loaded by its segments, and so
         // read by them; what a section's name finds is not there. The profile
         // listed no section and said nothing of it (audit 2026-11-06).
@@ -4165,7 +4166,8 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
             p
         }) {
             Ok(profile) => {
-                let advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+                let mut advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+                advisories.extend(n0xis_frontend::il2cpp_caps::version_advisory(metadata_version));
                 let data = json!({
                     "image": profile,
                     "il2cpp": metadata.as_ref().map(|p| json!({
