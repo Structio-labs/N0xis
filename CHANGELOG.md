@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **What is verified is written down, and the gate holds it to its test.** `docs/verification/ledger.toml` lists each statement a reader acts on with the source outside the tool that checks it, the test that does, and the numbers; `scripts/gate.py` fails when a claim marked verified names a test that did not pass in that run. ROADMAP's ✅ now means built, and an item is verified only where it cites the ledger. Known wrong answers are listed there too, as `false`.
 
+**`rtti scan` of a PE that finds no MSVC RTTI says the GNU ABI's is not read.** A PE built by mingw holds Itanium `_ZTV`/`_ZTI` objects, which this reader does not read on a PE, and was answered `count: 0` alone, the shape of an image with no class. Where nothing is found on a PE, `not_read` says so.
+
 **`profile` counts `.pdata` functions, not entries; `function discover --pdata` refuses `--arch`.** `pdata_functions` was the table's size over 12, every continuation entry a function of its own: 2 512 and 1 930 on two system DLLs whose functions are 2 504 and 1 920. It counts through the table `function discover --pdata` reads. `--arch` beside `--pdata` was accepted and changed nothing, since the table is read in the layout the image's header states; it is refused.
 
 **`ir slice` refuses a register that is not one, and a place outside the function.** `--reg zzz` and `--at` an address the function does not cover answered `ok: true` with no nodes, the shape of "nothing computes it". They are refused as `unknown-register` and `not-in-function`.

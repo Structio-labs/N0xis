@@ -1573,6 +1573,7 @@ impl Plugin for AnalysisPasses {
                 // image does not have.
                 let (mut refused_virtual_bases, mut refused_first_slot_not_code, mut refused_first_slot_empty) = (0usize, 0usize, 0usize);
                 let (mut refused_several_tables, mut structure_not_read) = (0usize, None);
+                let msvc_only = itanium.is_none();
                 let vtables = if let Some(itanium) = itanium {
                     refused_several_tables = itanium.count_refused(n0xis_core::VtableRefusal::SeveralTables);
                     structure_not_read = itanium.structure_not_read.clone();
@@ -1596,6 +1597,7 @@ impl Plugin for AnalysisPasses {
                     };
                     n0xis_core::scan_msvc_rtti(resolved.src.as_mem(), image_base, &resolved.src.data_ranges_of(None), text, pointer_size)
                 };
+                let none_found = vtables.is_empty();
                 let mut payload = json!({
                     "count": vtables.len(),
                     "vtables": vtables,
@@ -1610,6 +1612,16 @@ impl Plugin for AnalysisPasses {
                 }
                 if let Some(why) = structure_not_read {
                     payload["structure_not_read"] = json!(why);
+                }
+                // On a PE only MSVC's RTTI is read. A PE gcc or clang built for
+                // the GNU ABI (mingw) holds Itanium RTTI, `_ZTV`/`_ZTI` objects
+                // named in a COFF symbol table, and was answered `count: 0` as if
+                // it had no class (audit 2026-11-06). Said where nothing was
+                // found, so an MSVC image's classes read as they did.
+                if msvc_only && none_found {
+                    payload["not_read"] = json!(
+                        "only MSVC RTTI is read on a PE: the Itanium RTTI a PE built for the GNU ABI (mingw) holds is not read, so count 0 says nothing of its classes"
+                    );
                 }
                 ok_json(n0xis_contracts::schema::v1::RTTI_SCAN, payload, &resolved.label)
             }),
