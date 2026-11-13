@@ -212,6 +212,26 @@ pub fn validate(input: &SigValidateInput) -> SigValidateArtifact {
     if mask_findings.iter().any(|f| f.kind == "false-invariant" || f.kind == "contradiction") {
         refusals.push("proposed signature fixes bytes the samples prove variable — use the derived_signature instead".into());
     }
+    // Byte-identical samples are one sample read several times: they show
+    // nothing about which bytes stay put when something changes, so the bar is
+    // counted in distinct samples. Three copies of `48 89 e5` used to bless.
+    let distinct_samples = input.samples.iter().map(|s| &s[..analyzed_len]).collect::<std::collections::BTreeSet<_>>().len();
+    if sample_count >= min_independent && distinct_samples < min_independent && analyzed_len > 0 {
+        refusals.push(format!(
+            "{sample_count} samples, of which {distinct_samples} differ from each other over the {analyzed_len} bytes compared; identical samples are one sample, and ≥{min_independent} different ones are needed to bless"
+        ));
+    }
+    // A signature with no fixed byte matches any bytes of its length: it says
+    // nothing about the structure. The pattern judged is the one proposed, or,
+    // with none, the derived one.
+    let fixed = match &input.proposed {
+        Some(p) => p.iter().take(analyzed_len).filter(|b| b.is_some()).count(),
+        None => invariant_bytes,
+    };
+    if fixed == 0 && analyzed_len > 0 {
+        let which = if input.proposed.is_some() { "the proposed signature" } else { "the derived signature" };
+        refusals.push(format!("{which} fixes no byte: it matches any {analyzed_len} bytes, and says nothing about the structure"));
+    }
     if sample_count >= 2 && invariant_bytes == analyzed_len && analyzed_len > 0 {
         warnings.push("every byte is invariant across the samples — either the samples are not actually varied, or this really is a rigid structure; confirm the varied axis truly differs".into());
     }
@@ -333,10 +353,41 @@ mod tests {
             vec![vec![0x48, 0x01], vec![0x48, 0x99], vec![0x48, 0x40]],
             &["map"],
         );
-        inp.proposed = Some(vec![None, None]); // wildcards offset 0 which is invariant
+        // Wildcards offset 0, which is invariant, and fixes offset 2. It used to
+        // be `[None, None]`, a signature with no fixed byte, which blessed.
+        inp.samples = vec![vec![0x48, 0x01, 0x77], vec![0x48, 0x99, 0x77], vec![0x48, 0x40, 0x77]];
+        inp.proposed = Some(vec![None, None, Some(0x77)]);
         let art = validate(&inp);
         assert!(art.mask_findings.iter().any(|f| f.kind == "loose" && f.offset == 0));
-        assert!(art.blessed, "a loose-but-correct signature still blesses");
+        assert!(art.blessed, "a loose-but-correct signature still blesses: {:?}", art.refusals);
+    }
+
+    /// Three copies of one sample are one sample: no bless, and the refusal
+    /// says how many differ.
+    #[test]
+    fn identical_samples_are_one_sample() {
+        let mut inp = input(vec![vec![0x48, 0x89, 0xe5]; 3], &["input", "session", "seed"]);
+        inp.proposed = Some(vec![Some(0x48), Some(0x89), Some(0xe5)]);
+        let art = validate(&inp);
+        assert!(!art.blessed);
+        assert!(art.refusals.iter().any(|r| r.contains("1 differ")), "{:?}", art.refusals);
+        // Two of three alike are two samples.
+        let art = validate(&input(vec![vec![0x48, 0x01], vec![0x48, 0x01], vec![0x48, 0x02]], &["seed"]));
+        assert!(!art.blessed, "{:?}", art.refusals);
+    }
+
+    /// A signature that fixes nothing matches anything of its length.
+    #[test]
+    fn a_signature_of_wildcards_is_not_blessed() {
+        let samples = vec![vec![0x48, 0x89, 0xe5, 0x01], vec![0x48, 0x89, 0xe5, 0x02], vec![0x48, 0x89, 0xe5, 0x03]];
+        let mut inp = input(samples, &["seed"]);
+        inp.proposed = Some(vec![None; 4]);
+        let art = validate(&inp);
+        assert!(!art.blessed);
+        assert!(art.refusals.iter().any(|r| r.contains("fixes no byte")), "{:?}", art.refusals);
+        // With none proposed, samples that agree nowhere derive all wildcards.
+        let art = validate(&input(vec![vec![1, 2], vec![3, 4], vec![5, 6]], &["seed"]));
+        assert!(!art.blessed && art.refusals.iter().any(|r| r.contains("derived signature fixes no byte")), "{:?}", art.refusals);
     }
 
     #[test]

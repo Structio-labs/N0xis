@@ -1371,7 +1371,10 @@ deliberately-varied samples (RE_METHOD F3).
 - `--signature "<hex>"` — the proposed signature to audit (`??` = wildcard).
 - `--varied <axes>` — which axes you deliberately varied (e.g. `input,session,seed`); **required to
   bless** — an invariant is only meaningful relative to what changed.
-- `--min-independent` — independence bar (default 3).
+- `--min-independent` — independence bar (default 3), counted in samples that **differ**: byte-identical
+  samples are one sample read several times, and the refusal says how many differ.
+- A signature that fixes no byte (the proposed one, or with none proposed the derived one) is never
+  blessed: it matches any bytes of its length.
 - Schema: `n0xis.sig.validate.v1`
 
 ---
