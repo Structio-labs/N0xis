@@ -921,6 +921,18 @@ fn signed_side(e: &MicroExpr, word: n0xis_arch::Bits, names: &RenderNames) -> St
     }
 }
 
+/// [`signed_side`]'s twin: an operand C reads as unsigned for an unsigned operator.
+fn unsigned_side(e: &MicroExpr, word: n0xis_arch::Bits, names: &RenderNames) -> String {
+    match e {
+        MicroExpr::Cast { signed: false, .. } | MicroExpr::Load { signed: false, .. } => render_expr(e, names),
+        MicroExpr::Const { value, .. } if (0..=0x7fff_ffff).contains(value) => render_expr(e, names),
+        MicroExpr::Cast { signed: true, bits, .. } | MicroExpr::Load { signed: true, bits, .. } if *bits < word => {
+            format!("({}){}", c_type(*bits, false), render_expr(e, names))
+        }
+        _ => format!("({}){}", c_type(word, false), render_expr(e, names)),
+    }
+}
+
 pub fn render_expr(e: &MicroExpr, names: &RenderNames) -> String {
     render_computed(e, names, false)
 }
@@ -980,6 +992,17 @@ fn render_computed(e: &MicroExpr, names: &RenderNames, under_narrow_cast: bool) 
         MicroExpr::Binary(op @ (BinOp::Slt | BinOp::Sle | BinOp::Sgt | BinOp::Sge), l, r) if word.is_some() => {
             let w = word.expect("just checked");
             format!("({} {} {})", signed_side(l, w, names), bin_op_text(*op), signed_side(r, w, names))
+        }
+        // C divides in the type of its operands, so each says the kind the operator
+        // is: a `uint64_t` divided signed printed `rdi / 0xa`, which C divides
+        // unsigned.
+        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if word.is_some() => {
+            let w = word.expect("just checked");
+            format!("({} {} {})", signed_side(l, w, names), bin_op_text(*op), signed_side(r, w, names))
+        }
+        MicroExpr::Binary(op @ (BinOp::UDiv | BinOp::UMod), l, r) if word.is_some() => {
+            let w = word.expect("just checked");
+            format!("({} {} {})", unsigned_side(l, w, names), bin_op_text(*op), unsigned_side(r, w, names))
         }
         MicroExpr::Binary(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), l, r) if word.is_some() => {
             let w = word.expect("just checked");

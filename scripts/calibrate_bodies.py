@@ -107,6 +107,14 @@ MUTATIONS = [
     # One name for one frame slot: an index steps from the slot's own name, which is declared (round 3, item 4).
     (CORE + "render.rs", "    if names.is_frame_address(base)\n", "    if false && names.is_frame_address(base)\n", *LIB, "decomp::tests::an_indexed_frame_slot_is_named_by_the_slot_it_steps_from"),
     (CORE + "typeinfer.rs", "indexed_base(addr, *bits) {\n                out.push(MemAccess { base, offset, bits: *bits, signed: *signed, indexed: true });", "indexed_base(addr, *bits).filter(|_| false) {\n                out.push(MemAccess { base, offset, bits: *bits, signed: *signed, indexed: true });", *LIB, "decomp::tests::an_indexed_frame_slot_is_named_by_the_slot_it_steps_from"),
+    # A multiply and shift that divides for every operand is a division, and only that (round 3, item 5).
+    (CORE + "optimize.rs", "                changed |= division_round(&mut blocks, &mut delta);\n", "", *LIB, "divide::tests::a_multiply_and_shift_that_divides_for_every_operand_is_a_division"),
+    (CORE + "divide.rs", "        e.checked_mul((1u128 << xbits) - 1).is_some_and(|b| b < p)", "        true", *LIB, "divide::tests::a_multiply_and_shift_that_does_not_divide_stays_as_it_is"),
+    (CORE + "divide.rs", "        e > 0 && e.checked_mul(1u128 << (xbits - 1)).is_some_and(|b| b <= p)", "        true", *LIB, "divide::tests::the_bound_is_exactly_what_every_operand_agrees_with"),
+    (CORE + "divide.rs", "    canonical(v) == canonical(x) && constant(k)", "    v.as_ref() == x && constant(k)", *LIB, "divide::tests::a_multiply_and_shift_that_divides_for_every_operand_is_a_division"),
+    (CORE + "divide.rs", "        MicroExpr::Binary(BinOp::Shr, t, k) if cut && constant(k).is_some_and(|k| k <= 32)", "        MicroExpr::Binary(BinOp::Shr, t, k) if cut && constant(k).is_some_and(|k| k <= 64)", *LIB, "divide::tests::a_logical_floor_is_read_only_where_the_low_half_is_the_same"),
+    (CORE + "render.rs", "        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if word.is_some() => {", "        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if false && word.is_some() => {", *LIB, "divide::tests::a_multiply_and_shift_that_divides_for_every_operand_is_a_division"),
+    (CORE + "optimize.rs", "        BinOp::SDiv => sl.wrapping_div(sign_extend(r, bits)),", "        BinOp::SDiv => l.wrapping_div(r),", *LIB, "optimize::shift_agreement::a_signed_divide_folds_signed"),
 ]
 
 

@@ -27,6 +27,7 @@ mod diff;
 mod devirt;
 mod discover;
 mod dissect;
+mod divide;
 mod dom;
 mod dot;
 mod eh;

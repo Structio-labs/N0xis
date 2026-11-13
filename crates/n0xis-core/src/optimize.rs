@@ -133,12 +133,17 @@ impl Pass for OptimizePass {
         // Heap-allocation result vars (Rung 2c) — the Call `ret`s are SSA defs,
         // stable across the optimizer rounds, so this is computed once.
         let alloc_bases = allocation_bases(&blocks, &ssa.callsites);
+        // The division forms are read as the IR computes them on a 64-bit word.
+        let word_is_64 = ctx.arch.pointer_size() == Some(8);
         let mut delta = Vec::new();
         let mut rounds = 0;
         for _ in 0..MAX_ROUNDS {
             rounds += 1;
             let mut changed = false;
             changed |= const_fold_round(&mut blocks, &mut delta);
+            if word_is_64 {
+                changed |= division_round(&mut blocks, &mut delta);
+            }
             changed |= copy_prop_round(&mut blocks, &mut delta);
             changed |= mem_forward_round(&mut blocks, &mut delta, &alloc_bases, win64);
             changed |= dead_store_round(&mut blocks, &mut delta, win64);
@@ -291,10 +296,12 @@ fn fold_binary(op: BinOp, lhs: i128, rhs: i128, bits: n0xis_arch::Bits) -> Optio
         BinOp::Mul => l.wrapping_mul(r),
         BinOp::UDiv | BinOp::SDiv if r == 0 => return None,
         BinOp::UDiv => l.wrapping_div(r),
-        BinOp::SDiv => l.wrapping_div(r),
+        // A signed divide reads both operands as signed, as the shift does: on the
+        // masked values `-55 / 10` was a large positive quotient.
+        BinOp::SDiv => sl.wrapping_div(sign_extend(r, bits)),
         BinOp::UMod | BinOp::SMod if r == 0 => return None,
         BinOp::UMod => l.wrapping_rem(r),
-        BinOp::SMod => l.wrapping_rem(r),
+        BinOp::SMod => sl.wrapping_rem(sign_extend(r, bits)),
         BinOp::And => l & r,
         BinOp::Or => l | r,
         BinOp::Xor => l ^ r,
@@ -402,6 +409,20 @@ fn const_fold_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> 
         })
     });
     folded_any
+}
+
+/// A multiply and shift that is a division for every operand, said as one
+/// ([`crate::divide`]).
+fn division_round(blocks: &mut [SsaBlock], delta: &mut Vec<OptDeltaEntry>) -> bool {
+    let defs = crate::divide::pure_defs(blocks);
+    let mut changed = false;
+    for_each_block_expr_mut(blocks, |e| {
+        crate::divide::as_division(e, &defs).inspect(|d| {
+            delta.push(OptDeltaEntry { pass: "divide", at: None, summary: format!("{e:?} -> {d:?}") });
+            changed = true;
+        })
+    });
+    changed
 }
 
 // ---------------------------------------------------------------------
@@ -2119,5 +2140,15 @@ mod shift_agreement {
         assert_eq!(by_emulator(&expr(BinOp::Sar, 0x8000_0000, 32, 32)), 0xffff_ffff);
         assert_eq!(by_value_set(&expr(BinOp::Shr, 0xffff_ffff, 128, 32), 32), 0);
         assert_eq!(by_fold(&expr(BinOp::Shr, 0xff, 256, 8)), Some(0));
+    }
+
+    /// A signed divide of constants is signed: `-55 / 10` is `-5` and `-55 % 10`
+    /// is `-5`, where the masked operands gave a large positive quotient.
+    #[test]
+    fn a_signed_divide_folds_signed() {
+        assert_eq!(fold_binary(BinOp::SDiv, -55, 10, 64), Some(mask_to_bits(-5, 64)));
+        assert_eq!(fold_binary(BinOp::SMod, -55, 10, 64), Some(mask_to_bits(-5, 64)));
+        assert_eq!(fold_binary(BinOp::SDiv, 0xffff_ffc9, 10, 32), Some(mask_to_bits(-5, 32)));
+        assert_eq!(fold_binary(BinOp::UDiv, -55, 10, 64), Some(((1i128 << 64) - 55) / 10));
     }
 }
