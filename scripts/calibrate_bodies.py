@@ -115,6 +115,10 @@ MUTATIONS = [
     (CORE + "divide.rs", "        MicroExpr::Binary(BinOp::Shr, t, k) if cut && constant(k).is_some_and(|k| k <= 32)", "        MicroExpr::Binary(BinOp::Shr, t, k) if cut && constant(k).is_some_and(|k| k <= 64)", *LIB, "divide::tests::a_logical_floor_is_read_only_where_the_low_half_is_the_same"),
     (CORE + "render.rs", "        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if word.is_some() => {", "        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if false && word.is_some() => {", *LIB, "divide::tests::a_multiply_and_shift_that_divides_for_every_operand_is_a_division"),
     (CORE + "optimize.rs", "        BinOp::SDiv => sl.wrapping_div(sign_extend(r, bits)),", "        BinOp::SDiv => l.wrapping_div(r),", *LIB, "optimize::shift_agreement::a_signed_divide_folds_signed"),
+    # A register a local callee's own instructions do not write keeps its value across the call (round 3, item 5).
+    (CORE + "ssa.rs", "        crate::callee::keep_what_callees_leave(ctx, &mut lifted);\n", "", *LIB, "callee::tests::a_register_a_leaf_callee_does_not_write_keeps_its_value"),
+    (CORE + "callee.rs", " && crate::summary::writes_are_all_of_it(cfg))", ")", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
+    (CORE + "callee.rs", "            changes.as_ref().is_none_or(|w| w.contains(&ctx.arch.normalize_reg(dst)))", "            changes.as_ref().is_none_or(|_| false)", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
 ]
 
 

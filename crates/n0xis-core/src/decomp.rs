@@ -1530,9 +1530,11 @@ mod tests {
         let (q, text, _) = of(vec![0x66, 0x0f, 0x38, 0xdc, 0xc1, 0xc3]);
         assert!(q < 1.0, "{q}: {text}");
         // A name read that nothing on the page gives a value: a call clobbers rcx,
-        // and the next read of it is the clobbered version.
-        // call +0; mov %rcx,%rax; ret
-        let (q, text, flagged) = of(vec![0xe8, 0, 0, 0, 0, 0x48, 0x89, 0xc8, 0xc3]);
+        // and the next read of it is the clobbered version. The callee is off the
+        // page: one on it that leaves rcx alone, as `call +0` to the `mov` and `ret`
+        // here does, keeps it.
+        // call +0x100; mov %rcx,%rax; ret
+        let (q, text, flagged) = of(vec![0xe8, 0, 1, 0, 0, 0x48, 0x89, 0xc8, 0xc3]);
         assert!(text.contains("rcx.1"), "{text}");
         assert!(q < 1.0, "{q}: {text}");
         // That is not a matter of coverage: every instruction was lifted.

@@ -39,7 +39,7 @@ use serde::Serialize;
 use crate::typeinfer::ReturnType;
 
 use crate::{
-    CType, CfgInput, CfgPass, CoreError, Ctx, OptimizePass, Pass, SsaPass, TypeInferInput, TypeInferPass,
+    CType, CfgArtifact, CfgInput, CfgPass, CoreError, Ctx, OptimizePass, Pass, SsaPass, TypeInferInput, TypeInferPass,
 };
 
 /// What a caller can learn about a function without re-analyzing it.
@@ -155,17 +155,11 @@ fn stores_outside_its_frame(ctx: &Ctx, blocks: &[crate::ssa::SsaBlock]) -> bool 
 }
 
 /// Summarize one function. `None` when it cannot be decoded at `va`.
-pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary> {
-    let cfg = CfgPass.run(ctx, CfgInput::new(va, max_bytes)).ok()?;
-    if cfg.start != va || cfg.blocks.is_empty() {
-        return None;
-    }
-    // The proven-noreturn set, when the caller has already run the fixpoint.
-    let proven: HashSet<Va> = ctx.noreturn.cloned().unwrap_or_default();
-
-    // Keyed by the name the def-use records, valued by the name the ABI uses —
-    // `zmm0` and `xmm0` are one register, and the caller should read the
-    // spelling the disassembly shows.
+/// The volatile registers `cfg`'s own instructions write, as the decoder lists each
+/// instruction's writes, implicit ones included. Keyed by the name the def-use
+/// records, spelled as the ABI does: `zmm0` and `xmm0` are one register, and the
+/// caller should read the spelling the disassembly shows.
+pub(crate) fn volatile_writes(ctx: &Ctx, cfg: &CfgArtifact) -> BTreeSet<String> {
     let volatile: std::collections::HashMap<String, &'static str> =
         crate::ir::volatile_registers(ctx).into_iter().map(|n| (ctx.arch.normalize_reg(n), n)).collect();
     let mut clobbers: BTreeSet<String> = BTreeSet::new();
@@ -179,6 +173,28 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
             }
         }
     }
+    clobbers
+}
+
+/// Whether [`volatile_writes`] is all a call to this function can change: it calls
+/// nothing, leaves by no jump that was not read, and was read to its end. Only a
+/// leaf's set is closed by the function alone.
+pub(crate) fn writes_are_all_of_it(cfg: &CfgArtifact) -> bool {
+    cfg.callsites.is_empty() && !cfg.leaves_by_an_unresolved_jump() && !cfg.end_by.is_cut()
+}
+
+pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary> {
+    let cfg = CfgPass.run(ctx, CfgInput::new(va, max_bytes)).ok()?;
+    if cfg.start != va || cfg.blocks.is_empty() {
+        return None;
+    }
+    // The proven-noreturn set, when the caller has already run the fixpoint.
+    let proven: HashSet<Va> = ctx.noreturn.cloned().unwrap_or_default();
+
+    // Keyed by the name the def-use records, valued by the name the ABI uses —
+    // `zmm0` and `xmm0` are one register, and the caller should read the
+    // spelling the disassembly shows.
+    let clobbers = volatile_writes(ctx, &cfg);
 
     let mut calls: BTreeSet<u64> = BTreeSet::new();
     let mut has_unknown_call = false;
@@ -244,7 +260,7 @@ pub fn summarize(ctx: &Ctx, va: Va, max_bytes: usize) -> Option<FunctionSummary>
         clobbers: clobbers.into_iter().collect(),
         // Only a leaf's clobber set is closed by this function alone, and only
         // where all of it was read.
-        clobbers_complete: calls.is_empty() && !has_unknown_call && !cfg.end_by.is_cut(),
+        clobbers_complete: writes_are_all_of_it(&cfg),
         calls: calls.into_iter().map(Va).collect(),
         writes_memory,
         has_unknown_call,

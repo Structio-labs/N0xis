@@ -100,6 +100,9 @@ struct Memo {
     gives: HashMap<(u64, u8), Gives>,
     comes_back: HashMap<(u64, u8), bool>,
     flows: HashMap<u64, Option<Flow>>,
+    /// The volatile registers a call to each function can change, where its own
+    /// instructions are all of it ([`closed_clobbers`]).
+    clobbers: HashMap<u64, Option<Arc<BTreeSet<String>>>>,
     /// Whether what an earlier process kept for this image was taken in.
     taken_in: bool,
     /// How many answers the store holds, as far as this process knows: more here
@@ -633,6 +636,73 @@ fn shape_of(ctx: &Ctx, id: Option<&str>, va: Va) -> Option<Arc<Shape>> {
         });
     }
     shape
+}
+
+/// The volatile registers a call to the function at `va` can change, normalized,
+/// where the function's own instructions are all of it: a leaf read to its end
+/// ([`crate::summary::writes_are_all_of_it`]), its writes as the decoder lists them
+/// ([`crate::summary::volatile_writes`]), the same answer `function summary` gives
+/// as `clobbers` with `clobbers_complete`. `None` is "any of them".
+fn closed_clobbers(ctx: &Ctx, id: Option<&str>, va: Va) -> Option<Arc<BTreeSet<String>>> {
+    if let Some(id) = id
+        && let Some(c) = with_memo(id, |m| m.clobbers.get(&va.0).cloned())
+    {
+        return c;
+    }
+    // Built with nothing asked, as `flow_of`'s: a leaf calls nothing to ask about, and
+    // what is not a leaf is not looked at further.
+    let plain = Ctx { noreturn_on_demand: false, ..*ctx };
+    let found = CfgPass
+        .run(&plain, CfgInput::new(va, CALLEE_SCAN_SIZE))
+        .ok()
+        .filter(|cfg| cfg.start == va && !cfg.blocks.is_empty() && crate::summary::writes_are_all_of_it(cfg))
+        .map(|cfg| Arc::new(crate::summary::volatile_writes(ctx, &cfg).iter().map(|r| ctx.arch.normalize_reg(r)).collect()));
+    if let Some(id) = id {
+        with_memo(id, |m| {
+            if m.clobbers.len() < MEMO_MAX {
+                m.clobbers.insert(va.0, found.clone());
+            }
+        });
+    }
+    found
+}
+
+/// A register a direct call's callee does not write keeps its value across the
+/// call: the marker the lift puts on every register the convention lets a callee
+/// change goes, where the callee's own instructions show it is not changed. gcc
+/// allocates registers across a call to a function in the same unit by what that
+/// function clobbers, and keeps a value in `r9` over it: the body printed `r9.2`,
+/// a name nothing defines, where the machine reads what was there before the call.
+///
+/// Only on proof: a callee that calls anything, leaves by a jump not read, or was
+/// not read to its end keeps every marker. Only on x86-64, whose call leaves the
+/// return address on the stack: where the call itself writes a register (`lr`),
+/// the callee's instructions are not all of what changes.
+pub(crate) fn keep_what_callees_leave(ctx: &Ctx, lifted: &mut crate::lift::LiftedFunction) {
+    if ctx.arch.name() != "x86-64" {
+        return;
+    }
+    let id = ctx_identity(ctx);
+    for block in &mut lifted.blocks {
+        let calls: HashMap<Va, Va> = block
+            .stmts
+            .iter()
+            .filter_map(|s| match &s.stmt {
+                MicroStmt::Call { target: CallTarget::Direct { va }, .. } => Some((s.va, *va)),
+                _ => None,
+            })
+            .collect();
+        if calls.is_empty() {
+            continue;
+        }
+        let mut written: HashMap<Va, Option<Arc<BTreeSet<String>>>> = HashMap::new();
+        block.stmts.retain(|s| {
+            let MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } = &s.stmt else { return true };
+            let Some(&callee) = calls.get(&s.va).filter(|_| u == n0xis_arch::CALL_CLOBBER) else { return true };
+            let changes = written.entry(callee).or_insert_with(|| closed_clobbers(ctx, id.as_deref(), callee));
+            changes.as_ref().is_none_or(|w| w.contains(&ctx.arch.normalize_reg(dst)))
+        });
+    }
 }
 
 fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
@@ -1391,6 +1461,43 @@ mod tests {
     const RET: &[u8] = &[0xc3];
     // mov eax,[rcx]; ret
     const READS_FIRST: &[u8] = &[0x8b, 0x01, 0xc3];
+
+    /// `call g; add eax,r8d; ret`: `r8` read after the call, as gcc's register
+    /// allocation across a call to a function in its unit leaves it.
+    fn reads_r8_after_a_call() -> Vec<u8> {
+        let mut f = Vec::new();
+        call(&mut f, G);
+        f.extend([0x44, 0x01, 0xc0, 0xc3]);
+        f
+    }
+
+    /// A leaf that writes `eax` from `ecx` and nothing else keeps `r8`: what is read
+    /// after the call is what came in, a third parameter, and no name is left
+    /// undefined. With the marker, the body read `r8.1`, which nothing assigns.
+    #[test]
+    fn a_register_a_leaf_callee_does_not_write_keeps_its_value() {
+        // lea eax,[rcx+rcx*2]; ret
+        let snap = image(reads_r8_after_a_call(), &[0x8d, 0x04, 0x49, 0xc3], RET);
+        let text = body(&snap).pseudo.join("\n");
+        assert!(!text.contains("r8.1"), "{text}");
+        assert_eq!(param_count(&snap), 3, "{text}");
+    }
+
+    /// Kept only on proof: a callee that writes `r8`, calls anything, or leaves by a
+    /// jump through a register (what runs next is not read here) leaves it unknown.
+    #[test]
+    fn a_register_a_callee_writes_or_may_write_is_not_kept() {
+        // xor r8d,r8d; mov eax,ecx; ret
+        let writes = image(reads_r8_after_a_call(), &[0x45, 0x31, 0xc0, 0x89, 0xc8, 0xc3], RET);
+        // call h; ret, where h only returns
+        let calls = image(reads_r8_after_a_call(), &[0xe8, 0xfb, 0x00, 0x00, 0x00, 0xc3], RET);
+        // jmp rax: whatever runs next is not read, and writes what it writes
+        let leaves = image(reads_r8_after_a_call(), &[0xff, 0xe0], RET);
+        for snap in [writes, calls, leaves] {
+            let text = body(&snap).pseudo.join("\n");
+            assert!(text.contains("r8.1") && !text.contains("r8.0") && !text.contains("r8)"), "{text}");
+        }
+    }
 
     /// `mov rbx,rcx; call g; mov rcx,rbx; call g` reads its first argument, and after
     /// propagation it is two calls with a bare `rcx.0`, which proves nothing there.
