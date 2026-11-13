@@ -1157,6 +1157,13 @@ fn intrinsic(
             let bits = arg(2)? as u32;
             ((mask(arg(0)?, bits) * mask(arg(1)?, bits)) >> bits) as u64
         }
+        // The signed one, what a one-operand `imul` leaves in `rdx`: both operands
+        // read as signed at the width, the product's upper half at that width.
+        "__mulh" => {
+            let bits = arg(2)? as u32;
+            let p = sign_extend_128(arg(0)?, bits) * sign_extend_128(arg(1)?, bits);
+            mask((p >> bits) as u64, bits) as u64
+        }
         // The divides read `rdx:rax` and one source. A quotient that does not
         // fit in 64 bits **traps** on the hardware; nothing is invented for it.
         "__udiv" | "__urem" => {
@@ -1515,28 +1522,34 @@ fn scalar_float(name: &str, args: &[u128]) -> Option<u64> {
         "__cvtsi2ss" => u64::from(((a? as i64) as f32).to_bits()),
         "__cvtsd2ss" => u64::from((d(a)? as f32).to_bits()),
         "__cvtss2sd" => (f64::from(f(a)?)).to_bits(),
-        // Truncate toward zero. Out of range — NaN included — the hardware
-        // writes the "integer indefinite" value, not a saturated one, and this
-        // is the 64-bit spelling of it. A 32-bit destination has its own
-        // indefinite (`0x80000000`) and this intrinsic does not carry the
-        // destination width, so that case is **not modelled**: it would need
-        // the width in the IR, and inventing it here is the wrong place.
-        "__cvttsd2si" | "__cvtsd2si" => truncate_to_int(d(a)?),
-        "__cvttss2si" | "__cvtss2si" => truncate_to_int(f64::from(f(a)?)),
+        // Truncate toward zero, or round to nearest-even, the rounding a fresh
+        // MXCSR selects (`cvtsd2si` without the `t`). Out of range — NaN included —
+        // the hardware writes the "integer indefinite" of the destination's width,
+        // not a saturated value; the lift names a 32-bit destination's conversion
+        // with a `32`, since its indefinite is `0x80000000`.
+        "__cvttsd2si" => to_int(d(a)?.trunc(), 64),
+        "__cvttss2si" => to_int(f64::from(f(a)?).trunc(), 64),
+        "__cvtsd2si" => to_int(d(a)?.round_ties_even(), 64),
+        "__cvtss2si" => to_int(f64::from(f(a)?).round_ties_even(), 64),
+        "__cvttsd2si32" => to_int(d(a)?.trunc(), 32),
+        "__cvttss2si32" => to_int(f64::from(f(a)?).trunc(), 32),
+        "__cvtsd2si32" => to_int(d(a)?.round_ties_even(), 32),
+        "__cvtss2si32" => to_int(f64::from(f(a)?).round_ties_even(), 32),
         _ => return None,
     })
 }
 
-/// x86's float→signed-integer conversion: truncate toward zero, and answer with
-/// the *integer indefinite* rather than a saturated edge when the value does not
-/// fit. Rust's `as` saturates, which is a different number on exactly the inputs
-/// that matter.
-fn truncate_to_int(v: f64) -> u64 {
-    let t = v.trunc();
-    if t.is_nan() || t < -(2f64.powi(63)) || t >= 2f64.powi(63) {
-        return i64::MIN as u64;
+/// x86's float→signed-integer conversion of a value already rounded to an integer
+/// (`trunc` for `cvtt*`, nearest-even for `cvt*`), into `bits`: the *integer
+/// indefinite* of that width (its minimum) rather than a saturated edge when the
+/// value does not fit. Rust's `as` saturates, which is a different number on exactly
+/// the inputs that matter. A 32-bit result is the register's, zero-extended.
+fn to_int(t: f64, bits: u32) -> u64 {
+    let limit = 2f64.powi(bits as i32 - 1);
+    if t.is_nan() || t < -limit || t >= limit {
+        return if bits == 32 { u64::from(i32::MIN as u32) } else { i64::MIN as u64 };
     }
-    (t as i64) as u64
+    if bits == 32 { u64::from((t as i32) as u32) } else { (t as i64) as u64 }
 }
 
 /// A `bits`-wide value read as signed, in 128-bit arithmetic.
@@ -1643,4 +1656,34 @@ fn binop(op: BinOp, a: u64, b: u64, va: Va) -> Result<u64, EmuError> {
         BinOp::Sgt => u64::from(sa > sb),
         BinOp::Sge => u64::from(sa >= sb),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scalar_float;
+
+    /// `cvttsd2si eax` and `cvttsd2si rax` of 3e9: out of `int`'s range the first writes
+    /// `0x80000000`, the second has room for it. `cvtsd2si` rounds to nearest-even.
+    #[test]
+    fn a_float_to_int_conversion_answers_at_its_width() {
+        let x = |v: f64| u128::from(v.to_bits());
+        assert_eq!(scalar_float("__cvttsd2si32", &[x(3e9)]), Some(0x8000_0000));
+        assert_eq!(scalar_float("__cvttsd2si", &[x(3e9)]), Some(3_000_000_000));
+        assert_eq!(scalar_float("__cvttsd2si32", &[x(-2.7)]), Some(u64::from((-2i32) as u32)));
+        assert_eq!(scalar_float("__cvtsd2si", &[x(2.7)]), Some(3));
+        assert_eq!(scalar_float("__cvtsd2si", &[x(2.5)]), Some(2), "a tie goes to the even one");
+        assert_eq!(scalar_float("__cvtsd2si32", &[x(3.5)]), Some(4));
+    }
+
+    /// The high half of a signed product: -3 * 5 is -15, whose upper 64 bits are all
+    /// ones; 2^62 * 4 carries one into them. At 32 bits, `imul ecx` of -1 and 2.
+    #[test]
+    fn the_signed_high_half_of_a_product() {
+        let mulh = |a: i64, b: i64, w: u64| {
+            super::intrinsic("__mulh", &[u128::from(a as u64), u128::from(b as u64), u128::from(w)], n0xis_contracts::Va(0), 0, 0).ok().map(|v| v as u64)
+        };
+        assert_eq!(mulh(-3, 5, 64), Some(u64::MAX));
+        assert_eq!(mulh(1 << 62, 4, 64), Some(1));
+        assert_eq!(mulh(0xffff_ffff, 2, 32), Some(0xffff_ffff));
+    }
 }

@@ -448,6 +448,16 @@ fn vec_sources(instr: &Instruction) -> Vec<MicroExpr> {
     (first..instr.op_count()).map(|i| smart_read(instr, i)).collect()
 }
 
+/// Whether every source of a vector instruction is one register, and none is memory:
+/// `pxor xmm0,xmm0`, `vpxor xmm1,xmm2,xmm2`.
+fn sources_are_one_register(instr: &Instruction) -> bool {
+    let first = u32::from(instr.encoding() != EncodingKind::Legacy);
+    let regs: Vec<Option<Register>> = (first..instr.op_count())
+        .map(|i| (instr.op_kind(i) == OpKind::Register).then(|| instr.op_register(i)))
+        .collect();
+    regs.len() >= 2 && regs.iter().all(|r| r.is_some() && *r == regs[0])
+}
+
 /// `dst = name(sources…)` for an ALU-shaped vector instruction.
 fn vec_intr(instr: &Instruction, name: &str, out: &mut Vec<MicroStmt>) {
     let args = vec_sources(instr);
@@ -1386,7 +1396,14 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         | Mnemonic::Vxorpd
             if instr.op_mask() == Register::None =>
         {
-            vec_binop(&instr, BinOp::Xor, &mut out)
+            if sources_are_one_register(&instr) {
+                // `pxor xmm0,xmm0`: zero, whatever the register held. Read as `xmm0 ^ xmm0`,
+                // the register's value at entry was used, and a function that zeroes its
+                // accumulator took a `double` parameter it was never passed.
+                smart_write(&instr, 0, MicroExpr::constant(0, op_bits(&instr, 0)), &mut out);
+            } else {
+                vec_binop(&instr, BinOp::Xor, &mut out)
+            }
         }
         Mnemonic::Por
         | Mnemonic::Orps
@@ -1767,11 +1784,27 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Cvtsi2sd | Mnemonic::Cvtsi2ss => {
             intr_unary_signed(&instr, &mnemonic_intrinsic(mn), &mut out)
         }
+        // Float to a signed integer, named at the destination's width. Out of range
+        // (NaN included) the processor writes the width's own "integer indefinite":
+        // `0x80000000` into `eax`, `0x8000000000000000` into `rax`. One name for both
+        // read as the 64-bit conversion, and `(int)d` printed as
+        // `(uint32_t)__cvttsd2si(d)`, which for 3e9 is `0xb2d05e00` where the
+        // processor says `0x80000000`. The VEX spelling is the same conversion.
         Mnemonic::Cvtsd2si
         | Mnemonic::Cvtss2si
         | Mnemonic::Cvttsd2si
         | Mnemonic::Cvttss2si
-        | Mnemonic::Cvtsd2ss
+        | Mnemonic::Vcvtsd2si
+        | Mnemonic::Vcvtss2si
+        | Mnemonic::Vcvttsd2si
+        | Mnemonic::Vcvttss2si
+            if instr.op_mask() == Register::None =>
+        {
+            let name = mnemonic_intrinsic(mn).replacen("__v", "__", 1);
+            let name = if op_bits(&instr, 0) == 32 { format!("{name}32") } else { name };
+            intr_unary(&instr, &name, &mut out)
+        }
+        Mnemonic::Cvtsd2ss
         | Mnemonic::Cvtss2sd
         | Mnemonic::Cvtps2pd
         | Mnemonic::Cvtpd2ps
@@ -1789,11 +1822,7 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Vcvtsi2sd | Mnemonic::Vcvtsi2ss => {
             vec_intr_unary_signed(&instr, &mnemonic_intrinsic(mn), &mut out)
         }
-        Mnemonic::Vcvtsd2si
-        | Mnemonic::Vcvtss2si
-        | Mnemonic::Vcvttsd2si
-        | Mnemonic::Vcvttss2si
-        | Mnemonic::Vcvtsd2ss
+        Mnemonic::Vcvtsd2ss
         | Mnemonic::Vcvtss2sd
         | Mnemonic::Vcvtdq2ps
         | Mnemonic::Vcvtps2dq
@@ -1869,7 +1898,13 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         // plain product; the high half is the `__umulh` intrinsic. Both read the
         // pre-multiply `rax`, so the high write is emitted first. Only the 32/64-
         // bit forms (which really target rdx:rax) are lifted.
-        Mnemonic::Mul if op_bits(&instr, 0) >= 32 => {
+        //
+        // The signed one-operand `imul` is the same shape with the signed high half,
+        // `__mulh`: the low half of a product is the same either way. It was left as
+        // `/*imul rsi*/` where a value belongs, the way gcc computes
+        // `((__int128)a * b) >> 64`.
+        Mnemonic::Mul | Mnemonic::Imul if instr.op_count() == 1 && op_bits(&instr, 0) >= 32 => {
+            let high = if mn == Mnemonic::Imul { "__mulh" } else { "__umulh" };
             let src = read_operand(&instr, 0);
             let rax = MicroExpr::var("rax");
             // The high half is the product's *upper `width` bits*, and `width`
@@ -1895,7 +1930,7 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
             // both inputs are still live, and the high half moved in last.
             out.push(MicroStmt::Assign {
                 dst: MUL_TEMP.into(),
-                value: narrow(MicroExpr::intrinsic("__umulh", vec![rax.clone(), src.clone(), w])),
+                value: narrow(MicroExpr::intrinsic(high, vec![rax.clone(), src.clone(), w])),
             });
             out.push(MicroStmt::Assign {
                 dst: "rax".into(),
@@ -2950,6 +2985,50 @@ mod tests {
                 value: MicroExpr::binary(BinOp::Xor, MicroExpr::var("xmm0"), MicroExpr::var("xmm1")),
             }],
         );
+    }
+
+    /// `pxor xmm0,xmm0` and `vxorps xmm1,xmm2,xmm2` zero the destination and read
+    /// nothing. Read as `xmm0 ^ xmm0`, the value at entry was used, and a function
+    /// zeroing its accumulator took a `double` parameter it was never passed.
+    #[test]
+    fn a_vector_xor_of_one_register_with_itself_is_zero() {
+        // pxor xmm0, xmm0 = 66 0F EF C0
+        assert_eq!(
+            lift_one(&[0x66, 0x0F, 0xEF, 0xC0]),
+            vec![MicroStmt::Assign { dst: "xmm0".into(), value: MicroExpr::constant(0, 128) }],
+        );
+        // vxorps xmm1, xmm2, xmm2 = C5 E8 57 CA: the destination is not a source.
+        let stmts = lift_one(&[0xC5, 0xE8, 0x57, 0xCA]);
+        assert!(
+            stmts.iter().any(|s| matches!(s, MicroStmt::Assign { dst, value: MicroExpr::Const { value: 0, .. } } if dst == "xmm1")),
+            "{stmts:?}"
+        );
+        assert!(!format!("{stmts:?}").contains("xmm2"), "{stmts:?}");
+    }
+
+    /// `(int)d` is `cvttsd2si eax`, whose out-of-range answer is `0x80000000`; the
+    /// 64-bit one's is not that. The width is in the name.
+    #[test]
+    fn a_float_to_int_conversion_is_named_at_its_width() {
+        let name = |code: &[u8]| match lift_one(code).first() {
+            Some(MicroStmt::Assign { value, .. }) => format!("{value:?}"),
+            other => panic!("{other:?}"),
+        };
+        // cvttsd2si eax, xmm0 = F2 0F 2C C0; cvttsd2si rax, xmm0 = F2 48 0F 2C C0
+        assert!(name(&[0xF2, 0x0F, 0x2C, 0xC0]).contains("\"__cvttsd2si32\""), "{}", name(&[0xF2, 0x0F, 0x2C, 0xC0]));
+        assert!(name(&[0xF2, 0x48, 0x0F, 0x2C, 0xC0]).contains("\"__cvttsd2si\""));
+        // vcvttsd2si eax, xmm0 = C5 FB 2C C0: the same conversion.
+        assert!(name(&[0xC5, 0xFB, 0x2C, 0xC0]).contains("\"__cvttsd2si32\""));
+    }
+
+    /// `imul rsi` (one operand) is `rdx:rax = rax * rsi`, signed: the high half is
+    /// `__mulh`. It was left unlifted, and printed `/*imul rsi*/` as a value.
+    #[test]
+    fn a_one_operand_imul_has_a_signed_high_half() {
+        // imul rsi = 48 F7 EE
+        let text = format!("{:?}", lift_one(&[0x48, 0xF7, 0xEE]));
+        assert!(text.contains("\"__mulh\""), "{text}");
+        assert!(!text.contains("Unlifted"), "{text}");
     }
 
     #[test]

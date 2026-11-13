@@ -42,6 +42,7 @@ static inline R128 __sqrtsd(R128 a){return bh_lo(a,bh_d2b(sqrt(bh_b2d((uint64_t)
 static inline R128 __cvtsi2sd_(int64_t x){return bh_d2b((double)x);}
 #define __cvtsi2sd(x) __cvtsi2sd_((int64_t)(x))
 static inline int64_t __cvttsd2si(R128 a){return _mm_cvttsd_si64(_mm_castsi128_pd(_mm_set_epi64x(0,(int64_t)(uint64_t)a)));}
+static inline uint32_t __cvttsd2si32(R128 a){return (uint32_t)_mm_cvttsd_si32(_mm_castsi128_pd(_mm_set_epi64x(0,(int64_t)(uint64_t)a)));}
 static inline R128 __cvtsd2ss(R128 a){return bh_f2b((float)bh_b2d((uint64_t)a));}
 static inline R128 __cvtss2sd(R128 a){return bh_d2b((double)bh_b2f((uint32_t)a));}
 #define FC(n,e) static inline int n##_sd(R128 a,R128 b){double x=bh_b2d((uint64_t)a),y=bh_b2d((uint64_t)b);return e;} static inline int n##_ss(R128 a,R128 b){float x=bh_b2f((uint32_t)a),y=bh_b2f((uint32_t)b);return e;}
@@ -50,6 +51,8 @@ FC(__fcmp_ule,!(x>y)) FC(__fcmp_ult,!(x>=y)) FC(__fcmp_uno,x!=x||y!=y) FC(__fcmp
 static inline uint64_t __max(int64_t a,int64_t b){return a>b?a:b;} static inline uint64_t __min(int64_t a,int64_t b){return a<b?a:b;}
 static inline uint64_t __umax(uint64_t a,uint64_t b){return a>b?a:b;} static inline uint64_t __umin(uint64_t a,uint64_t b){return a<b?a:b;}
 static inline uint64_t __cqo(int64_t x){return x<0?~0ull:0;}
+static inline uint64_t __umulh(uint64_t a,uint64_t b,int w){return w>=64?(uint64_t)(((bh_u128)a*b)>>64):(uint64_t)((((uint64_t)(uint32_t)a)*(uint32_t)b)>>32);}
+static inline uint64_t __mulh(uint64_t a,uint64_t b,int w){return w>=64?(uint64_t)(((bh_i128)(int64_t)a*(int64_t)b)>>64):(uint64_t)(uint32_t)((((int64_t)(int32_t)a)*(int32_t)b)>>32);}
 static inline uint64_t __cdq(uint64_t x){return (uint32_t)((int32_t)x>>31);}
 #define BH_DIVIDEND(w,hi,lo) ((w)==32?(bh_u128)(((uint64_t)(uint32_t)(hi)<<32)|(uint32_t)(lo)):(((bh_u128)(hi)<<64)|(lo)))
 #define BH_SDIVIDEND(w,hi,lo) ((w)==32?(bh_i128)(int64_t)(((uint64_t)(uint32_t)(hi)<<32)|(uint32_t)(lo)):(bh_i128)(((bh_u128)(hi)<<64)|(lo)))

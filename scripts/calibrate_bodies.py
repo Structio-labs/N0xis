@@ -36,7 +36,7 @@ MUTATIONS = [
     (CORE + "ir.rs", "                    None if limited => GraphEnd::InstructionCap { read, stated: beyond },\n", "", *LIB, "ir::tests::the_instruction_limit_is_said_where_it_binds"),
     (CORE + "decomp.rs", "        let quality = cfg.end_by.quality_cap().map_or(quality, |cap| quality.min(cap));\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
     (CORE + "decomp.rs", "            .chain(cut.as_ref().map(|c| format!(\"    /* {} */\", c.words)))\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
-    (CORE + "manifest.rs", "    if art.callsites.is_empty() && !cut {", "    if art.callsites.is_empty() {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
+    (CORE + "manifest.rs", "    if art.callsites.is_empty() && !cut && !art.leaves_by_an_unresolved_jump() {", "    if art.callsites.is_empty() && !art.leaves_by_an_unresolved_jump() {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
     (CORE + "manifest.rs", "if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {", "if art.stats.returns == 0 && art.stats.tail_calls == 0 {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
     (CORE + "trace.rs", "            not_followed.cut_bodies += usize::from(cut.is_some());\n", "", *LIB, "trace::tests::a_cut_body_truncates_the_walk"),
     (CORE + "summary.rs", " && !has_unknown_call && !cfg.end_by.is_cut(),", " && !has_unknown_call,", *LIB, "summary::tests::a_cut_function_has_no_complete_clobbers"),
@@ -87,6 +87,14 @@ MUTATIONS = [
     (CORE + "pointer_tail.rs", " && !read_through_an_index(target, &defs, 0)", "", *LIB, "decomp::tests::a_jump_through_a_table_with_no_frame_is_not_a_tail_call"),
     (CORE + "pointer_tail.rs", "        if v.split('.').next() == Some(self.sp) {\n            return None;\n        }\n", "", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
     (CORE + "callee.rs", "                (None, Takes::AtLeast(n)) if tail =>", "                (None, Takes::AtLeast(n)) if false =>", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
+    # What the bytes settle, said (round 3, item 4).
+    ("crates/n0xis-arch/src/x64_lift.rs", "            if sources_are_one_register(&instr) {", "            if false {", "n0xis-arch", None, "x64_lift::tests::a_vector_xor_of_one_register_with_itself_is_zero"),
+    ("crates/n0xis-arch/src/x64_lift.rs", "            let name = if op_bits(&instr, 0) == 32 { format!(\"{name}32\") } else { name };\n", "", "n0xis-arch", None, "x64_lift::tests::a_float_to_int_conversion_is_named_at_its_width"),
+    (CORE + "emulate.rs", "        \"__cvttsd2si32\" => to_int(d(a)?.trunc(), 32),", "        \"__cvttsd2si32\" => to_int(d(a)?.trunc(), 64),", *LIB, "emulate::tests::a_float_to_int_conversion_answers_at_its_width"),
+    (CORE + "emulate.rs", "        \"__cvtsd2si\" => to_int(d(a)?.round_ties_even(), 64),", "        \"__cvtsd2si\" => to_int(d(a)?.trunc(), 64),", *LIB, "emulate::tests::a_float_to_int_conversion_answers_at_its_width"),
+    ("crates/n0xis-arch/src/x64_lift.rs", "        Mnemonic::Mul | Mnemonic::Imul if instr.op_count() == 1 && op_bits(&instr, 0) >= 32 => {", "        Mnemonic::Mul if instr.op_count() == 1 && op_bits(&instr, 0) >= 32 => {", "n0xis-arch", None, "x64_lift::tests::a_one_operand_imul_has_a_signed_high_half"),
+    (CORE + "emulate.rs", "            let p = sign_extend_128(arg(0)?, bits) * sign_extend_128(arg(1)?, bits);", "            let p = (mask(arg(0)?, bits) * mask(arg(1)?, bits)) as i128;", *LIB, "emulate::tests::the_signed_high_half_of_a_product"),
+    (CORE + "render.rs", "        MicroExpr::Binary(BinOp::Shl, l, r) if word.is_some_and(|w| w > 32) && matches!(l.as_ref(), MicroExpr::Const { .. }) => {", "        MicroExpr::Binary(BinOp::Shl, l, r) if false && word.is_some_and(|w| w > 32) && matches!(l.as_ref(), MicroExpr::Const { .. }) => {", *LIB, "render::tests::a_shifted_64_bit_constant_says_its_width"),
 ]
 
 

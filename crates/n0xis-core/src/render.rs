@@ -937,6 +937,14 @@ fn render_computed(e: &MicroExpr, names: &RenderNames, under_narrow_cast: bool) 
             };
             format!("({cast}{} >> {})", render_expr(l, names), render_expr(r, names))
         }
+        // A constant is an `int` to C, and `<<` computes in the type of what it shifts:
+        // `mov eax,1; shl rax,cl` printed as `0x1 << n`, which C shifts in 32 bits, where
+        // the bytes shift 64. Here the shift is at the word (a narrower one is under its
+        // cast, and has no word to widen to).
+        MicroExpr::Binary(BinOp::Shl, l, r) if word.is_some_and(|w| w > 32) && matches!(l.as_ref(), MicroExpr::Const { .. }) => {
+            let w = word.expect("just checked");
+            format!("(({}){} << {})", c_type(w, false), render_expr(l, names), render_expr(r, names))
+        }
         MicroExpr::Binary(BinOp::Shl, l, r) if word.is_some() => {
             let w = word.expect("just checked");
             format!("({} << {})", at_word(l, w, names), render_expr(r, names))
@@ -1316,6 +1324,21 @@ mod tests {
     ///
     /// A *dynamic* adjustment is a different thing — `alloca` is a statement —
     /// so only a constant displacement is dropped.
+    /// `mov eax,1; shl rax,cl` is `1 << n` in 64 bits. Printed `0x1 << n`, C shifts an
+    /// `int`, and for `n` from 32 the answer is not the processor's.
+    #[test]
+    fn a_shifted_64_bit_constant_says_its_width() {
+        let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_word_bits(Some(64));
+        let e = MicroExpr::binary(BinOp::Shl, MicroExpr::constant(1, 64), MicroExpr::var("rcx.1"));
+        assert_eq!(render_expr(&e, &names), "((uint64_t)0x1 << rcx.1)");
+        // `mov eax,1` gives the constant 32 bits; the shift is still the word's.
+        let e = MicroExpr::binary(BinOp::Shl, MicroExpr::constant(1, 32), MicroExpr::var("rcx.1"));
+        assert_eq!(render_expr(&e, &names), "((uint64_t)0x1 << rcx.1)");
+        // A 32-bit shift is under its cast, and C's `int` is its width: nothing to say.
+        let e = MicroExpr::Cast { signed: false, bits: 32, expr: Box::new(e) };
+        assert_eq!(render_expr(&e, &names), "(uint32_t)(0x1 << rcx.1)");
+    }
+
     #[test]
     fn frame_bookkeeping_is_not_a_statement_but_alloca_is() {
         let names = RenderNames::new(&[], &crate::UnnamedFunction::Address).with_stack_pointer(Some("rsp"));
