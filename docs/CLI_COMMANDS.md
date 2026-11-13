@@ -708,6 +708,8 @@ leaves `"found\n"` as the end of `"not found\n"`: a row that does not land on th
 On an image rustc built, which cuts its strings by a length, a reference before the text does not count.
 `found_unreferenced` counts every occurrence nothing reached, past `--limit` too, in what `data.searched` names
 (`code`, `data` as for `xref to`, `not_searched`).
+The query is looked for as UTF-8 and, when it is two code units or more, as UTF-16LE; a UTF-16LE hit says
+`encoding: "utf16le"` and its preview is of code units (a UTF-8 hit has no `encoding`, as before).
 - `--query` (required) — the string to search for.
 - `--data-start`/`--data-size` — data window to search (defaults to `.rdata`, else `.text`).
 - `--start`/`--size` — code window to scan for the referencing `lea` (defaults to `.text`).
@@ -1309,7 +1311,8 @@ Rank scripts/data/strings by how densely they cluster a concept's vocabulary. `<
 `"retry,backoff,timeout"`. `game grep` is a hidden alias for the same command (its first
 name), kept so existing scripts still run.
 - `--dir` (required, repeatable) — directory of extracted scripts/data (LuaJIT bytecode
-  auto-decoded to text).
+  auto-decoded to text; a file with a UTF-16 byte-order mark read as UTF-16; a binary file read for its
+  ASCII and UTF-16LE runs).
 - `--term` (repeatable extra vocabulary term); `--min-distinct` (require N distinct terms per
   file, default 1); `--limit` (default 40); `--max-snippets` (context snippets per file, default
   3).

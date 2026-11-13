@@ -72,10 +72,23 @@ pub struct StringSearched {
     pub not_searched: Vec<&'static str>,
 }
 
-/// Each place a query's text is in a window of data, with the start of the string
-/// around it: the run of bytes since the last NUL.
+/// Each place a query's text is in a window of data, in each encoding it is
+/// looked for, with the start of the string around it.
+///
+/// **UTF-8 and UTF-16LE.** The query used to be looked for as its UTF-8 bytes
+/// only, so a wide literal (`L"..."`, `u"..."`, how a PE's text is often held)
+/// answered `count: 0, found_unreferenced: 0`, the shape of "not in this
+/// binary", over a string `strings` lists (audit 2026-11-06). The two are kept
+/// apart, each in address order, since what starts a string differs: a NUL
+/// byte, a NUL code unit.
 #[derive(Clone, Debug)]
 pub struct StringOccurrences {
+    by: Vec<(crate::StringEncoding, Encoded)>,
+}
+
+/// One encoding's occurrences.
+#[derive(Clone, Debug)]
+struct Encoded {
     /// `(the occurrence, the start of its string)`, in address order.
     at: Vec<(u64, u64)>,
     len: u64,
@@ -86,23 +99,25 @@ pub struct StringOccurrences {
 /// literal: on one image built by rustc, 118 160 bytes of `.rodata` have none.
 const MAX_BEFORE: usize = 4096;
 
-impl StringOccurrences {
-    /// `terminated` says whether a string here ends at a NUL. An image rustc built
-    /// cuts its literals by a length, so the bytes before a text are other literals,
-    /// and a reference to them does not reach it: only one on the text's own bytes
-    /// does. It was measured: taken as NUL-terminated, every `lea` of a neighbouring
-    /// literal called the text referenced.
-    pub fn find(data: &[u8], data_start: Va, needle: &[u8], terminated: bool) -> Self {
+impl Encoded {
+    /// `unit` is the encoding's code unit in bytes: a string starts after the
+    /// last NUL unit at a whole number of units before the text.
+    fn find(data: &[u8], data_start: Va, needle: &[u8], terminated: bool, unit: usize) -> Self {
         let mut at = Vec::new();
         let mut pos = 0usize;
-        let mut run = 0usize;
         if !needle.is_empty() {
             while let Some(rel) = data[pos..].windows(needle.len()).position(|w| w == needle) {
                 let idx = pos + rel;
-                if let Some(nul) = data[pos..idx].iter().rposition(|&b| b == 0) {
-                    run = pos + nul + 1;
-                }
-                let start = if terminated { run.max(idx.saturating_sub(MAX_BEFORE)) } else { idx };
+                let start = if terminated {
+                    let floor = idx.saturating_sub(MAX_BEFORE);
+                    let mut s = idx;
+                    while s >= floor + unit && s >= unit && data[s - unit..s].iter().any(|&b| b != 0) {
+                        s -= unit;
+                    }
+                    s
+                } else {
+                    idx
+                };
                 at.push((data_start.0 + idx as u64, data_start.0 + start as u64));
                 pos = idx + 1;
             }
@@ -116,6 +131,43 @@ impl StringOccurrences {
         let first = self.at.partition_point(|&(occ, _)| occ + self.len <= target);
         (first..self.at.len()).take_while(move |&i| self.at[i].1 <= target)
     }
+}
+
+impl StringOccurrences {
+    /// `terminated` says whether a string here ends at a NUL. An image rustc built
+    /// cuts its literals by a length, so the bytes before a text are other literals,
+    /// and a reference to them does not reach it: only one on the text's own bytes
+    /// does. It was measured: taken as NUL-terminated, every `lea` of a neighbouring
+    /// literal called the text referenced.
+    pub fn find(data: &[u8], data_start: Va, query: &str, terminated: bool) -> Self {
+        // A query of one code unit is not looked for wide: `a` in UTF-16LE is
+        // `61 00`, the end of every C string ending in `a`, and each would be
+        // called a wide `a`.
+        let wide: Vec<u8> = if query.encode_utf16().nth(1).is_some() { query.encode_utf16().flat_map(u16::to_le_bytes).collect() } else { Vec::new() };
+        Self {
+            by: vec![
+                (crate::StringEncoding::Utf8, Encoded::find(data, data_start, query.as_bytes(), terminated, 1)),
+                (crate::StringEncoding::Utf16le, Encoded::find(data, data_start, &wide, terminated, 2)),
+            ],
+        }
+    }
+
+    /// Every occurrence, as `(encoding index, occurrence index)` with its address,
+    /// in address order.
+    fn all(&self) -> Vec<((usize, usize), u64)> {
+        let mut out: Vec<((usize, usize), u64)> =
+            self.by.iter().enumerate().flat_map(|(e, (_, enc))| enc.at.iter().enumerate().map(move |(i, &(occ, _))| ((e, i), occ))).collect();
+        out.sort_by_key(|&(key, address)| (address, key));
+        out
+    }
+
+    fn reached_by(&self, target: u64) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.by.iter().enumerate().flat_map(move |(e, (_, enc))| enc.reached_by(target).map(move |i| (e, i)))
+    }
+
+    fn address(&self, (e, i): (usize, usize)) -> u64 {
+        self.by[e].1.at[i].0
+    }
 
     /// Whether a reference to `target` reaches any occurrence.
     pub fn reaches(&self, target: u64) -> bool {
@@ -126,9 +178,18 @@ impl StringOccurrences {
 #[derive(Clone, Debug, Serialize)]
 pub struct StringHit {
     pub address: Va,
-    /// Up to 64 bytes at the match, non-printable bytes shown as `.`.
+    /// Which encoding of the query is here: written only when it is not UTF-8,
+    /// so a UTF-8 hit reads as it did before wide text was looked for.
+    #[serde(skip_serializing_if = "is_utf8")]
+    pub encoding: crate::StringEncoding,
+    /// Up to 64 bytes at the match, non-printable bytes shown as `.`; for a
+    /// UTF-16LE hit, up to 32 code units.
     pub preview: String,
     pub xrefs: Vec<XrefEntry>,
+}
+
+fn is_utf8(e: &crate::StringEncoding) -> bool {
+    *e == crate::StringEncoding::Utf8
 }
 
 /// The string-xref artifact (`n0xis.xref.string.v1`).
@@ -172,7 +233,6 @@ impl StringXrefPass {
     /// [`Pass::run`] with the sweep's window size given, so a test can show the
     /// answer does not depend on it.
     pub(crate) fn run_in(&self, ctx: &Ctx, input: StringXrefInput, chunk: u64) -> Result<StringXrefArtifact, CoreError> {
-        let needle = input.query.as_bytes();
         let mut not_searched = crate::xref::not_searched(&input.references);
         if !input.strings_are_terminated {
             not_searched.push("a reference to bytes before the text: this image cuts its strings by a length, so those are other strings");
@@ -182,24 +242,24 @@ impl StringXrefPass {
             data: input.words.clone(),
             not_searched,
         };
-        if needle.is_empty() {
+        if input.query.is_empty() {
             return Ok(StringXrefArtifact { query: input.query, count: 0, found_unreferenced: 0, hits: Vec::new(), searched });
         }
 
         let data = ctx.source.read(input.data_start, input.data_size)?;
-        let occurrences = StringOccurrences::find(&data, input.data_start, needle, input.strings_are_terminated);
+        let occurrences = StringOccurrences::find(&data, input.data_start, &input.query, input.strings_are_terminated);
         // Every reference that reaches an occurrence, as (occurrence, row). One
         // sweep answers every occurrence at once. Each occurrence used to filter the
         // whole decoded window, which had to be held to be filtered again, and took
         // the code's length times the occurrences.
-        let row = |occ: usize, from: Va, target: Va, kind: &str, text: String| -> (usize, XrefEntry) {
-            let offset = target.0 as i64 - occurrences.at[occ].0 as i64;
+        let row = |occ: (usize, usize), from: Va, target: Va, kind: &str, text: String| -> ((usize, usize), XrefEntry) {
+            let offset = target.0 as i64 - occurrences.address(occ) as i64;
             let mut entry = crate::xref_entry(ctx, from, Some(target), None, kind, text);
             entry.sym = None; // the target is a string literal, not a named symbol
             entry.string_offset = (offset != 0).then_some(offset);
             (occ, entry)
         };
-        let mut referencing: Vec<(usize, XrefEntry)> = Vec::new();
+        let mut referencing: Vec<((usize, usize), XrefEntry)> = Vec::new();
         // Each instruction that reaches an occurrence, so a word a relocation writes
         // inside one is not listed again as a word of data.
         let mut instructions: Vec<(u64, u64)> = Vec::new();
@@ -224,29 +284,43 @@ impl StringXrefPass {
             }
         }
         // By occurrence, each one's references kept in the order they were found.
-        referencing.sort_by_key(|&(occ, _)| occ);
+        let mut by_occurrence: std::collections::BTreeMap<(usize, usize), Vec<XrefEntry>> = std::collections::BTreeMap::new();
+        for (occ, entry) in referencing {
+            by_occurrence.entry(occ).or_default().push(entry);
+        }
 
         let mut hits = Vec::new();
         let mut found_unreferenced = 0usize;
-        let mut rows = referencing.into_iter().peekable();
         // Every occurrence, past `limit` too: the limit is on what is listed, and
         // `found_unreferenced` is a statement about the whole of the window.
-        for (occ, &(address, _)) in occurrences.at.iter().enumerate() {
-            let mut xrefs = Vec::new();
-            while let Some((_, entry)) = rows.next_if(|(o, _)| *o == occ) {
-                xrefs.push(entry);
-            }
+        for (occ, address) in occurrences.all() {
+            let xrefs = by_occurrence.remove(&occ).unwrap_or_default();
             if xrefs.is_empty() {
                 found_unreferenced += 1;
             } else if hits.len() < input.limit {
+                let encoding = occurrences.by[occ.0].0;
                 let idx = (address - input.data_start.0) as usize;
                 let end = (idx + 64).min(data.len());
-                hits.push(StringHit { address: Va(address), preview: preview_ascii(&data[idx..end]), xrefs });
+                let preview = match encoding {
+                    crate::StringEncoding::Utf8 => preview_ascii(&data[idx..end]),
+                    crate::StringEncoding::Utf16le => preview_utf16le(&data[idx..end]),
+                };
+                hits.push(StringHit { address: Va(address), encoding, preview, xrefs });
             }
         }
 
         Ok(StringXrefArtifact { query: input.query, count: hits.len(), found_unreferenced, hits, searched })
     }
+}
+
+/// A UTF-16LE preview: each code unit that is printable ASCII, as itself;
+/// any other, `.`.
+fn preview_utf16le(bytes: &[u8]) -> String {
+    bytes
+        .chunks_exact(2)
+        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .map(|u| if (32..=126).contains(&u) { u as u8 as char } else { '.' })
+        .collect()
 }
 
 /// Printable-ASCII preview; non-printable bytes render as `.`.
@@ -313,6 +387,36 @@ mod tests {
             .unwrap();
         assert_eq!(art.count, 0);
         assert_eq!(art.found_unreferenced, 1, "the string is there; say so");
+    }
+
+    /// A wide literal is found, and a reference into it reaches it from the
+    /// string's start, which is after the last NUL code unit, not byte.
+    #[test]
+    fn a_utf16le_literal_and_its_reference_are_found() {
+        let wide = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        // At 0x2000: "x\0" in UTF-16LE, then "WIDE_PLANTED" at 0x2004.
+        let mut data = wide("x");
+        data.extend([0, 0]);
+        data.extend(wide("pre:WIDE_PLANTED"));
+        data.extend([0, 0]);
+        // lea rcx, [rip+disp] -> 0x2004, the start of "pre:WIDE_PLANTED".
+        let disp: i32 = 0x2004 - 0x1007;
+        let mut code = vec![0x48, 0x8D, 0x0D];
+        code.extend_from_slice(&disp.to_le_bytes());
+        code.push(0xC3);
+        let snap = Snapshot::builder().region(Va(0x1000), code).region(Va(0x2000), data).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let art = StringXrefPass.run(&ctx, StringXrefInput::of_code(Va(0x2000), 64, vec![(Va(0x1000), 8)], "WIDE_PLANTED".into(), 10)).unwrap();
+        assert_eq!((art.count, art.found_unreferenced), (1, 0), "{art:?}");
+        let hit = &art.hits[0];
+        assert_eq!(hit.address, Va(0x200c));
+        assert_eq!(hit.encoding, crate::StringEncoding::Utf16le);
+        assert!(hit.preview.starts_with("WIDE_PLANTED"), "{}", hit.preview);
+        assert_eq!(hit.xrefs[0].string_offset, Some(-8));
+        // A UTF-8 hit says nothing of its encoding, as before.
+        let utf8 = serde_json::to_value(StringHit { address: Va(1), encoding: crate::StringEncoding::Utf8, preview: String::new(), xrefs: Vec::new() }).unwrap();
+        assert!(utf8.get("encoding").is_none());
     }
 
     #[test]

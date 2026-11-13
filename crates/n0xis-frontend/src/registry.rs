@@ -2764,7 +2764,7 @@ impl Plugin for AnalysisPasses {
                         let terminated = !matches!(src, Src::Static(img) if n0xis_sources::rustc_evidence(img.image()).is_some());
                         let held = match src {
                             Src::Static(img) if explicit_code_start.is_none() && code_size_arg.is_none() => ctx.source.read(data_start, data_size).ok().and_then(|data| {
-                                let occurrences = n0xis_core::StringOccurrences::find(&data, data_start, query.as_bytes(), terminated);
+                                let occurrences = n0xis_core::StringOccurrences::find(&data, data_start, &query, terminated);
                                 img.words_where(&|v| occurrences.reaches(v))
                             }),
                             _ => None,

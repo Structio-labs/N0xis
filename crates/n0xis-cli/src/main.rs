@@ -7125,10 +7125,30 @@ fn file_to_document(path: &std::path::Path) -> Option<Document> {
     {
         return Some(Document { id, kind: "lua".into(), text: lua_chunk_to_text(&chunk) });
     }
+    // A file whose byte-order mark says UTF-16 is text in UTF-16. Read as
+    // bytes, its ASCII letters are each followed by a zero, no run of four is
+    // found, and a file holding the term was not listed (audit 2026-11-06).
+    let utf16 = |units: &mut dyn Iterator<Item = u16>| char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect::<String>();
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return Some(Document { id, kind: "text".into(), text: utf16(&mut rest.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]]))) });
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return Some(Document { id, kind: "text".into(), text: utf16(&mut rest.chunks_exact(2).map(|p| u16::from_be_bytes([p[0], p[1]]))) });
+    }
     match std::str::from_utf8(&bytes) {
         Ok(s) => Some(Document { id, kind: "text".into(), text: s.to_string() }),
         Err(_) => {
-            let text = extract_ascii_runs(&bytes, 4);
+            // The runs of a binary file: ASCII, then UTF-16LE, which is how a
+            // PE's resources and wide literals hold text, by the reader `strings`
+            // uses for the same encoding.
+            let mut text = extract_ascii_runs(&bytes, 4);
+            for wide in n0xis_core::find_strings(&bytes, Va(0), 4, &[n0xis_core::StringEncoding::Utf16le]) {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&wide.text);
+                text.push('\n');
+            }
             if text.is_empty() { None } else { Some(Document { id, kind: "strings".into(), text }) }
         }
     }

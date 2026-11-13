@@ -15,7 +15,7 @@
 //! The target is the committed `strings_planted.so` with its section headers
 //! taken away here (`e_shoff`, `e_shnum`, `e_shstrndx` zeroed): the bytes
 //! planted in its source, and where they are loaded, are found by the small
-//! program-header reader below, not by the tool.
+//! program-header reader in `support`, not by the tool.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,33 +28,10 @@ const ELF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/strings_p
 /// Planted in `strings_planted.c`.
 const PLANTED: &[u8] = b"n0xis-planted-ascii-7f3a";
 
-fn u16le(b: &[u8], at: usize) -> u64 {
-    u16::from_le_bytes(b[at..at + 2].try_into().unwrap()).into()
-}
-fn u32le(b: &[u8], at: usize) -> u64 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap()).into()
-}
-fn u64le(b: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
-}
-
-/// `(p_type, p_offset, p_vaddr, p_filesz)` of every program header of an
-/// ELF64 little-endian image.
-fn program_headers(b: &[u8]) -> Vec<(u64, u64, u64, u64)> {
-    assert_eq!(&b[..6], b"\x7fELF\x02\x01", "an ELF64 little-endian fixture");
-    let (off, size, n) = (u64le(b, 0x20) as usize, u16le(b, 0x36) as usize, u16le(b, 0x38) as usize);
-    (0..n).map(|i| off + i * size).map(|p| (u32le(b, p), u64le(b, p + 8), u64le(b, p + 16), u64le(b, p + 32))).collect()
-}
-
 /// The fixture with no section headers, and where the planted string is loaded.
 fn sectionless() -> (PathBuf, PathBuf, u64) {
     let mut b = std::fs::read(ELF).expect("the fixture");
-    let at = b.windows(PLANTED.len()).position(|w| w == PLANTED).expect("the planted string is in the file") as u64;
-    let va = program_headers(&b)
-        .into_iter()
-        .find(|&(ty, off, _, filesz)| ty == 1 && (off..off + filesz).contains(&at))
-        .map(|(_, off, vaddr, _)| vaddr + (at - off))
-        .expect("a PT_LOAD holds the planted string");
+    let va = support::elf64_load_address_of(&b, PLANTED);
     b[0x28..0x30].fill(0); // e_shoff
     b[0x3c..0x40].fill(0); // e_shnum, e_shstrndx
     let dir = std::env::temp_dir().join(format!("n0xis-sectionless-{}", std::process::id()));
@@ -97,7 +74,7 @@ fn reads_by_address_go_through_the_loadable_segments() {
 fn what_a_section_name_finds_is_said_to_be_not_read() {
     let (dir, path, _) = sectionless();
     let file = path.to_str().unwrap();
-    let has_eh_frame_segment = program_headers(&std::fs::read(&path).unwrap()).iter().any(|&(ty, ..)| ty == 0x6474_e550);
+    let has_eh_frame_segment = support::elf64_program_headers(&std::fs::read(&path).unwrap()).iter().any(|&(ty, ..)| ty == 0x6474_e550);
     assert!(has_eh_frame_segment, "the fixture has a PT_GNU_EH_FRAME");
 
     let eh = n0x(&dir, &["function", "eh", "--file", file]);
