@@ -141,12 +141,13 @@ pub(crate) fn own_args<'b>(ctx: &Ctx, cfg: &CfgArtifact, blocks: &'b [SsaBlock],
     let open = frame.iter().any(|(v, off)| *off >= word && v.split('.').next() != Some(sp));
     let written = slots(&flow.frame.stored);
     let mut tails = Vec::new();
+    let idom = crate::dom::idom_of(cfg);
     for (bi, b) in blocks.iter().enumerate() {
         if cfg.blocks.get(bi).is_none_or(|c| c.terminator != "tail-call") {
             continue;
         }
         let Some((si, target)) = b.stmts.iter().enumerate().rev().find_map(|(i, s)| crate::callee::call_target_of(&s.stmt).map(|t| (i, t))) else { continue };
-        let at = crate::callee::version_before(blocks, cfg, bi, si, sp).and_then(|v| frame.get(&v));
+        let at = crate::callee::version_before(blocks, &idom, bi, si, sp).and_then(|v| frame.get(&v));
         if at == Some(0) {
             tails.push(target);
         }
@@ -303,6 +304,23 @@ mod tests {
         let p = body(&f, ADDS_TWO);
         assert!(p.signature.contains("(uint32_t arg0, uint32_t arg1)"), "{}", p.signature);
         assert!(p.pseudo.join("\n").contains("(arg0, arg1)"), "{}", p.pseudo.join("\n"));
+    }
+
+    /// `movl $8,(%esp); call g` after a join both of whose paths leave the stack pointer
+    /// where it was: SSA puts no phi there, and the version is the dominator's. Up
+    /// single predecessors only, the call was given nothing (gcc's CRT main,
+    /// `__amsg_exit(8)`, objdump `movl $0x8,(%esp)`).
+    #[test]
+    fn a_call_after_a_join_is_given_what_was_stored() {
+        // sub esp,0xc; cmp dword [esp+0x10],0; je +5; mov eax,1;
+        let mut f = vec![0x83, 0xec, 0x0c, 0x83, 0x7c, 0x24, 0x10, 0x00, 0x74, 0x05, 0xb8, 1, 0, 0, 0];
+        // mov dword [esp],8; call g; add esp,0xc; ret
+        f.extend([0xc7, 0x04, 0x24, 0x08, 0, 0, 0]);
+        branch(&mut f, 0xe8, G);
+        f.extend([0x83, 0xc4, 0x0c, 0xc3]);
+        let p = body(&f, &[0x8b, 0x44, 0x24, 0x04, 0xc3]);
+        let text = p.pseudo.join("\n");
+        assert!(text.contains("(0x8)"), "{text}");
     }
 
     /// `push [esp+8]; push [esp+8]; call g`: the two pushes are `g`'s arguments, the

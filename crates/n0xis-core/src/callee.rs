@@ -456,9 +456,15 @@ fn places(layout: &ArgLayout, fixed: usize, conversions: &[Conversion]) -> Vec<P
         .collect()
 }
 
-/// The version of register `reg` standing just before statement `at` of block `b`, up a
-/// chain of single predecessors. Nothing is claimed past a join.
-pub(crate) fn version_before(blocks: &[SsaBlock], cfg: &CfgArtifact, mut b: usize, at: usize, reg: &str) -> Option<String> {
+/// The version of register `reg` standing just before statement `at` of block `b`:
+/// the last write before it in the block, else the block's phi, else what stands at
+/// the end of its immediate dominator (`idom`, [`crate::dom::idom_of`] of the graph
+/// `blocks` were built from), and so up the tree. SSA puts a phi wherever the paths
+/// into a block bring different versions, so a block with none has one version on
+/// every path. Up a chain of single predecessors only, a call after a join was given
+/// nothing: gcc's CRT main lost `movl $0x8,(%esp); call __amsg_exit`'s argument, and
+/// two more of its calls once a call that does not return took an edge away.
+pub(crate) fn version_before(blocks: &[SsaBlock], idom: &[Option<usize>], mut b: usize, at: usize, reg: &str) -> Option<String> {
     let writes = |s: &crate::ssa::SsaStmt| -> Option<String> {
         match &s.stmt {
             MicroStmt::Assign { dst, .. } | MicroStmt::Call { ret: Some(dst), .. } if dst.split('.').next() == Some(reg) => Some(dst.clone()),
@@ -472,12 +478,11 @@ pub(crate) fn version_before(blocks: &[SsaBlock], cfg: &CfgArtifact, mut b: usiz
         if let Some(p) = blocks[b].phis.iter().find(|p| p.var == reg) {
             return Some(p.dst.clone());
         }
-        let start = cfg.blocks.get(b)?.start;
-        let preds: Vec<usize> = cfg.blocks.iter().enumerate().filter(|(_, x)| x.successors.iter().any(|s| s.to == start)).map(|(i, _)| i).collect();
-        match preds.as_slice() {
-            [] if b == 0 => return Some(format!("{reg}.0")),
-            [p] => b = *p,
-            _ => return None,
+        match idom.get(b).copied().flatten() {
+            Some(d) => b = d,
+            None if b == 0 => return Some(format!("{reg}.0")),
+            // A block the entry does not reach: nothing stands there.
+            None => return None,
         }
         if let Some(v) = blocks.get(b)?.stmts.iter().rev().find_map(writes) {
             return Some(v);
@@ -529,6 +534,7 @@ fn read_here(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &RawFlow, 
     let mut forwards = Vec::new();
     let assigns = assigns_of(blocks);
     let layout = arg_layout(ctx, arg_regs.len());
+    let idom = crate::dom::idom_of(cfg);
     for (bi, b) in blocks.iter().enumerate() {
         for (si, s) in b.stmts.iter().enumerate() {
             let Some((target, args)) = call_of_stmt(&s.stmt) else { continue };
@@ -537,7 +543,7 @@ fn read_here(ctx: &Ctx, cfg: &CfgArtifact, blocks: &[SsaBlock], flow: &RawFlow, 
             for p in places(&layout, fc.fixed, &fc.conversions) {
                 if let Place::Float(i) = p
                     && let Some(reg) = crate::ir::float_arg_registers(ctx).get(i)
-                    && version_before(blocks, cfg, bi, si, reg).is_some_and(|v| v.ends_with(".0"))
+                    && version_before(blocks, &idom, bi, si, reg).is_some_and(|v| v.ends_with(".0"))
                 {
                     used.insert(format!("{reg}.0"));
                 }
@@ -1113,6 +1119,7 @@ fn settle_format_calls(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], ra
     // Stack arguments are read off the form before propagation: to the pass that clears
     // stores nothing here loads, the outgoing area is such a store.
     let frame = sp.map(|sp| crate::ssa::frame_offsets(raw, sp, ctx.arch.pointer_size())).unwrap_or_default();
+    let idom = crate::dom::idom_of(cfg);
     let mut used_stores: Vec<(usize, Va)> = Vec::new();
     let mut format_names: BTreeSet<String> = BTreeSet::new();
     for (bi, b) in snapshot.iter().enumerate() {
@@ -1127,13 +1134,13 @@ fn settle_format_calls(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], ra
             let mut new_args: Vec<MicroExpr> = args[..fc.fixed - 1].to_vec();
             new_args.push(if let MicroExpr::Var(v) = format_arg { assigns.get(v.as_str()).map_or_else(|| format_arg.clone(), |e| (*e).clone()) } else { format_arg.clone() });
             let raw_at = raw.get(bi).map_or(0, |r| raw_call_at(r, s.va));
-            let call_sp = sp.and_then(|sp| version_before(raw, cfg, bi, raw_at, sp)).and_then(|v| frame.get(&v));
+            let call_sp = sp.and_then(|sp| version_before(raw, &idom, bi, raw_at, sp)).and_then(|v| frame.get(&v));
             for p in places(&layout, fc.fixed, &fc.conversions) {
                 new_args.push(match p {
                     Place::Int(i) => args.get(i).cloned().unwrap_or_else(|| MicroExpr::Unknown("argument".into())),
                     Place::Float(i) => crate::ir::float_arg_registers(ctx)
                         .get(i)
-                        .and_then(|r| version_before(&snapshot, cfg, bi, si, r))
+                        .and_then(|r| version_before(&snapshot, &idom, bi, si, r))
                         .map_or_else(|| MicroExpr::Unknown("vector argument".into()), MicroExpr::Var),
                     Place::Stack(at, c) => {
                         let want = call_sp.map(|o| o + layout.shadow + at);
@@ -1224,6 +1231,7 @@ fn settle_stack_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], raw:
     let (Some(word), Some(sp)) = (crate::stack_args::stack_word(ctx), ctx.arch.stack_pointer()) else { return };
     let frame = crate::ssa::frame_offsets(raw, sp, ctx.arch.pointer_size());
     let loaded = crate::stack_args::loaded_offsets(raw, &frame);
+    let idom = crate::dom::idom_of(cfg);
     let id = ctx_identity(ctx);
     let depth = if id.is_some() { DEPTH } else { 1 };
     let snapshot = blocks.to_vec();
@@ -1237,7 +1245,7 @@ fn settle_stack_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBlock], raw:
         for (si, s) in b.stmts.iter().enumerate() {
             let Some(target) = call_target_of(&s.stmt) else { continue };
             let raw_at = raw_call_at(r, s.va);
-            let Some(version) = version_before(raw, cfg, bi, raw_at, sp) else { continue };
+            let Some(version) = version_before(raw, &idom, bi, raw_at, sp) else { continue };
             // Past a realignment (`and $-8,%esp`, mingw's with a `double` in the frame) the
             // offset from entry is lost; what the call is given is still a constant away
             // from what that left.

@@ -18,6 +18,13 @@ use n0xis_contracts::Va;
 
 use crate::ir::{CfgArtifact, Successor};
 
+/// The immediate dominator of each block of `cfg`, from the edges [`crate::SsaPass`]
+/// placed its phis by: what a block with no phi for a register inherits.
+pub fn idom_of(cfg: &CfgArtifact) -> Vec<Option<usize>> {
+    let (_, pred) = block_graph(cfg);
+    DomTree::forward(cfg.blocks.len(), &pred).idom().to_vec()
+}
+
 /// Block-index successor/predecessor adjacency, resolved from a `CfgArtifact`'s
 /// address-keyed edges. Successor addresses that fall outside the function
 /// (tail calls, unresolved indirect branches) simply have no edge — sound,
