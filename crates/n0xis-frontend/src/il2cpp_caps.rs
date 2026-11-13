@@ -953,6 +953,24 @@ impl Plugin for Il2CppTools {
     }
 }
 
+/// What `profile` says of a metadata file whose version `il2cpp metadata` does
+/// not read ([`metadata::KNOWN_VERSIONS`]): it named the version and said
+/// nothing of it, so the refusal was not seen coming (field report 2026-11-12).
+pub fn version_advisory(version: Option<u32>) -> Option<n0xis_core::Advisory> {
+    let v = version?;
+    let known = metadata::KNOWN_VERSIONS;
+    let read = i32::try_from(v).is_ok_and(|v| known.contains(&v));
+    (!read).then(|| n0xis_core::Advisory {
+        command: "il2cpp metadata".into(),
+        verdict: "ineffective".into(),
+        reason: format!(
+            "the metadata states version {v}, outside {}..={}, the versions `il2cpp metadata` reads: it refuses this file",
+            known.start(),
+            known.end()
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,22 +1006,4 @@ mod tests {
             assert_eq!(v["error"]["code"], "bad-name", "{bad} should be refused");
         }
     }
-}
-
-/// What `profile` says of a metadata file whose version `il2cpp metadata` does
-/// not read ([`metadata::KNOWN_VERSIONS`]): it named the version and said
-/// nothing of it, so the refusal was not seen coming (field report 2026-11-12).
-pub fn version_advisory(version: Option<u32>) -> Option<n0xis_core::Advisory> {
-    let v = version?;
-    let known = metadata::KNOWN_VERSIONS;
-    let read = i32::try_from(v).is_ok_and(|v| known.contains(&v));
-    (!read).then(|| n0xis_core::Advisory {
-        command: "il2cpp metadata".into(),
-        verdict: "ineffective".into(),
-        reason: format!(
-            "the metadata states version {v}, outside {}..={}, the versions `il2cpp metadata` reads: it refuses this file",
-            known.start(),
-            known.end()
-        ),
-    })
 }

@@ -317,8 +317,10 @@ impl StringXrefPass {
 /// any other, `.`.
 fn preview_utf16le(bytes: &[u8]) -> String {
     bytes
-        .chunks_exact(2)
-        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&p| u16::from_le_bytes(p))
         .map(|u| if (32..=126).contains(&u) { u as u8 as char } else { '.' })
         .collect()
 }

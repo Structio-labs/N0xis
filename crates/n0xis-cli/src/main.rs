@@ -7152,10 +7152,10 @@ fn file_to_document(path: &std::path::Path) -> Option<Document> {
     // found, and a file holding the term was not listed (audit 2026-11-06).
     let utf16 = |units: &mut dyn Iterator<Item = u16>| char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect::<String>();
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return Some(Document { id, kind: "text".into(), text: utf16(&mut rest.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]]))) });
+        return Some(Document { id, kind: "text".into(), text: utf16(&mut rest.as_chunks::<2>().0.iter().map(|&p| u16::from_le_bytes(p))) });
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return Some(Document { id, kind: "text".into(), text: utf16(&mut rest.chunks_exact(2).map(|p| u16::from_be_bytes([p[0], p[1]]))) });
+        return Some(Document { id, kind: "text".into(), text: utf16(&mut rest.as_chunks::<2>().0.iter().map(|&p| u16::from_be_bytes(p))) });
     }
     match std::str::from_utf8(&bytes) {
         Ok(s) => Some(Document { id, kind: "text".into(), text: s.to_string() }),
