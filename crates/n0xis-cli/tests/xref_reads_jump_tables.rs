@@ -48,12 +48,12 @@ fn build(tag: &str, compiler: &str, objdump: &'static str, flags: &[&str]) -> Op
     std::fs::create_dir_all(&dir).expect("temp dir");
     let file = dir.join(if compiler.contains("mingw") { "sw.exe" } else { "sw" });
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/xref/switches.c");
+    // Built only with the `oracle` feature, which is asking for this compiler: one
+    // that is missing is a failure, not a pass with nothing checked.
     match Command::new(compiler).args(["-O2"]).args(flags).arg("-o").arg(&file).arg(source).output() {
         Ok(o) if o.status.success() => Some(Built { file, objdump }),
-        _ => {
-            eprintln!("{tag}: skipped, {compiler} could not build");
-            None
-        }
+        Ok(o) => panic!("{tag}: {compiler} could not build: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => panic!("{tag}: {compiler} is not here: {e}"),
     }
 }
 
@@ -84,6 +84,43 @@ impl Built {
             .collect();
         assert!(!jumps.is_empty(), "objdump shows no indirect jump in {function}: {all:?}");
         jumps[0]
+    }
+
+    /// Each indirect jump of `function`, with the bound its bytes put on the index: the
+    /// `cmp` against a constant that a `ja` or `jae` follows, in the straight run of
+    /// instructions before the jump (no jump or return between). `ja` lets the
+    /// constant through, `jae` one less. Without one there is no guard. Read from the
+    /// bytes and not the source: gcc 14 guards a `switch` whose default is
+    /// `__builtin_unreachable()`, which gcc 16 and clang do not.
+    fn guards(&self, function: &str) -> Vec<(u64, Option<u64>)> {
+        let all = self.instructions(function);
+        let text = |i: usize| all[i].1.strip_prefix("notrack ").unwrap_or(&all[i].1).to_string();
+        let mut out = Vec::new();
+        for (i, (at, _)) in all.iter().enumerate() {
+            let t = text(i);
+            if !(t.starts_with("jmp") && !t.contains('<') && !t.split_whitespace().nth(1).is_some_and(|o| o.starts_with("0x"))) {
+                continue;
+            }
+            let mut bound = None;
+            for j in (0..i).rev() {
+                let u = text(j);
+                if u.starts_with("jmp") || u.starts_with("ret") {
+                    break;
+                }
+                let (ja, jae) = (u.starts_with("ja "), u.starts_with("jae "));
+                if (ja || jae) && j > 0 {
+                    let cmp = text(j - 1);
+                    let imm = cmp.strip_prefix("cmp").and_then(|c| c.rsplit(',').next()).and_then(|v| u64::from_str_radix(v.trim().strip_prefix("0x")?, 16).ok());
+                    if let Some(imm) = imm {
+                        bound = if ja { Some(imm) } else { imm.checked_sub(1) };
+                        break;
+                    }
+                }
+            }
+            out.push((*at, bound));
+        }
+        assert!(!out.is_empty(), "objdump shows no indirect jump in {function}: {all:?}");
+        out
     }
 
     /// Where the function's first `ja` goes: its table's default.
@@ -207,6 +244,7 @@ fn a_table_guarded_by_memory(tag: &str, b: &Built) {
 
 /// With no guard, a table ends where the next one's base is, which the code takes.
 fn two_tables_side_by_side(tag: &str, b: &Built) {
+    let guards = b.guards("two_tables");
     let all = b.instructions("two_tables");
     let jumps: Vec<u64> = all
         .iter()
@@ -223,9 +261,11 @@ fn two_tables_side_by_side(tag: &str, b: &Built) {
     for jump in jumps {
         let from = b.xref("from", jump);
         assert_eq!(from["jump_table"]["state"], "resolved", "{tag}: {from}");
-        assert_eq!(from["jump_table"]["guarded"], false, "{tag}: no guard in the source: {from}");
+        let guarded = guards.iter().find(|(at, _)| *at == jump).is_some_and(|(_, g)| g.is_some());
+        assert_eq!(from["jump_table"]["guarded"], guarded, "{tag}: as the bytes guard it: {from}");
         let rows = table_rows(&from);
-        assert!(rows.iter().all(|r| r["evidence"] == "jump_table_walked"), "{tag}: {from}");
+        let evidence = if guarded { "jump_table_guarded" } else { "jump_table_walked" };
+        assert!(rows.iter().all(|r| r["evidence"] == evidence), "{tag}: {from}");
         each_entry_is_what_the_file_holds(tag, b, &rows);
         sizes.insert(hex(&from["jump_table"]["table"]), rows.len());
     }
@@ -234,29 +274,47 @@ fn two_tables_side_by_side(tag: &str, b: &Built) {
     assert_eq!(sizes, vec![8, 10], "{tag}: the source writes 10 entries and 8");
 }
 
-/// `ir explain` gives a table's bound from the guard of its index. A step limit of
-/// 99999 stands above the guard in `interpret`, compared in a register, and the guard
-/// itself compares memory. Where there is no guard it does not know.
-fn explain_says_the_guard(tag: &str, b: &Built) {
-    let explain = |function: &str| -> Vec<String> {
+/// One bound for a table, the guard's, in every answer: `ir build`'s graph and
+/// its cases, `ir explain`, and the `case` labels `decomp pseudo` prints. A step limit
+/// of 99999 stands above the guard in `interpret`, compared in a register, and the
+/// guard itself compares memory: the graph took the step limit, and read on past the
+/// table by it. Where the bytes guard nothing, no bound is said.
+fn one_bound_for_every_consumer(tag: &str, b: &Built) {
+    let ask = |what: &[&str], function: &str| -> Value {
         let mut cmd = support::isolated(Command::new(n0xis_exe()));
-        let out = cmd.args(["ir", "explain", "--file"]).arg(&b.file).args(["--addr", &format!("{:#x}", b.symbol(function))]).output().expect("n0xis");
+        let out = cmd.args(what).arg("--file").arg(&b.file).args(["--addr", &format!("{:#x}", b.symbol(function))]).output().expect("n0xis");
         let v: Value = serde_json::from_slice(&out.stdout).expect("an envelope");
-        assert_eq!(v["ok"], true, "{v}");
-        v["data"]["lines"].as_array().expect("lines").iter().filter_map(|l| l.as_str().map(str::to_string)).collect()
+        assert_eq!(v["ok"], true, "{tag}: {v}");
+        v["data"].clone()
     };
-    let lines = explain("interpret");
-    let table = lines.iter().find(|l| l.contains(" table=")).unwrap_or_else(|| panic!("{tag}: {lines:?}"));
-    assert!(table.contains("bound=12 ") && table.contains("-> 13 cases"), "{tag}: 13 cases, 0 to 12, in the source: {table}");
-    assert_eq!(lines.iter().filter(|l| l.contains("case[")).count(), 13, "{tag}: {lines:?}");
-
-    let lines = explain("big_switch");
-    let table = lines.iter().find(|l| l.contains(" table=")).unwrap_or_else(|| panic!("{tag}: {lines:?}"));
-    assert!(table.contains("bound=40 ") && table.contains("-> 41 cases"), "{tag}: {table}");
-
-    let lines = explain("two_tables");
-    let tables: Vec<&String> = lines.iter().filter(|l| l.contains(" table=")).collect();
-    assert!(!tables.is_empty() && tables.iter().all(|l| l.contains("bound=? ")), "{tag}: no guard in the source: {tables:?}");
+    for function in ["interpret", "big_switch", "two_tables"] {
+        let guards = b.guards(function);
+        let graph = ask(&["ir", "build"], function);
+        let switches = graph["switches"].as_array().cloned().unwrap_or_default();
+        let explain: Vec<String> = ask(&["ir", "explain"], function)["lines"].as_array().expect("lines").iter().filter_map(|l| l.as_str().map(str::to_string)).collect();
+        let mut seen = 0;
+        for (jump, guard) in &guards {
+            let Some(sw) = switches.iter().find(|s| hex(&s["at"]) == *jump) else { continue };
+            seen += 1;
+            assert_eq!(sw["bound"].as_u64(), *guard, "{tag} {function}: the graph's bound is the guard's: {sw}");
+            let line = explain.iter().find(|l| l.trim_start().starts_with(&format!("{jump:#x} "))).unwrap_or_else(|| panic!("{tag} {function}: {explain:?}"));
+            let said = guard.map_or("bound=? ".to_string(), |g| format!("bound={g} "));
+            assert!(line.contains(&said), "{tag} {function}: {said}in {line}");
+            if let Some(g) = guard {
+                let cases = sw["cases"].as_array().expect("cases").len() as u64;
+                assert_eq!(cases, g + 1, "{tag} {function}: as many case edges as the guard lets through: {sw}");
+                assert!(line.contains(&format!("-> {} cases", g + 1)), "{tag} {function}: {line}");
+            }
+        }
+        assert!(seen > 0, "{tag} {function}: the graph has a switch at a jump the bytes show: {guards:?} {switches:?}");
+        // The body's `case` labels: none past what a guard lets through, where all are guarded.
+        if guards.iter().all(|(_, g)| g.is_some()) {
+            let most = guards.iter().filter_map(|(_, g)| *g).max().expect("guarded");
+            let body = ask(&["decomp", "pseudo"], function)["pseudo"].as_array().expect("pseudo").iter().filter_map(|l| l.as_str().map(str::to_string)).collect::<Vec<_>>();
+            let labels: Vec<u64> = body.iter().filter_map(|l| u64::from_str_radix(l.trim().strip_prefix("case 0x")?.strip_suffix(':')?, 16).ok()).collect();
+            assert!(!labels.is_empty() && labels.iter().all(|&k| k <= most), "{tag} {function}: case labels past the guard's {most}: {labels:?}");
+        }
+    }
 }
 
 /// A jump with no table says it does not know.
@@ -280,7 +338,19 @@ fn gcc_position_independent() {
     a_table_guarded_by_memory("gcc_pie", &b);
     two_tables_side_by_side("gcc_pie", &b);
     a_jump_with_no_table("gcc_pie", &b);
-    explain_says_the_guard("gcc_pie", &b);
+    one_bound_for_every_consumer("gcc_pie", &b);
+}
+
+/// gcc 14 guards the second table of `two_tables`, whose default is unreachable,
+/// where gcc 16 and clang do not: the bytes say which, not the source.
+#[test]
+fn gcc14_position_independent() {
+    let Some(b) = build("gcc14_pie", "gcc-14", "objdump", &["-fPIE", "-pie"]) else { return };
+    a_table_of_forty_one("gcc14_pie", &b);
+    a_table_guarded_by_memory("gcc14_pie", &b);
+    two_tables_side_by_side("gcc14_pie", &b);
+    a_jump_with_no_table("gcc14_pie", &b);
+    one_bound_for_every_consumer("gcc14_pie", &b);
 }
 
 #[test]
@@ -289,7 +359,7 @@ fn gcc_fixed_with_absolute_entries() {
     a_table_of_forty_one("gcc_fixed", &b);
     a_table_guarded_by_memory("gcc_fixed", &b);
     a_jump_with_no_table("gcc_fixed", &b);
-    explain_says_the_guard("gcc_fixed", &b);
+    one_bound_for_every_consumer("gcc_fixed", &b);
 }
 
 #[test]
@@ -299,7 +369,7 @@ fn clang_position_independent() {
     a_table_guarded_by_memory("clang_pie", &b);
     two_tables_side_by_side("clang_pie", &b);
     a_jump_with_no_table("clang_pie", &b);
-    explain_says_the_guard("clang_pie", &b);
+    one_bound_for_every_consumer("clang_pie", &b);
 }
 
 #[test]
@@ -308,7 +378,7 @@ fn clang_fixed_with_absolute_entries() {
     a_table_of_forty_one("clang_fixed", &b);
     a_table_guarded_by_memory("clang_fixed", &b);
     a_jump_with_no_table("clang_fixed", &b);
-    explain_says_the_guard("clang_fixed", &b);
+    one_bound_for_every_consumer("clang_fixed", &b);
 }
 
 #[test]
@@ -317,5 +387,5 @@ fn mingw_pe() {
     a_table_of_forty_one("mingw", &b);
     a_table_guarded_by_memory("mingw", &b);
     a_jump_with_no_table("mingw", &b);
-    explain_says_the_guard("mingw", &b);
+    one_bound_for_every_consumer("mingw", &b);
 }

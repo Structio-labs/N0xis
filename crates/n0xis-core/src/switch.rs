@@ -11,7 +11,7 @@
 //! indirect `switch` in a live process gets its edges filled in, which a
 //! file-only disassembler cannot do (CONCEPT §5.1).
 
-use n0xis_arch::{SwitchDispatch, SwitchKind};
+use n0xis_arch::{DecodedInsn, SwitchDispatch, SwitchKind};
 use n0xis_contracts::Va;
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +50,17 @@ pub struct ResolvedSwitch {
 }
 
 /// Read the jump table for `disp` through the source seam and resolve cases.
-pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
+///
+/// `insns` end at the dispatching jump. The bound is the guard of the index that
+/// reaches the table, read from them ([`n0xis_arch::Arch::index_guard`]), and it is
+/// the one bound: `ir build`'s, the `switch` a body prints and `ir explain`'s. It was
+/// [`SwitchDispatch::bound`], the nearest comparison against any constant: on a
+/// loop's dispatch that is a step limit of 99999 above a guard that compares memory,
+/// and the graph read on past the table by it, two case edges to code no index
+/// reaches. Where no guard is read the bound is not known, and the table is read
+/// as far as its entries stay code.
+pub fn resolve_switch(ctx: &Ctx, insns: &[DecodedInsn], disp: &SwitchDispatch) -> ResolvedSwitch {
+    let bound = ctx.arch.index_guard(insns, disp);
     // An architecture with no native pointer width (a WebAssembly module's)
     // recognizes no jump table — `detect_switch` is how it would, and it
     // lifts nothing — so it does not get here. Were it to, a table of
@@ -63,7 +73,7 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
             table: disp.table,
             index_reg: disp.index_reg.clone(),
             scale: disp.scale,
-            bound: disp.bound,
+            bound,
             entry_size: 0,
             resolved: false,
             cases: Vec::new(),
@@ -76,7 +86,7 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
         table: disp.table,
         index_reg: disp.index_reg.clone(),
         scale: disp.scale,
-        bound: disp.bound,
+        bound,
         entry_size,
         resolved: false,
         cases: Vec::new(),
@@ -89,7 +99,7 @@ pub fn resolve_switch(ctx: &Ctx, disp: &SwitchDispatch) -> ResolvedSwitch {
     // A recovered bound `n` caps the walk at `n + 1` entries (indices 0..=n);
     // without one, probe a fixed window. Either way the walk stops at the first
     // entry that leaves executable code — that word marks the table's end.
-    let count = match disp.bound {
+    let count = match bound {
         Some(n) => (n.saturating_add(1) as usize).min(MAX_SWITCH_CASES),
         None => UNBOUNDED_PROBE_LIMIT,
     };

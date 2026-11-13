@@ -119,6 +119,9 @@ MUTATIONS = [
     (CORE + "ssa.rs", "        crate::callee::keep_what_callees_leave(ctx, &mut lifted);\n", "", *LIB, "callee::tests::a_register_a_leaf_callee_does_not_write_keeps_its_value"),
     (CORE + "callee.rs", " && crate::summary::writes_are_all_of_it(cfg))", ")", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
     (CORE + "callee.rs", "            changes.as_ref().is_none_or(|w| w.contains(&ctx.arch.normalize_reg(dst)))", "            changes.as_ref().is_none_or(|_| false)", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
+    # One switch bound, the guard's, for every consumer (round 3, item 6); and the test takes it from the bytes.
+    (CORE + "switch.rs", "    let bound = ctx.arch.index_guard(insns, disp);", "    let bound = disp.bound;", "n0xis-cli", "xref_reads_jump_tables", "gcc_position_independent", ORACLE),
+    ("crates/n0xis-cli/tests/xref_reads_jump_tables.rs", "        let guarded = guards.iter().find(|(at, _)| *at == jump).is_some_and(|(_, g)| g.is_some());", "        let guarded = false;", "n0xis-cli", "xref_reads_jump_tables", "gcc14_position_independent", ORACLE),
 ]
 
 

@@ -342,7 +342,7 @@ fn sweep_declared_gaps(ctx: &Ctx, bytes: &[u8], start: Va, declared: &[(u64, u64
                     .rposition(|i| matches!(i.kind, InsnKind::CondJump | InsnKind::Jump | InsnKind::Ret | InsnKind::Int | InsnKind::Call))
                     .map_or(0, |p| p + 1);
                 if let Some(dispatch) = ctx.arch.detect_switch_with_context(&walked, block_start) {
-                    let switch = crate::switch::resolve_switch(ctx, &dispatch);
+                    let switch = crate::switch::resolve_switch(ctx, &walked, &dispatch);
                     let whole = switch.bound.is_some_and(|b| switch.cases.len() as u64 == b + 1);
                     if switch.resolved && whole && !switch.cases.iter().any(|c| calls.contains_key(&c.0)) {
                         for case in &switch.cases {
