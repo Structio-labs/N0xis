@@ -53,7 +53,7 @@ pub fn resolve_table_locator(live: &impl LiveTarget, locator: &TableLocator) -> 
             let arch = X64::new();
             let ctx = Ctx::new(live, &arch);
             let art = AobScanPass
-                .run(&ctx, AobInput { start, size, pattern: pattern_parsed })
+                .run(&ctx, AobInput { start, size, pattern: pattern_parsed, past_end: n0xis_core::PastEnd::Stop })
                 .map_err(|e| e.to_string())?;
             art.matches
                 .first()

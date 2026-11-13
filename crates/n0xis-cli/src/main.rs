@@ -4894,6 +4894,11 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
 
     let limit = if a.limit == 0 { usize::MAX } else { a.limit };
     let align = a.align.max(1) as u64;
+    // Over the whole image the sections are where the search stops and starts,
+    // not where the bytes do: a match may run on into the section that follows.
+    // A window or one section named is the answer's subject, and stops at its end.
+    let whole_image = !(explicit_start.is_some() && a.size.is_some()) && a.section.is_none();
+    let past_end = if whole_image { n0xis_core::PastEnd::ReadOn } else { n0xis_core::PastEnd::Stop };
     // Each match with its range's name, the bytes scanned, whether `limit` cut it.
     type Found = (Vec<(Va, String)>, usize, bool);
     let scan = |ctx: &Ctx| -> Result<n0xis_sources::Swept<Found>, n0xis_sources::SourceError> {
@@ -4909,7 +4914,7 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
                 continue;
             }
             let size = *size as usize;
-            match AobScanPass.run(ctx, AobInput { start: *start, size, pattern: pattern.clone() }) {
+            match AobScanPass.run(ctx, AobInput { start: *start, size, pattern: pattern.clone(), past_end }) {
                 Ok(art) => {
                     read.record(*start, size, Ok(art.bytes_scanned))?;
                     scanned += art.bytes_scanned;

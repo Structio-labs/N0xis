@@ -63,3 +63,16 @@ pub fn elf64_load_address_of(b: &[u8], needle: &[u8]) -> u64 {
         .map(|(_, off, vaddr, _)| vaddr + (at - off))
         .expect("a PT_LOAD holds the bytes")
 }
+
+/// `(sh_flags, sh_addr, sh_offset, sh_size, sh_type)` of every section header
+/// of an ELF64 little-endian image, by the same few lines of reading.
+pub fn elf64_section_headers(b: &[u8]) -> Vec<(u64, u64, u64, u64, u32)> {
+    assert_eq!(&b[..6], b"\x7fELF\x02\x01", "an ELF64 little-endian image");
+    let u64le = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let u16le = |at: usize| usize::from(u16::from_le_bytes(b[at..at + 2].try_into().unwrap()));
+    let (off, size, n) = (u64le(0x28) as usize, u16le(0x3a), u16le(0x3c));
+    (0..n)
+        .map(|i| off + i * size)
+        .map(|h| (u64le(h + 8), u64le(h + 16), u64le(h + 24), u64le(h + 32), u32::from_le_bytes(b[h + 4..h + 8].try_into().unwrap())))
+        .collect()
+}

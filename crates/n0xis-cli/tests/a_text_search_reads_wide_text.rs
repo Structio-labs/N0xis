@@ -88,3 +88,34 @@ fn xref_string_finds_a_referenced_wide_literal() {
     assert_eq!(hit["encoding"], "utf16le", "{v}");
     assert!(!hit["xrefs"].as_array().unwrap().is_empty(), "{v}");
 }
+
+/// `find` over the whole image finds bytes that run over the seam of two
+/// sections that touch, in memory and in the file: they are one run of bytes,
+/// and were searched one section at a time (audit 2026-11-06, `count: 0` over
+/// the end of `.note.gnu.build-id` and the start of `.interp`). The seam is
+/// found by the section headers, read here.
+#[test]
+fn find_reads_over_the_seam_of_two_sections_that_touch() {
+    const ELF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/strings_planted.so");
+    const SHF_ALLOC: u64 = 2;
+    const SHT_NOBITS: u32 = 8;
+    let b = std::fs::read(ELF).unwrap();
+    let mut secs: Vec<_> = support::elf64_section_headers(&b).into_iter().filter(|s| s.0 & SHF_ALLOC != 0 && s.4 != SHT_NOBITS).collect();
+    secs.sort_by_key(|s| s.1);
+    let seam = secs
+        .windows(2)
+        .find(|w| w[0].1 + w[0].3 == w[1].1 && w[0].2 + w[0].3 == w[1].2 && w[0].3 >= 4 && w[1].3 >= 4)
+        .map(|w| (w[1].1, w[1].2))
+        .expect("two sections that touch in the fixture");
+    let (va, off) = (seam.0 - 4, (seam.1 - 4) as usize);
+    let hex: Vec<String> = b[off..off + 8].iter().map(|x| format!("{x:02x}")).collect();
+    let dir = dir_with(&[("seam", Vec::new())]);
+    let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
+        .args(["find", "--file", ELF, "--bytes", &hex.join(" ")])
+        .current_dir(&dir)
+        .output()
+        .expect("run n0xis");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let at: Vec<&str> = v["data"]["matches"].as_array().into_iter().flatten().filter_map(|m| m["va"].as_str()).collect();
+    assert!(at.contains(&format!("{va:#x}").as_str()), "{:#x}: {v}", va);
+}

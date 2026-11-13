@@ -33,6 +33,21 @@ pub struct AobInput {
     pub start: Va,
     pub size: usize,
     pub pattern: Vec<AobByte>,
+    /// Whether a match that starts in the window may end past it.
+    pub past_end: PastEnd,
+}
+
+/// What a match that starts in a window and would end past it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PastEnd {
+    /// Not a match: the window is the answer's subject, and nothing past it.
+    Stop,
+    /// A match, where the source holds bytes right after the window. What
+    /// `find` over a whole image asks: the image's sections are its windows,
+    /// and two that touch hold one run of bytes. Searched one at a time, the
+    /// eight bytes over the seam between `.note.gnu.build-id` and `.interp`
+    /// answered `count: 0` (audit 2026-11-06).
+    ReadOn,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -53,10 +68,20 @@ impl Pass for AobScanPass {
     }
 
     fn run(&self, ctx: &Ctx, input: AobInput) -> Result<AobArtifact, CoreError> {
-        let bytes = ctx.source.read(input.start, input.size)?;
+        let bytes = match input.past_end {
+            PastEnd::Stop => ctx.source.read(input.start, input.size)?,
+            PastEnd::ReadOn => {
+                let reach = input.size.saturating_add(input.pattern.len().saturating_sub(1));
+                n0xis_sources::read_across(ctx.source, input.start, reach)?
+            }
+        };
         let mut matches = Vec::new();
         matches_in(&bytes, input.start, &input.pattern, &mut matches);
-        Ok(AobArtifact { matches, bytes_scanned: bytes.len() })
+        // A match past the end is the next window's; the bytes read on to are
+        // not this window's bytes scanned.
+        let end = input.start.0.saturating_add(input.size as u64);
+        matches.retain(|m| m.0 < end);
+        Ok(AobArtifact { matches, bytes_scanned: bytes.len().min(input.size) })
     }
 }
 
@@ -133,8 +158,24 @@ mod tests {
         let arch = X64::new();
         let ctx = Ctx::new(&snap, &arch);
         let pattern = parse_aob("48 8B ?? 68").unwrap();
-        let art = AobScanPass.run(&ctx, AobInput { start: Va(0x1000), size: 10, pattern }).unwrap();
+        let art = AobScanPass.run(&ctx, AobInput { start: Va(0x1000), size: 10, pattern, past_end: PastEnd::Stop }).unwrap();
         assert_eq!(art.matches, vec![Va(0x1000), Va(0x1005)]);
+    }
+
+    /// Over two regions that touch, a match that starts in the first and ends
+    /// in the second is the first's, with `ReadOn`; with `Stop` it is not
+    /// there; and the second does not list it again.
+    #[test]
+    fn a_match_over_the_seam_of_two_windows_that_touch_is_the_first_ones() {
+        let snap = Snapshot::builder().region(Va(0x1000), vec![0x90, 0x90, 0x48]).region(Va(0x1003), vec![0x8B, 0x90]).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let pattern = parse_aob("48 8B").unwrap();
+        let run = |start, size, past_end| AobScanPass.run(&ctx, AobInput { start: Va(start), size, pattern: pattern.clone(), past_end }).unwrap();
+        let first = run(0x1000, 3, PastEnd::ReadOn);
+        assert_eq!((first.matches.as_slice(), first.bytes_scanned), (&[Va(0x1002)][..], 3));
+        assert!(run(0x1000, 3, PastEnd::Stop).matches.is_empty());
+        assert!(run(0x1003, 2, PastEnd::ReadOn).matches.is_empty());
     }
 
     #[test]
