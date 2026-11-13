@@ -7723,6 +7723,26 @@ fn cmd_sig_gen(a: SigGenArgs, pretty: bool) -> bool {
     }
 
     let funcs = img.named_functions();
+    // A signature is a function's name keyed by its bytes, so only a function
+    // the image names can give one. An image that names none is not a library
+    // of none: a mingw PE whose names are in the COFF symbol table, which is
+    // not read, answered `functions_total: 0, ok: true` while discovery found
+    // 117. Refused, with the names the image states and were not read.
+    if funcs.is_empty() {
+        let unread: Vec<String> = match img.image().symbols() {
+            n0xis_sources::Answer::Read(p) => p.not_read.iter().map(|u| format!("{} ({})", u.part, u.why)).collect(),
+            n0xis_sources::Answer::NotRead { why } => vec![format!("the symbols ({why})")],
+        };
+        let not_read = if unread.is_empty() { String::new() } else { format!("; not read: {}", unread.join("; ")) };
+        return ir_err(
+            "no-named-functions",
+            &format!(
+                "the image names no function this reader reads, and a signature is a function's name: functions found without one would \
+                 give signatures that name nothing{not_read}"
+            ),
+            pretty,
+        );
+    }
     let mut lines: Vec<String> = Vec::new();
     let mut sigs: Vec<serde_json::Value> = Vec::new();
     let mut skipped_short = 0usize;

@@ -1561,7 +1561,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x const identify` | Recognize magic constants. Provide `--value`, or a function (`--file/--pid/--snapshot` + `--addr`), or a Lua chunk (`--lua`) |
 | `n0x input probe` | Try each actuation method and report which the OS input stack registers and whether each carries the `LLKHF_INJECTED` flag a target may filter |
 | `n0x locate by-transition` | Snapshot → operator toggles one thing → rescan → keep only what changed |
-| `n0x sig gen` | Generate a FLIRT-class `.npat` signature database from a *symbolized* image: fingerprint each named function's leading bytes, wildcarding the displacements a linker varies (relative call/jump targets, RIP-relative offsets). Feed the output back with `decomp … --flirt` to name the same functions in a *stripped* binary that statically links them |
+| `n0x sig gen` | Generate a FLIRT-class `.npat` signature database from a *symbolized* image: fingerprint each named function's leading bytes, wildcarding the displacements a linker varies (relative call/jump targets, RIP-relative offsets). An image that names no function this reader reads is refused (`no-named-functions`), with the name tables it states and were not read (a PE's COFF symbol table). Feed the output back with `decomp … --flirt` to name the same functions in a *stripped* binary that statically links them |
 | `n0x sig validate` | Report which bytes are invariant across samples; refuse to bless a signature from <3 deliberately-varied samples |
 
 ### UI-layer localization (Phase 9, marked invalid) (4)

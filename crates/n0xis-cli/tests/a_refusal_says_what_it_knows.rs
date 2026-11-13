@@ -56,3 +56,16 @@ fn analyze_on_what_it_does_not_take_does_not_ask_for_a_pe() {
     assert!(message.contains("--file"), "{a}");
     assert!(!message.contains("needs a static PE"), "the same command reads an ELF: {a}");
 }
+
+/// `sig gen` on an image that names no function is not a library of none: a
+/// PE whose names are in no table this reader reads (here no export table and
+/// no COFF symbols; on the audit's mingw image, a COFF symbol table) answered
+/// `functions_total: 0, ok: true` over the functions its `.text` holds.
+#[test]
+fn sig_gen_on_an_image_that_names_nothing_refuses() {
+    const PE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/imports/ordinals-i686.exe");
+    let dir = project("sig-gen");
+    let a = n0x(&dir, &["sig", "gen", "--file", PE]);
+    assert_eq!(a["ok"], false, "{a}");
+    assert_eq!(a["error"]["code"], "no-named-functions", "{a}");
+}
