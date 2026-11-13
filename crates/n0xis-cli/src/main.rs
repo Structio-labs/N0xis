@@ -4217,8 +4217,27 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
         if matches!(src, Src::Static(_)) && src.section_range(".pdata").is_none() {
             return ir_err("discover-failed", "this image has no `.pdata` table, which only a 64-bit PE has. Without --pdata, discovery reads its other tables and its code", pretty);
         }
+        // A window narrows the table as it narrows the scan: the same one
+        // window the default path resolves from `--start`/`--size`, and the
+        // functions that start in it. It was accepted here and ignored without
+        // a word, so a page of the whole table came back as the window's.
+        let window = if explicit_start.is_some() || a.size.is_some() {
+            let text = match &src {
+                Src::Static(pe) => pe.text_range(),
+                Src::Live(l) => l.text_range(),
+                Src::Snap(_) | Src::Remote(_) => None,
+            };
+            let ranges = n0xis_frontend::discovered::image_code_ranges(&src, text, region_len, explicit_start, a.size, bytes_base);
+            if ranges.is_empty() {
+                return ir_err("no-range", "could not resolve the window: pass --start and --size", pretty);
+            }
+            Some(ranges)
+        } else {
+            None
+        };
+        let in_window = |va: Va| window.as_ref().is_none_or(|w| w.iter().any(|&(s, n)| va.0 >= s.0 && va.0 - s.0 < n as u64));
         let run_pdata = |ctx: &Ctx| -> bool {
-            match n0xis_core::discover_pdata(ctx.source, base) {
+            match n0xis_core::discover_pdata(ctx.source, base).map(|all| all.into_iter().filter(|f| in_window(f.va)).collect::<Vec<_>>()) {
                 Ok(all) => {
                     // `.pdata` is an exact table, so the total is known for
                     // free — and it *must* be reported. A 94 MB PE yields

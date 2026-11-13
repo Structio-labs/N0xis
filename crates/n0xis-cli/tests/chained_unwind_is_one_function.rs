@@ -160,6 +160,17 @@ fn the_default_list_starts_no_function_in_a_continuation() {
 }
 
 #[test]
+fn a_window_narrows_the_pdata_list() {
+    // `h`, by its symbol: the export table and the recording agree on it.
+    let truth = readobj_functions();
+    let (&h, t) = truth.iter().find(|(_, t)| t.continuations.is_empty()).expect("one function of one entry");
+    let size = (t.end - h).to_string();
+    let v = run(&project("window"), &["function", "discover", "--file", &image(), "--pdata", "--start", &hex(h), "--size", &size]);
+    assert_eq!(listed(&v["data"]).keys().copied().collect::<Vec<_>>(), vec![h], "only the function in the window: {v}");
+    assert_eq!(v["meta"]["total"], 1, "{v}");
+}
+
+#[test]
 fn decomp_ends_where_the_last_contiguous_part_ends_and_goes_on_in_the_part_apart() {
     let truth = readobj_functions();
     let dir = project("decomp");
