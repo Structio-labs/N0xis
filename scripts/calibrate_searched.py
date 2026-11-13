@@ -135,6 +135,27 @@ MUTATIONS = [
     # It is told it has no exception table, and the profile says nothing.
     (REGISTRY, "&& img.image().sections().is_empty()", "&& false", "n0xis-cli", "an_image_without_sections_is_read_by_its_segments", "what_a_section_name_finds_is_said_to_be_not_read"),
     (MAIN, "if elf.image().sections().is_empty() {", "if false {", "n0xis-cli", "an_image_without_sections_is_read_by_its_segments", "what_a_section_name_finds_is_said_to_be_not_read"),
+    # Text in UTF-16 is not read: a file with a byte-order mark, a binary's wide runs, a wide literal.
+    (MAIN, "if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {", "if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]).filter(|_| false) {", "n0xis-cli", "a_text_search_reads_wide_text", "concept_grep_reads_a_utf16_file"),
+    (MAIN, "for wide in n0xis_core::find_strings(&bytes, Va(0), 4, &[n0xis_core::StringEncoding::Utf16le]) {", "for wide in Vec::<n0xis_core::FoundString>::new() {", "n0xis-cli", "a_text_search_reads_wide_text", "concept_grep_reads_wide_runs_in_a_binary_file"),
+    ("crates/n0xis-core/src/xref_string.rs", "Encoded::find(data, data_start, &wide, terminated, 2)", "Encoded::find(data, data_start, &[], terminated, 2)", *CORE_LIB, "xref_string::tests::a_utf16le_literal_and_its_reference_are_found"),
+    ("crates/n0xis-core/src/xref_string.rs", "Encoded::find(data, data_start, &wide, terminated, 2)", "Encoded::find(data, data_start, &[], terminated, 2)", "n0xis-cli", "a_text_search_reads_wide_text", "xref_string_finds_a_referenced_wide_literal"),
+    # Junk by the shape of the text again: whatever the lift says.
+    ("crates/n0xis-core/src/deobfuscate.rs", "MicroStmt::Assign { dst, value: MicroExpr::Var(v) } => v == dst,\n                        _ => false,", "MicroStmt::Assign { dst, value: MicroExpr::Var(v) } => v == dst,\n                        _ => true,", *CORE_LIB, "deobfuscate::tests::a_32_bit_self_move_on_x86_64_is_not_junk"),
+    # Every hit is a finding, whatever chance gives.
+    ("crates/n0xis-luajit/src/lcg.rs", "let above_chance = expected_by_chance < CHANCE_BOUND;", "let above_chance = true;", "n0xis-luajit", None, "lcg::tests::hits_are_weighed_against_what_chance_gives"),
+    # Sections searched one at a time again.
+    (MAIN, "let past_end = if whole_image { n0xis_core::PastEnd::ReadOn } else { n0xis_core::PastEnd::Stop };", "let past_end = if whole_image { n0xis_core::PastEnd::Stop } else { n0xis_core::PastEnd::Stop };", "n0xis-cli", "a_text_search_reads_wide_text", "find_reads_over_the_seam_of_two_sections_that_touch"),
+    # An empty slice of no register, or of a place outside the function.
+    (REGISTRY, "if ctx.arch.regs().by_name(&reg).is_none() && !insns()", "if false && ctx.arch.regs().by_name(&reg).is_none() && !insns()", "n0xis-cli", "a_refusal_says_what_it_knows", "ir_slice_of_no_register_or_outside_the_function_refuses"),
+    (REGISTRY, "&& !insns().any(|i| at.get() >= i.va.get()", "&& false && !insns().any(|i| at.get() >= i.va.get()", "n0xis-cli", "a_refusal_says_what_it_knows", "ir_slice_of_no_register_or_outside_the_function_refuses"),
+    # `.pdata` entries counted as functions again; `--arch` taken and ignored.
+    ("crates/n0xis-core/src/profile.rs", "Some(table.functions.len())", "Some(table.functions.len().max(exception_size as usize / 12))", "n0xis-cli", "chained_unwind_is_one_function", "the_profile_counts_functions_not_entries"),
+    (MAIN, "    if a.pdata\n        && let Some(asked) = a.arch.as_deref()", "    if false\n        && let Some(asked) = a.arch.as_deref()", "n0xis-cli", "chained_unwind_is_one_function", "an_arch_with_the_pdata_list_is_refused"),
+    # A PE with no MSVC RTTI is answered `count: 0` alone.
+    (REGISTRY, "if msvc_only && none_found {", "if false && msvc_only && none_found {", "n0xis-cli", "a_count_of_nothing_says_what_was_not_read", "an_rtti_scan_of_a_pe_that_finds_nothing_says_only_msvc_is_read"),
+    # Clearing nothing writes a record.
+    ("crates/n0xis-project/src/annotate.rs", "if value.is_none() && !all.contains_key(&key) {", "if false {", "n0xis-project", None, "annotate::tests::clearing_nothing_makes_no_record"),
 ]
 
 

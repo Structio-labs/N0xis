@@ -36,7 +36,8 @@ fn dir_with(files: &[(&str, Vec<u8>)]) -> PathBuf {
     dir
 }
 
-fn listed(dir: &PathBuf) -> Vec<String> {
+/// Each file listed, as `(name, kind)`.
+fn listed(dir: &PathBuf) -> Vec<(String, String)> {
     let out = support::isolated(Command::new(env!("CARGO_BIN_EXE_n0xis")))
         .args(["concept", "grep", TERM, "--dir", "docs"])
         .current_dir(dir)
@@ -45,7 +46,9 @@ fn listed(dir: &PathBuf) -> Vec<String> {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
     assert_eq!(v["ok"], true, "{v}");
     let hits = v["data"]["hits"].as_array().unwrap_or_else(|| panic!("no hits list: {v}"));
-    hits.iter().filter_map(|h| h["id"].as_str()).map(|id| id.rsplit(['/', '\\']).next().unwrap().to_string()).collect()
+    hits.iter()
+        .filter_map(|h| Some((h["id"].as_str()?.rsplit(['/', '\\']).next()?.to_string(), h["kind"].as_str()?.to_string())))
+        .collect()
 }
 
 #[test]
@@ -57,7 +60,10 @@ fn concept_grep_reads_a_utf16_file() {
     let dir = dir_with(&[("le.txt", le), ("be.txt", be)]);
     let mut got = listed(&dir);
     got.sort();
-    assert_eq!(got, ["be.txt", "le.txt"]);
+    // Read as text, the encoding its mark states: not as a binary's runs, which
+    // find an ASCII term in UTF-16LE too, and nothing else of the file.
+    let text = |n: &str| (n.to_string(), "text".to_string());
+    assert_eq!(got, [text("be.txt"), text("le.txt")]);
 }
 
 #[test]
@@ -67,7 +73,7 @@ fn concept_grep_reads_wide_runs_in_a_binary_file() {
     bin.extend(utf16le(TERM));
     bin.extend([0x00, 0x00, 0xFE, 0x10]);
     let dir = dir_with(&[("res.bin", bin)]);
-    assert_eq!(listed(&dir), ["res.bin"]);
+    assert_eq!(listed(&dir), [("res.bin".to_string(), "strings".to_string())]);
 }
 
 #[test]
