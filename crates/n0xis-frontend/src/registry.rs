@@ -1629,6 +1629,20 @@ impl Plugin for AnalysisPasses {
                 // and on a PE carrying both tables they answered differently
                 // about the same image.
                 let Some(all) = scan_unwind(&resolved.src) else {
+                    // Both tables are found by their section's name. An image
+                    // that states no section may hold one all the same (an ELF's
+                    // `PT_GNU_EH_FRAME` segment), and was told it had neither
+                    // (audit 2026-11-06).
+                    if let Src::Static(img) = &resolved.src
+                        && img.image().sections().is_empty()
+                    {
+                        return Response::error(
+                            "no-exception-table",
+                            "the image states no section headers, and `.eh_frame` and `.pdata` are found by their section's name: \
+                             its exception tables, if it has any, are not read"
+                                .to_string(),
+                        );
+                    }
                     return Response::error(
                         "no-exception-table",
                         "neither `.eh_frame` (ELF DWARF CFI) nor `.pdata` (PE unwind) is present in this image".to_string(),

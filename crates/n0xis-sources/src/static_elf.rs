@@ -753,11 +753,31 @@ impl StaticElf {
             }
         };
         let relocated = read_relocated_words(&elf, &bytes);
-        let placed = sections
-            .iter()
-            .filter(|s| s.in_image)
-            .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
-            .collect();
+        // An image with no section headers (`e_shnum` 0: stripped of them, or
+        // made by a tool that writes none) is still loaded, by its program
+        // headers: the loader never reads a section header. Placed by its
+        // `PT_LOAD` segments, then, as the loader places it; with none of
+        // either, nothing is placed. Placing only sections answered "address
+        // not mapped" inside a `PT_LOAD` and made every read of such an
+        // image come back empty (audit 2026-11-06).
+        let placed = if elf.section_headers.is_empty() {
+            loads()
+                .filter_map(|ph| {
+                    Some(Placement {
+                        va: ph.p_vaddr,
+                        end: ph.p_vaddr.saturating_add(ph.p_memsz),
+                        file_offset: usize::try_from(ph.p_offset).ok()?,
+                        file_size: usize::try_from(ph.p_filesz).ok()?,
+                    })
+                })
+                .collect()
+        } else {
+            sections
+                .iter()
+                .filter(|s| s.in_image)
+                .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
+                .collect()
+        };
         let public_sections = sections
             .iter()
             .map(|s| Section {

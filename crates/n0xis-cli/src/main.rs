@@ -4123,7 +4123,23 @@ fn cmd_profile(a: ProfileArgs, pretty: bool) -> bool {
             .map(|(va, name)| n0xis_core::ExportInfo { name, va, index: None, forwarder: None, thunk_target: None, thunk_kind: None })
             .collect();
         let profile = n0xis_core::assemble_profile(elf.image_base(), elf.machine(), sections, exports, None, a.exports);
-        let advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+        let mut advisories = n0xis_core::advisories(&profile, metadata.as_deref(), a.pid.is_some());
+        // An image with no section headers is loaded by its segments, and so
+        // read by them; what a section's name finds is not there. The profile
+        // listed no section and said nothing of it (audit 2026-11-06).
+        if elf.image().sections().is_empty() {
+            let loads = elf.image().segments().list.len();
+            advisories.push(n0xis_core::Advisory {
+                command: "function discover, xref to, xref string, function eh, rtti scan".into(),
+                verdict: "ineffective".into(),
+                reason: format!(
+                    "the image states no section headers, so nothing a section's name finds is found: no `.text` for a default code \
+                     window (discover and xref refuse: pass --start and --size), no `.eh_frame` (function eh refuses), no `.rodata` or \
+                     `.data` to read vtables from (rtti scan reads none). Reads by address (mem read, disasm, find, strings) go through \
+                     its {loads} loadable segments"
+                ),
+            });
+        }
         let data = json!({
             "image": profile,
             "il2cpp": metadata.as_ref().map(|p| json!({

@@ -443,7 +443,24 @@ impl ImageSource {
     /// ranges a byte/string search (`find`) can actually read. Sections that
     /// occupy address space but hold no file bytes (`.bss`) are skipped; the
     /// readable size is the on-disk size.
+    ///
+    /// An image that states no section at all (an ELF with no section
+    /// headers) is placed by its segments, so its segments are what can be
+    /// read: each named `segment N` in the order the image lists them. Without
+    /// them a search of such an image read nothing and answered `count: 0`
+    /// over a string its loaded bytes hold (audit 2026-11-06).
     pub fn sections(&self) -> Vec<(String, Va, u64)> {
+        if self.image.sections().is_empty() {
+            return self
+                .image
+                .segments()
+                .list
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.file_size > 0)
+                .map(|(i, s)| (format!("segment {i}"), s.va, s.file_size.min(s.mem_size)))
+                .collect();
+        }
         self.image.sections().iter().filter(|s| s.file_size > 0).map(|s| (s.name.clone(), s.va, s.file_size)).collect()
     }
 
