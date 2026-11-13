@@ -1,0 +1,59 @@
+
+chained.dll:	file format coff-x86-64
+
+Disassembly of section .text:
+
+0000000180001000 <f>:
+180001000:     	pushq	%rbx
+180001001:     	movl	%ecx, %eax
+180001003:     	pushq	%rsi
+180001004:     	addl	$0x11, %eax
+180001007:     	addl	$0x22, %eax
+18000100a:     	popq	%rsi
+18000100b:     	popq	%rbx
+18000100c:     	retq
+18000100d:     	int3
+18000100e:     	int3
+18000100f:     	int3
+
+0000000180001010 <g>:
+180001010:     	pushq	%rbx
+180001011:     	subq	$0x20, %rsp
+180001015:     	movl	%ecx, %ebx
+180001017:     	testl	%ebx, %ebx
+180001019:     	js	0x180001040 <h+0x10>
+18000101b:     	leal	0x7(%rbx), %eax
+18000101e:     	addq	$0x20, %rsp
+180001022:     	popq	%rbx
+180001023:     	retq
+180001024:     	int3
+180001025:     	int3
+180001026:     	int3
+180001027:     	int3
+180001028:     	int3
+180001029:     	int3
+18000102a:     	int3
+18000102b:     	int3
+18000102c:     	int3
+18000102d:     	int3
+18000102e:     	int3
+18000102f:     	int3
+
+0000000180001030 <h>:
+180001030:     	pushq	%rbx
+180001031:     	leal	0x3(%rcx), %eax
+180001034:     	popq	%rbx
+180001035:     	retq
+180001036:     	int3
+180001037:     	int3
+180001038:     	int3
+180001039:     	int3
+18000103a:     	int3
+18000103b:     	int3
+18000103c:     	int3
+18000103d:     	int3
+18000103e:     	int3
+18000103f:     	int3
+180001040:     	callq	0x180001030 <h>
+180001045:     	movl	$0x1234, %eax           # imm = 0x1234
+18000104a:     	jmp	0x18000101e <g+0xe>

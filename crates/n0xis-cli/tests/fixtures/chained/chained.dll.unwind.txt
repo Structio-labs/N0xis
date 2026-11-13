@@ -1,0 +1,148 @@
+
+File: chained.dll
+Format: COFF-x86-64
+Arch: x86_64
+AddressSize: 64bit
+UnwindInformation [
+  RuntimeFunction {
+    StartAddress: (0x180001000)
+    EndAddress: (0x180001003)
+    UnwindInfoAddress: (0x180002058)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 1
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 1
+      UnwindCodes [
+        0x01: PUSH_NONVOL reg=RBX
+      ]
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x180001003)
+    EndAddress: (0x180001007)
+    UnwindInfoAddress: (0x180002060)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x4)
+        ChainInfo (0x4)
+      ]
+      PrologSize: 1
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 1
+      UnwindCodes [
+        0x01: PUSH_NONVOL reg=RSI
+      ]
+      Chained {
+        StartAddress: (0x180001000)
+        EndAddress: (0x180001003)
+        UnwindInfoAddress: (0x180002058)
+      }
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x180001007)
+    EndAddress: (0x18000100D)
+    UnwindInfoAddress: (0x180002074)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x4)
+        ChainInfo (0x4)
+      ]
+      PrologSize: 0
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 0
+      UnwindCodes [
+      ]
+      Chained {
+        StartAddress: (0x180001000)
+        EndAddress: (0x180001003)
+        UnwindInfoAddress: (0x180002058)
+      }
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x180001010)
+    EndAddress: (0x180001017)
+    UnwindInfoAddress: (0x180002084)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 5
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 2
+      UnwindCodes [
+        0x05: ALLOC_SMALL size=32
+        0x01: PUSH_NONVOL reg=RBX
+      ]
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x180001017)
+    EndAddress: (0x180001024)
+    UnwindInfoAddress: (0x18000208C)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x4)
+        ChainInfo (0x4)
+      ]
+      PrologSize: 0
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 0
+      UnwindCodes [
+      ]
+      Chained {
+        StartAddress: (0x180001010)
+        EndAddress: (0x180001017)
+        UnwindInfoAddress: (0x180002084)
+      }
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x180001030)
+    EndAddress: (0x180001036)
+    UnwindInfoAddress: (0x1800020AC)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 1
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 1
+      UnwindCodes [
+        0x01: PUSH_NONVOL reg=RBX
+      ]
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x180001040)
+    EndAddress: (0x18000104C)
+    UnwindInfoAddress: (0x18000209C)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x4)
+        ChainInfo (0x4)
+      ]
+      PrologSize: 0
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 0
+      UnwindCodes [
+      ]
+      Chained {
+        StartAddress: (0x180001017)
+        EndAddress: (0x180001024)
+        UnwindInfoAddress: (0x18000208C)
+      }
+    }
+  }
+]

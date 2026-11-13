@@ -52,6 +52,10 @@ pub struct EhFunction {
     /// Exclusive end, from the FDE's `pc_range` — an authoritative extent, like
     /// ELF `st_size` and unlike the end-of-function heuristic.
     pub end: Va,
+    /// Code of this function that does not continue `[start, end)`: an x64
+    /// unwind continuation placed elsewhere ([`n0xis_sources::UnwindFunction::detached`]).
+    /// An FDE states none.
+    pub detached: Vec<n0xis_sources::FunctionPart>,
     pub regions: Vec<EhRegion>,
 }
 
@@ -383,6 +387,7 @@ pub fn scan_eh_frame(src: &dyn MemorySource, eh_frame: (Va, u64), order: ByteOrd
                     out.push(EhFunction {
                         start: Va(pc_begin),
                         end: Va(pc_begin.saturating_add(pc_range)),
+                        detached: Vec::new(),
                         regions,
                     });
                 }
@@ -438,33 +443,29 @@ const MAX_SCOPES: u64 = 512;
 /// `FuncInfo` (magic `0x19930520`–`0x19930522`) is recognized so it is never
 /// mistaken for a scope table — its try-block map is a follow-on.
 pub fn scan_pdata(src: &dyn MemorySource, image_base: Va, pdata: (Va, u64)) -> Vec<EhFunction> {
-    let (base, size) = (pdata.0.get(), pdata.1.min(MAX_EH_FRAME as u64) as usize);
-    let Ok(table) = src.read(Va(base), size) else { return Vec::new() };
+    let size = pdata.1.min(MAX_EH_FRAME as u64) as usize;
     let code = src.code_ranges();
     let is_code = |va: u64| code.iter().any(|(s, n)| va >= s.get() && va < s.get().saturating_add(*n));
-    let va = |rva: u64| image_base.get().saturating_add(rva);
-
+    // One function per root entry, its continuations as parts
+    // ([`n0xis_sources::read_unwind_table`]): a continuation carries no handler
+    // data of its own, and it is no function.
+    let Ok(table) = n0xis_sources::read_unwind_table(src, image_base, pdata.0, size, n0xis_sources::pe_isa(src, image_base)) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    let mut cur = Cur::new(&table, PE_ORDER);
-    let mut records = 0usize;
-    while records < MAX_RECORDS {
-        records += 1;
-        let (Some(begin), Some(end), Some(unwind)) = (cur.u32(), cur.u32(), cur.u32()) else { break };
-        if begin == 0 && end == 0 && unwind == 0 {
-            break;
-        }
-        if end <= begin {
-            continue;
-        }
-        let mut regions = pe_regions(src, image_base, unwind, &is_code);
+    for f in table.functions.into_iter().take(MAX_RECORDS) {
+        let (start, end, detached) = (f.start(), f.contiguous_end(), f.detached());
+        let mut regions = pe_regions(src, image_base, u64::from(f.unwind_rva()), &is_code);
         // Attribute a protected range to the function whose bytes it covers.
         // MSVC compiles each `catch` into a **funclet** with its own `.pdata`
         // entry, and every one of them points at the *parent's* `FuncInfo` — so
         // without this filter the parent's try ranges are reported again under
         // each funclet, where they do not lie. Measured on a neutral C++ runtime
-        // DLL: 199 of 360 ranges were outside the entry that named them.
-        regions.retain(|r| r.try_start.get() >= va(begin) && r.try_end.get() <= va(end));
-        out.push(EhFunction { start: Va(va(begin)), end: Va(va(end)), regions });
+        // DLL: 199 of 360 ranges were outside the entry that named them. The
+        // function's bytes are all of its parts, not its first entry's.
+        let within = |lo: Va, hi: Va| (lo >= start && hi <= end) || detached.iter().any(|p| lo >= p.start && hi <= p.end);
+        regions.retain(|r| within(r.try_start, r.try_end));
+        out.push(EhFunction { start, end, detached, regions });
     }
     out
 }

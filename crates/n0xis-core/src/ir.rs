@@ -376,6 +376,10 @@ impl CfgPass {
         // as a tail call into a separate function, leaving a dispatch block's
         // conditional branch with no in-function successor.
         let instrs = fold_cold_partitions(ctx, input.start, instrs);
+        // And every part the unwind table states for it apart from its first
+        // range: the same shape, stated by the image rather than recognized by
+        // a name, so it needs no symbol table.
+        let instrs = fold_detached_parts(ctx, input.start, instrs);
 
         build(ctx, &instrs, input.start, how)
     }
@@ -457,6 +461,41 @@ fn fold_cold_partitions(ctx: &Ctx, start: Va, mut instrs: Vec<DecodedInsn>) -> V
         for c in cold {
             if c.va.0 < end {
                 present.insert(c.va.0);
+                instrs.push(c);
+            }
+        }
+    }
+    instrs
+}
+
+/// Fold in every part of the function at `start` that the image's unwind table
+/// states apart from its first range ([`crate::StatedFunction::detached`]): an
+/// x64 continuation entry placed elsewhere, chained back to this function's
+/// first entry. A jump into one is a branch inside this function, not a tail
+/// call, and the body goes on there; without it the graph stopped at the jump.
+///
+/// Every part is decoded to its stated end (within the same ceiling as any
+/// stated extent) and appended after what is already there, the entry staying
+/// first. A part some instruction already covers (a `--size` window that
+/// reaches it) is not decoded twice.
+fn fold_detached_parts(ctx: &Ctx, start: Va, mut instrs: Vec<DecodedInsn>) -> Vec<DecodedInsn> {
+    let Some(stated) = ctx.functions else { return instrs };
+    let from = stated.extents.partition_point(|f| f.start < start);
+    let parts: Vec<n0xis_sources::FunctionPart> =
+        stated.extents[from..].iter().take_while(|f| f.start == start).flat_map(|f| f.detached().iter().copied()).collect();
+    if parts.is_empty() {
+        return instrs;
+    }
+    let mut present: std::collections::BTreeSet<u64> = instrs.iter().map(|i| i.va.0).collect();
+    for p in parts {
+        if present.contains(&p.start.0) {
+            continue;
+        }
+        let cap = (p.end.0.saturating_sub(p.start.0) as usize).min(MAX_DECLARED_EXTENT);
+        let Ok(bytes) = ctx.source.read(p.start, cap) else { continue };
+        let end = p.start.0 + bytes.len() as u64;
+        for c in ctx.arch.decode_stream(&bytes, p.start, bytes.len().max(DEFAULT_MAX_INSNS)) {
+            if c.va.0 < end && present.insert(c.va.0) {
                 instrs.push(c);
             }
         }

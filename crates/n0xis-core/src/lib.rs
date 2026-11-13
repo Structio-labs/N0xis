@@ -266,6 +266,11 @@ pub struct StatedFunctions<'a> {
     /// is a start with no stated extent.
     pub extents: &'a [StatedFunction],
     pub coverage: n0xis_sources::StartCoverage,
+    /// Whether any of `extents` has a part apart
+    /// ([`StatedFunction::detached`]): worked out once where the list is
+    /// attached, so a lookup on an image with none (every ELF) never walks
+    /// the list for one.
+    any_detached: bool,
 }
 
 /// The recovered vtables a pass may read, and how their slots are read.
@@ -378,8 +383,29 @@ impl<'a> Ctx<'a> {
         extents: &'a [StatedFunction],
         coverage: n0xis_sources::StartCoverage,
     ) -> Self {
-        self.functions = Some(StatedFunctions { extents, coverage });
+        let any_detached = extents.iter().any(|f| !f.detached().is_empty());
+        self.functions = Some(StatedFunctions { extents, coverage, any_detached });
         self
+    }
+
+    /// The stated function `at` is code of, in `[start, end)` or in a part
+    /// apart ([`StatedFunction::holds`]) — the one answer to "which function
+    /// holds this address" every reader of [`Self::functions`] asks.
+    ///
+    /// By start first: the nearest starts at or below `at` (a few, since an
+    /// export with no length and an unwind entry can share one start). Only
+    /// where that misses and the list has parts apart are they asked, since
+    /// a part can lie anywhere, below its function's start too.
+    pub fn function_holding(&self, at: n0xis_contracts::Va) -> Option<&'a StatedFunction> {
+        let f = self.functions?;
+        let i = f.extents.partition_point(|s| s.start.0 <= at.0);
+        if let Some(hit) = f.extents[..i].iter().rev().take(8).find(|s| s.holds(at)) {
+            return Some(hit);
+        }
+        if f.any_detached {
+            return f.extents.iter().find(|s| s.detached().iter().any(|p| p.holds(at)));
+        }
+        None
     }
     /// Attach the whole-program type store (see the field docs).
     pub fn with_type_flow(mut self, flow: &'a dyn crate::TypeFlowLookup) -> Self {

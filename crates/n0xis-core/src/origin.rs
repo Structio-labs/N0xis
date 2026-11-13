@@ -42,12 +42,44 @@ pub struct StatedFunction {
     pub start: Va,
     /// Exclusive; `end <= start` is a start with no stated extent.
     pub end: Va,
+    /// The function's code that does not continue `[start, end)`, from an x64
+    /// unwind table's continuations: private, so only [`Self::of_unwind`],
+    /// which takes a function the table's reader built from a root entry, can
+    /// state any.
+    detached: Vec<n0xis_sources::FunctionPart>,
     pub stated_by: Sources<StatedBy>,
 }
 
 impl StatedFunction {
     pub fn new(start: Va, end: Va, by: StatedBy) -> Self {
-        StatedFunction { start, end, stated_by: Sources::one(by) }
+        StatedFunction { start, end, detached: Vec::new(), stated_by: Sources::one(by) }
+    }
+
+    /// The function an unwind table states, with its parts apart.
+    pub fn of_unwind(f: &crate::EhFunction, by: StatedBy) -> Self {
+        StatedFunction { start: f.start, end: f.end, detached: f.detached.clone(), stated_by: Sources::one(by) }
+    }
+
+    /// The parts of this function that do not continue `[start, end)`, in
+    /// address order.
+    pub fn detached(&self) -> &[n0xis_sources::FunctionPart] {
+        &self.detached
+    }
+
+    /// Whether `va` is code of this function: in `[start, end)` or in one of
+    /// its parts apart. The one answer to "which stated function holds this
+    /// address" ([`crate::Ctx::function_holding`]).
+    pub fn holds(&self, va: Va) -> bool {
+        (va >= self.start && va < self.end) || self.detached.iter().any(|p| p.holds(va))
+    }
+
+    /// The one range of this function `va` lies in — `[start, end)` or a part
+    /// apart — for a reader that decodes the code before `va`.
+    pub fn range_holding(&self, va: Va) -> Option<(Va, Va)> {
+        if va >= self.start && va < self.end {
+            return Some((self.start, self.end));
+        }
+        self.detached.iter().find(|p| p.holds(va)).map(|p| (p.start, p.end))
     }
 
     /// Sort by `(start, end)` and fold every declaration of one extent into
@@ -61,6 +93,12 @@ impl StatedFunction {
                     for by in f.stated_by.iter() {
                         last.stated_by.add(*by);
                     }
+                    for p in f.detached {
+                        if !last.detached.contains(&p) {
+                            last.detached.push(p);
+                        }
+                    }
+                    last.detached.sort_unstable();
                 }
                 _ => out.push(f),
             }

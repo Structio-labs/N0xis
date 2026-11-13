@@ -404,11 +404,13 @@ fn discover_cache_generation() -> String {
     format!("disc{DISCOVERED_FORMAT}-{:08x}-", h.finish() as u32)
 }
 
-/// The format of a kept [`n0xis_core::Discovered`]: 3 since a start an ELF
+/// The format of a kept [`n0xis_core::Discovered`]: 4 since a stated end
+/// carries the function's parts apart (an x64 unwind table's continuations); 3
+/// since a start an ELF
 /// symbol declares carries the symbol's table; 2 since each start carries its
 /// sources (`n0x why`); 1 was bare `(start, end)` pairs, under the prefix
 /// `disc-`.
-const DISCOVERED_FORMAT: u32 = 3;
+const DISCOVERED_FORMAT: u32 = 4;
 
 /// Function discovery over `[start, start + size)` of an image that cannot
 /// change, kept on disk under `.n0x/discover-cache/`. The key hashes the
@@ -431,6 +433,10 @@ pub fn discovered_cached(ctx: &Ctx, start: Va, size: usize, label: &str) -> Resu
             f.end.0.hash(&mut h);
             for by in f.stated_by.iter() {
                 by.hash(&mut h);
+            }
+            // Hashed only where there are any, as the coverage below is.
+            for p in f.detached() {
+                p.hash(&mut h);
             }
         }
         // Hashed only where it is not the default, so every native image keeps

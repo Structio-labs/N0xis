@@ -69,6 +69,11 @@ pub use watch_slot::{SlotCensus, TargetSlots, WatchKind, WatchSlot};
 mod static_wasm;
 #[cfg(feature = "static-wasm")]
 pub use static_wasm::{ElementPlaced, ElementPlacement, WasmModule};
+// The x64 exception table read as functions: OS-free and over the
+// `MemorySource` seam, so the core and every image reader ask the one reader.
+mod pdata;
+pub use pdata::{pe_isa, read_unwind_table, FunctionPart, UnwindFunction, UnwindTable, MAX_EXCEPTION_TABLE};
+
 #[cfg(feature = "static-pe")]
 mod static_pe;
 #[cfg(feature = "static-pe")]

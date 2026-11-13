@@ -61,6 +61,12 @@ pub struct FunctionWhy {
     /// The name the function list gives it, the layer that gave it, and every
     /// other layer that names the start.
     pub name: NameWhy,
+    /// The part of the function the address is in, where that is a part apart
+    /// from `[start, end)` (an x64 unwind continuation placed elsewhere, which
+    /// the same declaration states). Absent where the address is in the first
+    /// range, which is every function with no such part.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_part: Option<n0xis_sources::FunctionPart>,
 }
 
 /// A table that states function extents.
@@ -295,6 +301,7 @@ pub fn answer(
 ) -> Result<WhyArtifact, Inconsistent> {
     let function = match containing(ctx, names, found, addr, cfg_end)? {
         Located::In(entry, end) => Containing::Found(Box::new(FunctionWhy {
+            in_part: part_holding(entry, addr),
             start: entry.va,
             index: n0xis_core::function_index(ctx, entry.va),
             addr_is_start: addr == entry.va,
@@ -336,6 +343,11 @@ fn containing<'a>(
     if end_va(&end).is_some_and(|end| addr < end) {
         return Ok(Located::In(nearest, end));
     }
+    // A part of a listed function apart from its first range: it can lie
+    // anywhere, below the function's start too, so every entry is asked.
+    if let Some(entry) = found.entries.iter().find(|e| part_holding(e, addr).is_some()) {
+        return Ok(Located::In(entry, end_why(ctx, names, entry, cfg_end)?));
+    }
     for entry in found.entries[..below - 1].iter().rev() {
         if let Some((end, _)) = Discovered::end_of(ctx, entry)
             && addr < end
@@ -357,6 +369,12 @@ fn containing<'a>(
             nearest.va
         ),
     }))
+}
+
+/// The part apart from `[start, end)` of the listed function `entry` that
+/// `addr` lies in, as its declaration states it.
+fn part_holding(entry: &DiscoveredStart, addr: Va) -> Option<n0xis_sources::FunctionPart> {
+    entry.stated_end.as_ref()?.detached.iter().find(|p| p.holds(addr)).copied()
 }
 
 /// How far the function is known to reach: its end, or, where its graph was

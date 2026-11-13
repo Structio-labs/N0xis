@@ -351,11 +351,7 @@ fn coff_machine(bytes: &[u8]) -> Isa {
         return Isa::Unreadable;
     }
     match rd(e_lfanew + 4) {
-        Some(0x8664) => Isa::X64,
-        Some(0x014c) => Isa::X86,
-        Some(0xAA64) => Isa::Arm64,
-        Some(0x01c0 | 0x01c4) => Isa::Arm,
-        Some(raw) => Isa::Unrecognized { raw },
+        Some(raw) => crate::pdata::isa_of_coff_machine(raw),
         None => Isa::Unreadable,
     }
 }
@@ -769,24 +765,21 @@ fn export_symbols(table: &[PeExport], sections: &[SectionRange]) -> BTreeMap<u64
     out
 }
 
-/// Read the `.pdata` exception table into `begin VA → exclusive end VA`.
+/// Read the `.pdata` exception table into `start VA → exclusive end VA`, one
+/// entry per **function** ([`crate::read_unwind_table`]): a continuation entry
+/// (`UNW_FLAG_CHAININFO`) is no start, and the end is where the code that runs
+/// on from the start ends, the root entry with every continuation that follows
+/// it without a gap. A part elsewhere is not an extent a start can state; the
+/// unwind extents the core attaches carry it.
 ///
 /// The table is found through the optional header's exception data directory
-/// (index 3), and each `RUNTIME_FUNCTION` is three RVAs: begin, end, unwind.
-/// Every bound comes from the bytes actually present — nothing is sized from a
-/// value read out of the file — so a truncated or hostile table yields a short
-/// map rather than a large allocation.
+/// (index 3). Every bound comes from the bytes actually present — nothing is
+/// sized from a value read out of the file — so a truncated or hostile table
+/// yields a short map rather than a large allocation.
 ///
-/// Absent (`0` RVA, no unwind info, 32-bit PE) leaves the map empty.
-///
-/// **A known wrong answer, kept because this step changes none:** an ARM64
-/// PE32+ passes the magic check, and its `.pdata` holds 8-byte records (a
-/// begin RVA and an unwind-data RVA or packed unwind word), which are read
-/// here as 12-byte x86-64 ones. On an ARM64 DLL linked here (clang and
-/// lld-link 23.1.1), `llvm-readobj --unwind` lists four functions of 60, 44,
-/// 40 and 40 bytes; this map holds one, the first, ending `0x121efd9` bytes
-/// past its start (`function discover --pdata` answers the same in 0.3.5).
-/// It goes with §5 step 4's one `.pdata` parser.
+/// Absent (`0` RVA, no unwind info, 32-bit PE) leaves the map empty. An ARM64
+/// PE32+ is read as the reader documents ([`crate::read_unwind_table`]), the
+/// known wrong answer it keeps.
 fn parse_pdata(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> BTreeMap<u64, u64> {
     let mut out = BTreeMap::new();
     let rd32 = |off: usize| -> Option<u32> {
@@ -808,33 +801,15 @@ fn parse_pdata(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> BTre
     if rva == 0 || size == 0 {
         return out;
     }
-    let va = image_base.saturating_add(rva as u64);
-    let Some(sec) = sections.iter().find(|s| va >= s.va_start && va < s.va_end) else {
-        return out;
-    };
-    let in_sec = (va - sec.va_start) as usize;
-    if in_sec >= sec.file_size {
-        return out;
-    }
-    let start = sec.file_offset + in_sec;
-    let avail = (sec.file_size - in_sec).min(size as usize);
-    let end = (start + avail).min(bytes.len());
-    let table = match bytes.get(start..end) {
-        Some(t) => t,
-        None => return out,
-    };
-    let mut off = 0usize;
-    while off + 12 <= table.len() {
-        let begin = u32::from_le_bytes(table[off..off + 4].try_into().unwrap());
-        let fend = u32::from_le_bytes(table[off + 4..off + 8].try_into().unwrap());
-        off += 12;
-        if begin == 0 && fend == 0 {
-            break; // the table's terminator
-        }
-        if fend <= begin {
-            continue; // a malformed entry states no extent
-        }
-        out.insert(image_base.saturating_add(begin as u64), image_base.saturating_add(fend as u64));
+    let placed: Vec<Placement> = sections
+        .iter()
+        .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
+        .collect();
+    let relocated = RelocatedWords::NotRead(RelocationsNotRead::FormatNotRead);
+    let view = LoadedBytes { file: bytes, placed: &placed, written_by_loader: &relocated };
+    let table = crate::read_unwind_table(&view, Va(image_base), Va(image_base.saturating_add(rva as u64)), size as usize, coff_machine(bytes));
+    for f in table.map(|t| t.functions).unwrap_or_default() {
+        out.insert(f.start().0, f.contiguous_end().0);
     }
     out
 }

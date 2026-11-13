@@ -50,6 +50,12 @@ pub struct FunctionCandidate {
     /// 3). Absent on a native image, whose functions are their addresses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
+    /// The function's code that does not continue `[va, end)`: an x64 unwind
+    /// continuation placed elsewhere, part of this function and no start of
+    /// another. Absent where there is none, which is every image but a PE
+    /// whose table splits a function apart.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub detached: Vec<n0xis_sources::FunctionPart>,
 }
 
 /// Authoritative function discovery from the PE exception directory (the
@@ -66,11 +72,6 @@ pub struct FunctionCandidate {
 /// CLI's hand-written `--pdata` handler a symbol-carrying context, which it
 /// does not build today — a known gap, stated here rather than left to be
 /// discovered as "why does `--pdata` lose the names".
-/// Upper bound on the exception directory this will read in one go. Generous
-/// against real images (a browser engine's table is under a megabyte) and
-/// bounded against a header that states a size the file cannot hold.
-const MAX_EXCEPTION_TABLE: usize = 64 * 1024 * 1024;
-
 pub fn discover_pdata(source: &dyn MemorySource, module_base: Va) -> Result<Vec<FunctionCandidate>, CoreError> {
     let hdr = source.read(module_base, 0x400)?;
     let rd_u32 = |off: usize| -> Option<u32> { hdr.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())) };
@@ -105,34 +106,24 @@ pub fn discover_pdata(source: &dyn MemorySource, module_base: Va) -> Result<Vec<
     }
     // `exc_size` is a length read out of the image's own header, so it is
     // untrusted: it bounds the read, it never sizes an allocation on its own.
-    let table = source.read(module_base.offset(exc_rva as u64), (exc_size as usize).min(MAX_EXCEPTION_TABLE))?;
-    let mut out = Vec::new();
-    let mut off = 0usize;
-    // Each RUNTIME_FUNCTION is 12 bytes: BeginAddress, EndAddress, UnwindInfo
-    // (all RVAs). We only need begin+end.
-    while off + 12 <= table.len() {
-        let begin = u32::from_le_bytes(table[off..off + 4].try_into().unwrap());
-        let end = u32::from_le_bytes(table[off + 4..off + 8].try_into().unwrap());
-        off += 12;
-        if begin == 0 && end == 0 {
-            break;
-        }
-        // A RUNTIME_FUNCTION whose end does not follow its start describes no
-        // function. Dropping it is not tidiness: it is the difference between
-        // reporting a misparse and reporting a function at an address that
-        // holds none.
-        if end <= begin {
-            continue;
-        }
-        let va = module_base.offset(begin as u64);
-        out.push(FunctionCandidate {
-            name: crate::unnamed_function_name(crate::UnnamedFunction::Address(va)),
-            va,
-            end: Some(module_base.offset(end as u64)),
+    //
+    // One function per root entry, each continuation a part of it
+    // ([`n0xis_sources::read_unwind_table`]): a continuation listed as a
+    // function was a start in the middle of another one, and its root's end
+    // cut that function short.
+    let isa = n0xis_sources::pe_isa(source, module_base);
+    let table = n0xis_sources::read_unwind_table(source, module_base, module_base.offset(exc_rva as u64), exc_size as usize, isa)?;
+    Ok(table
+        .functions
+        .iter()
+        .map(|f| FunctionCandidate {
+            name: crate::unnamed_function_name(crate::UnnamedFunction::Address(f.start())),
+            va: f.start(),
+            end: Some(f.contiguous_end()),
             index: None,
-        });
-    }
-    Ok(out)
+            detached: f.detached(),
+        })
+        .collect())
 }
 
 /// The name to report for a function starting at `va`.
@@ -601,6 +592,11 @@ pub struct DiscoveredStart {
 pub struct StatedEnd {
     pub end: Va,
     pub by: Sources<StatedBy>,
+    /// The function's parts that do not continue `[start, end)`
+    /// ([`crate::StatedFunction::detached`]), as the same declaration states
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detached: Vec<n0xis_sources::FunctionPart>,
 }
 
 impl Discovered {
@@ -645,6 +641,7 @@ impl Discovered {
                 va,
                 end,
                 index: function_index(ctx, va),
+                detached: entry.stated_end.as_ref().map(|s| s.detached.clone()).unwrap_or_default(),
             });
         }
         DiscoverArtifact {
@@ -680,6 +677,10 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // only the first (docs/design/WHY.md §3).
         let mut found: BTreeMap<u64, Found> = BTreeMap::new();
         let mut declared: Vec<(u64, u64)> = Vec::new();
+        // The parts of declared functions that do not continue their first
+        // range (an x64 unwind continuation placed elsewhere): code of a
+        // function, never the start of one, wherever a rule below lands.
+        let mut parts: Vec<(u64, u64)> = Vec::new();
         let every = ctx.functions.is_some_and(|f| f.coverage == n0xis_sources::StartCoverage::Every);
         for f in ctx.functions.map_or(&[][..], |f| f.extents) {
             let (s, e) = (f.start, f.end);
@@ -687,7 +688,7 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             // export, say, on an image with no `.pdata` to give extents. It
             // seeds the start and leaves the extent to be inferred; it must not
             // overwrite a real extent already recorded for the same address.
-            let extent = (e.0 > s.0).then(|| StatedEnd { end: e, by: f.stated_by.clone() });
+            let extent = (e.0 > s.0).then(|| StatedEnd { end: e, by: f.stated_by.clone(), detached: f.detached().to_vec() });
             // A function of no bytes at the window's end — a corrupted
             // module's last body of size 0, which starts where the code
             // section ends — holds no byte of any window and is in this one,
@@ -706,8 +707,15 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             if e.0 > s.0 {
                 declared.push((s.0, e.0));
             }
+            parts.extend(f.detached().iter().map(|p| (p.start.0, p.end.0)));
         }
         declared.sort_unstable();
+        parts.sort_unstable();
+        // What brackets a gap: a declared function's range, and a part of one.
+        // The instruction after a part's end begins whatever comes next, as
+        // after a function's.
+        let mut brackets: Vec<(u64, u64)> = declared.iter().chain(&parts).copied().collect();
+        brackets.sort_unstable();
 
         // Where the image declares every function it has, with its extent (a
         // WebAssembly module: one body per defined function, and between the
@@ -735,7 +743,13 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
                 }
             }
         };
-        let inside_a_declared_function = |va: u64| declared_around(va).is_some();
+        // The part of a declared function `va` lies in, its first byte
+        // included: a part's start is no function's start.
+        let part_around = |va: u64| -> Option<(u64, u64)> {
+            let i = parts.partition_point(|(s, _)| *s <= va);
+            parts[..i].iter().rev().find(|(_, e)| va < *e).copied()
+        };
+        let inside_a_declared_function = |va: u64| declared_around(va).is_some() || part_around(va).is_some();
         // Whether the instruction that ends exactly at `va`, decoding from the
         // declared start `from`, is a `call`: then `va` is where that call
         // returns, inside the same function. `None` when the walk cannot reach
@@ -772,7 +786,7 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // It needs an extent to start from, which is why it is a rule about
         // *declared* functions: a start with no stated length says nothing
         // about where the next one begins.
-        for va in after_declared_ends(ctx, &bytes, input.start, &declared) {
+        for va in after_declared_ends(ctx, &bytes, input.start, &brackets) {
             if range.contains(&va) && !inside_a_declared_function(va) {
                 record(&mut found, va, StartSource::AfterDeclaredEnd);
             }
@@ -817,9 +831,10 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             }
             i += 1;
         }
-        let weak: BTreeSet<u64> = matches.iter().filter(|(va, marker)| !marker && va.is_multiple_of(align) && declared_around(*va).is_none()).map(|(va, _)| *va).collect();
+        let weak: BTreeSet<u64> =
+            matches.iter().filter(|(va, marker)| !marker && va.is_multiple_of(align) && !inside_a_declared_function(*va)).map(|(va, _)| *va).collect();
         let (call_targets, fallen_into) = sweep_calls_and_fallthroughs(ctx, &bytes, input.start, &weak);
-        for va in sweep_declared_gaps(ctx, &bytes, input.start, &declared, &call_targets) {
+        for va in sweep_declared_gaps(ctx, &bytes, input.start, &brackets, &call_targets) {
             if range.contains(&va) && !inside_a_declared_function(va) {
                 record(&mut found, va, StartSource::GapSweep);
             }
@@ -862,9 +877,10 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
             // since `longjmp` comes back to it indirectly, and it goes on
             // with the same function (found on a Qt build, the one false
             // start of its 5 with no unwind entry).
-            let entry = match declared_around(va) {
-                None => !fallen_into.contains(&va),
-                Some((from, _)) => marker && after_a_call(from, va) != Some(true),
+            let entry = match (part_around(va), declared_around(va)) {
+                (Some((from, _)), _) => from != va && marker && after_a_call(from, va) != Some(true),
+                (None, None) => !fallen_into.contains(&va),
+                (None, Some((from, _))) => marker && after_a_call(from, va) != Some(true),
             };
             if va.is_multiple_of(align) && entry {
                 record(&mut found, va, StartSource::Prologue);
@@ -1268,7 +1284,7 @@ mod tests {
         let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
         let found = discover_entries(&ctx, Va(0x1000), 0x40).unwrap();
         assert_eq!(sources_at(&found, 0x1023), vec![StartSource::Stated(StatedBy::EhFrame)]);
-        assert_eq!(found.entries[0].stated_end, Some(StatedEnd { end: Va(0x1030), by: Sources::one(StatedBy::EhFrame) }));
+        assert_eq!(found.entries[0].stated_end, Some(StatedEnd { end: Va(0x1030), by: Sources::one(StatedBy::EhFrame), detached: Vec::new() }));
     }
 
     /// A start only a call reaches: no prologue, no declaration.
@@ -1382,7 +1398,7 @@ mod tests {
                 StartSource::Prologue,
             ]
         );
-        assert_eq!(found.entries[0].stated_end, Some(StatedEnd { end: Va(0x100A), by: Sources::one(StatedBy::EhFrame) }));
+        assert_eq!(found.entries[0].stated_end, Some(StatedEnd { end: Va(0x100A), by: Sources::one(StatedBy::EhFrame), detached: Vec::new() }));
     }
 
     /// A function list kept on disk before the sources were recorded — bare

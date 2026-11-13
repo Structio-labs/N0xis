@@ -714,7 +714,7 @@ pub fn stated_functions(src: &Src) -> Vec<n0xis_core::StatedFunction> {
     };
     let in_plt = |va: Va| plt.iter().any(|&(lo, hi)| va >= lo && va < hi);
     let mut out: Vec<StatedFunction> = match eh_map(src).as_ref() {
-        Some(unwind) => unwind.functions.iter().filter(|f| !in_plt(f.start)).map(|f| StatedFunction::new(f.start, f.end, unwind.by)).collect(),
+        Some(unwind) => unwind.functions.iter().filter(|f| !in_plt(f.start)).map(|f| StatedFunction::of_unwind(f, unwind.by)).collect(),
         None => Vec::new(),
     };
     if let Src::Static(img) = src {

@@ -243,7 +243,7 @@ impl<'a> CodeScan<'a> {
         }
         if self.refs.pic_register {
             // What a function set is that function's: where one starts, nothing is known.
-            let function = stated_function(ctx, ins.va).map(|(s, _)| s.0);
+            let function = ctx.function_holding(ins.va).map(|f| f.start.0);
             if function != self.function {
                 self.pic.clear();
                 self.function = function;
@@ -364,11 +364,11 @@ const JUMP_LOOKBACK: u64 = 4096;
 /// The most of one function decoded for a jump in it.
 const FUNCTION_LOOKBACK: u64 = 1 << 20;
 
-/// The start and exclusive end the image states for the function `at` is in.
+/// The one range of the stated function `at` is code of that holds it: the
+/// function's `[start, end)`, or the part apart `at` lies in, for a reader that
+/// decodes the code before `at` or bounds a table by the code around it.
 fn stated_function(ctx: &Ctx, at: Va) -> Option<(Va, Va)> {
-    let f = ctx.functions?.extents;
-    let i = f.partition_point(|s| s.start.0 <= at.0);
-    f[..i].iter().rev().take(8).find(|s| s.end.0 > at.0).map(|s| (s.start, s.end))
+    ctx.function_holding(at)?.range_holding(at)
 }
 
 /// The instructions from where `at`'s function starts up to and including `at`,
