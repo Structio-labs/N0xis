@@ -121,6 +121,20 @@ MUTATIONS = [
     ("crates/n0xis-core/src/ssa.rs", "MicroExpr::Cast { bits, expr, .. } if Some(*bits) == address_bits => {", "MicroExpr::Cast { bits, expr, .. } if false && Some(*bits) == address_bits => {", *CORE_LIB, "summary::tests::an_i386_local_is_in_the_frame_and_a_store_through_an_argument_is_not"),
     # Seen through without wrapping: a 32-bit displacement stays an unsigned word.
     ("crates/n0xis-core/src/ssa.rs", "(*bits > 0 && *bits < 128).then(|| (off << shift) >> shift)", "(*bits > 0 && *bits < 128 && shift > 0).then_some(off)", *CORE_LIB, "ssa::tests::an_i386_slot_is_placed_at_its_signed_offset"),
+    # --- claims pass 4 ---
+    # The threads not walked go unsaid again.
+    (MAIN, "let not_walked = (walked < threads_in_process).then(", "let not_walked = false.then(", *WALK, "a_backtrace_of_one_thread_says_how_many_the_process_has"),
+    # An image that names nothing is a library of none again.
+    (MAIN, "    if funcs.is_empty() {\n        let unread", "    if false {\n        let unread", "n0xis-cli", "a_refusal_says_what_it_knows", "sig_gen_on_an_image_that_names_nothing_refuses"),
+    # Identical samples count as many; a pattern of wildcards is blessed.
+    ("crates/n0xis-core/src/sigvalidate.rs", "if sample_count >= min_independent && distinct_samples < min_independent && analyzed_len > 0 {", "if false {", *CORE_LIB, "sigvalidate::tests::identical_samples_are_one_sample"),
+    ("crates/n0xis-core/src/sigvalidate.rs", "if fixed == 0 && analyzed_len > 0 {", "if false {", *CORE_LIB, "sigvalidate::tests::a_signature_of_wildcards_is_not_blessed"),
+    # A sectionless ELF is placed by its sections, that is not at all; and searched by them.
+    ("crates/n0xis-sources/src/static_elf.rs", "let placed = if elf.section_headers.is_empty() {", "let placed = if false {", "n0xis-cli", "an_image_without_sections_is_read_by_its_segments", "reads_by_address_go_through_the_loadable_segments"),
+    ("crates/n0xis-sources/src/image_source.rs", "        if self.image.sections().is_empty() {\n            return self", "        if false {\n            return self", "n0xis-cli", "an_image_without_sections_is_read_by_its_segments", "reads_by_address_go_through_the_loadable_segments"),
+    # It is told it has no exception table, and the profile says nothing.
+    (REGISTRY, "&& img.image().sections().is_empty()", "&& false", "n0xis-cli", "an_image_without_sections_is_read_by_its_segments", "what_a_section_name_finds_is_said_to_be_not_read"),
+    (MAIN, "if elf.image().sections().is_empty() {", "if false {", "n0xis-cli", "an_image_without_sections_is_read_by_its_segments", "what_a_section_name_finds_is_said_to_be_not_read"),
 ]
 
 
