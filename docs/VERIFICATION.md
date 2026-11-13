@@ -2455,6 +2455,8 @@ Copies of the owner's projects, which wait for a later word.
 
 ### Wrong answers with `ok:true`, October 2026
 
+> **Re-measured 2026-11-14 (bc901d4)** with the same harness, images and inputs, for the decompiled bodies: [ledger: decomp.bodies-october-set]. On 8 x86 images, counting only bodies the harness ran on both sides, right went from 49 to 76 and wrong from 36 to 11; it catches 155 of 166 planted changes, and misses constants its inputs never reach. Closed: the dropped pass-through argument, the loop that tests a value its body defines later (64-bit images), the arithmetic shift printed as unsigned, the 64-bit magic multiply printed as a 32-bit product, the `void*` subscript, and the virtual call in tail position. The i386 pushed argument no longer makes a wrong body (0 wrong on ELF32 and PE32), but 4 to 6 bodies per i386 image now say their return type is not known, which the harness cannot run, so it is not counted as closed ([ledger: decomp.tail-call-through-pointer]). Still wrong: [ledger: decomp.ipa-register-allocation]. The items below that are not about bodies are not re-measured yet.
+
 Images, names and sections:
 - `rtti scan` on a MinGW PE, whose classes carry Itanium RTTI: 0 of 7 vtables, x64 and
   i386, with no advisory (second pass: 0 of 4).

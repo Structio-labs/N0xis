@@ -95,3 +95,19 @@ test = [
 ]
 status = "verified"
 measured = "2026-11-13, claims-3; `hlt` is taken as a trap everywhere, which is wrong in ring-0 code (`sti; hlt; ret`)."
+
+[[claim]]
+id = "decomp.bodies-october-set"
+layer = "the decompiled body"
+says = "The 14 functions of the October formats set behave as their source on x86: ELF64 (executable, PIE, shared object), ELF32, PE32+ and PE32 from GCC, MinGW and the MSVC ABI."
+oracle = "the processor: each printed body compiled beside the source function and run on the same inputs"
+status = "measured-private"
+measured = "2026-11-14, bc901d4, 8 x86 images x 14 functions, execution verdicts only on both sides: right 49 -> 76, wrong 36 -> 11, not settled (did not compile, could not map the image, or says unknown) 27 -> 25. The harness, calibrated by planting one change in each body it called right: caught 28 of 28 flipped comparisons, 62 of 63 additions made subtractions, 65 of 75 constants made one larger; the misses are a division by a constant through a multiply (msg) and two others, where the inputs never reach the values that differ. An independent review re-ran every recorded right body on about ten times more inputs, with garbage in the upper halves of 32-bit register arguments: all stay right. 6 of the 12 that say their return type is not known run right once it is filled in. The review's list of ways this harness can still lie is the condition for moving it into the repository. Closed there: a forwarded register argument dropped (caller1, 8 of 8 right), a loop testing a value defined later (strlen, wide_len), a signed shift printed unsigned (wide_mul), a 64-bit multiply printed 32-bit (msg), a void* subscript losing its width (wide_len). Still wrong: `decomp.ipa-register-allocation`. The harness is private for now; its i386 calls were corrected to hand `argN` its stack slot, without which 14 right bodies read as wrong."
+
+[[claim]]
+id = "decomp.ipa-register-allocation"
+layer = "the decompiled body"
+says = "GCC's interprocedural register allocation keeps a value in a caller-saved register across a call to a local function that does not clobber it; the pseudo-C reads it as a never-assigned name."
+oracle = "the processor; the same source rebuilt with -fno-ipa-ra prints right"
+status = "false"
+measured = "2026-11-14, bc901d4: caller2, uses_farewell and run wrong on ELF64 executable and PIE and on MinGW x64, caller2 and uses_farewell on MinGW i386 (11 bodies). Bodies round 3 item 5 is on it."
