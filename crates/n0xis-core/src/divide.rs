@@ -337,9 +337,12 @@ mod tests {
         xs
     }
 
+    /// A function's bytes, the division its text should say, and C's own answer.
+    type Case = (&'static [u8], &'static str, fn(u64) -> u64);
+
     #[test]
     fn a_multiply_and_shift_that_divides_for_every_operand_is_a_division() {
-        let cases: [(&[u8], &str, fn(u64) -> u64); 7] = [
+        let cases: [Case; 7] = [
             (GCC_U32_10, "((uint32_t)rdi.0 / 0xa)", |x| u64::from(x as u32 / 10)),
             (GCC_I32_10, "((int32_t)rdi.0 / 0xa)", |x| (x as i32 / 10) as u64),
             (GCC_U64_10, "((uint64_t)rdi.0 / 0xa)", |x| x / 10),
