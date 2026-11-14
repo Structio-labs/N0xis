@@ -143,6 +143,9 @@ MUTATIONS = [
     (CORE + "switch.rs", ".filter(|_| !matches!(bound, Some(IndexBound::Guard(_))));", ";", *LIB, "switch::tests::a_guarded_read_goes_past_the_functions_stated_end"),
     (CORE + "switch.rs", "(end != TableEnd::Guard && end != TableEnd::Limit && (self.cases.len() as u64) <= guard)", "false", *LIB, "switch::tests::a_guarded_read_stopped_early_says_it_is_short_of_its_guard"),
     (CORE + "switch.rs", "ctx.table_bases.and_then(|t| t.bases()).unwrap_or_else(", "None::<std::sync::Arc<Self>>.unwrap_or_else(", *LIB, "switch::tests::the_images_table_bases_end_a_table_its_own_code_does_not_name"),
+    # A whole-program command reads a table as `ir build` does: both against the image's table bases.
+    ("crates/n0xis-cli/src/main.rs", ".with_vtables(&vtables, slots).with_table_bases(&bases);", ".with_vtables(&vtables, slots);", "n0xis-cli", "whole_program_reads_tables_as_ir_build", "analyze_reads_a_table_where_ir_build_does"),
+    ("crates/n0xis-frontend/src/registry.rs", "                .with_stated_functions(&stated, stated_coverage(&resolved.src))\n                .with_table_bases(&bases)", "                .with_stated_functions(&stated, stated_coverage(&resolved.src))", "n0xis-cli", "whole_program_reads_tables_as_ir_build", "analyze_reads_a_table_where_ir_build_does"),
     (CORE + "structure.rs", "    if let Some(note) = sw.and_then(crate::switch::ResolvedSwitch::unguarded_note) {", "    if let Some(note) = None::<String> {", *LIB, "switch::tests::a_body_says_no_guard_held_its_switch"),
     (CORE + "decomp.rs", "                    if let Some(note) = sw.and_then(crate::switch::ResolvedSwitch::unguarded_note) {", "                    if let Some(note) = None::<String> {", *LIB, "switch::tests::a_body_says_no_guard_held_its_switch"),
     (CORE + "decomp.rs", "crate::structure::UNRECOVERED_JUMP, crate::switch::UNGUARDED_TABLE]", "crate::structure::UNRECOVERED_JUMP]", *LIB, "switch::tests::a_body_says_no_guard_held_its_switch"),

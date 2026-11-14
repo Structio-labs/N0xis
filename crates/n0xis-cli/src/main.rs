@@ -4545,7 +4545,9 @@ fn cmd_discover(a: DiscoverArgs, pretty: bool) -> bool {
             // of this is how the two front doors came to disagree about how
             // many functions the same image has.
             let stated = n0xis_frontend::stated_functions(&src);
-            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src)))
+            // Its tables end where the image's next one begins, as `ir build` reads them.
+            let bases = n0xis_frontend::table_bases::ImageTableBases::new(&src, arch.as_ref(), &label, &stated);
+            run(&Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src)).with_table_bases(&bases))
         }
         Src::Live(l) => run(&Ctx::new(l.as_ref(), arch.as_ref()).with_symbols(&local)),
         Src::Snap(s) => run(&Ctx::new(s, arch.as_ref()).with_symbols(&local)),
@@ -4621,7 +4623,10 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     // a PE it counted 6 681 where `function discover` lists 8 258.
     progress("discovering", 0, 0);
     let stated = n0xis_frontend::stated_functions(&src);
-    let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src));
+    // Every graph this command builds reads its tables against the image's table
+    // bases, as `ir build` and `function discover` do: one answer for a table.
+    let bases = n0xis_frontend::table_bases::ImageTableBases::new(&src, arch.as_ref(), &label, &stated);
+    let dctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(pe.as_ref()).with_stated_functions(&stated, n0xis_frontend::stated_coverage(&src)).with_table_bases(&bases);
     let ranges = n0xis_frontend::discovered::image_code_ranges(&src, pe.text_range(), region_len, None, None, Va(0));
     let funcs = match n0xis_frontend::discovered::discovered_ranges(&dctx, &src, &label, &ranges) {
         Ok(found) => found.page(&dctx, 0, 0).functions,
@@ -4763,7 +4768,7 @@ fn cmd_analyze(a: AnalyzeArgs, pretty: bool, quiet: bool) -> bool {
     let pdb = n0xis_frontend::pdb_syms::lookup(pe.as_ref());
     let named = n0xis_frontend::static_names::StaticNames::new(&local, pdb.symbols(), None, pe.as_ref(), None);
     let vtables = std::sync::Arc::new(n0xis_frontend::annotation_syms::persisted_vtable_map());
-    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables, slots);
+    let ctx = Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&named).with_vtables(&vtables, slots).with_table_bases(&bases);
 
     // Phase 2c — whole-program type propagation, PERSISTED (priority 3b).
     //
