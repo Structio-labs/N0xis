@@ -129,6 +129,18 @@ fn analysis_fingerprint() -> String {
     format!("{}+{build}", env!("CARGO_PKG_VERSION"))
 }
 
+/// What a context chose that makes its graph another graph for the same bytes, as a
+/// key's part: one place for the CFG cache and the decomp cache. A graph that asked
+/// its callees whether they return; one whose tables were read against the image's
+/// table bases rather than its own code's.
+fn graph_choices(ctx: &Ctx) -> String {
+    format!(
+        "{}{}",
+        if ctx.noreturn_on_demand { "|noreturn-asked" } else { "" },
+        if ctx.table_bases.is_some() { "|image-table-bases" } else { "" },
+    )
+}
+
 /// Drop cache entries left by *other* builds — once per process, on the first
 /// cached run. Best-effort: a failed sweep (no project, read-only dir, a file
 /// held open) is not a reason to fail an analysis.
@@ -166,8 +178,7 @@ pub fn cfg_cached(ctx: &Ctx, input: CfgInput) -> Result<(CfgArtifact, bool), Cor
         ctx.arch.decoder_id(),
         image_identity(ctx),
         if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") },
-        // A graph that asked its callees is another graph, for the same bytes.
-        if ctx.noreturn_on_demand { "|noreturn-asked" } else { "" },
+        graph_choices(ctx),
     );
     let key = cfg_cache_key(&scope, input, &probe);
     sweep_stale_generations_once();
@@ -300,8 +311,7 @@ pub fn decomp_cached(
         ctx.arch.decoder_id(),
         image_identity(ctx),
         if fingerprint.is_empty() { String::new() } else { format!("|{fingerprint}") },
-        // A graph that asked its callees is another graph, for the same bytes.
-        if ctx.noreturn_on_demand { "|noreturn-asked" } else { "" },
+        graph_choices(ctx),
     );
     let key = decomp_cache_key(&scope, input, &probe, style, var_names, var_types, struct_defs);
     sweep_stale_decomp_once();

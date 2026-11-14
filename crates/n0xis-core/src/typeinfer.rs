@@ -1458,11 +1458,13 @@ const CALLEE_TYPES_MAX: usize = 200_000;
 pub(crate) fn ctx_identity(ctx: &Ctx) -> Option<String> {
     let source = ctx.source.identity()?;
     Some(format!(
-        "{source}|{}|{}|{}|{}",
+        "{source}|{}|{}|{}|{}|{}",
         ctx.arch.decoder_id(),
         ctx.symbols.map(|s| s.symbol_fingerprint()).unwrap_or_default(),
         ctx.vtables.map_or(0, |v| v.classes.len()),
         ctx.noreturn_on_demand,
+        // A graph read against the image's table bases is another graph.
+        ctx.table_bases.is_some(),
     ))
 }
 

@@ -419,12 +419,6 @@ fn dispatch_of(ctx: &Ctx, at: Va) -> Result<IndexedDispatch, &'static str> {
     Ok(IndexedDispatch { table: disp.table.map(|t| t.0), relative: matches!(disp.kind, n0xis_arch::SwitchKind::RegRel32), bound: ctx.arch.index_guard(&insns, &disp) })
 }
 
-/// Every address the index recorded code taking, and each jump's own table: where a
-/// table ends is where the next begins.
-fn table_bases(idx: &XrefIndex) -> TableBases {
-    TableBases::new(idx.edges.keys().copied(), idx.jumps.iter().filter_map(|j| j.dispatch.as_ref()?.table))
-}
-
 /// A dispatch's table, read from the image.
 fn read_dispatch(ctx: &Ctx, at: Va, d: &IndexedDispatch, bases: &TableBases) -> Result<crate::switch::TableRead, &'static str> {
     let table = d.table.ok_or("the dispatch reads its table through a register no instruction before it sets to an address")?;
@@ -464,7 +458,7 @@ pub fn jump_table_from(ctx: &Ctx, addr: Va, idx: &XrefIndex, section_at: &dyn Fn
     if !ctx.arch.recognizes_jump_tables() {
         return Some((Vec::new(), JumpTableAnswer::NotResolved { why: "no table's dispatch is recognized on this instruction set" }));
     }
-    let bases = table_bases(idx);
+    let bases = TableBases::of_index(idx);
     Some(match dispatch_of(ctx, addr).and_then(|d| read_dispatch(ctx, addr, &d, &bases)) {
         Ok(read) => {
             let table = read.relative_to.or_else(|| read.entries.first().map(|e| e.0)).unwrap_or(addr);
@@ -495,7 +489,7 @@ pub fn jump_table_references(ctx: &Ctx, addr: Va, idx: &XrefIndex, section_at: &
         let searched = SearchedJumps::NotRead { why: "no table's dispatch is recognized on this instruction set".to_string() };
         return JumpTableReferences { refs: Vec::new(), searched, tables: Vec::new() };
     }
-    let bases = table_bases(idx);
+    let bases = TableBases::of_index(idx);
     let mut refs = Vec::new();
     let mut tables = Vec::new();
     let (mut resolved, mut not_resolved, mut no_table) = (0usize, 0usize, 0usize);
@@ -754,7 +748,8 @@ pub fn xref_kind(kind: InsnKind) -> &'static str {
 /// Every address `ins` names, as the index records it: its branch target, its
 /// RIP-relative operand, what [`CodeScan`] finds besides, and the body of a function
 /// it names by index with no branch to it (`ref.func`). **The one rule**: the index
-/// and a graph's table bases ([`TableBases::of_code`]) both take it from here.
+/// and a graph's table bases where no image's list is attached ([`TableBases::of_code`])
+/// both take it from here.
 /// `scan` walks the code in address order.
 pub(crate) fn addresses_named(ctx: &Ctx, scan: &mut CodeScan, ins: &n0xis_arch::DecodedInsn) -> Vec<Va> {
     let mut named: Vec<Va> = ins.target.into_iter().chain(ins.rip_target).collect();

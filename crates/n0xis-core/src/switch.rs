@@ -97,6 +97,16 @@ impl ResolvedSwitch {
         self.index.and_then(IndexBound::guard)
     }
 
+    /// Where a guard was read and the read stopped before as many entries as it lets
+    /// through: the guard's count and why the read stopped. The guard and the table
+    /// disagree (an index masked to 8 values over a table of 7), and the read keeps
+    /// the earlier stop. In the JSON: a `bound` with an `end` other than `guard`.
+    pub fn short_of_its_guard(&self) -> Option<(u64, TableEnd)> {
+        let guard = self.bound()?;
+        let end = self.end?;
+        (end != TableEnd::Guard && end != TableEnd::Limit && (self.cases.len() as u64) <= guard).then_some((guard.saturating_add(1), end))
+    }
+
     /// What a body says above a switch whose cases no guard of the index bounds:
     /// the bound the read was held to and why it stopped. `None` for a guarded
     /// table, and for one not read, which says so in its own words.
@@ -156,8 +166,13 @@ impl TableEnd {
 }
 
 /// Every address code takes that a table may start at: where a table ends is
-/// where the next begins. **One constructor**, for `xref`'s reads (from its index
-/// of the whole image) and the graph's (from the function's own code).
+/// where the next begins. **One list per image**, the one `xref` builds from its
+/// index of the whole image's code ([`TableBases::of_index`]); a graph takes it
+/// through [`Ctx::table_bases`](crate::Ctx::table_bases). Taken from the function's
+/// own code instead, a graph missed a table the next function names, and read on
+/// into it: 15 tables on the five images read one or two entries past where `xref`
+/// stopped, fd's ELF 19 for 18, rg's PE 11 for 9 with two into the middle of a `ud2`.
+#[derive(Debug, Default)]
 pub struct TableBases {
     sorted: Vec<u64>,
 }
@@ -173,8 +188,16 @@ impl TableBases {
         Self { sorted }
     }
 
-    /// The table bases one function's code states: what its instructions name, by
-    /// the rule the xref index records them by, and the tables of `dispatches`.
+    /// The image's: every address its index recorded code taking, and each jump's
+    /// own table.
+    pub fn of_index(idx: &crate::xref::XrefIndex) -> Self {
+        Self::new(idx.edges.keys().copied(), idx.jumps.iter().filter_map(|j| j.dispatch.as_ref()?.table))
+    }
+
+    /// The table bases one stretch of code states: what its instructions name, by
+    /// the rule the xref index records them by, and the tables of `dispatches`. What
+    /// a graph falls back to where no image's list is attached (a live process, a
+    /// context built bare); it misses a table only other code names.
     pub fn of_code<'a>(ctx: &Ctx, insns: &[DecodedInsn], dispatches: impl IntoIterator<Item = &'a SwitchDispatch>) -> Self {
         let refs = crate::xref::CodeReferences::default();
         let mut scan = crate::xref::CodeScan::new(&refs);
@@ -182,9 +205,22 @@ impl TableBases {
         Self::new(named, dispatches.into_iter().filter_map(|d| d.table).map(|t| t.0))
     }
 
+    /// The bases a graph reads its tables against: the image's where `ctx` has them,
+    /// else those of its own code.
+    pub fn for_graph<'a>(ctx: &Ctx, insns: &[DecodedInsn], dispatches: impl IntoIterator<Item = &'a SwitchDispatch>) -> std::sync::Arc<Self> {
+        ctx.table_bases.and_then(|t| t.bases()).unwrap_or_else(|| std::sync::Arc::new(Self::of_code(ctx, insns, dispatches)))
+    }
+
     pub fn after(&self, table: u64) -> Option<u64> {
         self.sorted.get(self.sorted.partition_point(|&b| b <= table)).copied()
     }
+}
+
+/// Where a context gets the image's [`TableBases`], built when a graph first meets
+/// a table: the frontend's, from the `xref` index it keeps for the image.
+pub trait TableBasesSource {
+    /// `None` where the image's list cannot be had; a graph then takes its own code's.
+    fn bases(&self) -> Option<std::sync::Arc<TableBases>>;
 }
 
 /// Read the jump table for `disp` through the source seam and resolve cases.
@@ -277,7 +313,13 @@ pub fn read_table(ctx: &Ctx, kind: SwitchKind, table: Va, at: Va, bound: Option<
         Some(before_next) if before_next < held => (before_next, TableEnd::NextTable),
         _ => (held, by),
     };
-    let function = crate::xref::stated_function(ctx, at);
+    // A guard read from the bytes says more than a stated end: gcc moves a default
+    // case into a `.cold` part, which a stripped ELF's unwind data states as a
+    // function of its own, and Lua's guarded tables of 34 were cut to 4 there, a case
+    // of the function itself among those lost. The next table and what is not code
+    // stop a guarded read too; where one stops it short of its guard, the switch
+    // says so ([`ResolvedSwitch::short_of_its_guard`]).
+    let function = crate::xref::stated_function(ctx, at).filter(|_| !matches!(bound, Some(IndexBound::Guard(_))));
     let mut targets = Vec::new();
     let read = read_entries(ctx, kind, table, count)?;
     if read.len() < count && read.last().is_none_or(Option::is_some) {
@@ -570,6 +612,67 @@ mod tests {
             assert!(!guarded.pseudo.iter().any(|l| l.contains(UNGUARDED_TABLE)), "{style:?}: {:?}", guarded.pseudo);
             assert!(open.quality < guarded.quality, "{style:?}: {} against {}", open.quality, guarded.quality);
         }
+    }
+
+    /// The switch at `jump` in `code` at 0x1000 (padded with `ret` to 0x1100), over
+    /// a table of 32-bit offsets from 0x2000 to `targets`.
+    fn resolve_code(code: &[u8], jump: u64, targets: &[u64], bases: Option<&dyn TableBasesSource>) -> ResolvedSwitch {
+        let mut bytes = code.to_vec();
+        bytes.resize(0x100, 0xc3);
+        let table: Vec<u8> = targets.iter().flat_map(|t| ((*t as i64 - 0x2000) as i32).to_le_bytes()).collect();
+        let snap = Snapshot::builder().region(Va(0x1000), bytes).region(Va(0x2000), table).build();
+        let arch = X64::new();
+        let mut ctx = Ctx::new(&snap, &arch);
+        if let Some(b) = bases {
+            ctx = ctx.with_table_bases(b);
+        }
+        let insns = arch.decode_range(code, Va(0x1000), code.len());
+        let at = insns.iter().position(|i| i.va == Va(jump)).expect("the jump decodes");
+        let disp = arch.detect_switch_with_context(&insns[..=at], 0).expect("a dispatch");
+        let bases = TableBases::for_graph(&ctx, &insns, [&disp]);
+        resolve_switch(&ctx, &insns[..=at], &disp, &bases)
+    }
+
+    /// A guard read from the bytes says more than the function's stated end: an entry
+    /// to code outside `[0x1000, 0x1030)`, as gcc's `.cold` part of the function is
+    /// to a stripped ELF's unwind data, does not end a guarded read. Lua's tables of
+    /// 34 were cut to 4 there, a case of the function itself among those lost.
+    #[test]
+    fn a_guarded_read_goes_past_the_functions_stated_end() {
+        let functions = crate::origin::fdes(&[(Va(0x1000), Va(0x1030))]);
+        let sw = Planted { guard: true, ..Planted::new([0x1020, 0x1100, 0x1021]) }.resolve(Some(&functions));
+        assert_eq!((sw.cases.len(), sw.end), (3, Some(TableEnd::Guard)));
+        assert_eq!(sw.short_of_its_guard(), None);
+    }
+
+    /// The next table and what is not code stop a guarded read too, and the switch
+    /// says it stopped short of its guard, which `ir explain` shows.
+    #[test]
+    fn a_guarded_read_stopped_early_says_it_is_short_of_its_guard() {
+        let sw = Planted { guard: true, ..Planted::new([0x1020, 0x9000, 0x1021]) }.resolve(None);
+        assert_eq!((sw.cases.len(), sw.end), (1, Some(TableEnd::NotCode)));
+        assert_eq!(sw.short_of_its_guard(), Some((3, TableEnd::NotCode)));
+    }
+
+    struct Bases(Vec<u64>);
+    impl TableBasesSource for Bases {
+        fn bases(&self) -> Option<std::sync::Arc<TableBases>> {
+            Some(std::sync::Arc::new(TableBases::new(self.0.iter().copied(), [])))
+        }
+    }
+
+    /// Where the image's table bases are attached, the graph reads against them: a
+    /// table 0x2014 starts, named only by code elsewhere, ends this one at 5 entries,
+    /// which the function's own code would have read on past.
+    #[test]
+    fn the_images_table_bases_end_a_table_its_own_code_does_not_name() {
+        let code = Planted::new([]).image().read(Va(0x1000), 0x30).expect("code");
+        let targets: Vec<u64> = cases(0x1020, 12).collect();
+        let own = resolve_code(&code[..0x19], 0x1017, &targets, None);
+        assert_eq!(own.cases.len(), 12, "the function's own code names no second table");
+        let image = Bases(vec![0x2014]);
+        let sw = resolve_code(&code[..0x19], 0x1017, &targets, Some(&image));
+        assert_eq!((sw.cases.len(), sw.end), (5, Some(TableEnd::NextTable)));
     }
 
     /// The JSON a switch has always had: `bound` is the guard's, and only the

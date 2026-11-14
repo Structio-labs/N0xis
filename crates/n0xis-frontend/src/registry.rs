@@ -1063,11 +1063,13 @@ fn with_cfg_ctx(
                 flirt.as_ref().map(|f| f as &dyn n0xis_sources::SymbolProvider),
             );
             let stated = stated_functions(&resolved.src);
+            let bases = crate::table_bases::ImageTableBases::new(&resolved.src, arch.as_ref(), &label, &stated);
             let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
                 .with_symbols(&full)
                 .with_modules(pe.as_ref())
                 .with_eh(eh_regions)
                 .with_stated_functions(&stated, stated_coverage(&resolved.src))
+                .with_table_bases(&bases)
                 .with_type_flow(&flow)
                 .with_layout(&layout);
             if let (Some(vtables), Some(subclassed), Some(slots)) = (&vtables, &subclassed, slots) {
@@ -1222,7 +1224,12 @@ fn with_src_ctx_names(
             // build a CFG per function, and without these the extent heuristic
             // stretched an 82-byte function to the whole decode window.
             let stated = stated_functions(&src);
-            let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref()).with_symbols(&full).with_modules(pe.as_ref()).with_stated_functions(&stated, stated_coverage(&src));
+            let bases = crate::table_bases::ImageTableBases::new(&src, arch.as_ref(), &label, &stated);
+            let mut ctx = n0xis_core::Ctx::new(pe.as_ref(), arch.as_ref())
+                .with_symbols(&full)
+                .with_modules(pe.as_ref())
+                .with_stated_functions(&stated, stated_coverage(&src))
+                .with_table_bases(&bases);
             if let (Some(vtables), Some(subclassed), Some(slots)) = (&vtables, &subclassed, slots) {
                 ctx = ctx.with_vtables(vtables, slots).with_subclassed(subclassed);
             }

@@ -44,6 +44,7 @@ pub mod source;
 pub mod static_names;
 pub mod strings_caps;
 pub mod symbols_caps;
+pub mod table_bases;
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
 pub mod provenance;
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]

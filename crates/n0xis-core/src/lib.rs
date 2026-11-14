@@ -142,7 +142,7 @@ pub use rtti::{
     demangle_rtti_name, rtti_symbol_map, scan_itanium_rtti, scan_msvc_rtti, Bases, BasesUnknown, CodePointers, ItaniumScan,
     RefusedVtable, RttiRefusal, RttiSymbols, RttiVtable, Subclasses, VtableRefusal, VtableSlots,
 };
-pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, TableBases, TableEnd, UNGUARDED_TABLE, resolve_switch};
+pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, TableBases, TableBasesSource, TableEnd, UNGUARDED_TABLE, resolve_switch};
 pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, ReturnType,
     TypeArtifact, TypeInferInput, TypeInferPass, abi_arg_registers, earlier_stack_local_slots,
@@ -257,6 +257,11 @@ pub struct Ctx<'a> {
     /// is what lets a dispatch through `this->impl` resolve at all. `None` =
     /// per-function layout exactly as before.
     pub layout: Option<&'a dyn crate::ClassLayoutLookup>,
+    /// Where the image's jump-table bases come from ([`TableBases`]): every address
+    /// its code takes, from the `xref` index, built when a graph first meets a table.
+    /// A table ends where the next begins, and a graph that knew only its own code's
+    /// read into the next function's. `None` = the function's own code's.
+    pub table_bases: Option<&'a dyn crate::TableBasesSource>,
 }
 
 /// The function extents an image states, and whether they are all of its
@@ -343,6 +348,7 @@ impl<'a> Ctx<'a> {
             functions: None,
             type_flow: None,
             layout: None,
+            table_bases: None,
         }
     }
     pub fn with_symbols(mut self, symbols: &'a dyn SymbolProvider) -> Self {
@@ -416,6 +422,11 @@ impl<'a> Ctx<'a> {
         self
     }
     /// Attach the program-wide class-layout store (see the field docs).
+    /// Attach where the image's jump-table bases come from (see the field docs).
+    pub fn with_table_bases(mut self, bases: &'a dyn crate::TableBasesSource) -> Self {
+        self.table_bases = Some(bases);
+        self
+    }
     pub fn with_layout(mut self, layout: &'a dyn crate::ClassLayoutLookup) -> Self {
         self.layout = Some(layout);
         self

@@ -827,7 +827,7 @@ fn switch_case_reach(ctx: &Ctx, instrs: &[DecodedInsn], start: u64, end_cap: u64
         }
     }
     // Where each table ends is where another the window takes begins.
-    let bases = TableBases::of_code(ctx, instrs, dispatches.iter().map(|(_, d)| d));
+    let bases = TableBases::for_graph(ctx, instrs, dispatches.iter().map(|(_, d)| d));
     let mut furthest = start;
     for (idx, disp) in &dispatches {
         let r = resolve_switch(ctx, &instrs[..=*idx], disp, &bases);
@@ -1026,7 +1026,7 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Resu
             }
         }
         // Where each table ends is where another the function takes begins.
-        let bases = TableBases::of_code(ctx, instrs, dispatches.iter().map(|(_, d)| d));
+        let bases = TableBases::for_graph(ctx, instrs, dispatches.iter().map(|(_, d)| d));
         for (idx, disp) in &dispatches {
             let r = resolve_switch(ctx, &instrs[..=*idx], disp, &bases);
             for c in &r.cases {
@@ -1528,7 +1528,9 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
             let cases = sw.cases.len();
             // With no guard, what held the read and why it stopped.
             let held = match (sw.index, sw.end) {
-                (Some(n0xis_arch::IndexBound::Guard(_)), _) | (_, None) => String::new(),
+                // The guard lets more through than the table holds: the read kept the earlier stop.
+                (Some(n0xis_arch::IndexBound::Guard(_)), _) => sw.short_of_its_guard().map_or(String::new(), |(lets, end)| format!(" (guard lets {lets} through, {})", end.words())),
+                (_, None) => String::new(),
                 (Some(n0xis_arch::IndexBound::Width(w)), Some(end)) => format!(" (width={w}, {})", end.words()),
                 (None, Some(end)) => format!(" (width=?, {})", end.words()),
             };
