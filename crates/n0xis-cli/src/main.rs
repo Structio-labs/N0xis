@@ -119,6 +119,11 @@ struct FeedbackArgs {
     /// each. Only its bytes go, not its name.
     #[arg(long = "attach", value_name = "FILE")]
     attach: Vec<std::path::PathBuf>,
+    /// An error envelope this tool printed, saved in FILE or piped in (`-`). Only its code and its
+    /// message go, with every path, address, file name and quoted span replaced; the result is in
+    /// the report shown before anything is sent.
+    #[arg(long = "with-error", value_name = "FILE|-")]
+    with_error: Option<std::path::PathBuf>,
     /// Send it. Without this nothing leaves this machine: the report is shown and saved.
     #[arg(long)]
     send: bool,
@@ -3759,6 +3764,25 @@ fn read_attachment(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// What `--with-error` names, read no further than an envelope can be, and kept as only its code
+/// and scrubbed message. Nothing of it is written anywhere but into the report shown.
+fn read_error_envelope(from: &std::path::Path) -> Result<n0xis_feedback::ReportedError, (&'static str, String)> {
+    use std::io::Read;
+    const ENVELOPE_MAX_BYTES: u64 = 1 << 20;
+    let mut bytes = Vec::new();
+    let read = if from.as_os_str() == "-" {
+        let stdin = command_stdin().map_err(|e| (STDIN_IS_SESSION_CODE, format!("--with-error - reads standard input; {e}. Pass a file.")))?;
+        stdin.lock().take(ENVELOPE_MAX_BYTES + 1).read_to_end(&mut bytes)
+    } else {
+        std::fs::File::open(from).and_then(|f| f.take(ENVELOPE_MAX_BYTES + 1).read_to_end(&mut bytes))
+    };
+    read.map_err(|e| ("error-unreadable", format!("{}: {e}", from.display())))?;
+    if bytes.len() as u64 > ENVELOPE_MAX_BYTES {
+        return Err(("not-an-error-envelope", format!("more than the {ENVELOPE_MAX_BYTES} bytes an envelope is")));
+    }
+    n0xis_feedback::ReportedError::from_envelope(&bytes).map_err(|r| (r.code(), r.to_string()))
+}
+
 /// Where a report is saved: the project's `.n0x/feedback/` when there is a project here, and the
 /// system's temporary directory otherwise. Never the global project: a report is no record of it.
 fn save_feedback(json: &str) -> std::io::Result<std::path::PathBuf> {
@@ -3786,7 +3810,12 @@ fn cmd_feedback(a: FeedbackArgs, pretty: bool) -> bool {
             Err(e) => return emit(&Response::<serde_json::Value>::error("attachment-unreadable", format!("{}: {e}", path.display())), pretty),
         }
     }
-    let built = match n0xis_feedback::build(&a.text, &attachments, env!("CARGO_PKG_VERSION")) {
+    let error = match a.with_error.as_deref().map(read_error_envelope) {
+        None => None,
+        Some(Ok(error)) => Some(error),
+        Some(Err((code, message))) => return emit(&Response::<serde_json::Value>::error(code, message), pretty),
+    };
+    let built = match n0xis_feedback::build(&a.text, &attachments, error, env!("CARGO_PKG_VERSION")) {
         Ok(built) => built,
         Err(refusal) => return emit(&Response::<serde_json::Value>::error(refusal.code(), refusal.to_string()), pretty),
     };
@@ -6619,6 +6648,8 @@ fn cmd_serve(a: &ServeArgs) {
             Ok(cli) => match cli.command {
                 // guard against re-entrancy / another server on the same channel
                 Command::Serve(_) | Command::RemoteServe(_) => emit_err("unsupported", "serve/remote-serve not allowed inside a session".into()),
+                // A person sends feedback, from the command line; a session is a program driving the tool.
+                Command::Feedback(_) => emit_err("unsupported", "feedback is not taken inside a session: a person sends it, with `n0x feedback`".into()),
                 cmd => {
                     // force compact output so every response is exactly one line;
                     // suppress [n0x] progress so it can't interleave a session line

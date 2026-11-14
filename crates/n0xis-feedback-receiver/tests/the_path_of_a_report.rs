@@ -269,7 +269,7 @@ fn what_is_shown_is_what_is_sent_and_what_is_stored() {
     let front = Front::start(start_receiver(config(&spool)));
     let updater = client(&front, Some(json!({ "challenge": front.url("/challenge"), "report": front.url("/report") })));
     let shot = png(3, 2000);
-    let built: Built = n0xis_feedback::build("the decompiler hangs on a switch", std::slice::from_ref(&shot), "1.0.0").expect("builds");
+    let built: Built = n0xis_feedback::build("the decompiler hangs on a switch", std::slice::from_ref(&shot), None, "1.0.0").expect("builds");
 
     let sent = updater.send_feedback(&built).unwrap_or_else(|r| panic!("{}: {}", r.why.code(), r.message));
 
@@ -300,7 +300,7 @@ fn what_is_shown_is_what_is_sent_and_what_is_stored() {
 fn a_manifest_that_names_no_receiver_is_said_and_nothing_is_posted() {
     let spool = scratch("spool");
     let front = Front::start(start_receiver(config(&spool)));
-    let built = n0xis_feedback::build("x", &[], "1.0.0").expect("builds");
+    let built = n0xis_feedback::build("x", &[], None, "1.0.0").expect("builds");
     let refused = client(&front, None).send_feedback(&built).expect_err("nowhere to send");
     assert_eq!(refused.why.code(), "no-feedback-endpoint", "{}", refused.message);
     let refused = client(&front, Some(json!({ "report": front.url("/report") }))).send_feedback(&built).expect_err("half an address");
@@ -317,7 +317,7 @@ fn a_demand_past_what_a_client_works_for_is_refused_not_obeyed() {
     let hard = json!({ "schema": 1, "nonce": "00".repeat(32), "difficulty": n0xis_feedback::MAX_DIFFICULTY + 1, "expires_in_seconds": 60 });
     front.route("/hard", serde_json::to_vec(&hard).expect("json"));
     let updater = client(&front, Some(json!({ "challenge": front.url("/hard"), "report": front.url("/report") })));
-    let refused = updater.send_feedback(&n0xis_feedback::build("x", &[], "1.0.0").expect("builds")).expect_err("too hard");
+    let refused = updater.send_feedback(&n0xis_feedback::build("x", &[], None, "1.0.0").expect("builds")).expect_err("too hard");
     assert_eq!(refused.why.code(), "difficulty-too-high", "{}", refused.message);
     assert!(front.posted.lock().unwrap().is_empty());
 }
@@ -326,7 +326,7 @@ fn a_demand_past_what_a_client_works_for_is_refused_not_obeyed() {
 fn a_wrong_proof_fails_and_spends_its_nonce() {
     let spool = scratch("spool");
     let port = start_receiver(config(&spool));
-    let built = n0xis_feedback::build("x", &[], "1.0.0").expect("builds");
+    let built = n0xis_feedback::build("x", &[], None, "1.0.0").expect("builds");
     let (_, c) = challenge(port, "192.0.2.1");
     let c = c.expect("a challenge");
     let right = solved(&c, built.body());
@@ -340,7 +340,7 @@ fn a_wrong_proof_fails_and_spends_its_nonce() {
     // A proof for another body does not carry over.
     let (_, c) = challenge(port, "192.0.2.1");
     let c = c.expect("a challenge");
-    let other = n0xis_feedback::build("y", &[], "1.0.0").expect("builds");
+    let other = n0xis_feedback::build("y", &[], None, "1.0.0").expect("builds");
     let for_other = solved(&c, other.body());
     if !n0xis_feedback::verify(&n0xis_feedback::nonce_from_hex(&c.nonce).expect("nonce"), built.body(), c.difficulty, for_other) {
         assert_eq!(post(port, &c.nonce, for_other, built.body(), "192.0.2.1").0, 403);
@@ -358,7 +358,7 @@ fn a_nonce_past_its_time_is_refused() {
     let mut receiver = Receiver::new(config(&spool)).expect("receiver");
     let now = Instant::now();
     let c: Challenge = serde_json::from_slice(&receiver.challenge(now).body).expect("challenge");
-    let built = n0xis_feedback::build("x", &[], "1.0.0").expect("builds");
+    let built = n0xis_feedback::build("x", &[], None, "1.0.0").expect("builds");
     let proof = solved(&c, built.body()).to_string();
     let late = now + Duration::from_secs(c.expires_in_seconds + 1);
     let answer = receiver.report(Some(&c.nonce), Some(&proof), built.body(), late, SystemTime::now());
@@ -425,7 +425,7 @@ fn a_body_past_the_bound_is_refused_by_its_length_before_it_is_read() {
     let (status, _) = plain(port, &head, b"");
     assert_eq!(status, 413);
     // The nonce was not spent on it.
-    let built = n0xis_feedback::build("x", &[], "1.0.0").expect("builds");
+    let built = n0xis_feedback::build("x", &[], None, "1.0.0").expect("builds");
     assert_eq!(post(port, &c.nonce, solved(&c, built.body()), built.body(), "192.0.2.2").0, 201);
     let chunked = "POST /report HTTP/1.1\r\nHost: x\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\n";
     assert_eq!(plain(port, chunked, b"").0, 411, "a body that states no length");
@@ -436,7 +436,7 @@ fn a_full_spool_answers_507_and_stores_nothing() {
     let spool = scratch("spool");
     let mut config = config(&spool);
     let mut probe = Receiver::new(config.clone()).expect("receiver");
-    let built = n0xis_feedback::build("a report of some length", &[], "1.0.0").expect("builds");
+    let built = n0xis_feedback::build("a report of some length", &[], None, "1.0.0").expect("builds");
     let send = |r: &mut Receiver| {
         let now = Instant::now();
         let c: Challenge = serde_json::from_slice(&r.challenge(now).body).expect("challenge");
@@ -472,7 +472,7 @@ fn delete_removes_a_report_only_by_its_digest() {
     let mut receiver = Receiver::new(config(&spool)).expect("receiver");
     let now = Instant::now();
     let c: Challenge = serde_json::from_slice(&receiver.challenge(now).body).expect("challenge");
-    let built = n0xis_feedback::build("keep me until pulled", &[png(5, 300)], "1.0.0").expect("builds");
+    let built = n0xis_feedback::build("keep me until pulled", &[png(5, 300)], None, "1.0.0").expect("builds");
     assert_eq!(receiver.report(Some(&c.nonce), Some(&solved(&c, built.body()).to_string()), built.body(), now, SystemTime::now()).status, 201);
     let ready = n0xis_feedback_receiver::export(&spool).expect("export");
     assert_eq!(ready[0].files, vec!["report.json".to_string(), "attachment-1.png".to_string()]);

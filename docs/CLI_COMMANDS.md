@@ -262,12 +262,16 @@ A directory, or its nearest existing ancestor, that is not owned by this user is
 - Sources: none.
 - Schema: `n0xis.config.v1`
 
-### `feedback <text> [--attach <file>]... [--send]`
+### `feedback <text> [--attach <file>]... [--with-error <file>|-] [--send]`
 
-A report to the project, written by a person and never by anything on its own: there is no MCP tool and no `serve` method for it.
+A report to the project, written by a person and never by anything on its own: there is no MCP tool for it, and a `serve` session refuses it as `unsupported`.
 It holds the schema, this version, the OS family and architecture, the text, and for each `--attach` the type (PNG or JPEG, by its
 bytes), size and sha256. Nothing about what is analysed: no path, name, bytes, string or address, and nothing that tells one machine
 from another (`docs/FEEDBACK.md`). Text at most 64 KiB, an attachment at most 10 MiB; an attachment's name is not sent.
+`--with-error` takes an error envelope this tool printed, from a file or standard input (`-`), and keeps only `error.code` and
+`error.message`, with every path, address, file name and quoted span in the message replaced by `<path>`, `<addr>`, `<file>`,
+`<quoted>`; it is `report.error`, shown before anything is sent. Nothing records errors on its own. Refusals: `not-an-error-envelope`,
+`error-unreadable`.
 
 Without `--send`, nothing leaves the machine: `data.report` is the JSON that would be sent, byte for byte as it would be sent, also
 saved at `data.saved` (in the project's `.n0x/feedback/`, or the system's temporary directory when there is no project), with

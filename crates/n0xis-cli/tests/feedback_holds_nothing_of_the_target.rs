@@ -210,3 +210,81 @@ fn the_limits_and_the_types_hold_at_the_door() {
     assert_eq!(code(&["feedback", "   "]), "empty-text");
     assert_eq!(code(&["feedback", "x", "--attach", dir.join("no-such.png").to_str().expect("utf-8")]), "attachment-unreadable");
 }
+
+/// `run`, with `stdin` written to the child's standard input.
+fn run_with_stdin(dir: &Path, config: &Path, args: &[&str], stdin: &[u8]) -> Output {
+    use std::io::Write;
+    let mut child = support::isolated(Command::new(BIN))
+        .args(args)
+        .current_dir(dir)
+        .env("N0X_CONFIG_DIR", config)
+        .env("N0X_NO_UPDATE_CHECK", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn n0xis");
+    child.stdin.take().expect("stdin").write_all(stdin).expect("write stdin");
+    child.wait_with_output().expect("wait")
+}
+
+#[test]
+fn an_error_handed_over_reaches_the_report_as_its_code_and_a_scrubbed_message() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("feedback-error-{}", std::process::id())).join("secret-workdir-e5");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".n0x")).expect("project");
+    let config = dir.parent().expect("parent").join("config");
+    std::fs::create_dir_all(&config).expect("config");
+    let target = dir.join("zz-planted-target-5521.so");
+    std::fs::write(&target, std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/strings_planted.so")).expect("fixture")).expect("plant");
+    let missing = dir.join("zz-missing-target-5521.so");
+    let planted_addr = "0x7f3a10e9";
+
+    // Two refusals the binary itself gives about the planted files: a path, then an address.
+    let path_refusal = run(&dir, &config, &["profile", "--file", missing.to_str().expect("utf-8")]).stdout;
+    let addr_refusal = run(&dir, &config, &["decomp", "pseudo", "--addr", planted_addr, "--file", target.to_str().expect("utf-8")]).stdout;
+    let needles = [dir.display().to_string(), "secret-workdir-e5".to_string(), "zz-missing-target-5521".to_string(), "zz-planted-target-5521".to_string(), planted_addr.to_string()];
+    // Calibration of the haystack: what is handed over does hold them.
+    assert!(holds(&path_refusal, "zz-missing-target-5521"), "{}", String::from_utf8_lossy(&path_refusal));
+    assert!(holds(&addr_refusal, planted_addr), "{}", String::from_utf8_lossy(&addr_refusal));
+    let saved_envelope = dir.join("refusal.json");
+    std::fs::write(&saved_envelope, &path_refusal).expect("save the envelope");
+
+    let handed: [(&str, Output); 2] = [
+        ("load-failed", run(&dir, &config, &["feedback", "it could not open my file", "--with-error", saved_envelope.to_str().expect("utf-8")])),
+        ("decomp-failed", run_with_stdin(&dir, &config, &["feedback", "it could not decompile", "--with-error", "-"], &addr_refusal)),
+    ];
+    for (code, out) in handed {
+        let answer = envelope(&out);
+        assert_eq!(answer["ok"], true, "{answer}");
+        let report = std::fs::read(answer["data"]["saved"].as_str().expect("saved")).expect("saved report");
+        let body = n0xis_feedback::frame(&report, &[]);
+        for needle in &needles {
+            assert!(!holds(&report, needle) && !holds(&body, needle), "a reported error holds {needle}: {}", String::from_utf8_lossy(&report));
+        }
+        // Shown before anything is sent, as the code and a message that still says something.
+        let parsed: Value = serde_json::from_slice(&report).expect("json");
+        assert_eq!(parsed["error"]["code"], code, "{parsed}");
+        assert!(answer["data"]["report"]["error"]["message"].as_str().is_some_and(|m| m.contains('<') && m.len() > 10), "{answer}");
+    }
+
+    let not = dir.join("not-a-refusal.json");
+    std::fs::write(&not, br#"{"ok":true,"data":{}}"#).expect("write");
+    assert_eq!(envelope(&run(&dir, &config, &["feedback", "x", "--with-error", not.to_str().expect("utf-8")]))["error"]["code"], "not-an-error-envelope");
+}
+
+/// A `serve` session is a program driving the tool, and a person sends feedback: the session refuses it
+/// and nothing is saved, so no agent on a session reaches `--send`.
+#[test]
+fn a_session_does_not_take_feedback() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("feedback-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".n0x")).expect("project");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).expect("config");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/strings_planted.so");
+    let out = run_with_stdin(&dir, &config, &["serve", "--quiet", "--file", fixture.to_str().expect("utf-8")], b"feedback hello --send\n\n");
+    let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let refused = lines.iter().find(|v| v["error"]["code"] == "unsupported" && v["error"]["message"].as_str().is_some_and(|m| m.contains("feedback")));
+    assert!(refused.is_some(), "the session answered: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(!dir.join(".n0x").join("feedback").exists(), "a session saved a report");
+}

@@ -60,8 +60,8 @@ def read(directory):
 
 
 def error_code(report):
-    # Schema 1 carries no error; a later schema's `last_error.code` groups by itself.
-    last = report.get("last_error") if isinstance(report, dict) else None
+    # `error` is there only when the user handed one over with --with-error.
+    last = report.get("error") if isinstance(report, dict) else None
     return last.get("code", "none") if isinstance(last, dict) else "none"
 
 

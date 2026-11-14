@@ -14,12 +14,16 @@ long it is kept, and how to have it deleted.
 ## What a report holds
 
 ```json
-{"schema":1,"version":"0.3.9","os":"linux","arch":"x86_64","text":"what you wrote","attachments":[{"type":"png","size":48213,"sha256":"…"}]}
+{"schema":1,"version":"0.3.9","os":"linux","arch":"x86_64","text":"what you wrote","attachments":[{"type":"png","size":48213,"sha256":"…"}],
+ "error":{"code":"load-failed","message":"failed to load source: open <quoted>: No such file or directory (os error 2)"}}
 ```
 
 - the report format's version, the tool's version, the operating system family (`linux`, `windows`, `macos`) and the
   processor architecture: no OS release, no build, no machine name;
 - your text, at most 64 KiB;
+- with `--with-error FILE` (or `-` for standard input), an error this tool printed that you hand over: its code, and its
+  message with every path, address, file name and quoted name replaced by a placeholder (`<path>`, `<addr>`, `<file>`,
+  `<quoted>`). Nothing else of it, and you see the result before anything is sent. The tool keeps no record of errors;
 - for each file you name with `--attach`: its type, size and sha256, and its bytes are sent after the JSON. Only PNG
   and JPEG are taken, decided by the file's bytes, at most 10 MiB each. The file's name is not sent. A screenshot can
   show anything that was on the screen, so look at it before you attach it.
