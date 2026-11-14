@@ -127,3 +127,107 @@ says = "disasm decodes past a PE section's VirtualSize, reading the file's zero 
 oracle = "llvm-readobj --sections (VirtualSize) and objdump, which stops there"
 status = "false"
 measured = "2026-11-14, 0891678: a mingw PE whose .text has VirtualSize 0x20 and 512 raw bytes: 12 `add` past 0x140001020 out of 20 asked. Open since 2026-10-20 (44 on one DLL)."
+
+[[claim]]
+id = "audit.profile-export-count"
+layer = "image inventory"
+says = "profile's export_count omits an export that has an ordinal and no name."
+oracle = "objdump -p: the export address table's live slots"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): planted.dll: 1 counted, 2 live slots (ordinals 1 and 7)."
+
+[[claim]]
+id = "audit.why-start-inside"
+layer = "function extents"
+says = "why says addr_is_start: true for an address inside a function."
+oracle = "nm on the unstripped twin of a stripped static executable"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 0x408940 lies inside printf_positional; why says it starts a function."
+
+[[claim]]
+id = "audit.ir-build-cut-silent"
+layer = "the decompiled body"
+says = "ir build ends a function at the read window with no statement that it was cut."
+oracle = "nm: the symbol's size"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): end 0x2160 against a true end 0x52ea (size 0x418a); no cut stated."
+
+[[claim]]
+id = "audit.ir-manifest-returns-cut"
+layer = "control flow"
+says = "ir manifest answers returns 0 for a cut function that returns."
+oracle = "objdump of the unstripped twin: one ret"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): flags [cut], returns 0, on a function with a ret past the cut."
+
+[[claim]]
+id = "audit.discover-starts-inside"
+layer = "function discovery"
+says = "function discover lists starts inside functions on a stripped static executable."
+oracle = "nm on the unstripped twin: sized symbols"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 24 of 1 126 starts fall strictly inside a sized symbol (0x408940, 0x40a120, 0x40a280, ...)."
+
+[[claim]]
+id = "audit.params-past-registers"
+layer = "the decompiled body"
+says = "function summary and decomp give 6 (SysV) or 4 (Win64) parameters to a function that takes 8: stack parameters past the registers are not read on x86-64."
+oracle = "the fixture's source arity"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): P8: 6 of 8 on gcc and clang, 4 of 8 on PE."
+
+[[claim]]
+id = "audit.eh-pe64-catch"
+layer = "exception tables"
+says = "function eh answers regions [] for a PE64 function with a catch handler."
+oracle = "objdump -p: UNW_FLAG_EHANDLER present"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): a mingw C++ catcher: no region."
+
+[[claim]]
+id = "audit.has-switch-without-switch"
+layer = "the decompiled body"
+says = "decomp pseudo flags has-switch on a body that prints no switch."
+oracle = "the fixture's source: a switch and a computed goto"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): i386 switch_hole and RET_computed: has-switch true, no switch in the body."
+
+[[claim]]
+id = "audit.decomp-data-address"
+layer = "the decompiled body"
+says = "decomp pseudo decompiles bytes in .rodata as a function with ok:true and no word that the address is not code."
+oracle = "objdump -h: the section's flags"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 0x2004 in .rodata: ok, quality 0.5, nothing said."
+
+[[claim]]
+id = "audit.wasm-element-xref"
+layer = "cross-references"
+says = "xref to on a wasm function referenced only by an element segment answers count 0."
+oracle = "wasm-objdump: elem holds ref.func"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 1 reference in the element segment, 0 answered."
+
+[[claim]]
+id = "audit.lua-table-strings"
+layer = "script runtimes"
+says = "lua table gives text: null for every string on LuaJIT 2.1."
+oracle = "the script printed its own table and strings"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): both strings absent from the answer."
+
+[[claim]]
+id = "audit.bindings-data-table"
+layer = "image inventory"
+says = "bindings list misses a {name, fn} table held in data."
+oracle = "the fixture's source: 3 bindings, 2 in a data table"
+status = "false"
+measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 1 found of 3, ELF and PE."
+
+[[claim]]
+id = "audit.claims-2026-11"
+layer = "every command's stated facts"
+says = "Of 220 statements a reader acts on, picked across 105 commands on 2026-11-06, those not listed as `false` here hold on their fixtures."
+oracle = "per statement, a source that is not the tool: the fixture's source, objdump, readelf, nm, gdb, wasm-objdump, llvm-pdbutil, /proc/<pid>/mem, what the program printed"
+status = "measured-private"
+measured = "2026-11-14, 0891678: 158 hold (97 that held at 0.3.9, all still holding, and 61 of the 74 that were false), 12 false (the `audit.*` entries), 1 a refusal that names its reason, 9 known, 27 not tested, 13 too vague to be false. Every holding check was run on planted wrong answers and catches at least one (126) or fails loudly (31); one blind check found that way was tightened. The fixtures and the re-run script are private for now."
