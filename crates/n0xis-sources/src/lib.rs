@@ -49,7 +49,7 @@ pub use plugin::{
 mod image;
 pub use image::{
     formats, recognize, Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DataSegment, DeclaredStart, Export, ExportTo, Extent,
-    Finding, Format, FormatTables, Image, ImageFormat, ImageSymbol, ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa,
+    FileSection, Finding, Format, FormatTables, Image, ImageFormat, ImageSymbol, ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa,
     ItemKind, Library, LibraryRef, LibrarySource, LinearMemory, LoadedBytes, Machine, MemoryAddress, OpenError, OpenOptions, Opened, Partial,
     Placement, PointerWidth, Reach, Section, Segment, SegmentPlacement, Segments, StartCoverage, StartReason, SymbolKind, SymbolTable,
     UnlistedSlot, Unread,

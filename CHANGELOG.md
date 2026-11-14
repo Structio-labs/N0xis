@@ -7,6 +7,8 @@ All notable changes to N0xis are recorded here. Versions follow
 
 **What is verified is written down, and the gate holds it to its test.** `docs/verification/ledger.toml` lists each statement a reader acts on with the source outside the tool that checks it, the test that does, and the numbers; `scripts/gate.py` fails when a claim marked verified names a test that did not pass in that run. ROADMAP's ✅ now means built, and an item is verified only where it cites the ledger. Known wrong answers are listed there too, as `false`.
 
+**`find` and `strings` read the sections an image does not load, and list their hits apart.** They said they read every file-backed section and left out each section without `SHF_ALLOC`: `GCC: (` in `.comment` was `count: 0`, and `strings --section .comment` refused as no such section. Such a section has no address, so its hits are in a list of their own, `unmapped`, by file offset, with `unmapped_sections` saying which were read; the rows that were there keep their shape and hold loaded addresses only.
+
 **`profile` says when the IL2CPP metadata beside an image is a version `il2cpp metadata` does not read.** It named the version and said nothing, and the command then refused the file. A version outside 16..=31 is an advisory against `il2cpp metadata`, from the one statement of the range the reader refuses by.
 
 **Clearing an annotation where there is none makes no record.** `annotate name --addr A` with no value at an address with nothing wrote a record with a history entry from nothing to nothing, and `annotate list` counted it. A clear at an address with no record changes nothing and writes nothing.

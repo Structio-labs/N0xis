@@ -364,6 +364,15 @@ pub struct Section {
     pub in_image: bool,
 }
 
+/// A section the file holds and the image does not load: its name and where
+/// its bytes are in the file ([`Image::unloaded_sections`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileSection {
+    pub name: String,
+    pub file_offset: u64,
+    pub file_size: u64,
+}
+
 /// Whether an ELF section is one the linker fills with PLT stubs: executable,
 /// named `.plt…` (`.plt`, `.plt.got`, `.plt.sec`), with bytes in the file.
 /// **The one statement of it**, read by the ELF reader's stub decoder and by
@@ -850,6 +859,13 @@ pub trait Image: std::fmt::Debug + Send + Sync {
     /// themselves (an ELF's `.comment`), which no loader maps, or `None` for an
     /// image without one.
     fn comment(&self) -> Option<&[u8]>;
+    /// Sections the file holds and the image does not load (an ELF section
+    /// without `SHF_ALLOC`: `.comment`, `.symtab`, debug information). They
+    /// have no address, so they are not among [`Self::sections`]; a search
+    /// that reads them reads them from the file. Empty for a format with none.
+    fn unloaded_sections(&self) -> &[FileSection] {
+        &[]
+    }
     /// How a word of this image's data states an address
     /// ([`crate::AddressWords`]). For [`crate::AddressWords::Relocated`],
     /// `relocated` has been handed each such word's address and the address it

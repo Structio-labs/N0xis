@@ -114,6 +114,10 @@ pub struct StringsPage {
     /// About a running process: what its sweep did not read. These keys take their
     /// places among the others ([`n0xis_sources::LiveAnswer`] flattens them in).
     coverage: serde_json::Map<String, Value>,
+    /// Strings in sections the image does not load, by file offset, and which
+    /// were read: `unmapped`, `unmapped_sections`. Keys after `strings`, so
+    /// they take their places in key order there; absent where none was read.
+    unmapped: serde_json::Map<String, Value>,
 }
 
 /// `{"at": ..., "kind": ...}`: [`n0xis_core::CutBy`]'s own order is the other one.
@@ -191,6 +195,9 @@ impl Serialize for StringsPage {
             map.serialize_entry(key, value)?;
         }
         map.serialize_entry("strings", &Rows(self))?;
+        for (key, value) in &self.unmapped {
+            map.serialize_entry(key, value)?;
+        }
         map.end()
     }
 }
@@ -219,9 +226,26 @@ fn strings(args: &Value) -> Response<Answer> {
         Ok(r) => r,
         Err((c, m)) => return Response::error(&c, m),
     };
-    let ranges = match ranges(&resolved.src, args, start) {
-        Ok(r) => r,
-        Err((c, m)) => return Response::error(c, m),
+    // A section named that the image does not load is read from the file
+    // alone; over the whole image those sections are read beside the others.
+    let named = args.get("section").and_then(Value::as_str);
+    let window = start.is_some() || args.get("size").and_then(Value::as_u64).is_some();
+    let unloaded: Vec<(&n0xis_sources::FileSection, &[u8])> = match &resolved.src {
+        Src::Static(img) if !window => match named {
+            Some(name) if img.section_range(name).is_some() => Vec::new(),
+            Some(name) => img.unloaded_sections().into_iter().filter(|(f, _)| f.name == name).collect(),
+            None => img.unloaded_sections(),
+        },
+        _ => Vec::new(),
+    };
+    let file_only = named.is_some() && !unloaded.is_empty();
+    let ranges = if file_only {
+        Vec::new()
+    } else {
+        match ranges(&resolved.src, args, start) {
+            Ok(r) => r,
+            Err((c, m)) => return Response::error(c, m),
+        }
     };
     let key = resolved.src.as_mem().identity().map(|id| format!("{id}|{min}|{encodings:?}|{ranges:?}"));
     let kept = key.as_ref().and_then(|k| KEPT.lock().ok().and_then(|kept| kept.as_ref().filter(|(had, _)| had == k).map(|(_, s)| Arc::clone(s))));
@@ -281,7 +305,16 @@ fn strings(args: &Value) -> Response<Answer> {
         .collect();
     let literal_cuts = serde_json::to_value(scanned.literal_cuts).unwrap_or(Value::Null);
     let read_by_sweep = scanned.read.clone();
-    let mut answer = StringsPage { scanned, shown, count: returned, literal_cuts, min, ranges: Value::Array(read), coverage: serde_json::Map::new() };
+    let mut answer = StringsPage {
+        scanned,
+        shown,
+        count: returned,
+        literal_cuts,
+        min,
+        ranges: Value::Array(read),
+        coverage: serde_json::Map::new(),
+        unmapped: unmapped_strings(&unloaded, min, &encodings, needle.as_deref(), limit),
+    };
     let is_live = matches!(resolved.src, Src::Live(_) | Src::Remote(_));
     if is_live && let Ok(Value::Object(coverage)) = serde_json::to_value(&read_by_sweep) {
         answer.coverage = coverage;
@@ -289,7 +322,15 @@ fn strings(args: &Value) -> Response<Answer> {
     // A live sweep's coverage is in the page already, so its answer is this either way,
     // and the refusal to call nothing a result is the same one.
     let swept = n0xis_sources::Swept { answer, read: read_by_sweep };
-    let data = if is_live { swept.live().map(|stated| stated.answer) } else { swept.window() };
+    // Only a section the image does not load was asked for: nothing in memory
+    // was to be read, and the answer is the file's.
+    let data = if is_live {
+        swept.live().map(|stated| stated.answer)
+    } else if file_only {
+        Ok(swept.answer)
+    } else {
+        swept.window()
+    };
     let data = match data {
         Ok(data) => data,
         Err(nothing) => return Response::error(n0xis_sources::NOTHING_READABLE, nothing.to_string()),
@@ -297,6 +338,49 @@ fn strings(args: &Value) -> Response<Answer> {
     Response::success(schema::v1::STRINGS, Answer::Strings(data))
         .with_source(resolved.label)
         .with_page(total, returned)
+}
+
+/// The strings of the sections the image does not load, as `unmapped` (each
+/// with its section and file offset, never an address: they have none) and
+/// `unmapped_sections` (which were read, and how many strings there were before
+/// `limit`). `.comment` was not read at all, and `--section .comment` refused as
+/// no such section (audit 2026-11-06).
+fn unmapped_strings(
+    unloaded: &[(&n0xis_sources::FileSection, &[u8])],
+    min: usize,
+    encodings: &[StringEncoding],
+    needle: Option<&str>,
+    limit: usize,
+) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    if unloaded.is_empty() {
+        return out;
+    }
+    let mut rows: Vec<Value> = Vec::new();
+    for (section, bytes) in unloaded {
+        for found in n0xis_core::find_strings(bytes, Va(0), min, encodings) {
+            if needle.is_some_and(|n| !found.text.to_lowercase().contains(n)) {
+                continue;
+            }
+            rows.push(json!({
+                "encoding": found.encoding,
+                "file_offset": format!("{:#x}", section.file_offset + found.address.0),
+                "section": section.name,
+                "text": found.text,
+            }));
+        }
+    }
+    let shown = n0xis_contracts::Shown::cap(&mut rows, limit);
+    out.insert("unmapped".into(), Value::Array(rows));
+    out.insert(
+        "unmapped_sections".into(),
+        json!({
+            "hits": shown.total,
+            "note": "sections the image does not load (not allocated in memory), so with no address: read from the file, and a string in one is in `unmapped` by its file offset, never among `strings`",
+            "read": unloaded.iter().map(|(s, _)| s.name.clone()).collect::<Vec<_>>(),
+        }),
+    );
+    out
 }
 
 /// The ranges to read: `start`+`size`, one named section, or the image's
@@ -489,6 +573,7 @@ mod tests {
             min: 1,
             ranges: json!([{ "size": 64, "name": ".rdata", "address": "0x1000" }]),
             coverage,
+            unmapped: serde_json::Map::new(),
         }
     }
 

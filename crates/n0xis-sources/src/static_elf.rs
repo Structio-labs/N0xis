@@ -21,7 +21,7 @@ use goblin::elf::Elf;
 use n0xis_contracts::Va;
 
 use crate::image::{
-    Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, FormatTables, Image, ImageSymbol,
+    Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, FileSection, Finding, FormatTables, Image, ImageSymbol,
     ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, ItemKind, Library, LibraryRef, LibrarySource, LoadedBytes, Machine,
     OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
     SymbolTable, UnlistedSlot, Unread,
@@ -354,6 +354,7 @@ pub(crate) struct StaticElf {
     placed: Vec<Placement>,
     /// Where in the file `.comment` is, when it has one the file holds.
     comment: Option<std::ops::Range<usize>>,
+    unloaded: Vec<FileSection>,
     symbols: Answer<Partial<Vec<ImageSymbol>>>,
     exports: Answer<Vec<Export>>,
     imports: Answer<Imports>,
@@ -408,7 +409,18 @@ impl StaticElf {
         // unallocated section (sh_addr == 0: debug info, symbol tables) isn't
         // part of the address space and is skipped for `read`.
         let mut sections = Vec::with_capacity(elf.section_headers.len());
+        // What the file holds and the loader does not place: no address, read
+        // from the file by whoever asks ([`Image::unloaded_sections`]). A
+        // section whose bytes the file does not hold is not among them.
+        let mut unloaded: Vec<FileSection> = Vec::new();
         for sh in &elf.section_headers {
+            if sh.sh_flags & SHF_ALLOC == 0 && sh.sh_type != SHT_NOBITS && sh.sh_type != 0 && sh.sh_size > 0 {
+                let in_file = sh.sh_offset.checked_add(sh.sh_size).is_some_and(|end| end <= bytes.len() as u64);
+                if in_file {
+                    let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("").to_string();
+                    unloaded.push(FileSection { name, file_offset: sh.sh_offset, file_size: sh.sh_size });
+                }
+            }
             if sh.sh_addr == 0 {
                 continue;
             }
@@ -811,6 +823,7 @@ impl StaticElf {
         drop(elf);
         Ok(StaticElf {
             comment,
+            unloaded,
             bytes,
             machine,
             linkage,
@@ -966,6 +979,9 @@ impl Image for StaticElf {
     /// `None` too when the headers state bytes past the end of the file.
     fn comment(&self) -> Option<&[u8]> {
         self.bytes.get(self.comment.clone()?)
+    }
+    fn unloaded_sections(&self) -> &[FileSection] {
+        &self.unloaded
     }
 
     fn constant_after_load(&self, va: Va) -> bool {

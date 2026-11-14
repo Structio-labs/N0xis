@@ -158,6 +158,9 @@ MUTATIONS = [
     ("crates/n0xis-project/src/annotate.rs", "if value.is_none() && !all.contains_key(&key) {", "if false {", "n0xis-project", None, "annotate::tests::clearing_nothing_makes_no_record"),
     # A metadata version the reader refuses goes unsaid.
     ("crates/n0xis-frontend/src/il2cpp_caps.rs", "    (!read).then(|| n0xis_core::Advisory {", "    (!read && false).then(|| n0xis_core::Advisory {", "n0xis-cli", "a_count_of_nothing_says_what_was_not_read", "a_metadata_version_il2cpp_metadata_does_not_read_is_said"),
+    # Sections the image does not load are left out again.
+    ("crates/n0xis-sources/src/static_elf.rs", "                if in_file {\n                    let name", "                if false && in_file {\n                    let name", "n0xis-cli", "a_section_the_image_does_not_load_is_read_from_the_file", "find_lists_a_hit_in_a_section_not_loaded_by_its_file_offset"),
+    ("crates/n0xis-frontend/src/strings_caps.rs", "    let file_only = named.is_some() && !unloaded.is_empty();", "    let file_only = false;", "n0xis-cli", "a_section_the_image_does_not_load_is_read_from_the_file", "strings_reads_a_section_not_loaded_whole_or_named"),
 ]
 
 

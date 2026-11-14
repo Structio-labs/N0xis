@@ -85,6 +85,14 @@ impl Pass for AobScanPass {
     }
 }
 
+/// Every offset in `bytes` where `pattern` matches: for bytes with no address,
+/// as a section an image does not load is read from its file.
+pub fn match_offsets(bytes: &[u8], pattern: &[AobByte]) -> Vec<usize> {
+    let mut at = Vec::new();
+    matches_in(bytes, Va(0), pattern, &mut at);
+    at.into_iter().map(|v| v.0 as usize).collect()
+}
+
 /// Every place `pattern` matches in `bytes`, which were read at `start`.
 fn matches_in(bytes: &[u8], start: Va, pattern: &[AobByte], matches: &mut Vec<Va>) {
     let plen = pattern.len();

@@ -4835,6 +4835,28 @@ struct FindAnswer<'a> {
     matches: FindRows<'a>,
     pattern_len: usize,
     truncated: bool,
+    /// Hits in sections the image does not load, by file offset: the rows above
+    /// are only ever loaded addresses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unmapped: Vec<UnmappedRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unmapped_sections: Option<UnmappedSections>,
+}
+
+/// A hit in a section the image does not load.
+#[derive(serde::Serialize)]
+struct UnmappedRow {
+    file_offset: String,
+    section: String,
+}
+
+/// Which sections the image does not load were read, and what `unmapped` is out of.
+#[derive(serde::Serialize)]
+struct UnmappedSections {
+    /// Every hit there, before `--limit` cut the list.
+    hits: usize,
+    note: &'static str,
+    read: Vec<String>,
 }
 
 struct FindRows<'a>(&'a [(Va, String)]);
@@ -4896,6 +4918,8 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
         match &src {
             Src::Static(pe) => match pe.section_range(sec) {
                 Some((s, z)) => vec![(sec.to_string(), s, z)],
+                // A section the image does not load is read from the file, below.
+                None if pe.unloaded_sections().iter().any(|(f, _)| f.name == sec) => Vec::new(),
                 None => return ir_err("no-section", &format!("no section named {sec:?} in the image"), pretty),
             },
             _ => return ir_err("no-section", "--section needs a static --file image", pretty),
@@ -4961,7 +4985,50 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
         Err(e) => return ir_err("read-failed", &e.to_string(), pretty),
     };
 
-    let data = FindAnswer { bytes_scanned: scanned, count: matches.len(), matches: FindRows(&matches), pattern_len: pattern.len(), truncated };
+    // The sections the image does not load: read from the file, over the whole
+    // image or when one is named, and their hits listed apart by file offset,
+    // since they have no address. `.comment` was answered `count: 0` over a
+    // string it holds, and `--section .comment` refused as no such section
+    // (audit 2026-11-06).
+    let mut unmapped: Vec<UnmappedRow> = Vec::new();
+    let mut unmapped_read: Vec<String> = Vec::new();
+    if let Src::Static(img) = &src
+        && !(explicit_start.is_some() && a.size.is_some())
+    {
+        for (section, bytes) in img.unloaded_sections() {
+            if a.section.as_deref().is_some_and(|named| named != section.name) || (a.section.is_some() && !ranges.is_empty()) {
+                continue;
+            }
+            unmapped_read.push(section.name.clone());
+            for at in n0xis_core::match_offsets(bytes, &pattern) {
+                if at as u64 % align == 0 {
+                    unmapped.push(UnmappedRow { file_offset: format!("{:#x}", section.file_offset + at as u64), section: section.name.clone() });
+                }
+            }
+        }
+    }
+    let unmapped_shown = n0xis_contracts::Shown::cap(&mut unmapped, if a.limit == 0 { 0 } else { a.limit });
+    let unmapped_sections = (!unmapped_read.is_empty()).then(|| UnmappedSections {
+        hits: unmapped_shown.total,
+        note: "sections the image does not load (not allocated in memory), so with no address: read from the file, and a hit in one is in \
+               `unmapped` by its file offset, never among `matches`",
+        read: unmapped_read,
+    });
+    let file_only = ranges.is_empty() && unmapped_sections.is_some();
+    let data = FindAnswer {
+        bytes_scanned: scanned,
+        count: matches.len(),
+        matches: FindRows(&matches),
+        pattern_len: pattern.len(),
+        truncated,
+        unmapped,
+        unmapped_sections,
+    };
+    // Only a section the image does not load was named: nothing in memory was
+    // to be read, and the answer is the file's.
+    if file_only {
+        return emit(&Response::success(schema::v1::FIND, data).with_source(label), pretty);
+    }
     match src {
         // A process: a named window may not read, or may stop part-way.
         Src::Live(_) | Src::Remote(_) => emit_swept(schema::v1::FIND, n0xis_sources::Swept { answer: data, read }, label, pretty),

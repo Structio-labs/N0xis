@@ -464,6 +464,23 @@ impl ImageSource {
         self.image.sections().iter().filter(|s| s.file_size > 0).map(|s| (s.name.clone(), s.va, s.file_size)).collect()
     }
 
+    /// The sections the file holds and the image does not load, each with its
+    /// bytes from the file ([`crate::Image::unloaded_sections`]): what a
+    /// search reads beside [`Self::sections`], and reports by file offset,
+    /// since they have no address.
+    pub fn unloaded_sections(&self) -> Vec<(&crate::FileSection, &[u8])> {
+        let file = self.image.loaded_bytes().file;
+        self.image
+            .unloaded_sections()
+            .iter()
+            .filter_map(|s| {
+                let start = usize::try_from(s.file_offset).ok()?;
+                let end = start.checked_add(usize::try_from(s.file_size).ok()?)?;
+                Some((s, file.get(start..end)?))
+            })
+            .collect()
+    }
+
     /// Every section with its executable flag — the shape `profile` needs.
     ///
     /// Separate from [`Self::sections`] (which `find` uses to bound a byte
