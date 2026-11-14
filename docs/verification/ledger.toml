@@ -38,10 +38,11 @@ measured = "2026-11-13, 0ddd734: 3 functions in five x64 system DLLs (private se
 [[claim]]
 id = "profile.pdata-functions"
 layer = "image inventory"
-says = "profile's pdata_functions counts .pdata records, continuations included, not functions."
-oracle = "llvm-readobj --unwind"
-status = "false"
-measured = "2026-11-13: 2 512 and 1 930 on the two runtime DLLs, where the functions are 2 504 and 1 920."
+says = "profile's pdata_functions counts functions, a chained continuation not counted as one."
+oracle = "llvm-readobj --unwind: entries minus those flagged ChainInfo"
+test = "the_profile_counts_functions_not_entries"
+status = "verified"
+measured = "2026-11-14, 0891678: 2 504 and 1 920 on the two runtime DLLs, equal to llvm-readobj's 2 512 - 8 and 1 930 - 10; 0.3.9 said 2 512 and 1 930."
 
 [[claim]]
 id = "summary.writes-memory"
