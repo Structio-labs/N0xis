@@ -37,7 +37,7 @@ MUTATIONS = [
     (CORE + "decomp.rs", "        let quality = cfg.end_by.quality_cap().map_or(quality, |cap| quality.min(cap));\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
     (CORE + "decomp.rs", "            .chain(cut.as_ref().map(|c| format!(\"    /* {} */\", c.words)))\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
     (CORE + "manifest.rs", "    if art.callsites.is_empty() && !cut && !art.leaves_by_an_unresolved_jump() {", "    if art.callsites.is_empty() && !art.leaves_by_an_unresolved_jump() {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
-    (CORE + "manifest.rs", "    if !cut && !crate::noreturn_ipa::function_returns(", "    if !crate::noreturn_ipa::function_returns(", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
+    (CORE + "manifest.rs", "    if !cut && !crate::noreturn_ipa::function_returns(", "    if !crate::noreturn_ipa::function_returns(", *LIB, "manifest::tests::a_cut_graph_whose_read_part_loops_is_not_said_not_to_return"),
     (CORE + "trace.rs", "            not_followed.cut_bodies += usize::from(cut.is_some());\n", "", *LIB, "trace::tests::a_cut_body_truncates_the_walk"),
     (CORE + "summary.rs", "    cfg.callsites.is_empty() && !cfg.leaves_by_an_unresolved_jump() && !cfg.end_by.is_cut()", "    cfg.callsites.is_empty() && !cfg.leaves_by_an_unresolved_jump()", *LIB, "summary::tests::a_cut_function_has_no_complete_clobbers"),
     # What a function takes.

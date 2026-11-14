@@ -343,4 +343,38 @@ mod tests {
         assert!(e.cut.is_some() && e.flags.contains(&"cut"), "{:?}", e.flags);
         assert!(!e.flags.contains(&"no-return") && !e.flags.contains(&"leaf"), "{:?}", e.flags);
     }
+
+    /// A cut graph whose part read never returns is still not said not to return:
+    /// the rest was not read. Every path from the entry loops, and the graph reads on
+    /// past them only for a branch no path reaches, until the bytes run out:
+    ///
+    /// ```text
+    /// 1000: 74 1e   je  0x1020
+    /// 1002: eb fc   jmp 0x1000
+    /// 1004: 74 35   je  0x103b        (no path reaches it)
+    /// 1006: 90 ...  nop, to 0x1020
+    /// 1020: eb de   jmp 0x1000
+    /// 1022: b8 01 00 00 00  mov eax,0x1, five times, to the end at 0x1040
+    /// ```
+    ///
+    /// The graph's own rule ([`crate::noreturn_ipa::function_returns`]) says "never"
+    /// of what was read, which is why the cut is asked first.
+    #[test]
+    fn a_cut_graph_whose_read_part_loops_is_not_said_not_to_return() {
+        let mut code = vec![0x74, 0x1e, 0xeb, 0xfc, 0x74, 0x35];
+        code.resize(0x20, 0x90);
+        code.extend_from_slice(&[0xeb, 0xde]);
+        code.extend(std::iter::repeat_n([0xb8u8, 1, 0, 0, 0], 6).flatten());
+        code.truncate(0x40);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = crate::ir::CfgPass.run(&ctx, crate::ir::CfgInput::new(Va(0x1000), 64)).expect("cfg builds");
+        assert!(cfg.end_by.is_cut(), "the fixture is cut: {:?}", cfg.end_by);
+        let none = std::collections::HashSet::new();
+        assert!(!crate::noreturn_ipa::function_returns(&cfg, &none), "the fixture's read part never returns");
+        let input = ManifestInput { candidates: vec![ManifestCandidate { name: "loops".into(), va: Va(0x1000) }], max_bytes: 64 };
+        let e = &ManifestPass.run(&ctx, input).expect("manifest builds").entries[0];
+        assert!(e.flags.contains(&"cut") && !e.flags.contains(&"no-return"), "{:?}", e.flags);
+    }
 }
