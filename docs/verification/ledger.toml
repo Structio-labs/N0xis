@@ -111,3 +111,19 @@ says = "GCC's interprocedural register allocation keeps a value in a caller-save
 oracle = "the processor; the same source rebuilt with -fno-ipa-ra prints right"
 status = "false"
 measured = "2026-11-14, bc901d4: caller2, uses_farewell and run wrong on ELF64 executable and PIE and on MinGW x64, caller2 and uses_farewell on MinGW i386 (11 bodies). Bodies round 3 item 5 is on it."
+
+[[claim]]
+id = "disasm.invalid-byte"
+layer = "instruction decoding"
+says = "disasm on an invalid byte takes two bytes where the processor and objdump take one, loses the next instruction, and stops with fewer instructions than asked and no word why."
+oracle = "objdump on a five-instruction fixture with one invalid byte (0x06 in 64-bit mode)"
+status = "false"
+measured = "2026-11-14, 0891678: asked 10, answered 2 (`mov`, then `invalid` of `06 b8`); objdump: mov, (bad) one byte, mov, ret. Open since 2026-10-20 (a stripped browser binary: 20 005 of 60 000 asked)."
+
+[[claim]]
+id = "disasm.past-virtual-size"
+layer = "instruction decoding"
+says = "disasm decodes past a PE section's VirtualSize, reading the file's zero padding as `add [rax],al`, with no note."
+oracle = "llvm-readobj --sections (VirtualSize) and objdump, which stops there"
+status = "false"
+measured = "2026-11-14, 0891678: a mingw PE whose .text has VirtualSize 0x20 and 512 raw bytes: 12 `add` past 0x140001020 out of 20 asked. Open since 2026-10-20 (44 on one DLL)."
