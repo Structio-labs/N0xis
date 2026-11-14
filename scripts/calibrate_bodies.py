@@ -37,9 +37,9 @@ MUTATIONS = [
     (CORE + "decomp.rs", "        let quality = cfg.end_by.quality_cap().map_or(quality, |cap| quality.min(cap));\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
     (CORE + "decomp.rs", "            .chain(cut.as_ref().map(|c| format!(\"    /* {} */\", c.words)))\n", "", *LIB, "decomp::tests::a_body_cut_by_the_window_says_so"),
     (CORE + "manifest.rs", "    if art.callsites.is_empty() && !cut && !art.leaves_by_an_unresolved_jump() {", "    if art.callsites.is_empty() && !art.leaves_by_an_unresolved_jump() {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
-    (CORE + "manifest.rs", "if art.stats.returns == 0 && art.stats.tail_calls == 0 && !cut {", "if art.stats.returns == 0 && art.stats.tail_calls == 0 {", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
+    (CORE + "manifest.rs", "    if !cut && !crate::noreturn_ipa::function_returns(", "    if !crate::noreturn_ipa::function_returns(", *LIB, "manifest::tests::a_cut_graph_says_so_and_claims_nothing_of_the_rest"),
     (CORE + "trace.rs", "            not_followed.cut_bodies += usize::from(cut.is_some());\n", "", *LIB, "trace::tests::a_cut_body_truncates_the_walk"),
-    (CORE + "summary.rs", " && !has_unknown_call && !cfg.end_by.is_cut(),", " && !has_unknown_call,", *LIB, "summary::tests::a_cut_function_has_no_complete_clobbers"),
+    (CORE + "summary.rs", "    cfg.callsites.is_empty() && !cfg.leaves_by_an_unresolved_jump() && !cfg.end_by.is_cut()", "    cfg.callsites.is_empty() && !cfg.leaves_by_an_unresolved_jump()", *LIB, "summary::tests::a_cut_function_has_no_complete_clobbers"),
     # What a function takes.
     (CORE + "ssa.rs", "if seen.iter().any(|(n, left)| *left && passed.contains(n)) {", "if false {", *LIB, "callee::tests::a_value_moved_to_a_call_is_a_parameter"),
     (CORE + "callee.rs", "        if takes_of(ctx, id.as_deref(), callee, depth).floor() > pos {", "        if false {", *LIB, "callee::tests::a_register_passed_on_as_it_came_is_a_parameter_when_the_callee_reads_it"),
@@ -83,9 +83,9 @@ MUTATIONS = [
     (CORE + "decomp.rs", "\"/* dispatcher */\", crate::structure::UNRECOVERED_JUMP]", "\"/* dispatcher */\"]", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
     # A jump with the frame given back is a tail call through a pointer, and only that (item 3b).
     (CORE + "decomp.rs", "        let cfg = crate::pointer_tail::with_tail_calls_through_pointers(ctx, input.cfg)?;", "        let cfg = input.cfg;", *LIB, "decomp::tests::a_jump_through_a_slot_with_the_frame_given_back_is_a_tail_call"),
-    (CORE + "pointer_tail.rs", "            at == Some(0) && !is_constant", "            !is_constant", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
-    (CORE + "pointer_tail.rs", " && !read_through_an_index(target, &defs, 0)", "", *LIB, "decomp::tests::a_jump_through_a_table_with_no_frame_is_not_a_tail_call"),
-    (CORE + "pointer_tail.rs", "        if v.split('.').next() == Some(self.sp) {\n            return None;\n        }\n", "", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
+    (CORE + "tail_jump.rs", "                at == Some(0) && !is_constant", "                !is_constant", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
+    (CORE + "tail_jump.rs", " && !read_through_an_index(target, &defs, 0)", "", *LIB, "decomp::tests::a_jump_through_a_table_with_no_frame_is_not_a_tail_call"),
+    (CORE + "tail_jump.rs", "        if v.split('.').next() == Some(self.sp) {\n            return None;\n        }\n", "", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
     (CORE + "callee.rs", "                (None, Takes::AtLeast(n)) if tail =>", "                (None, Takes::AtLeast(n)) if false =>", *LIB, "decomp::tests::an_i386_jump_through_a_slot_is_given_the_slots_it_rewrites"),
     # What the bytes settle, said (round 3, item 4).
     ("crates/n0xis-arch/src/x64_lift.rs", "            if sources_are_one_register(&instr) {", "            if false {", "n0xis-arch", None, "x64_lift::tests::a_vector_xor_of_one_register_with_itself_is_zero"),
@@ -116,9 +116,9 @@ MUTATIONS = [
     (CORE + "render.rs", "        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if word.is_some() => {", "        MicroExpr::Binary(op @ (BinOp::SDiv | BinOp::SMod), l, r) if false && word.is_some() => {", *LIB, "divide::tests::a_multiply_and_shift_that_divides_for_every_operand_is_a_division"),
     (CORE + "optimize.rs", "        BinOp::SDiv => sl.wrapping_div(sign_extend(r, bits)),", "        BinOp::SDiv => l.wrapping_div(r),", *LIB, "optimize::shift_agreement::a_signed_divide_folds_signed"),
     # A register a local callee's own instructions do not write keeps its value across the call (round 3, item 5).
-    (CORE + "ssa.rs", "        crate::callee::keep_what_callees_leave(ctx, &mut lifted);\n", "", *LIB, "callee::tests::a_register_a_leaf_callee_does_not_write_keeps_its_value"),
+    (CORE + "ssa.rs", "        crate::callee::keep_what_callees_leave(ctx, &cfg, &mut lifted);\n", "", *LIB, "callee::tests::a_register_a_leaf_callee_does_not_write_keeps_its_value"),
     (CORE + "callee.rs", " && crate::summary::writes_are_all_of_it(cfg))", ")", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
-    (CORE + "callee.rs", "            changes.as_ref().is_none_or(|w| w.contains(&ctx.arch.normalize_reg(dst)))", "            changes.as_ref().is_none_or(|_| false)", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
+    (CORE + "callee.rs", "                keep[k] = changes.as_ref().is_none_or(|w| w.contains(&reg));", "                keep[k] = changes.as_ref().is_none_or(|_| false);", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
     # One switch bound, the guard's, for every consumer (round 3, item 6); and the test takes it from the bytes.
     (CORE + "switch.rs", "    let bound = ctx.arch.index_guard(insns, disp);", "    let bound = disp.bound;", "n0xis-cli", "xref_reads_jump_tables", "gcc_position_independent", ORACLE),
     ("crates/n0xis-cli/tests/xref_reads_jump_tables.rs", "        let guarded = guards.iter().find(|(at, _)| *at == jump).is_some_and(|(_, g)| g.is_some());", "        let guarded = false;", "n0xis-cli", "xref_reads_jump_tables", "gcc14_position_independent", ORACLE),
