@@ -166,7 +166,7 @@ impl Pass for SsaPass {
 
     fn run(&self, ctx: &Ctx, cfg: CfgArtifact) -> Result<SsaArtifact, CoreError> {
         let mut lifted = LiftPass.run(ctx, cfg.clone())?;
-        crate::callee::keep_what_callees_leave(ctx, &mut lifted);
+        crate::callee::keep_what_callees_leave(ctx, &cfg, &mut lifted);
         let (fr, fr2) = crate::ir::float_return_registers(ctx);
         let mut ssa = build_ssa(ctx.arch, &cfg, &lifted, fr, fr2);
         ssa.raw_flow.returns = return_evidence(&ssa.blocks, crate::ir::abi_return_register(ctx).as_deref());

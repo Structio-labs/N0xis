@@ -669,21 +669,36 @@ fn closed_clobbers(ctx: &Ctx, id: Option<&str>, va: Va) -> Option<Arc<BTreeSet<S
 
 /// A register a direct call's callee does not write keeps its value across the
 /// call: the marker the lift puts on every register the convention lets a callee
-/// change goes, where the callee's own instructions show it is not changed. gcc
-/// allocates registers across a call to a function in the same unit by what that
-/// function clobbers, and keeps a value in `r9` over it: the body printed `r9.2`,
-/// a name nothing defines, where the machine reads what was there before the call.
+/// change goes, where the callee's own instructions show it is not changed and
+/// something after the call reads it. gcc allocates registers across a call to a
+/// function in the same unit by what that function clobbers, and keeps a value in
+/// `r9` over it: the body printed `r9.2`, a name nothing defines, where the machine
+/// reads what was there before the call.
 ///
 /// Only on proof: a callee that calls anything, leaves by a jump not read, or was
 /// not read to its end keeps every marker. Only on x86-64, whose call leaves the
 /// return address on the stack: where the call itself writes a register (`lr`),
 /// the callee's instructions are not all of what changes.
-pub(crate) fn keep_what_callees_leave(ctx: &Ctx, lifted: &mut crate::lift::LiftedFunction) {
+///
+/// A later call's argument list is no read here: the lift gives every call all the
+/// convention's argument registers, and which of them a callee takes is settled
+/// later by its count. Counted as reads they made a kept register an argument of the
+/// next call whose count is not known (`luaV_equalobj` given 6 where it takes 3), and
+/// made every call site ask its callee, a third more time on a decompile.
+pub(crate) fn keep_what_callees_leave(ctx: &Ctx, cfg: &CfgArtifact, lifted: &mut crate::lift::LiftedFunction) {
     if ctx.arch.name() != "x86-64" {
         return;
     }
+    let marked = |s: &crate::lift::LiftedStmt| match &s.stmt {
+        MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } if u == n0xis_arch::CALL_CLOBBER => Some(ctx.arch.normalize_reg(dst)),
+        _ => None,
+    };
+    if !lifted.blocks.iter().flat_map(|b| &b.stmts).any(|s| marked(s).is_some()) {
+        return;
+    }
+    let live_out = registers_read_after(ctx, cfg, lifted);
     let id = ctx_identity(ctx);
-    for block in &mut lifted.blocks {
+    for (i, block) in lifted.blocks.iter_mut().enumerate() {
         let calls: HashMap<Va, Va> = block
             .stmts
             .iter()
@@ -696,13 +711,76 @@ pub(crate) fn keep_what_callees_leave(ctx: &Ctx, lifted: &mut crate::lift::Lifte
             continue;
         }
         let mut written: HashMap<Va, Option<Arc<BTreeSet<String>>>> = HashMap::new();
-        block.stmts.retain(|s| {
-            let MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } = &s.stmt else { return true };
-            let Some(&callee) = calls.get(&s.va).filter(|_| u == n0xis_arch::CALL_CLOBBER) else { return true };
-            let changes = written.entry(callee).or_insert_with(|| closed_clobbers(ctx, id.as_deref(), callee));
-            changes.as_ref().is_none_or(|w| w.contains(&ctx.arch.normalize_reg(dst)))
+        // Read backwards: a marker is worth asking about where what follows it reads it.
+        let mut read: BTreeSet<String> = live_out.get(i).cloned().unwrap_or_default();
+        let mut keep = vec![true; block.stmts.len()];
+        for (k, s) in block.stmts.iter().enumerate().rev() {
+            if let Some(reg) = marked(s)
+                && read.remove(&reg)
+                && let Some(&callee) = calls.get(&s.va)
+            {
+                let changes = written.entry(callee).or_insert_with(|| closed_clobbers(ctx, id.as_deref(), callee));
+                keep[k] = changes.as_ref().is_none_or(|w| w.contains(&reg));
+                continue;
+            }
+            step_back(ctx, &s.stmt, &mut read);
+        }
+        let mut k = 0;
+        block.stmts.retain(|_| {
+            k += 1;
+            keep[k - 1]
         });
     }
+}
+
+/// `read` before `stmt`, from `read` after it: what it writes is not read before it,
+/// what it reads is. A call's argument list is not a read (see
+/// [`keep_what_callees_leave`]); its target, where computed, is.
+fn step_back(ctx: &Ctx, stmt: &MicroStmt, read: &mut BTreeSet<String>) {
+    let written = match stmt {
+        MicroStmt::Assign { dst, .. } | MicroStmt::Call { ret: Some(dst), .. } => Some(ctx.arch.normalize_reg(dst)),
+        _ => None,
+    };
+    if let Some(w) = written {
+        read.remove(&w);
+    }
+    let exprs: Vec<&MicroExpr> = match stmt {
+        MicroStmt::Call { target: CallTarget::Indirect(t), .. } => vec![t],
+        MicroStmt::Call { .. } => Vec::new(),
+        other => crate::optimize::stmt_read_exprs(other),
+    };
+    let mut vars = BTreeSet::new();
+    for e in exprs {
+        crate::ssa::collect_expr_vars(e, &mut vars);
+    }
+    read.extend(vars.iter().map(|v| ctx.arch.normalize_reg(v)));
+}
+
+/// For each lifted block, the registers some path from its end reads before writing,
+/// by [`step_back`]: the usual liveness, to a fixed point over the graph's edges.
+fn registers_read_after(ctx: &Ctx, cfg: &CfgArtifact, lifted: &crate::lift::LiftedFunction) -> Vec<BTreeSet<String>> {
+    let index: HashMap<u64, usize> = cfg.blocks.iter().enumerate().map(|(i, b)| (b.start.0, i)).collect();
+    let succ: Vec<Vec<usize>> = cfg.blocks.iter().map(|b| b.successors.iter().filter_map(|s| index.get(&s.to.0).copied()).collect()).collect();
+    let n = lifted.blocks.len().min(cfg.blocks.len());
+    let mut live_in: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n];
+    let mut live_out: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in (0..n).rev() {
+            let out: BTreeSet<String> = succ[i].iter().filter(|&&s| s < n).flat_map(|&s| live_in[s].iter().cloned()).collect();
+            let mut inn = out.clone();
+            for s in lifted.blocks[i].stmts.iter().rev() {
+                step_back(ctx, &s.stmt, &mut inn);
+            }
+            if inn != live_in[i] {
+                live_in[i] = inn;
+                changed = true;
+            }
+            live_out[i] = out;
+        }
+    }
+    live_out
 }
 
 fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
