@@ -7,6 +7,11 @@
 //! lists the whole reports with their digests, one JSON line each, and the other removes one only
 //! when given the digest `export` stated, so a report is removed only once a copy that matches it
 //! has been taken.
+//!
+//! `receiver.example.json` beside this crate is a whole configuration to start from. Its numbers are an
+//! example and the deployment's to choose: 64 KiB of text and 10 MiB an attachment are the client's own
+//! bounds, so a receiver above them takes nothing more, and `max_body_bytes` is the length prefix, a
+//! report's JSON with its text escaped at worst six bytes a byte, and `max_attachments` attachments.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

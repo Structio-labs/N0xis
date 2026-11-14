@@ -1,0 +1,16 @@
+{
+  "listen": "127.0.0.1:8471",
+  "spool": "/opt/other-projects/n0xis-feedback/spool",
+  "quota_bytes": 1073741824,
+  "max_body_bytes": 44040192,
+  "max_text_bytes": 65536,
+  "max_attachment_bytes": 10485760,
+  "max_attachments": 4,
+  "difficulty": 20,
+  "nonce_ttl_seconds": 300,
+  "max_outstanding_nonces": 10000,
+  "rate_limit_requests": 20,
+  "rate_limit_window_seconds": 3600,
+  "max_tracked_addresses": 100000,
+  "client_ip_header": "X-Real-IP"
+}

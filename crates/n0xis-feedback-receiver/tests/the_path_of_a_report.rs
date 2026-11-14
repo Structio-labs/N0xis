@@ -502,6 +502,8 @@ fn a_configuration_that_is_not_whole_or_not_on_the_loopback_is_refused() {
     .expect("json");
     std::fs::write(&path, value.to_string()).expect("write");
     Config::load(&path).expect("a whole configuration loads");
+    // The example a deployment starts from is a configuration this receiver loads.
+    Config::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("receiver.example.json")).expect("the example loads");
     value["listen"] = json!("0.0.0.0:8471");
     std::fs::write(&path, value.to_string()).expect("write");
     assert!(Config::load(&path).unwrap_err().contains("loopback"));
