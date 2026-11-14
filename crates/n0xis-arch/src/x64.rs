@@ -669,31 +669,45 @@ impl X64 {
         };
         let scan = &before[upto.saturating_sub(WINDOW)..upto];
         let mut held = HeldIndex::Register(index);
+        // Guards of a register the index is not in yet, walking back: `mov r11d, r9d;
+        // ...; cmp r9d, 0xc; ja; ...; movsxd rax, [rcx+r11*4]`. Where the walk reaches
+        // the copy, with the compared register not written since, the guard is the
+        // index's. Nearest first. Without them the walk went on past the copy to an
+        // earlier `cmp r9b, 0xf` and read 16 entries of a table of 13 (fd's ELF).
+        let mut pending: Vec<(Instruction, u64)> = Vec::new();
         let mut factory = InstructionInfoFactory::new();
         for (i, di) in scan.iter().enumerate().rev() {
             let ins = decode_raw(di, self.bitness)?;
             match di.kind {
                 InsnKind::CondJump => {
                     let cmp = i.checked_sub(1).and_then(|p| decode_raw(&scan[p], self.bitness))?;
-                    if cmp.mnemonic() == Mnemonic::Cmp && held.is_compared_by(&cmp) {
-                        let limit = imm_op1(&cmp)?;
-                        match ins.mnemonic() {
-                            Mnemonic::Ja | Mnemonic::Jg => return Some(limit),
-                            Mnemonic::Jae | Mnemonic::Jge => return limit.checked_sub(1),
-                            // A test of this index that does not bound it from above
-                            // (`cmp rax, 3; je`): the guard is further up.
-                            _ => {}
+                    if cmp.mnemonic() == Mnemonic::Cmp
+                        && let Some(limit) = upper_bound_of(&ins, &cmp)
+                    {
+                        if held.is_compared_by(&cmp) {
+                            return limit;
+                        }
+                        if cmp.op0_kind() == OpKind::Register {
+                            pending.push((cmp, limit?));
                         }
                     }
                 }
                 InsnKind::Jump | InsnKind::Ret | InsnKind::Int => return None,
-                InsnKind::Call => match held {
-                    HeldIndex::Register(Register::RBX | Register::RBP | Register::R12 | Register::R13 | Register::R14 | Register::R15) => {}
-                    _ => return None,
-                },
+                InsnKind::Call => {
+                    // What a call leaves is only what the convention keeps.
+                    let kept = |r: Register| matches!(r, Register::RBX | Register::RBP | Register::R12 | Register::R13 | Register::R14 | Register::R15);
+                    pending.retain(|(cmp, _)| kept(cmp.op0_register().full_register()));
+                    match held {
+                        HeldIndex::Register(r) if kept(r) => {}
+                        _ => return None,
+                    }
+                }
                 _ => {
                     let info = factory.info(&ins);
                     let writes = |r: Register| info.used_registers().iter().any(|u| u.register().full_register() == r && matches!(u.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite));
+                    // A write before a pending guard's compare: what it compared is not
+                    // what the register held before.
+                    pending.retain(|(cmp, _)| !writes(cmp.op0_register().full_register()));
                     match held {
                         HeldIndex::Register(r) if writes(r) => match held.before_write(&ins) {
                             WrittenBy::Copy(earlier) => {
@@ -701,6 +715,11 @@ impl X64 {
                                 // read further up still answers first.
                                 if let Some(w) = zero_extended_from(&ins) {
                                     *width = Some(width.map_or(w, |was: u64| was.min(w)));
+                                }
+                                // A guard of the register copied from, read after the
+                                // copy with nothing writing it between.
+                                if let Some((_, limit)) = pending.iter().find(|(cmp, _)| earlier.is_compared_by(cmp)) {
+                                    return Some(*limit);
                                 }
                                 held = earlier;
                             }
@@ -721,6 +740,19 @@ impl X64 {
             }
         }
         None
+    }
+}
+
+/// The largest index `jcc` after `cmp` lets fall through to the table, where it is a
+/// jump past it on a value above a constant: `Some(None)` where that is no index at all
+/// (`cmp rax, 0; jae`), `None` where `jcc` bounds nothing from above (`cmp rax, 3; je`:
+/// the guard is further up).
+fn upper_bound_of(jcc: &Instruction, cmp: &Instruction) -> Option<Option<u64>> {
+    let limit = imm_op1(cmp)?;
+    match jcc.mnemonic() {
+        Mnemonic::Ja | Mnemonic::Jg => Some(Some(limit)),
+        Mnemonic::Jae | Mnemonic::Jge => Some(limit.checked_sub(1)),
+        _ => None,
     }
 }
 

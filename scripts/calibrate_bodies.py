@@ -136,8 +136,10 @@ MUTATIONS = [
     (CORE + "switch.rs", "        let target = decode_entry(kind, table, chunk).filter(|&t| is_code(ctx, &code, t));", "        let target = decode_entry(kind, table, chunk);", *LIB, "switch::tests::an_unguarded_read_stops_at_an_entry_that_is_not_code"),
     (CORE + "switch.rs", "        end = TableEnd::Unreadable;\n", "", *LIB, "switch::tests::a_read_past_the_words_the_image_holds_says_so"),
     (CORE + "switch.rs", "Err(serde::de::Error::custom(\"a switch with both a guard's bound and a width\"))", "Ok(None)", *LIB, "switch::tests::a_switch_says_its_guard_and_its_width_under_their_own_keys"),
-    # The function's end stops only a read no guard holds, and the image's table bases, where attached, are the graph's
-    # (round 3, item 6c).
+    # The function's end stops only a read no guard holds; the guard of the register the index was copied from is its
+    # guard; the image's table bases, where attached, are the graph's (round 3, item 6c).
+    ("crates/n0xis-arch/src/x64.rs", "                                if let Some((_, limit)) = pending.iter().find(|(cmp, _)| earlier.is_compared_by(cmp)) {", "                                if let Some((_, limit)) = pending.iter().find(|_| false) {", *LIB, "switch::tests::a_guard_of_the_register_the_index_was_copied_from_is_the_index_guard"),
+    ("crates/n0xis-arch/src/x64.rs", "                    pending.retain(|(cmp, _)| !writes(cmp.op0_register().full_register()));\n", "", *LIB, "switch::tests::a_guard_of_the_register_the_index_was_copied_from_is_the_index_guard"),
     (CORE + "switch.rs", ".filter(|_| !matches!(bound, Some(IndexBound::Guard(_))));", ";", *LIB, "switch::tests::a_guarded_read_goes_past_the_functions_stated_end"),
     (CORE + "switch.rs", "(end != TableEnd::Guard && end != TableEnd::Limit && (self.cases.len() as u64) <= guard)", "false", *LIB, "switch::tests::a_guarded_read_stopped_early_says_it_is_short_of_its_guard"),
     (CORE + "switch.rs", "ctx.table_bases.and_then(|t| t.bases()).unwrap_or_else(", "None::<std::sync::Arc<Self>>.unwrap_or_else(", *LIB, "switch::tests::the_images_table_bases_end_a_table_its_own_code_does_not_name"),

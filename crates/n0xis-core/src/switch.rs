@@ -633,6 +633,41 @@ mod tests {
         resolve_switch(&ctx, &insns[..=at], &disp, &bases)
     }
 
+    /// The guard of the register the index was copied from, read after the copy: as
+    /// objdump reads it,
+    ///
+    /// ```text
+    /// 1000: 41 80 f9 0f        cmp    r9b,0xf
+    /// 1004: 77 3a              ja     0x1040
+    /// 1006: 45 89 cb           mov    r11d,r9d
+    /// 1009: 44 89 c8           mov    eax,r9d      (or 41 ff c1: inc r9d)
+    /// 100c: 41 83 f9 0c        cmp    r9d,0xc
+    /// 1010: 77 2e              ja     0x1040
+    /// 1012: 48 8d 0d e7 0f 00 00  lea rcx,[rip+0xfe7]  # 0x2000
+    /// 1019: 4a 63 04 99        movsxd rax,DWORD PTR [rcx+r11*4]
+    /// 101d: 48 01 c8           add    rax,rcx
+    /// 1020: ff e0              jmp    rax
+    /// ```
+    ///
+    /// `cmp r9d,0xc; ja` lets 13 through, and `r9` is what `r11` was copied from: 13 of
+    /// 20 entries that are code. The walk went past the copy to `cmp r9b,0xf` and read
+    /// 16 (fd's ELF, 0x2d4431, a table of 13). With `r9` written after the copy, the
+    /// compare is of another value, and the guard is the earlier one.
+    #[test]
+    fn a_guard_of_the_register_the_index_was_copied_from_is_the_index_guard() {
+        let code = |mid: [u8; 3]| -> Vec<u8> {
+            let mut c = vec![0x41, 0x80, 0xf9, 0x0f, 0x77, 0x3a, 0x45, 0x89, 0xcb];
+            c.extend(mid);
+            c.extend([0x41, 0x83, 0xf9, 0x0c, 0x77, 0x2e, 0x48, 0x8d, 0x0d, 0xe7, 0x0f, 0x00, 0x00, 0x4a, 0x63, 0x04, 0x99, 0x48, 0x01, 0xc8, 0xff, 0xe0]);
+            c
+        };
+        let targets: Vec<u64> = cases(0x1030, 20).collect();
+        let sw = resolve_code(&code([0x44, 0x89, 0xc8]), 0x1020, &targets, None);
+        assert_eq!((sw.index, sw.cases.len(), sw.end), (Some(IndexBound::Guard(12)), 13, Some(TableEnd::Guard)));
+        let sw = resolve_code(&code([0x41, 0xff, 0xc1]), 0x1020, &targets, None);
+        assert_eq!((sw.index, sw.cases.len()), (Some(IndexBound::Guard(15)), 16), "r9 written after the copy");
+    }
+
     /// A guard read from the bytes says more than the function's stated end: an entry
     /// to code outside `[0x1000, 0x1030)`, as gcc's `.cold` part of the function is
     /// to a stripped ELF's unwind data, does not end a guarded read. Lua's tables of
