@@ -725,12 +725,34 @@ pub(crate) fn keep_what_callees_leave(ctx: &Ctx, cfg: &CfgArtifact, lifted: &mut
             }
             step_back(ctx, &s.stmt, &mut read);
         }
-        let mut k = 0;
-        block.stmts.retain(|_| {
-            k += 1;
-            keep[k - 1]
-        });
+        // What the callee leaves is the value from before the call: the marker becomes
+        // a copy of the register into itself, so the version after the call says it
+        // came through one ([`kept_through_a_call`]).
+        for (s, keep) in block.stmts.iter_mut().zip(keep) {
+            if !keep && let MicroStmt::Assign { dst, value } = &mut s.stmt {
+                *value = MicroExpr::Var(dst.clone());
+            }
+        }
     }
+}
+
+/// The versions `blocks` (SSA, unoptimized) carries through a call that leaves the
+/// register ([`keep_what_callees_leave`]): the copy of a register into itself at a
+/// call's address.
+fn kept_through_a_call(blocks: &[SsaBlock]) -> BTreeSet<&str> {
+    let mut out = BTreeSet::new();
+    for b in blocks {
+        let calls: BTreeSet<Va> = b.stmts.iter().filter(|s| matches!(s.stmt, MicroStmt::Call { .. })).map(|s| s.va).collect();
+        for s in &b.stmts {
+            if let MicroStmt::Assign { dst, value: MicroExpr::Var(src) } = &s.stmt
+                && calls.contains(&s.va)
+                && dst.split('.').next() == src.split('.').next()
+            {
+                out.insert(dst.as_str());
+            }
+        }
+    }
+    out
 }
 
 /// `read` before `stmt`, from `read` after it: what it writes is not read before it,
@@ -1169,6 +1191,11 @@ enum Def<'b> {
 }
 
 fn defs_of(blocks: &[SsaBlock]) -> HashMap<&str, Def<'_>> {
+    defs_of_as(blocks, &BTreeSet::new())
+}
+
+/// [`defs_of`], with the versions in `no_value` read as a call's marker.
+fn defs_of_as<'b>(blocks: &'b [SsaBlock], no_value: &BTreeSet<&str>) -> HashMap<&'b str, Def<'b>> {
     let mut defs = HashMap::new();
     for b in blocks {
         for p in &b.phis {
@@ -1177,6 +1204,9 @@ fn defs_of(blocks: &[SsaBlock]) -> HashMap<&str, Def<'_>> {
         for s in &b.stmts {
             match &s.stmt {
                 MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } if u == n0xis_arch::CALL_CLOBBER => {
+                    defs.insert(dst.as_str(), Def::Clobber);
+                }
+                MicroStmt::Assign { dst, .. } if no_value.contains(dst.as_str()) => {
                     defs.insert(dst.as_str(), Def::Clobber);
                 }
                 MicroStmt::Assign { dst, value: MicroExpr::Var(from) } => {
@@ -1222,11 +1252,18 @@ fn holds_a_value(name: &str, defs: &HashMap<&str, Def<'_>>, params: &BTreeSet<St
 /// callee is known to read. Below the last one kept a hole stays a hole, since a
 /// position means a register: `f(rdi, rsi.3, rdx.2)` with `rsi.3` unset says the
 /// second register was passed and nothing here set it.
-fn args_kept(takes: Takes, args: &[MicroExpr], defs: &HashMap<&str, Def<'_>>, params: &BTreeSet<String>) -> usize {
+///
+/// `carried` marks the positions whose register holds only what it held before an
+/// earlier call that left it: a value nothing set for this call. The lift hands every
+/// call the convention's registers, and a register a callee leaves holds a value at
+/// the next call whether or not it is passed: counted, `luaV_equalobj` was given 5
+/// where it takes 3. Where the callee's count is known, it decides.
+fn args_kept(takes: Takes, args: &[MicroExpr], carried: &[bool], defs: &HashMap<&str, Def<'_>>, params: &BTreeSet<String>) -> usize {
     match takes {
         Takes::Exactly(n) => n.min(args.len()),
         Takes::AtLeast(n) => {
-            let real = args.iter().rposition(|a| !matches!(a, MicroExpr::Var(v) if !holds_a_value(v, defs, params))).map_or(0, |i| i + 1);
+            let hole = |i: usize, a: &MicroExpr| carried.get(i).copied().unwrap_or(false) || matches!(a, MicroExpr::Var(v) if !holds_a_value(v, defs, params));
+            let real = args.iter().enumerate().rposition(|(i, a)| !hole(i, a)).map_or(0, |i| i + 1);
             real.max(n).min(args.len())
         }
     }
@@ -1462,22 +1499,36 @@ pub(crate) fn settle_call_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBl
     let depth = if id.is_some() { DEPTH } else { 1 };
     let snapshot = blocks.to_vec();
     let defs = defs_of(&snapshot);
-    let settle = |target: &CallTarget, args: &mut Vec<MicroExpr>| {
+    // Which positions of each call hold only what an earlier call left, read off the
+    // raw form, where the copy that says so still stands: of the call the statement
+    // at `va` makes, the last one at or before it ([`raw_call_at`]).
+    let kept = kept_through_a_call(raw);
+    let raw_defs = defs_of(raw);
+    let raw_defs_kept = defs_of_as(raw, &kept);
+    let carried = |bi: usize, va: Va| -> Vec<bool> {
+        let Some(r) = raw.get(bi) else { return Vec::new() };
+        let Some(MicroStmt::Call { args, .. }) = r.stmts.get(raw_call_at(r, va)).map(|s| &s.stmt) else { return Vec::new() };
+        args.iter()
+            .map(|a| matches!(a, MicroExpr::Var(v) if holds_a_value(v, &raw_defs, params) && !holds_a_value(v, &raw_defs_kept, params)))
+            .collect()
+    };
+    let settle = |target: &CallTarget, args: &mut Vec<MicroExpr>, carried: &[bool]| {
         // What its format asked for is what it was given, above.
         let formatted = name_and_body(cfg, target).0.is_some_and(|n| format_position(n).is_some()) && args.iter().any(|a| matches!(a, MicroExpr::Const { .. } | MicroExpr::AddrOf(_)));
         if !matches!(target, CallTarget::Intrinsic(_)) && !formatted {
             let takes = takes_of(ctx, id.as_deref(), callee_of(ctx, cfg, target), depth);
-            args.truncate(args_kept(takes, args, &defs, params));
+            args.truncate(args_kept(takes, args, carried, &defs, params));
         }
     };
-    for b in blocks.iter_mut() {
+    for (bi, b) in blocks.iter_mut().enumerate() {
         for s in &mut b.stmts {
+            let carried = if kept.is_empty() { Vec::new() } else { carried(bi, s.va) };
             if let MicroStmt::Call { target, args, .. } = &mut s.stmt {
-                settle(target, args);
+                settle(target, args, &carried);
             }
             s.stmt = crate::optimize::map_stmt_exprs(&s.stmt, &mut |e| match e {
                 MicroExpr::Call { target, mut args } => {
-                    settle(&target, &mut args);
+                    settle(&target, &mut args, &carried);
                     MicroExpr::Call { target, args }
                 }
                 other => other,
@@ -1486,7 +1537,7 @@ pub(crate) fn settle_call_args(ctx: &Ctx, cfg: &CfgArtifact, blocks: &mut [SsaBl
         if let Some(c) = b.condition.take() {
             b.condition = Some(crate::optimize::map_expr(&c, &mut |e| match e {
                 MicroExpr::Call { target, mut args } => {
-                    settle(&target, &mut args);
+                    settle(&target, &mut args, &[]);
                     MicroExpr::Call { target, args }
                 }
                 other => other,
