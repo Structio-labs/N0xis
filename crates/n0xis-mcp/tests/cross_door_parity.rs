@@ -337,7 +337,8 @@ fn function_discover_carries_a_project_rename() {
         .expect("fixture defines `add`")
         .to_string();
 
-    let set = mcp.call("annotate_set", json!({ "addr": add_va, "field": "name", "value": "RenamedThroughMcp" }));
+    // The image the rename is about: a write without one is refused.
+    let set = mcp.call("annotate_set", json!({ "addr": add_va, "field": "name", "value": "RenamedThroughMcp", "file": fx.file }));
     assert_eq!(set["ok"], true, "annotate_set failed: {set}");
 
     let disc = mcp.call("function_discover", json!({ "file": fx.file }));

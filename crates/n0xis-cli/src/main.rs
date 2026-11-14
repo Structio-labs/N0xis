@@ -1382,11 +1382,15 @@ enum AnnotateCmd {
     Bookmark(AnnotateBookmarkArgs),
     /// Show the current facts + full history for one address.
     Show(AnnotateShowArgs),
-    /// List every annotated address of a target: a WebAssembly module's own
-    /// with `--file <module>`, else the records native targets share.
+    /// List every annotated address of the image `--file`/`--pid` names, and
+    /// the records made before a record named its image (`unbound`), which
+    /// apply to no image until bound.
     List(AnnotateListArgs),
     /// Remove all annotations (and history) at an address.
     Rm(AnnotateRmArgs),
+    /// Bind the unbound records (made before a record named its image) to the
+    /// image `--file`/`--pid` names.
+    Bind(AnnotateListArgs),
 }
 
 #[derive(Args)]
@@ -1430,9 +1434,12 @@ struct AnnotateRmArgs {
 #[derive(Args)]
 struct AnnotateImageArgs {
     /// The image the address is in (a `serve` session supplies its own). It
-    /// says whose records are read and written: a WebAssembly module keeps its
-    /// own, under its identity, since every module's offsets start near 0;
-    /// every native target shares one map, the one used without `--file`.
+    /// says whose records are read and written: each native image keeps its
+    /// own, under the digest of its file (`--pid`: its main module's file), and
+    /// a WebAssembly module its own, under its identity. With no image named
+    /// and no session, a write is refused. Records are keyed by absolute
+    /// address: a process the loader placed elsewhere (ASLR) has them at the
+    /// wrong addresses, a known limit.
     /// With an image, a variable is also checked against the function's
     /// variables: `var` and `vartype` refuse a name that is not one and store
     /// a name the page shows under its key; a saved name or type keyed by the
@@ -3362,6 +3369,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Annotate(AnnotateCmd::Show(a)) => cmd_annotate_show(a, pretty),
         Command::Annotate(AnnotateCmd::List(a)) => cmd_annotate_list(a, pretty),
         Command::Annotate(AnnotateCmd::Rm(a)) => cmd_annotate_rm(a, pretty),
+        Command::Annotate(AnnotateCmd::Bind(a)) => run_capability("annotate.bind", a.image.into_json(json!({})), pretty),
         Command::Snapshot(SnapshotCmd::Dump(a)) => cmd_snapshot_dump(a, pretty),
         Command::Snapshot(SnapshotCmd::Info(a)) => cmd_snapshot_info(a, pretty),
         Command::Snapshot(SnapshotCmd::List) => cmd_snapshot_list(pretty),
@@ -5001,14 +5009,14 @@ fn cmd_find(a: FindArgs, pretty: bool) -> bool {
             }
             unmapped_read.push(section.name.clone());
             for at in n0xis_core::match_offsets(bytes, &pattern) {
-                if at as u64 % align == 0 {
+                if (at as u64).is_multiple_of(align) {
                     unmapped.push(UnmappedRow { file_offset: format!("{:#x}", section.file_offset + at as u64), section: section.name.clone() });
                 }
             }
         }
     }
     let unmapped_shown = n0xis_contracts::Shown::cap(&mut unmapped, if a.limit == 0 { 0 } else { a.limit });
-    let unmapped_sections = (!unmapped_read.is_empty()).then(|| UnmappedSections {
+    let unmapped_sections = (!unmapped_read.is_empty()).then_some(UnmappedSections {
         hits: unmapped_shown.total,
         note: "sections the image does not load (not allocated in memory), so with no address: read from the file, and a hit in one is in \
                `unmapped` by its file offset, never among `matches`",

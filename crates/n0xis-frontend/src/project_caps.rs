@@ -63,28 +63,27 @@ fn names_image(args: &Value) -> bool {
     SOURCE_KEYS.iter().any(|k| args.get(*k).is_some_and(|v| !v.is_null()))
 }
 
-/// Whose records a request reads and writes ([`Scope`]): the target it names,
+/// Whose records a request reads and writes ([`Scope`]): the image it names,
 /// the way every other command names one; naming none, the session's target
-/// (`attach`, which every other command falls back to the same way); with
-/// neither, the native map, as every `annotate` command did before scopes
-/// existed.
+/// (`attach`, which every other command falls back to the same way, and which
+/// `serve` holds for its session). With neither there is no image the record is
+/// about, and the request is refused: it went to the map every native target
+/// shared, and a rename made on one image was printed on any other at that
+/// address (audit 2026-11-06).
 ///
-/// A WebAssembly module is always named, by the request or by the session:
-/// its offsets mean nothing without the module, and a module's records are
-/// kept under its identity, which only the module can give. Not consulting
-/// the session wrote an MCP rename of an attached module (`annotate_set` with
-/// no `file`) into the native map, where it applied to no module and to any
-/// native image at that address.
-/// `(code, message)` when the target cannot be opened.
+/// A WebAssembly module is named the same way, by the request or by the
+/// session: its offsets mean nothing without the module.
+/// `(code, message)` when there is no target or it cannot be opened.
 fn scope_for(args: &Value) -> Result<Target, crate::source::FrontendError> {
     if !names_image(args) {
-        // A process is a native target: its scope needs no attach. A session
-        // file that cannot be read is an error, as it is for every command
-        // that falls back to it, not a silent native scope.
+        // A session file that cannot be read is an error, as it is for every
+        // command that falls back to it.
         let session = n0xis_project::session::current().map_err(|e| ("session-unreadable".to_string(), format!("{e:#}")))?;
-        match session {
-            Some(s) if s.pid.is_none() && s.file.is_some() => {}
-            _ => return Ok(Target { scope: Scope::Native, module: None }),
+        if !session.is_some_and(|s| s.pid.is_some() || s.file.is_some()) {
+            return Err((
+                "no-image".to_string(),
+                "an annotation is kept for the image it is about: name it with --file <image> or --pid <pid> (or attach a session)".to_string(),
+            ));
         }
     }
     let resolved = crate::source::resolve(crate::registry::spec_of(args))?;
@@ -96,6 +95,21 @@ fn scope_for(args: &Value) -> Result<Target, crate::source::FrontendError> {
         _ => None,
     };
     Ok(Target { scope: crate::annotation_syms::scope_of(&resolved.src), module })
+}
+
+/// The records made before images were told apart, as an answer's `unbound`:
+/// how many, the records, and the command that binds them. `None` when there
+/// are none.
+fn unbound_field() -> Result<Option<Value>, String> {
+    let records = n0xis_project::annotate::unbound().map_err(|e| format!("{e:#}"))?;
+    Ok((!records.is_empty()).then(|| {
+        json!({
+            "count": records.len(),
+            "records": records,
+            "applied": false,
+            "bind": "annotate bind --file <image>: these were made before a record named its image, apply to no image, and that command moves them under the image named",
+        })
+    }))
 }
 
 /// Whose records a request reads and writes, and for a WebAssembly module the
@@ -470,12 +484,25 @@ impl Plugin for ProjectOps {
 
         reg.add(Capability::new(
             "annotate.list",
-            "Every annotated address of a target: a WebAssembly module's own records when `file` names one, else the records every native target shares.",
+            "Every annotated address of the image `file` or `pid` names (a WebAssembly module's own records for a module), and the records made before a record named its image, as `unbound`. With no image named and no session, only those.",
             Some(schema::v1::ANNOTATION),
             Origin::Builtin,
             Box::new(|args| {
+                let unbound = match unbound_field() {
+                    Ok(u) => u,
+                    Err(e) => return err_pair("annotate-failed", e),
+                };
                 let target = match scope_for(args) {
                     Ok(s) => s,
+                    // No image: the records of none, and those that name none.
+                    Err((code, _)) if code == "no-image" => {
+                        let mut v = json!({ "count": 0, "records": [] });
+                        if let Some(u) = unbound {
+                            v["unbound"] = u;
+                        }
+                        return ok(schema::v1::ANNOTATION, v)
+                            .with_note("no image named: name one with --file or --pid to list its records".to_string());
+                    }
                     Err((code, message)) => return err_pair(&code, message),
                 };
                 let scope = &target.scope;
@@ -492,9 +519,9 @@ impl Plugin for ProjectOps {
                                 pending.join(", ")
                             ));
                         }
-                        // A listing of the native records is not every record:
+                        // A listing of an image's records is not every record:
                         // each module's are kept apart, and are said to exist.
-                        if *scope == Scope::Native {
+                        if matches!(scope, Scope::Image(_)) {
                             match n0xis_project::annotate::module_scopes() {
                                 Ok(modules) if !modules.is_empty() => {
                                     let held: usize = modules.iter().map(|(_, n)| n).sum();
@@ -507,7 +534,14 @@ impl Plugin for ProjectOps {
                                 Err(e) => notes.push(format!("the WebAssembly modules' records could not be read ({e:#})")),
                             }
                         }
-                        let answer = target.answer(json!({ "count": records.len(), "records": records }));
+                        if let Scope::Unidentified(why) = scope {
+                            notes.push(format!("no record is kept for this target: {why}"));
+                        }
+                        let mut v = json!({ "count": records.len(), "records": records });
+                        if let Some(u) = unbound {
+                            v["unbound"] = u;
+                        }
+                        let answer = target.answer(v);
                         if notes.is_empty() { answer } else { answer.with_note(notes.join("; ")) }
                     }
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
@@ -532,6 +566,30 @@ impl Plugin for ProjectOps {
                 let scope = &target.scope;
                 match n0xis_project::annotate::remove(scope, va) {
                     Ok(removed) => target.answer(json!({ "va": va, "removed": removed })),
+                    Err(e) => err_pair("annotate-failed", format!("{e:#}")),
+                }
+            }),
+        ));
+
+        reg.add(Capability::new(
+            "annotate.bind",
+            "Bind the records made before a record named its image to the image `file` or `pid` names: each moves under that image, unless it already holds a record at that address.",
+            Some(schema::v1::ANNOTATION),
+            Origin::Builtin,
+            Box::new(|args| {
+                let target = match scope_for(args) {
+                    Ok(s) => s,
+                    Err((code, message)) => return err_pair(&code, message),
+                };
+                let Scope::Image(identity) = &target.scope else {
+                    let why = match &target.scope {
+                        Scope::Unidentified(why) => why.clone(),
+                        _ => "a WebAssembly module keeps its own records, and none was made for it before modules were told apart".to_string(),
+                    };
+                    return err_pair("not-bindable", format!("unbound records are bound to a native image's file: {why}"));
+                };
+                match n0xis_project::annotate::bind_unbound(identity) {
+                    Ok((bound, left)) => ok(schema::v1::ANNOTATION, json!({ "bound": bound, "left_unbound": left, "image": identity })),
                     Err(e) => err_pair("annotate-failed", format!("{e:#}")),
                 }
             }),

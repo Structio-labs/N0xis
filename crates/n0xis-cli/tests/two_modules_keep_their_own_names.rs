@@ -55,18 +55,21 @@ fn two_modules_keep_two_names_at_one_offset() {
         let v = run(&root, &["annotate", "name", "--addr", BODY, "--value", name, "--file", file]);
         assert_eq!(v["ok"], true, "{v}");
     }
-    // A native record at the same number, written with no target, as before.
-    assert_eq!(run(&root, &["annotate", "name", "--addr", BODY, "--value", "native"])["ok"], true);
+    // A native image's record at the same number. With no target it was
+    // written to a map every native image shared; it is refused now.
+    const NATIVE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/strings_planted.so");
+    assert_eq!(run(&root, &["annotate", "name", "--addr", BODY, "--value", "native"])["error"]["code"], "no-image");
+    assert_eq!(run(&root, &["annotate", "name", "--addr", BODY, "--value", "native", "--file", NATIVE])["ok"], true);
 
     assert_eq!(name_at(&root, a), "first", "the first module keeps its own rename");
     assert_eq!(name_at(&root, b), "second", "the second keeps its own");
-    let native = run(&root, &["annotate", "show", "--addr", BODY]);
-    assert_eq!(native["data"]["name"], "native", "the native record is the native target's: {native}");
+    let native = run(&root, &["annotate", "show", "--addr", BODY, "--file", NATIVE]);
+    assert_eq!(native["data"]["name"], "native", "the native record is the native image's: {native}");
     let one = run(&root, &["annotate", "show", "--addr", BODY, "--file", a]);
     assert_eq!(one["data"]["name"], "first", "{one}");
 
-    // Listing the native records says the modules' are kept apart.
-    let list = run(&root, &["annotate", "list"]);
+    // Listing the native image's records says the modules' are kept apart.
+    let list = run(&root, &["annotate", "list", "--file", NATIVE]);
     assert_eq!(list["data"]["count"], 1, "{list}");
     assert!(list["meta"]["note"].as_str().is_some_and(|n| n.contains("2 WebAssembly module")), "{list}");
     let _ = std::fs::remove_dir_all(&root);

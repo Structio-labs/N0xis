@@ -161,6 +161,10 @@ MUTATIONS = [
     # Sections the image does not load are left out again.
     ("crates/n0xis-sources/src/static_elf.rs", "                if in_file {\n                    let name", "                if false && in_file {\n                    let name", "n0xis-cli", "a_section_the_image_does_not_load_is_read_from_the_file", "find_lists_a_hit_in_a_section_not_loaded_by_its_file_offset"),
     ("crates/n0xis-frontend/src/strings_caps.rs", "    let file_only = named.is_some() && !unloaded.is_empty();", "    let file_only = false;", "n0xis-cli", "a_section_the_image_does_not_load_is_read_from_the_file", "strings_reads_a_section_not_loaded_whole_or_named"),
+    # Every native target shares one map again: any image's record is every image's.
+    ("crates/n0xis-frontend/src/annotation_syms.rs", "                Ok(digest) => Scope::Image(digest),", "                Ok(_digest) => Scope::Image(String::from(\"shared\")),", "n0xis-cli", "a_record_is_about_one_image", "a_rename_on_one_image_is_not_another_images_name"),
+    # A write with no image named goes through.
+    ("crates/n0xis-frontend/src/project_caps.rs", "        if !session.is_some_and(|s| s.pid.is_some() || s.file.is_some()) {", "        if false && !session.is_some_and(|s| s.pid.is_some() || s.file.is_some()) {", "n0xis-cli", "a_record_is_about_one_image", "a_rename_on_one_image_is_not_another_images_name"),
 ]
 
 

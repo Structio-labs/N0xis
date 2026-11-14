@@ -48,18 +48,31 @@ use n0xis_sources::SymbolProvider;
 use crate::source::Src;
 
 /// Whose annotations a source reads and writes: a WebAssembly module's own,
-/// under its identity, or the native map every other target shares
-/// (docs/design/WASM.md §5 decision 1).
+/// under its identity (docs/design/WASM.md §5 decision 1); a native image's
+/// own, under the digest of its file, which a live process gives by its main
+/// module's file on disk, so `--pid` and `--file` of one image are one scope;
+/// or, where that file cannot be named or read, no scope, with why.
 ///
 /// The one place a target's scope is decided, so a reader and a writer of one
-/// target cannot disagree about which records are its.
+/// target cannot disagree about which records are its. Every native target
+/// shared one map until 2026-11-14, and a rename made on one image was printed
+/// on any other at that address (audit 2026-11-06).
 pub fn scope_of(src: &Src) -> Scope {
+    if let Src::Static(img) = src
+        && let Some(identity) = img.module_identity()
+    {
+        return Scope::Module(identity.to_string());
+    }
     match src {
-        Src::Static(img) => match img.module_identity() {
-            Some(identity) => Scope::Module(identity.to_string()),
-            None => Scope::Native,
+        Src::Static(_) | Src::Live(_) => match src.modules().first().and_then(|m| m.path.clone()) {
+            Some(path) => match n0xis_project::annotate::image_digest(std::path::Path::new(&path)) {
+                Ok(digest) => Scope::Image(digest),
+                Err(e) => Scope::Unidentified(format!("the image's file cannot be read to tell which image this is ({e:#})")),
+            },
+            None => Scope::Unidentified("the target names no image file to tell which image it is".to_string()),
         },
-        Src::Live(_) | Src::Snap(_) | Src::Remote(_) => Scope::Native,
+        Src::Snap(_) => Scope::Unidentified("a snapshot or inline bytes name no image file to tell which image they are".to_string()),
+        Src::Remote(_) => Scope::Unidentified("a remote process's image file is on the other machine, and is not read here".to_string()),
     }
 }
 
@@ -104,12 +117,14 @@ impl LocalNames {
         let dir = root.as_ref().map(|r| r.dir.clone());
 
         let user_sig = match scope {
-            Scope::Native => file_signature(dir.as_deref(), n0xis_project::annotate::NATIVE_STORE),
+            Scope::Image(identity) => fnv1a(file_signature(dir.as_deref(), n0xis_project::annotate::IMAGE_STORE), identity.as_bytes()),
             Scope::Module(identity) => fnv1a(file_signature(dir.as_deref(), n0xis_project::annotate::MODULE_STORE), identity.as_bytes()),
+            // No record is anyone's here: one constant, never a store's.
+            Scope::Unidentified(_) => fnv1a(0, b"unidentified"),
         };
         let user = memoized(&USER_MEMO, user_sig, || build_user(scope));
         let (rtti_sig, flirt_sig, rtti, flirt) = match scope {
-            Scope::Native => {
+            Scope::Image(_) | Scope::Unidentified(_) => {
                 let rtti_sig = file_signature(dir.as_deref(), "rtti-symbols.json");
                 let flirt_sig = file_signature(dir.as_deref(), "flirt-symbols.json");
                 (rtti_sig, flirt_sig, memoized(&RTTI_MEMO, rtti_sig, build_rtti), memoized(&FLIRT_MEMO, flirt_sig, build_flirt))
@@ -271,8 +286,11 @@ static STORE_ERROR_MEMO: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None)
 pub fn unreadable_store_note() -> Option<String> {
     let dir = n0xis_project::resolve().ok().map(|r| r.dir);
     let sig = fnv1a(
-        file_signature(dir.as_deref(), n0xis_project::annotate::NATIVE_STORE),
-        &file_signature(dir.as_deref(), n0xis_project::annotate::MODULE_STORE).to_le_bytes(),
+        fnv1a(
+            file_signature(dir.as_deref(), n0xis_project::annotate::NATIVE_STORE),
+            &file_signature(dir.as_deref(), n0xis_project::annotate::MODULE_STORE).to_le_bytes(),
+        ),
+        &file_signature(dir.as_deref(), n0xis_project::annotate::IMAGE_STORE).to_le_bytes(),
     );
     let mut guard = STORE_ERROR_MEMO.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((cached, note)) = guard.as_ref()

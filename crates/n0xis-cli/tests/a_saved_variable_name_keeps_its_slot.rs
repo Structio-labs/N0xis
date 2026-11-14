@@ -71,8 +71,13 @@ impl Project {
         Project { dir }
     }
 
+    /// The fixture's records, bound to the image: written before a record
+    /// named its image, they apply to none until `annotate bind` says which.
     fn with_v1_annotations(tag: &str) -> Self {
-        Project::new(tag, Some(&fixture("stack_slots_v1_annotations.json")))
+        let p = Project::new(tag, Some(&fixture("stack_slots_v1_annotations.json")));
+        let bound = p.run(&["annotate", "bind", "--file", &image()]);
+        assert_eq!(bound["data"]["bound"], 4, "{bound}");
+        p
     }
 
     fn run(&self, args: &[&str]) -> Value {
@@ -89,10 +94,14 @@ impl Project {
         self.run(&["decomp", "pseudo", "--file", &image(), "--addr", addr])
     }
 
-    /// The annotations file as it is on disk.
+    /// The image's records as they are on disk: its one map in the store of
+    /// every image's.
     fn stored(&self) -> Value {
-        let raw = std::fs::read_to_string(self.dir.join(".n0x/annotations.json")).expect("annotations.json");
-        serde_json::from_str(&raw).expect("annotations.json is JSON")
+        let raw = std::fs::read_to_string(self.dir.join(".n0x/annotations-images.json")).expect("annotations-images.json");
+        let all: Value = serde_json::from_str(&raw).expect("annotations-images.json is JSON");
+        let images = all.as_object().expect("a map by image");
+        assert_eq!(images.len(), 1, "one image annotated: {all}");
+        images.values().next().unwrap().clone()
     }
 }
 
@@ -171,10 +180,11 @@ fn an_earlier_key_with_both_slots_present_lands_on_neither_and_says_so() {
     let answer: Value = String::from_utf8_lossy(&out.stdout).lines().nth(1).and_then(|l| serde_json::from_str(l).ok()).unwrap_or(Value::Null);
     assert!(says_so(note(&answer)), "a session's `annotate show` places against the session's image: {answer}");
 
-    // With no image there is no function to place it against; the answer
-    // says the key depends on one.
+    // With no image there is no image whose record it is: refused, naming the
+    // ways to name one. It answered from the map every image shared.
     let unchecked = p.run(&["annotate", "show", "--addr", BOTH]);
-    assert!(unchecked["meta"]["note"].as_str().is_some_and(|n| n.contains("planted_both") && n.contains("--file")), "{unchecked}");
+    assert_eq!(unchecked["error"]["code"], "no-image", "{unchecked}");
+    assert!(unchecked["error"]["message"].as_str().is_some_and(|n| n.contains("--file") && n.contains("--pid")), "{unchecked}");
 }
 
 /// Neither slot exists: applied nowhere, as before, and the answer says so.
@@ -249,14 +259,14 @@ fn an_ambiguous_earlier_key_survives_a_write_to_the_same_name() {
     assert!(note(&d).contains("planted_both"), "{d}");
 }
 
-/// With no image a write settles nothing, and the earlier key stays aside; the
-/// next write that names the image — whose function has one of the two slots —
-/// settles it there.
+/// With no image a write is refused, and the earlier key stays aside (it was
+/// written, settling nothing); the next write that names the image — whose
+/// function has one of the two slots — settles it there.
 #[test]
 fn a_later_write_settles_an_earlier_key_once_the_image_disambiguates() {
     let p = Project::with_v1_annotations("settle");
     let blind = p.run(&["annotate", "vartype", "--addr", BELOW, "--var", "@return", "--value", "int"]);
-    assert_eq!(blind["ok"], true, "{blind}");
+    assert_eq!(blind["error"]["code"], "no-image", "{blind}");
     assert_eq!(p.stored()[BELOW]["earlier_var_names"]["local_8"], "planted_below", "nothing to settle it against");
 
     let seen = p.run(&["annotate", "vartype", "--file", &image(), "--addr", BELOW, "--var", "@return", "--value", "long"]);
@@ -288,19 +298,29 @@ fn a_file_without_the_version_field_still_loads() {
     let raw = std::fs::read_to_string(fixture("stack_slots_v1_annotations.json")).expect("fixture");
     assert!(!raw.contains("var_key_version"), "the fixture is the format from before the field");
 
-    let p = Project::with_v1_annotations("load");
-    let list = p.run(&["annotate", "list"]);
+    // Records from before a record named its image are unbound: listed as
+    // such, applied to no image, and bound when asked.
+    let p = Project::new("load", Some(&fixture("stack_slots_v1_annotations.json")));
+    let before = p.run(&["annotate", "list", "--file", &image()]);
+    assert_eq!((before["data"]["count"].clone(), before["data"]["unbound"]["count"].clone()), (0.into(), 4.into()), "{before}");
+    assert_eq!(before["data"]["unbound"]["applied"], false, "{before}");
+    assert!(before["data"]["unbound"]["bind"].as_str().unwrap().contains("annotate bind --file"), "{before}");
+    assert_eq!(p.run(&["annotate", "bind", "--file", &image()])["data"]["bound"], 4);
+    let list = p.run(&["annotate", "list", "--file", &image()]);
     assert_eq!(list["ok"], true, "{list}");
     assert_eq!(list["data"]["count"], 4, "{list}");
-    let shown = p.run(&["annotate", "show", "--addr", BELOW]);
+    assert!(list["data"].get("unbound").is_none(), "{list}");
+    let bound = std::fs::read_to_string(p.dir.join(".n0x/annotations-images.json")).expect("annotations-images.json");
+    let shown = p.run(&["annotate", "show", "--addr", BELOW, "--file", &image()]);
     assert_eq!(shown["ok"], true, "{shown}");
     assert_eq!(shown["data"]["earlier_var_names"]["local_8"], "planted_below", "{shown}");
     assert_eq!(shown["data"]["earlier_var_types"]["local_8"], "int64_t", "{shown}");
     for addr in [BOTH, BELOW, ABOVE, OTHER] {
         assert_eq!(p.decomp(addr)["ok"], true);
     }
-    let after = std::fs::read_to_string(p.dir.join(".n0x/annotations.json")).expect("annotations.json");
-    assert_eq!(after, raw, "nobody wrote, so the file keeps its bytes");
+    // Reading writes nothing: the bound records keep their bytes.
+    let after = std::fs::read_to_string(p.dir.join(".n0x/annotations-images.json")).expect("annotations-images.json");
+    assert_eq!(after, bound, "nobody wrote, so the file keeps its bytes");
 }
 
 /// A store this build cannot read — here, a record of a version it does not
@@ -310,25 +330,30 @@ fn a_file_without_the_version_field_still_loads() {
 #[test]
 fn an_unreadable_store_is_said_and_never_overwritten() {
     let p = Project::new("unreadable", None);
+    // Under the image's identity: FNV-1a 64 of its file, by its published
+    // constants.
+    let bytes = std::fs::read(image()).expect("image");
+    let digest = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
     let store = format!(
-        r#"{{ "{BOTH}": {{ "va": "{BOTH}", "var_names": {{ "local_8": "from_a_newer_build" }}, "var_key_version": 99 }} }}"#
+        r#"{{ "fnv1a64:{digest:016x}": {{ "{BOTH}": {{ "va": "{BOTH}", "var_names": {{ "local_8": "from_a_newer_build" }}, "var_key_version": 99 }} }} }}"#
     );
-    let path = p.dir.join(".n0x/annotations.json");
+    let path = p.dir.join(".n0x/annotations-images.json");
     std::fs::write(&path, &store).expect("plant");
 
     let d = p.decomp(ABOVE);
     assert_eq!(d["ok"], true, "the decompile still renders: {d}");
     assert!(note(&d).contains("annotations could not be read") && note(&d).contains("99"), "{d}");
 
-    let shown = p.run(&["annotate", "show", "--addr", BOTH]);
+    let file = image();
+    let shown = p.run(&["annotate", "show", "--addr", BOTH, "--file", &file]);
     assert_eq!(shown["ok"], false, "{shown}");
     assert!(shown["error"]["message"].as_str().is_some_and(|m| m.contains("99")), "{shown}");
-    assert_eq!(p.run(&["annotate", "list"])["ok"], false);
+    assert_eq!(p.run(&["annotate", "list", "--file", &file])["ok"], false);
 
     for write in [
-        vec!["annotate", "comment", "--addr", ABOVE, "--value", "x"],
-        vec!["annotate", "var", "--addr", ABOVE, "--var", "local_8", "--value", "x"],
-        vec!["annotate", "bookmark", "--addr", ABOVE],
+        vec!["annotate", "comment", "--addr", ABOVE, "--value", "x", "--file", &file],
+        vec!["annotate", "var", "--addr", ABOVE, "--var", "local_8", "--value", "x", "--file", &file],
+        vec!["annotate", "bookmark", "--addr", ABOVE, "--file", &file],
     ] {
         assert_eq!(p.run(&write)["ok"], false, "{write:?}");
     }

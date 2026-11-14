@@ -4676,6 +4676,7 @@ phase from its first mistake on.
 | `annotate show` | Provenance, annotations & snapshots | what was written |
 | `annotate list` | Provenance, annotations & snapshots | the count before and after |
 | `annotate rm` | Provenance, annotations & snapshots | the store |
+| `annotate bind` | Provenance, annotations & snapshots | the store before and after, and another image's names |
 | `snapshot dump` | Provenance, annotations & snapshots | a live process — byte-identical over the whole capture |
 | `snapshot info` | Provenance, annotations & snapshots | the modules `/proc` lists |
 | `snapshot list` | Provenance, annotations & snapshots | the file on disk |

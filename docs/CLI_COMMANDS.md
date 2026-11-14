@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **123 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **124 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -1138,26 +1138,41 @@ module+function + decompiled statement (Phase 4c — watchpoint × decompiler, f
 ### `annotate name --addr <hex> [--value <str>]`
 Assert (or clear, with no `--value`) a function/variable name at an address (versioned with full
 history).
-- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
-  session supplies its own. They say whose records are read and written: a WebAssembly module
-  keeps its own, under its identity; every native target shares one map, the one used without a
-  source, as before.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd` (or a `serve` session's own), and
+  `--arch`. They say whose records
+  are read and written: each native image keeps its own, under the digest of its file (`--pid`: its
+  main module's file on disk, so one image is one identity either way; read once, kept by path,
+  size and modification time); a WebAssembly module keeps its own, under its identity. With no
+  image named and no session, it is refused (`no-image`); an image whose file cannot be read, a
+  snapshot or a remote process holds no record, and a write to it is refused with why. Known
+  limit: records are keyed by absolute address, so a process the loader placed elsewhere (ASLR)
+  has them at the wrong addresses.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate type --addr <hex> [--value <str>]`
 Assert (or clear) a type note at an address, e.g. `"int(char*, size_t)"`.
-- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
-  session supplies its own. They say whose records are read and written: a WebAssembly module
-  keeps its own, under its identity; every native target shares one map, the one used without a
-  source, as before.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd` (or a `serve` session's own), and
+  `--arch`. They say whose records
+  are read and written: each native image keeps its own, under the digest of its file (`--pid`: its
+  main module's file on disk, so one image is one identity either way; read once, kept by path,
+  size and modification time); a WebAssembly module keeps its own, under its identity. With no
+  image named and no session, it is refused (`no-image`); an image whose file cannot be read, a
+  snapshot or a remote process holds no record, and a write to it is refused with why. Known
+  limit: records are keyed by absolute address, so a process the loader placed elsewhere (ASLR)
+  has them at the wrong addresses.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate comment --addr <hex> [--value <str>]`
 Assert (or clear) a free-text comment at an address.
-- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
-  session supplies its own. They say whose records are read and written: a WebAssembly module
-  keeps its own, under its identity; every native target shares one map, the one used without a
-  source, as before.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd` (or a `serve` session's own), and
+  `--arch`. They say whose records
+  are read and written: each native image keeps its own, under the digest of its file (`--pid`: its
+  main module's file on disk, so one image is one identity either way; read once, kept by path,
+  size and modification time); a WebAssembly module keeps its own, under its identity. With no
+  image named and no session, it is refused (`no-image`); an image whose file cannot be read, a
+  snapshot or a remote process holds no record, and a write to it is refused with why. Known
+  limit: records are keyed by absolute address, so a process the loader placed elsewhere (ASLR)
+  has them at the wrong addresses.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate show --addr <hex>`
@@ -1179,23 +1194,41 @@ Show the current facts + full history for one address.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate list`
-List every annotated address of a target: with `--file <module>`, a WebAssembly module's own
-records; without, the records native targets share, and `meta.note` says how many records the
-modules' own maps hold, which this listing leaves out.
-- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
-  session supplies its own. They say whose records are read and written: a WebAssembly module
-  keeps its own, under its identity; every native target shares one map, the one used without a
-  source, as before.
+List every annotated address of the image named (a WebAssembly module's own records for a
+module), and `unbound`: the records made before a record named its image, which apply to no
+image (`applied: false`) until `annotate bind` binds them. With no image named and no session,
+only `unbound`, and `count: 0`. `meta.note` says how many records the modules' own maps hold.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd` (or a `serve` session's own), and
+  `--arch`. They say whose records
+  are read and written: each native image keeps its own, under the digest of its file (`--pid`: its
+  main module's file on disk, so one image is one identity either way; read once, kept by path,
+  size and modification time); a WebAssembly module keeps its own, under its identity. With no
+  image named and no session, it is refused (`no-image`); an image whose file cannot be read, a
+  snapshot or a remote process holds no record, and a write to it is refused with why. Known
+  limit: records are keyed by absolute address, so a process the loader placed elsewhere (ASLR)
+  has them at the wrong addresses.
 - Schema: `n0xis.annotation.v1`
 
 ### `annotate rm --addr <hex>`
 Remove all annotations (and history) at an address.
-- Sources (optional): `--file` | `--pid` | `--snapshot` | `--remote-cmd`, and `--arch`; a `serve`
-  session supplies its own. They say whose records are read and written: a WebAssembly module
-  keeps its own, under its identity; every native target shares one map, the one used without a
-  source, as before.
+- Sources: `--file` | `--pid` | `--snapshot` | `--remote-cmd` (or a `serve` session's own), and
+  `--arch`. They say whose records
+  are read and written: each native image keeps its own, under the digest of its file (`--pid`: its
+  main module's file on disk, so one image is one identity either way; read once, kept by path,
+  size and modification time); a WebAssembly module keeps its own, under its identity. With no
+  image named and no session, it is refused (`no-image`); an image whose file cannot be read, a
+  snapshot or a remote process holds no record, and a write to it is refused with why. Known
+  limit: records are keyed by absolute address, so a process the loader placed elsewhere (ASLR)
+  has them at the wrong addresses.
 - Schema: `n0xis.annotation.v1`
 
+
+### `annotate bind --file <image>`
+Bind the unbound records (made before a record named its image, kept in `.n0x/annotations.json`)
+to the image `--file`/`--pid` names: each moves under that image's identity, unless it already
+holds a record at that address, which stays unbound. Answers `bound`, `left_unbound` and `image`
+(the identity).
+- Schema: `n0xis.annotation.v1`
 ### `snapshot dump --name <str>`
 Capture a byte range (+ modules, when resolvable) from a live process or static file into a
 reloadable `.n0x/dumps/snapshot/<name>.json`.
@@ -1419,7 +1452,7 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**123 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**124 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
@@ -1525,7 +1558,8 @@ sections above document a subset in depth; every command has `--help`, and
 |---|---|
 | `n0x annotate bookmark` | Bookmark ("favorite") an address so it shows in the Bookmarks/Notes list. `--off` removes the bookmark |
 | `n0x annotate comment` | Assert (or clear) a free-text comment at an address |
-| `n0x annotate list` | List every annotated address of a target: a WebAssembly module's own with `--file <module>`, else the records native targets share |
+| `n0x annotate list` | List every annotated address of the image `--file`/`--pid` names, and the records made before a record named its image (`unbound`), which apply to no image until bound |
+| `n0x annotate bind` | Bind the unbound records (made before a record named its image) to the image `--file`/`--pid` names |
 | `n0x annotate name` | Assert (or clear, with no `--value`) a function/variable name at an address |
 | `n0x annotate rm` | Remove all annotations (and history) at an address |
 | `n0x annotate show` | Show the current facts + full history for one address |

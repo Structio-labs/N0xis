@@ -75,9 +75,11 @@ fn only_a_listed_variable_takes_a_name_and_only_a_param_or_local_a_type() {
     let typed_param = run(&project, &["annotate", "vartype", "--file", file, "--addr", &addr, "--var", &param, "--value", "int"]);
     assert_eq!(typed_param["ok"], true, "{typed_param}");
 
-    // With no image, nothing is checked, and the answer says so.
+    // With no image there is none the record is about: refused, naming both
+    // ways to name one. It was stored unchecked, in the map every image shared.
     let unchecked = run(&project, &["annotate", "var", "--addr", &addr, "--var", "anything", "--value", "x"]);
-    assert_eq!(unchecked["ok"], true);
-    assert!(unchecked["meta"]["note"].as_str().is_some_and(|n| n.contains("not checked")), "{unchecked}");
+    assert_eq!(unchecked["error"]["code"], "no-image", "{unchecked}");
+    let message = unchecked["error"]["message"].as_str().unwrap();
+    assert!(message.contains("--file") && message.contains("--pid"), "{unchecked}");
     let _ = std::fs::remove_dir_all(&project);
 }

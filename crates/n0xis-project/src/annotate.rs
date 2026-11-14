@@ -12,9 +12,20 @@
 //! split as [`selection`](crate::selection)/[`table`](crate::table), one map
 //! of records keyed by address per [`Scope`]:
 //!
-//! - **native targets** (PE, ELF, live processes, snapshots) share
-//!   `.n0x/annotations.json` (`BTreeMap<va-hex, AnnotationRecord>`), exactly
-//!   as every record lived before scopes existed;
+//! - **each native image** (PE, ELF; a live process by its main module's
+//!   file) has a map of its own, under the digest of the image's file, in
+//!   `.n0x/annotations-images.json`
+//!   (`BTreeMap<identity, BTreeMap<va-hex, AnnotationRecord>>`). A record made
+//!   on one image applied to every image at the same address until
+//!   2026-11-14: a rename of `t1`'s function was printed as the name of
+//!   whatever another image held there, unflagged (audit 2026-11-06). The
+//!   records still key by **absolute address** within an image: a process the
+//!   loader placed elsewhere (ASLR) has them at the wrong addresses, a known
+//!   limit;
+//! - **records made before that**, which carry no image, stay in
+//!   `.n0x/annotations.json`: **unbound**, listed as such, never applied to
+//!   output, until `annotate bind --file <image>` moves them under that
+//!   image ([`bind_unbound`]);
 //! - **each WebAssembly module** has a map of its own, under the module's
 //!   identity, in `.n0x/annotations-modules.json`
 //!   (`BTreeMap<identity, BTreeMap<va-hex, AnnotationRecord>>`).
@@ -478,22 +489,32 @@ impl AnnotationRecord {
 /// Which target a record belongs to.
 ///
 /// Every reader and writer of the store names one, so none can read or write
-/// without saying whose records it means.
+/// without saying whose records it means. There is no scope of "every native
+/// target": a record is about one image.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scope {
-    /// Every native target: the project-wide address map records have always
-    /// lived in, read and written exactly as before scopes.
-    Native,
+    /// One native image, by the digest of its file ([`image_digest`]): a live
+    /// process by its main module's file, so it is the same identity `--file`
+    /// gives that image.
+    Image(String),
     /// One WebAssembly module, by its identity (its `build_id` section, else a
     /// hash of its bytes): a map of its own. A native record never applies to
     /// a module, and a module's never to anything else.
     Module(String),
+    /// A target whose identity could not be read (a snapshot, a remote
+    /// process, an image file that cannot be read), and why: it holds no
+    /// record, and a write to it is refused with this reason.
+    Unidentified(String),
 }
 
-/// The file native records are kept in.
+/// The file records made before images were told apart are kept in: unbound.
 pub const NATIVE_STORE: &str = "annotations.json";
+/// The file every native image's records are kept in, by identity.
+pub const IMAGE_STORE: &str = "annotations-images.json";
 /// The file every module's records are kept in, by identity.
 pub const MODULE_STORE: &str = "annotations-modules.json";
+/// Digests of image files already read, by path, size and modification time.
+const DIGEST_CACHE: &str = "image-digests.json";
 
 fn store_path(name: &str) -> Result<std::path::PathBuf> {
     Ok(resolve()?.dir.join(name))
@@ -521,26 +542,101 @@ fn write_store<T: Serialize>(name: &str, value: &T) -> Result<()> {
 
 type Records = BTreeMap<String, AnnotationRecord>;
 
-fn load_all(scope: &Scope) -> Result<Records> {
+/// The store a keyed scope lives in.
+fn keyed(scope: &Scope) -> Option<(&'static str, &str)> {
     match scope {
-        Scope::Native => read_store(NATIVE_STORE),
-        Scope::Module(identity) => Ok(read_store::<BTreeMap<String, Records>>(MODULE_STORE)?.remove(identity).unwrap_or_default()),
+        Scope::Image(identity) => Some((IMAGE_STORE, identity)),
+        Scope::Module(identity) => Some((MODULE_STORE, identity)),
+        Scope::Unidentified(_) => None,
+    }
+}
+
+fn load_all(scope: &Scope) -> Result<Records> {
+    match keyed(scope) {
+        Some((store, identity)) => Ok(read_store::<BTreeMap<String, Records>>(store)?.remove(identity).unwrap_or_default()),
+        None => Ok(Records::new()),
     }
 }
 
 fn save_all(scope: &Scope, records: &Records) -> Result<()> {
-    match scope {
-        Scope::Native => write_store(NATIVE_STORE, records),
-        Scope::Module(identity) => {
-            let mut modules: BTreeMap<String, Records> = read_store(MODULE_STORE)?;
-            if records.is_empty() {
-                modules.remove(identity);
-            } else {
-                modules.insert(identity.clone(), records.clone());
+    let Some((store, identity)) = keyed(scope) else {
+        let Scope::Unidentified(why) = scope else { unreachable!("every other scope is keyed") };
+        anyhow::bail!("a record is kept for the image it is about, and this target's cannot be told: {why}");
+    };
+    let mut all: BTreeMap<String, Records> = read_store(store)?;
+    if records.is_empty() {
+        all.remove(identity);
+    } else {
+        all.insert(identity.to_string(), records.clone());
+    }
+    write_store(store, &all)
+}
+
+/// The digest that names a native image: `fnv1a64:<hex>` of every byte of its
+/// file, the form a WebAssembly module without a build id is named by. Read
+/// once per file and kept in `.n0x/image-digests.json` by path, size and
+/// modification time, so a large image is not read again for each command.
+/// An error, with the path and why, when the file cannot be read.
+pub fn image_digest(path: &std::path::Path) -> Result<String> {
+    #[derive(Serialize, Deserialize, PartialEq)]
+    struct Seen {
+        size: u64,
+        modified_ns: u128,
+        digest: String,
+    }
+    let meta = fs::metadata(path).with_context(|| format!("read the image file {}", path.display()))?;
+    let modified_ns = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned();
+    let mut cache: BTreeMap<String, Seen> = read_store(DIGEST_CACHE).unwrap_or_default();
+    if let Some(seen) = cache.get(&key)
+        && seen.size == meta.len()
+        && seen.modified_ns == modified_ns
+    {
+        return Ok(seen.digest.clone());
+    }
+    let bytes = fs::read(path).with_context(|| format!("read the image file {}", path.display()))?;
+    let digest = format!("fnv1a64:{:016x}", fnv1a64(&bytes));
+    cache.insert(key, Seen { size: meta.len(), modified_ns, digest: digest.clone() });
+    // A cache that cannot be written costs a read next time, nothing more.
+    let _ = write_store(DIGEST_CACHE, &cache);
+    Ok(digest)
+}
+
+/// FNV-1a, 64-bit: stable across builds and toolchains, as an identity kept on
+/// disk must be.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+/// Records made before images were told apart: they carry no image, and are
+/// applied to none. What `annotate list` names, with the command that binds them.
+pub fn unbound() -> Result<Vec<AnnotationRecord>> {
+    Ok(read_store::<Records>(NATIVE_STORE)?.into_values().collect())
+}
+
+/// Bind every unbound record to the image `identity` names: each moves into
+/// that image's map, unless the image already holds a record at its address,
+/// in which case it stays unbound. Returns `(bound, left unbound)`.
+pub fn bind_unbound(identity: &str) -> Result<(usize, usize)> {
+    let scope = Scope::Image(identity.to_string());
+    let unbound: Records = read_store(NATIVE_STORE)?;
+    let mut bound = load_all(&scope)?;
+    let mut left = Records::new();
+    let mut moved = 0usize;
+    for (key, record) in unbound {
+        match bound.entry(key) {
+            std::collections::btree_map::Entry::Occupied(held) => {
+                left.insert(held.key().clone(), record);
             }
-            write_store(MODULE_STORE, &modules)
+            std::collections::btree_map::Entry::Vacant(free) => {
+                free.insert(record);
+                moved += 1;
+            }
         }
     }
+    save_all(&scope, &bound)?;
+    write_store(NATIVE_STORE, &left)?;
+    Ok((moved, left.len()))
 }
 
 /// Every module identity the store holds records for, with how many: what a
@@ -553,6 +649,7 @@ pub fn module_scopes() -> Result<Vec<(String, usize)>> {
 /// What a reader that renders without the store checks to say why.
 pub fn readable() -> Result<()> {
     read_store::<Records>(NATIVE_STORE)?;
+    read_store::<BTreeMap<String, Records>>(IMAGE_STORE)?;
     read_store::<BTreeMap<String, Records>>(MODULE_STORE)?;
     Ok(())
 }
@@ -724,6 +821,13 @@ mod tests {
     use super::*;
     use crate::CWD_TEST_LOCK;
 
+    /// The identity the tests' image is kept under.
+    const IMG: &str = "fnv1a64:0000000000000001";
+
+    fn img() -> Scope {
+        Scope::Image(IMG.into())
+    }
+
     fn in_temp_project<T>(f: impl FnOnce() -> T) -> T {
         let _guard = CWD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!(
@@ -744,11 +848,11 @@ mod tests {
     #[test]
     fn clearing_nothing_makes_no_record() {
         in_temp_project(|| {
-            set_name(&Scope::Native, Va(0x1234), None).unwrap();
-            set_comment(&Scope::Native, Va(0x1234), None).unwrap();
-            assert!(list(&Scope::Native).unwrap().is_empty());
-            set_name(&Scope::Native, Va(0x1234), Some("f".into())).unwrap();
-            let rec = set_name(&Scope::Native, Va(0x1234), None).unwrap();
+            set_name(&img(), Va(0x1234), None).unwrap();
+            set_comment(&img(), Va(0x1234), None).unwrap();
+            assert!(list(&img()).unwrap().is_empty());
+            set_name(&img(), Va(0x1234), Some("f".into())).unwrap();
+            let rec = set_name(&img(), Va(0x1234), None).unwrap();
             assert_eq!((rec.name, rec.history.len()), (None, 2));
         });
     }
@@ -756,19 +860,19 @@ mod tests {
     #[test]
     fn set_name_type_comment_and_read_back() {
         in_temp_project(|| {
-            assert!(get(&Scope::Native, Va(0x1000)).unwrap().is_none());
+            assert!(get(&img(), Va(0x1000)).unwrap().is_none());
 
-            let rec = set_name(&Scope::Native, Va(0x1000), Some("parse_header".to_string())).unwrap();
+            let rec = set_name(&img(), Va(0x1000), Some("parse_header".to_string())).unwrap();
             assert_eq!(rec.name.as_deref(), Some("parse_header"));
             assert_eq!(rec.history.len(), 1);
 
-            let rec = set_type(&Scope::Native, Va(0x1000), Some("int(char*, size_t)".to_string())).unwrap();
+            let rec = set_type(&img(), Va(0x1000), Some("int(char*, size_t)".to_string())).unwrap();
             assert_eq!(rec.type_note.as_deref(), Some("int(char*, size_t)"));
-            let rec = set_comment(&Scope::Native, Va(0x1000), Some("bounds-checks then parses".to_string())).unwrap();
+            let rec = set_comment(&img(), Va(0x1000), Some("bounds-checks then parses".to_string())).unwrap();
             assert_eq!(rec.comment.as_deref(), Some("bounds-checks then parses"));
             assert_eq!(rec.history.len(), 3, "one history entry per distinct field set");
 
-            let fetched = get(&Scope::Native, Va(0x1000)).unwrap().expect("record exists");
+            let fetched = get(&img(), Va(0x1000)).unwrap().expect("record exists");
             assert_eq!(fetched.name.as_deref(), Some("parse_header"));
             assert_eq!(fetched.type_note.as_deref(), Some("int(char*, size_t)"));
         });
@@ -787,20 +891,20 @@ mod tests {
             let b = Scope::Module("fnv1a64:00000000deadbeef".into());
             set_name(&a, Va(0x95), Some("parse".into())).unwrap();
             set_name(&b, Va(0x95), Some("render".into())).unwrap();
-            set_name(&Scope::Native, Va(0x95), Some("native_entry".into())).unwrap();
+            set_name(&img(), Va(0x95), Some("native_entry".into())).unwrap();
 
             assert_eq!(get(&a, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("parse"));
             assert_eq!(get(&b, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("render"));
-            assert_eq!(get(&Scope::Native, Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("native_entry"));
+            assert_eq!(get(&img(), Va(0x95)).unwrap().and_then(|r| r.name).as_deref(), Some("native_entry"));
             assert_eq!(list(&a).unwrap().len(), 1);
             assert!(get(&Scope::Module("build-id:ffff".into()), Va(0x95)).unwrap().is_none(), "an unknown module has no records");
 
-            // The native file holds the native record and nothing else, so a
-            // build from before scopes, which reads it alone, never sees a
-            // module's record as a native one.
-            let native: Records = read_store(NATIVE_STORE).unwrap();
-            assert_eq!(native.len(), 1);
-            assert_eq!(native["0x95"].name.as_deref(), Some("native_entry"));
+            // The image's map holds the image's record and nothing else, and
+            // nothing is written where records without an image are kept.
+            let images: BTreeMap<String, Records> = read_store(IMAGE_STORE).unwrap();
+            assert_eq!(images[IMG].len(), 1);
+            assert_eq!(images[IMG]["0x95"].name.as_deref(), Some("native_entry"));
+            assert!(unbound().unwrap().is_empty());
             assert_eq!(module_scopes().unwrap().len(), 2);
 
             assert!(remove(&a, Va(0x95)).unwrap());
@@ -812,8 +916,8 @@ mod tests {
     #[test]
     fn renaming_never_loses_the_old_name_versioned_truth() {
         in_temp_project(|| {
-            set_name(&Scope::Native, Va(0x2000), Some("sub_2000".to_string())).unwrap();
-            let rec = set_name(&Scope::Native, Va(0x2000), Some("compute_checksum".to_string())).unwrap();
+            set_name(&img(), Va(0x2000), Some("sub_2000".to_string())).unwrap();
+            let rec = set_name(&img(), Va(0x2000), Some("compute_checksum".to_string())).unwrap();
             assert_eq!(rec.name.as_deref(), Some("compute_checksum"));
             assert_eq!(rec.history.len(), 2);
             assert_eq!(rec.history[0].old, None);
@@ -826,8 +930,8 @@ mod tests {
     #[test]
     fn setting_the_same_value_again_does_not_grow_history() {
         in_temp_project(|| {
-            set_name(&Scope::Native, Va(0x3000), Some("f".to_string())).unwrap();
-            let rec = set_name(&Scope::Native, Va(0x3000), Some("f".to_string())).unwrap();
+            set_name(&img(), Va(0x3000), Some("f".to_string())).unwrap();
+            let rec = set_name(&img(), Va(0x3000), Some("f".to_string())).unwrap();
             assert_eq!(rec.history.len(), 1, "idempotent set must not add a duplicate history entry");
         });
     }
@@ -853,9 +957,9 @@ mod tests {
         placed.earlier.iter().map(|e| (e.key.as_str(), &e.outcome)).collect()
     }
 
-    /// Plant a whole `annotations.json` in the temp project.
+    /// Plant the test image's whole map in the temp project.
     fn plant(records: &[AnnotationRecord]) {
-        save_all(&Scope::Native, &records.iter().map(|r| (r.va.to_string(), r.clone())).collect()).unwrap();
+        save_all(&img(), &records.iter().map(|r| (r.va.to_string(), r.clone())).collect()).unwrap();
     }
 
     /// The four places a version-1 `local_<hex>` can land, by which of its two
@@ -946,7 +1050,7 @@ mod tests {
             record.earlier_var_types = names(&[("local_8", "int64_t")]);
             plant(&[record]);
 
-            let write = set_var_name(&Scope::Native, Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
+            let write = set_var_name(&img(), Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
             let record = write.record;
             assert_eq!(record.var_names, names(&[("local_neg_8", "saved"), ("rcx", "counter")]));
             assert_eq!(record.var_types, names(&[("local_neg_8", "int64_t")]));
@@ -966,12 +1070,13 @@ mod tests {
         in_temp_project(|| {
             plant(&[version_1(&[("local_8", "earlier")])]);
             let both = || Ok::<_, String>(Some(vars(&["local_8", "local_neg_8"])));
-            let write = set_var_name(&Scope::Native, Va(0x1000), "local_8", Some("current".into()), both).unwrap();
+            let write = set_var_name(&img(), Va(0x1000), "local_8", Some("current".into()), both).unwrap();
             assert_eq!(write.record.var_names, names(&[("local_8", "current")]));
             assert_eq!(write.record.earlier_var_names, names(&[("local_8", "earlier")]));
             assert!(matches!(write.earlier[0].outcome, EarlierOutcome::Ambiguous(_)), "{:?}", write.earlier);
 
-            let raw: serde_json::Value = serde_json::from_str(&fs::read_to_string(store_path(NATIVE_STORE).unwrap()).unwrap()).unwrap();
+            let raw: serde_json::Value = serde_json::from_str(&fs::read_to_string(store_path(IMAGE_STORE).unwrap()).unwrap()).unwrap();
+            let raw = &raw[IMG];
             assert_eq!(raw["0x1000"]["var_key_version"], 2);
             assert_eq!(raw["0x1000"]["var_names"]["local_8"], "current");
             assert_eq!(raw["0x1000"]["earlier_var_names"]["local_8"], "earlier");
@@ -984,11 +1089,11 @@ mod tests {
     fn a_later_write_settles_a_key_once_the_image_disambiguates() {
         in_temp_project(|| {
             plant(&[version_1(&[("local_8", "earlier")])]);
-            let unchecked = set_var_name(&Scope::Native, Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(None)).unwrap();
+            let unchecked = set_var_name(&img(), Va(0x1000), "rcx", Some("counter".into()), || Ok::<_, String>(None)).unwrap();
             assert_eq!(unchecked.record.earlier_var_names, names(&[("local_8", "earlier")]));
             assert_eq!(unchecked.earlier[0].outcome, EarlierOutcome::Unchecked);
 
-            let settled = set_var_type(&Scope::Native, Va(0x1000), "rcx", Some("int".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
+            let settled = set_var_type(&img(), Va(0x1000), "rcx", Some("int".into()), || Ok::<_, String>(Some(vars(&["local_neg_8", "rcx"])))).unwrap();
             assert_eq!(settled.record.var_names, names(&[("local_neg_8", "earlier"), ("rcx", "counter")]));
             assert!(settled.record.earlier_var_names.is_empty());
         });
@@ -1000,30 +1105,81 @@ mod tests {
     #[test]
     fn an_unreadable_store_refuses_every_write() {
         in_temp_project(|| {
-            let newer = r#"{ "0x2000": { "va": "0x2000", "var_names": { "local_8": "kept" }, "var_key_version": 99 } }"#;
-            fs::write(store_path(NATIVE_STORE).unwrap(), newer).unwrap();
-            assert!(get(&Scope::Native, Va(0x1000)).is_err());
-            assert!(list(&Scope::Native).is_err());
-            assert!(set_name(&Scope::Native, Va(0x1000), Some("f".into())).is_err());
-            assert!(set_var_name(&Scope::Native, Va(0x1000), "rcx", Some("x".into()), || Ok::<_, String>(None)).is_err());
-            assert!(set_bookmark(&Scope::Native, Va(0x1000), true).is_err());
-            assert!(remove(&Scope::Native, Va(0x2000)).is_err());
-            assert_eq!(fs::read_to_string(store_path(NATIVE_STORE).unwrap()).unwrap(), newer, "the file keeps its bytes");
+            let newer = r#"{ "fnv1a64:0000000000000001": { "0x2000": { "va": "0x2000", "var_names": { "local_8": "kept" }, "var_key_version": 99 } } }"#;
+            fs::write(store_path(IMAGE_STORE).unwrap(), newer).unwrap();
+            assert!(get(&img(), Va(0x1000)).is_err());
+            assert!(list(&img()).is_err());
+            assert!(set_name(&img(), Va(0x1000), Some("f".into())).is_err());
+            assert!(set_var_name(&img(), Va(0x1000), "rcx", Some("x".into()), || Ok::<_, String>(None)).is_err());
+            assert!(set_bookmark(&img(), Va(0x1000), true).is_err());
+            assert!(remove(&img(), Va(0x2000)).is_err());
+            assert_eq!(fs::read_to_string(store_path(IMAGE_STORE).unwrap()).unwrap(), newer, "the file keeps its bytes");
+        });
+    }
+
+    /// A record of one image is not another's; a record with no image is
+    /// listed as unbound, applies to none, and `bind_unbound` moves it under
+    /// an image, leaving one whose address that image already holds.
+    #[test]
+    fn records_belong_to_one_image_and_unbound_ones_are_bound_by_asking() {
+        in_temp_project(|| {
+            let other = Scope::Image("fnv1a64:0000000000000002".into());
+            set_name(&img(), Va(0x1139), Some("t1_target".into())).unwrap();
+            assert!(get(&other, Va(0x1139)).unwrap().is_none(), "another image has no record there");
+
+            let old = r#"{ "0x1139": { "va": "0x1139", "name": "old_one" }, "0x2000": { "va": "0x2000", "name": "old_two" } }"#;
+            fs::write(store_path(NATIVE_STORE).unwrap(), old).unwrap();
+            assert_eq!(unbound().unwrap().len(), 2);
+            assert!(get(&other, Va(0x2000)).unwrap().is_none(), "an unbound record applies to no image");
+
+            assert_eq!(bind_unbound(IMG).unwrap(), (1, 1), "0x1139 is held by the image already");
+            assert_eq!(get(&img(), Va(0x2000)).unwrap().and_then(|r| r.name).as_deref(), Some("old_two"));
+            assert_eq!(get(&img(), Va(0x1139)).unwrap().and_then(|r| r.name).as_deref(), Some("t1_target"));
+            assert_eq!(unbound().unwrap().len(), 1);
+        });
+    }
+
+    /// A target that cannot be told is given no record, and a write to it
+    /// says why.
+    #[test]
+    fn a_target_with_no_identity_holds_nothing_and_refuses_a_write() {
+        in_temp_project(|| {
+            let none = Scope::Unidentified("a snapshot names no image file".into());
+            assert!(list(&none).unwrap().is_empty());
+            let e = set_name(&none, Va(0x10), Some("f".into())).unwrap_err().to_string();
+            assert!(e.contains("a snapshot names no image file"), "{e}");
+        });
+    }
+
+    /// The digest is the file's, read once: a file changed in size or time is
+    /// read again.
+    #[test]
+    fn an_image_digest_is_its_files_and_is_kept() {
+        in_temp_project(|| {
+            let path = std::env::current_dir().unwrap().join("image.bin");
+            fs::write(&path, b"abc").unwrap();
+            // FNV-1a 64 of "abc", by its published constants.
+            assert_eq!(image_digest(&path).unwrap(), "fnv1a64:e71fa2190541574b");
+            let cache: serde_json::Value = serde_json::from_str(&fs::read_to_string(store_path(DIGEST_CACHE).unwrap()).unwrap()).unwrap();
+            assert_eq!(cache.as_object().unwrap().len(), 1);
+            fs::write(&path, b"abcd").unwrap();
+            assert_ne!(image_digest(&path).unwrap(), "fnv1a64:e71fa2190541574b");
+            assert!(image_digest(&path.with_extension("gone")).unwrap_err().to_string().contains("image.gone"));
         });
     }
 
     #[test]
     fn list_is_va_sorted_and_remove_drops_everything() {
         in_temp_project(|| {
-            set_name(&Scope::Native, Va(0x3000), Some("c".to_string())).unwrap();
-            set_name(&Scope::Native, Va(0x1000), Some("a".to_string())).unwrap();
-            set_name(&Scope::Native, Va(0x2000), Some("b".to_string())).unwrap();
-            let all = list(&Scope::Native).unwrap();
+            set_name(&img(), Va(0x3000), Some("c".to_string())).unwrap();
+            set_name(&img(), Va(0x1000), Some("a".to_string())).unwrap();
+            set_name(&img(), Va(0x2000), Some("b".to_string())).unwrap();
+            let all = list(&img()).unwrap();
             assert_eq!(all.iter().map(|r| r.va).collect::<Vec<_>>(), vec![Va(0x1000), Va(0x2000), Va(0x3000)]);
 
-            assert!(remove(&Scope::Native, Va(0x2000)).unwrap());
-            assert!(!remove(&Scope::Native, Va(0x2000)).unwrap(), "already removed");
-            assert_eq!(list(&Scope::Native).unwrap().len(), 2);
+            assert!(remove(&img(), Va(0x2000)).unwrap());
+            assert!(!remove(&img(), Va(0x2000)).unwrap(), "already removed");
+            assert_eq!(list(&img()).unwrap().len(), 2);
         });
     }
 }
