@@ -797,6 +797,11 @@ fn emit_switch(ctx: &mut Ctx, n: usize, until: Option<usize>) {
         (None, Some(reg)) => (format!("/*index in {reg}*/"), 0),
         (None, None) => ("/* dispatcher */".to_string(), 0),
     };
+    // Cases no guard of the index bounds are only as many as the read found; the
+    // body says what held it and why it stopped, before the cases it found.
+    if let Some(note) = sw.and_then(crate::switch::ResolvedSwitch::unguarded_note) {
+        ctx.out.push(format!("{}{note}", pad(ctx.indent)));
+    }
     ctx.out.push(format!("{}switch ({disp}) {{", pad(ctx.indent)));
     let mut emitted: BTreeSet<usize> = BTreeSet::new();
     for &s in &ctx.succ[n].to_vec() {

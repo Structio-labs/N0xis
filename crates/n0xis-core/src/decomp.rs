@@ -448,7 +448,7 @@ impl Pass for DecompPass {
         // instructions dilute it. The switch's marks and an unread jump's are the ones the
         // structuring adds.
         let unknown_return = usize::from(matches!(types.signature.ret, crate::typeinfer::ReturnType::Unknown));
-        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| ["/*index in ", "/*table not read*/", "/* dispatcher */", crate::structure::UNRECOVERED_JUMP].iter().any(|m| l.contains(m))).count();
+        let marks = unsaid + marked + unknown_return + pseudo.iter().filter(|l| ["/*index in ", "/*table not read*/", "/* dispatcher */", crate::structure::UNRECOVERED_JUMP, crate::switch::UNGUARDED_TABLE].iter().any(|m| l.contains(m))).count();
         let quality = if cfg.insn_count == 0 {
             0.0
         } else {
@@ -853,6 +853,10 @@ fn render_goto(cfg: &CfgArtifact, blocks: &[SsaBlock], names: &RenderNames) -> V
             "ret" | "tail-call" | "int" | "trap" | "call-noreturn" => {}
             "ijmp" => {
                 if b.successors.iter().any(|s| s.kind == "switch-case") {
+                    let sw = cfg.switches.iter().find(|s| s.at.get() >= b.start.get() && s.at.get() < b.end.get());
+                    if let Some(note) = sw.and_then(crate::switch::ResolvedSwitch::unguarded_note) {
+                        lines.push(format!("    {note}"));
+                    }
                     lines.push("    // switch dispatch:".to_string());
                     for s in &b.successors {
                         if let Some(j) = addr_to_id(cfg, s.to) {

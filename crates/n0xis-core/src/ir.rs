@@ -22,7 +22,7 @@ use n0xis_arch::{DecodedInsn, FrameInfo, InsnKind};
 use n0xis_contracts::{SymKind, Va};
 use serde::{Deserialize, Serialize};
 
-use crate::switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
+use crate::switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, TableBases, resolve_switch};
 use crate::{Ctx, CoreError, Pass};
 
 /// Generous linear cap; `auto_end` normally stops well before this.
@@ -803,7 +803,7 @@ pub(crate) fn ends_block(kind: InsnKind) -> bool {
 /// says 29, on one real function. The bound is what makes this evidence rather
 /// than a guess, and it is the same evidence the CFG uses for the edges.
 fn switch_case_reach(ctx: &Ctx, instrs: &[DecodedInsn], start: u64, end_cap: u64) -> u64 {
-    let mut furthest = start;
+    let mut dispatches = Vec::new();
     for (idx, ins) in instrs.iter().enumerate() {
         if ins.kind != InsnKind::Jump || ins.target.is_some() {
             continue;
@@ -822,11 +822,16 @@ fn switch_case_reach(ctx: &Ctx, instrs: &[DecodedInsn], start: u64, end_cap: u64
             })
             .map(|p| p + 1)
             .unwrap_or(0);
-        let Some(disp) = ctx.arch.detect_switch_with_context(&instrs[..=idx], block_start) else {
-            continue;
-        };
-        let r = resolve_switch(ctx, &instrs[..=idx], &disp);
-        if !r.resolved || r.bound.is_none() {
+        if let Some(disp) = ctx.arch.detect_switch_with_context(&instrs[..=idx], block_start) {
+            dispatches.push((idx, disp));
+        }
+    }
+    // Where each table ends is where another the window takes begins.
+    let bases = TableBases::of_code(ctx, instrs, dispatches.iter().map(|(_, d)| d));
+    let mut furthest = start;
+    for (idx, disp) in &dispatches {
+        let r = resolve_switch(ctx, &instrs[..=*idx], disp, &bases);
+        if !r.resolved || r.bound().is_none() {
             continue;
         }
         for c in &r.cases {
@@ -1005,25 +1010,31 @@ fn build(ctx: &Ctx, instrs: &[DecodedInsn], start: Va, end_by: GraphEnd) -> Resu
     // consumer can follow, and a malformed graph.
     let mut resolved_switches: BTreeMap<u64, ResolvedSwitch> = BTreeMap::new();
     {
+        let mut dispatches = Vec::new();
         let mut block_start = 0usize;
         for (idx, ins) in instrs.iter().enumerate() {
             if ins.kind == InsnKind::Jump
                 && ins.target.is_none()
                 && let Some(disp) = ctx.arch.detect_switch_with_context(&instrs[..=idx], block_start)
             {
-                let r = resolve_switch(ctx, &instrs[..=idx], &disp);
-                for c in &r.cases {
-                    if valid.contains(&c.0) {
-                        leaders.insert(c.0);
-                    }
-                }
-                resolved_switches.insert(ins.va.0, r);
+                dispatches.push((idx, disp));
             }
             // A terminator ends the block, so the next instruction starts one —
             // the same rule `compute_leaders` follows.
             if ends_block(ins.kind) {
                 block_start = idx + 1;
             }
+        }
+        // Where each table ends is where another the function takes begins.
+        let bases = TableBases::of_code(ctx, instrs, dispatches.iter().map(|(_, d)| d));
+        for (idx, disp) in &dispatches {
+            let r = resolve_switch(ctx, &instrs[..=*idx], disp, &bases);
+            for c in &r.cases {
+                if valid.contains(&c.0) {
+                    leaders.insert(c.0);
+                }
+            }
+            resolved_switches.insert(instrs[*idx].va.0, r);
         }
     }
     let mut blocks: Vec<CfgBlock> = Vec::new();
@@ -1513,10 +1524,16 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
             let table = sw.table.map(|t| t.to_string()).unwrap_or_else(|| "?".into());
             // The guard of the index that reaches the table, or not known: the graph's
             // own bound ([`crate::switch::resolve_switch`]), which its cases keep to.
-            let bound = sw.bound.map(|b| b.to_string()).unwrap_or_else(|| "?".into());
+            let bound = sw.bound().map(|b| b.to_string()).unwrap_or_else(|| "?".into());
             let cases = sw.cases.len();
+            // With no guard, what held the read and why it stopped.
+            let held = match (sw.index, sw.end) {
+                (Some(n0xis_arch::IndexBound::Guard(_)), _) | (_, None) => String::new(),
+                (Some(n0xis_arch::IndexBound::Width(w)), Some(end)) => format!(" (width={w}, {})", end.words()),
+                (None, Some(end)) => format!(" (width=?, {})", end.words()),
+            };
             lines.push(format!(
-                "  {} {} table={} idx={} scale={} bound={} -> {} cases",
+                "  {} {} table={} idx={} scale={} bound={} -> {} cases{}",
                 sw.at,
                 sw.kind,
                 table,
@@ -1524,6 +1541,7 @@ pub fn explain(art: &CfgArtifact) -> Vec<String> {
                 sw.scale,
                 bound,
                 cases,
+                held,
             ));
             for (n, case) in sw.cases.iter().take(cases).enumerate() {
                 lines.push(format!("    case[{n}] -> {case}"));
@@ -1684,7 +1702,7 @@ mod tests {
         let sw = &art.switches[0];
         assert_eq!(sw.kind, "mem-indexed");
         assert_eq!(sw.table, Some(Va(0x2000)));
-        assert_eq!(sw.bound, Some(2));
+        assert_eq!(sw.bound(), Some(2));
         assert_eq!(sw.entry_size, 8);
         assert!(sw.resolved, "cases came from memory");
         assert_eq!(sw.cases, vec![Va(0x1010), Va(0x1018), Va(0x1020)]);

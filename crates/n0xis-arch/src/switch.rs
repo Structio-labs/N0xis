@@ -74,5 +74,36 @@ pub struct SwitchDispatch {
     pub base_reg: Option<String>,
 }
 
+/// The largest index a dispatch's table can be read with, and what says so
+/// ([`Arch::index_guard`](crate::Arch::index_guard)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexBound {
+    /// A guard of the index lets through at most this: a compare and a jump past
+    /// the dispatch above it, or a mask.
+    Guard(u64),
+    /// No guard of the index was read, but the index was widened from a narrower
+    /// value with zeros, and cannot exceed it: 255 for a `movzx` of a byte. It is
+    /// what the index *can* be, not what the compiler emitted entries for.
+    Width(u64),
+}
+
+impl IndexBound {
+    /// The largest index, whatever says so.
+    pub fn largest(self) -> u64 {
+        match self {
+            IndexBound::Guard(n) | IndexBound::Width(n) => n,
+        }
+    }
+
+    /// The guard's bound, where a guard says it.
+    pub fn guard(self) -> Option<u64> {
+        match self {
+            IndexBound::Guard(n) => Some(n),
+            IndexBound::Width(_) => None,
+        }
+    }
+}
+
 /// Table-entry size for the MSVC rel32 idiom.
 const REL32_ENTRY_SIZE: u32 = 4;

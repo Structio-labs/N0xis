@@ -294,7 +294,7 @@ impl Arch for Wasm {
     }
 
     /// No guard is read here: [`Arch::detect_switch`] recognizes nothing.
-    fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &n0xis_arch::SwitchDispatch) -> Option<u64> {
+    fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &n0xis_arch::SwitchDispatch) -> Option<n0xis_arch::IndexBound> {
         None
     }
 

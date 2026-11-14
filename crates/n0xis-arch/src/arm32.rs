@@ -1776,7 +1776,7 @@ impl Arch for Arm32 {
     }
 
     /// No guard is read here: [`Arch::detect_switch`] recognizes nothing.
-    fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &crate::SwitchDispatch) -> Option<u64> {
+    fn index_guard(&self, _insns: &[DecodedInsn], _dispatch: &crate::SwitchDispatch) -> Option<crate::IndexBound> {
         None
     }
 

@@ -80,7 +80,7 @@ MUTATIONS = [
     # An indirect jump nothing was read for: said, counted, and what it may reach set apart (round 3, item 3).
     (CORE + "structure.rs", "    !t.is_empty() && (!t.starts_with(\"//\") || t == UNRECOVERED_JUMP)", "    !t.is_empty() && !t.starts_with(\"//\")", *LIB, "decomp::tests::an_unread_jump_is_said_and_what_it_may_reach_is_set_apart"),
     (CORE + "structure.rs", "                ctx.out.push(format!(\"{}{UNREACHED_PREFIX}{}\", pad(ctx.indent), ctx.blocks[b].start));\n", "", *LIB, "decomp::tests::an_unread_jump_is_said_and_what_it_may_reach_is_set_apart"),
-    (CORE + "decomp.rs", "\"/* dispatcher */\", crate::structure::UNRECOVERED_JUMP]", "\"/* dispatcher */\"]", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
+    (CORE + "decomp.rs", "\"/* dispatcher */\", crate::structure::UNRECOVERED_JUMP, crate::switch::UNGUARDED_TABLE]", "\"/* dispatcher */\", crate::switch::UNGUARDED_TABLE]", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
     # A jump with the frame given back is a tail call through a pointer, and only that (item 3b).
     (CORE + "decomp.rs", "        let cfg = crate::pointer_tail::with_tail_calls_through_pointers(ctx, input.cfg)?;", "        let cfg = input.cfg;", *LIB, "decomp::tests::a_jump_through_a_slot_with_the_frame_given_back_is_a_tail_call"),
     (CORE + "tail_jump.rs", "                at == Some(0) && !is_constant", "                !is_constant", *LIB, "decomp::tests::a_jump_with_the_frame_still_up_is_not_a_tail_call"),
@@ -123,8 +123,22 @@ MUTATIONS = [
     (CORE + "callee.rs", "        MicroStmt::Call { .. } => Vec::new(),\n", "", *LIB, "callee::tests::a_marker_nothing_after_the_call_reads_is_not_asked_about"),
     (CORE + "callee.rs", "                && read.remove(&reg)\n", "                && (read.remove(&reg) || true)\n", *LIB, "callee::tests::a_marker_nothing_after_the_call_reads_is_not_asked_about"),
     # One switch bound, the guard's, for every consumer (round 3, item 6); and the test takes it from the bytes.
-    (CORE + "switch.rs", "    let bound = ctx.arch.index_guard(insns, disp);", "    let bound = disp.bound;", "n0xis-cli", "xref_reads_jump_tables", "gcc_position_independent", ORACLE),
+    (CORE + "switch.rs", "    let index = ctx.arch.index_guard(insns, disp);", "    let index = disp.bound.map(n0xis_arch::IndexBound::Guard);", "n0xis-cli", "xref_reads_jump_tables", "gcc_position_independent", ORACLE),
     ("crates/n0xis-cli/tests/xref_reads_jump_tables.rs", "        let guarded = guards.iter().find(|(at, _)| *at == jump).is_some_and(|(_, g)| g.is_some());", "        let guarded = false;", "n0xis-cli", "xref_reads_jump_tables", "gcc14_position_independent", ORACLE),
+    # A table no guard bounds is read to the first of its index's width, the function's stated end, the next table's
+    # base and an entry that is not code, and the body says which (round 3, item 6b).
+    ("crates/n0xis-arch/src/x64.rs", "        guard.map(IndexBound::Guard).or(width.map(IndexBound::Width))", "        width.map(IndexBound::Width)", *LIB, "switch::tests::a_guarded_table_is_read_to_its_guard"),
+    ("crates/n0xis-arch/src/x64.rs", "                                if let Some(w) = zero_extended_from(&ins) {", "                                if let Some(w) = None::<u64> {", *LIB, "switch::tests::an_index_widened_from_a_byte_holds_the_read_to_256"),
+    (CORE + "switch.rs", "        if function.is_some_and(|f| !f.holds(target)) {", "        if false {", *LIB, "switch::tests::an_unguarded_read_stops_at_the_functions_stated_end"),
+    (CORE + "switch.rs", "        if function.is_some_and(|f| !f.holds(target)) {", "        if function.is_some_and(|f| !(target >= f.start && target < f.end)) {", *LIB, "switch::tests::a_part_of_the_function_apart_is_inside_it"),
+    (CORE + "switch.rs", "        Some(before_next) if before_next < held => (before_next, TableEnd::NextTable),", "        Some(before_next) if false && before_next < held => (before_next, TableEnd::NextTable),", *LIB, "switch::tests::an_unguarded_read_stops_at_the_next_table"),
+    (CORE + "ir.rs", "        let bases = TableBases::of_code(ctx, instrs, dispatches.iter().map(|(_, d)| d));", "        let bases = TableBases::new([0u64; 0], [0u64; 0]);", *LIB, "switch::tests::the_graph_stops_a_table_where_its_function_takes_the_next"),
+    (CORE + "switch.rs", "        let target = decode_entry(kind, table, chunk).filter(|&t| is_code(ctx, &code, t));", "        let target = decode_entry(kind, table, chunk);", *LIB, "switch::tests::an_unguarded_read_stops_at_an_entry_that_is_not_code"),
+    (CORE + "switch.rs", "        end = TableEnd::Unreadable;\n", "", *LIB, "switch::tests::a_read_past_the_words_the_image_holds_says_so"),
+    (CORE + "switch.rs", "Err(serde::de::Error::custom(\"a switch with both a guard's bound and a width\"))", "Ok(None)", *LIB, "switch::tests::a_switch_says_its_guard_and_its_width_under_their_own_keys"),
+    (CORE + "structure.rs", "    if let Some(note) = sw.and_then(crate::switch::ResolvedSwitch::unguarded_note) {", "    if let Some(note) = None::<String> {", *LIB, "switch::tests::a_body_says_no_guard_held_its_switch"),
+    (CORE + "decomp.rs", "                    if let Some(note) = sw.and_then(crate::switch::ResolvedSwitch::unguarded_note) {", "                    if let Some(note) = None::<String> {", *LIB, "switch::tests::a_body_says_no_guard_held_its_switch"),
+    (CORE + "decomp.rs", "crate::structure::UNRECOVERED_JUMP, crate::switch::UNGUARDED_TABLE]", "crate::structure::UNRECOVERED_JUMP]", *LIB, "switch::tests::a_body_says_no_guard_held_its_switch"),
 ]
 
 

@@ -35,7 +35,7 @@ pub use microir::{
     BinOp, Bits, CALL_CLOBBER, CallTarget, CmpKind, FLAGS_VAR, JUMP_TARGET_VAR, MemEffect, OLD_MEMORY_VAR,
     MicroExpr, MicroStmt, Shift, UnOp, UnliftedReads,
 };
-pub use switch::{SwitchDispatch, SwitchKind};
+pub use switch::{IndexBound, SwitchDispatch, SwitchKind};
 pub use x64::{X64, x64reg};
 
 use std::num::NonZeroUsize;
@@ -618,14 +618,17 @@ pub trait Arch {
 
     /// The largest index the guard of a dispatch's index lets through, where a
     /// guard of *that index* can be read: `insns` end at the dispatching jump.
-    /// `None` is "not known", and is the answer to anything less than certain.
+    /// Where none is, the largest the index's width allows, where the index was
+    /// widened with zeros from a narrower value on the way to the table
+    /// ([`IndexBound::Width`]). `None` is "not known", and is the answer to
+    /// anything less than certain.
     ///
     /// Not [`SwitchDispatch::bound`], which is the nearest comparison against a
     /// constant whatever it compares: on a loop's dispatch it can be a step limit,
     /// when the real guard compares memory and so is not one it reads.
     ///
     /// Required, with no default: an instruction set that cannot answer says so.
-    fn index_guard(&self, insns: &[DecodedInsn], dispatch: &SwitchDispatch) -> Option<u64>;
+    fn index_guard(&self, insns: &[DecodedInsn], dispatch: &SwitchDispatch) -> Option<IndexBound>;
 
     /// Whether [`Arch::detect_switch`] recognizes anything on this instruction
     /// set: a `None` from it then means "no table here", where otherwise it

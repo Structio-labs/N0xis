@@ -142,7 +142,7 @@ pub use rtti::{
     demangle_rtti_name, rtti_symbol_map, scan_itanium_rtti, scan_msvc_rtti, Bases, BasesUnknown, CodePointers, ItaniumScan,
     RefusedVtable, RttiRefusal, RttiSymbols, RttiVtable, Subclasses, VtableRefusal, VtableSlots,
 };
-pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, resolve_switch};
+pub use switch::{ResolvedSwitch, SWITCH_CASE_CONFIDENCE, TableBases, TableEnd, UNGUARDED_TABLE, resolve_switch};
 pub use typeinfer::{
     CType, FieldAccess, LocalVar, ParamInfo, RecoveredSignature, RecoveredType, ReturnType,
     TypeArtifact, TypeInferInput, TypeInferPass, abi_arg_registers, earlier_stack_local_slots,
