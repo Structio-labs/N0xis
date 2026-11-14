@@ -1612,6 +1612,51 @@ mod tests {
         assert_eq!(param_count(&snap), 3, "{text}");
     }
 
+    /// A marker is asked about only where something after the call reads it, and a
+    /// later call's argument list is no read: `mov edx,7; mov ecx,1; call g;
+    /// mov ecx,r8d; call h; ret`, with `g` a leaf that writes only `eax` and `h`
+    /// leaving by `jmp rax`. `r8` is read after `call g` and `g` does not write it, so
+    /// its marker goes; `rdx` is read by nothing after it but the argument list the
+    /// lift gives `call h`, so its marker is not asked about and stays.
+    ///
+    /// What a body prints does not show it: a register only a later call's list
+    /// holds is no argument there either way ([`args_kept`]'s `carried`). Asked about,
+    /// every call site asked its callee, a third more time on a decompile (fd PE, 40
+    /// functions: median 0.028 s to 0.038 s), so the rule is held here, on the lift.
+    #[test]
+    fn a_marker_nothing_after_the_call_reads_is_not_asked_about() {
+        let mut f = vec![0xba, 0x07, 0x00, 0x00, 0x00, 0xb9, 0x01, 0x00, 0x00, 0x00];
+        call(&mut f, G);
+        let after_g = F + f.len() as u64;
+        f.extend([0x44, 0x89, 0xc1]);
+        call(&mut f, H);
+        f.push(0xc3);
+        // lea eax,[rcx+rcx*2]; ret / jmp rax
+        let snap = image(f, &[0x8d, 0x04, 0x49, 0xc3], &[0xff, 0xe0]);
+        let arch = X64::new();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(F), 0x100)).unwrap();
+        let mut lifted = crate::lift::LiftPass.run(&ctx, cfg.clone()).unwrap();
+        let marked_at_g = |lifted: &crate::lift::LiftedFunction| -> BTreeSet<String> {
+            lifted
+                .blocks
+                .iter()
+                .flat_map(|b| &b.stmts)
+                .filter(|s| s.va.0 == after_g - 5)
+                .filter_map(|s| match &s.stmt {
+                    MicroStmt::Assign { dst, value: MicroExpr::Unknown(u) } if u == n0xis_arch::CALL_CLOBBER => Some(ctx.arch.normalize_reg(dst)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = marked_at_g(&lifted);
+        assert!(before.contains("rdx") && before.contains("r8"), "the lift marks both at `call g`: {before:?}");
+        keep_what_callees_leave(&ctx, &cfg, &mut lifted);
+        let after = marked_at_g(&lifted);
+        assert!(!after.contains("r8"), "r8 is read after the call and g leaves it: {after:?}");
+        assert!(after.contains("rdx"), "only `call h`'s list holds rdx: {after:?}");
+    }
+
     /// Kept only on proof: a callee that writes `r8`, calls anything, or leaves by a
     /// jump through a register (what runs next is not read here) leaves it unknown.
     #[test]

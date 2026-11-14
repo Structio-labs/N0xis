@@ -119,6 +119,9 @@ MUTATIONS = [
     (CORE + "ssa.rs", "        crate::callee::keep_what_callees_leave(ctx, &cfg, &mut lifted);\n", "", *LIB, "callee::tests::a_register_a_leaf_callee_does_not_write_keeps_its_value"),
     (CORE + "callee.rs", " && crate::summary::writes_are_all_of_it(cfg))", ")", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
     (CORE + "callee.rs", "                keep[k] = changes.as_ref().is_none_or(|w| w.contains(&reg));", "                keep[k] = changes.as_ref().is_none_or(|_| false);", *LIB, "callee::tests::a_register_a_callee_writes_or_may_write_is_not_kept"),
+    # A marker is asked about only where something after the call reads it, and a later call's argument list is no read.
+    (CORE + "callee.rs", "        MicroStmt::Call { .. } => Vec::new(),\n", "", *LIB, "callee::tests::a_marker_nothing_after_the_call_reads_is_not_asked_about"),
+    (CORE + "callee.rs", "                && read.remove(&reg)\n", "                && (read.remove(&reg) || true)\n", *LIB, "callee::tests::a_marker_nothing_after_the_call_reads_is_not_asked_about"),
     # One switch bound, the guard's, for every consumer (round 3, item 6); and the test takes it from the bytes.
     (CORE + "switch.rs", "    let bound = ctx.arch.index_guard(insns, disp);", "    let bound = disp.bound;", "n0xis-cli", "xref_reads_jump_tables", "gcc_position_independent", ORACLE),
     ("crates/n0xis-cli/tests/xref_reads_jump_tables.rs", "        let guarded = guards.iter().find(|(at, _)| *at == jump).is_some_and(|(_, g)| g.is_some());", "        let guarded = false;", "n0xis-cli", "xref_reads_jump_tables", "gcc14_position_independent", ORACLE),
