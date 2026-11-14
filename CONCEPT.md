@@ -147,6 +147,32 @@ These derive from the global engineering rules and are binding on every module:
    until it is **reproducible** — pinned to the exact target, version and build so
    a later reader can re-run it. [`docs/VERIFICATION.md`](docs/VERIFICATION.md) is
    where this is kept honest.
+8. **The measurement is measured too.** Every instrument here has lied at least
+   once: a check that took any refusal for the right one, an oracle using a
+   definition the project had dropped, a before-and-after that mixed hand
+   verdicts with executed ones. So:
+   - **No number before calibration.** A check is first run on planted wrong
+     answers it must catch, and on the build that has the defect, which it must
+     show. Before a number is quoted outside the tree, the instrument is reviewed
+     by someone handed the instrument and not the conclusion.
+   - **Three numbers, never two:** right, wrong, and not stated. "Not known"
+     beats a wrong answer, but it is not free: a move from right to not known is
+     a loss and is reported as one, or wrong can fall by unknown rising.
+   - **The strongest oracle needs nothing from the target but its bytes:** the
+     processor running the image's own code beside what the tool printed. An
+     oracle that needs the target's source is second best, because it cannot
+     reach the images people actually open.
+   - **Regression sets and accuracy sets are different things.** A set the
+     project has fixed against says "nothing broke". Accuracy is measured only on
+     code nobody on the project has seen: a new set each round, generated where
+     it can be.
+   - **A status lives where a check holds it.**
+     [`docs/verification/ledger.toml`](docs/verification/ledger.toml) names each
+     verified statement, its independent source and its test, and the gate fails
+     when the test is gone. A ✅ in the roadmap means built.
+   - **A recorded wrong answer is work, not documentation.** Known defects that
+     give a silent wrong answer are triaged by harm after every round, and a
+     release has a bar for them.
 
 ## 4. Architecture: layers & seams
 

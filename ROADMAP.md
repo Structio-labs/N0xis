@@ -9,6 +9,34 @@ Legend: 🎯 milestone · ✅ built · ⏳ in progress · ⬜ todo · ⚠️ cav
 
 ✅ means built and passing its own tests, not that its answers are verified. An item is verified only where it carries `[ledger: <id>]`: [`docs/verification/ledger.toml`](docs/verification/ledger.toml) names the independent source and the test, and the gate fails when that test is gone or fails. The 2026-11-06 claims audit found 74 of 220 statements false in commands marked ✅, which is why the two are now apart.
 
+## Now — the verification track to 0.4.0 (agreed 2026-11-14)
+
+The rule behind it is CONCEPT §3 principle 8. **0.4.0 ships when:**
+1. the ledger holds no `false` entry that gives a silent wrong answer in the core: function discovery and
+   extents, cross-references, strings, x86 decompilation, value scan;
+2. the decompiled bodies' accuracy is measured, whatever it turns out to be, and written down: on a freshly
+   generated set nobody has fixed against, and on one set of real MSVC-built images;
+3. every command ran on real Windows, the pre-release sweep.
+
+The next new content after it is WebAssembly lifting (stage 3).
+
+- ⏳ **Close the known wrong answers.** The claims audit had 74 of 220 statements false at 0.3.9 and 34 on main
+  on 2026-11-14; the decompiled-body rounds 1 to 3 run alongside.
+- ⬜ **A body oracle that needs only the image.** Map the image, stub its imports, run the function's own bytes
+  on the processor beside the printed body. It starts as an experiment: what share of one MSVC DLL's functions
+  can be driven this way.
+- ⬜ **Fresh unfamiliar code every round.** A generator of pure, defined-behaviour C functions, with a new seed
+  per round, feeds the behaviour harness, so every release gets a held-out set nobody has seen.
+- ⬜ **MSVC ground truth from official open-source releases that publish their PDBs** (Node.js, CPython). The
+  pinned URL and hash go in the ledger, and nothing is redistributed.
+- ⬜ **One body harness in the repository,** reviewed once, replacing the three that exist. Every report gives
+  right, wrong and not stated.
+- ⬜ **A sampled body diff in the gate:** old against new on a few hundred functions, listed, not failing.
+- ⬜ **Docs pass.** Re-measure every Open row and every item of the October wrong-answer list in
+  `docs/VERIFICATION.md`, and move each into the ledger.
+- ⬜ **The ledger's status where a reader meets the answer,** in the form agreed on 2026-10-23: the category
+  of the source, no confidence numbers. Design first.
+
 ---
 
 ## Phase 1 — Workspace skeleton & seams ✅
