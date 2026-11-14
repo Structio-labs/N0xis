@@ -75,6 +75,8 @@ pub mod v1 {
     pub const UPDATE: &str = "n0xis.update.v1";
     /// The user's own settings (`config get`, `config set`).
     pub const CONFIG: &str = "n0xis.config.v1";
+    /// `feedback`: a report as it is sent, where it was saved, and where else it can go.
+    pub const FEEDBACK: &str = "n0xis.feedback.v1";
     /// Built-in quick reference (`guide`).
     pub const GUIDE: &str = "n0xis.guide.v1";
     /// Project init report (`init`).

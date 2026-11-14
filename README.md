@@ -102,6 +102,10 @@ a script, a pipe, `2>&1`, CI and a scheduler make no request and get no line. `-
 Turn the check off with `n0x config set update.check false` or `N0X_NO_UPDATE_CHECK=1`. To install without being
 asked, `n0x config set update.auto true`.
 
+`n0x feedback "what happened"` shows, as JSON, the report it would send, saves it, and prints an issue link and an
+address to write to; it sends only with `--send`. A report holds your text, the version, the OS family and architecture,
+and the PNG or JPEG files you attach, and nothing about what you analyse: [docs/FEEDBACK.md](docs/FEEDBACK.md).
+
 ## Quickstart
 
 Every command prints **one** JSON object, argument errors included: `{"ok":true,"data":…,"meta":…}` or
@@ -122,7 +126,7 @@ n0xis provenance trace --pid 4821 --addr 0x1a2b3c40 --kind write --pretty   # li
 
 A command names its target with `--file`, `--pid`, `--snapshot`, `--remote-cmd` or `--bytes`; its `--help`
 lists the ones it takes. Output is Unix plumbing: `n0xis function discover --file app.exe --pdata | jq -r '.data.functions[].va'`
-feeds the next command. `n0xis guide` lists all 124 commands, generated from the binary, and a test fails the
+feeds the next command. `n0xis guide` lists all 125 commands, generated from the binary, and a test fails the
 build if this README, `MAP.md`, `CONCEPT.md` or `docs/CLI_COMMANDS.md` states another count. On Linux, with Yama `ptrace_scope=1`, reading another process needs
 root or `CAP_SYS_PTRACE` unless it allows tracing, as `config-demo` does.
 
@@ -159,7 +163,7 @@ them, from October 2026:
 - **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — every check, its source and case count: proven, open, not claimed.
 - **[oracle/README.md](oracle/README.md)** — targets whose answer is known before the question, and how to add one.
 - **[CONCEPT.md](CONCEPT.md)** (architecture) · **[ROADMAP.md](ROADMAP.md)** (history, what is missing) ·
-  **[MAP.md](MAP.md)** (the 18-crate layout) · **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
+  **[MAP.md](MAP.md)** (the 20-crate layout) · **[docs/COMMUNITY_ROADMAP.md](docs/COMMUNITY_ROADMAP.md)** ·
   **[docs/PRODUCT_POLICY.md](docs/PRODUCT_POLICY.md)** · **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## License

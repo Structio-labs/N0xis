@@ -116,6 +116,9 @@ def stateful(T):
         c("global+version", "--version"), c("global+help", "--help"), c("help+decomp", "decomp", "pseudo", "--help"),
         c("config.set", "config", "set", "update.check", "false"),
         c("config.get", "config", "get", "update.check"),
+        # Without --send nothing leaves the machine, so these need no network; --send is asked of a published release only.
+        c("feedback", "feedback", "the sweep's own words", must=["n0xis.feedback.v1"]),
+        c("feedback+not-an-image", "feedback", "x", "--attach", A, refuses="not-an-image"),
         c("capability.list", "capability", "list"),
         c("capability.run", "capability", "run", "decode", "--args", '{"bytes":"48 89 c8 c3","addr":"0x1000"}', must=["mov"]),
         c("capability.run+bad", "capability", "run", "no.such.thing", "--args", "{}", refuses="unknown-capability"),

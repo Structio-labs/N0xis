@@ -163,6 +163,30 @@ fn a_next_key_is_signed_into_the_manifest() {
 }
 
 #[test]
+fn a_feedback_address_is_signed_into_the_manifest_whole_or_not_at_all() {
+    let b = Bench::new("feedback");
+    let key = b.key();
+    let (challenge, report) = ("https://feedback.example/n0xis/challenge", "https://feedback.example/n0xis/report");
+    let out = b.release(&version(), &["--key", key.to_str().unwrap(), "--feedback-challenge", challenge, "--feedback-report", report]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let parsed = Manifest::parse(&fs::read(b.out().join("manifest.json")).unwrap()).unwrap();
+    let endpoint = parsed.feedback().expect("reads").expect("published");
+    assert_eq!((endpoint.challenge.as_str(), endpoint.report.as_str()), (challenge, report));
+
+    let half = Bench::new("feedback-half");
+    let out = half.release(&version(), &["--key", half.key().to_str().unwrap(), "--feedback-report", report]);
+    refused(&out, "go together");
+    let plain = Bench::new("feedback-plain");
+    let out = plain.release(&version(), &["--key", plain.key().to_str().unwrap(), "--feedback-challenge", "http://x/c", "--feedback-report", report]);
+    refused(&out, "https://");
+    let none = Bench::new("feedback-none");
+    let out = none.release(&version(), &["--key", none.key().to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let parsed = Manifest::parse(&fs::read(none.out().join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(parsed.feedback().expect("reads"), None, "no field unless asked");
+}
+
+#[test]
 fn two_keys_sign_on_two_lines_and_either_verifies() {
     let b = Bench::new("two");
     let second = Bench::new("two-second");

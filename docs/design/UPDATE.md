@@ -70,6 +70,10 @@ What every shipped client reads, and so what every later release must keep publi
     "n0xis-mcp": { "…": "the same" } } }
 ```
 
+- `feedback`, optional: `{"challenge": "https://…", "report": "https://…"}`, where `n0x feedback --send` asks for a nonce and posts
+  (docs/FEEDBACK.md). Two whole addresses, never a base a client joins a path onto. Read only by `feedback`, so a later shape of it cannot
+  stop an update; one this client cannot read is `bad-manifest` there, and none is `no-feedback-endpoint`. `scripts/release.py
+  --feedback-challenge URL --feedback-report URL` publishes it.
 - `manifest.json.sig`, beside the manifest wherever it is: lines of hex, one ed25519 signature of the manifest's exact bytes
   on each. Any line verifying under any key held is enough, and a line that does not read as a signature is skipped.
 - `version` is semver. `components` is required, and an entry is read only when this client is about to use it, so a later

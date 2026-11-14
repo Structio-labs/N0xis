@@ -14,7 +14,7 @@ exposed two ways over one `{ok,data,meta}` envelope: the **n0xis** CLI (this doc
 > --brief` drops per-arg detail, and every command also has clap `--help`. This markdown is the
 > human-readable companion to that live guide, not a second source of truth.
 
-**Command count.** This binary reports **124 leaf commands** via `n0x guide`. That number is
+**Command count.** This binary reports **125 leaf commands** via `n0x guide`. That number is
 counted from the clap tree at run time, so it is the binary's own answer, not a figure kept in
 prose — every command is listed in [Complete command inventory](#complete-command-inventory)
 below, and `crates/n0xis-cli/tests/docs_match_binary.rs` fails the build if this document and
@@ -261,6 +261,26 @@ A directory, or its nearest existing ancestor, that is not owned by this user is
 
 - Sources: none.
 - Schema: `n0xis.config.v1`
+
+### `feedback <text> [--attach <file>]... [--send]`
+
+A report to the project, written by a person and never by anything on its own: there is no MCP tool and no `serve` method for it.
+It holds the schema, this version, the OS family and architecture, the text, and for each `--attach` the type (PNG or JPEG, by its
+bytes), size and sha256. Nothing about what is analysed: no path, name, bytes, string or address, and nothing that tells one machine
+from another (`docs/FEEDBACK.md`). Text at most 64 KiB, an attachment at most 10 MiB; an attachment's name is not sent.
+
+Without `--send`, nothing leaves the machine: `data.report` is the JSON that would be sent, byte for byte as it would be sent, also
+saved at `data.saved` (in the project's `.n0x/feedback/`, or the system's temporary directory when there is no project), with
+`data.issue`, a prefilled issue link for the public repository (`data.issue_carries_text` is false when the text is too long for a
+link), and `data.contact`, the address to write to. With `--send`, the receiver's address is read from the signed update manifest,
+never built in; the report is sent with a proof of work for the receiver's nonce, and `data.sent.id` is the receiver's name for it,
+to give when asking for its deletion. A manifest that publishes no address is `no-feedback-endpoint`; the receiver refusing is
+`feedback-refused`, `rate-limited` or `spool-full`; not reaching it is `feedback-unavailable` or the manifest's own refusal. Every
+refusal of `--send` carries `error.fallback` with `saved`, `issue` and `contact`. Refusals before that: `empty-text`,
+`text-too-long`, `attachment-too-large`, `not-an-image`, `attachment-unreadable`, `not-saved`.
+
+- Sources: none.
+- Schema: `n0xis.feedback.v1`
 
 ### `init [--dir <path>] [--name <str>] [--core <path>]`
 Create a `.n0x/` project (config, dirs, `n0x.cmd` shim).
@@ -1452,14 +1472,14 @@ primitive. Read-only (RPM over committed-writable regions). Live only.
 
 ## Complete command inventory
 
-**124 leaf commands**, listed straight from `n0x guide` — which walks the clap
+**125 leaf commands**, listed straight from `n0x guide` — which walks the clap
 tree of this binary, so this table can neither invent a command nor miss one. The
 sections above document a subset in depth; every command has `--help`, and
 `n0x guide <topic>` gives its arguments as JSON.
 
 <!-- BEGIN GENERATED COMMAND INVENTORY — regenerate with tests/docs_match_binary.rs -->
 
-### Environment & project (12)
+### Environment & project (13)
 
 | Command | What it does |
 |---|---|
@@ -1468,6 +1488,7 @@ sections above document a subset in depth; every command has `--help`, and
 | `n0x config get` | Read one setting, or all of them, with their defaults |
 | `n0x config set` | Change a setting |
 | `n0x doctor` | Environment / readiness check |
+| `n0x feedback` | Write to the project: shows exactly the report that would be sent, as JSON, saves it, and prints where else it can go |
 | `n0x guide` | Capability catalog: every command, its arguments, and composable workflow recipes — structured JSON a script or a person reads to learn what the tool can do and how to drive it, instead of guessing. `guide <topic>` filters to matching commands (e.g. `guide scan`) |
 | `n0x init` | Create a `.n0x/` project (config, dirs, `n0x.cmd` shim) |
 | `n0x process ps` | List running processes |

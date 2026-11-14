@@ -111,6 +111,19 @@ struct UpdateArgs {
     rollback: Option<Option<String>>,
 }
 
+#[derive(Args)]
+struct FeedbackArgs {
+    /// What to say: what you did, what you expected, what happened. At most 64 KiB.
+    text: String,
+    /// A PNG or JPEG to send with it, decided by its bytes; repeat for more. At most 10 MiB
+    /// each. Only its bytes go, not its name.
+    #[arg(long = "attach", value_name = "FILE")]
+    attach: Vec<std::path::PathBuf>,
+    /// Send it. Without this nothing leaves this machine: the report is shown and saved.
+    #[arg(long)]
+    send: bool,
+}
+
 #[derive(Subcommand)]
 enum ConfigCmd {
     /// Read one setting, or all of them, with their defaults.
@@ -169,6 +182,11 @@ enum Command {
     /// The user's own settings, one file in the user's configuration directory.
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Write to the project: shows exactly the report that would be sent, as
+    /// JSON, saves it, and prints where else it can go. Sends it only with
+    /// `--send`. Holds your text, this version, the OS and architecture, and
+    /// the attachments you name, and nothing about what you analyse.
+    Feedback(FeedbackArgs),
     /// Project introspection.
     #[command(subcommand)]
     Project(ProjectCmd),
@@ -3278,6 +3296,7 @@ fn dispatch(command: Command, typed: &[String], pretty: bool, quiet: bool) -> bo
         Command::Init(a) => cmd_init(a, pretty),
         Command::Update(a) => cmd_update(a, pretty),
         Command::Config(a) => cmd_config(a, pretty),
+        Command::Feedback(a) => cmd_feedback(a, pretty),
         Command::Project(ProjectCmd::Info) => cmd_project_info(pretty),
         Command::Project(ProjectCmd::Cache(a)) => cmd_project_cache(a, pretty),
         Command::Symbols(SymbolsCmd::Add(a)) => cmd_symbols_add(a, pretty),
@@ -3415,7 +3434,7 @@ fn cmd_doctor(pretty: bool) -> bool {
 /// doesn't model categories, so this is the one hand-maintained mapping).
 fn guide_category(top: &str) -> &'static str {
     match top {
-        "doctor" | "guide" | "init" | "update" | "config" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
+        "doctor" | "guide" | "init" | "update" | "config" | "feedback" | "project" | "process" | "remote-serve" | "profile" | "capability" => "Environment & project",
         "module" | "disasm" | "ir" | "function" | "decomp" | "xref" | "diff" | "rtti" | "analyze" | "find" | "strings" | "type" | "symbols" | "imports" | "why" | "contradictions" => "Static analysis & decompilation",
         "mem" | "scan" | "patch" | "table" | "debug" | "selection" | "dump" => "Live memory",
         "provenance" | "annotate" | "snapshot" | "plugin" => "Provenance, annotations & snapshots",
@@ -3714,6 +3733,89 @@ fn cmd_config(a: ConfigCmd, pretty: bool) -> bool {
         ConfigCmd::Set(a) => n0xis_update::config::set(&dir, &a.key, &a.value),
     };
     emit_update_answer(schema::v1::CONFIG, answer, pretty)
+}
+
+/// What `feedback` answers: the report as it is sent, byte for byte, and where else it can go.
+#[derive(serde::Serialize)]
+struct FeedbackAnswer {
+    /// The receiver's id for it, when it was sent; null when it was not.
+    sent: Option<n0xis_update::Sent>,
+    /// The JSON that is sent, as its bytes: a re-serialized copy would differ from them under `--pretty`.
+    report: Box<serde_json::value::RawValue>,
+    /// The same bytes on the disk.
+    saved: String,
+    /// The public repository's issue form, prefilled with the text where a link can carry it.
+    issue: String,
+    issue_carries_text: bool,
+    contact: &'static str,
+}
+
+/// An attachment's bytes, read no further than one past the bound, so a file past it is refused as
+/// that by `n0xis_feedback::build` without being read whole.
+fn read_attachment(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(n0xis_feedback::CLIENT_LIMITS.max_attachment_bytes + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Where a report is saved: the project's `.n0x/feedback/` when there is a project here, and the
+/// system's temporary directory otherwise. Never the global project: a report is no record of it.
+fn save_feedback(json: &str) -> std::io::Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let name = format!("feedback-{stamp}-{}.json", std::process::id());
+    let dir = match std::env::current_dir().ok().and_then(|cwd| n0xis_project::find_local(&cwd)) {
+        Some(project) => project.join("feedback"),
+        None => std::env::temp_dir(),
+    };
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(name);
+    // New, never over a file or a link someone left at the name.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    std::io::Write::write_all(&mut file, json.as_bytes())?;
+    Ok(path)
+}
+
+/// `n0x feedback`. Nothing about what is analysed goes into a report: its shape has no place for
+/// it (`n0xis-feedback`), and this reads nothing of the project but where to save.
+fn cmd_feedback(a: FeedbackArgs, pretty: bool) -> bool {
+    let mut attachments = Vec::with_capacity(a.attach.len());
+    for path in &a.attach {
+        match read_attachment(path) {
+            Ok(bytes) => attachments.push(bytes),
+            Err(e) => return emit(&Response::<serde_json::Value>::error("attachment-unreadable", format!("{}: {e}", path.display())), pretty),
+        }
+    }
+    let built = match n0xis_feedback::build(&a.text, &attachments, env!("CARGO_PKG_VERSION")) {
+        Ok(built) => built,
+        Err(refusal) => return emit(&Response::<serde_json::Value>::error(refusal.code(), refusal.to_string()), pretty),
+    };
+    let saved = match save_feedback(built.json()) {
+        Ok(path) => path.display().to_string(),
+        Err(e) => return emit(&Response::<serde_json::Value>::error("not-saved", format!("the report could not be saved: {e}")), pretty),
+    };
+    let issue = n0xis_feedback::issue_link(built.report());
+    let report = match serde_json::value::RawValue::from_string(built.json().to_string()) {
+        Ok(raw) => raw,
+        Err(e) => return emit(&Response::<serde_json::Value>::error("serialize", e.to_string()), pretty),
+    };
+    let mut answer = FeedbackAnswer { sent: None, report, saved, issue: issue.url, issue_carries_text: issue.carries_text, contact: n0xis_feedback::CONTACT };
+    if !a.send {
+        return emit(&Response::success(schema::v1::FEEDBACK, answer), pretty);
+    }
+    let sent = n0xis_update::Updater::for_running(UPDATE_COMPONENT, env!("CARGO_PKG_VERSION")).and_then(|updater| updater.send_feedback(&built));
+    match sent {
+        Ok(sent) => {
+            answer.sent = Some(sent);
+            emit(&Response::success(schema::v1::FEEDBACK, answer), pretty)
+        }
+        Err(r) => {
+            // Not sent, and still saved: where it is and where else it can go, beside why.
+            let hint = format!("the report is saved at {}; it can be filed at the issue link or mailed to {}", answer.saved, answer.contact);
+            let detail = serde_json::json!({ "saved": answer.saved, "issue": answer.issue, "issue_carries_text": answer.issue_carries_text, "contact": answer.contact });
+            emit::emit_refusal_with(&update_refusal(r).with_hint(hint), "fallback", detail, pretty)
+        }
+    }
 }
 
 fn cmd_init(a: InitArgs, pretty: bool) -> bool {

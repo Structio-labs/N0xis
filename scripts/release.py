@@ -407,6 +407,8 @@ def main():
     ap.add_argument("--skip-windows-sweep", metavar="REASON", help="publish without a clean sweep of these binaries on a real Windows; the reason goes in the release notes")
     ap.add_argument("--prebuilt", help="take the binaries from this directory, by their asset names, instead of building")
     ap.add_argument("--base-url", help="where the manifest says the files are (default this tag's release)")
+    ap.add_argument("--feedback-challenge", metavar="URL", help="where `n0x feedback --send` asks for a nonce; with --feedback-report, or neither")
+    ap.add_argument("--feedback-report", metavar="URL", help="where `n0x feedback --send` posts a report")
     args = ap.parse_args()
 
     version = workspace_version()
@@ -416,6 +418,10 @@ def main():
         refuse("a published release is built here and lives at its own address")
     if args.next_key and not re.fullmatch(r"[0-9a-f]{64}", args.next_key):
         refuse("--next-key is 64 lower-case hex digits")
+    # Both whole addresses or none: a client is given them and never joins a path on (docs/design/UPDATE.md §2).
+    feedback = (args.feedback_challenge, args.feedback_report)
+    if any(feedback) and not all(u and u.startswith("https://") for u in feedback):
+        refuse("--feedback-challenge and --feedback-report go together, and each is an https:// address")
     check_keys(args.key, args.publish, version, args.strand_older_copies)
     if args.publish:
         release_notes(version)
@@ -441,6 +447,8 @@ def main():
         refuse(windows_problem)
     if args.next_key:
         manifest["next_key"] = args.next_key
+    if all(feedback):
+        manifest["feedback"] = {"challenge": args.feedback_challenge, "report": args.feedback_report}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     if args.key:

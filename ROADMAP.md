@@ -4602,6 +4602,7 @@ phase from its first mistake on.
 | `doctor` | Environment & project | the machine and the manifest |
 | `update` | Environment & project | a planted server over real TLS with planted manifests and a key made for the test (`crates/n0xis-update/tests/planted.rs`); the real binary replaced and rolled back, confirmed by `--version` of the file on disk, on Linux and under Wine (`scripts/update_e2e.py`) |
 | `config get` | Environment & project | the file itself, and what a run does with it (`crates/n0xis-update/tests/settings.rs`, `crates/n0xis-cli/tests/update_door.rs`) |
+| `feedback` | Environment & project | planted paths, names, strings and addresses searched for in the report of the real binary run inside a project that analysed them, calibrated by planting each leak (`crates/n0xis-cli/tests/feedback_holds_nothing_of_the_target.rs`); the report posted and stored compared byte for byte with the one shown, through a manifest signed by a key made for the test, real TLS and the real receiver, its digests checked by `sha256sum` (`crates/n0xis-feedback-receiver/tests/the_path_of_a_report.rs`) |
 | `config set` | Environment & project | the file itself, and what a run does with it (`crates/n0xis-update/tests/settings.rs`, `crates/n0xis-cli/tests/update_door.rs`) |
 | `profile` | Environment & project | objdump and the raw PE header |
 | `guide` | Environment & project | the binary's own command tree (a test fails the build on drift) |
