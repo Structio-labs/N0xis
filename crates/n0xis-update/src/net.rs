@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Tymofii Kosovskyi
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! The network client: GET over HTTPS, bounded in time and in size. Nothing else in the tree opens
-//! a connection, and it carries nothing about what is being analysed: the callers hand it addresses
-//! from the configuration and a signed manifest, and have nothing else to give it.
+//! The network client: GET over HTTPS, bounded in time and in size, and the one POST, of a feedback
+//! report the user asked to send. Nothing else in the tree opens a connection, and it carries nothing
+//! about what is being analysed: the callers hand it addresses from the configuration and a signed
+//! manifest, and the report `n0xis-feedback` built, whose shape has no place for anything else.
 
 use std::io::{ErrorKind, Read, Write};
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use crate::{Refusal, Why};
 /// the signature has said anything about the bytes.
 const MANIFEST_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const SIGNATURE_MAX_BYTES: u64 = 64 * 1024;
+/// A challenge, or the receiver's answer to a report: a few hundred bytes of JSON.
+const FEEDBACK_ANSWER_MAX_BYTES: u64 = 64 * 1024;
 
 /// The bounds of every request, and how long another run's lock is waited out.
 #[derive(Clone, Copy, Debug)]
@@ -160,6 +163,46 @@ impl Transport {
         }
         // A short body is found where the digest is, by reading the file back.
         Ok(())
+    }
+}
+
+impl Transport {
+    /// A nonce from the receiver. Anything but a challenge this client reads is `feedback-unavailable`.
+    pub(crate) fn get_challenge(&self, url: &str) -> Result<n0xis_feedback::Challenge, Refusal> {
+        let unavailable = |what: String| Refusal::new(Why::FeedbackUnavailable, format!("{url}: {what}"));
+        let bytes = self.get_small(url, FEEDBACK_ANSWER_MAX_BYTES).map_err(|f| unavailable(f.message()))?;
+        serde_json::from_slice(&bytes).map_err(|e| unavailable(format!("not a challenge: {e}")))
+    }
+
+    /// Post `body` with its proof. The receiver's status decides the refusal, so a full spool and a
+    /// limit reached are told apart from a refusal of the report itself.
+    pub(crate) fn post_report(&self, url: &str, nonce: &str, proof: u64, body: &[u8]) -> Result<n0xis_feedback::Accepted, Refusal> {
+        let mut response = self
+            .file
+            .post(url)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header(n0xis_feedback::NONCE_HEADER, nonce)
+            .header(n0xis_feedback::PROOF_HEADER, proof.to_string())
+            .content_type("application/octet-stream")
+            .send(body)
+            .map_err(|e| Refusal::new(Why::FeedbackUnavailable, format!("{url}: {}", failed(e).message())))?;
+        let status = response.status().as_u16();
+        let answer = response.body_mut().with_config().limit(FEEDBACK_ANSWER_MAX_BYTES).read_to_vec().unwrap_or_default();
+        if status == 201 {
+            return serde_json::from_slice(&answer)
+                .map_err(|e| Refusal::new(Why::FeedbackUnavailable, format!("{url} took the report and answered with no id: {e}")));
+        }
+        // The receiver's own words, bounded: a person reads them, and a proxy's page is long.
+        let said: String = String::from_utf8_lossy(&answer).chars().take(300).collect();
+        let why = match status {
+            507 => Why::FeedbackSpoolFull,
+            429 => Why::FeedbackRateLimited,
+            400..=499 => Why::FeedbackRefused,
+            _ => Why::FeedbackUnavailable,
+        };
+        Err(Refusal::new(why, format!("{url} answered {status}: {}", said.trim())))
     }
 }
 

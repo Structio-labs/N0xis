@@ -14,6 +14,7 @@
 //! this client does not know is left alone, so the manifest can grow without stranding anyone.
 
 pub mod config;
+mod feedback;
 mod install;
 mod manifest;
 mod net;
@@ -26,7 +27,8 @@ use semver::Version;
 use serde::Serialize;
 
 pub use install::{Outcome, RollbackReport, Skipped, UpdateReport, rollback};
-pub use manifest::{Entry, Manifest, platform};
+pub use feedback::Sent;
+pub use manifest::{Entry, FeedbackEndpoint, Manifest, platform};
 pub use net::{Limits, Transport};
 pub use trust::{RELEASE_PUBLIC_KEY, Trust};
 
@@ -88,6 +90,20 @@ pub enum Why {
     NotABareName,
     /// `update.auto` left a version alone that `--rollback` went back from. Only ever in `skipped`.
     Held,
+    // What `n0x feedback --send` refuses with. After the rest, since only a manifest fetch compares
+    // seriousness and none of these comes out of one.
+    /// The signed manifest names no feedback address: none is published yet.
+    NoFeedbackEndpoint,
+    /// The receiver did not answer, or not with what it should have.
+    FeedbackUnavailable,
+    /// The receiver refused the report: a nonce or proof it did not take, or a limit of its own.
+    FeedbackRefused,
+    /// The receiver's spool is full (507), so nothing was stored.
+    FeedbackSpoolFull,
+    /// The receiver's rate limit for this address (429).
+    FeedbackRateLimited,
+    /// The receiver asked for more work than a client does ([`n0xis_feedback::MAX_DIFFICULTY`]).
+    FeedbackTooHard,
 }
 
 impl Why {
@@ -121,6 +137,12 @@ impl Why {
             Why::NotOurs => "not-ours",
             Why::NotABareName => "not-a-bare-name",
             Why::Held => "held",
+            Why::NoFeedbackEndpoint => "no-feedback-endpoint",
+            Why::FeedbackUnavailable => "feedback-unavailable",
+            Why::FeedbackRefused => "feedback-refused",
+            Why::FeedbackSpoolFull => "spool-full",
+            Why::FeedbackRateLimited => "rate-limited",
+            Why::FeedbackTooHard => "difficulty-too-high",
         }
     }
 }

@@ -15,6 +15,11 @@
 //! to the version and to untyped components, and an entry is decoded only when this client is about to use
 //! it. A later component of another shape, which this client would never touch, cannot make the
 //! whole document unreadable, and neither can a `next_key` it does not understand.
+//!
+//! **`feedback`, optional:** `{ "challenge": "https://…", "report": "https://…" }`, where `n0x feedback
+//! --send` asks for a nonce and posts a report. Both addresses are given whole, since the client asks
+//! and never derives: a path joined on here would be frozen in every copy. Read only by `feedback`, so
+//! a later shape of it cannot stop an update.
 
 use std::collections::BTreeMap;
 
@@ -33,6 +38,14 @@ pub struct Manifest {
     pub version: Version,
     pub next_key: Option<[u8; 32]>,
     components: BTreeMap<String, Value>,
+    feedback: Option<Value>,
+}
+
+/// Where feedback goes, as a signed manifest names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeedbackEndpoint {
+    pub challenge: String,
+    pub report: String,
 }
 
 /// One file of one component, for one platform.
@@ -56,7 +69,19 @@ impl Manifest {
             _ => return Err(bad("the manifest lists no components".to_string())),
         };
         let next_key = value.get("next_key").and_then(Value::as_str).and_then(from_hex::<32>);
-        Ok(Manifest { version, next_key, components })
+        let feedback = value.get("feedback").cloned();
+        Ok(Manifest { version, next_key, components, feedback })
+    }
+
+    /// Where feedback goes: none when the manifest publishes no `feedback`, and a refusal when it
+    /// publishes one this client cannot read, which is not the same as none being published.
+    pub fn feedback(&self) -> Result<Option<FeedbackEndpoint>, Refusal> {
+        let Some(raw) = &self.feedback else { return Ok(None) };
+        let field = |name: &str| raw.get(name).and_then(Value::as_str).map(str::to_string);
+        match (field("challenge"), field("report")) {
+            (Some(challenge), Some(report)) => Ok(Some(FeedbackEndpoint { challenge, report })),
+            _ => Err(Refusal::new(Why::BadManifest, format!("version {}: the feedback field does not name a challenge and a report address", self.version))),
+        }
     }
 
     /// The entry of `component` for `platform`, or why it cannot be used.

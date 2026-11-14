@@ -1,0 +1,14 @@
+[package]
+name = "n0xis-feedback"
+description = "What a feedback report is, on both sides of the wire: the schema, its limits, its framing and the proof of work. No I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# `raw_value`: the door prints a report's JSON inside its envelope as the bytes that are sent, and a
+# re-serialized copy would differ from them under `--pretty`.
+serde_json = { workspace = true, features = ["raw_value"] }
+ring = "0.17"

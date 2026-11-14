@@ -1,0 +1,28 @@
+[package]
+name = "n0xis-feedback-receiver"
+description = "The feedback receiver: one small HTTP service on the loopback, behind a proxy, that stores reports in a spool for the owner's machine to pull. Never linked by the tool."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "n0xis-feedback-receiver"
+path = "src/main.rs"
+
+[dependencies]
+n0xis-feedback = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+ring = "0.17"
+# Synchronous, no runtime, no TLS: it listens on the loopback and the proxy in front speaks HTTPS.
+tiny_http = { version = "0.12", default-features = false }
+
+[dev-dependencies]
+# The whole path a report takes, in one test: the real client of `n0xis-update`, a manifest signed by a
+# key made for the test, real TLS in front of this receiver as the proxy would be.
+n0xis-update = { workspace = true }
+rcgen = "0.14"
+semver = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

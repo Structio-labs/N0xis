@@ -41,8 +41,13 @@ PURE_CRATES="${PURE_CRATES:-n0xis-contracts n0xis-arch n0xis-core}"
 #   n0xis-update, ureq, rustls    — the network. Only the two doors link the
 #                                   update adapter, so no analysis path can
 #                                   reach a connection (docs/design/UPDATE.md §4).
+#   n0xis-feedback, n0xis-feedback-receiver, tiny_http
+#                                 — the feedback report's wire form and the
+#                                   service that receives it (docs/FEEDBACK.md).
+#                                   The CLI door builds a report; nothing that
+#                                   analyses has a reason to see one.
 # One regex, anchored, matched against bare package names.
-FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp|n0xis-pdb|pdb2|n0xis-wasm|n0xis-update|ureq|rustls)$'
+FORBIDDEN='^(windows-sys|windows-targets|goblin|png|libloading|eframe|winit|tokio|rmcp|clap|n0xis-frontend|n0xis-il2cpp|n0xis-pdb|pdb2|n0xis-wasm|n0xis-update|ureq|rustls|n0xis-feedback|n0xis-feedback-receiver|tiny_http)$'
 
 status=0
 
