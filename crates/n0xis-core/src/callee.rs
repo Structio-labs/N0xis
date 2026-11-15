@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ir::{CfgArtifact, CfgInput, CfgPass};
 use crate::signatures::{KnownSignature, known_signature};
-use crate::ssa::{RawFlow, SsaBlock};
+use crate::ssa::{Defines, RawFlow, SsaBlock};
 use crate::typeinfer::{CALLEE_SCAN_SIZE, abi_arg_regs, collect_definite_param_regs, ctx_identity};
 use crate::{Ctx, OptimizePass, Pass, SsaPass};
 
@@ -82,6 +82,9 @@ struct Shape {
     returns_of: Vec<Callee>,
     /// It has a `ret`.
     returns_at_all: bool,
+    /// How much of the return register the paths that compute a value define
+    /// ([`crate::ssa::ReturnEvidence::defines`]).
+    defines: Option<Defines>,
 }
 
 /// What a function gives back.
@@ -98,6 +101,9 @@ struct Memo {
     shapes: HashMap<u64, Option<Arc<Shape>>>,
     takes: HashMap<(u64, u8), Takes>,
     gives: HashMap<(u64, u8), Gives>,
+    /// How much of the return register each defines; `None` is "not known", an answer
+    /// like the others.
+    defines: HashMap<(u64, u8), Option<Defines>>,
     comes_back: HashMap<(u64, u8), bool>,
     flows: HashMap<u64, Option<Flow>>,
     /// The volatile registers a call to each function can change, where its own
@@ -114,7 +120,7 @@ impl Memo {
     /// The answers, not the shapes and graphs they were worked out from: those are
     /// cheap beside the questions and large beside the answers.
     fn answers(&self) -> usize {
-        self.takes.len() + self.gives.len() + self.comes_back.len()
+        self.takes.len() + self.gives.len() + self.comes_back.len() + self.defines.len()
     }
 }
 
@@ -139,12 +145,14 @@ pub struct KeptAnswers {
     takes: Vec<(u64, u8, Takes)>,
     gives: Vec<(u64, u8, Gives)>,
     comes_back: Vec<(u64, u8, bool)>,
+    #[serde(default)]
+    defines: Vec<(u64, u8, Option<Defines>)>,
 }
 
 impl KeptAnswers {
     /// How many answers it holds.
     pub fn len(&self) -> usize {
-        self.takes.len() + self.gives.len() + self.comes_back.len()
+        self.takes.len() + self.gives.len() + self.comes_back.len() + self.defines.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -183,6 +191,11 @@ pub fn with_kept_answers<R>(ctx: &Ctx, store: &dyn AnswerStore, f: impl FnOnce()
                     m.gives.entry((va, depth)).or_insert(g);
                 }
             }
+            for (va, depth, d) in kept.defines {
+                if m.defines.len() < MEMO_MAX {
+                    m.defines.entry((va, depth)).or_insert(d);
+                }
+            }
             for (va, depth, b) in kept.comes_back {
                 if m.comes_back.len() < MEMO_MAX {
                     m.comes_back.entry((va, depth)).or_insert(b);
@@ -198,6 +211,7 @@ pub fn with_kept_answers<R>(ctx: &Ctx, store: &dyn AnswerStore, f: impl FnOnce()
                 takes: m.takes.iter().map(|(&(va, d), &t)| (va, d, t)).collect(),
                 gives: m.gives.iter().map(|(&(va, d), &g)| (va, d, g)).collect(),
                 comes_back: m.comes_back.iter().map(|(&(va, d), &b)| (va, d, b)).collect(),
+                defines: m.defines.iter().map(|(&(va, d), &w)| (va, d, w)).collect(),
             }
         })
     });
@@ -835,7 +849,7 @@ fn analyse(ctx: &Ctx, va: Va) -> Option<Shape> {
     let open = unnamed_from.is_some() || reads_what_cannot_be_listed(&cfg, &opt.blocks) || stack.is_some_and(|(_, _, open)| open);
     let returns = &opt.raw_flow.returns;
     let returns_of = returns.calls.iter().map(|t| callee_of(ctx, &cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == va)).collect();
-    Some(Shape { read, forwards, open, returns_value: returns.value, only_returned: returns.only_returned, returns_of, returns_at_all: returns.any })
+    Some(Shape { read, forwards, open, returns_value: returns.value, only_returned: returns.only_returned, returns_of, returns_at_all: returns.any, defines: returns.defines })
 }
 
 /// How far down a tail jump's slots are offered to its callee: past this a function
@@ -967,6 +981,57 @@ pub(crate) fn function_gives(ctx: &Ctx, cfg: &CfgArtifact, flow: &RawFlow) -> Gi
     let depth = if id.is_some() { DEPTH } else { 1 };
     let callees: Vec<Callee> = flow.returns.calls.iter().map(|t| callee_of(ctx, cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == cfg.start)).collect();
     weigh(flow.returns.value, flow.returns.only_returned, || join_gives(ctx, id.as_deref(), &callees, depth))
+}
+
+/// How much of the return register a callee defines, or `None` where that is not known:
+/// a callee with no body here, one that never comes back, one too far down. A named
+/// callee's type is its name, which the caller prints; no width is read off it here.
+fn defines_of(ctx: &Ctx, id: Option<&str>, callee: Callee, depth: u8) -> Option<Defines> {
+    let Callee::Body(va) = callee else { return None };
+    if depth == 0 {
+        return None;
+    }
+    if let Some(id) = id
+        && let Some(d) = with_memo(id, |m| m.defines.get(&(va.0, depth)).copied())
+    {
+        return d;
+    }
+    let answer = shape_of(ctx, id, va).filter(|s| s.returns_at_all).and_then(|s| join_defines(ctx, id, s.defines, &s.returns_of, depth - 1));
+    if let Some(id) = id {
+        with_memo(id, |m| {
+            if m.defines.len() < MEMO_MAX {
+                m.defines.insert((va.0, depth), answer);
+            }
+        });
+    }
+    answer
+}
+
+/// A function's return paths joined ([`Defines::join`]): what its own writes define,
+/// and for each call whose result a path returns untouched, what that callee defines.
+/// One callee that cannot say makes the whole not known, and not the full register:
+/// that default printed `uint64_t` over 8-bit results on every function that passes
+/// one on. The exception is a path here that defines a byte and leaves the rest, since
+/// no write is narrower and whatever the callee defines, the function defines a byte.
+fn join_defines(ctx: &Ctx, id: Option<&str>, own: Option<Defines>, callees: &[Callee], depth: u8) -> Option<Defines> {
+    let mut acc = own;
+    let mut not_known = false;
+    for &c in callees {
+        match defines_of(ctx, id, c, depth) {
+            Some(d) => acc = Some(d.join_onto(acc)),
+            None => not_known = true,
+        }
+    }
+    acc.filter(|a| !not_known || (a.bits <= 8 && !a.whole))
+}
+
+/// How much of the return register the function in hand defines, the companion of
+/// [`function_gives`] and asked the same way.
+pub(crate) fn function_defines(ctx: &Ctx, cfg: &CfgArtifact, flow: &RawFlow) -> Option<Defines> {
+    let id = ctx_identity(ctx);
+    let depth = if id.is_some() { DEPTH } else { 1 };
+    let callees: Vec<Callee> = flow.returns.calls.iter().map(|t| callee_of(ctx, cfg, t)).filter(|c| !matches!(c, Callee::Body(b) if *b == cfg.start)).collect();
+    join_defines(ctx, id.as_deref(), flow.returns.defines, &callees, depth)
 }
 
 /// A value computed for the return and nothing else is one. One that something else
@@ -2097,5 +2162,105 @@ mod tests {
         let snap = image(vec![0x53, 0xb8, 1, 0, 0, 0, 0x5b, 0xc3], RET, RET);
         let b = body(&snap);
         assert!(!b.pseudo.iter().any(|l| l.contains("/*from caller*/")), "{:?}", b.pseudo);
+    }
+
+    /// The type a body's signature gives its return.
+    fn return_type(snap: &Snapshot) -> String {
+        let sig = body(snap).signature;
+        sig.split(" sub_").next().unwrap_or_else(|| panic!("no name in {sig}")).to_string()
+    }
+
+    /// `cmp rsi,rdi; setl al; ret`: a callee that defines a byte of `rax`.
+    const DEFINES_A_BYTE: &[u8] = &[0x48, 0x39, 0xf7, 0x0f, 0x9c, 0xc0, 0xc3];
+
+    /// `sub rsp,8; movsx rsi,dil; movsx edi,dil; call G; add rsp,8; ret`, as gcc -O1
+    /// builds `int8_t f(int8_t p) { return g(p, p); }`. Placed at `F`, and at `G` with
+    /// its call going to `H`.
+    fn passes_on(at: u64, to: u64) -> Vec<u8> {
+        let mut f = vec![0x48, 0x83, 0xec, 0x08, 0x48, 0x0f, 0xbe, 0xf7, 0x40, 0x0f, 0xbe, 0xff];
+        let rel = to as i64 - (at as i64 + f.len() as i64 + 5);
+        f.push(0xe8);
+        f.extend_from_slice(&(rel as i32).to_le_bytes());
+        f.extend([0x48, 0x83, 0xc4, 0x08, 0xc3]);
+        f
+    }
+
+    /// A function that returns what its callee left in `rax` defines what the callee
+    /// defines: a byte. It printed `uint64_t`, the width of the register, over an
+    /// `int8_t` in the source; the upper 56 bits are whatever `cmp` and the caller left.
+    #[test]
+    fn a_result_passed_on_is_as_wide_as_the_callee_defines() {
+        let snap = image(passes_on(F, G), DEFINES_A_BYTE, RET);
+        assert_eq!(return_type(&snap), "uint8_t");
+    }
+
+    /// `sub rsp,8; movsx edi,dil; call G; cbw; add rsp,8; ret`, as gcc -O1 builds
+    /// `uint16_t f(uint8_t p) { return (uint16_t)g((int8_t)p); }` with `g` the function
+    /// above: `cbw` writes `ax` and nothing more, whatever the callee two calls down
+    /// defines.
+    #[test]
+    fn a_write_of_ax_defines_sixteen_bits() {
+        let mut f = vec![0x48, 0x83, 0xec, 0x08, 0x40, 0x0f, 0xbe, 0xff];
+        call(&mut f, G);
+        f.extend([0x66, 0x98, 0x48, 0x83, 0xc4, 0x08, 0xc3]);
+        let snap = image(f, &passes_on(G, H), DEFINES_A_BYTE);
+        assert_eq!(return_type(&snap), "uint16_t");
+    }
+
+    /// A callee nobody can read gives no width, and that is said: `call G; ret` with `G`
+    /// leaving by `jmp rax` on one path, and `mov eax,5; ret` on the other, so that the
+    /// function does give a value. Not the full register, which is the answer that was
+    /// wrong, and not the 32 bits of the path that can be read.
+    #[test]
+    fn a_callee_that_cannot_say_leaves_the_width_unknown() {
+        // test rdi,rdi; je +6; mov eax,5; ret; jmp G
+        let mut f = vec![0x48, 0x85, 0xff, 0x74, 0x06, 0xb8, 0x05, 0x00, 0x00, 0x00, 0xc3];
+        let rel = G as i64 - (F as i64 + f.len() as i64 + 5);
+        f.push(0xe9);
+        f.extend_from_slice(&(rel as i32).to_le_bytes());
+        let snap = image(f, &[0xff, 0xe0], RET);
+        let sig = body(&snap).signature;
+        assert!(!sig.starts_with("uint64_t") && !sig.starts_with("uint32_t") && !sig.starts_with("void"), "{sig}");
+    }
+
+    /// The narrowest path decides where a path leaves the rest of the register as it
+    /// was: `cmp rdi,7; jg +5; jmp G` with `G` `mov eax,edi; ret`, and on the other path
+    /// `cmp rsi,rdi; setl al; ret`.
+    #[test]
+    fn one_path_that_writes_a_byte_makes_it_a_byte() {
+        let mut f = vec![0x48, 0x83, 0xff, 0x07, 0x7f, 0x05];
+        let rel = G as i64 - (F as i64 + f.len() as i64 + 5);
+        f.push(0xe9);
+        f.extend_from_slice(&(rel as i32).to_le_bytes());
+        f.extend_from_slice(DEFINES_A_BYTE);
+        let snap = image(f, &[0x89, 0xf8, 0xc3], RET);
+        assert_eq!(return_type(&snap), "uint8_t");
+    }
+
+    /// A byte written over a register the function has just stated is no narrowing:
+    /// `xor eax,eax; cmp rsi,rdi; setl al; ret` is how `int f(long a, long b) { return
+    /// a < b; }` is built, and it defines 32 bits.
+    #[test]
+    fn a_byte_written_over_a_stated_register_keeps_its_width() {
+        let snap = image(vec![0x31, 0xc0, 0x48, 0x39, 0xf7, 0x0f, 0x9c, 0xc0, 0xc3], RET, RET);
+        assert_eq!(return_type(&snap), "uint32_t");
+    }
+
+    /// A byte written over another value's remains defines a byte: `mov rax,rdi; cmp
+    /// rax,rsi; setl al; ret`, as clang builds a `uint8_t` comparison after using `rax`
+    /// to hold a parameter. The 64 bits of the copy under it are not the result's.
+    #[test]
+    fn a_byte_written_over_a_value_in_passing_is_a_byte() {
+        let snap = image(vec![0x48, 0x89, 0xf8, 0x48, 0x39, 0xf0, 0x0f, 0x9c, 0xc0, 0xc3], RET, RET);
+        assert_eq!(return_type(&snap), "uint8_t");
+    }
+
+    /// Two paths that each state the whole register give the wider: `test rdi,rdi; je
+    /// +3; xor eax,eax; ret; mov rax,[rsi]; ret` returns 64 bits, and the 32 of the
+    /// first path would say its upper half never comes back.
+    #[test]
+    fn a_zeroed_register_on_one_path_does_not_narrow_a_64_bit_return() {
+        let snap = image(vec![0x48, 0x85, 0xff, 0x74, 0x03, 0x31, 0xc0, 0xc3, 0x48, 0x8b, 0x06, 0xc3], RET, RET);
+        assert_eq!(return_type(&snap), "uint64_t");
     }
 }

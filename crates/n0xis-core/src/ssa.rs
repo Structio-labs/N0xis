@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use n0xis_arch::{Arch, BinOp, CallTarget, CmpKind, MicroExpr, MicroStmt, UnliftedReads, FLAGS_VAR, JUMP_TARGET_VAR};
 use n0xis_contracts::Va;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dom::{DomTree, block_graph, dom_children, dominance_frontier};
 use crate::ir::{Callsite, CfgArtifact, Successor};
@@ -151,6 +151,54 @@ pub struct ReturnEvidence {
     /// There is a `ret` at all. A function with none gives nothing to a question about
     /// what it gives, since nothing it left in a register is ever seen.
     pub any: bool,
+    /// How much of the return register the paths that compute a value here define,
+    /// joined over them ([`Defines::join`]). `None` where no path computes one here: a
+    /// path that returns a call's result untouched is in `calls`, and only the callee
+    /// can say how much that is.
+    pub defines: Option<Defines>,
+}
+
+/// How much of the return register a write defines. The lift returns the whole register
+/// at every `ret`, and `mov %dil,%al; ret` defines eight bits of it: the other fifty-six
+/// are what the caller or a call left there, and a return type as wide as the register
+/// promises them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Defines {
+    /// The width written, or the width the value was extended from.
+    pub bits: n0xis_arch::Bits,
+    /// The function sign-extended it itself.
+    pub signed: bool,
+    /// Every bit of the register is stated: a 32-bit write zeroes the upper half, an
+    /// extension fills it. Where this is false the bits above `bits` are what was there
+    /// before the write.
+    pub whole: bool,
+}
+
+impl Defines {
+    /// A full write of a register `word` bits wide.
+    pub fn full(word: n0xis_arch::Bits) -> Self {
+        Defines { bits: word, signed: false, whole: true }
+    }
+
+    /// Two return paths of one function. A path that leaves bits above its width
+    /// unstated makes them garbage for the function, so the narrowest such path decides.
+    /// Two paths that each state the whole register join to the wider: `xor %eax,%eax`
+    /// on one path and a 64-bit load on the other is a function that returns 64 bits,
+    /// and the narrower answer would say its upper half is never returned.
+    pub fn join(self, other: Defines) -> Defines {
+        let signed = self.signed && other.signed;
+        match (self.whole, other.whole) {
+            (true, true) => Defines { bits: self.bits.max(other.bits), signed, whole: true },
+            (false, false) => Defines { bits: self.bits.min(other.bits), signed, whole: false },
+            (false, true) => Defines { signed, ..self },
+            (true, false) => Defines { signed, ..other },
+        }
+    }
+
+    /// See [`Defines::join`], for a path that may have said nothing yet.
+    pub fn join_onto(self, acc: Option<Defines>) -> Defines {
+        acc.map_or(self, |a| a.join(self))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -169,7 +217,8 @@ impl Pass for SsaPass {
         crate::callee::keep_what_callees_leave(ctx, &cfg, &mut lifted);
         let (fr, fr2) = crate::ir::float_return_registers(ctx);
         let mut ssa = build_ssa(ctx.arch, &cfg, &lifted, fr, fr2);
-        ssa.raw_flow.returns = return_evidence(&ssa.blocks, crate::ir::abi_return_register(ctx).as_deref());
+        let word = ctx.arch.pointer_size().map_or(0, |bytes| n0xis_arch::Bits::from(bytes) * 8);
+        ssa.raw_flow.returns = return_evidence(&ssa.blocks, crate::ir::abi_return_register(ctx).as_deref(), word);
         Ok(ssa)
     }
 }
@@ -871,15 +920,8 @@ pub(crate) fn raw_flow(blocks: &[SsaBlock], stack_pointer: Option<&str>, word_by
 
 /// See [`ReturnEvidence`]. `ret_reg` is the convention's integer return register: its
 /// entry value, and a marker of what a call may have changed, are no value. A phi
-/// asks each of the paths into it.
-fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence {
-    enum Def<'b> {
-        Phi(&'b [crate::ssa::PhiInput]),
-        Call(&'b CallTarget),
-        Copy(&'b str),
-        Clobber,
-        Other,
-    }
+/// asks each of the paths into it. `word` is the width of the register.
+fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>, word: n0xis_arch::Bits) -> ReturnEvidence {
     let mut defs: HashMap<&str, Def> = HashMap::new();
     for b in blocks {
         for p in &b.phis {
@@ -893,8 +935,8 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
                 MicroStmt::Assign { dst, value: MicroExpr::Var(from) } => {
                     defs.insert(dst.as_str(), Def::Copy(from.as_str()));
                 }
-                MicroStmt::Assign { dst, .. } => {
-                    defs.insert(dst.as_str(), Def::Other);
+                MicroStmt::Assign { dst, value } => {
+                    defs.insert(dst.as_str(), Def::Other(value));
                 }
                 MicroStmt::Call { ret: Some(dst), target, .. } => {
                     defs.insert(dst.as_str(), Def::Call(target));
@@ -941,9 +983,10 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
                     out.any = true;
                     work.push(v.as_str());
                 }
-                MicroStmt::Return(Some(_)) => {
+                MicroStmt::Return(Some(e)) => {
                     out.any = true;
                     out.value = true;
+                    out.defines = Some(written(e, None, &defs, word, 0).join_onto(out.defines));
                 }
                 MicroStmt::Return(None) => out.any = true,
                 _ => {}
@@ -955,24 +998,116 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>) -> ReturnEvidence
             continue;
         }
         match defs.get(v) {
-            None => out.value |= v.ends_with(".0") && Some(ssa_root(v)) != ret_reg,
+            None => {
+                if v.ends_with(".0") && Some(ssa_root(v)) != ret_reg {
+                    out.value = true;
+                    out.defines = Some(Defines::full(word).join_onto(out.defines));
+                }
+            }
             Some(Def::Clobber) => {}
-            Some(Def::Other) => {
+            Some(Def::Other(e)) => {
                 out.value = true;
                 out.only_returned |= !read.contains(v);
+                out.defines = Some(written(e, Some(v), &defs, word, 0).join_onto(out.defines));
             }
             Some(Def::Call(t)) => out.calls.push((*t).clone()),
             Some(Def::Phi(inputs)) => work.extend(inputs.iter().map(|i| i.value.as_str())),
             // One register's version of another of itself passes the question on;
             // from any other register, somebody moved it here to return it.
             Some(Def::Copy(from)) if ssa_root(from) == ssa_root(v) => work.push(from),
-            Some(Def::Copy(_)) => {
+            Some(Def::Copy(from)) => {
                 out.value = true;
                 out.only_returned |= !read.contains(v);
+                out.defines = Some(moved(from, &defs, word, 0).join_onto(out.defines));
             }
         }
     }
     out
+}
+
+/// What defines a version of a register, as [`return_evidence`] reads it.
+enum Def<'b> {
+    Phi(&'b [crate::ssa::PhiInput]),
+    Call(&'b CallTarget),
+    Copy(&'b str),
+    Clobber,
+    Other(&'b MicroExpr),
+}
+
+/// How many definitions back a width is followed, through the copies of a value moved
+/// from register to register. Past it nothing is claimed of what was there before.
+const DEFINES_DEPTH: u8 = 8;
+
+/// How much of its register one write defines, read off the form the lift gives a
+/// write before anything is propagated into it (`reg_write` in the x86 lift): a write
+/// of part of a register is `(old & keep) | (uintN_t)value`, a 32-bit write on a 64-bit
+/// target and an extension are a cast, and anything else fills the register. `dst` is
+/// the version written, where there is one: a merge that keeps another register's bits
+/// is an `or` the program wrote, not a partial write.
+fn written(e: &MicroExpr, dst: Option<&str>, defs: &HashMap<&str, Def>, word: n0xis_arch::Bits, depth: u8) -> Defines {
+    match e {
+        MicroExpr::Cast { bits, signed, .. } | MicroExpr::Load { bits, signed, .. } => Defines { bits: *bits, signed: *signed, whole: true },
+        MicroExpr::Const { bits, value } => Defines { bits: *bits, signed: *value < 0, whole: true },
+        MicroExpr::Binary(BinOp::Or, kept, _) => {
+            let MicroExpr::Binary(BinOp::And, old, keep) = kept.as_ref() else { return Defines::full(word) };
+            let (MicroExpr::Var(old), MicroExpr::Const { value: keep, bits: container }) = (old.as_ref(), keep.as_ref()) else {
+                return Defines::full(word);
+            };
+            if dst.is_some_and(|d| ssa_root(d) != ssa_root(old)) {
+                return Defines::full(word);
+            }
+            let all = if *container >= 128 { u128::MAX } else { (1u128 << *container) - 1 };
+            let field = !(*keep as u128) & all;
+            // The field written starts at bit 0 and is `n` bits: `al`, `ax`. One that
+            // does not (`ah`) says nothing of a width.
+            if field & field.wrapping_add(1) != 0 {
+                return Defines::full(word);
+            }
+            let n = field.count_ones();
+            // `xor %eax,%eax; setl %al` is how a compiler extends a byte: the register was
+            // set to a constant for the write to land in, and is stated whole. Anything
+            // else under the write is another value's remains, `mov %rdi,%rax; ...; setl
+            // %al` (clang, for a `uint8_t`), and the write defines its own bits only.
+            match defs.get(old.as_str()) {
+                Some(Def::Other(under)) if states_a_constant(under) => {
+                    let under = written(under, Some(old), defs, word, depth + 1);
+                    Defines { bits: under.bits.max(n), signed: false, whole: under.whole }
+                }
+                _ => Defines { bits: n, signed: false, whole: false },
+            }
+        }
+        _ => Defines::full(word),
+    }
+}
+
+/// A write of a constant, as the lift gives it: `mov $0,%eax`, `xor %eax,%eax`.
+fn states_a_constant(e: &MicroExpr) -> bool {
+    match e {
+        MicroExpr::Cast { expr, .. } => states_a_constant(expr),
+        MicroExpr::Const { .. } => true,
+        MicroExpr::Binary(BinOp::Xor | BinOp::Sub, a, b) => matches!((a.as_ref(), b.as_ref()), (MicroExpr::Var(a), MicroExpr::Var(b)) if a == b),
+        _ => false,
+    }
+}
+
+/// What this function's own writes define in one version of a register, or `None`
+/// where it is what the caller or a call left there.
+fn own(v: &str, defs: &HashMap<&str, Def>, word: n0xis_arch::Bits, depth: u8) -> Option<Defines> {
+    if depth >= DEFINES_DEPTH {
+        return None;
+    }
+    match defs.get(v)? {
+        Def::Other(e) => Some(written(e, Some(v), defs, word, depth + 1)),
+        Def::Copy(from) if ssa_root(from) == ssa_root(v) => own(from, defs, word, depth + 1),
+        Def::Copy(from) => Some(moved(from, defs, word, depth + 1)),
+        Def::Phi(_) | Def::Call(_) | Def::Clobber => None,
+    }
+}
+
+/// A register moved whole into another: as much as its own writes defined, and where
+/// it holds what came in, or what a call or a merge left, the whole of that.
+fn moved(from: &str, defs: &HashMap<&str, Def>, word: n0xis_arch::Bits, depth: u8) -> Defines {
+    own(from, defs, word, depth).unwrap_or(Defines::full(word))
 }
 
 /// The frame offset of every version of the stack pointer and every copy of one (a

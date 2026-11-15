@@ -961,6 +961,10 @@ fn recover_return_type(
     // be given a return value it does not have.
     entry_ret: Option<&str>,
     gives: crate::callee::Gives,
+    // How much of the return register the function defines, joined over its return
+    // paths and the callees whose result it passes on (`callee::function_defines`);
+    // `None` where that is not known.
+    defines: Option<crate::ssa::Defines>,
 ) -> ReturnType {
     // Nothing else here can tell a result from what a call left in the register: the
     // lift returns the register at every `ret`, and every call defines it.
@@ -981,7 +985,16 @@ fn recover_return_type(
                     // A width with no name is the generic fallback; when the
                     // value came out of the float register that fallback is
                     // wrong in kind, not just in precision.
-                    return ReturnType::Known(if float_return && t.name.is_none() { floating(t.bits) } else { t });
+                    if float_return || t.name.is_some() {
+                        return ReturnType::Known(if t.name.is_none() { floating(t.bits) } else { t });
+                    }
+                    // An integer's width is not this expression's to say: it is one
+                    // return of several, and the register is as wide as the word
+                    // whatever was written to it. `mov %dil,%al; ret` and `call f;
+                    // ret` both read here as the full word, which printed `uint64_t`
+                    // over 8-bit results; a width nobody could work out is said to be
+                    // unknown, not 64.
+                    return defines.map_or(ReturnType::Unknown, |d| ReturnType::Known(CType::generic(d.bits, d.signed)));
                 }
             }
         }
@@ -991,7 +1004,11 @@ fn recover_return_type(
     // left the result somewhere this pass cannot see: on i386 that is the x87
     // stack, where every `float` and `double` comes back.
     if gives == crate::callee::Gives::Value {
-        return ReturnType::Known(CType::generic(word, false));
+        return if float_return {
+            ReturnType::Known(CType::generic(word, false))
+        } else {
+            defines.map_or(ReturnType::Unknown, |d| ReturnType::Known(CType::generic(d.bits, d.signed)))
+        };
     }
     let modelled = !blocks
         .iter()
@@ -1750,7 +1767,8 @@ fn infer_with(
     let callee_rets = callee_return_types(cfg);
     let entry_ret = crate::ir::abi_return_register(ctx).map(|r| format!("{r}.0"));
     let gives = if float_return { crate::callee::Gives::Value } else { crate::callee::function_gives(ctx, cfg, flow) };
-    let ret = recover_return_type(blocks, &callee_rets, word_bits(ctx), float_return, entry_ret.as_deref(), gives);
+    let defines = if float_return { None } else { crate::callee::function_defines(ctx, cfg, flow) };
+    let ret = recover_return_type(blocks, &callee_rets, word_bits(ctx), float_return, entry_ret.as_deref(), gives, defines);
     // When the result spans both vector return registers, the type above names
     // its FIRST half. Naming the registers is what keeps that from reading as
     // the whole answer — this model has no name for a two-register aggregate,
