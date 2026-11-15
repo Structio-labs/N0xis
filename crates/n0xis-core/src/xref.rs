@@ -161,6 +161,28 @@ pub struct XrefSearched {
     /// nothing in the image points outside it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub address_outside_image: bool,
+    /// A WebAssembly module's element segments, read for the function at the
+    /// address ([`XrefArtifact::element_refs`]). Absent where an image has none
+    /// to read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub element_segments: Option<SearchedElements>,
+}
+
+/// The element segments read for an answer.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SearchedElements {
+    Read { segments: usize },
+}
+
+/// A function an element segment holds: the segment's index in the element
+/// index space and the item's position in it (`wasm-objdump -x`'s
+/// `segment[s]` and `elem[i]`). A segment of function indices states no
+/// position for an item in the file, so the reference is named by the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ElementRef {
+    pub segment: u32,
+    pub item: u32,
 }
 
 /// Whether a value an instruction states (`mov edi, 0x402010`, `mov eax, ds:0x403020`)
@@ -285,6 +307,7 @@ impl XrefSearched {
             data: SearchedData::NotSearched { why },
             not_searched: not_searched(&CodeReferences::default()),
             address_outside_image: false,
+            element_segments: None,
         }
     }
 
@@ -301,6 +324,7 @@ impl XrefSearched {
             jump_tables,
             not_searched: not_searched(refs),
             address_outside_image: false,
+            element_segments: None,
         }
     }
 }
@@ -317,6 +341,12 @@ pub struct XrefArtifact {
     /// For `xref from` at an indirect jump: whether its table was read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_table: Option<JumpTableAnswer>,
+    /// `xref to` a WebAssembly function: the element segment items that hold
+    /// it, beside `refs` and not counted in `count`, which counts positions.
+    /// Absent where no element segments were read
+    /// ([`XrefSearched::element_segments`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub element_refs: Option<Vec<ElementRef>>,
 }
 
 /// What `xref from` says of an indirect jump.
@@ -669,7 +699,7 @@ impl XrefPass {
                 // range.
                 let end = input.scan_start.get().saturating_add(input.size as u64);
                 if input.addr.get() < input.scan_start.get() || input.addr.get() >= end {
-                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new(), searched, jump_table: None });
+                    return Ok(XrefArtifact { addr: input.addr, dir: input.dir, count: 0, refs: Vec::new(), searched, jump_table: None, element_refs: None });
                 }
                 let bytes = ctx.source.read(input.addr, MAX_INSN_BYTES)?;
                 for ins in ctx.arch.decode_range(&bytes, input.addr, bytes.len()) {
@@ -705,6 +735,7 @@ impl XrefPass {
             refs,
             searched,
             jump_table: None,
+            element_refs: None,
         })
     }
 }

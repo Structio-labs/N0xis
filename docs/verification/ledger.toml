@@ -217,10 +217,11 @@ measured = "2026-11-15, re-measured with no change to the tool: the audit's 0x20
 [[claim]]
 id = "audit.wasm-element-xref"
 layer = "cross-references"
-says = "xref to on a wasm function referenced only by an element segment answers count 0."
-oracle = "wasm-objdump: elem holds ref.func"
-status = "false"
-measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 1 reference in the element segment, 0 answered."
+says = "xref to on a wasm function lists the element segment items that hold it, {segment, item}, beside its rows, and says how many segments were read."
+oracle = "wasm-objdump -x (Elem) and -d (each body's position), recorded beside the fixture"
+test = "xref_to_lists_the_element_segment_items_that_hold_a_function"
+status = "verified"
+measured = "2026-11-15: the audit's module: element_refs [{segment 0, item 0}] for function 1, count 0 (no instruction names it), element_segments read 1; before (0891678) count 0 and nothing else. The fixture's segments are function-index forms; an expression-form segment (`ref.func` items) is read by the same code and not exercised by a test."
 
 [[claim]]
 id = "audit.lua-table-strings"

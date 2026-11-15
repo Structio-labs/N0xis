@@ -139,7 +139,9 @@ why (docs/design/WASM.md §5, decisions 1 and 2):
   `body` for an import) and a defined callee's body as `target`, a `ref.func` its function as
   `target_function`; and the answer has the index of the function `start` is in as `function`.
   `xref to --addr <body>` lists the direct calls and tail calls to it (`call`/`jmp`) and the
-  `ref.func`s of it (`data`), not the element segments that place it in a table; `xref from` at
+  `ref.func`s of it (`data`), and beside them, in `element_refs`, the element segment items that
+  hold it (`{segment, item}`, as `wasm-objdump -x` numbers them; not in `count`), with
+  `searched.element_segments` saying how many segments were read; `xref from` at
   a call to an import lists that call, with `to_function` and no `to`. Every reference carries
   `from_function`, and `to_function` beside `to`.
 - **Every code position carries its function's index** — the function list, `disasm`, `xref`,
@@ -730,7 +732,8 @@ Who references `--addr` (`to`) / what `--addr` references (`from`).
 - On a WebAssembly module (see *WebAssembly modules*) each reference carries `from_function` and
   `to_function`, the indices of the functions it is from and to; a call to an imported function
   has `to_function` and no `to` (an import has no position), and its `sym` is the import's name
-  (its `name` section's, else `module.field`); a `ref.func` is a `data` reference.
+  (its `name` section's, else `module.field`); a `ref.func` is a `data` reference. `xref to` a
+  function's body also lists the element segment items that hold it, in `element_refs`.
 - Schema: `n0xis.xref.v1`
 
 ### `xref string --query <str>`

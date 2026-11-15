@@ -1110,6 +1110,41 @@ fn not_an_image(src: &Src) -> &'static str {
     }
 }
 
+/// Of a WebAssembly module, the element segment items that hold the function
+/// whose body starts at `addr`, and how many segments were read; `None` for
+/// any other source. `wasm-objdump -x` lists them as `elem[i] = ref.func:n`
+/// under `segment[s]`: a function a table holds, called through
+/// `call_indirect` and named by no instruction, which `xref to` answered with
+/// a bare count of 0 (claims audit, 2026-11-14).
+fn element_refs_to(src: &Src, ctx: &n0xis_core::Ctx, addr: Va) -> Option<(usize, Vec<n0xis_core::ElementRef>)> {
+    let Src::Static(img) = src else { return None };
+    let n0xis_sources::FormatTables::Wasm(module) = img.tables() else { return None };
+    let segments = module.module().elements();
+    let index = n0xis_core::function_index(ctx, addr);
+    let mut refs = Vec::new();
+    for (segment, seg) in segments.iter().enumerate() {
+        let holds = |item: usize| refs_function(&seg.items, item, index);
+        let items = match &seg.items {
+            n0xis_wasm::ElementItems::Functions(f) => f.len(),
+            n0xis_wasm::ElementItems::Expressions(e) => e.len(),
+        };
+        refs.extend((0..items).filter(|&i| holds(i)).map(|item| n0xis_core::ElementRef { segment: segment as u32, item: item as u32 }));
+    }
+    Some((segments.len(), refs))
+}
+
+/// Whether item `item` of an element segment is function `index`: a function
+/// index, or a constant expression that is `ref.func` of it.
+fn refs_function(items: &n0xis_wasm::ElementItems, item: usize, index: Option<u32>) -> bool {
+    let Some(index) = index else { return false };
+    match items {
+        n0xis_wasm::ElementItems::Functions(f) => f.get(item).is_some_and(|f| f.0 == index),
+        n0xis_wasm::ElementItems::Expressions(e) => {
+            e.get(item).is_some_and(|expr| expr.iter().any(|l| matches!(l.instr, n0xis_wasm::Instr::RefFunc(f) if f.0 == index)))
+        }
+    }
+}
+
 /// Fold one code window's string-xref result into the accumulated one.
 ///
 /// The data side does not move between windows, so every window rediscovers the
@@ -2689,7 +2724,10 @@ impl Plugin for AnalysisPasses {
                         refs.extend(table_refs);
                         let mut searched = searched;
                         searched.address_outside_image = matches!(src, Src::Static(img) if img.section_at(addr.0).is_none());
-                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs, searched, jump_table: None };
+                        let element_refs = element_refs_to(src, ctx, addr);
+                        searched.element_segments = element_refs.as_ref().map(|(segments, _)| n0xis_core::SearchedElements::Read { segments: *segments });
+                        let element_refs = element_refs.map(|(_, refs)| refs);
+                        let art = n0xis_core::XrefArtifact { addr, dir, count: refs.len(), refs, searched, jump_table: None, element_refs };
                         return ok_json(n0xis_contracts::schema::v1::XREF, art, label);
                     }
                     let windows =
