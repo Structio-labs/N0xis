@@ -121,10 +121,12 @@ fn printed_width(file: &Path, name: &str, va: u64) -> (Option<u32>, String) {
     (bits, sig)
 }
 
-/// `(compiler, function)` printed at 64 bits over an 8-bit source: see the module's
-/// last paragraph. `c_i8` is `mov %esi,%eax; mul %dil; add $0x3,%al; ret`, a byte added
-/// over the product.
-const MERGED: &[(&str, &str)] = &[("clang", "p_u8"), ("clang", "p_i8"), ("clang", "c_i8")];
+/// `(compiler, function, bits)` printed wider than an 8-bit source, at the width of the
+/// value the byte was written over: see the module's last paragraph. `c_i8` is
+/// `mov %esi,%eax; mul %dil; add $0x3,%al; ret`: a byte added over the product, itself
+/// written over a 32-bit move, so 32 (it read as 64 only while `mul %dil` was not
+/// translated and the register's width was not known).
+const MERGED: &[(&str, &str, u32)] = &[("clang", "p_u8", 64), ("clang", "p_i8", 64), ("clang", "c_i8", 32)];
 
 #[test]
 fn a_return_type_is_as_wide_as_the_source_where_the_bytes_say_it() {
@@ -143,8 +145,9 @@ fn a_return_type_is_as_wide_as_the_source_where_the_bytes_say_it() {
             let body = insns.get(&name).unwrap_or_else(|| panic!("{tag}: objdump has no {name}"));
             let stated = source >= 32 || states_its_width(body, source);
             // What a write of `%eax` defines, where the bytes say nothing narrower.
-            let listed = MERGED.contains(&(compiler, name.as_str()));
-            let want = if listed { 64 } else if stated { source } else { 32 };
+            let merged_at = MERGED.iter().find(|(c, n, _)| *c == compiler && *n == name.as_str()).map(|m| m.2);
+            let listed = merged_at.is_some();
+            let want = merged_at.unwrap_or(if stated { source } else { 32 });
             let (got, sig) = printed_width(&file, &name, va);
             if listed && got == Some(want) {
                 merged += 1;
