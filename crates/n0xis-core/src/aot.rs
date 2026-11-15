@@ -9,7 +9,10 @@
 //! metadata* blob so managed exception stacks stay readable — and that blob is
 //! the most direct `method start RVA → fully-qualified name` map in the image.
 //! This module parses it, for any .NET 8 NativeAOT image, with **no hardcode**
-//! for a particular application.
+//! for a particular application, and for an image built by .NET 10, whose
+//! linear map is the same but whose metadata handles pack a 7-bit tag beside a
+//! 25-bit offset ([`HandleLayout`]); a handle layout it does not recognise is
+//! refused by name, not read.
 //!
 //! The format is documented in-tree (`dotnet/runtime`, release/8.0):
 //! - `ReadyToRunHeader` + `ReadyToRunSectionType` — `Runtime/inc/ModuleHeaders.h`
@@ -75,6 +78,102 @@ mod ht {
     pub const TYPE_REFERENCE: u8 = 0x3d;
     pub const TYPE_SPECIFICATION: u8 = 0x3e;
     pub const TYPE_VARIABLE_SIGNATURE: u8 = 0x3f;
+}
+
+/// How a NativeFormat handle packs its type tag beside its record offset. The
+/// packing is not the same in every ILC: a .NET 8 image spends 8 bits on the
+/// tag and 24 on the offset, while an image whose ReadyToRunHeader reads 16.0
+/// and whose runtime reports itself as 10.0.10 spends 7 and 25. Read under the
+/// wrong one, every handle names a record that is not there: the formatter then
+/// copied a megabyte-long "string" from wherever the offset fell into each of
+/// tens of thousands of names, and the command ran out of memory on a 73 MB
+/// image instead of answering. So no handle can be decoded without a layout in
+/// hand, and the layout is read from the image ([`HandleLayout::detect`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandleLayout {
+    /// `type << 24 | offset` (.NET 8).
+    Tag8Offset24,
+    /// `type << 25 | offset` (seen built by .NET 10).
+    Tag7Offset25,
+}
+
+impl HandleLayout {
+    const fn offset_bits(self) -> u32 {
+        match self {
+            HandleLayout::Tag8Offset24 => 24,
+            HandleLayout::Tag7Offset25 => 25,
+        }
+    }
+
+    const fn offset_mask(self) -> u32 {
+        (1 << self.offset_bits()) - 1
+    }
+
+    /// The offset of a **typed** handle (the field implies the type; the wire
+    /// value carries the offset in its low bits).
+    fn offset(self, raw: u32) -> u32 {
+        raw & self.offset_mask()
+    }
+
+    /// From a raw in-memory token (`type << bits | offset`), as stored by the
+    /// RVA→token blob (`Handle.FromIntToken`).
+    fn token(self, token: u32) -> Handle {
+        Handle { ty: (token >> self.offset_bits()) as u8, off: self.offset(token) }
+    }
+
+    /// From a stream-encoded **generic** handle varint (`offset << tag bits | type`).
+    fn stream(self, raw: u32) -> Handle {
+        let tag_bits = 32 - self.offset_bits();
+        Handle { ty: (raw & ((1 << tag_bits) - 1)) as u8, off: raw >> tag_bits }
+    }
+
+    /// Whether every InvokeMap entry carries a metadata method handle. A .NET 8
+    /// image says so per entry with `HasMetadataHandle` (`0x04`) and otherwise
+    /// writes a name-and-signature vertex in its place; the 7-bit-tag image never
+    /// sets that bit (no entry of 119 630 does) and writes the handle in every
+    /// entry: all 116 638 entries with an entrypoint read as a method whose
+    /// name is an ASCII string, where the flag test kept none of them. That the
+    /// two changes travel together is measured on that one image, not read
+    /// from the producer's source.
+    const fn invoke_entries_always_carry_a_handle(self) -> bool {
+        matches!(self, HandleLayout::Tag7Offset25)
+    }
+
+    /// Read the layout from the RVA→token map itself: its first entry always
+    /// sets the owning type (the running owning type starts null), and that
+    /// token's tag is one of the type-handle kinds. The two layouts put those
+    /// kinds in disjoint top bytes (`3a..3e` against `74..7d`), so one token
+    /// decides, and [`parse_rva_to_token`] then holds every later token to it.
+    fn detect(map: &[u8]) -> Result<Self, String> {
+        let declared = map.get(0..4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let Some(&command) = map.get(4) else {
+            return Err(format!("the RVA→token map holds no entry (declared count {declared:?})"));
+        };
+        if command & CMD_UPDATE_OWNING_TYPE == 0 {
+            return Err(format!("its first entry (command 0x{command:02x}) sets no owning type"));
+        }
+        let Some(t) = map.get(5..9) else {
+            return Err("the RVA→token map ends inside its first entry".into());
+        };
+        let token = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+        [HandleLayout::Tag8Offset24, HandleLayout::Tag7Offset25]
+            .into_iter()
+            .find(|l| is_owning_type_tag(l.token(token).ty))
+            .ok_or_else(|| {
+                format!(
+                    "its first owning-type token 0x{token:08x} names no type under an 8-bit or a 7-bit handle tag"
+                )
+            })
+    }
+}
+
+/// The handle kinds a method's owning type can be, in either layout's numbering
+/// (the tag values themselves did not change, only the width they are packed in).
+fn is_owning_type_tag(ty: u8) -> bool {
+    matches!(
+        ty,
+        ht::TYPE_DEFINITION | ht::TYPE_REFERENCE | ht::TYPE_SPECIFICATION | ht::TYPE_INSTANTIATION_SIGNATURE
+    )
 }
 
 /// One recovered method: its start RVA and the name we reconstructed.
@@ -351,8 +450,13 @@ pub fn parse_aot(src: &dyn MemorySource, image_base: Va) -> Result<AotArtifact, 
         return Err(CoreError::Other("EmbeddedMetadata signature mismatch".into()));
     }
 
-    let meta = Meta { b: &meta_bytes };
-    let entries = parse_rva_to_token(&map_bytes, map.rva)?;
+    let layout = HandleLayout::detect(&map_bytes).map_err(|why| {
+        CoreError::Other(format!(
+            "NativeAOT metadata handle layout not recognised (ReadyToRunHeader {version}): {why}"
+        ))
+    })?;
+    let meta = Meta { b: &meta_bytes, layout };
+    let entries = parse_rva_to_token(&map_bytes, map.rva, layout)?;
     let method_count = entries.len();
 
     let mut symbols = Vec::with_capacity(entries.len().min(1 << 16));
@@ -445,7 +549,7 @@ struct MapEntry {
 
 /// Parse the linear `StackTraceMethodRvaToTokenMapping` blob. `blob_rva` is the
 /// blob's own RVA, needed to resolve the position-relative method pointers.
-fn parse_rva_to_token(buf: &[u8], blob_rva: u32) -> Result<Vec<MapEntry>, CoreError> {
+fn parse_rva_to_token(buf: &[u8], blob_rva: u32, layout: HandleLayout) -> Result<Vec<MapEntry>, CoreError> {
     if buf.len() < 4 {
         return Err(CoreError::Other("RVA→token blob too small".into()));
     }
@@ -466,7 +570,16 @@ fn parse_rva_to_token(buf: &[u8], blob_rva: u32) -> Result<Vec<MapEntry>, CoreEr
 
         if command & CMD_UPDATE_OWNING_TYPE != 0 {
             let token = cur.u32_le().ok_or_else(trunc)?;
-            owning_type = Handle::from_token(token);
+            owning_type = layout.token(token);
+            // Every owning type is a type handle. One that is not means the
+            // layout, or this reading of the blob, is wrong, and every name
+            // after it would be read from the wrong record.
+            if !is_owning_type_tag(owning_type.ty) {
+                return Err(CoreError::Other(format!(
+                    "RVA→token entry {} carries owning-type token 0x{token:08x}, which names no type under the {layout:?} handle layout",
+                    out.len()
+                )));
+            }
         }
         if command & CMD_UPDATE_NAME != 0 {
             name_off = cur.unsigned().ok_or_else(trunc)?;
@@ -644,10 +757,10 @@ fn parse_invoke_map(
         }
         // Method handle (metadata) or a NameAndSig vertex — only the former is
         // resolvable to a metadata name.
-        let method_off = if flags & INVOKE_HAS_METADATA_HANDLE != 0 {
+        let method_off = if meta.layout.invoke_entries_always_carry_a_handle() || flags & INVOKE_HAS_METADATA_HANDLE != 0 {
             let Some((v, n)) = decode_unsigned(&invoke, o) else { continue };
             o += n;
-            Some(v & 0x00FF_FFFF)
+            Some(meta.layout.offset(v))
         } else {
             let Some((_v, n)) = decode_unsigned(&invoke, o) else { continue };
             o += n;
@@ -792,15 +905,6 @@ impl Handle {
     fn null() -> Self {
         Handle { ty: ht::NULL, off: 0 }
     }
-    /// From a raw in-memory token (`type << 24 | offset`), as stored by the
-    /// RVA→token blob (`Handle.FromIntToken`).
-    fn from_token(token: u32) -> Self {
-        Handle { ty: (token >> 24) as u8, off: token & 0x00FF_FFFF }
-    }
-    /// From a stream-encoded handle varint (`offset << 8 | type`).
-    fn from_stream(raw: u32) -> Self {
-        Handle { ty: (raw & 0xFF) as u8, off: raw >> 8 }
-    }
     fn is_null(&self) -> bool {
         self.ty == ht::NULL
     }
@@ -818,6 +922,7 @@ type TypeDefExt = (u32, u32, u32, Vec<u32>, Vec<u32>);
 /// offsets into `b` (which begins with the metadata signature).
 struct Meta<'a> {
     b: &'a [u8],
+    layout: HandleLayout,
 }
 
 impl<'a> Meta<'a> {
@@ -825,7 +930,7 @@ impl<'a> Meta<'a> {
     /// type in the low byte and the offset in the high bits.
     fn handle(&self, off: u32) -> Option<(Handle, u32)> {
         let (raw, n) = decode_unsigned(self.b, off as usize)?;
-        Some((Handle::from_stream(raw), off + n as u32))
+        Some((self.layout.stream(raw), off + n as u32))
     }
 
     /// Read a **typed** handle member at `off` (e.g. `ConstantStringValueHandle`,
@@ -834,7 +939,7 @@ impl<'a> Meta<'a> {
     /// A zero offset is the null handle. Returns `(offset, next)`.
     fn typed_off(&self, off: u32) -> Option<(u32, u32)> {
         let (raw, n) = decode_unsigned(self.b, off as usize)?;
-        Some((raw & 0x00FF_FFFF, off + n as u32))
+        Some((self.layout.offset(raw), off + n as u32))
     }
 
     /// Read an unsigned member at `off` → `(value, next)`.
@@ -861,7 +966,7 @@ impl<'a> Meta<'a> {
         let mut out = Vec::with_capacity(count.min(4096));
         for _ in 0..count {
             let (raw, n) = decode_unsigned(self.b, p)?;
-            out.push(Handle::from_stream(raw));
+            out.push(self.layout.stream(raw));
             p += n;
         }
         Some((out, p as u32))
@@ -875,7 +980,7 @@ impl<'a> Meta<'a> {
         let mut out = Vec::with_capacity(count.min(4096));
         for _ in 0..count {
             let (raw, n) = decode_unsigned(self.b, p)?;
-            out.push(raw & 0x00FF_FFFF);
+            out.push(self.layout.offset(raw));
             p += n;
         }
         Some((out, p as u32))
@@ -939,14 +1044,21 @@ impl<'a> Meta<'a> {
     /// `ConstantStringValue.Value` at handle offset `off`. Offset 0 is the null
     /// handle (e.g. the root namespace's empty name) — never a real record, and
     /// reading it would decode the metadata signature as a giant length.
+    ///
+    /// ILC writes these strings as UTF-8, so bytes that are not UTF-8 are not a
+    /// string record: the offset is wrong, and the read is refused rather than
+    /// copied. A lossy decode here once turned each misread handle into up to a
+    /// megabyte and a half of text; on the image that showed it, 200 979 611
+    /// bytes of return-type "names" read under the wrong handle layout came
+    /// down to 2 271 that happen to be UTF-8.
     fn string(&self, off: u32) -> Option<String> {
         if off == 0 {
             return Some(String::new());
         }
         let (len, consumed) = decode_unsigned(self.b, off as usize)?;
         let start = off as usize + consumed;
-        let bytes = self.b.get(start..start + len as usize)?;
-        Some(String::from_utf8_lossy(bytes).into_owned())
+        let bytes = self.b.get(start..start.checked_add(len as usize)?)?;
+        std::str::from_utf8(bytes).ok().map(str::to_owned)
     }
 
     /// `MethodSignature` → `(returnType, parameterTypes)`.
@@ -1013,11 +1125,14 @@ impl<'a> Meta<'a> {
         Some(self.handle(off)?.0)
     }
 
-    /// `ArraySignature` → `(elementType, rank)`.
+    /// `ArraySignature` → `(elementType, rank)`. The runtime allows at most 32
+    /// dimensions; a rank past that is a misread record, and printing it would
+    /// spend one comma per claimed dimension (up to two billion of them).
     fn array_signature(&self, off: u32) -> Option<(Handle, i32)> {
+        const MAX_RANK: i32 = 32;
         let (elem, o) = self.handle(off)?;
         let (rank, _o) = self.signed(o)?;
-        Some((elem, rank))
+        (rank <= MAX_RANK).then_some((elem, rank))
     }
 
     /// `TypeVariableSignature`/`MethodTypeVariableSignature` → `Number`.
@@ -1209,5 +1324,156 @@ impl<'a> Formatter<'a> {
             self.emit_string(name_off);
         }
         self.depth -= 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `NativePrimitiveEncoder.WriteUnsigned`, for the widths these fixtures need.
+    fn uns(out: &mut Vec<u8>, v: u32) {
+        if v < 1 << 7 {
+            out.push((v << 1) as u8);
+        } else if v < 1 << 14 {
+            out.extend([((v << 2) | 1) as u8, (v >> 6) as u8]);
+        } else {
+            assert!(v < 1 << 21);
+            out.extend([((v << 3) | 3) as u8, (v >> 5) as u8, (v >> 13) as u8]);
+        }
+    }
+
+    fn string_record(blob: &mut Vec<u8>, s: &[u8]) -> u32 {
+        let off = blob.len() as u32;
+        uns(blob, s.len() as u32);
+        blob.extend_from_slice(s);
+        off
+    }
+
+    /// A metadata blob holding `Outer.Inner.Widget` the way a 7-bit-tag image
+    /// lays it out: the namespaces chain through **generic** handles, whose wire
+    /// form is `offset << 7 | tag`. Returns `(blob, widget typedef offset)`.
+    fn tag7_metadata() -> (Vec<u8>, u32) {
+        let mut b = METADATA_SIGNATURE.to_le_bytes().to_vec();
+        let outer = string_record(&mut b, b"Outer");
+        let inner = string_record(&mut b, b"Inner");
+        let widget = string_record(&mut b, b"Widget");
+        // Each namespace record sits at an odd offset, so that its 8-bit-tag
+        // reading (`raw & 0xff` of `offset << 7 | tag`) is `0xaf`, not a namespace.
+        let ns_record = |b: &mut Vec<u8>, parent: u32, name: u32| -> u32 {
+            if b.len().is_multiple_of(2) {
+                b.push(0);
+            }
+            let off = b.len() as u32;
+            uns(b, if parent == 0 { 0 } else { (parent << 7) | ht::NAMESPACE_DEFINITION as u32 });
+            uns(b, name);
+            off
+        };
+        let root = ns_record(&mut b, 0, 0);
+        let ns_outer = ns_record(&mut b, root, outer);
+        let ns_inner = ns_record(&mut b, ns_outer, inner);
+        let typedef = b.len() as u32;
+        for v in [0, 0, ns_inner, widget, 0, 0, 0, 0, 0] {
+            uns(&mut b, v); // flags, base, namespace, name, size, pack, enclosing, nested, methods
+        }
+        (b, typedef)
+    }
+
+    /// The RVA→token map with one entry whose owning type is `token`.
+    fn one_entry_map(token: u32) -> Vec<u8> {
+        let mut m = 1i32.to_le_bytes().to_vec();
+        m.push(CMD_UPDATE_OWNING_TYPE);
+        m.extend(token.to_le_bytes());
+        m.extend(0i32.to_le_bytes());
+        m
+    }
+
+    /// The shape of the defect: an image whose handles carry a 7-bit tag. Read
+    /// as 8-bit, the owning type's tag is `0x74` (no type at all) and the
+    /// namespace chain breaks; read as the image lays it out, the name is whole.
+    #[test]
+    fn a_seven_bit_tag_image_is_read_in_its_own_layout() {
+        let (blob, typedef) = tag7_metadata();
+        let map = one_entry_map(((ht::TYPE_DEFINITION as u32) << 25) | typedef);
+        let layout = HandleLayout::detect(&map).expect("layout from the first owning-type token");
+        assert_eq!(layout, HandleLayout::Tag7Offset25);
+        let entries = parse_rva_to_token(&map, 0x1000, layout).expect("map");
+        let meta = Meta { b: &blob, layout };
+        let mut f = Formatter::new(&meta);
+        f.emit_type_name(entries[0].owning_type, true);
+        assert_eq!(f.out, "Outer.Inner.Widget");
+    }
+
+    #[test]
+    fn an_eight_bit_tag_token_is_still_read_as_eight_bit() {
+        let map = one_entry_map(((ht::TYPE_REFERENCE as u32) << 24) | 0x12);
+        assert_eq!(HandleLayout::detect(&map), Ok(HandleLayout::Tag8Offset24));
+    }
+
+    /// A token that is a type in neither layout is refused with what was seen,
+    /// and so is a later token that breaks the layout the first one chose.
+    #[test]
+    fn an_owning_type_token_in_no_known_layout_is_refused() {
+        let err = HandleLayout::detect(&one_entry_map(0x5500_0010)).unwrap_err();
+        assert!(err.contains("0x55000010"), "{err}");
+
+        let mut map = one_entry_map(((ht::TYPE_DEFINITION as u32) << 25) | 4);
+        map[0] = 2; // two entries, the second with an 8-bit-tag owning type
+        map.push(CMD_UPDATE_OWNING_TYPE);
+        map.extend((((ht::TYPE_DEFINITION as u32) << 24) | 4).to_le_bytes());
+        map.extend(0i32.to_le_bytes());
+        let layout = HandleLayout::detect(&map).unwrap();
+        let err = parse_rva_to_token(&map, 0, layout).err().expect("refused").to_string();
+        assert!(err.contains("entry 1") && err.contains("0x3a000004"), "{err}");
+    }
+
+    /// A count read from the file bounds nothing that is allocated or printed:
+    /// an array signature claiming a million dimensions is a misread record,
+    /// not a million commas.
+    #[test]
+    fn an_array_rank_past_the_runtime_limit_prints_no_dimensions() {
+        let mut b = METADATA_SIGNATURE.to_le_bytes().to_vec();
+        let name = string_record(&mut b, b"Int32");
+        let elem = b.len() as u32;
+        for v in [0, 0, 0, name, 0, 0, 0] {
+            uns(&mut b, v);
+        }
+        let arr = b.len() as u32;
+        uns(&mut b, (elem << 8) | ht::TYPE_DEFINITION as u32);
+        // +1 000 000: below 2^20, a value's signed and unsigned encodings agree.
+        uns(&mut b, 1_000_000);
+        assert_eq!(meta_rank(&b, arr), Some(1_000_000));
+        let meta = Meta { b: &b, layout: HandleLayout::Tag8Offset24 };
+        let mut f = Formatter::new(&meta);
+        f.emit_type_name(Handle::typed(ht::ARRAY_SIGNATURE, arr), false);
+        assert!(f.out.len() < 64, "{} bytes printed", f.out.len());
+    }
+
+    /// The oversized-count fixture for the map itself: a header claiming two
+    /// billion entries over a 13-byte blob.
+    #[test]
+    fn a_map_count_larger_than_its_blob_is_bounded_by_the_blob() {
+        let mut map = one_entry_map(((ht::TYPE_DEFINITION as u32) << 24) | 4);
+        map[0..4].copy_from_slice(&i32::MAX.to_le_bytes());
+        // At most `13 / 5` entries fit; the second is truncated, and says so.
+        let r = parse_rva_to_token(&map, 0, HandleLayout::Tag8Offset24);
+        assert!(r.is_err());
+    }
+
+    fn meta_rank(b: &[u8], arr: u32) -> Option<i32> {
+        let meta = Meta { b, layout: HandleLayout::Tag8Offset24 };
+        let (_elem, o) = meta.handle(arr)?;
+        Some(meta.signed(o)?.0)
+    }
+
+    /// Bytes that are not UTF-8 are not a string record.
+    #[test]
+    fn a_string_record_that_is_not_utf8_is_refused() {
+        let mut b = METADATA_SIGNATURE.to_le_bytes().to_vec();
+        let bad = string_record(&mut b, &[0x41, 0xff, 0xfe, 0x42]);
+        let good = string_record(&mut b, b"Name");
+        let meta = Meta { b: &b, layout: HandleLayout::Tag8Offset24 };
+        assert_eq!(meta.string(bad), None);
+        assert_eq!(meta.string(good).as_deref(), Some("Name"));
     }
 }
