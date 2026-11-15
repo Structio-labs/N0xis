@@ -872,16 +872,40 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
         // And not where the code before runs on into it: `push %rbx; sub
         // $8,%rsp` on a 16-byte boundary, an AArch64 `cbz` over a frame set up
         // late, are the middle of a function whatever the bytes look like.
+        // The declared ranges with a marker inside that jump through a
+        // computed address ([`jumps_through_a_computed_address`]), each decoded
+        // once.
+        let mut computed: BTreeMap<(u64, u64), bool> = BTreeMap::new();
+        for &(va, marker) in &matches {
+            if let Some(range) = part_around(va).or_else(|| declared_around(va)).filter(|_| marker) {
+                computed.entry(range).or_insert_with(|| jumps_through_a_computed_address(ctx, &bytes, input.start, range));
+            }
+        }
         for (va, marker) in matches {
             // Inside a declared extent only the marker counts, and not where
             // a call returns: code after a `setjmp` carries `endbr64` too,
             // since `longjmp` comes back to it indirectly, and it goes on
             // with the same function (found on a Qt build, the one false
             // start of its 5 with no unwind entry).
+            //
+            // Nor in a range that jumps through a computed address: a
+            // `goto *` lands on labels of its own function, and the compiler
+            // marks each landing with `endbr64` as it marks an entry. glibc's
+            // printf does it, and on a static executable without symbols 24
+            // labels of two functions were listed as functions, 24 of the 25
+            // markers kept inside an unwind range; the one entry among them
+            // (`_dl_tlsdesc_undefweak`, in an FDE begun in the padding before
+            // it) is in a range with no such jump (2026-11-15, against `nm`
+            // of the unstripped twin; on the shared C library and a Python
+            // runtime, 103 and 6 markers in such ranges, none a symbol's
+            // start).
+            let inside = |(from, end): (u64, u64)| {
+                marker && after_a_call(from, va) != Some(true) && computed.get(&(from, end)) != Some(&true)
+            };
             let entry = match (part_around(va), declared_around(va)) {
-                (Some((from, _)), _) => from != va && marker && after_a_call(from, va) != Some(true),
+                (Some(range), _) => range.0 != va && inside(range),
                 (None, None) => !fallen_into.contains(&va),
-                (None, Some((from, _))) => marker && after_a_call(from, va) != Some(true),
+                (None, Some(range)) => inside(range),
             };
             if va.is_multiple_of(align) && entry {
                 record(&mut found, va, StartSource::Prologue);
@@ -890,6 +914,17 @@ pub fn discover_entries(ctx: &Ctx, start: Va, size: usize) -> Result<Discovered,
 
         Ok(Discovered { start: input.start, scanned_bytes: bytes.len(), entries: entries(found) })
     }
+}
+
+/// Whether the code of `range` holds a jump to an address it computes (`jmp
+/// rax`, `jmp [table + rax*8]`): a computed `goto`, a jump table, a call
+/// through a pointer in tail position. `false` where the range is not in the
+/// window `bytes` (at `base`) holds, which is no evidence either way.
+fn jumps_through_a_computed_address(ctx: &Ctx, bytes: &[u8], base: Va, (from, end): (u64, u64)) -> bool {
+    let Some(code) = from.checked_sub(base.0).and_then(|lo| bytes.get(lo as usize..(end - base.0) as usize)) else {
+        return false;
+    };
+    ctx.arch.decode_range(code, Va(from), code.len()).iter().any(|i| i.kind == InsnKind::Jump && i.target.is_none())
 }
 
 /// A start while discovery runs: what the declarations state about its end,
@@ -1198,6 +1233,28 @@ mod tests {
             vec![Va(0x1000), Va(0x1020)],
             "the marker is kept, the stack-adjust idiom is not",
         );
+    }
+
+    #[test]
+    fn a_marker_a_computed_goto_lands_on_is_not_an_entry() {
+        // `goto *` lands on labels of its own function, and with CET each
+        // carries `endbr64`: glibc's printf, 24 labels listed as functions on
+        // a static executable without symbols. The same marker in a range with
+        // no such jump is still an entry (`an_entry_marker_survives_…`).
+        let mut code = vec![0xF3, 0x0F, 0x1E, 0xFA]; // 0x1000 endbr64, the declared start
+        code.extend_from_slice(&[0xFF, 0xE2]); // 0x1004 jmp rdx
+        code.resize(0x20, 0x90);
+        code.extend_from_slice(&[0xF3, 0x0F, 0x1E, 0xFA]); // 0x1020 endbr64: a label
+        code.extend_from_slice(&[0xFF, 0xE2]); // 0x1024 jmp rdx
+        code.resize(0x40, 0x90);
+        let snap = Snapshot::builder().region(Va(0x1000), code).build();
+        let arch = X64::new();
+        let stated = crate::origin::fdes(&[(Va(0x1000), Va(0x1040))]);
+        let ctx = Ctx::new(&snap, &arch).with_stated_functions(&stated, n0xis_sources::StartCoverage::Some);
+        let art = DiscoverPass
+            .run(&ctx, DiscoverInput { start: Va(0x1000), size: 64, limit: 100, offset: 0 })
+            .unwrap();
+        assert_eq!(art.functions.iter().map(|f| f.va).collect::<Vec<_>>(), vec![Va(0x1000)], "the label is not a function");
     }
 
     #[test]

@@ -145,10 +145,11 @@ measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): pla
 [[claim]]
 id = "audit.why-start-inside"
 layer = "function extents"
-says = "why says addr_is_start: true for an address inside a function."
-oracle = "nm on the unstripped twin of a stripped static executable"
-status = "false"
-measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 0x408940 lies inside printf_positional; why says it starts a function."
+says = "why says addr_is_start: false for a label of a computed goto inside a function, and places it in that function."
+oracle = "nm on the unstripped twin of a stripped executable; objdump for where the labels are"
+test = "why_calls_a_label_of_a_computed_goto_no_start"
+status = "verified"
+measured = "2026-11-15: the stripped static executable of the claims audit: 0x408940 is in 0x407e10 (printf_positional per nm), addr_is_start false; before (0891678) a start of its own. The test builds oracle/computed_goto.c with gcc -fcf-protection."
 
 [[claim]]
 id = "audit.ir-build-cut-silent"
@@ -169,10 +170,14 @@ measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): fla
 [[claim]]
 id = "audit.discover-starts-inside"
 layer = "function discovery"
-says = "function discover lists starts inside functions on a stripped static executable."
-oracle = "nm on the unstripped twin: sized symbols"
-status = "false"
-measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 24 of 1 126 starts fall strictly inside a sized symbol (0x408940, 0x40a120, 0x40a280, ...)."
+says = "function discover lists no label of a computed goto as a function: an endbr64 inside an unwind range that jumps through a computed address is where that jump lands."
+oracle = "nm on the unstripped twin: sized symbols; objdump for the labels"
+test = [
+  "discovery_lists_no_label_of_a_computed_goto_as_a_function",
+  "a_marker_a_computed_goto_lands_on_is_not_an_entry",
+]
+status = "verified"
+measured = "2026-11-15: the stripped static executable of the claims audit: 0 of 1 102 starts inside a sized symbol, the 24 removed exactly the 24 inside, nothing else changed; before (0891678) 24 of 1 126, every one an endbr64 at a label of printf_positional or __printf_buffer. The rule's class, counted with readelf, objdump and nm without n0xis: endbr64 strictly inside an FDE, aligned, not after a call: static executable 24 in ranges with an indirect jmp (none a symbol), 1 in a range with none (_dl_tlsdesc_undefweak, kept); the shared C library 103 and 2 (nm -D, none a symbol); a Python 3.14 runtime 6 and 0."
 
 [[claim]]
 id = "audit.params-past-registers"

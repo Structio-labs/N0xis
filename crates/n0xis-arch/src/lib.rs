@@ -540,7 +540,8 @@ pub trait Arch {
     /// it. That rule is wrong for the one case where several entry points share
     /// one unwind range — hand-written assembly usually — so a marker in this
     /// list is exempt from it. Empty = every pattern yields to a declared
-    /// extent.
+    /// extent. Not in a range that jumps through a computed address: there a
+    /// marker is where that jump lands, a label (discovery's rule).
     fn entry_markers(&self) -> &'static [&'static [u8]] {
         &[]
     }
