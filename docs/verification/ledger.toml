@@ -208,10 +208,11 @@ measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): i38
 [[claim]]
 id = "audit.decomp-data-address"
 layer = "the decompiled body"
-says = "decomp pseudo decompiles bytes in .rodata as a function with ok:true and no word that the address is not code."
-oracle = "objdump -h: the section's flags"
-status = "false"
-measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): 0x2004 in .rodata: ok, quality 0.5, nothing said."
+says = "decomp pseudo, like disasm, says in its note that an address in a section without code is in no section the image marks executable, and says nothing of it in code."
+oracle = "readelf -SW / objdump -h: the section's flags"
+test = "decomp_and_disasm_say_an_address_in_a_section_without_code_is_not_code"
+status = "verified"
+measured = "2026-11-15, re-measured with no change to the tool: the audit's 0x2004 in .rodata answers ok, quality 0.5, with the note \"0x2004 is not in any section this image marks executable; the bytes are decoded as code because they were asked for, not because they are\". The 2026-11-14 record was the audit's pattern (`not executable`), which does not match those words; the statement is made at the front door every graph-scoped command shares, and no test held it until this one. Why 2026-10-05 measured no note was not established."
 
 [[claim]]
 id = "audit.wasm-element-xref"
