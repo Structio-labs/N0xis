@@ -251,3 +251,11 @@ says = "Of 220 statements a reader acts on, picked across 105 commands on 2026-1
 oracle = "per statement, a source that is not the tool: the fixture's source, objdump, readelf, nm, gdb, wasm-objdump, llvm-pdbutil, /proc/<pid>/mem, what the program printed"
 status = "measured-private"
 measured = "2026-11-14, 0891678: 158 hold (97 that held at 0.3.9, all still holding, and 61 of the 74 that were false), 12 false (the `audit.*` entries), 1 a refusal that names its reason, 9 known, 27 not tested, 13 too vague to be false. Every holding check was run on planted wrong answers and catches at least one (126) or fails loudly (31); one blind check found that way was tightened. The fixtures and the re-run script are private for now."
+
+[[claim]]
+id = "decomp.return-width"
+layer = "the decompiled body"
+says = "The printed return type is no wider than the width the function defines in the return register on its return paths; where that width cannot be known (a value passed on from a callee of unknown width, a register only zeroed), the type says not known rather than uint64_t."
+oracle = "the source's declared type (generated functions, gcc and clang) and the producer's DWARF (installed shared libraries with the distribution's debug info); objdump for the bytes"
+status = "measured-private"
+measured = "2026-11-15, bodies-4 8e02594 against 25e531b, separate builds (sha256 recorded). Generated set seed 271828, 200 functions x gcc -O1, gcc -O2, clang -O2: right 81 -> 101, right on covered paths 86 -> 115, wider type than the source 185 -> 136, wrong 143 -> 143, not stated 105 -> 105; the only moves are wider -> right (49). Behaviour sets: no body changes verdict. October set: 107 verdicts identical. 34 shared libraries, 7112 functions with DWARF prototypes (tuning and scoring halves together): return width right 1081 -> 1638, wrong 1312 -> 274 (right -> narrower 3), right -> not stated 181; returns-a-value right 2581 -> 2100, wrong 955 -> 585, right -> not stated 481; return class right 1589 -> 1254, wrong 804 -> 658, right -> not stated 335. The losses are values passed on from callees of unknown width: the fact that the function returns something is lost with the width. Not covered: a result kept in a callee-saved register across code, printf-family callees, signedness beyond the function's own extension, i386 and AArch64 widths."
