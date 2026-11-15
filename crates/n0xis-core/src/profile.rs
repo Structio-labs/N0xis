@@ -353,7 +353,7 @@ pub fn assemble_profile(
 
     let image_end = sections
         .iter()
-        .map(|s| s.va.get().saturating_add(s.virtual_size.max(s.raw_size) as u64))
+        .map(|s| s.va.get().saturating_add(n0xis_sources::pe_section_extent(s.virtual_size, s.raw_size).0))
         .max()
         .map(Va)
         .unwrap_or(module_base);

@@ -23,7 +23,7 @@ use n0xis_contracts::Va;
 use crate::image::{
     Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, FileSection, Finding, FormatTables, Image, ImageSymbol,
     ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, ItemKind, Library, LibraryRef, LibrarySource, LoadedBytes, Machine,
-    OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
+    OpenError, OpenOptions, Opened, Partial, PastFile, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
     SymbolTable, UnlistedSlot, Unread,
 };
 
@@ -780,6 +780,7 @@ impl StaticElf {
                         end: ph.p_vaddr.saturating_add(ph.p_memsz),
                         file_offset: usize::try_from(ph.p_offset).ok()?,
                         file_size: usize::try_from(ph.p_filesz).ok()?,
+                        past_file: PastFile::Short,
                     })
                 })
                 .collect()
@@ -787,7 +788,7 @@ impl StaticElf {
             sections
                 .iter()
                 .filter(|s| s.in_image)
-                .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
+                .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size, past_file: PastFile::Short })
                 .collect()
         };
         let public_sections = sections

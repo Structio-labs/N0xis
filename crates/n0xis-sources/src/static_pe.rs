@@ -24,7 +24,7 @@ use n0xis_contracts::Va;
 use crate::image::{
     Access, AddressModel, Answer, Binding, ByteOrder, CodeView, DeclaredStart, Export, Extent, Finding, FormatTables, Image, ImageSymbol,
     ImportBinding, ImportName, ImportRef, ImportReference, Imports, Isa, ItemKind, Library, LibraryRef, LibrarySource, LoadedBytes, Machine,
-    OpenError, OpenOptions, Opened, Partial, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
+    OpenError, OpenOptions, Opened, Partial, PastFile, Placement, PointerWidth, Reach, Section, Segment, Segments, StartCoverage, StartReason, SymbolKind,
     SymbolTable, UnlistedSlot, Unread,
 };
 use crate::MemorySource;
@@ -40,6 +40,14 @@ struct SectionRange {
     /// `IMAGE_SCN_MEM_EXECUTE`. See [`crate::MemorySource::code_ranges`] for why one
     /// `.text` is not enough on this corpus.
     executable: bool,
+}
+
+/// The read view's placements: each section's file bytes, then its zero fill.
+fn placements(sections: &[SectionRange]) -> Vec<Placement> {
+    sections
+        .iter()
+        .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size, past_file: PastFile::Zeros })
+        .collect()
 }
 
 /// `IMAGE_SCN_MEM_EXECUTE`, `_READ`, `_WRITE`.
@@ -161,9 +169,9 @@ impl StaticPe {
             let rva = s.virtual_address as u64;
             let virtual_size = s.virtual_size as u64;
             let file_offset = s.pointer_to_raw_data as usize;
-            let file_size = s.size_of_raw_data as usize;
+            let (content, file_size) = crate::pe_section_extent(s.virtual_size, s.size_of_raw_data);
             let va_start = image_base.saturating_add(rva);
-            let va_end = va_start.saturating_add(virtual_size.max(file_size as u64));
+            let va_end = va_start.saturating_add(content);
             sections.push(SectionRange { name, va_start, va_end, file_offset, file_size, executable: s.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 });
             segments.push(Segment {
                 va: Va(va_start),
@@ -178,10 +186,7 @@ impl StaticPe {
             });
         }
 
-        let placed: Vec<Placement> = sections
-            .iter()
-            .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
-            .collect();
+        let placed = placements(&sections);
         // A PE's base relocations are not read.
         let relocated = RelocatedWords::NotRead(RelocationsNotRead::FormatNotRead);
         // The export table is read through the image's own read view, the one
@@ -801,10 +806,7 @@ fn parse_pdata(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> BTre
     if rva == 0 || size == 0 {
         return out;
     }
-    let placed: Vec<Placement> = sections
-        .iter()
-        .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
-        .collect();
+    let placed = placements(sections);
     let relocated = RelocatedWords::NotRead(RelocationsNotRead::FormatNotRead);
     let view = LoadedBytes { file: bytes, placed: &placed, written_by_loader: &relocated };
     let table = crate::read_unwind_table(&view, Va(image_base), Va(image_base.saturating_add(rva as u64)), size as usize, coff_machine(bytes));
@@ -847,10 +849,7 @@ mod tests {
     /// The loader's by-ordinal symbols as `(va, ordinal)`, read exactly the way
     /// the reader reads them: the shared table, then the symbol map.
     fn ordinal_exports(bytes: &[u8], sections: &[SectionRange], image_base: u64) -> Vec<(u64, u32)> {
-        let placed: Vec<Placement> = sections
-            .iter()
-            .map(|s| Placement { va: s.va_start, end: s.va_end, file_offset: s.file_offset, file_size: s.file_size })
-            .collect();
+        let placed = placements(sections);
         let relocated = RelocatedWords::NotRead(RelocationsNotRead::FormatNotRead);
         let view = LoadedBytes { file: bytes, placed: &placed, written_by_loader: &relocated };
         let table = export_table(&view, bytes, image_base).unwrap_or_default();

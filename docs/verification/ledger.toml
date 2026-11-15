@@ -129,10 +129,15 @@ measured = "2026-11-15: asked 10, answered 4 (mov, (bad) of one byte, mov, ret),
 [[claim]]
 id = "disasm.past-virtual-size"
 layer = "instruction decoding"
-says = "disasm decodes past a PE section's VirtualSize, reading the file's zero padding as `add [rax],al`, with no note."
-oracle = "llvm-readobj --sections (VirtualSize) and objdump, which stops there"
-status = "false"
-measured = "2026-11-14, 0891678: a mingw PE whose .text has VirtualSize 0x20 and 512 raw bytes: 12 `add` past 0x140001020 out of 20 asked. Open since 2026-10-20 (44 on one DLL)."
+says = "A PE section is its VirtualSize bytes (SizeOfRawData where VirtualSize is 0), as the loader maps it: the file's bytes are served to the smaller of the two, zeros past SizeOfRawData, and the file's padding past VirtualSize is in no section; disasm stops there and says so."
+oracle = "llvm-readobj --sections (VirtualSize, RawDataSize) and objdump, which stops at VirtualSize"
+test = [
+  "disasm_stops_where_a_pe_section_ends_and_says_so",
+  "strings_reads_each_pe_section_for_what_it_holds",
+  "past_its_file_bytes_a_placement_reads_as_it_says",
+]
+status = "verified"
+measured = "2026-11-15: the fixture: 12 of 20 asked, ending at 0x140001020 with a note (before, 0891678: 12 `add` past it). Old (93cc490) against new on 38 PEs (two compatibility-layer runtime DLLs, five system DLLs, fd and rg and n0xis in two builds, the audit's 25): function discover's starts unchanged on all 38 (205 675), strings unchanged on all 38 (256 060, addresses and lengths), scanned_bytes lower on 37 by exactly the executable sections' bytes past VirtualSize (43 625 in all, per llvm-readobj), profile changes image_end only. Nothing unexplained."
 
 [[claim]]
 id = "audit.profile-export-count"

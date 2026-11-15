@@ -287,7 +287,7 @@ impl WasmImage {
         // One placement, the whole file at offset 0: a read at a module
         // offset reads the module's bytes there (the lead's DECISIONS item 8),
         // what `disasm` decodes.
-        let placed = vec![Placement { va: 0, end: len, file_offset: 0, file_size: bytes.len() }];
+        let placed = vec![Placement { va: 0, end: len, file_offset: 0, file_size: bytes.len(), past_file: crate::PastFile::Short }];
 
         let defined: Vec<(u32, std::ops::Range<usize>)> = (0..module.functions().len())
             .filter_map(|i| {

@@ -350,11 +350,15 @@ pub struct Access {
 pub struct Section {
     pub name: String,
     pub va: Va,
-    /// Bytes of address space it covers: an ELF's `sh_size`; for a PE the
-    /// larger of `VirtualSize` and `SizeOfRawData`.
+    /// Bytes of address space it covers: an ELF's `sh_size`; a PE's
+    /// `VirtualSize`, or its `SizeOfRawData` where `VirtualSize` is 0, as the
+    /// loader maps it. A PE's file bytes past `VirtualSize` (the padding to
+    /// `FileAlignment`) belong to no section; it was the larger of the two
+    /// until 2026-11-15, and `disasm` decoded that padding as `add [rax],al`.
     pub size: u64,
     pub file_offset: u64,
-    /// Bytes the file holds for it: 0 for `SHT_NOBITS`; a PE's `SizeOfRawData`.
+    /// Bytes the file holds for it: 0 for `SHT_NOBITS`; a PE's `SizeOfRawData`
+    /// up to its `size` (past them, up to `size`, a PE section reads as zeros).
     pub file_size: u64,
     /// `SHF_EXECINSTR`; `IMAGE_SCN_MEM_EXECUTE`.
     pub executable: bool,
@@ -382,6 +386,27 @@ pub struct FileSection {
 /// compiled without the ELF reader.
 pub(crate) fn is_elf_plt_section(name: &str, executable: bool, file_size: u64) -> bool {
     executable && name.starts_with(".plt") && file_size > 0
+}
+
+/// A section as the loader maps it, from its header's `VirtualSize` and
+/// `SizeOfRawData`: `(bytes of address space, file bytes served)`.
+///
+/// Its content is `VirtualSize` bytes; the file's bytes are served up to the
+/// smaller of the two, and from `SizeOfRawData` to `VirtualSize` it reads as
+/// the zeros the loader maps there. What the file holds past `VirtualSize`
+/// (its padding to `FileAlignment`) is in no section: it was, when a section
+/// was the larger of the two, and `disasm` decoded a `.text` of 0x20 bytes on
+/// into its 512-byte padding as `add [rax],al` (objdump and llvm-readobj stop
+/// at `VirtualSize`). `VirtualSize` 0 means `SizeOfRawData`, as it does to the
+/// loader.
+///
+/// **The one statement of it**, read by the PE reader and by `profile`'s own
+/// header walk; here, in the format-neutral seam, because the second is
+/// compiled without the PE reader.
+pub fn pe_section_extent(virtual_size: u32, size_of_raw_data: u32) -> (u64, usize) {
+    let raw = u64::from(size_of_raw_data);
+    let content = if virtual_size == 0 { raw } else { u64::from(virtual_size) };
+    (content, raw.min(content) as usize)
 }
 
 /// What a symbol names, as its table says.
@@ -776,8 +801,22 @@ pub struct Placement {
     /// Exclusive.
     pub end: u64,
     pub file_offset: usize,
-    /// File bytes from `file_offset`; past them, up to `end`, a read is short.
+    /// File bytes from `file_offset`; past them, up to `end`, as `past_file`
+    /// says.
     pub file_size: usize,
+    pub past_file: PastFile,
+}
+
+/// What a read finds in a placement past its file bytes, up to its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PastFile {
+    /// Nothing: the read is short, as a live read at the same spot would be
+    /// where the loader leaves the address unmapped or the reader does not
+    /// say (an ELF's `.bss` tail).
+    Short,
+    /// Zeros, as the loader maps them: a PE section whose `VirtualSize` is
+    /// larger than its `SizeOfRawData`.
+    Zeros,
 }
 
 /// What memory holds when the image is loaded (§2, §7 decision 3), as the read
@@ -812,11 +851,14 @@ impl MemorySource for LoadedBytes<'_> {
             return Err(SourceError::Unmapped(va));
         };
         let in_placement = (va.0 - p.va) as usize;
-        // Inside a placement but past its file bytes (a `.bss` tail): not
-        // synthesized — a short read, exactly as a live read at the same spot
-        // would give.
+        // Past its file bytes (a `.bss` tail, a PE section's zero fill), what
+        // the placement says is there, up to its end.
+        let zeros = |from: u64, n: usize| match p.past_file {
+            PastFile::Short => Vec::new(),
+            PastFile::Zeros => vec![0u8; n.min(p.end.saturating_sub(from) as usize)],
+        };
         if in_placement >= p.file_size {
-            return Ok(Vec::new());
+            return Ok(zeros(va.0, len));
         }
         let file_start = p.file_offset + in_placement;
         let avail = p.file_size - in_placement;
@@ -825,7 +867,13 @@ impl MemorySource for LoadedBytes<'_> {
         if file_start >= end {
             return Ok(Vec::new());
         }
-        Ok(self.file[file_start..end].to_vec())
+        let mut out = self.file[file_start..end].to_vec();
+        // Only where all the file bytes asked for were there: a file shorter
+        // than its section table says is short, not zeros.
+        if out.len() == take && take < len {
+            out.extend(zeros(va.0 + take as u64, len - take));
+        }
+        Ok(out)
     }
 
     fn contains(&self, va: Va) -> bool {
@@ -1007,4 +1055,26 @@ pub fn formats() -> &'static [Format] {
 pub fn recognize(bytes: &[u8]) -> Option<&'static Format> {
     let prefix = &bytes[..bytes.len().min(SNIFF_LEN)];
     formats().iter().find(|f| (f.sniff)(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A placement's bytes past the file's: zeros where the loader maps them
+    /// (a PE section whose `VirtualSize` passes its `SizeOfRawData`), a short
+    /// read where it does not say; and never past the placement's end.
+    #[test]
+    fn past_its_file_bytes_a_placement_reads_as_it_says() {
+        let file = [0u8, 0, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let relocated = RelocatedWords::NotRead(crate::RelocationsNotRead::FormatNotRead);
+        let read = |past_file, va: u64, len| {
+            let placed = [Placement { va: 0x1000, end: 0x1008, file_offset: 2, file_size: 4, past_file }];
+            LoadedBytes { file: &file, placed: &placed, written_by_loader: &relocated }.read(Va(va), len).expect("mapped")
+        };
+        assert_eq!(read(PastFile::Zeros, 0x1002, 16), [0xCC, 0xDD, 0, 0, 0, 0], "file bytes, then zeros to the end");
+        assert_eq!(read(PastFile::Zeros, 0x1005, 2), [0, 0]);
+        assert_eq!(read(PastFile::Short, 0x1002, 16), [0xCC, 0xDD], "the file byte past file_size (0xEE) is not served");
+        assert!(read(PastFile::Short, 0x1005, 2).is_empty());
+    }
 }
