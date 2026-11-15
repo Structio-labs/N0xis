@@ -49,7 +49,11 @@ pub struct ManifestEntry {
     pub end: Va,
     pub insn_count: usize,
     pub block_count: usize,
-    pub returns: usize,
+    /// The `ret`s of the graph: all of them, or of a graph cut where reading
+    /// stopped, a lower bound. It was a count of what was read: `returns: 0`
+    /// beside the flag `cut`, of a function whose `ret` lies past the cut
+    /// (claims audit, 2026-11-14).
+    pub returns: Counted,
     pub indirect_branches: usize,
     pub tail_calls: usize,
     pub callsites: usize,
@@ -63,6 +67,37 @@ pub struct ManifestEntry {
     /// ([`crate::CfgArtifact::cut`]); with the flag `cut`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<crate::ir::Cut>,
+}
+
+/// A count of what a graph holds: every one of them, or, where the graph is
+/// cut before its function ends or nothing could be read, at least this many.
+/// `All(n)` prints as `n`; `AtLeast(n)` as `{"at_least": n}`, so a lower bound
+/// is never read as the count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Counted {
+    All(usize),
+    AtLeast(usize),
+}
+
+impl Counted {
+    /// `n` of a graph: all of them where it is whole, at least `n` where it is cut.
+    fn of(art: &CfgArtifact, n: usize) -> Self {
+        if art.end_by.is_cut() { Counted::AtLeast(n) } else { Counted::All(n) }
+    }
+}
+
+impl Serialize for Counted {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match *self {
+            Counted::All(n) => s.serialize_u64(n as u64),
+            Counted::AtLeast(n) => {
+                use serde::ser::SerializeMap;
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_entry("at_least", &n)?;
+                m.end()
+            }
+        }
+    }
 }
 
 /// Batch summarization pass. Never fails outright — a candidate that can't be
@@ -101,7 +136,7 @@ fn summarize(ctx: &Ctx, candidate: ManifestCandidate, max_bytes: usize) -> Manif
             end: art.end,
             insn_count: art.insn_count,
             block_count: art.block_count,
-            returns: art.stats.returns,
+            returns: Counted::of(&art, art.stats.returns),
             indirect_branches: art.stats.indirect_branches,
             tail_calls: art.stats.tail_calls,
             callsites: art.callsites.len(),
@@ -117,7 +152,7 @@ fn summarize(ctx: &Ctx, candidate: ManifestCandidate, max_bytes: usize) -> Manif
             end: candidate.va,
             insn_count: 0,
             block_count: 0,
-            returns: 0,
+            returns: Counted::AtLeast(0),
             indirect_branches: 0,
             tail_calls: 0,
             callsites: 0,

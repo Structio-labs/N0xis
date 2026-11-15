@@ -1829,7 +1829,19 @@ impl Plugin for AnalysisPasses {
             Origin::Builtin,
             Box::new(|args| {
                 with_cfg_ctx(args, RttiUse::Attached, |ctx, input, label, _| match n0xis_pipeline::cfg_cached(ctx, input) {
-                    Ok((art, _cached)) => ok_json(n0xis_contracts::schema::v1::IR_CFG, art, label),
+                    // A cut graph says so as every answer built on one does,
+                    // with `cut` (`at`, `end_by`, `words`): `end_by` alone was
+                    // read as a graph's end by an audit of the commands, which
+                    // took a function cut at its 4 KiB window for a whole one.
+                    Ok((art, _cached)) => match (serde_json::to_value(&art), art.cut()) {
+                        (Ok(mut v), cut) => {
+                            if let (Some(cut), Some(obj)) = (cut, v.as_object_mut()) {
+                                obj.insert("cut".into(), serde_json::to_value(cut).unwrap_or(Value::Null));
+                            }
+                            Response::success(n0xis_contracts::schema::v1::IR_CFG, v).with_source(label.to_string())
+                        }
+                        (Err(e), _) => Response::error("serialize", e.to_string()),
+                    },
                     Err(e) => Response::error("ir-failed", e.to_string()),
                 })
             }),

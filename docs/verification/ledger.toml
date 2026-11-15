@@ -154,18 +154,20 @@ measured = "2026-11-15: the stripped static executable of the claims audit: 0x40
 [[claim]]
 id = "audit.ir-build-cut-silent"
 layer = "the decompiled body"
-says = "ir build ends a function at the read window with no statement that it was cut."
-oracle = "nm: the symbol's size"
-status = "false"
-measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): end 0x2160 against a true end 0x52ea (size 0x418a); no cut stated."
+says = "ir build of a function cut where reading stopped carries `cut` (where, why, in words), as every answer built on the graph does, and none where it is whole."
+oracle = "the bytes, planted: a function whose one ret lies past the read window; nm's size in the audit's fixture"
+test = "ir_build_says_a_graph_cut_at_its_window_is_cut"
+status = "verified"
+measured = "2026-11-15: the audit's fixture (nm size 0x418a, stripped twin): cut at 0x2160, 4096 bytes read, the function goes on; before (0891678) `end_by: bytes_ran_out` and no `cut`, which the audit read as no statement."
 
 [[claim]]
 id = "audit.ir-manifest-returns-cut"
 layer = "control flow"
-says = "ir manifest answers returns 0 for a cut function that returns."
-oracle = "objdump of the unstripped twin: one ret"
-status = "false"
-measured = "2026-11-14, 0891678, claims audit re-run (rerun.py, calibrated): flags [cut], returns 0, on a function with a ret past the cut."
+says = "ir manifest gives a cut function's returns as a lower bound, {\"at_least\": n}, not a count; a whole one's as the number."
+oracle = "the bytes, planted: one ret past the window; objdump of the audit fixture's unstripped twin: one ret"
+test = "ir_manifest_counts_the_returns_of_a_cut_function_as_a_lower_bound"
+status = "verified"
+measured = "2026-11-15: the audit's fixture: flags [cut], returns {at_least: 0}; before (0891678) returns 0. Other counts of a cut entry (tail_calls, callsites, insn_count) are still of what was read, beside `cut`."
 
 [[claim]]
 id = "audit.discover-starts-inside"

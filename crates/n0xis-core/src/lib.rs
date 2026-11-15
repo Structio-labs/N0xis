@@ -123,7 +123,7 @@ pub use emulate::{
     DEFAULT_STACK_TOP, EmuConfig, EmuError, EmuResult, Emulator, RETURN_SENTINEL,
 };
 pub use lift::{LiftPass, LiftedBlock, LiftedFunction, LiftedStmt};
-pub use manifest::{ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
+pub use manifest::{Counted, ManifestArtifact, ManifestCandidate, ManifestEntry, ManifestInput, ManifestPass};
 pub use noreturn::is_known_noreturn;
 pub use noreturn_ipa::{propagate_noreturn, NoReturnArtifact, NoReturnInput, NoReturnPropagatePass, Returns};
 pub use optimize::{OptArtifact, OptDeltaEntry, OptimizePass};

@@ -545,8 +545,8 @@ end, past the 8192-instruction limit up to 1 MiB), `heuristic` with the rule `by
 or one of the two cuts, where `end` is where reading stopped and not where the function does: `bytes_ran_out` (the
 window, or the readable bytes, ended with no end found in them) and `instruction_cap` (the decode limit of 8192
 instructions, only where no extent is stated), each with the bytes `read` and the extent the image `stated`, or
-`null`. A cut graph is said as such by every command built on it: `decomp pseudo`, `function summary`, `function
-trace` and `ir manifest` carry `cut` (`at`, `end_by`, `words`) where it is cut and nothing where it is not, and a
+`null`. A cut graph is said as such by `ir build` and every command built on it: `decomp pseudo`, `function summary`,
+`function trace` and `ir manifest` carry `cut` (`at`, `end_by`, `words`) where it is cut and nothing where it is not, and a
 cut function's summary has `clobbers_complete: false`. A graph
 kept in `.n0x/ir-cache/` by a build before `end_by` is not read: the key carries the build, and an entry without
 the field does not parse.
@@ -569,7 +569,8 @@ Per-function index with quality scoring, over discovered candidates.
   `--limit` (candidates to summarize, default 200), `--max-bytes` (byte window handed to `ir
   build` per candidate, default 4096), `--arch`.
 - An entry whose graph is cut where reading stopped has `cut` and the flag `cut`, and neither `leaf` nor
-  `no-return`: what was not read may call and may return.
+  `no-return`: what was not read may call and may return. Its `returns` is a lower bound, `{"at_least":
+  n}`, not a count (as is an `unreadable` entry's); a whole graph's is the number.
 - Sources: `--pid` | `--file` | `--bytes` | `--snapshot` | `--remote-cmd`.
 - `data`: `count`, `entries`, and `total` (the candidates discovered) with `truncated`, true when
   `--limit` cut the list. `function typeflow` and `function layout` say the same beside
