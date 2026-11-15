@@ -986,7 +986,7 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>, word: n0xis_arch:
                 MicroStmt::Return(Some(e)) => {
                     out.any = true;
                     out.value = true;
-                    out.defines = Some(written(e, None, &defs, word, 0).join_onto(out.defines));
+                    out.defines = Some(written(e, None, &defs, word).join_onto(out.defines));
                 }
                 MicroStmt::Return(None) => out.any = true,
                 _ => {}
@@ -1008,7 +1008,7 @@ fn return_evidence(blocks: &[SsaBlock], ret_reg: Option<&str>, word: n0xis_arch:
             Some(Def::Other(e)) => {
                 out.value = true;
                 out.only_returned |= !read.contains(v);
-                out.defines = Some(written(e, Some(v), &defs, word, 0).join_onto(out.defines));
+                out.defines = Some(written(e, Some(v), &defs, word).join_onto(out.defines));
             }
             Some(Def::Call(t)) => out.calls.push((*t).clone()),
             Some(Def::Phi(inputs)) => work.extend(inputs.iter().map(|i| i.value.as_str())),
@@ -1044,7 +1044,7 @@ const DEFINES_DEPTH: u8 = 8;
 /// target and an extension are a cast, and anything else fills the register. `dst` is
 /// the version written, where there is one: a merge that keeps another register's bits
 /// is an `or` the program wrote, not a partial write.
-fn written(e: &MicroExpr, dst: Option<&str>, defs: &HashMap<&str, Def>, word: n0xis_arch::Bits, depth: u8) -> Defines {
+fn written(e: &MicroExpr, dst: Option<&str>, defs: &HashMap<&str, Def>, word: n0xis_arch::Bits) -> Defines {
     match e {
         MicroExpr::Cast { bits, signed, .. } | MicroExpr::Load { bits, signed, .. } => Defines { bits: *bits, signed: *signed, whole: true },
         MicroExpr::Const { bits, value } => Defines { bits: *bits, signed: *value < 0, whole: true },
@@ -1070,7 +1070,7 @@ fn written(e: &MicroExpr, dst: Option<&str>, defs: &HashMap<&str, Def>, word: n0
             // %al` (clang, for a `uint8_t`), and the write defines its own bits only.
             match defs.get(old.as_str()) {
                 Some(Def::Other(under)) if states_a_constant(under) => {
-                    let under = written(under, Some(old), defs, word, depth + 1);
+                    let under = written(under, Some(old), defs, word);
                     Defines { bits: under.bits.max(n), signed: false, whole: under.whole }
                 }
                 _ => Defines { bits: n, signed: false, whole: false },
@@ -1097,7 +1097,7 @@ fn own(v: &str, defs: &HashMap<&str, Def>, word: n0xis_arch::Bits, depth: u8) ->
         return None;
     }
     match defs.get(v)? {
-        Def::Other(e) => Some(written(e, Some(v), defs, word, depth + 1)),
+        Def::Other(e) => Some(written(e, Some(v), defs, word)),
         Def::Copy(from) if ssa_root(from) == ssa_root(v) => own(from, defs, word, depth + 1),
         Def::Copy(from) => Some(moved(from, defs, word, depth + 1)),
         Def::Phi(_) | Def::Call(_) | Def::Clobber => None,
