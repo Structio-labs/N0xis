@@ -518,6 +518,10 @@ Linear disassembly.
 - `--addr` (required) — start address.
 - `--count` — number of instructions to decode (default 20).
 - Sources: `--pid` | `--file` | `--bytes`.
+- An invalid instruction is listed (`kind: invalid`), as long as the instruction set says (one byte on
+  x86, as `objdump` steps), and the listing goes on past it. A listing shorter than `--count` says why
+  in `meta.note`: the bytes ended, or ended inside an instruction (not listed), or a WebAssembly body
+  ended.
 - On a WebAssembly module, `--addr` is a module offset: a body's start decodes its `locals`
   declaration first (`text`: `locals 3 i32, 1 f64`), then each instruction in the canonical text
   spelling of `n0xis-wasm`, to the body's last `end`, however long an instruction is (a

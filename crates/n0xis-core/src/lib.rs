@@ -95,7 +95,7 @@ pub use ui_locate::{
     aabb_plausible, rect_overlap, Aabb, AabbLayout, CoordSpace, Rect, SpaceBound, UiElementHit,
     UiLocateArtifact, UiLocateInput, UiLocatePass,
 };
-pub use decode::{DecodeInput, DecodeOutput, DecodePass};
+pub use decode::{DecodeInput, DecodeOutput, DecodePass, Shortfall};
 pub use decomp::{DecompInput, DecompPass, DecompStyle, PseudoFunction};
 pub use callee::{with_kept_answers, AnswerStore, KeptAnswers};
 pub use deobfuscate::{DeobfuscateArtifact, DeobfuscatePass, JunkInsn, OpaqueBranch};

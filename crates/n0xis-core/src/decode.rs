@@ -47,6 +47,53 @@ pub struct DecodeOutput {
     pub count: usize,
     pub bytes_consumed: usize,
     pub insns: Vec<DecodedInsn>,
+    /// Why `insns` holds fewer instructions than were asked for, and `None`
+    /// exactly when it holds as many. Not part of the artifact: the front
+    /// door says it beside the answer, as it says the other remarks of a
+    /// listing ([`Shortfall`]'s `Display` is that sentence).
+    #[serde(skip)]
+    pub short: Option<Shortfall>,
+}
+
+/// Why a listing ended before the count asked for.
+///
+/// It used to end at the first invalid instruction with no word: 20 005 of
+/// 60 000 instructions asked on a stripped executable (2026-10-20), and on a
+/// five-instruction fixture 2 of 10, where `objdump` steps over the one
+/// invalid byte and lists the rest. An invalid instruction no longer ends a
+/// listing; these are what still can, each said where it happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shortfall {
+    /// The source holds no more bytes from `at`: the end of what the image
+    /// has at that address (a section's bytes in the file, a mapped region).
+    BytesEnd { at: Va },
+    /// The read window ended at `at`, with bytes the source could still give.
+    WindowEnd { at: Va },
+    /// The last `left` bytes, at `at`, begin an instruction the bytes end
+    /// inside.
+    Truncated { at: Va, left: usize },
+    /// The body of function `function` ends at `at` (an architecture that
+    /// identifies functions by index decodes one body, from its start).
+    BodyEnd { function: u32, at: Va },
+    /// The instruction at `at` is invalid, on an architecture that decodes a
+    /// body from its start and so has no place after it to go on from.
+    InvalidInBody { at: Va },
+}
+
+impl std::fmt::Display for Shortfall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Shortfall::BytesEnd { at } => write!(f, "the listing ends at {at}, where the source has no more bytes"),
+            Shortfall::WindowEnd { at } => write!(f, "the listing ends at {at}, where the bytes read for it end"),
+            Shortfall::Truncated { at, left } => {
+                write!(f, "the listing ends at {at}: the {left} byte(s) there begin an instruction the source's bytes end inside")
+            }
+            Shortfall::BodyEnd { function, at } => write!(f, "the listing ends at {at}, the end of function {function}'s body"),
+            Shortfall::InvalidInBody { at } => {
+                write!(f, "the listing ends at the invalid instruction at {at}: a body is decoded from its start, and there is no place after it to go on from")
+            }
+        }
+    }
 }
 
 /// Linear disassembly pass.
@@ -74,7 +121,7 @@ impl Pass for DecodePass {
             None => input.max_bytes,
         };
         let bytes = ctx.source.read(input.start, max_bytes)?;
-        let insns = ctx.arch.decode_stream(&bytes, input.start, input.max_insns);
+        let (insns, short) = listing(ctx, &bytes, input, function, max_bytes);
         // Bytes were read, an instruction was asked for, and none decoded,
         // where the architecture says no instruction is at `start`: an
         // architecture that knows where its instructions are (a WebAssembly
@@ -105,6 +152,73 @@ impl Pass for DecodePass {
             count: insns.len(),
             bytes_consumed,
             insns,
+            short,
         })
     }
+}
+
+/// Up to `input.max_insns` instructions from the front of `bytes`, as a linear
+/// listing reads them, and why there are fewer where there are.
+///
+/// An invalid instruction is listed, as long as the instruction set says it is
+/// ([`Arch::resync_step`](n0xis_arch::Arch::resync_step): one byte on x86),
+/// and the listing goes on after it, as `objdump` does. A function walk stops
+/// there ([`Arch::decode_stream`](n0xis_arch::Arch::decode_stream)'s rule); a
+/// listing does not, since what follows is what was asked for. Not on an
+/// architecture that identifies functions by index: it decodes one body from
+/// its start, and a step past a byte it could not read lands in its operands.
+fn listing(
+    ctx: &Ctx,
+    bytes: &[u8],
+    input: DecodeInput,
+    function: Option<n0xis_arch::IndexedFunction>,
+    window: usize,
+) -> (Vec<DecodedInsn>, Option<Shortfall>) {
+    let max = input.max_insns;
+    let va_at = |at: usize| Va(input.start.0.wrapping_add(at as u64));
+    let mut insns: Vec<DecodedInsn> = Vec::new();
+    let mut at = 0usize;
+    while insns.len() < max && at < bytes.len() {
+        let run = ctx.arch.decode_stream(&bytes[at..], va_at(at), max - insns.len());
+        let ended_invalid = run.last().is_some_and(|i| i.kind == n0xis_arch::InsnKind::Invalid);
+        let before = insns.len();
+        for insn in run {
+            at += insn.len as usize;
+            insns.push(insn);
+        }
+        if insns.len() == before {
+            break;
+        }
+        if ended_invalid {
+            // The bytes ended inside an instruction: not an invalid one, and
+            // nothing to step past.
+            let last = insns.last().map(|i| (i.va, i.len as usize));
+            if let Some((va, len)) = last {
+                let from = at - len;
+                if let Err(n0xis_arch::DecodeError::Truncated(_)) = ctx.arch.decode(&bytes[from..], va) {
+                    insns.pop();
+                    return (insns, Some(Shortfall::Truncated { at: va, left: bytes.len() - from }));
+                }
+            }
+            if function.is_none() {
+                continue;
+            }
+            if insns.len() < max
+                && let Some(bad) = insns.last().map(|i| i.va)
+            {
+                return (insns, Some(Shortfall::InvalidInBody { at: bad }));
+            }
+        }
+        break;
+    }
+    if insns.len() >= max {
+        return (insns, None);
+    }
+    let short = match function {
+        Some(f) => Shortfall::BodyEnd { function: f.index, at: va_at(at) },
+        None if at < bytes.len() => Shortfall::Truncated { at: va_at(at), left: bytes.len() - at },
+        None if bytes.len() < window => Shortfall::BytesEnd { at: va_at(at) },
+        None => Shortfall::WindowEnd { at: va_at(at) },
+    };
+    (insns, Some(short))
 }

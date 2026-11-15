@@ -1541,11 +1541,13 @@ impl Plugin for AnalysisPasses {
                 let input = n0xis_core::DecodeInput::count(addr, usize_arg(args, "count", DEFAULT_DECODE_COUNT));
                 let note = outside_code_note(&resolved.src, addr);
                 match n0xis_core::Pass::run(&n0xis_core::DecodePass, &ctx, input) {
-                    Ok(out) => match serde_json::to_value(out) {
+                    Ok(out) => match serde_json::to_value(&out) {
                         Ok(mut v) => {
                             attach_comments(&mut v, &crate::annotation_syms::scope_of(&resolved.src));
+                            // Fewer instructions than asked for says why, first.
+                            let short = out.short.map(|why| format!("{} of {} instructions asked: {why}", out.count, input.max_insns));
                             add_note(
-                                Response::success(n0xis_contracts::schema::v1::DECODE, v).with_source(resolved.label),
+                                add_note(Response::success(n0xis_contracts::schema::v1::DECODE, v).with_source(resolved.label), short),
                                 note,
                             )
                         }

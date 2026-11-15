@@ -116,10 +116,15 @@ measured = "2026-11-14, bc901d4: caller2, uses_farewell and run wrong on ELF64 e
 [[claim]]
 id = "disasm.invalid-byte"
 layer = "instruction decoding"
-says = "disasm on an invalid byte takes two bytes where the processor and objdump take one, loses the next instruction, and stops with fewer instructions than asked and no word why."
-oracle = "objdump on a five-instruction fixture with one invalid byte (0x06 in 64-bit mode)"
-status = "false"
-measured = "2026-11-14, 0891678: asked 10, answered 2 (`mov`, then `invalid` of `06 b8`); objdump: mov, (bad) one byte, mov, ret. Open since 2026-10-20 (a stripped browser binary: 20 005 of 60 000 asked)."
+says = "disasm takes an invalid x86 byte as one byte, as the processor and objdump do, goes on past it, and says why where it answers fewer instructions than asked."
+oracle = "objdump on the same bytes: a five-instruction fixture with one invalid byte (0x06 in 64-bit mode) and a truncated tail"
+test = [
+  "an_invalid_byte_is_one_byte_and_the_listing_goes_on_past_it",
+  "a_listing_shorter_than_asked_says_why",
+  "the_objdump_record_is_what_objdump_prints",
+]
+status = "verified"
+measured = "2026-11-15: asked 10, answered 4 (mov, (bad) of one byte, mov, ret), as objdump, with a note that the bytes end inside an instruction at 0x40100c; before (0891678): 2, the second `invalid` of `06 b8`, no note. Open since 2026-10-20 (a stripped browser binary: 20 005 of 60 000 asked), not re-measured on it."
 
 [[claim]]
 id = "disasm.past-virtual-size"

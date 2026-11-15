@@ -8,7 +8,7 @@
 //! a memory source — bytes in, structure out.
 
 use iced_x86::{
-    Decoder, DecoderOptions, FlowControl, Formatter, Instruction, InstructionInfoFactory,
+    Decoder, DecoderError, DecoderOptions, FlowControl, Formatter, Instruction, InstructionInfoFactory,
     IntelFormatter, Mnemonic, OpAccess, OpKind, Register,
 };
 use n0xis_contracts::{Reg, Va};
@@ -920,6 +920,13 @@ impl Arch for X64 {
             return Err(DecodeError::Truncated(va));
         }
         let instr = decoder.decode();
+        // Bytes that begin an instruction they do not complete are not an
+        // invalid one: the instruction is past the end of what was handed, as
+        // on every other instruction set here. `disasm` tells the two apart,
+        // stepping past an invalid byte and stopping at the end of the bytes.
+        if decoder.last_error() == DecoderError::NoMoreBytes {
+            return Err(DecodeError::Truncated(va));
+        }
         if instr.is_invalid() {
             return Err(DecodeError::Invalid(va));
         }
@@ -934,8 +941,23 @@ impl Arch for X64 {
         let mut instr = Instruction::default();
         while decoder.can_decode() && out.len() < max {
             decoder.decode_out(&mut instr);
-            let di = build_insn(&instr, bytes, va, &mut fmt);
+            let mut di = build_insn(&instr, bytes, va, &mut fmt);
             let invalid = di.kind == InsnKind::Invalid;
+            // Bytes that end inside an instruction keep the length iced read:
+            // to the end of the bytes, where a function walk reads its cut.
+            if invalid && decoder.last_error() != DecoderError::NoMoreBytes {
+                // As long as the instruction set says it is, the step the
+                // sweep takes past it ([`Arch::resync_step`]), not the bytes
+                // iced read before giving up: `06 b8` was one invalid
+                // instruction of two bytes where the processor and objdump
+                // fault on, and step over, the `06` alone, and the `mov` the
+                // `b8` begins was lost to every listing. The 32-bit A32 and
+                // Thumb decoder says the same of its own.
+                let at = (instr.ip() - va.0) as usize;
+                let step = self.resync_step(&bytes[at..]).get();
+                di.len = step as u32;
+                di.bytes = bytes[at..].iter().take(step).copied().collect();
+            }
             out.push(di);
             if invalid {
                 break;
@@ -944,11 +966,6 @@ impl Arch for X64 {
         out
     }
 
-    /// One byte, in both bitnesses. An x86 instruction can begin at any byte,
-    /// and an encoding that does not decode has no length the architecture
-    /// defines: how many bytes a decoder read before giving up is that
-    /// decoder's (iced gives `0f 0a 90` a length of three, llvm-objdump two), so the only
-    /// step that is not a guess is the smallest.
     fn recognizes_jump_tables(&self) -> bool {
         true
     }
@@ -960,6 +977,11 @@ impl Arch for X64 {
         matches!(insn.mnemonic.as_str(), "pop" | "leave" | "add")
     }
 
+    /// One byte, in both bitnesses. An x86 instruction can begin at any byte,
+    /// and an encoding that does not decode has no length the architecture
+    /// defines: how many bytes a decoder read before giving up is that
+    /// decoder's (iced gives `0f 0a 90` a length of three, llvm-objdump two), so the only
+    /// step that is not a guess is the smallest.
     fn resync_step(&self, _bytes: &[u8]) -> std::num::NonZeroUsize {
         std::num::NonZeroUsize::MIN
     }
