@@ -545,6 +545,20 @@ const DIV_TEMP: &str = "divt";
 /// source, and the source is often `rdx`.
 const MUL_TEMP: &str = "__mul_hi";
 
+/// Where a one-operand `mul`/`imul`/`div`/`idiv` of `width` bits keeps its two
+/// halves, `(low, high)`: the product's halves, or the quotient and the
+/// remainder. One table for the four instructions, from the manual; `None` for a
+/// width the instruction does not have.
+fn accumulator_halves(width: Bits) -> Option<(Register, Register)> {
+    match width {
+        8 => Some((Register::AL, Register::AH)),
+        16 => Some((Register::AX, Register::DX)),
+        32 => Some((Register::EAX, Register::EDX)),
+        64 => Some((Register::RAX, Register::RDX)),
+        _ => None,
+    }
+}
+
 fn opaque_flags(mnemonic: Mnemonic) -> MicroStmt {
     MicroStmt::Assign {
         dst: FLAGS_VAR.to_string(),
@@ -1894,101 +1908,107 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Ud2 | Mnemonic::Int3 => {
             out.push(MicroStmt::Call { target: CallTarget::Intrinsic(mnemonic_intrinsic(mn)), args: vec![], ret: None });
         }
-        // 1-operand unsigned multiply: `rdx:rax = rax * src`. The low half is a
-        // plain product; the high half is the `__umulh` intrinsic. Both read the
-        // pre-multiply `rax`, so the high write is emitted first. Only the 32/64-
-        // bit forms (which really target rdx:rax) are lifted.
+        // 1-operand multiply, in every width the manual defines: the accumulator
+        // times the source, the product twice the operand's width.
         //
-        // The signed one-operand `imul` is the same shape with the signed high half,
-        // `__mulh`: the low half of a product is the same either way. It was left as
-        // `/*imul rsi*/` where a value belongs, the way gcc computes
-        // `((__int128)a * b) >> 64`.
-        Mnemonic::Mul | Mnemonic::Imul if instr.op_count() == 1 && op_bits(&instr, 0) >= 32 => {
-            let high = if mn == Mnemonic::Imul { "__mulh" } else { "__umulh" };
-            let src = read_operand(&instr, 0);
-            let rax = MicroExpr::var("rax");
-            // The high half is the product's *upper `width` bits*, and `width`
-            // is not recoverable from the operands: a 32-bit `mul` leaves
-            // `(a*b) >> 32` in `edx`, a 64-bit one `(a*b) >> 64` in `rdx`. It
-            // travels as a third argument for the same reason the divide's does.
+        // * 8 bits: `ax = al * src`. The whole product fits the word this IR
+        //   computes in, so it is one product of the two bytes, each read the way
+        //   the instruction reads it (zero-extended for `mul`, sign-extended for
+        //   `imul`), written to `ax`.
+        // * 16, 32 and 64 bits: `dx:ax`, `edx:eax`, `rdx:rax`. The low half is a
+        //   plain product, the same for `mul` and `imul`; the high half is the
+        //   house's high product, `__umulh` or the signed `__mulh`, whose third
+        //   argument is the operand's width, because the high half is the
+        //   product's upper `width` bits and the width is not recoverable from the
+        //   operands: a 32-bit `mul` leaves `(a*b) >> 32` in `edx`, a 64-bit one
+        //   `(a*b) >> 64` in `rdx`. Both halves are written through `reg_write`,
+        //   so a 16-bit half keeps the rest of its register and a 32-bit one
+        //   clears it, as every other write of that width does.
+        //
+        // This was lifted at 32 and 64 bits only, and an 8- or 16-bit multiply
+        // printed `/*mul bl*/` where a value belongs: 72 `mul` and 58 `imul`
+        // placeholders in 600 generated bodies.
+        //
+        // **Order matters and needs one temporary**, exactly as it does for the
+        // divide below. Both halves read the *pre*-multiply `rax` **and** `src`,
+        // and `src` is frequently `rdx`: writing the high half first left the low
+        // half reading the value it had just written. clang builds the closed form
+        // of a summation loop as `mul %edx`, so the wrong answer was the whole
+        // loop's result. The high half is parked, the low half written while both
+        // inputs are still live, and the high half moved in last.
+        //
+        // The flags stay opaque, as for every width before: the manual sets CF and
+        // OF from whether the high half is significant and leaves the rest
+        // undefined, and nothing here reconstructs that.
+        Mnemonic::Mul | Mnemonic::Imul if instr.op_count() == 1 && accumulator_halves(op_bits(&instr, 0)).is_some() => {
             let width = op_bits(&instr, 0);
-            let narrow = |v: MicroExpr| {
-                if width < WORD_BITS {
-                    MicroExpr::Cast { signed: false, bits: width, expr: Box::new(v) }
-                } else {
-                    v
-                }
-            };
-            let w = MicroExpr::constant(i128::from(width), 8);
-            // **Order matters and needs one temporary**, exactly as it does for
-            // the divide below — and here it did not have one. Both halves read
-            // the *pre*-multiply `rax` **and** `src`, and `src` is frequently
-            // `rdx`: writing the high half first left the low half reading the
-            // value it had just written. clang builds the closed form of a
-            // summation loop as `mul %edx`, so the wrong answer was the whole
-            // loop's result. The high half is parked, the low half written while
-            // both inputs are still live, and the high half moved in last.
-            out.push(MicroStmt::Assign {
-                dst: MUL_TEMP.into(),
-                value: narrow(MicroExpr::intrinsic(high, vec![rax.clone(), src.clone(), w])),
-            });
-            out.push(MicroStmt::Assign {
-                dst: "rax".into(),
-                value: narrow(MicroExpr::binary(BinOp::Mul, rax, src)),
-            });
-            out.push(MicroStmt::Assign { dst: "rdx".into(), value: MicroExpr::var(MUL_TEMP) });
+            let signed = mn == Mnemonic::Imul;
+            let src = read_operand(&instr, 0);
+            let Some((low, high)) = accumulator_halves(width) else { unreachable!("guarded above") };
+            if width == 8 {
+                let read = |v: MicroExpr| if signed { MicroExpr::Cast { signed: true, bits: 8, expr: Box::new(v) } } else { v };
+                let product = MicroExpr::binary(BinOp::Mul, read(reg_read(&instr, Register::AL)), read(src));
+                reg_write(&instr, Register::AX, product, &mut out);
+            } else {
+                // The accumulator is read as the whole container: the low half of a
+                // product depends only on the low bits of its operands, the high
+                // product reads its operands at the width it is given, and a
+                // product of two 16-bit values printed as C would otherwise be
+                // computed in `int`, where it overflows.
+                let rax = MicroExpr::var("rax");
+                let w = MicroExpr::constant(i128::from(width), 8);
+                let name = if signed { "__mulh" } else { "__umulh" };
+                out.push(MicroStmt::Assign { dst: MUL_TEMP.into(), value: MicroExpr::intrinsic(name, vec![rax.clone(), src.clone(), w]) });
+                reg_write(&instr, low, MicroExpr::binary(BinOp::Mul, rax, src), &mut out);
+                reg_write(&instr, high, MicroExpr::var(MUL_TEMP), &mut out);
+            }
             out.push(opaque_flags(mn));
         }
-        // 1-operand divide: `rax = rdx:rax / src`, `rdx = rdx:rax % src`. The
-        // dividend is **twice the operand width** — 128 bits for `idivq`, 64 for
-        // `idivl` — and this IR has no value that wide, so both halves are
-        // intrinsics over the three real inputs, sound and exact about *what is
-        // read* and vague only about the arithmetic itself.
+        // 1-operand divide, in every width the manual defines: the dividend is
+        // **twice the operand width** and the quotient and remainder each one
+        // width — `al`/`ah` from `ax` at 8 bits, `ax`/`dx` from `dx:ax` at 16,
+        // `eax`/`edx` from `edx:eax` at 32, `rax`/`rdx` from `rdx:rax` at 64. This
+        // IR has no value 128 bits wide, so both results are intrinsics over the
+        // dividend's two halves, the source and the width, sound and exact about
+        // *what is read* and vague only about the arithmetic itself.
         //
-        // The width travels as a fourth argument, because it is not recoverable
+        // The width travels as the fourth argument, because it is not recoverable
         // from the other three: a 32-bit divide reads `edx:eax`, and reading the
         // whole of `rdx` and `rax` instead made the dividend astronomically
         // larger, so every 32-bit signed division reported a quotient that does
-        // not fit. It is an argument rather than a name so that everything which
-        // walks a call's operands keeps seeing operands.
+        // not fit. The intrinsic reads each half at that width, so the halves are
+        // passed as their containers, except at 8 bits, where the high half is
+        // `ah` and not the low bits of anything. It is an argument rather than a
+        // name so that everything which walks a call's operands keeps seeing
+        // operands.
+        //
+        // This was lifted at 32 and 64 bits only, and an 8- or 16-bit divide
+        // printed `/*div bl*/`: 94 `div` and 10 `idiv` placeholders in 600
+        // generated bodies.
         //
         // **Order matters and needs one temporary.** Both results read the
-        // *pre*-division `rdx` **and** `rax`, so writing either register first
-        // would clobber the other's input; the quotient is parked, the remainder
-        // written while both inputs are still live, and the quotient moved in
-        // last. Division by zero traps on the hardware and nothing is invented
-        // here to model that: the flags are left opaque, exactly as the manual
-        // leaves them undefined.
-        //
-        // Only the 32/64-bit forms are lifted — the 8- and 16-bit ones write
-        // `ax`/`ah` sub-registers this model would have to guess at.
-        Mnemonic::Div | Mnemonic::Idiv if op_bits(&instr, 0) >= 32 => {
+        // *pre*-division dividend, so writing either first would clobber the
+        // other's input; the quotient is parked, the remainder written while both
+        // inputs are still live, and the quotient moved in last. A zero divisor or
+        // a quotient that does not fit faults on the hardware, and nothing is
+        // invented here to model that: the intrinsic is the instruction's, and the
+        // emulator refuses those operands as the processor does. The flags are
+        // left opaque, exactly as the manual leaves them undefined.
+        Mnemonic::Div | Mnemonic::Idiv if accumulator_halves(op_bits(&instr, 0)).is_some() => {
             let signed = mn == Mnemonic::Idiv;
             let (quot, rem) = if signed { ("__idiv", "__irem") } else { ("__udiv", "__urem") };
             let src = read_operand(&instr, 0);
             let width = op_bits(&instr, 0);
-            let args = || {
-                vec![
-                    MicroExpr::var("rdx"),
-                    MicroExpr::var("rax"),
-                    src.clone(),
-                    MicroExpr::constant(i128::from(width), 8),
-                ]
+            let Some((quotient, remainder)) = accumulator_halves(width) else { unreachable!("guarded above") };
+            let (dividend_high, dividend_low) = if width == 8 {
+                (reg_read(&instr, Register::AH), reg_read(&instr, Register::AL))
+            } else {
+                (MicroExpr::var("rdx"), MicroExpr::var("rax"))
             };
-            // A 32-bit divide writes `eax`/`edx`, which is a 32-bit value —
-            // and, in 64-bit mode, one that clears the upper half. These
-            // assignments name the register directly rather than going through
-            // `reg_write`, so the narrowing has to be here.
-            let narrow = |v: MicroExpr| {
-                if width < WORD_BITS {
-                    MicroExpr::Cast { signed: false, bits: width, expr: Box::new(v) }
-                } else {
-                    v
-                }
-            };
-            out.push(MicroStmt::Assign { dst: DIV_TEMP.into(), value: narrow(MicroExpr::intrinsic(quot, args())) });
-            out.push(MicroStmt::Assign { dst: "rdx".into(), value: narrow(MicroExpr::intrinsic(rem, args())) });
-            out.push(MicroStmt::Assign { dst: "rax".into(), value: MicroExpr::var(DIV_TEMP) });
+            let args = || vec![dividend_high.clone(), dividend_low.clone(), src.clone(), MicroExpr::constant(i128::from(width), 8)];
+            out.push(MicroStmt::Assign { dst: DIV_TEMP.into(), value: MicroExpr::intrinsic(quot, args()) });
+            reg_write(&instr, remainder, MicroExpr::intrinsic(rem, args()), &mut out);
+            reg_write(&instr, quotient, MicroExpr::var(DIV_TEMP), &mut out);
             out.push(opaque_flags(mn));
         }
         // `movbe` — a load or store that swaps byte order on the way. Exactly a
@@ -2034,6 +2054,14 @@ pub(crate) fn lift(arch: &crate::X64, insn: &DecodedInsn, abi: &str) -> Vec<Micr
         Mnemonic::Cbw => sext_acc(&instr, 8, Register::AX, &mut out),
         Mnemonic::Cwde => sext_acc(&instr, 16, Register::EAX, &mut out),
         Mnemonic::Cdqe => sext_acc(&instr, 32, Register::RAX, &mut out),
+        // `cwd`, the `dx:ax` dividend setup: `dx` is the sign of `ax`, every bit
+        // of it, and the rest of `rdx` is kept, as any 16-bit write keeps it. An
+        // exact shift, so it needs no intrinsic. Untranslated, it left a 16-bit
+        // signed divide reading `/*cwd*/` as its high half.
+        Mnemonic::Cwd => {
+            let ax = MicroExpr::Cast { signed: true, bits: 16, expr: Box::new(reg_read(&instr, Register::AX)) };
+            reg_write(&instr, Register::DX, MicroExpr::binary(BinOp::Sar, ax, MicroExpr::constant(15, 8)), &mut out);
+        }
         // Sign-extend rax into rdx (`cdq`/`cqo`) — the `rdx:rax` dividend setup.
         Mnemonic::Cdq | Mnemonic::Cqo => {
             out.push(MicroStmt::Assign { dst: "rdx".into(), value: MicroExpr::intrinsic(mnemonic_intrinsic(mn), vec![MicroExpr::var("rax")]) });

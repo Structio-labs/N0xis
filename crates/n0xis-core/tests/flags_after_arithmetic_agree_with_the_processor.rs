@@ -201,3 +201,154 @@ fn every_condition_after_arithmetic_answers_as_the_processor_does() {
     assert!(wrong.is_empty(), "{} of {compared} wrong; first: {:#?}", wrong.len(), &wrong[..wrong.len().min(12)]);
     assert!(compared > 20_000, "compared only {compared}");
 }
+
+/// `rax` and `rdx` after `$insn`, run with `rax`, `rdx` and `rcx` holding the three values.
+macro_rules! accumulator {
+    ($insn:literal) => {
+        |a: u64, d: u64, b: u64| -> (u64, u64) {
+            let (mut rax, mut rdx) = (a, d);
+            // SAFETY: the instruction touches only the registers named here and the
+            // flags. A divide is run only on operands `divide_faults` passes.
+            unsafe {
+                asm!($insn, inout("rax") rax, inout("rdx") rdx, in("rcx") b, options(nomem, nostack));
+            }
+            (rax, rdx)
+        }
+    };
+}
+
+/// What a one-operand divide divides by, and whether it divides by `ah`.
+#[derive(Clone, Copy)]
+enum Divide {
+    No,
+    By { width: u32, signed: bool, ah: bool },
+}
+
+/// Whether the divide faults on these operands, by the manual: a zero divisor, or
+/// a quotient outside the operand's width. The dividend is `ax` at 8 bits and
+/// `rdx:rax`'s low halves of the width above it.
+fn divide_faults(div: Divide, a: u64, d: u64, b: u64) -> bool {
+    let Divide::By { width, signed, ah } = div else { return false };
+    let mask = |v: u64| u128::from(v) & ((1u128 << width) - 1);
+    let divisor = if ah { mask(a >> 8) } else { mask(b) };
+    let dividend = if width == 8 { u128::from(a) & 0xffff } else { (mask(d) << width) | mask(a) };
+    if divisor == 0 {
+        return true;
+    }
+    if !signed {
+        return dividend / divisor >= 1u128 << width;
+    }
+    let sext = |v: u128, bits: u32| ((v << (128 - bits)) as i128) >> (128 - bits);
+    let q = sext(dividend, 2 * width) / sext(divisor, width);
+    q < -(1i128 << (width - 1)) || q >= 1i128 << (width - 1)
+}
+
+struct Accumulator {
+    name: &'static str,
+    bytes: &'static [u8],
+    divide: Divide,
+    machine: fn(u64, u64, u64) -> (u64, u64),
+}
+
+/// `rax` and `rdx` after the instruction under the IR, or the emulator's refusal.
+/// One SSA per function, run on every input.
+fn accumulator_lifts(bytes: &[u8]) -> [n0xis_core::SsaArtifact; 2] {
+    let arch = X64::new();
+    [&[0xc3][..], &[0x48, 0x89, 0xd0, 0xc3][..]].map(|tail| {
+        let mut code = bytes.to_vec();
+        code.extend(tail); // ret, or mov %rdx,%rax; ret
+        let snap = Snapshot::builder().region(Va(0x1000), code.clone()).build();
+        let ctx = Ctx::new(&snap, &arch);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(0x1000), code.len())).expect("cfg");
+        SsaPass.run(&ctx, cfg).expect("ssa")
+    })
+}
+
+fn accumulator_emulated(ssa: &n0xis_core::SsaArtifact, a: u64, d: u64, b: u64) -> Result<Option<u64>, String> {
+    let mut emu = Emulator::with_config(&ssa.blocks, None, EmuConfig::default());
+    emu.set_var("rax", a).set_var("rdx", d).set_var("rcx", b);
+    emu.run().map(|r| r.ret).map_err(|e| e.to_string())
+}
+
+/// One-operand `mul`, `imul`, `div` and `idiv` in every width, and the two- and
+/// three-operand `imul`, against the processor: `rax` and `rdx` afterwards, on
+/// each width's boundary values and seeded random ones. An 8- or 16-bit one was
+/// left untranslated (`/*mul bl*/`), so the IR could not answer at all.
+///
+/// A divide the manual says faults (a zero divisor, a quotient too wide) is not run
+/// on the processor; the IR must refuse it rather than answer a number, and that
+/// refusal is what a body states: the call of `__udiv` is the instruction's own.
+#[test]
+fn multiply_and_divide_in_every_width_leave_what_the_processor_leaves() {
+    use Divide::{By, No};
+    let d8 = |signed| By { width: 8, signed, ah: false };
+    let operations = [
+        Accumulator { name: "mul %cl", bytes: &[0xf6, 0xe1], divide: No, machine: accumulator!("mul cl") },
+        Accumulator { name: "imul %cl", bytes: &[0xf6, 0xe9], divide: No, machine: accumulator!("imul cl") },
+        Accumulator { name: "mul %ah", bytes: &[0xf6, 0xe4], divide: No, machine: accumulator!("mul ah") },
+        Accumulator { name: "mul %cx", bytes: &[0x66, 0xf7, 0xe1], divide: No, machine: accumulator!("mul cx") },
+        Accumulator { name: "imul %cx", bytes: &[0x66, 0xf7, 0xe9], divide: No, machine: accumulator!("imul cx") },
+        Accumulator { name: "mul %ecx", bytes: &[0xf7, 0xe1], divide: No, machine: accumulator!("mul ecx") },
+        Accumulator { name: "imul %ecx", bytes: &[0xf7, 0xe9], divide: No, machine: accumulator!("imul ecx") },
+        Accumulator { name: "mul %edx", bytes: &[0xf7, 0xe2], divide: No, machine: accumulator!("mul edx") },
+        Accumulator { name: "mul %rcx", bytes: &[0x48, 0xf7, 0xe1], divide: No, machine: accumulator!("mul rcx") },
+        Accumulator { name: "imul %rcx", bytes: &[0x48, 0xf7, 0xe9], divide: No, machine: accumulator!("imul rcx") },
+        Accumulator { name: "mul %rdx", bytes: &[0x48, 0xf7, 0xe2], divide: No, machine: accumulator!("mul rdx") },
+        // The dividend setups: `rdx` (or `dx`) from the sign of `rax` (or `ax`).
+        Accumulator { name: "cwtd", bytes: &[0x66, 0x99], divide: No, machine: accumulator!("cwd") },
+        Accumulator { name: "cltd", bytes: &[0x99], divide: No, machine: accumulator!("cdq") },
+        Accumulator { name: "cqto", bytes: &[0x48, 0x99], divide: No, machine: accumulator!("cqo") },
+        Accumulator { name: "div %cl", bytes: &[0xf6, 0xf1], divide: d8(false), machine: accumulator!("div cl") },
+        Accumulator { name: "idiv %cl", bytes: &[0xf6, 0xf9], divide: d8(true), machine: accumulator!("idiv cl") },
+        Accumulator { name: "div %ah", bytes: &[0xf6, 0xf4], divide: By { width: 8, signed: false, ah: true }, machine: accumulator!("div ah") },
+        Accumulator { name: "div %cx", bytes: &[0x66, 0xf7, 0xf1], divide: By { width: 16, signed: false, ah: false }, machine: accumulator!("div cx") },
+        Accumulator { name: "idiv %cx", bytes: &[0x66, 0xf7, 0xf9], divide: By { width: 16, signed: true, ah: false }, machine: accumulator!("idiv cx") },
+        Accumulator { name: "div %ecx", bytes: &[0xf7, 0xf1], divide: By { width: 32, signed: false, ah: false }, machine: accumulator!("div ecx") },
+        Accumulator { name: "idiv %ecx", bytes: &[0xf7, 0xf9], divide: By { width: 32, signed: true, ah: false }, machine: accumulator!("idiv ecx") },
+        Accumulator { name: "div %rcx", bytes: &[0x48, 0xf7, 0xf1], divide: By { width: 64, signed: false, ah: false }, machine: accumulator!("div rcx") },
+        Accumulator { name: "idiv %rcx", bytes: &[0x48, 0xf7, 0xf9], divide: By { width: 64, signed: true, ah: false }, machine: accumulator!("idiv rcx") },
+        Accumulator { name: "imul %cx,%ax", bytes: &[0x66, 0x0f, 0xaf, 0xc1], divide: No, machine: accumulator!("imul ax, cx") },
+        Accumulator { name: "imul %ecx,%eax", bytes: &[0x0f, 0xaf, 0xc1], divide: No, machine: accumulator!("imul eax, ecx") },
+        Accumulator { name: "imul %rcx,%rax", bytes: &[0x48, 0x0f, 0xaf, 0xc1], divide: No, machine: accumulator!("imul rax, rcx") },
+        Accumulator { name: "imul $0x1234,%cx,%ax", bytes: &[0x66, 0x69, 0xc1, 0x34, 0x12], divide: No, machine: accumulator!("imul ax, cx, 0x1234") },
+        Accumulator { name: "imul $-7,%ecx,%eax", bytes: &[0x6b, 0xc1, 0xf9], divide: No, machine: accumulator!("imul eax, ecx, -7") },
+        Accumulator { name: "imul $0x12345678,%rcx,%rax", bytes: &[0x48, 0x69, 0xc1, 0x78, 0x56, 0x34, 0x12], divide: No, machine: accumulator!("imul rax, rcx, 0x12345678") },
+        Accumulator { name: "imul $-3,%rcx,%rax", bytes: &[0x48, 0x6b, 0xc1, 0xfd], divide: No, machine: accumulator!("imul rax, rcx, -3") },
+    ];
+    // The boundary values, each width's least value among them, and seeded random ones.
+    let mut values = BOUNDARY.to_vec();
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    for _ in 0..14 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        values.push(seed);
+    }
+    let (mut compared, mut refused) = (0usize, 0usize);
+    let mut wrong = Vec::new();
+    for op in &operations {
+        let [rax_of, rdx_of] = accumulator_lifts(op.bytes);
+        for &a in &values {
+            for &b in &values {
+                // `rdx` as a divide's high half: zero, the sign of `rax`, and two others.
+                for d in [0, ((a as i64) >> 63) as u64, b >> 3, a ^ b] {
+                    let got = (accumulator_emulated(&rax_of, a, d, b), accumulator_emulated(&rdx_of, a, d, b));
+                    compared += 1;
+                    if divide_faults(op.divide, a, d, b) {
+                        refused += 1;
+                        if got.0.is_ok() || got.1.is_ok() {
+                            wrong.push(format!("{} on rax={a:x} rdx={d:x} rcx={b:x}: the processor faults, IR {got:x?}", op.name));
+                        }
+                        continue;
+                    }
+                    let (rax, rdx) = (op.machine)(a, d, b);
+                    if got != (Ok(Some(rax)), Ok(Some(rdx))) {
+                        wrong.push(format!("{} on rax={a:x} rdx={d:x} rcx={b:x}: processor rax={rax:x} rdx={rdx:x}, IR {got:x?}", op.name));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {compared} wrong; first: {:#?}", wrong.len(), &wrong[..wrong.len().min(12)]);
+    assert!(compared > 100_000 && refused > 1_000, "compared only {compared}, refused {refused}");
+}

@@ -9,8 +9,8 @@ import collections, json, sys
 
 SAME = ("same", "same_ext")
 ORDER = ["same", "same_ext", "narrow", "differ_nan_only", "differ", "crash", "died", "no_link", "no_compile", "no_answer"]
-SETS = {"emu gcc": lambda l: l.startswith("emu") and ".gcc" in l, "emu clang": lambda l: l.startswith("emu") and ".clang" in l, "held-out gcc": lambda l: l.startswith("heldout.gcc"), "held-out clang": lambda l: l.startswith("heldout.clang")}
-TOTALS = {"emu": "emu", "held-out": "heldout"}
+SETS = {"muldiv": lambda l: l.startswith("muldiv"), "emu gcc": lambda l: l.startswith("emu") and ".gcc" in l, "emu clang": lambda l: l.startswith("emu") and ".clang" in l, "held-out gcc": lambda l: l.startswith("heldout.gcc"), "held-out clang": lambda l: l.startswith("heldout.clang")}
+TOTALS = {"emu": "emu", "held-out": "heldout", "muldiv": "muldiv"}
 
 
 def load(run):
@@ -20,6 +20,8 @@ def load(run):
 def counts(res, tool):
     for name, f in SETS.items():
         rs = [r for r in res if r["tool"] == tool and f(r["lib"])]
+        if not rs:  # a run of one set (`behave.py --only`) has no rows for the others
+            continue
         c = collections.Counter(r["outcome"] for r in rs)
         printed = sum(1 for r in rs if r.get("level0"))
         width = sum(1 for r in rs if r.get("rescued_by") and r["rescued_by"][1] == "0")
@@ -27,6 +29,8 @@ def counts(res, tool):
         print(f"{name:14} {tool:6} n={len(rs):3} compiles-as-printed={printed:3} " + " ".join(f"{k}={c[k]}" for k in ORDER if c[k]) + f" | rescued: access width {width}, unset name nonzero {unset}")
     for name, prefix in TOTALS.items():
         rs = [r for r in res if r["tool"] == tool and r["lib"].startswith(prefix)]
+        if not rs:
+            continue
         print(f"{name:14} {tool:6} same {sum(r['outcome'] in SAME for r in rs)} of {len(rs)}, compiles as printed {sum(1 for r in rs if r.get('level0'))} of {len(rs)}")
 
 

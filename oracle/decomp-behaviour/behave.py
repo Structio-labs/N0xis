@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Behaviour: each body the engine prints, compiled with one prelude, run against the original on generated inputs.
 
-Usage: behave.py ENGINE OUTDIR
+Usage: behave.py ENGINE OUTDIR [--only SET]
+`--only muldiv` runs one set outside the default run instead (`ONLY` below).
 Builds the libraries, asks ENGINE for every function of each (`function discover`, then one `decomp pseudo` per start,
 each under `ulimit -v 4194304` in a project of its own), and prints the counts per set. Everything goes under OUTDIR:
 results.json, functions.tsv (one line per function per build, what `report.py` reads), lib/, bodies/, runs/.
@@ -43,11 +44,13 @@ HELD = {  # kinds, source return bits (0 void), returns a string
     "h_isqrt": ("v", 32), "h_clamp": ("vvv", 32), "h_bsearch": ("Snn", 64), "h_isort": ("bn", 0), "h_bitrev": ("v", 32), "h_atol": ("s", 64), "h_hexval": ("v", 32), "h_utf8len": ("c", 32), "h_sum32": ("bn", 64), "h_max32": ("bn", 32),
     "h_struct": ("b", 64), "h_struct_set": ("bv", 0), "h_day": ("n", 32), "h_fall": ("vv", 32), "h_trace": ("bm", 64), "h_div10": ("v", 32), "h_mod7": ("v", 32), "h_udiv1000": ("v", 32), "h_rotl": ("vv", 32), "h_cmp3": ("vv", 32), "h_abs": ("v", 32),
     "h_satadd": ("vv", 32), "h_toupper": ("c", 8), "h_ispow2": ("v", 32), "h_bswap": ("v", 64), "h_count_eq": ("Bnc", 32), "h_fill16": ("bnc", 0), "h_collatz": ("v", 64), "h_call3": ("vv", 32), "h_call_loop": ("v", 32), "h_table": ("v", 32), "h_name": ("n", 64)}
-SRC = {"emu": ORACLE + "/emu.c", "emu_fp": ORACLE + "/emu_fp.c", "emu_calls": ORACLE + "/emu_calls.c", "emu_switch": ORACLE + "/emu_switch.c", "emu_simd": ORACLE + "/emu_simd.c", "heldout": HERE + "/heldout.c"}
+SRC = {"emu": ORACLE + "/emu.c", "emu_fp": ORACLE + "/emu_fp.c", "emu_calls": ORACLE + "/emu_calls.c", "emu_switch": ORACLE + "/emu_switch.c", "emu_simd": ORACLE + "/emu_simd.c", "heldout": HERE + "/heldout.c", "muldiv": ORACLE + "/muldiv.c"}
 LIBS = [("emu", "gcc", "-O1"), ("emu_fp", "gcc", "-O1"), ("emu_calls", "gcc", "-O1"), ("emu_switch", "gcc", "-O1"), ("emu_simd", "gcc", "-O1"),
         ("emu", "gcc", "-O2"), ("emu_fp", "gcc", "-O2"), ("emu_calls", "gcc", "-O2"), ("emu_switch", "gcc", "-O2"), ("emu_simd", "gcc", "-O2"),
         ("heldout", "gcc", "-O1"), ("heldout", "gcc", "-O2"), ("heldout", "clang", "-O2"), ("emu", "clang", "-O2"), ("emu_switch", "clang", "-O2"), ("emu_calls", "clang", "-O2")]
 
+# Sets outside the default run, one per class of operation, each at gcc and clang -O1 and -O2. Run with `--only SET`.
+ONLY = {"muldiv": [("muldiv", c, o) for c in ("gcc", "clang") for o in ("-O1", "-O2")]}
 
 def libname(s, c, o):
     return f"{s}.{c}{o}"
@@ -614,6 +617,8 @@ def jobs(outdir, discovered):
 
 def main():
     engine, outdir = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+    if "--only" in sys.argv:
+        LIBS[:] = ONLY[sys.argv[sys.argv.index("--only") + 1]]
     CFLAGS.extend(["-I", outdir])
     os.makedirs(f"{outdir}/bodies", exist_ok=True)
     subprocess.run([sys.executable, HERE + "/gen_prelude.py", outdir + "/prelude.h"], check=True)

@@ -51,13 +51,16 @@ FC(__fcmp_ule,!(x>y)) FC(__fcmp_ult,!(x>=y)) FC(__fcmp_uno,x!=x||y!=y) FC(__fcmp
 static inline uint64_t __max(int64_t a,int64_t b){return a>b?a:b;} static inline uint64_t __min(int64_t a,int64_t b){return a<b?a:b;}
 static inline uint64_t __umax(uint64_t a,uint64_t b){return a>b?a:b;} static inline uint64_t __umin(uint64_t a,uint64_t b){return a<b?a:b;}
 static inline uint64_t __cqo(int64_t x){return x<0?~0ull:0;}
-static inline uint64_t __umulh(uint64_t a,uint64_t b,int w){return w>=64?(uint64_t)(((bh_u128)a*b)>>64):(uint64_t)((((uint64_t)(uint32_t)a)*(uint32_t)b)>>32);}
-static inline uint64_t __mulh(uint64_t a,uint64_t b,int w){return w>=64?(uint64_t)(((bh_i128)(int64_t)a*(int64_t)b)>>64):(uint64_t)(uint32_t)((((int64_t)(int32_t)a)*(int32_t)b)>>32);}
+// The one-operand multiply's high half and divide's halves at the width the lift states: 8, 16, 32 or 64.
+static inline uint64_t bh_wmask(int w){return w>=64?~0ull:(1ull<<w)-1;}
+static inline int64_t bh_sext(uint64_t v,int w){return w>=64?(int64_t)v:(int64_t)(v<<(64-w))>>(64-w);}
+static inline uint64_t __umulh(uint64_t a,uint64_t b,int w){return w>=64?(uint64_t)(((bh_u128)a*b)>>64):((a&bh_wmask(w))*(b&bh_wmask(w)))>>w;}
+static inline uint64_t __mulh(uint64_t a,uint64_t b,int w){return w>=64?(uint64_t)(((bh_i128)(int64_t)a*(int64_t)b)>>64):(uint64_t)((bh_sext(a,w)*bh_sext(b,w))>>w)&bh_wmask(w);}
 static inline uint64_t __cdq(uint64_t x){return (uint32_t)((int32_t)x>>31);}
-#define BH_DIVIDEND(w,hi,lo) ((w)==32?(bh_u128)(((uint64_t)(uint32_t)(hi)<<32)|(uint32_t)(lo)):(((bh_u128)(hi)<<64)|(lo)))
-#define BH_SDIVIDEND(w,hi,lo) ((w)==32?(bh_i128)(int64_t)(((uint64_t)(uint32_t)(hi)<<32)|(uint32_t)(lo)):(bh_i128)(((bh_u128)(hi)<<64)|(lo)))
-#define BH_DIVISOR(w,d) ((w)==32?(bh_u128)(uint32_t)(d):(bh_u128)(uint64_t)(d))
-#define BH_SDIVISOR(w,d) ((w)==32?(bh_i128)(int32_t)(d):(bh_i128)(int64_t)(d))
+#define BH_DIVIDEND(w,hi,lo) ((w)>=64?(((bh_u128)(hi)<<64)|(lo)):(bh_u128)((((uint64_t)(hi)&bh_wmask(w))<<(w))|((uint64_t)(lo)&bh_wmask(w))))
+#define BH_SDIVIDEND(w,hi,lo) ((w)>=64?(bh_i128)(((bh_u128)(hi)<<64)|(lo)):(bh_i128)bh_sext((((uint64_t)(hi)&bh_wmask(w))<<(w))|((uint64_t)(lo)&bh_wmask(w)),2*(w)))
+#define BH_DIVISOR(w,d) ((bh_u128)((uint64_t)(d)&bh_wmask(w)))
+#define BH_SDIVISOR(w,d) ((bh_i128)bh_sext((uint64_t)(d),(w)))
 static inline uint64_t __udiv(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_DIVIDEND(w,hi,lo)/BH_DIVISOR(w,d));}
 static inline uint64_t __urem(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_DIVIDEND(w,hi,lo)%BH_DIVISOR(w,d));}
 static inline uint64_t __idiv(uint64_t hi,uint64_t lo,uint64_t d,int w){return (uint64_t)(BH_SDIVIDEND(w,hi,lo)/BH_SDIVISOR(w,d));}
