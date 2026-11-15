@@ -984,9 +984,15 @@ pub(crate) fn function_gives(ctx: &Ctx, cfg: &CfgArtifact, flow: &RawFlow) -> Gi
 }
 
 /// How much of the return register a callee defines, or `None` where that is not known:
-/// a callee with no body here, one that never comes back, one too far down. A named
-/// callee's type is its name, which the caller prints; no width is read off it here.
+/// a callee with no body here, one that never comes back, one too far down. A callee
+/// the prototype table names defines what its declared return type holds, and an
+/// extension to it: an import's result is the caller's to trust as declared.
 fn defines_of(ctx: &Ctx, id: Option<&str>, callee: Callee, depth: u8) -> Option<Defines> {
+    if let Callee::Known(sig) = callee {
+        let word = ctx.arch.pointer_size().map(|bytes| n0xis_arch::Bits::from(bytes) * 8)?;
+        let (bits, signed) = crate::signatures::declared_width(sig.ret?, word)?;
+        return Some(Defines { bits, signed, whole: true });
+    }
     let Callee::Body(va) = callee else { return None };
     if depth == 0 {
         return None;
@@ -2246,13 +2252,62 @@ mod tests {
         assert_eq!(return_type(&snap), "uint32_t");
     }
 
-    /// A byte written over another value's remains defines a byte: `mov rax,rdi; cmp
-    /// rax,rsi; setl al; ret`, as clang builds a `uint8_t` comparison after using `rax`
-    /// to hold a parameter. The 64 bits of the copy under it are not the result's.
+    /// A byte or a word written over a value the function put in the register merges
+    /// with it: `mov rax,rdi; mov al,sil; ret` and `mov rax,rdi; mov ax,si; ret` are how
+    /// gcc builds `uint64_t f(uint64_t a, uint64_t b)` returning `a` with a byte or 16
+    /// bits of `b` in its low end, and they printed `uint8_t` and `uint16_t`. The bytes
+    /// of a `uint8_t` comparison computed after `rax` held a parameter (clang: `mov
+    /// rax,rdi; ...; setl al`) have the same form, and read as 64 bits as well.
     #[test]
-    fn a_byte_written_over_a_value_in_passing_is_a_byte() {
-        let snap = image(vec![0x48, 0x89, 0xf8, 0x48, 0x39, 0xf0, 0x0f, 0x9c, 0xc0, 0xc3], RET, RET);
-        assert_eq!(return_type(&snap), "uint8_t");
+    fn a_part_written_over_a_value_the_function_put_there_merges_with_it() {
+        let byte = image(vec![0x48, 0x89, 0xf8, 0x40, 0x88, 0xf0, 0xc3], RET, RET);
+        assert_eq!(return_type(&byte), "uint64_t");
+        let word = image(vec![0x48, 0x89, 0xf8, 0x66, 0x89, 0xf0, 0xc3], RET, RET);
+        assert_eq!(return_type(&word), "uint64_t");
+    }
+
+    /// `xor eax,eax; ret` is `return 0` and `return NULL`, of any type: no width.
+    /// It printed `uint32_t` over the `void *` of a thread's entry function. Beside
+    /// a path that does say, it adds nothing: `test rdi,rdi; je +4; mov rax,[rsi]; ret;
+    /// xor eax,eax; ret` is 64 bits (held above), and with `mov eax,[rsi]` it is 32.
+    #[test]
+    fn a_zeroed_register_alone_says_no_width() {
+        let alone = image(vec![0x31, 0xc0, 0xc3], RET, RET);
+        let sig = body(&alone).signature;
+        assert!(!sig.starts_with("uint") && !sig.starts_with("void"), "{sig}");
+        let beside = image(vec![0x48, 0x85, 0xff, 0x74, 0x03, 0x8b, 0x06, 0xc3, 0x31, 0xc0, 0xc3], RET, RET);
+        assert_eq!(return_type(&beside), "uint32_t");
+    }
+
+    /// `G` is `malloc` by the image's names, with nothing at it to read.
+    struct NamesMalloc;
+    impl n0xis_sources::SymbolProvider for NamesMalloc {
+        fn slot_target(&self, _va: Va) -> Option<Va> {
+            None
+        }
+        fn symbol_at(&self, va: Va) -> Option<n0xis_contracts::Symbol> {
+            (va.0 == G).then(|| n0xis_contracts::Symbol { va: Va(G), module: String::new(), name: "malloc".into(), kind: n0xis_contracts::SymKind::Function })
+        }
+    }
+
+    /// A callee the prototype table names gives the width it is declared with, on any
+    /// return path: `test rdi,rdi; je +3; xor eax,eax; ret; jmp malloc` returns a
+    /// pointer. With no width for the name the call made the whole not known.
+    #[test]
+    fn a_named_callee_gives_its_declared_width() {
+        let mut f = vec![0x48, 0x85, 0xff, 0x74, 0x03, 0x31, 0xc0, 0xc3];
+        let rel = G as i64 - (F as i64 + f.len() as i64 + 5);
+        f.push(0xe9);
+        f.extend_from_slice(&(rel as i32).to_le_bytes());
+        let snap = image(f, &[0xff, 0xe0], RET);
+        let arch = X64::new();
+        let syms = NamesMalloc;
+        let ctx = Ctx::new(&snap, &arch).with_symbols(&syms);
+        let cfg = CfgPass.run(&ctx, CfgInput::new(Va(F), 0x100)).unwrap();
+        let b = DecompPass
+            .run(&ctx, DecompInput { cfg, style: DecompStyle::Ssa, explain: false, strip_block_labels: true, var_names: Default::default(), var_types: Default::default(), struct_defs: Default::default() })
+            .unwrap();
+        assert!(b.signature.starts_with("uint64_t ") || b.signature.starts_with("void* "), "{}", b.signature);
     }
 
     /// Two paths that each state the whole register give the wider: `test rdi,rdi; je

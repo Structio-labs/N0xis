@@ -17,6 +17,13 @@
 //!   the source" cannot be asked of those. `objdump` says which a function is: one
 //!   whose `ret` follows a write of `%al` (or `%ax`, `cbtw`) states its width, and has
 //!   to be printed at it. Never 64, and never "not known", in either case.
+//!
+//! One form is printed wider than its source, and is listed ([`MERGED`]) so that it is
+//! counted and not forgotten: a byte written over a value the function itself put in
+//! the register. `mov %rdi,%rax; mov %sil,%al; ret` is a `uint64_t` with a byte merged
+//! in, and clang builds a `uint8_t` comparison as `mov %rdi,%rax; ...; setl %al; ret`
+//! after using `%rax` to hold a parameter: the same bytes for two types, read as the
+//! first. An entry that is printed at its source's width again fails here as stale.
 
 // It builds its target with a compiler at run time, so its answer depends on that
 // compiler's version: a local instrument, not a CI gate.
@@ -114,6 +121,11 @@ fn printed_width(file: &Path, name: &str, va: u64) -> (Option<u32>, String) {
     (bits, sig)
 }
 
+/// `(compiler, function)` printed at 64 bits over an 8-bit source: see the module's
+/// last paragraph. `c_i8` is `mov %esi,%eax; mul %dil; add $0x3,%al; ret`, a byte added
+/// over the product.
+const MERGED: &[(&str, &str)] = &[("clang", "p_u8"), ("clang", "p_i8"), ("clang", "c_i8")];
+
 #[test]
 fn a_return_type_is_as_wide_as_the_source_where_the_bytes_say_it() {
     let builds = [("gcc-O1", "gcc", "-O1"), ("gcc-O2", "gcc", "-O2"), ("clang-O1", "clang", "-O1"), ("clang-O2", "clang", "-O2")];
@@ -124,16 +136,19 @@ fn a_return_type_is_as_wide_as_the_source_where_the_bytes_say_it() {
         let found = functions(&file);
         assert_eq!(found.len(), 26, "{tag}: nm lists the fixture's 26 functions: {found:?}");
         let insns = disassembly(&file);
-        let (mut exact, mut stated_narrow, mut written_wider) = (0, 0, 0);
+        let (mut exact, mut stated_narrow, mut written_wider, mut merged) = (0, 0, 0, 0);
         for (name, va) in found {
             asked += 1;
             let source = source_width(&name).expect("listed by it");
             let body = insns.get(&name).unwrap_or_else(|| panic!("{tag}: objdump has no {name}"));
             let stated = source >= 32 || states_its_width(body, source);
             // What a write of `%eax` defines, where the bytes say nothing narrower.
-            let want = if stated { source } else { 32 };
+            let listed = MERGED.contains(&(compiler, name.as_str()));
+            let want = if listed { 64 } else if stated { source } else { 32 };
             let (got, sig) = printed_width(&file, &name, va);
-            if got == Some(want) {
+            if listed && got == Some(want) {
+                merged += 1;
+            } else if got == Some(want) {
                 exact += usize::from(stated);
                 stated_narrow += usize::from(stated && source < 32);
                 written_wider += usize::from(!stated);
@@ -141,7 +156,7 @@ fn a_return_type_is_as_wide_as_the_source_where_the_bytes_say_it() {
                 wrong.push(format!("{tag} {name}: `{sig}`, the source returns {source} bits and the bytes define {want}: {}", body.join("; ")));
             }
         }
-        eprintln!("{tag}: {exact} printed at the source's width ({stated_narrow} of them narrower than 32), {written_wider} at the 32 bits the compiler wrote for a narrower type");
+        eprintln!("{tag}: {exact} printed at the source's width ({stated_narrow} of them narrower than 32), {written_wider} at the 32 bits the compiler wrote for a narrower type, {merged} at 64 over a narrower type (a part written over a value the function put there)");
         // Without one of these the narrow half of the check asked nothing of this build.
         assert!(stated_narrow > 0 || !wrong.is_empty(), "{tag}: no function states a width under 32 in its bytes");
     }

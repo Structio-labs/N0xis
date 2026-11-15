@@ -94,6 +94,22 @@ static KNOWN_SIGNATURES: &[(&str, KnownSignature)] = &[
     ("sprintf", sig!([p!("buffer", "char*"), p!("format", "const char*")], Some("int"), variadic)),
 ];
 
+/// The width and signedness of a type the table declares for a return, on a target whose
+/// pointers are `word` bits, or `None` for a name no width is written down for here.
+/// Every return the table declares has one (held by a test below), so a caller that
+/// returns such a call's result knows how wide it is without the first guess at it.
+pub fn declared_width(type_name: &str, word: n0xis_arch::Bits) -> Option<(n0xis_arch::Bits, bool)> {
+    if type_name.ends_with('*') {
+        return Some((word, false));
+    }
+    match type_name {
+        "HANDLE" | "HMODULE" | "LPVOID" | "FARPROC" | "size_t" | "SIZE_T" => Some((word, false)),
+        "DWORD" | "UINT" => Some((32, false)),
+        "BOOL" | "int" => Some((32, true)),
+        _ => None,
+    }
+}
+
 /// Look up a known signature by bare function name (case-insensitive). The
 /// caller is expected to have already stripped a `module!` prefix.
 pub fn known_signature(bare_name: &str) -> Option<&'static KnownSignature> {
@@ -103,6 +119,16 @@ pub fn known_signature(bare_name: &str) -> Option<&'static KnownSignature> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A return added to the table with a type [`declared_width`] has no width for
+    /// would make every function that passes it on print "not known".
+    #[test]
+    fn every_declared_return_has_a_width() {
+        let without: Vec<_> = KNOWN_SIGNATURES.iter().filter_map(|(name, sig)| sig.ret.filter(|r| declared_width(r, 64).is_none()).map(|r| (*name, r))).collect();
+        assert!(without.is_empty(), "{without:?}");
+        assert_eq!(declared_width("void*", 32), Some((32, false)));
+        assert_eq!(declared_width("BOOL", 64), Some((32, true)));
+    }
 
     #[test]
     fn looks_up_case_insensitively() {
